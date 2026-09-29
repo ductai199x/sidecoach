@@ -29,6 +29,7 @@ import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.events.UserUtterance
 import com.sidecoach.vision.Pieces
+import com.sidecoach.voice.Py
 import java.math.BigDecimal
 import java.math.MathContext
 import java.util.UUID
@@ -479,16 +480,17 @@ class Profiler(
         )
     }
 
+    /**
+     * The motif to practise: the one missed most often over the games, as the insight line rates
+     * it; else the game's turning point. The profile's cells keep the misses and the chances
+     * apart, and asking one cell for both matched none: every recommendation was the turning
+     * point's (the parity audit, 2026-09-29). `Profiler._weak_motif`.
+     */
     private fun weakMotif(review: GameReview): Pair<String?, String> {
-        val rows = store.cells().filter {
-            it.cause == null && it.motif != null && it.chances >= Insights.MIN_CHANCES && it.errors != 0
-        }
-        if (rows.isNotEmpty()) {
-            val worst = rows.maxWithOrNull(
-                compareBy<CellRow>({ (it.errors + 1).toDouble() / (it.chances + 2) }, { it.expectedLoss }),
-            )!!
+        val worst = Insights.motifRates(store.cells()).maxByOrNull { it.rate }
+        if (worst != null) {
             return worst.motif to
-                "${Insights.motifWords(worst.motif)}: ${worst.errors} of ${worst.chances} chances missed over your games"
+                "${Insights.motifWords(worst.motif)}: ${worst.missed} of ${worst.seen} chances missed over your games"
         }
         for (point in review.turningPoints) {
             if (!point.motif.isNullOrEmpty()) {
@@ -662,7 +664,7 @@ class Profiler(
             val parts = outcomes.map { (k, n) -> "$n $k" }
             val accs = reviews.mapNotNull { it.accuracy }
             var text = "${reviews.size} game${if (reviews.size != 1) "s" else ""} (${parts.joinToString(", ")})"
-            if (accs.isNotEmpty()) text += ", accuracy ${Insights.fixed(accs.sum() / accs.size, 0)}"
+            if (accs.isNotEmpty()) text += ", accuracy ${Insights.fixed(Py.sum(accs) / accs.size, 0)}"
             val costs = LinkedHashMap<String, Double>()
             for (r in reviews) for ((cause, loss) in r.causes) costs[cause] = (costs[cause] ?: 0.0) + loss
             if (costs.isNotEmpty()) {

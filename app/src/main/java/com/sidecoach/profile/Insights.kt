@@ -2,6 +2,7 @@ package com.sidecoach.profile
 
 import com.sidecoach.events.ProfileCell
 import com.sidecoach.events.insightWords
+import com.sidecoach.voice.Py
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -45,9 +46,9 @@ object Insights {
             if (r.cause != null && r.errors > 0) byCause.getOrPut(r.cause) { ArrayList() }.add(r)
         }
         if (byCause.isNotEmpty()) {
-            val (cause, cells) = byCause.entries.maxByOrNull { e -> e.value.sumOf { it.expectedLoss } }!!.toPair()
+            val (cause, cells) = byCause.entries.maxByOrNull { e -> Py.sum(e.value.map { it.expectedLoss }) }!!.toPair()
             val errors = cells.sumOf { it.errors }
-            val loss = cells.sumOf { it.expectedLoss }
+            val loss = Py.sum(cells.map { it.expectedLoss })
             if (errors >= MIN_ERRORS) {
                 val over = if (games > 1) " over $games games" else ""
                 out.add("Your biggest cost$over is $cause: $errors mistakes, ${fixed(loss, 2)} expected score.")
@@ -63,21 +64,7 @@ object Insights {
             }
         }
         // The motif missed most often, as a rate over the occasions it was on the board.
-        val chances = LinkedHashMap<String, Int>()
-        val misses = HashMap<String, Int>()
-        for (r in rows) {
-            val motif = r.motif ?: continue
-            if (r.cause == null) chances[motif] = (chances[motif] ?: 0) + r.chances
-            else misses[motif] = (misses[motif] ?: 0) + r.errors
-        }
-        val rated = chances.keys
-            .filter { (chances[it] ?: 0) >= MIN_CHANCES && (misses[it] ?: 0) >= 2 }
-            .map { m ->
-                val missed = misses[m] ?: 0
-                val seen = chances[m] ?: 0
-                Rated(m, (missed + 1).toDouble() / (seen + 2), missed, seen)
-            }
-        rated.maxByOrNull { it.rate }?.let { (motif, rate, missed, seen) ->
+        motifRates(rows).maxByOrNull { it.rate }?.let { (motif, rate, missed, seen) ->
             out.add(
                 "You miss a ${motifWords(motif)} about ${percent(rate)} of the time one is on the board" +
                     " ($missed of $seen).",
@@ -100,7 +87,29 @@ object Insights {
         return out
     }
 
-    private data class Rated(val motif: String, val rate: Double, val missed: Int, val seen: Int)
+    internal data class Rated(val motif: String, val rate: Double, val missed: Int, val seen: Int)
+
+    /**
+     * Each motif missed at least twice over enough of its chances, with the rate it is missed,
+     * smoothed as (misses + 1) / (chances + 2), in the order its chances came. A cell with a
+     * cause counts misses, one without counts chances. `insights.motif_rates`.
+     */
+    internal fun motifRates(rows: List<CellRow>): List<Rated> {
+        val chances = LinkedHashMap<String, Int>()
+        val misses = HashMap<String, Int>()
+        for (r in rows) {
+            val motif = r.motif ?: continue
+            if (r.cause == null) chances[motif] = (chances[motif] ?: 0) + r.chances
+            else misses[motif] = (misses[motif] ?: 0) + r.errors
+        }
+        return chances.keys
+            .filter { (chances[it] ?: 0) >= MIN_CHANCES && (misses[it] ?: 0) >= 2 }
+            .map { m ->
+                val missed = misses[m] ?: 0
+                val seen = chances[m] ?: 0
+                Rated(m, (missed + 1).toDouble() / (seen + 2), missed, seen)
+            }
+    }
 
     /** Python's `round(x, n)`: the exact value, half to even. */
     fun round(value: Double, places: Int): Double =

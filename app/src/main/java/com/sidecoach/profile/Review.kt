@@ -8,6 +8,7 @@ import com.sidecoach.events.GameReview
 import com.sidecoach.events.PhaseSummary
 import com.sidecoach.events.TurningPoint
 import com.sidecoach.vision.Pieces
+import com.sidecoach.voice.Py
 
 /**
  * The post-game review: the game in numbers, from the engine's verdicts on the player's
@@ -107,7 +108,7 @@ object Review {
                 PhaseSummary(
                     phase = phase,
                     moves = items.size,
-                    expectedLoss = Insights.round(items.sumOf { it.expectedLoss }, 3),
+                    expectedLoss = Insights.round(Py.sum(items.map { it.expectedLoss }), 3),
                     mistakes = items.count { it.severity in ERRORS },
                 )
             }

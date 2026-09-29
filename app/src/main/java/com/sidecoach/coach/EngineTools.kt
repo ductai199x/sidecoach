@@ -139,17 +139,22 @@ class EngineTools(
 
     /** The tool's answer, as text for the model; a bad call is told what was wrong. */
     fun run(name: String, arguments: JSONObject): String {
-        val moves = tokens(arguments.opt("moves"))
-        val start = arguments.optString("start").ifEmpty { "now" }
+        // The values as Python reads them: a null is None, falsy, and str() of anything
+        // is Python's -- {"square": null} was 'null', and {"moves": false} a move
+        // (the parity audit, 2026-09-29).
+        val args = pyJsonOr(arguments.toString(), null) as? Map<*, *> ?: emptyMap<String, Any?>()
+        val moves = tokens(args["moves"].takeIf { pyTruthy(it) } ?: emptyList<Any?>())
+        val start = pyStr(args["start"].takeIf { pyTruthy(it) } ?: "now")
+        val target = pyStr(args["square"].takeIf { pyTruthy(it) } ?: "")
         log.add(
             "$name(${moves.joinToString(" ")}" + (if (start != "now") "; $start" else "") +
-                (if (name == "square") "; ${arguments.optString("square")})" else ")"),
+                (if (name == "square") "; $target)" else ")"),
         )
         val board = (if (start == "before_last_move") before else now)
             ?: return "There is no last move to start from: the tools start from the board now."
         return when (name) {
             "analyse" -> analyse(board, moves, start)
-            "square" -> square(board, moves, arguments.optString("square"), start)
+            "square" -> square(board, moves, target, start)
             else -> "No tool named ${pyRepr(name)}: the tools are analyse and square."
         }
     }
@@ -274,14 +279,10 @@ class EngineTools(
     private companion object {
         /** The moves as tokens: one move each, their numbers taken off ("4. Kg2" -> "Kg2"). */
         fun tokens(moves: Any?): List<String> {
-            val items: List<Any?> = when (moves) {
-                null, JSONObject.NULL -> emptyList()
-                is JSONArray -> (0 until moves.length()).map { moves.opt(it) }
-                else -> listOf(moves)
-            }
+            val items: List<Any?> = if (moves is List<*>) moves else listOf(moves)
             val out = ArrayList<String>()
             for (item in items) {
-                for (raw in item.toString().replace(",", " ").split(Regex("\\s+"))) {
+                for (raw in pyStr(item).replace(",", " ").split(Regex("\\s+"))) {
                     val token = NUMBER.replace(raw.trim(), "")
                     if (token.isNotEmpty() && token != "..." && token != "..") {
                         out.add(token.replace("0-0-0", "O-O-O").replace("0-0", "O-O"))

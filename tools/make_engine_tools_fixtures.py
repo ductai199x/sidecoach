@@ -17,7 +17,7 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
-from sidecoach.coach.engine_tools import TOOL_ROUNDS, TOOL_WORDS, EngineTools  # noqa: E402
+from sidecoach.coach.engine_tools import SPECS, TOOL_ROUNDS, TOOL_WORDS, EngineTools  # noqa: E402
 from sidecoach.events import Line  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -65,6 +65,13 @@ CASES = [
             ("square", {"square": "a7", "moves": ["Kg2"], "start": "now"}),
             ("fly", {}),
             ("analyse", {}),
+            # Arguments as a model may write them, read as Python reads them (the parity audit,
+            # 2026-09-29): a null square, a false or numeric move list, a null move, a null start.
+            ("square", {"square": None}),
+            ("analyse", {"moves": False}),
+            ("analyse", {"moves": ["Kg2", None]}),
+            ("analyse", {"moves": 5}),
+            ("analyse", {"moves": ["Kg2"], "start": None}),
         ],
     ),
     (
@@ -113,7 +120,7 @@ def main() -> None:
                 "frames": [b.fen() for b in tools.frames],
             }
         )
-    payload = {"tool_words": TOOL_WORDS, "tool_rounds": TOOL_ROUNDS, "cases": cases}
+    payload = {"tool_words": TOOL_WORDS, "tool_rounds": TOOL_ROUNDS, "specs": SPECS, "cases": cases}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "engine_tools.json").write_text(json.dumps(payload), encoding="utf-8")
     print(f"{sum(len(c['calls']) for c in cases)} calls -> {OUT / 'engine_tools.json'}")

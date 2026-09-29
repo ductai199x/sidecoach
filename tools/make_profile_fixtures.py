@@ -337,6 +337,10 @@ REFUSALS = [
     # Not "SELECT load_extension('x')": refused on both, but Android's SQLite is built without
     # the function ("no such function: load_extension") where the desktop's denies it.
     "SELECT 'pragma_table_info' AS word",
+    # A column and a CTE named pragma_..., which the desktop's authorizer lets through (the
+    # parity audit, 2026-09-29).
+    "SELECT 1 AS pragma_count",
+    "WITH pragma_x AS (SELECT 1 AS v) SELECT v FROM pragma_x",
     "select count(*) as n from games ;",
     "WITH g AS (SELECT * FROM games) SELECT COUNT(*) AS n FROM g",
     "SELECT json_each.value FROM games, json_each('[1,2]')",
@@ -344,6 +348,8 @@ REFUSALS = [
 ]
 RUNAWAY = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT COUNT(*) FROM n"
 CAPPED = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n LIMIT 500) SELECT x FROM n"
+# No LIMIT at all: the rows cap stops it, where the phone's cursor ran it to the time limit.
+UNBOUNDED = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT x FROM n"
 RENDERS = [
     "SELECT 1e999 AS big, -1e999 AS small, 2.5 AS half, 1e20 AS huge, 0.1235 AS r, 3.0 AS three,"
     " -2.0 AS minus, x'0141ff27' AS blob, x'22' AS dq, x'' AS empty, 'it''s' AS s, NULL AS n, 7 AS i,"
@@ -668,7 +674,16 @@ def main() -> None:
     except QueryRefused as exc:
         runaway = str(exc)
     _, capped = store.query(CAPPED, rows=10)
-    bounded = {"runaway": RUNAWAY, "runaway_error": runaway, "capped": CAPPED, "capped_rows": len(capped)}
+    columns_unbounded, unbounded = store.query(UNBOUNDED, rows=10)
+    bounded = {
+        "runaway": RUNAWAY,
+        "runaway_error": runaway,
+        "capped": CAPPED,
+        "capped_rows": len(capped),
+        "unbounded": UNBOUNDED,
+        "unbounded_columns": columns_unbounded,
+        "unbounded_rows": [list(r) for r in unbounded],
+    }
     # Values the rows show as Python's str() shows them: infinities, a float past 2**63,
     # blobs, a long text cut (`ask._cell`).
     renders = []

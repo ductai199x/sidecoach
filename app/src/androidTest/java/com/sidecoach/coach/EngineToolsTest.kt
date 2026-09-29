@@ -53,6 +53,8 @@ class EngineToolsTest {
         val root = fixture("chess/engine_tools.json")
         assertEquals(root.getString("tool_words"), TOOL_WORDS)
         assertEquals(root.getInt("tool_rounds"), TOOL_ROUNDS)
+        // The tools as the model is told of them: names, descriptions, parameters.
+        assertEquals(pyJsonLoads(root.getJSONArray("specs").toString()), pyJsonLoads(engineToolSpecs().toString()))
         val cases = root.getJSONArray("cases")
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)

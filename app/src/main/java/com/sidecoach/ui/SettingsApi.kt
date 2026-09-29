@@ -91,7 +91,7 @@ class SettingsApi(private val store: SettingsStore) {
                 (if (now.isNotEmpty()) "; applied now: " + words(now) else "") +
                 (if (later.isNotEmpty()) "; at the next Start: " + words(later) else "") +
                 (if (restart.isNotEmpty()) "; after a restart: " + words(restart) else "") +
-                (if (changed.isEmpty()) "; nothing changed" else ""),
+                (if (now.isEmpty() && later.isEmpty() && restart.isEmpty()) "; nothing changed" else ""),
         )
         return JSONObject().apply {
             put("ok", true)

@@ -456,15 +456,26 @@ class Store(val path: File?) {
         if (';' in text) throw QueryRefused("one statement at a time")
         val head = Py.split(text)[0].uppercase(Locale.ROOT)
         if (head != "SELECT" && head != "WITH") throw QueryRefused("only SELECT queries are allowed")
-        if (PRAGMA_FUNCTION.containsMatchIn(text.replace(STRING_LITERAL, "''"))) throw QueryRefused(NOT_AUTHORIZED)
+        if (pragmaTable(text.replace(STRING_LITERAL, "''"))) throw QueryRefused(NOT_AUTHORIZED)
         return lock.withLock {
             val cancel = CancellationSignal()
             val timer = Timer("profile-query", true)
             db.execSQL("PRAGMA query_only = 1")
             try {
                 timer.schedule((seconds * 1000).toLong()) { cancel.cancel() }
-                db.rawQuery(text, null, cancel).use { cursor ->
-                    val names = cursor.columnNames.toList()
+                // The names from the statement itself, never stepped; the rows from it capped
+                // at one more than wanted: Android's cursor counts a whole result on its first
+                // fill, and a query with no LIMIT ran into the time limit and was refused where
+                // the desktop's fetchmany stops at its rows (the parity audit, 2026-09-29).
+                // A statement that is no read -- a write inside a WITH, a syntax error -- is not
+                // one SQLite takes as a subquery: it runs as written, and says what is wrong with it.
+                val names = db.rawQuery(text, null, cancel).use { it.columnNames.toList() }
+                val capped = try {
+                    db.rawQuery("SELECT * FROM ($text) LIMIT ${maxRows + 1}", null, cancel)
+                } catch (_: SQLiteException) {
+                    db.rawQuery(text, null, cancel)
+                }
+                capped.use { cursor ->
                     val out = ArrayList<List<Any?>>()
                     while (out.size < maxRows + 1 && cursor.moveToNext()) {
                         out.add((0 until cursor.columnCount).map { i -> cell(cursor, i) })
@@ -510,8 +521,27 @@ class Store(val path: File?) {
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"
 
-        /** A pragma's table-valued function (`pragma_table_info`), quoted or not, any case. */
-        private val PRAGMA_FUNCTION = Regex("\\bpragma_\\w+", RegexOption.IGNORE_CASE)
+        /**
+         * A pragma's table-valued function used as one -- read FROM, JOINed, or called with its
+         * arguments -- and not a CTE of that name: `SELECT 1 AS pragma_count` is a column
+         * the desktop's authorizer lets through (the parity audit, 2026-09-29).
+         */
+        private val PRAGMA_USED = Regex(
+            "(?:\\b(?:FROM|JOIN)\\s+|,\\s*)(?:[\"`\\[]?main[\"`\\]]?\\s*\\.\\s*)?[\"`\\[]?(pragma_\\w+)" + "|\\b(pragma_\\w+)\\s*\\(",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** A CTE's name (`WITH name AS (`, `, name(cols) AS (`). */
+        private val CTE_NAME = Regex("(?:\\bWITH(?:\\s+RECURSIVE)?|,)\\s*(\\w+)\\s*(?:\\([^)]*\\))?\\s*AS\\s*\\(", RegexOption.IGNORE_CASE)
+
+        /** Whether [sql] reads a pragma's table-valued function. */
+        internal fun pragmaTable(sql: String): Boolean {
+            val ctes = CTE_NAME.findAll(sql).map { it.groupValues[1].lowercase(Locale.ROOT) }.toSet()
+            return PRAGMA_USED.findAll(sql).any { m ->
+                val name = (m.groups[1] ?: m.groups[2])!!.value.lowercase(Locale.ROOT)
+                name !in ctes
+            }
+        }
 
         /** A string literal ('it''s'), which is data, not a name: blanked before [PRAGMA_FUNCTION] looks. */
         private val STRING_LITERAL = Regex("'(?:[^']|'')*'")

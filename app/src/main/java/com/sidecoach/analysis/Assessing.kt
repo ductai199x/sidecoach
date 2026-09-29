@@ -249,6 +249,31 @@ class Assessing(
          * a missing engine at `sidecoach doctor`; the phone's binary ships in the APK, so
          * what can be missing is the network, and Setup is where it comes from.
          */
+        /**
+         * A second Stockfish for the coach, as `cli._named_engine` builds it: for the moves
+         * the player names and the model's own questions to the engine (`EngineTools`), the
+         * analyser's being on the game's positions. Half the threads, at most 128 MB, three
+         * lines, three seconds a position. Built, not started: the coach starts it at its
+         * first search, so a session nobody asks anything pays nothing for it. Null when
+         * there is no network yet.
+         */
+        fun coachEngine(context: Context, settings: SettingsStore): Engine? {
+            val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
+            val net = EngineAssets.found(context) ?: return null
+            if (!binary.exists()) return null
+            val config = settings.engine()
+            return Engine(
+                binary,
+                net,
+                threads = maxOf(1, config.threads / 2),
+                hashMb = minOf(128, config.hashMb),
+                multipv = 3,
+                pvPlies = config.pvPlies,
+                scoreModel = config.scoreModel,
+                maxSeconds = 3.0,
+            )
+        }
+
         fun fromSettings(context: Context, settings: SettingsStore, enabled: Boolean = true): Assessing {
             if (!enabled) return Assessing(null, "off")
             val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)

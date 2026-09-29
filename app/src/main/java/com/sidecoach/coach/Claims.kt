@@ -393,7 +393,10 @@ private fun parseMove(board: Board, text: String): Pair<Move?, String> {
         else -> Unit
     }
     val uci = Move.fromUciOrNull(cleaned.lowercase()) ?: return null to "unreadable"
-    return if (board.legalMoves().contains(uci)) uci to "" else null to "illegal"
+    // `move in board.legal_moves` asks python-chess's is_legal, which takes a castle written as
+    // the king taking its rook (E1H1); the list of legal moves holds only e1g1 (the parity
+    // audit, 2026-09-29).
+    return if (board.isLegal(uci)) uci to "" else null to "illegal"
 }
 
 /** The board to check a board claim on: after the move the user is weighing, if any. */

@@ -158,6 +158,10 @@ class ProfileTest {
         }
         assertEquals("the runaway query", bounded.getString("runaway_error"), runaway)
         assertEquals("the row cap", bounded.getInt("capped_rows"), store.query(bounded.getString("capped"), maxRows = 10).second.size)
+        // A query with no LIMIT stops at the cap, its names its own (the parity audit, 2026-09-29).
+        val (columns, rows) = store.query(bounded.getString("unbounded"), maxRows = 10)
+        assertEquals("unbounded names", bounded.getJSONArray("unbounded_columns").toString(), org.json.JSONArray(columns).toString())
+        assertEquals("unbounded rows", bounded.getJSONArray("unbounded_rows").toString(), org.json.JSONArray(rows.map { org.json.JSONArray(it) }).toString())
         // Values as Python's str() shows them in the rows: infinities, wide floats, blobs, a cut text.
         val renders = data.getJSONArray("renders")
         for (i in 0 until renders.length()) {
@@ -463,6 +467,20 @@ class ProfileTest {
      * a tactic never considered, the phase naming the rest), what counts as a tactic, the
      * causes read from the player's words, and the motifs in words (f2/f7, x-ray).
      */
+    /**
+     * Floats added as Python 3.12's sum() adds them, compensated: a session of 64.7, 97.4 and
+     * 55.4 had its mean accuracy said 72 on the desktop and 73 on the phone (the parity audit,
+     * 2026-09-29).
+     */
+    @Test
+    fun floatsAddUpAsPythonAddsThem() {
+        val accuracies = listOf(64.7, 97.4, 55.4)
+        assertEquals(217.5, com.sidecoach.voice.Py.sum(accuracies), 0.0)
+        assertEquals("72", Insights.fixed(com.sidecoach.voice.Py.sum(accuracies) / 3, 0))
+        assertEquals(0.30000000000000004, com.sidecoach.voice.Py.sum(listOf(0.1, 0.1, 0.1)), 0.0) // Python's own
+        assertEquals(0.0, com.sidecoach.voice.Py.sum(emptyList()), 0.0)
+    }
+
     @Test
     fun winsMaterialAndTheCauseMatchThePython() {
         val causes = fixture().getJSONObject("causes")

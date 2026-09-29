@@ -230,6 +230,23 @@ object Py {
     /** `str.strip()`. */
     fun strip(s: String): String = s.trim { isSpace(it) }
 
+    /**
+     * `sum(values)` over floats as Python 3.12 adds them: compensated (Neumaier), where a
+     * plain loop can end a hair away -- 64.7 + 97.4 + 55.4 is 217.5 in Python and
+     * 217.50000000000003 plainly, and a session's mean accuracy was said 72 on the desktop
+     * and 73 on the phone (the parity audit, 2026-09-29).
+     */
+    fun sum(values: Iterable<Double>): Double {
+        var total = 0.0
+        var carry = 0.0
+        for (x in values) {
+            val t = total + x
+            carry += if (Math.abs(total) >= Math.abs(x)) (total - t) + x else (x - t) + total
+            total = t
+        }
+        return if (carry != 0.0 && carry.isFinite()) total + carry else total
+    }
+
     /** `str.split()`: runs of whitespace, no empty pieces. */
     fun split(s: String): List<String> {
         val out = ArrayList<String>()

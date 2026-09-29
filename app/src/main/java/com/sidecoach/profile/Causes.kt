@@ -174,7 +174,7 @@ object Causes {
             RegexOption.IGNORE_CASE,
         ) to TIME_PRESSURE,
         Regex(
-            "\\b(?:(?:i )?(?:thought|figured|calculated|expected|assumed|believed|saw)\\b.*" +
+            "\\b(?:(?:i )?(?:thought|figured|calculated|expected|assumed|believed|saw)\\b[^\\n]*" +
                 "\\b(?:but|work|would|could|was|wasn'?t|didn'?t)|misjudg|miscalculat|" +
                 "(?:saw|knew) (?:it|that|the (?:threat|idea|move|fork|pin|mate)))",
             RegexOption.IGNORE_CASE,

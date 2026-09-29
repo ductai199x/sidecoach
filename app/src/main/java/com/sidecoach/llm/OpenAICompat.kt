@@ -1,5 +1,6 @@
 package com.sidecoach.llm
 
+import com.sidecoach.coach.pyJsonOr
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -196,14 +197,14 @@ class OpenAICompatProvider(
         for ((key, value) in extraBody) body.put(key, wrap(value))
         if (tools != null && tools.length() > 0) {
             body.put("tools", tools)
-            if (toolChoice != null) body.put("tool_choice", toolChoice)
+            if (!toolChoice.isNullOrEmpty()) body.put("tool_choice", toolChoice)
         }
         if (thinkingControl == ThinkingControl.EFFORT) {
             body.put(
                 "max_completion_tokens",
-                maxTokens + (if (reasoningEffort != null) REASONING_HEADROOM else 0),
+                maxTokens + (if (!reasoningEffort.isNullOrEmpty()) REASONING_HEADROOM else 0),
             )
-            if (reasoningEffort != null) body.put("reasoning_effort", reasoningEffort)
+            if (!reasoningEffort.isNullOrEmpty()) body.put("reasoning_effort", reasoningEffort)
         } else {
             body.put("max_tokens", maxTokens)
             body.put("temperature", temperature)
@@ -428,13 +429,16 @@ class OpenAICompatProvider(
             val call = raw.optJSONObject(i) ?: return@mapNotNull null
             val function = call.optJSONObject("function") ?: JSONObject()
             val arguments = function.opt("arguments")
+            // Strict, as json.loads is: org.json took unquoted keys, single quotes and
+            // trailing text, and ran a tool the desktop told the arguments were unreadable
+            // (the parity audit, 2026-09-29).
             val parsed = when (arguments) {
                 is JSONObject -> arguments
-                null -> JSONObject()
-                else -> try {
-                    JSONObject(arguments.toString().ifEmpty { "{}" })
-                } catch (_: JSONException) {
-                    JSONObject().put("_raw", arguments.toString())
+                null, JSONObject.NULL -> JSONObject()
+                else -> {
+                    val written = arguments.toString().ifEmpty { "{}" }
+                    val loaded = pyJsonOr(written, null)
+                    if (loaded is Map<*, *>) JSONObject(loaded) else JSONObject().put("_raw", written)
                 }
             }
             ToolCall(

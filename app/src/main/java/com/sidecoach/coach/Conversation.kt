@@ -217,6 +217,9 @@ class Conversation {
         entries.clear()
         records.clear()
         drained = 0
+        // The last game's dialogue, summarised, is not this one's: it opened the next game's
+        // record (the parity audit, 2026-09-29).
+        summary = ""
         val side = if (event.userSide == Pieces.Side.WHITE) "White" else "Black"
         var text = "You coach $side. They see the board from $side's side, their own pieces at the " +
             "bottom: ${hands(event.userSide)}."
@@ -492,9 +495,13 @@ class Conversation {
      * Replace [toFold] in the record by [text] (the whole earlier dialogue, as the
      * summariser rewrote it).
      */
-    fun fold(toFold: List<Entry>, text: String) {
+    fun fold(toFold: List<Entry>, text: String): Boolean {
+        // A summary of entries no longer in the record -- a new game began while the model
+        // wrote it -- is dropped. `Conversation.fold`.
+        if (toFold.any { entry -> entries.none { it === entry } }) return false
         for (entry in toFold) entry.folded = true
         summary = text.trim()
+        return true
     }
 
     /** Entries added since the last call, for the panel's conversation view. */

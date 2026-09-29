@@ -4,6 +4,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.Severity
+import com.sidecoach.voice.Py
 import kotlin.math.exp
 import kotlin.math.round
 
@@ -187,7 +188,7 @@ fun moveAccuracy(loss: Double): Double {
  */
 fun gameAccuracy(accuracies: List<Double>): Double? {
     if (accuracies.isEmpty()) return null
-    return accuracies.sum() / accuracies.size
+    return Py.sum(accuracies) / accuracies.size
 }
 
 /** How much better the best line is than the second best, or null without a second. */

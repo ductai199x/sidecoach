@@ -1489,6 +1489,10 @@ internal fun player(facts: PositionFacts): Boolean? {
  * [verifier], every candidate that passes those checks is also read against the messages by
  * a second model, the clean ones are sampled from, and when none is clean the likeliest is
  * repaired once: test-time verification, on top of the demonstrations in C.
+ *
+ * The desktop's claim reader (`Speaker.claim_reader`, `draft_claims.py`: a second model call
+ * that reads each draft's claims for the board to check) is not ported: it is off on the
+ * desktop too, nothing there passes one, as it doubled the cost of every reply.
  */
 class Speaker(
     var provider: LLMProvider,

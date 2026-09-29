@@ -30,7 +30,7 @@ data class EngineSettings(
     val multipv: Int = 6,
     val threads: Int = 2,
     val hashMb: Int = 64,
-    val depth: Int = 18,
+    val depth: Int = 14,
     val pvPlies: Int = 12,
     val scoreModel: String = "human",
     val maxSeconds: Double? = 5.0,

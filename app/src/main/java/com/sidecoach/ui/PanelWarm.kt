@@ -278,7 +278,11 @@ object PanelWarm {
             assessing = it
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "engine: ${it.detail}")
         }
-        val coach = coaching ?: CoachRunner(store, enabled = engine.on).also {
+        val coach = coaching ?: CoachRunner(
+            store,
+            enabled = engine.on,
+            engine = if (engine.on) Assessing.coachEngine(appContext, store) else null,
+        ).also {
             coaching = it
             // The voice takes a model reply sentence by sentence as it is written.
             it.coach?.streamSink = { trigger, ply -> PanelVoice.streamSink(trigger, ply) }

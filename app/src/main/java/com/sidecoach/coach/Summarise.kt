@@ -69,8 +69,7 @@ fun summarise(
     }
     val text = completion.text.trim()
     if (text.isEmpty()) return false
-    synchronized(guard) {
+    return synchronized(guard) {
         convo.fold(pending.map { it.second }, text)
     }
-    return true
 }

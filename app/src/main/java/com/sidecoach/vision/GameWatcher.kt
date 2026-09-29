@@ -152,9 +152,6 @@ class GameWatcher(
     /** The last frame's pixels as the gate reads them, for a tick that brings no new frame. */
     private var lastPixels: FramePixels? = null
 
-    /** The panel's board shown turned around; `panel._view_flip`. */
-    private var viewFlip = false
-
     /** The side a cold read assumes at the bottom once the player has chosen one. */
     private var forcedBottom: Pieces.Side? = null
 
@@ -232,8 +229,11 @@ class GameWatcher(
             pipelineMs.add((tVision - tBegun) / 1e6)
             ticks += 1
             val took = SystemClock.elapsedRealtime() - began
-            val geometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
-            events += drainCommands(pipeline, bgr, geometry, ts)
+            // The last board locked, kept when the lock drops: Flip and Re-read after a dialog
+            // or a scroll re-read it there (`panel.py`'s latest_geom; the parity audit,
+            // 2026-09-29: the phone said "no board on screen" where the desktop re-read it).
+            pipeline.board?.let { lastGeometry = BoardGeometry(it.region, it.cellPx) }
+            events += drainCommands(pipeline, bgr, lastGeometry, ts)
             transitions(pipeline)
             degraded = PanelEngine.checkDegraded(pipeline.readings, degraded)
             dispatch(events, ts)
@@ -278,7 +278,7 @@ class GameWatcher(
             // held, never a copy per tick.
             val previous = lastFrame
             lastFrame = bgr
-            lastGeometry = pipeline.board?.let { BoardGeometry(it.region, it.cellPx) }
+            pipeline.board?.let { lastGeometry = BoardGeometry(it.region, it.cellPx) }
             if (previous !== bgr) previous?.release()
         }
     }
@@ -425,8 +425,7 @@ class GameWatcher(
     ): MutableList<Event> {
         val rec = pipeline.reconciler
         if (rec != null && rec.started && rec.baseFen == STARTING_FEN) {
-            viewFlip = !viewFlip
-            PanelEngine.set("view_flip" to viewFlip)
+            PanelEngine.toggleViewFlip()
             PanelEngine.emit(
                 "user", "info", "view flipped (the game is still read from the screen as is)",
             )

@@ -330,6 +330,17 @@ object PanelEngine {
         synchronized(lock) { for ((key, value) in fields) state[key] = value }
     }
 
+    /**
+     * The panel's board shown turned around the other way, for the app's life as the page keeps
+     * it (`panel._view_flip`): kept per session, a Flip after Stop and Start set it to what it
+     * already was and did nothing (the parity audit, 2026-09-29). Returns the new setting.
+     */
+    fun toggleViewFlip(): Boolean = synchronized(lock) {
+        val flipped = state["view_flip"] != true
+        state["view_flip"] = flipped
+        flipped
+    }
+
     /** The game's moves (SAN) and the engine's label by ply, as the move list shows them. */
     @Suppress("UNCHECKED_CAST")
     fun moveList(): Pair<List<String>, Map<String, String>> = synchronized(lock) {

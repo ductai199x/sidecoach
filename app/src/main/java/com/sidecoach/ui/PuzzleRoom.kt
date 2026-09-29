@@ -82,7 +82,11 @@ class PuzzleRoom(
     // The engine and the coach of this room alone; the coach is told the position as a game
     // of kind "puzzle" and kept quiet: it speaks when asked.
     private val assessing = Assessing.fromSettings(context, settings, analysis)
-    private val coaching = CoachRunner(settings, coach && assessing.on)
+    private val coaching = CoachRunner(
+        settings,
+        coach && assessing.on,
+        if (coach && assessing.on) Assessing.coachEngine(context, settings) else null,
+    )
     private val thread: Thread
 
     init {
