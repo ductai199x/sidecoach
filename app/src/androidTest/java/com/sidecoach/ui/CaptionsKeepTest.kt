@@ -5,7 +5,6 @@ import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -61,27 +60,26 @@ class CaptionsKeepTest {
             Thread.sleep(8000)
             assertNotNull("the kept box faded", box())
 
-            // Sidecoach's own panel in front: out of the way; gone from the front: back.
+            // Always on screen means always (Tai, 2026-09-29: "is it always on screen or
+            // not????"): over Sidecoach's own panel too, and an answer asked for there shows in
+            // it at once -- it used to step aside and drop the words, and he saw nothing.
             Captions.panelInFront(true)
-            assertTrue("the box stayed over the panel", waitFor(3000) { box() == null })
-            Captions.panelInFront(false)
-            assertTrue("the kept box did not come back", waitFor(3000) { box() != null })
-
-            // An answer asked for on the panel comes while it is in front: not shown over it,
-            // but kept, and the box comes back with it once the panel is left (Tai, 2026-09-29:
-            // "I don't see shit on my screen" -- the words were dropped, the kept box empty).
-            Captions.panelInFront(true)
-            assertTrue("the box stayed over the panel", waitFor(3000) { box() == null })
+            Thread.sleep(1000)
+            assertNotNull("the kept box left for the panel", box())
             Captions.show("Play Be3+. Your bishop from f4 checks the king.")
-            Thread.sleep(500)
-            assertNull("the box came up over the panel", box())
-            Captions.panelInFront(false)
-            assertTrue("the kept box did not come back", waitFor(3000) { box() != null })
             var words: String? = null
-            assertTrue("the box came back without the answer: $words", waitFor(3000) {
+            assertTrue("the kept box did not show the answer: $words", waitFor(3000) {
                 instrumentation.runOnMainSync { words = Captions.wordsShown() }
                 words?.endsWith("Play Be3+. Your bishop from f4 checks the king.") == true
             })
+            Captions.panelInFront(false)
+            assertNotNull("the kept box went when the panel did", box())
+
+            // Captions turned on with the box kept: up at once, before the coach says anything.
+            Captions.configure(app, false)
+            assertTrue("the box stayed with captions off", waitFor(3000) { box() == null })
+            Captions.configure(app, true)
+            assertTrue("the kept box did not come up with captions", waitFor(3000) { box() != null })
 
             // Turned off again: it fades as before.
             Captions.keep(false)

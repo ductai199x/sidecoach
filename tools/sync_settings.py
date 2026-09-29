@@ -61,9 +61,9 @@ def main() -> None:
         "other apps."
     )
     voice["captions_keep"]["description"] = (
-        "Keeps the caption box on screen all the time, with the coach's last words in it. Off, "
-        "the box fades a few seconds after the coach stops talking and comes back when it "
-        "speaks again. Either way it steps aside while Sidecoach itself is open."
+        "Keeps the caption box on screen all the time, over every app, Sidecoach too: its "
+        "buttons, and the coach's last words once it has spoken. Off, the box comes up when the "
+        "coach speaks, fades a few seconds after, and steps aside while Sidecoach itself is open."
     )
     # What the phone does not honour is not on its page (Tai's rule of 2026-09-21: no dead
     # option shown; 2026-09-24: the phone's page showed the desktop's devices, folders, GPU

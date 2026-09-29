@@ -143,6 +143,7 @@ object Captions {
                     )
                 }
             }
+            restore()
         }
     }
 
@@ -157,6 +158,8 @@ object Captions {
             if (stay) {
                 main.removeCallbacks(hideLater)
                 restore()
+            } else if (front) {
+                drop()
             } else if (box != null && saying.isEmpty()) {
                 hideSoon()
             }
@@ -166,12 +169,15 @@ object Captions {
     /** Sidecoach's own panel in front (true) or not: its page shows the words already. */
     fun panelInFront(inFront: Boolean) {
         front = inFront
-        main.post { if (inFront) drop() else restore() }
+        main.post { if (inFront && !keep) drop() else restore() }
     }
 
-    /** A box kept on screen, back with the words said so far once the panel is not in front. */
+    /**
+     * Always on screen: the box up, with the words said so far or none yet, whatever is in
+     * front (Tai, 2026-09-29: "is it always on screen or not????").
+     */
     private fun restore() {
-        if (!keep || !on || front || box != null || said.isEmpty()) return
+        if (!keep || !on || box != null) return
         if (ensureBox()) box?.setText(said.toString())
     }
 
@@ -223,7 +229,7 @@ object Captions {
 
     private fun begin(text: String, speechMs: Long, force: Boolean = false) {
         if (!on) return
-        if (front && !force) {
+        if (front && !force && !keep) {
             if (!previewing) {
                 finish()
                 if (said.isNotEmpty()) said.append(if (box == null) "\n" else " ")
@@ -295,7 +301,7 @@ object Captions {
 
     private fun hideSoon(speaking: Long = 0) {
         main.removeCallbacks(hideLater)
-        if (keep && !previewing) return
+        if (keep) return
         main.postDelayed(hideLater, speaking + hideAfterMs)
     }
 
