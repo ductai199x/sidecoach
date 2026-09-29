@@ -1,10 +1,10 @@
 package com.sidecoach.coach
 
 import android.util.Log
+import com.sidecoach.analysis.Computed
+import com.sidecoach.analysis.ComputedFirst
 import com.sidecoach.analysis.Engine
-import com.sidecoach.chess.Board
 import com.sidecoach.events.CoachMessage
-import com.sidecoach.events.Line
 import com.sidecoach.events.Event
 import com.sidecoach.llm.KeyStore
 import com.sidecoach.llm.LLMProvider
@@ -34,12 +34,18 @@ import com.sidecoach.ui.SettingsStore
  * the model's questions to the engine while it answers (`EngineTools`) -- without one the
  * phone's model could ask the engine nothing, and "ok and after that?" past a line's end
  * had no engine's word to go on (the parity audit, 2026-09-29). [engine] is built by the
- * caller (`Assessing.coachEngine`) and started at the first search: a second process only
- * once a question needs it.
+ * caller (`Assessing.coachEngine`) and asked only what the analyser has not computed
+ * ([computed], `cli._named_engine`): a second process only once a question needs a position
+ * nothing reaches.
  */
-class CoachRunner(settings: SettingsStore, enabled: Boolean = true, engine: Engine? = null) {
+class CoachRunner(
+    settings: SettingsStore,
+    enabled: Boolean = true,
+    engine: Engine? = null,
+    computed: Computed? = null,
+) {
 
-    private val coachEngine: LazyEngine? = engine?.let { LazyEngine(it) }
+    private val coachEngine: ComputedFirst? = engine?.let { ComputedFirst(it, computed ?: Computed()) }
 
     val coach: Coach?
     var detail: String = "off"
@@ -68,7 +74,7 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true, engine: Engi
                 // a claim waited on a second full model call first (the runtime audit, 2026-09-25).
                 claims = if (offline) null else claimsCheck(routineProvider(settings, model)),
                 verifier = if (offline) null else verifier(settings, model),
-                engine = coachEngine,
+                engine = coachEngine?.let { EngineLike(it::analyse) },
                 summariseEvery = settings.summariseEvery(),
                 summariser = model,
                 compactRecord = settings.compactRecord(),
@@ -410,29 +416,5 @@ class CoachRunner(settings: SettingsStore, enabled: Boolean = true, engine: Engi
          */
         internal fun claimLine(verdict: Verdict): String =
             "${pyRepr(verdict.claim.text)}: ${verdict.result.slug}, ${verdict.reason}"
-    }
-}
-
-/**
- * An engine started at its first search and closed with the coach: the desktop starts its
- * coach's engine at once (`cli._named_engine`); on a phone the second process waits until a
- * question needs it. A search asked with no depth gets the tools' own (14).
- */
-internal class LazyEngine(private val engine: Engine) : EngineLike, AutoCloseable {
-    private var started = false
-
-    @Synchronized
-    override fun analyse(board: Board, depth: Int?): List<Line> {
-        if (!started) {
-            engine.open()
-            started = true
-        }
-        return engine.analyse(board, depth = depth ?: 14)
-    }
-
-    @Synchronized
-    override fun close() {
-        if (started) engine.close()
-        started = false
     }
 }

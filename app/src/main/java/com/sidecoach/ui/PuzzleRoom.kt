@@ -86,6 +86,7 @@ class PuzzleRoom(
         settings,
         coach && assessing.on,
         if (coach && assessing.on) Assessing.coachEngine(context, settings) else null,
+        assessing.computed,
     )
     private val thread: Thread
 

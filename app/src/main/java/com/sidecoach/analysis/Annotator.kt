@@ -130,11 +130,18 @@ class GameAnnotator(
     @Volatile var aheadHits = 0
         private set
 
+    /**
+     * Every search's lines as it finishes each usable depth, for any reader at any time (the
+     * coach's engine reads it before it searches).
+     */
+    val computed = Computed()
+
     /** Forget the cache; a new game shares no positions with the last one. */
     fun reset() {
         cache.clear()
         verdictCache.clear()
         ahead.clear()
+        computed.clear()
         previous = null
     }
 
@@ -171,6 +178,7 @@ class GameAnnotator(
         cached(key)?.let { return it }
         verdictCache[key]?.let { return it }
         val lines = engine.analyse(board, depth = depth, multipv = 1)
+        computed.add(board, lines, thin = true)
         val thin = Measured(
             fen = key,
             lines = lines,
@@ -210,14 +218,22 @@ class GameAnnotator(
         early: Boolean = false,
         onDepth: ((List<Line>) -> Unit)? = null,
     ): Measured {
+        val usable = minOf(EARLY_DEPTH, depth)
+        // A depth done: kept from the first usable one, and handed on.
+        val finished: (List<Line>) -> Unit = { found ->
+            if (found.isNotEmpty() && found[0].depth >= usable) computed.add(board, found)
+            onDepth?.invoke(found)
+        }
         val lines = engine.analyse(
             board,
             depth = depth,
             multipv = multipv,
             // The best line carried on to its point costs seconds; the full depth does it.
             carryBest = !early,
-            onDepth = onDepth,
+            onDepth = finished,
         )
+        // Before the side searches: the lines are the news, and a reader has them now.
+        computed.add(board, lines)
         val searched = withThreats
         return Measured(
             fen = board.fen(),

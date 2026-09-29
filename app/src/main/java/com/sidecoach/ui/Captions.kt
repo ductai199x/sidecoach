@@ -358,6 +358,20 @@ object Captions {
     private fun screen(ctx: Context): Rect = ctx.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
 
     /**
+     * How near the cross a box's centre must be let go to turn captions off: a little past the
+     * cross as it grows under the box. At 110 dp the reach covered the foot of the screen, and
+     * a box moved low was turned off instead (Tai, 2026-09-29: "sometime I need to reposition
+     * it but I can't since I would accidentally dismiss it").
+     */
+    private const val CROSS_REACH_DP = 56f
+
+    /** The centre of the cross a box is dropped on to turn captions off, at the screen's foot. */
+    internal fun crossCentre(ctx: Context): Pair<Int, Int> {
+        val screen = screen(ctx)
+        return screen.centerX() to screen.bottom - dp(ctx, 100f)
+    }
+
+    /**
      * Where a box of [w] x [h] at ([x], [y]) goes so it does not cover the board: above it or
      * below it, whichever is nearer and has the room, else the side with more room. Kept on
      * the screen either way.
@@ -826,10 +840,10 @@ object Captions {
             val bin = target
             target = null
             bin?.detach()
-            // Only a box carried onto the cross turns captions off. In its first place, low on
-            // the screen, the box already sits within the cross's reach, and a touch held
-            // without moving -- the start of a move, or a tap a busy phone was late to deliver
-            // -- turned them off where it was let go (the gesture test's screenshot, 2026-09-26).
+            // Only a box carried onto the cross turns captions off. A box can sit within the
+            // cross's reach where it was put, and a touch held without moving -- the start of a
+            // move, or a tap a busy phone was late to deliver -- turned them off where it was let
+            // go (the gesture test's screenshot, 2026-09-26).
             if (bin != null && dragged && bin.over(at)) {
                 turnOff()
                 return
@@ -913,12 +927,12 @@ object Captions {
                 setColor(0x99000000.toInt())
             }
             addView(circle, LayoutParams(size, size, Gravity.CENTER))
-            val screen = screen(ctx)
-            params.x = screen.left + (screen.width() - room) / 2
-            params.y = screen.bottom - room - dp(ctx, 52f)
+            val (x, y) = crossCentre(ctx)
+            centreX = x
+            centreY = y
+            params.x = x - room / 2
+            params.y = y - room / 2
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            centreX = params.x + room / 2
-            centreY = params.y + room / 2
         }
 
         fun attach() {
@@ -931,7 +945,8 @@ object Captions {
             runCatching { windows.removeView(this) }
         }
 
-        fun over(at: Pair<Int, Int>): Boolean = hypot((at.first - centreX).toDouble(), (at.second - centreY).toDouble()) < dp(ctx, 110f)
+        fun over(at: Pair<Int, Int>): Boolean =
+            hypot((at.first - centreX).toDouble(), (at.second - centreY).toDouble()) < dp(ctx, CROSS_REACH_DP)
 
         fun near(at: Pair<Int, Int>) {
             val now = over(at)

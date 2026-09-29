@@ -2,6 +2,8 @@ package com.sidecoach.coach
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.analysis.Computed
+import com.sidecoach.analysis.ComputedFirst
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
@@ -124,10 +126,11 @@ class NamedTest {
                         analyseNamed(words, board, null, us, level, static = false),
                         strings(want.getJSONArray("named_none")),
                     )
-                    // The sheet's own lines, and the pieces read on the board as it stands (TG-04).
+                    // The sheet's own lines computed first, and the pieces read on the board as it
+                    // stands (TG-04).
                     check(
                         "\"$words\" at $levelKey named known",
-                        analyseNamed(words, board, engine, us, level, depth = 14, known = before),
+                        analyseNamed(words, board, sheetFirst(engine, board, before), us, level, depth = 14),
                         strings(want.getJSONArray("named_known")),
                     )
                     check(
@@ -215,7 +218,7 @@ class NamedTest {
                 "examine" -> examine(
                     probeFrom(a.getJSONObject("probe"), board), board, engine,
                     if (a.isNull("best")) null else lineFrom(a.getJSONObject("best")),
-                    a.getBoolean("user_white"), level, a.getInt("depth"), known = lines(a.getJSONArray("known")),
+                    a.getBoolean("user_white"), level, a.getInt("depth"),
                 ) to out
                 "examine_piece" -> examinePiece(probeFrom(a.getJSONObject("probe"), board), board, a.getBoolean("user_white")) to out
                 "spoken" -> spoken(a.getString("fact")) to out
@@ -225,7 +228,6 @@ class NamedTest {
                     a.getString("text"), board, if (a.getBoolean("engine")) engine else null,
                     a.getBoolean("user_white"), level, depth = a.getInt("depth"), static = a.getBoolean("static"),
                     piecesBoard = if (a.isNull("pieces_fen")) null else Board(a.getString("pieces_fen")),
-                    known = lines(a.getJSONArray("known")),
                 ) to strings(out as JSONArray)
                 "check_draft" -> checkDraft(
                     a.getString("text"), board, strings(a.getJSONArray("after")).map { Board(it) },
@@ -271,7 +273,12 @@ class NamedTest {
         scoreCp = if (o.isNull("score_cp")) null else o.getInt("score_cp"),
     )
 
-    private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { lineFrom(array.getJSONObject(it)) }
+    /** The engine as the coach has it: the sheet's own lines for [board] computed first. */
+    private fun sheetFirst(engine: EngineLike, board: Board, lines: List<Line>): EngineLike {
+        val computed = Computed()
+        computed.add(board, lines)
+        return EngineLike(ComputedFirst(engine::analyse, computed)::analyse)
+    }
 
     /** The stub the generator used: the same lines for the same position, read from the file. */
     private fun recorded(seen: JSONObject): EngineLike = EngineLike { board, _ ->

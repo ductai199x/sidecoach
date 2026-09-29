@@ -282,6 +282,7 @@ object PanelWarm {
             store,
             enabled = engine.on,
             engine = if (engine.on) Assessing.coachEngine(appContext, store) else null,
+            computed = engine.computed,
         ).also {
             coaching = it
             // The voice takes a model reply sentence by sentence as it is written.

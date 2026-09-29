@@ -353,8 +353,9 @@ class CaptionsGestureTest {
         Log.i(TAG, "the buttons went by themselves ${SystemClock.uptimeMillis() - tapped} ms after the tap")
         Captions.controlsMs = LONG_MS
 
-        // A touch held and let go where it is: the box stays, and so do the captions. In its
-        // first place the box is within the cross's reach, and a hold alone turned them off.
+        // A touch held and let go where it is: the box stays, and so do the captions. With the
+        // cross's reach at 110 dp the box's first place was within it, and a hold alone turned
+        // them off.
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
         val still = box()!!
         holdAndDrag(still.centerX() to still.centerY(), still.centerX() to still.centerY())
@@ -388,8 +389,18 @@ class CaptionsGestureTest {
         Thread.sleep(300)
         val back = box()!!
 
+        // Low on the screen, just above the cross: moved there, captions still on (the reach
+        // used to be 110 dp, and a box put there was turned off; Tai, 2026-09-29).
+        val (crossX, crossY) = Captions.crossCentre(app)
+        val above = (90 * screen.density).toInt()
+        holdAndDrag(back.centerX() to back.centerY(), crossX to crossY - above)
+        assertTrue("a box let go above the cross turned captions off", waitFor { settled() })
+        assertTrue("captions went off above the cross", Captions.enabled && box() != null)
+        Thread.sleep(300)
+        val low = box()!!
+
         // Onto the cross at the foot of the screen: captions off.
-        holdAndDrag(back.centerX() to back.centerY(), screen.widthPixels / 2 to screen.heightPixels - 250) {
+        holdAndDrag(low.centerX() to low.centerY(), crossX to crossY) {
             shot("6_over_the_cross")
         }
         assertTrue("the box is still up", waitFor { box() == null })

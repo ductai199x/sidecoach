@@ -1,6 +1,8 @@
 package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.analysis.Computed
+import com.sidecoach.analysis.ComputedFirst
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
@@ -122,17 +124,19 @@ class HarnessTruthTest {
             Line(moves = listOf("f4f5", "h1h3", "e3g5"), depth = 20, expectedScore = 0.50),
             Line(moves = listOf("e3d2", "h1h3", "f4f5", "h3g3"), depth = 20, expectedScore = 0.50),
         )
-        val noSearch = EngineLike { _, _ ->
-            throw AssertionError("a move the position's own lines play needs no second search")
-        }
+        val computed = Computed()
+        computed.add(board, known)
+        val engine = ComputedFirst(
+            { _, _ -> throw AssertionError("a move the position's own lines play needs no second search") },
+            computed,
+        )
         val text = examine(
             parseProbe("your Bd2", listOf("Bd2"), board),
             board,
-            noSearch,
+            EngineLike(engine::analyse),
             known[0],
             userColour = WHITE,
             level = DisclosureLevel.LINE,
-            known = known,
         )
         assertTrue(text, "the opponent's reply would be 64... Rxh3" in text)
         assertTrue(text, "0.50 from the player's side" in text)

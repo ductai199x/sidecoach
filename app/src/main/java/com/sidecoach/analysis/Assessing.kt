@@ -54,6 +54,9 @@ class Assessing(
 
     val on: Boolean get() = analyser != null
 
+    /** What the engine has computed this game: the coach's engine reads it first. */
+    val computed: Computed? get() = analyser?.annotator?.computed
+
     /**
      * Where the assessment lines go when set (a puzzle room's log): `_Assessing.sink`. Left
      * null, they go to logcat as before.
@@ -253,8 +256,9 @@ class Assessing(
          * A second Stockfish for the coach, as `cli._named_engine` builds it: for the moves
          * the player names and the model's own questions to the engine (`EngineTools`), the
          * analyser's being on the game's positions. Half the threads, at most 128 MB, three
-         * lines, three seconds a position. Built, not started: the coach starts it at its
-         * first search, so a session nobody asks anything pays nothing for it. Null when
+         * lines, three seconds a position. Built, not started: asked only what the analyser has
+         * not computed ([ComputedFirst]), it starts at its first such search, so a session whose
+         * questions the analyser answered pays nothing for it. Null when
          * there is no network yet.
          */
         fun coachEngine(context: Context, settings: SettingsStore): Engine? {

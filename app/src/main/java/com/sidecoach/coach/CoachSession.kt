@@ -1578,8 +1578,6 @@ class Coach(
             // Pieces and squares as the board stands now, whatever position the question is
             // about.
             piecesBoard = board,
-            // The lines the sheet already shows: a move they start is read from them.
-            known = position.analysis?.lines ?: emptyList(),
         )
     } catch (exc: Exception) {
         speaker.lastError = "named analysis: ${exc::class.java.simpleName}: ${exc.message}"
