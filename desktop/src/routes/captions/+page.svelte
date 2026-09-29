@@ -108,9 +108,16 @@
     else if (!hideTimer) hideSoon();
   }
 
-  /** A line of the coach's, shown whole the moment it comes: its voice follows. */
+  /** A line of the coach's, shown whole the moment it comes: its voice follows. While
+   * Sidecoach is in front, which shows it already, it is kept for when Sidecoach is not: a box
+   * kept on screen comes back with it (Tai, 2026-09-29: "I don't see shit on my screen" -- an
+   * answer asked for in Sidecoach's window, the window minimised, and the kept box had nothing
+   * to show). */
   function begin(text: string, force = false): void {
-    if (front && !force) return;
+    if (front && !force) {
+      if (!previewing) said = joined(said, text, !shown);
+      return;
+    }
     // The sample line is no word of the coach's: the coach's first word takes its place.
     if (previewing && !force) said = "";
     previewing = force;
