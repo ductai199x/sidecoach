@@ -37,6 +37,12 @@ from sidecoach.vision.squares import CELL, BoardGeometry, is_light
 # only what the embedding reads (their tone and brightness); 13: a landing crop per square
 # colour.
 CACHE_VERSION = 13
+# The version before is read too, its one landing crop a kind standing for both square colours
+# until the set is learned again: a bump left every learned set unread until a start position
+# showed, and a puzzle never shows one (Tai's phone, 0.1.19; the phone reads every version
+# from 4, `ThemeCache.kt`; the parity audit, 2026-09-29). Older pickles hold models of an
+# older shape, and are learned again.
+PREVIOUS_VERSION = 12
 _QUANTUM = 8  # square colours within this many levels share a fingerprint (tolerates lighting)
 MATCH_TOLERANCE = 20.0  # palettes closer than this (in BGR) are treated as the same theme
 
@@ -146,11 +152,18 @@ class ThemeCache:
             return None
         if (
             isinstance(payload, dict)
-            and payload.get("version") == CACHE_VERSION
+            and payload.get("version") in (CACHE_VERSION, PREVIOUS_VERSION)
             and isinstance(payload.get("model"), ThemeModel)
             and payload.get("light_bg") is not None
             and payload.get("dark_bg") is not None
         ):
+            if payload["version"] == PREVIOUS_VERSION:
+                model = payload["model"]
+                model.landing_crops = {
+                    (symbol, light): crop
+                    for symbol, crop in model.landing_crops.items()
+                    for light in (True, False)
+                }
             return payload
         return None
 

@@ -256,6 +256,9 @@ class Conversation:
         self.entries = []
         self.records = []
         self._drained = 0
+        # The last game's dialogue, summarised, is not this one's: it opened the next game's
+        # record (the parity audit, 2026-09-29).
+        self.summary = ""
         side = "White" if event.user_side == Side.WHITE else "Black"
         text = (
             f"You coach {side}. They see the board from {side}'s side, their own pieces at the "
@@ -501,12 +504,17 @@ class Conversation:
                 out.append((after, entry))
         return out
 
-    def fold(self, entries: list[Entry], summary: str) -> None:
+    def fold(self, entries: list[Entry], summary: str) -> bool:
         """Replace `entries` in the record by `summary` (the whole earlier dialogue, as
-        the summariser rewrote it)."""
+        the summariser rewrote it). A summary of entries no longer in the record -- a new
+        game began while the model wrote it -- is dropped; returns whether it was kept."""
+        held = {id(entry) for entry in self.entries}
+        if any(id(entry) not in held for entry in entries):
+            return False
         for entry in entries:
             entry.folded = True
         self.summary = summary.strip()
+        return True
 
     def drain_new(self) -> list[Entry]:
         """Entries added since the last call, for the panel's conversation view."""

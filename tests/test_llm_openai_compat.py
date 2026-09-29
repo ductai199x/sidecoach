@@ -3,9 +3,10 @@ import json
 import httpx
 import pytest
 
+from sidecoach.llm.base import ChatMessage
 from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider
 
-USER = [{"role": "user", "content": "hi"}]
+USER: list[ChatMessage] = [{"role": "user", "content": "hi"}]
 
 
 PREFILL = {"role": "assistant", "content": EMPTY_THINK_PREFILL}

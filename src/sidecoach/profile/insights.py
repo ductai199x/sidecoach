@@ -50,6 +50,26 @@ def as_cells(rows: Sequence[CellRow]) -> list[ProfileCell]:
     ]
 
 
+def motif_rates(rows: Sequence[CellRow]) -> list[tuple[str, float, int, int]]:
+    """Each motif missed at least twice over enough of its chances: (motif, the rate it is
+    missed, smoothed as (misses + 1) / (chances + 2), misses, chances), in the order its
+    chances came. A cell with a cause counts misses, one without counts chances."""
+    chances: dict[str, int] = defaultdict(int)
+    misses: dict[str, int] = defaultdict(int)
+    for r in rows:
+        if r.motif is None:
+            continue
+        if r.cause is None:
+            chances[r.motif] += r.chances
+        else:
+            misses[r.motif] += r.errors
+    return [
+        (m, (misses[m] + 1) / (chances[m] + 2), misses[m], chances[m])
+        for m in chances
+        if chances[m] >= MIN_CHANCES and misses[m] >= 2
+    ]
+
+
 def insights(rows: Sequence[CellRow], games: int) -> list[str]:
     """The player model in a few sentences, or nothing while the counts are small."""
     out: list[str] = []
@@ -77,20 +97,7 @@ def insights(rows: Sequence[CellRow], games: int) -> list[str]:
                     f"That looks like a habit: it shows up across {kinds} kinds of position."
                 )
     # The motif missed most often, as a rate over the occasions it was on the board.
-    chances: dict[str, int] = defaultdict(int)
-    misses: dict[str, int] = defaultdict(int)
-    for r in rows:
-        if r.motif is None:
-            continue
-        if r.cause is None:
-            chances[r.motif] += r.chances
-        else:
-            misses[r.motif] += r.errors
-    rated = [
-        (m, (misses[m] + 1) / (chances[m] + 2), misses[m], chances[m])
-        for m in chances
-        if chances[m] >= MIN_CHANCES and misses[m] >= 2
-    ]
+    rated = motif_rates(rows)
     if rated:
         motif, rate, missed, seen = max(rated, key=lambda t: t[1])
         out.append(

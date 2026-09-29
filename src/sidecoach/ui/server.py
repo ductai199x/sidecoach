@@ -443,16 +443,24 @@ def _rooms_for(engine: PanelEngine) -> Any:
     puzzles = None
     with contextlib.suppress(Exception):
         puzzles = open_store(engine.settings.data_dir)
-    tts = getattr(engine, "_tts", None)
-    speak = getattr(tts, "say", None)
-    stop = getattr(tts, "stop", None)
+    # The panel's voice when it speaks, not when the rooms were made: a reload swaps it
+    # (`_reload_voice`), and the rooms spoke on through the old one, over the new (the
+    # parity audit, 2026-09-29; the phone looks it up at each call).
+    voiced = getattr(engine, "_tts", None) is not None
+
+    def speak(text: str) -> None:
+        engine._tts.say(text)
+
+    def stop() -> None:
+        engine._tts.stop()
+
     rooms = PuzzleRooms(
         engine.settings,
         store_path=engine.settings.data_dir / "profile.sqlite",
         puzzles=puzzles,
         data_dir=engine.settings.data_dir,
-        speak=speak,
-        stop_speaking=stop,
+        speak=speak if voiced else None,
+        stop_speaking=stop if voiced else None,
         analysis=engine.analysis,
         coach=engine.coach,
         mirror=engine._emit,

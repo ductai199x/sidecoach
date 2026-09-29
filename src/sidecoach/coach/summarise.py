@@ -72,5 +72,4 @@ def summarise(
     if not text:
         return False
     with guard:
-        convo.fold([e for _, e in pending], text)
-    return True
+        return convo.fold([e for _, e in pending], text)

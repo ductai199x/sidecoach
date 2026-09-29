@@ -47,6 +47,39 @@ def test_theme_cache_round_trips_a_learned_model(tmp_path: Path) -> None:
     assert cache.get(np.array([10.0, 10.0, 10.0]), np.array([250.0, 250.0, 250.0])) is None
 
 
+def test_a_theme_learned_before_the_last_version_is_still_read(tmp_path: Path) -> None:
+    """Version 12 kept one landing crop a kind; 13 keeps one per square colour. A 12 file is
+    read with its crop standing for both, where every set was ignored until a start position
+    showed, and a puzzle never shows one (the phone reads its old files too; the parity
+    audit, 2026-09-29). Anything older is learned again."""
+    import pickle
+
+    from sidecoach.vision.theme_cache import CACHE_VERSION, PREVIOUS_VERSION
+
+    model = ThemeModel.from_start_position(synthetic_board(), GEOM, Side.WHITE)
+    assert model is not None and model.light_bg is not None and model.dark_bg is not None
+    cache = ThemeCache(tmp_path)
+    path = tmp_path / "theme-old.pkl"
+    kinds = {symbol: crop for (symbol, _light), crop in model.landing_crops.items()}
+    model.landing_crops = kinds  # type: ignore[assignment] - the version 12 shape
+    for version, read in ((PREVIOUS_VERSION, True), (PREVIOUS_VERSION - 1, False)):
+        payload = {
+            "version": version,
+            "model": model,
+            "light_bg": model.light_bg,
+            "dark_bg": model.dark_bg,
+        }
+        path.write_bytes(pickle.dumps(payload))
+        loaded = cache._read(path)
+        assert (loaded is not None) is read, version
+    assert CACHE_VERSION == PREVIOUS_VERSION + 1
+    path.write_bytes(pickle.dumps({**payload, "version": PREVIOUS_VERSION}))
+    loaded = cache._read(path)
+    assert loaded is not None
+    crops = loaded["model"].landing_crops
+    assert set(crops) == {(symbol, light) for symbol in kinds for light in (True, False)}
+
+
 def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
     """The theme file holds the exemplars, the palette and the digits, not the last
     frame's 64 cells: pickled with them it was 2.8 MB instead of 60 KB, and a theme read

@@ -1283,9 +1283,16 @@ def _verifier(settings: Settings, provider: object) -> object:
     from sidecoach.config import LLMSettings
     from sidecoach.llm.factory import make_provider
 
-    return make_provider(
-        LLMSettings(provider=kind, model=settings.coach.verify_model), timeout_s=60
-    )
+    # One that cannot be built -- no key saved, a name mistyped -- leaves the coach without a
+    # second opinion, never without a coach: raised here, it stopped the coach from starting
+    # (the parity audit, 2026-09-29; the phone's CoachRunner.verifier).
+    try:
+        return make_provider(
+            LLMSettings(provider=kind, model=settings.coach.verify_model), timeout_s=60
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]no verifier: {exc}[/yellow]")
+        return None
 
 
 def _claims_check(provider: object) -> Callable[[str, chess.Board, object], list[str]] | None:

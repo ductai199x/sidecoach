@@ -1591,6 +1591,10 @@ class PanelEngine:
         pipe = GamePipeline(
             clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
         )
+        # A side chosen with Flip was for the last session's board, as the new pipeline's is
+        # none: kept, it overrode the labels of the next board's Re-read (the parity audit,
+        # 2026-09-29; the phone's is per session too).
+        self._forced_bottom = None
         # The engine, the coach and the models were built when the app opened (`warm`);
         # a Start that comes before that is done waits for it. Without a warm-up (the
         # CLI's replay, the tests) they are built here, once, and kept.

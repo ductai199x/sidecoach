@@ -44,7 +44,7 @@ from sidecoach.events import (
     UserUtterance,
 )
 from sidecoach.profile import causes
-from sidecoach.profile.insights import MIN_CHANCES, as_cells, insights, motif_words
+from sidecoach.profile.insights import as_cells, insights, motif_rates, motif_words
 from sidecoach.profile.puzzles import (
     Attempt,
     PuzzleStore,
@@ -564,16 +564,15 @@ class Profiler:
         ]
 
     def _weak_motif(self, review: GameReview) -> tuple[str | None, str]:
-        rows = [
-            r
-            for r in self.store.cells()
-            if r.cause is None and r.motif is not None and r.chances >= MIN_CHANCES and r.errors
-        ]
-        if rows:
-            worst = max(rows, key=lambda r: ((r.errors + 1) / (r.chances + 2), r.expected_loss))
-            return worst.motif, (
-                f"{motif_words(worst.motif)}: {worst.errors} of {worst.chances} chances missed"
-                " over your games"
+        """The motif to practise: the one missed most often over the games, as the insight
+        line rates it; else the game's turning point. The profile's cells keep the misses
+        and the chances apart, and asking one cell for both matched none: every
+        recommendation was the turning point's (the parity audit, 2026-09-29)."""
+        rated = motif_rates(self.store.cells())
+        if rated:
+            motif, _, missed, seen = max(rated, key=lambda t: t[1])
+            return motif, (
+                f"{motif_words(motif)}: {missed} of {seen} chances missed over your games"
             )
         for point in review.turning_points:
             if point.motif:

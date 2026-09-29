@@ -153,7 +153,38 @@ def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> 
     assert rec.puzzles and {p.id for p in rec.puzzles} <= {"000rO", "fork1"}
     assert all(p.url.startswith("https://lichess.org/training/") for p in rec.puzzles)
     _, rows = f.store.query("SELECT puzzle_ids FROM recommendations")
-    assert rows[0][0].split() == [p.id for p in rec.puzzles]
+    assert str(rows[0][0]).split() == [p.id for p in rec.puzzles]
+
+
+def test_the_weak_motif_is_the_one_missed_most_often_over_the_games(tmp_path: Path) -> None:
+    """The profile keeps misses (a cause) and chances (no cause) in separate cells, and asking
+    one cell for both matched none: every recommendation was the turning point's, while the
+    insight line said "You miss a hanging piece about 50% ... (2 of 4)" (the parity audit,
+    2026-09-29, both sides). The motif practised is the one that line rates worst."""
+    from sidecoach.events import GameReview, TurningPoint
+    from sidecoach.profile.store import CellRow
+
+    profiler = Profiler(Store(None), session_id="s", ts=0.0, puzzles=_store(tmp_path))
+    rows = [
+        CellRow("missedThreat", "pin", "middlegame", errors=2, chances=0, expected_loss=0.9),
+        CellRow(None, "pin", "middlegame", errors=0, chances=9, expected_loss=0.0),
+        CellRow("missedThreat", "fork", "middlegame", errors=2, chances=0, expected_loss=0.5),
+        CellRow(None, "fork", "middlegame", errors=0, chances=4, expected_loss=0.0),
+    ]
+    profiler.store.cells = lambda: rows  # type: ignore[method-assign]
+    review = GameReview(
+        game_id="g",
+        user_side=Side.WHITE,
+        result="1-0",
+        turning_points=[
+            TurningPoint(ply=5, san="Qh5", label="mistake", expected_loss=0.3, motif="pin")
+        ],
+    )
+    assert profiler._weak_motif(review) == ("fork", "fork: 2 of 4 chances missed over your games")
+    # Missed once, or over too few chances: the game's turning point still leads.
+    rows[2] = CellRow("missedThreat", "fork", "middlegame", errors=1, chances=0, expected_loss=0.5)
+    rows[0] = CellRow("missedThreat", "pin", "middlegame", errors=1, chances=0, expected_loss=0.9)
+    assert profiler._weak_motif(review) == ("pin", "pin: the turning point of this game")
 
 
 def _faced(puzzles: PuzzleStore, puzzle_id: str) -> chess.Board:

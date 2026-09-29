@@ -126,10 +126,11 @@ class EngineTools:
         """The tool's answer, as text for the model; a bad call is told what was wrong."""
         moves = _tokens(arguments.get("moves") or [])
         start = str(arguments.get("start") or "now")
+        square = str(arguments.get("square") or "")
         self.log.append(
             f"{name}({' '.join(moves)}"
             + (f"; {start}" if start != "now" else "")
-            + (f"; {arguments.get('square')})" if name == "square" else ")")
+            + (f"; {square})" if name == "square" else ")")
         )
         board = self.before if start == "before_last_move" else self.now
         if board is None:
@@ -137,7 +138,7 @@ class EngineTools:
         if name == "analyse":
             return self._analyse(board, moves, start)
         if name == "square":
-            return self._square(board, moves, str(arguments.get("square") or ""), start)
+            return self._square(board, moves, square, start)
         return f"No tool named {name!r}: the tools are analyse and square."
 
     # ---- the tools ----------------------------------------------------------------------
@@ -283,7 +284,9 @@ class EngineTools:
 def _tokens(moves: Sequence[Any]) -> list[str]:
     """The moves as tokens: one move each, their numbers taken off ("4. Kg2" -> "Kg2")."""
     out: list[str] = []
-    for item in moves if not isinstance(moves, str) else [moves]:
+    # A value that is no list is one item: a number or a dict from the model raised here and
+    # the whole reply failed (the parity audit, 2026-09-29; the phone took it as one move).
+    for item in moves if isinstance(moves, (list, tuple)) else [moves]:
         for token in str(item).replace(",", " ").split():
             token = _NUMBER.sub("", token.strip())
             if token and token not in ("...", ".."):

@@ -10,8 +10,8 @@ from tests.coaching import sent
 from tests.fakes import ScriptedProvider
 
 
-def _conversation(side: Side = Side.WHITE, **kw: bool) -> Conversation:
-    convo = Conversation(**kw)
+def _conversation(side: Side = Side.WHITE, *, compact_record: bool = False) -> Conversation:
+    convo = Conversation(compact_record=compact_record)
     convo.new_game(GameStarted(game_id="g", user_side=side, start_fen=chess.Board().fen()))
     return convo
 
@@ -215,6 +215,14 @@ def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verba
     # Nothing older to fold the second time: no call is made.
     assert not summarise(convo, summariser, keep=2)
     assert len(summariser.prompts) == 1
+    # The summary is the game's own: the next game starts without it, and one still being
+    # written when that game began is dropped -- it opened the next game's record (the parity
+    # audit, 2026-09-29).
+    pending = [entry for _, entry in convo.foldable(1)]
+    assert pending
+    convo.new_game(GameStarted(game_id="g2", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    assert "Earlier dialogue" not in convo.render()
+    assert not convo.fold(pending, "The last game's dialogue.") and convo.summary == ""
 
 
 def test_the_compact_record_drops_stale_nods_and_runs_sound_moves_together() -> None:
