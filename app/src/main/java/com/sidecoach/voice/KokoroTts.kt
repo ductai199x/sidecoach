@@ -175,7 +175,7 @@ class KokoroTts(
      */
     override fun say(text: String, voice: String?) {
         if (failed) return
-        val spoken = Py.strip(Notation.speak(text))
+        val spoken = Py.strip(Notation.speak(text, voice = true))
         if (spoken.isEmpty()) return
         ensureWorker()
         queue.put(Line(spoken, text, voice))

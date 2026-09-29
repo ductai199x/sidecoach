@@ -57,7 +57,7 @@ class VoiceParityTest {
         for (i in 0 until texts.length()) {
             val case = texts.getJSONObject(i)
             val text = case.getString("text")
-            val spoken = Py.strip(Notation.speak(text))
+            val spoken = Py.strip(Notation.speak(text, voice = true))
             check("#$i spoken form of \"$text\"", spoken, case.getString("spoken"))
             for ((key, input) in listOf("given" to text, "said" to case.getString("spoken"))) {
                 val want = case.getJSONObject(key)

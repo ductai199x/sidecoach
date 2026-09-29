@@ -71,7 +71,7 @@ class KokoroTtsTest {
         }
         val line = "That was fine. The centre holds, and the bishop is doing real work; your knight is " +
             "still waiting on b1, though, and it wants to come to c3 or d2 before you castle."
-        val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line)), 1.0f, "en-us")
+        val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line, voice = true)), 1.0f, "en-us")
         assertTrue("the line is not cut: ${pieces.map { it.first }}", pieces.size > 1)
         val began = SystemClock.elapsedRealtime()
         tts.say(line)
@@ -102,7 +102,7 @@ class KokoroTtsTest {
         val line = "The knight on f3 guards the pawn on e5, and the bishop on c4 eyes f7. " +
             "The knight on f3 guards the pawn on e5, and the bishop on c4 eyes f7. " +
             "The knight on f3 guards the pawn on e5, and the bishop on c4 eyes f7."
-        val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line)), 1.0f, "en-us")
+        val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line, voice = true)), 1.0f, "en-us")
         assertTrue("the line is not cut into three or more", pieces.size >= 3)
         tts.say(line)
         assertTrue("no piece was made", firstMade.await(30, TimeUnit.SECONDS))

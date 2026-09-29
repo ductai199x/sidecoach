@@ -109,6 +109,16 @@ EDGES = [
     "It ended ½-½ after 40 moves.",
     "The game was drawn, 1/2-1/2.",
     "White resigned: 0-1.",
+    # A capital as a sentence starts, P for a pawn, and the a-file as the voice says it
+    # (2026-09-29: "dxe5 pronounced like d-ai-ex-ee-five", the a-file as "er").
+    "Dxe5 was better.",
+    "G4 was a miss, costing you 28% of the game.",
+    "B5 was a mistake",
+    "Bxc6 doubles them",
+    "the A40 Horwitz Defense",
+    "defended by Rf8 and Pg7",
+    "Ra4 keeps the rook active, and bxa5 or Nad7 come next.",
+    "The pawn on a2 is weak: a plan on the a-file.",
 ]
 
 LONG = [
@@ -192,7 +202,7 @@ def long_strings(tokenizer: Tokenizer) -> list[dict]:
 def audio(kokoro: Kokoro) -> list[dict]:
     out = []
     for text in ["Nf3, still theory.", "Good. What does your knight want?", "Ready."]:
-        spoken = speak_notation(text).strip()
+        spoken = speak_notation(text, voice=True).strip()
         samples, rate = kokoro.create(spoken, voice="af_sarah", speed=1.0, lang="en-us")
         samples = np.asarray(samples, dtype=np.float32)
         out.append({
@@ -208,7 +218,7 @@ def main() -> None:
     texts = corpus()
     cases = []
     for text in texts:
-        spoken = speak_notation(text).strip()
+        spoken = speak_notation(text, voice=True).strip()
         cases.append({"text": text, "spoken": spoken, "given": front(tokenizer, text), "said": front(tokenizer, spoken)})
     fixtures = {
         "texts": cases,
