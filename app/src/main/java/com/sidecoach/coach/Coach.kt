@@ -35,6 +35,7 @@ import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.StreamCallback
 import com.sidecoach.llm.StreamingProvider
+import com.sidecoach.llm.ToolRound
 import com.sidecoach.llm.ToolsProvider
 import com.sidecoach.llm.refusedForGood
 import com.sidecoach.vision.Pieces
@@ -45,8 +46,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * The coach: what to say, when, from which facts, checked before it is shown.
@@ -1768,9 +1767,10 @@ class Speaker(
      * The model's reply, streamed to [onDelta] when given. With engine tools on the request and
      * a model that takes them, the engine calls it makes are answered and it is asked again,
      * [TOOL_ROUNDS] times at most, the last time to answer with what it has; the calls go in the
-     * stats, for the log. A server that refuses the tools is asked again without them: Luna with
-     * a reasoning effort takes no tools on chat completions, and the coach said nothing at all.
-     * `Speaker._complete`.
+     * stats, for the log. A server that refuses the tools is asked again without them, and the
+     * refusal goes in the stats: on chat completions Luna with a reasoning effort took no tools,
+     * and the coach said nothing at all -- and then, asked without them, the log still listed the
+     * calls as if they had been answered. `Speaker._complete`.
      */
     private fun complete(
         provider: LLMProvider,
@@ -1779,18 +1779,22 @@ class Speaker(
         onDelta: StreamCallback?,
     ): Completion {
         val tools = request.tools
+        var refused = ""
         val completion = if (tools != null && provider is ToolsProvider) {
             try {
                 withTools(provider, tools, request, messages, onDelta)
             } catch (e: Exception) {
                 if (!refusedForGood(e)) throw e
+                refused = (e.message ?: "").take(200)
                 plainly(provider, request, messages, onDelta)
             }
         } else {
             plainly(provider, request, messages, onDelta)
         }
-        if (tools == null || tools.log.isEmpty()) return completion
-        return completion.copy(stats = completion.stats + ("tools" to tools.log.toList()))
+        var stats = completion.stats
+        if (tools != null && tools.log.isNotEmpty()) stats = stats + ("tools" to tools.log.toList())
+        if (refused.isNotEmpty()) stats = stats + ("tools_refused" to refused)
+        return completion.copy(stats = stats)
     }
 
     private fun plainly(
@@ -1818,43 +1822,22 @@ class Speaker(
         messages: List<ChatMessage>,
         onDelta: StreamCallback?,
     ): Completion {
-        val turns = JSONArray()
+        var turns = emptyList<ToolRound>()
         var round = 0
         while (true) {
             val completion = provider.chatTools(
                 request.system,
                 messages,
                 tools = tools.specs,
-                turns = JSONArray(turns.toString()),
+                turns = turns,
                 maxTokens = VS_MAX_TOKENS,
                 temperature = VS_TEMPERATURE,
                 toolChoice = if (round == TOOL_ROUNDS) "none" else null,
                 onDelta = onDelta,
             )
             if (completion.toolCalls.isEmpty() || round == TOOL_ROUNDS) return completion
-            val calls = JSONArray()
-            for (call in completion.toolCalls) {
-                calls.put(
-                    JSONObject()
-                        .put("id", call.id)
-                        .put("type", "function")
-                        .put("function", JSONObject().put("name", call.name).put("arguments", call.arguments.toString())),
-                )
-            }
-            turns.put(
-                JSONObject()
-                    .put("role", "assistant")
-                    .put("content", completion.text.ifEmpty { JSONObject.NULL })
-                    .put("tool_calls", calls),
-            )
-            for (call in completion.toolCalls) {
-                turns.put(
-                    JSONObject()
-                        .put("role", "tool")
-                        .put("tool_call_id", call.id)
-                        .put("content", tools.run(call.name, call.arguments)),
-                )
-            }
+            val results = completion.toolCalls.map { tools.run(it.name, it.arguments) }
+            turns = turns + ToolRound(completion, results)
             round += 1
         }
     }

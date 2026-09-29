@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.PIECE_NAMES
+import com.sidecoach.analysis.restOfLine
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_SQUARES
@@ -9,6 +10,7 @@ import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
+import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -30,7 +32,7 @@ import org.json.JSONObject
  * kept ([frames]): the draft check then reads a reply about them against them.
  */
 
-/** Rounds of calls a reply may make before it must answer: one to look, one to look further. */
+/** Rounds of tool calls a reply may make before it must answer with what it has. */
 const val TOOL_ROUNDS = 3
 
 /** What the Task says of them. */
@@ -57,10 +59,13 @@ private fun startSpec(): JSONObject = JSONObject()
 private fun movesSpec(): JSONObject = JSONObject()
     .put("type", "array")
     .put("items", JSONObject().put("type", "string"))
+    // "From the start position" was read as the game's first position: a model that knows a game
+    // begins with 1. e4 could send the whole game (the code review, 2026-09-29).
     .put(
         "description",
-        "Moves in standard notation, in order and for both sides, played from the start " +
-            "position; empty for the start position itself.",
+        "Moves in standard notation, in order and for both sides, played from the position " +
+            "`start` names (the board now by default) -- never the game's earlier moves; empty " +
+            "for that position itself.",
     )
 
 /** The tools' specs in the OpenAI form: `engine_tools.SPECS`. */
@@ -96,9 +101,10 @@ fun engineToolSpecs(): JSONArray = JSONArray()
                 .put("name", "square")
                 .put(
                     "description",
-                    "What stands on a square and which pieces of each side attack it, in the " +
-                        "position reached by playing `moves` (as for analyse): whether a piece " +
-                        "there is defended, or a square is safe to go to.",
+                    "What stands on a square, which pieces of each side attack it, and which " +
+                        "pieces of the side to move can go there, in the position reached by " +
+                        "playing `moves` (as for analyse): whether a piece there is defended, " +
+                        "whether a square is safe to go to, whether a check can be blocked there.",
                 )
                 .put(
                     "parameters",
@@ -122,17 +128,25 @@ private val SQUARE_NAME = Regex("^[a-h][1-8]$")
 
 /**
  * The tools of one request: the board now, the position before the last move, the engine, and
- * whose side "the player" is. `engine_tools.EngineTools`.
+ * whose side "the player" is; and the lines the record shows for each of the two ([knownNow],
+ * [knownBefore]). Moves on one of those lines are read from it, as the model was shown it, and
+ * the rest go to the engine: a second search after a move the lines play can answer it
+ * differently, and the model, shown both, believed each in turn (the dev audit, 2026-09-26; Tai,
+ * 2026-09-29: "only then invoke a call to stockfish"). `engine_tools.EngineTools`.
  */
 class EngineTools(
     now: Board,
     before: Board?,
     private val engine: EngineLike,
     private val player: Boolean,
+    knownNow: List<Line> = emptyList(),
+    knownBefore: List<Line> = emptyList(),
     private val depth: Int = 14,
 ) {
     private val now: Board = now.copy(withStack = false)
     private val before: Board? = before?.copy(withStack = false)
+    private val known: Map<String, List<Line>> =
+        mapOf("now" to knownNow.toList(), "before_last_move" to knownBefore.toList())
     val frames: MutableList<Board> = ArrayList()
     val log: MutableList<String> = ArrayList() // what was asked, one entry a call, for the record
     val specs: JSONArray = engineToolSpecs()
@@ -166,11 +180,17 @@ class EngineTools(
         var head = heading(start, played, where)
         if (illegal.isNotEmpty()) head += " $illegal is not a legal move there, so the analysis stops before it."
         if (after.isGameOver(claimDraw = true)) return "$head The game is over there: ${result(after)}."
-        val lines: List<com.sidecoach.events.Line>
+        val known = this.known[where] ?: emptyList()
+        val own = if (played.isNotEmpty()) restOfLine(known, played.map { it.uci() }) else null
+        val lines: List<Line>
         val rating: String
         try {
-            lines = engine.analyse(after, depth).take(LINES)
-            rating = if (played.isNotEmpty()) rating(start, played[0], origin(where)) else ""
+            lines = when {
+                own != null -> listOf(own)
+                played.isEmpty() && known.isNotEmpty() -> known.take(LINES)
+                else -> engine.analyse(after, depth).take(LINES)
+            }
+            rating = if (played.isNotEmpty()) rating(start, played[0], origin(where), known) else ""
         } catch (exc: Exception) { // the engine gone or a position it refused
             return "$head The engine could not look at that position (${exc.javaClass.simpleName})."
         }
@@ -180,7 +200,10 @@ class EngineTools(
         if (lines.isNotEmpty()) {
             val score = fromPlayer(lines[0].expectedScore, after.turn)
             parts.add("Standing: ${standingWords(score, thirdPerson = true)} (${format2(score)} from the player's side).")
-            parts.add("The engine's lines, best first:")
+            // One line read off the sheet's is that line, not the engine's only move there.
+            parts.add(
+                if (own != null) "The rest of the engine's line through it, as given above:" else "The engine's lines, best first:",
+            )
             for ((i, line) in lines.withIndex()) {
                 val shown = line.moves.take(LINE_PLIES)
                 var text = "  ${i + 1}. ${sanLine(after, shown)} (${format2(fromPlayer(line.expectedScore, after.turn))})"
@@ -214,6 +237,10 @@ class EngineTools(
             }
             val role = if (piece != null && piece.colour == colour) "Defended" else "Attacked"
             parts.add("$role by ${owner(colour)}: " + (if (attackers.isNotEmpty()) attackers.joinToString(", ") else "nothing") + ".")
+        }
+        if (piece == null || piece.colour != after.turn) {
+            val there = whoCanMoveThere(after, square, player)
+            parts.add(there.replaceFirstChar { it.uppercaseChar() } + ".")
         }
         return parts.joinToString(" ")
     }
@@ -249,19 +276,26 @@ class EngineTools(
     /**
      * How the first move rates against the engine's best from [start], said as the first move's:
      * "Kg2 is the engine's best move there", printed after the line's end, was read as the best
-     * move there ("White's best is 8. Kg2", Tai's puzzle).
+     * move there ("White's best is 8. Kg2", Tai's puzzle). A move one of [start]'s lines plays is
+     * rated by that line's score, as the model was shown it; another by a search after it.
      */
-    private fun rating(start: Board, first: Move, origin: String): String {
-        val best = engine.analyse(start, depth)
+    private fun rating(start: Board, first: Move, origin: String, known: List<Line>): String {
+        val best = known.toList().ifEmpty { engine.analyse(start, depth) }
         if (best.isEmpty()) return ""
         val after = start.copy(withStack = false)
         after.push(first)
         val head = "The first move given, ${sanLine(start, listOf(first.uci()))}, is"
         if (best[0].moves.isNotEmpty() && best[0].moves[0] == first.uci()) return "$head the engine's best move from $origin."
         if (after.isGameOver(claimDraw = true)) return ""
-        val reply = engine.analyse(after, depth)
-        if (reply.isEmpty()) return ""
-        val gap = best[0].expectedScore - (1.0 - reply[0].expectedScore)
+        val own = best.firstOrNull { it.moves.take(1) == listOf(first.uci()) }
+        val score = if (own != null) {
+            own.expectedScore
+        } else {
+            val reply = engine.analyse(after, depth)
+            if (reply.isEmpty()) return ""
+            1.0 - reply[0].expectedScore
+        }
+        val gap = best[0].expectedScore - score
         val top = if (best[0].moves.isNotEmpty()) sanLine(start, best[0].moves.take(1)) else "?"
         if (gap <= 0.005) return "$head as good as the engine's best from $origin ($top)."
         return "$head ${format2(gap)} behind the engine's best from $origin, $top."

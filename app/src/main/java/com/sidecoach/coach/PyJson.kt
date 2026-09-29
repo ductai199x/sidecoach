@@ -1,5 +1,7 @@
 package com.sidecoach.coach
 
+import org.json.JSONArray
+import org.json.JSONObject
 import java.math.BigDecimal
 import java.math.BigInteger
 
@@ -37,6 +39,89 @@ fun pyJsonOr(text: String, fallback: Any?): Any? = try {
     pyJsonLoads(text)
 } catch (_: PyJsonError) {
     fallback
+}
+
+/**
+ * `json.dumps(value)`: `", "` and `": "` between the parts, a dict's keys in their order, every
+ * character outside ' '..'~' escaped (`ensure_ascii`), a float as its repr, NaN and the
+ * infinities as Python writes them. Python's values here, and org.json's: the arguments of a
+ * model's call go back to it as the desktop writes them (`openai_compat.chat_turns`).
+ */
+fun pyJsonDumps(value: Any?): String = StringBuilder().also { pyDump(value, it) }.toString()
+
+private fun pyDump(value: Any?, out: StringBuilder) {
+    when {
+        value == null || value == JSONObject.NULL -> out.append("null")
+        value is Boolean -> out.append(if (value) "true" else "false")
+        value is String -> pyDumpString(value, out)
+        value is Double || value is Float -> {
+            val number = (value as Number).toDouble()
+            out.append(
+                when {
+                    number.isNaN() -> "NaN"
+                    number == Double.POSITIVE_INFINITY -> "Infinity"
+                    number == Double.NEGATIVE_INFINITY -> "-Infinity"
+                    else -> pyFloatRepr(number)
+                },
+            )
+        }
+        value is Number -> out.append(value.toString()) // an int
+        value is Map<*, *> -> {
+            out.append('{')
+            for ((index, entry) in value.entries.withIndex()) {
+                if (index > 0) out.append(", ")
+                pyDumpString(entry.key.toString(), out)
+                out.append(": ")
+                pyDump(entry.value, out)
+            }
+            out.append('}')
+        }
+        value is List<*> -> {
+            out.append('[')
+            for ((index, one) in value.withIndex()) {
+                if (index > 0) out.append(", ")
+                pyDump(one, out)
+            }
+            out.append(']')
+        }
+        value is JSONObject -> {
+            out.append('{')
+            for ((index, key) in value.keys().asSequence().withIndex()) {
+                if (index > 0) out.append(", ")
+                pyDumpString(key, out)
+                out.append(": ")
+                pyDump(value.opt(key), out)
+            }
+            out.append('}')
+        }
+        value is JSONArray -> {
+            out.append('[')
+            for (index in 0 until value.length()) {
+                if (index > 0) out.append(", ")
+                pyDump(value.opt(index), out)
+            }
+            out.append(']')
+        }
+        else -> pyDumpString(value.toString(), out)
+    }
+}
+
+private fun pyDumpString(text: String, out: StringBuilder) {
+    out.append('"')
+    for (char in text) {
+        when (char) {
+            '"' -> out.append("\\\"")
+            '\\' -> out.append("\\\\")
+            '\n' -> out.append("\\n")
+            '\r' -> out.append("\\r")
+            '\t' -> out.append("\\t")
+            '\b' -> out.append("\\b")
+            '\u000C' -> out.append("\\f")
+            in ' '..'~' -> out.append(char)
+            else -> out.append("\\u").append(hex(char.code, 4))
+        }
+    }
+    out.append('"')
 }
 
 /** Python's truthiness of a JSON value: None, False, 0, 0.0, "", [] and {} are false. */

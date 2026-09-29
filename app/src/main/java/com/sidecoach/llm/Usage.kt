@@ -15,6 +15,13 @@ package com.sidecoach.llm
 const val CHARS_PER_TOKEN = 4.0
 
 /**
+ * A prompt written to the server's cache is billed at 1.25x the fresh prompt price on GPT-5.6
+ * and later (OpenAI's prompt-caching guide, 2026-09-29), in place of the fresh price; a server
+ * that reports no cache writes (`cache_write_tokens`) writes none.
+ */
+const val CACHE_WRITE_FACTOR = 1.25
+
+/**
  * USD per million tokens: fresh prompt, cached prompt, completion (reasoning included).
  * Null for any of them means the cost cannot be given.
  */
@@ -61,6 +68,10 @@ class Usage {
     /** Of the prompt tokens, the ones the server served from its cache. */
     var cached = 0
         private set
+
+    /** Of the prompt tokens, the ones it wrote to its cache. */
+    var written = 0
+        private set
     var completion = 0
         private set
 
@@ -70,8 +81,8 @@ class Usage {
 
     /**
      * Add one call. [stats] is the provider's (prompt_tokens, cached_tokens,
-     * completion_tokens, reasoning_tokens); missing counts are estimated from the
-     * character counts.
+     * cache_write_tokens, completion_tokens, reasoning_tokens); missing counts are estimated
+     * from the character counts.
      */
     fun record(stats: Map<String, Any?>, promptChars: Int = 0, completionChars: Int = 0) {
         var prompt = asInt(stats["prompt_tokens"])
@@ -84,6 +95,7 @@ class Usage {
             if (wasEstimated) estimated += 1
             this.prompt += prompt
             this.cached += asInt(stats["cached_tokens"]) ?: 0
+            this.written += asInt(stats["cache_write_tokens"]) ?: 0
             this.completion += completion
             this.reasoning += asInt(stats["reasoning_tokens"]) ?: 0
         }
@@ -95,9 +107,10 @@ class Usage {
         val promptPrice = prices.prompt!!
         val completionPrice = prices.completion!!
         synchronized(lock) {
-            val fresh = maxOf(0, prompt - cached)
+            val fresh = maxOf(0, prompt - cached - written)
             val cachedPrice = prices.cached ?: promptPrice
             return fresh / 1e6 * promptPrice +
+                written / 1e6 * promptPrice * CACHE_WRITE_FACTOR +
                 cached / 1e6 * cachedPrice +
                 completion / 1e6 * completionPrice
         }

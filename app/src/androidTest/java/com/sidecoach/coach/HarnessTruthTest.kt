@@ -4,11 +4,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.analysis.Computed
 import com.sidecoach.analysis.ComputedFirst
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.G1
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -17,7 +20,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * `tests/test_harness_truth.py` (desktop a050c5a), case for case: the harness says only what is
+ * `tests/test_harness_truth.py` (desktop a050c5a and ce06c4e), case for case: the harness says only what is
  * true of the board -- each cause of a false claim the v2 audit traced to the harness (dev and
  * test reruns, 2026-09-26), on the position it was found in.
  */
@@ -40,6 +43,11 @@ class HarnessTruthTest {
 
     private fun pushSan(board: Board, san: String) {
         board.push(board.parseSan(san)!!)
+    }
+
+    /** `_NoSearch`: an engine that must not be asked. */
+    private val noSearch = EngineLike { _, _ ->
+        throw AssertionError("a move the position's own lines play needs no second search")
     }
 
     @Test
@@ -124,12 +132,12 @@ class HarnessTruthTest {
             Line(moves = listOf("f4f5", "h1h3", "e3g5"), depth = 20, expectedScore = 0.50),
             Line(moves = listOf("e3d2", "h1h3", "f4f5", "h3g3"), depth = 20, expectedScore = 0.50),
         )
+        // The look-ahead's own search after Bd2, which answers it with Kh6: the sheet's line wins.
+        val after = board.copy()
+        pushSan(after, "Bd2")
         val computed = Computed()
-        computed.add(board, known)
-        val engine = ComputedFirst(
-            { _, _ -> throw AssertionError("a move the position's own lines play needs no second search") },
-            computed,
-        )
+        computed.add(after, listOf(Line(moves = listOf("h7h6", "d2e3"), depth = 18, expectedScore = 0.48)))
+        val engine = ComputedFirst(noSearch::analyse, computed)
         val text = examine(
             parseProbe("your Bd2", listOf("Bd2"), board),
             board,
@@ -137,9 +145,36 @@ class HarnessTruthTest {
             known[0],
             userColour = WHITE,
             level = DisclosureLevel.LINE,
+            known = known,
         )
         assertTrue(text, "the opponent's reply would be 64... Rxh3" in text)
         assertTrue(text, "0.50 from the player's side" in text)
+    }
+
+    @Test
+    fun aSquareSaysWhetherAPieceOfTheirsCanGetThere() {
+        // Tai's puzzle, 3...Rxf1+: "Why can't I block on g1?" -- told only who controls g1, Luna
+        // answered that g1 was empty. No piece of White's can go there; after Kg2 two of Black's
+        // can.
+        val board = Board(RXF1_CHECK)
+        val fact = examinePiece(Probe(label = "g1", moves = emptyList(), square = G1), board, userColour = WHITE)
+        assertTrue(fact, fact.endsWith("; none of the player's pieces can move there."))
+        val said = spoken(fact)
+        assertTrue(said, said.endsWith("; none of your pieces can move there."))
+        val tools = EngineTools(board, null, noSearch, WHITE)
+        val g1 = tools.run("square", JSONObject().put("square", "g1"))
+        assertTrue(g1, g1.endsWith("None of the player's pieces can move there."))
+        val afterKg2 = tools.run("square", JSONObject().put("square", "g1").put("moves", JSONArray(listOf("Kg2"))))
+        assertTrue(afterKg2, afterKg2.endsWith("The opponent can move the rook on f1 or the bishop on a7 there."))
+    }
+
+    @Test
+    fun aPieceGotOutOfAttackNamesWhatAttackedIt() {
+        // The engine's line 4. Kg2 Rg1+ 5. Kf3 g2 6. Nb2: told "gets the knight out of attack",
+        // Luna said 5...g2 attacked the knight -- the rook on g1 did.
+        val board = Board(RXF1_CHECK)
+        val notes = lineNotes(board, listOf("h1g2", "f1g1", "g2f3", "g3g2", "d1b2"), player = WHITE)
+        assertTrue(notes, notes.endsWith("the player's Nb2 (gets the knight out of attack from the rook on g1)"))
     }
 
     @Test
@@ -171,5 +206,9 @@ class HarnessTruthTest {
         val line = Board("7r/8/8/8/3N4/8/1B6/K6k w - - 0 1")
         val uncovered = describeEffects(line, line.parseSan("Nb5")!!)
         assertTrue("$uncovered", "uncovers an attack on the rook on h8 by the bishop on b2" in uncovered)
+    }
+
+    private companion object {
+        const val RXF1_CHECK = "6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4"
     }
 }

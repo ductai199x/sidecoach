@@ -9,6 +9,7 @@ import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,7 +20,8 @@ import java.io.File
  *
  * Tai, 2026-09-29: "our harness must first look at what was already computed, then if that's not
  * computed only then invoke a call to stockfish to ask for analysis over that specific line" --
- * the analyser is the producer, the coach's engine one of its readers.
+ * the analyser is the producer, the coach's engine one of its readers, and a move on a line the
+ * model was shown is read from that line.
  */
 @RunWith(AndroidJUnit4::class)
 class ComputedTest {
@@ -86,6 +88,21 @@ class ComputedTest {
         // mover is mated in 1, after A2 the other side mates in 1.
         val mated = Line(moves = listOf("a1", "b1", "a2", "b2"), depth = 18, expectedScore = 0.0, mate = -2)
         assertEquals(listOf(2, -1, 1), listOf(1, 2, 3).map { lineAfter(mated, it).mate })
+        // A line carried on past its mate (a slower one found from its end) has no count left.
+        val carried = Line(moves = listOf("a1", "b1", "a2", "b2", "a3"), depth = 18, expectedScore = 1.0, mate = 1)
+        assertNull(lineAfter(carried, 2).mate)
+    }
+
+    @Test
+    fun aMoveOnALineIsReadFromIt() {
+        val rest = restOfLine(lines, listOf("e2e4", "e7e5"))
+        assertEquals(listOf("g1f3", "b8c6"), rest?.moves)
+        assertEquals(0.55, rest!!.expectedScore, 0.0)
+        assertEquals(lineAfter(lines[1], 1), restOfLine(lines, listOf("d2d4")))
+        // Not on a line, a whole line (nothing after it), or nothing asked: none.
+        assertNull(restOfLine(lines, listOf("a2a3")))
+        assertNull(restOfLine(lines, listOf("d2d4", "d7d5", "c2c4")))
+        assertNull(restOfLine(lines, emptyList()))
     }
 
     @Test
@@ -99,14 +116,13 @@ class ComputedTest {
     }
 
     @Test
-    fun thePositionsOwnLinesComeFirstThenAVerdictsThenALineThroughIt() {
+    fun aPositionMeasuredWholeComesBeforeItsVerdictAndNothingElseIsKnown() {
         val computed = Computed()
         val afterE4 = after("e4")
         computed.add(start, lines)
-        // Through it only: the rest of the first line, one ply in.
-        val through = computed.lines(afterE4).single()
-        assertEquals(listOf("e7e5", "g1f3", "b8c6"), through.moves)
-        assertEquals(17, through.depth)
+        // A line passing through a position is no measure of it: a move refuted deeper still read
+        // off its line at depth 12 (the code review, 2026-09-29).
+        assertEquals(emptyList<Line>(), computed.lines(afterE4))
         val thin = listOf(Line(moves = listOf("c7c5"), depth = 18, expectedScore = 0.47))
         computed.add(afterE4, thin, thin = true)
         assertEquals(thin, computed.lines(afterE4))
@@ -116,8 +132,6 @@ class ComputedTest {
         )
         computed.add(afterE4, whole)
         assertEquals(whole, computed.lines(afterE4))
-        // Nothing reaches a position no line plays.
-        assertEquals(emptyList<Line>(), computed.lines(after("a3")))
         computed.clear()
         assertEquals(emptyList<Line>(), computed.lines(start))
         assertEquals(emptyList<Line>(), computed.lines(afterE4))
@@ -135,58 +149,72 @@ class ComputedTest {
     }
 
     @Test
-    fun ofTwoLinesThroughAPositionTheDeeperOneAnswers() {
-        // 1. e4 e5 is reached from the start, two plies in, and from after 1. e4, one ply in.
-        val computed = Computed()
-        computed.add(start, lines)
-        computed.add(after("e4"), listOf(Line(moves = listOf("e7e5", "b1c3", "g8f6"), depth = 18, expectedScore = 0.45)))
-        val line = computed.lines(after("e4", "e5")).single()
-        assertEquals(listOf("b1c3", "g8f6"), line.moves)
-        assertEquals(17, line.depth)
-    }
-
-    @Test
-    fun theCoachsEngineSearchesOnlyWhatIsNotComputed() {
+    fun theCoachsEngineSearchesOnlyAPositionNotComputedAndNeverOnceClosed() {
         val computed = Computed()
         computed.add(start, lines)
         val searcher = Recording()
         val engine = ComputedFirst(searcher::analyse, computed)
         assertEquals(lines, engine.analyse(start, 14))
-        assertEquals(listOf("g1f3", "b8c6"), engine.analyse(after("e4", "e5"), 14)[0].moves)
         assertEquals(emptyList<String>(), searcher.seen)
         assertEquals(0, engine.searches)
-        // A move no line plays: searched once, and known from then on.
+        // Not computed: searched once, and known from then on.
         engine.analyse(after("a3"), 14)
         engine.analyse(after("a3"), 14)
         assertEquals(listOf(after("a3").fen()), searcher.seen)
         assertEquals(1, engine.searches)
+        // Closed with a question still being answered: what is known, and no new Stockfish.
+        engine.close()
+        assertEquals(emptyList<Line>(), engine.analyse(after("h3"), 14))
+        assertEquals(1, engine.searches)
+        assertEquals(lines, engine.analyse(start, 14))
     }
 
     /**
      * Tai, 2026-09-29: "it only launches IF the move doesn't exist in the cached line or in the
-     * line already computed". The analyser measured the board; the model asks the tools.
+     * line already computed". The analyser measured the board, the sheet shows its lines, and the
+     * model asks the tools.
      */
     @Test
-    fun theToolsAnswerFromTheAnalysersLinesAndSearchAMoveTheyDoNotPlay() {
+    fun theToolsReadTheSheetsLinesAndSearchOnlyAPositionNothingHas() {
         val annotator = GameAnnotator(FakeEngine(mapOf(start.fen() to lines)), depth = 18, withThreats = false)
         annotator.measure(start)
         val searcher = Recording()
         val engine = ComputedFirst(searcher::analyse, annotator.computed)
-        val tools = EngineTools(start, null, EngineLike(engine::analyse), WHITE)
+        val tools = EngineTools(start, null, EngineLike(engine::analyse), WHITE, knownNow = lines)
         fun analyse(vararg moves: String) = tools.run("analyse", JSONObject().put("moves", JSONArray(moves.toList())))
-        analyse()
-        analyse("e4", "e5")
-        analyse("d4")
-        assertEquals("a position the lines reach was searched", emptyList<String>(), searcher.seen)
-        // The rest of the line, as the sheet has it.
-        val e4 = analyse("e4")
-        assertTrue(e4, "1... e5 2. Nf3 Nc6" in e4)
-        // A move no line plays: its position searched once, the start's best read from the lines.
+        val here = analyse()
+        assertTrue(here, "The engine's lines, best first:" in here)
+        val onLine = analyse("e4")
+        assertTrue(onLine, "The rest of the engine's line through it, as given above:" in onLine)
+        assertTrue(onLine, "1... e5 2. Nf3 Nc6" in onLine)
+        assertTrue(onLine, "The first move given, 1. e4, is the engine's best move" in onLine)
+        // A move the second line plays: rated by that line's score, as the sheet shows it.
+        val d4 = analyse("d4")
+        assertTrue(d4, "0.01 behind the engine's best from the board now, 1. e4." in d4)
+        assertEquals("a move on the sheet's lines was searched", emptyList<String>(), searcher.seen)
+        // A move no line plays: its position searched once.
         val out = analyse("a3")
         assertEquals(listOf(after("a3").fen()), searcher.seen)
         assertTrue(out, "The first move given, 1. a3, is" in out && "behind the engine's best" in out)
         analyse("a3")
         assertEquals(1, searcher.seen.size)
+    }
+
+    /**
+     * The look-ahead measures the position after each of the two best moves on its own, and its
+     * search can answer the move differently from the sheet's line through it: the model, shown
+     * both, believed each in turn (Bd2 answered with Kh6 where the lines had Rxh3, the dev audit,
+     * 2026-09-26). A move on the sheet's line is read from the line.
+     */
+    @Test
+    fun theSheetsLineWinsOverASeparateSearchOfThePositionAfterIt() {
+        val computed = Computed()
+        computed.add(start, lines)
+        computed.add(after("e4"), listOf(Line(moves = listOf("c7c5", "g1f3"), depth = 18, expectedScore = 0.44)))
+        val engine = ComputedFirst(Recording()::analyse, computed)
+        val tools = EngineTools(start, null, EngineLike(engine::analyse), WHITE, knownNow = lines)
+        val out = tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("e4"))))
+        assertTrue(out, "1... e5 2. Nf3 Nc6" in out && "c5" !in out.substringBefore("On the board there"))
     }
 
     /**

@@ -32,7 +32,7 @@ data class LLMSettings(
     val pricePromptPerM: Double? = null,
     val priceCachedPerM: Double? = null,
     val priceCompletionPerM: Double? = null,
-    /** How long the coach waits for the model before it speaks from the board instead. */
+    /** How long the coach waits for the model each time it asks, before it speaks from the board instead. */
     val timeoutS: Double = 60.0,
     /** Extra fields sent with every request, for a service that needs something unusual. */
     val extraBody: Map<String, Any?> = emptyMap(),
@@ -44,6 +44,8 @@ data class ProviderDefaults(
     val apiKeyEnv: String?,
     val thinkingControl: ThinkingControl,
     val reasoningEffort: String? = null,
+    /** The API spoken ([Wire]): chat completions, or OpenAI's responses. */
+    val wire: Wire = Wire.CHAT,
     /** A name that overrides baseUrl: a hosted provider's endpoint can be per account. */
     val baseUrlEnv: String? = null,
 )
@@ -72,6 +74,8 @@ val PROVIDER_DEFAULTS: Map<String, ProviderDefaults> = mapOf(
         apiKeyEnv = "OPENAI_API_KEY",
         thinkingControl = ThinkingControl.EFFORT,
         reasoningEffort = "medium",
+        // Its reasoning models take function tools with an effort only on /v1/responses.
+        wire = Wire.RESPONSES,
         baseUrlEnv = "OPENAI_BASE_URL",
     ),
 )
@@ -145,6 +149,7 @@ fun makeProvider(
         apiKey = apiKey,
         thinkingControl = wanted,
         reasoningEffort = effort,
+        wire = defaults.wire,
         timeoutS = timeoutS ?: settings.timeoutS,
         extraBody = settings.extraBody,
         transport = transport,

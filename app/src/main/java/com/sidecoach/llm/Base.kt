@@ -21,14 +21,23 @@ data class ToolCall(val id: String, val name: String, val arguments: JSONObject)
 /**
  * `llm.base.Completion`. `stats` carries whatever the backend reported about the call;
  * [toolCalls] the functions the model asked for instead of (or before) a reply -- empty when
- * it replied, and always empty from a provider that takes no tools.
+ * it replied, and always empty from a provider that takes no tools. [items] is the reply as
+ * its wire takes it back in a later request, where that is more than the text and the calls:
+ * the Responses API's output items, the model's reasoning among them.
  */
 data class Completion(
     val text: String,
     val reasoning: String = "",
     val stats: Map<String, Any?> = emptyMap(),
     val toolCalls: List<ToolCall> = emptyList(),
+    val items: List<JSONObject> = emptyList(),
 )
+
+/**
+ * `llm.base.ToolRound`: one round of the model's calls -- the reply that made them, and what
+ * each returned, in the calls' order. Each provider puts it on its own wire.
+ */
+data class ToolRound(val reply: Completion, val results: List<String>)
 
 private val STATUS = Regex("^(\\d{3}):")
 
@@ -77,16 +86,16 @@ interface StreamingProvider : LLMProvider {
 
 /**
  * A provider that takes tools: the desktop's `tools_ok`, whose `chat` and `chat_stream` then
- * accept `tools` (function specs in the OpenAI form), `turns` (the wire messages that follow the
- * conversation: the model's earlier calls and what each returned) and `tool_choice`. Here one
- * call: streamed to [onDelta] when given, read whole otherwise.
+ * accept `tools` (function specs in the chat-completions form), `turns` (the rounds that follow
+ * the conversation, [ToolRound]: the model's earlier calls and what each returned) and
+ * `tool_choice`. Here one call: streamed to [onDelta] when given, read whole otherwise.
  */
 interface ToolsProvider : LLMProvider {
     fun chatTools(
         system: String,
         messages: List<ChatMessage>,
         tools: JSONArray,
-        turns: JSONArray,
+        turns: List<ToolRound>,
         maxTokens: Int = 1500,
         temperature: Double = 0.7,
         toolChoice: String? = null,

@@ -42,6 +42,10 @@ private fun nameAt(board: Board, sq: Int): String {
     return "the $word on ${squareName(sq)}"
 }
 
+/** The pieces on [squares], the first two: "the rook on g1 and the pawn on e5". */
+private fun namesAt(board: Board, squares: List<Int>): String =
+    squares.take(2).joinToString(" and ") { nameAt(board, it) }
+
 /**
  * `colour`'s pieces that attack the enemy piece on `square`: those that could take it by a legal
  * move (were it `colour`'s move); on the king, those that give it check.
@@ -198,13 +202,16 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
 
     // The moved piece: was it attacked, and is it now? Attacked is a legal capture onto its
     // square, defended a legal recapture: a pinned piece neither threatens nor guards it.
+    // The attacker is named: "gets the knight out of attack" alone, the model guessed it, and
+    // guessed the pawn that had just moved rather than the rook on g1 (Luna on Tai's puzzle,
+    // 2026-09-29).
     if (mover != null && mover.pieceType != KING) {
-        val wasAttacked = Exchange.capturers(board, them, move.from).isNotEmpty()
-        val isAttacked = Exchange.capturers(after, them, move.to).isNotEmpty()
-        if (wasAttacked && !isAttacked) {
-            out.add("gets the $moverWord out of attack")
-        } else if (hazards && isAttacked && Exchange.defenders(after, us, move.to).isEmpty()) {
-            out.add("puts the $moverWord where it is attacked and undefended")
+        val wasAttacked = Exchange.capturers(board, them, move.from)
+        val isAttacked = Exchange.capturers(after, them, move.to)
+        if (wasAttacked.isNotEmpty() && isAttacked.isEmpty()) {
+            out.add("gets the $moverWord out of attack from ${namesAt(board, wasAttacked)}")
+        } else if (hazards && isAttacked.isNotEmpty() && Exchange.defenders(after, us, move.to).isEmpty()) {
+            out.add("puts the $moverWord where it is undefended and attacked by " + namesAt(after, isAttacked))
         }
     }
 
@@ -215,7 +222,8 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
     val afterLoose = undefended(after, us)
     val left = if (hazards) (afterLoose - beforeLoose).filter { it != move.to } else emptyList()
     for (s in left.sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })) {
-        val tail = if (Exchange.capturers(after, them, s).isNotEmpty()) ", and it is attacked" else ""
+        val hitters = Exchange.capturers(after, them, s)
+        val tail = if (hitters.isNotEmpty()) ", and it is attacked by ${namesAt(after, hitters)}" else ""
         out.add("leaves ${nameAt(after, s)} undefended$tail")
         break
     }
@@ -223,7 +231,8 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
         it != move.from && Exchange.capturers(after, them, it).isNotEmpty() && !Exchange.canBeWon(after, it)
     }
     for (s in covered.sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })) {
-        out.add("defends ${nameAt(after, s)}, which was attacked")
+        val by = namesAt(after, Exchange.capturers(after, them, s))
+        out.add("defends ${nameAt(after, s)}, which is attacked by $by")
         break
     }
 

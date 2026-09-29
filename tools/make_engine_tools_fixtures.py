@@ -1,6 +1,7 @@
-"""Record what the desktop's engine tools answer (`coach/engine_tools.py`, desktop c80b64b),
-for the Kotlin port to be held to: every call on a few positions, with an engine that plays
-the first legal moves (by UCI) so both sides see the same lines.
+"""Record what the desktop's engine tools answer (`coach/engine_tools.py`, desktop c80b64b and
+ce06c4e), for the Kotlin port to be held to: every call on a few positions, with an engine that
+plays the first legal moves (by UCI) so both sides see the same lines -- and, on one, the lines
+the sheet shows for the board now and before the last move, which a move on them is read from.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_engine_tools_fixtures.py
@@ -45,7 +46,19 @@ class FirstLegal:
         ]
 
 
-# (the board now, the position before the last move, the player's side, the calls)
+# The lines the sheet shows for Tai's puzzle after 3...Rxf1+ and before it (`known_now`,
+# `known_before`): scores of their own, so a move read off them is told from a search.
+KNOWN_NOW = [
+    Line(moves=["h1g2", "f1g1", "g2f3", "g3g2", "d1b2"], depth=20, expected_score=0.08),
+    Line(moves=["h1g2", "f1f2", "g2g3"], depth=20, expected_score=0.05),
+]
+KNOWN_BEFORE = [
+    Line(moves=["e1f1", "h1g2", "f1g1"], depth=20, expected_score=0.9),
+    Line(moves=["g3g2", "h1g2", "e1d1"], depth=20, expected_score=0.3),
+]
+
+# (the board now, the position before the last move, the player's side, the calls, and the
+# sheet's lines for each)
 CASES = [
     (
         # Tai's puzzle after 3...Rxf1+: White to move, Kg2 the only move.
@@ -73,6 +86,8 @@ CASES = [
             ("analyse", {"moves": 5}),
             ("analyse", {"moves": ["Kg2"], "start": None}),
         ],
+        [],
+        [],
     ),
     (
         # A mate on the move, and no last move to start from.
@@ -84,6 +99,8 @@ CASES = [
             ("analyse", {"moves": [], "start": "before_last_move"}),
             ("square", {"square": "d8", "moves": ["Rd8#"]}),
         ],
+        [],
+        [],
     ),
     (
         # The Scholar's position: a pin, a hanging piece, a promotion-free middle game.
@@ -97,15 +114,50 @@ CASES = [
             ("square", {"square": "f7"}),
             ("square", {"square": "e5", "moves": ["d3"]}),
         ],
+        [],
+        [],
+    ),
+    (
+        # The puzzle again, with the sheet's lines: a move on one is read from it and rated by
+        # its score; any other is searched (desktop ce06c4e).
+        "6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3N1r1K w - - 0 4",
+        "6k1/b1p2pp1/p7/1p6/1P6/P5pP/3R4/3NrB1K b - - 2 3",
+        chess.BLACK,
+        [
+            ("analyse", {"moves": []}),
+            ("analyse", {"moves": ["Kg2"]}),
+            ("analyse", {"moves": ["Kg2", "Rf2+"]}),
+            # The whole of a line: nothing after it to read, so searched.
+            ("analyse", {"moves": ["Kg2", "Rf2+", "Kxg3"]}),
+            ("analyse", {"moves": [], "start": "before_last_move"}),
+            ("analyse", {"moves": ["g2+"], "start": "before_last_move"}),
+            ("analyse", {"moves": ["Re2"], "start": "before_last_move"}),
+            # A start the tools do not know is the board now, and no sheet's lines.
+            ("analyse", {"moves": ["Kg2"], "start": "elsewhere"}),
+            ("square", {"square": "g1"}),
+            ("square", {"square": "g1", "moves": ["Kg2"]}),
+            ("square", {"square": "f2", "start": "before_last_move"}),
+        ],
+        KNOWN_NOW,
+        KNOWN_BEFORE,
     ),
 ]
 
 
+def line_json(line: Line) -> dict:
+    return {"moves": list(line.moves), "depth": line.depth, "expected_score": line.expected_score}
+
+
 def main() -> None:
     cases = []
-    for now, before, player, calls in CASES:
+    for now, before, player, calls, known_now, known_before in CASES:
         tools = EngineTools(
-            chess.Board(now), chess.Board(before) if before else None, FirstLegal(), player
+            chess.Board(now),
+            chess.Board(before) if before else None,
+            FirstLegal(),
+            player,
+            known_now=known_now,
+            known_before=known_before,
         )
         out = []
         for name, arguments in calls:
@@ -115,6 +167,8 @@ def main() -> None:
                 "now": now,
                 "before": before,
                 "player_white": player == chess.WHITE,
+                "known_now": [line_json(line) for line in known_now],
+                "known_before": [line_json(line) for line in known_before],
                 "calls": out,
                 "log": tools.log,
                 "frames": [b.fen() for b in tools.frames],

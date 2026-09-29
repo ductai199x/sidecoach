@@ -379,9 +379,10 @@ object PanelWarm {
     }
 
     /**
-     * One search of the start position, so the first real one does not pay the hash
-     * allocation and the thread start. `_warm_engines`; the phone has no second engine
-     * for named moves (see CoachRunner).
+     * One search of the start position on the analyser's Stockfish, so the first real one does
+     * not pay the hash allocation and the thread start. `_warm_engines`. Not the coach's: it
+     * starts only when a question needs a position nothing has computed (Tai, 2026-09-29; see
+     * CoachRunner), and warming it would start it at every launch.
      */
     private fun warmEngines() {
         val analyser = assessing?.analyser ?: return

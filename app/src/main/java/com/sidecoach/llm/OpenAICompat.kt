@@ -1,14 +1,17 @@
 package com.sidecoach.llm
 
+import com.sidecoach.coach.pyJsonDumps
+import com.sidecoach.coach.pyJsonLoads
 import com.sidecoach.coach.pyJsonOr
+import com.sidecoach.coach.pyStr
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
 /**
- * One provider for every OpenAI-compatible chat endpoint: LM Studio on a computer on the
- * network, DashScope, OpenAI itself, or anything else that serves
- * `/v1/chat/completions`. `llm/openai_compat.py`.
+ * One provider for every OpenAI-compatible endpoint: LM Studio on a computer on the network,
+ * DashScope, OpenAI itself, or anything else that serves `/v1/chat/completions`.
+ * `llm/openai_compat.py`.
  *
  * What differs between servers is how reasoning is controlled, and that is the one thing a
  * provider is configured with ([thinkingControl]). Measured 2026-09-14 on the first two:
@@ -18,15 +21,24 @@ import org.json.JSONObject
  *   server continues that message and the model skips reasoning.
  * - "param": DashScope honours `enable_thinking` in the request body. With qwen3.8-max a
  *   turn took 9.7 s with thinking and 1.8 s without; qwen3.8-flash 6.1 s and 1.1 s.
- * - "effort": OpenAI's reasoning models take `reasoning_effort` (none, low, medium, high,
- *   ...) and reject `max_tokens` and `temperature`; the answer budget goes in
- *   `max_completion_tokens`, with headroom for the reasoning tokens that count against it.
- *   The effort is a property of the provider, not of the call: a coach at medium and a
- *   judge at none are two providers of the same model ([withEffort]).
+ * - "effort": OpenAI's reasoning models take a reasoning effort (none, low, medium, high,
+ *   ...) and reject `max_tokens` and `temperature`; the answer budget has headroom for the
+ *   reasoning tokens that count against it. The effort is a property of the provider, not
+ *   of the call: a coach at medium and a judge at none are two providers of the same model
+ *   ([withEffort]).
  * - "none": nothing is sent and the model keeps its default.
  *
- * Reasoning text, when the server returns it, comes back in `message.reasoning_content`;
- * the cached share of the prompt in `usage.prompt_tokens_details.cached_tokens`.
+ * And which API it speaks ([wire]): "chat", the chat completions every such server serves, or
+ * "responses", OpenAI's `/v1/responses` -- the only one on which its reasoning models take
+ * function tools with an effort ("Function tools with reasoning_effort are not supported for
+ * gpt-5.6-luna in /v1/chat/completions", 2026-09-29: at medium the coach's engine tools were
+ * refused on every question). It is sent stateless (`store` false), and the model's reasoning
+ * comes back encrypted in its output items, which go back with the tools' results so it
+ * reasons on from where it was.
+ *
+ * On the chat wire, reasoning text, when the server returns it, comes back in
+ * `message.reasoning_content`; the cached share of the prompt in
+ * `usage.prompt_tokens_details.cached_tokens`.
  */
 
 enum class ThinkingControl(val slug: String) {
@@ -43,13 +55,22 @@ enum class ThinkingControl(val slug: String) {
 
 val THINKING_CONTROLS: List<String> = ThinkingControl.entries.map { it.slug }
 
+/** `openai_compat.Wire`: the API a provider speaks, chat completions or OpenAI's responses. */
+enum class Wire(val slug: String) {
+    CHAT("chat"),
+    RESPONSES("responses"),
+}
+
 const val EMPTY_THINK_PREFILL = "<think>\n\n</think>\n\n"
 
 /**
- * Reasoning tokens count against max_completion_tokens: a caller's budget is for the
+ * Reasoning tokens count against the answer's token budget: a caller's budget is for the
  * answer, so the reasoning gets headroom of its own or a short answer comes back empty.
  */
 const val REASONING_HEADROOM = 4000
+
+/** The fewest output tokens the Responses API takes; fewer is refused. */
+const val MIN_OUTPUT_TOKENS = 16
 
 /**
  * What httpx's `raise_for_status` says of a reply that is not a success, as the desktop's
@@ -89,7 +110,52 @@ private val REASON_PHRASES: Map<Int, String> = mapOf(
     510 to "Not Extended", 511 to "Network Authentication Required",
 )
 
-/** The wire message list: system, the conversation, and the no-think prefill if used. */
+/**
+ * A round's calls, each with what it returned: `zip(strict=True)`, which raises when the counts
+ * differ.
+ */
+private fun answered(turn: ToolRound): List<Pair<ToolCall, String>> {
+    val calls = turn.reply.toolCalls
+    require(calls.size == turn.results.size) {
+        "zip() argument 2 is ${if (turn.results.size < calls.size) "shorter" else "longer"} than argument 1"
+    }
+    return calls.zip(turn.results)
+}
+
+/**
+ * The rounds of tool calls as chat messages: the reply that asked, then each result.
+ * `openai_compat.chat_turns`.
+ */
+fun chatTurns(turns: List<ToolRound>): JSONArray {
+    val wire = JSONArray()
+    for (turn in turns) {
+        val calls = JSONArray()
+        for (call in turn.reply.toolCalls) {
+            calls.put(
+                JSONObject()
+                    .put("id", call.id)
+                    .put("type", "function")
+                    .put("function", JSONObject().put("name", call.name).put("arguments", pyJsonDumps(call.arguments))),
+            )
+        }
+        wire.put(
+            JSONObject()
+                .put("role", "assistant")
+                .put("content", turn.reply.text.ifEmpty { JSONObject.NULL })
+                .put("tool_calls", calls),
+        )
+        for ((call, result) in answered(turn)) {
+            wire.put(JSONObject().put("role", "tool").put("tool_call_id", call.id).put("content", result))
+        }
+    }
+    return wire
+}
+
+/**
+ * The chat wire's message list: system, the conversation, and the no-think prefill if used.
+ * The tool calls and their results ([chatTurns]) go in before the prefill, in
+ * [OpenAICompatProvider.requestBody]: `build_messages(turns=)`.
+ */
 fun buildMessages(
     system: String,
     messages: List<ChatMessage>,
@@ -105,6 +171,53 @@ fun buildMessages(
     return wire
 }
 
+/**
+ * The Responses wire's input: the conversation, then each round -- the reply's own output items
+ * (its reasoning with them), or its text and calls when it has none -- and what each call
+ * returned. `openai_compat.response_input`.
+ */
+fun responseInput(messages: List<ChatMessage>, turns: List<ToolRound> = emptyList()): JSONArray {
+    val wire = JSONArray()
+    for (message in messages) wire.put(JSONObject().put("role", message.role).put("content", message.content))
+    for (turn in turns) {
+        if (turn.reply.items.isNotEmpty()) {
+            for (item in turn.reply.items) wire.put(item)
+        } else {
+            if (turn.reply.text.isNotEmpty()) {
+                wire.put(JSONObject().put("role", "assistant").put("content", turn.reply.text))
+            }
+            for (call in turn.reply.toolCalls) {
+                wire.put(
+                    JSONObject()
+                        .put("type", "function_call")
+                        .put("call_id", call.id)
+                        .put("name", call.name)
+                        .put("arguments", pyJsonDumps(call.arguments)),
+                )
+            }
+        }
+        for ((call, result) in answered(turn)) {
+            wire.put(JSONObject().put("type", "function_call_output").put("call_id", call.id).put("output", result))
+        }
+    }
+    return wire
+}
+
+/**
+ * Chat-completions function specs in the Responses form: the function's fields at the top, and
+ * `strict` off -- on, every parameter would have to be required. `openai_compat.response_tools`.
+ */
+fun responseTools(tools: JSONArray): JSONArray {
+    val out = JSONArray()
+    for (index in 0 until tools.length()) {
+        val function = tools.optJSONObject(index)?.optJSONObject("function") ?: JSONObject()
+        val tool = JSONObject().put("type", "function")
+        for (key in function.keys()) tool.put(key, function.opt(key))
+        out.put(tool.put("strict", false))
+    }
+    return out
+}
+
 class OpenAICompatProvider(
     override val name: String,
     baseUrl: String,
@@ -112,6 +225,7 @@ class OpenAICompatProvider(
     private val apiKey: String? = null,
     val thinkingControl: ThinkingControl = ThinkingControl.NONE,
     val reasoningEffort: String? = null,
+    val wire: Wire = Wire.CHAT,
     val timeoutS: Double = 60.0,
     extraBody: Map<String, Any?> = emptyMap(),
     private val transport: Transport = UrlTransport(),
@@ -132,6 +246,9 @@ class OpenAICompatProvider(
 
     private val timeoutMs: Int = (timeoutS * 1000).toInt()
 
+    private val endpoint: String
+        get() = "$baseUrl/" + if (wire == Wire.RESPONSES) "responses" else "chat/completions"
+
     /**
      * The same endpoint and model at another reasoning effort (an "effort" provider); any
      * other kind of provider is returned as it is.
@@ -145,6 +262,7 @@ class OpenAICompatProvider(
             apiKey = apiKey,
             thinkingControl = thinkingControl,
             reasoningEffort = effort,
+            wire = wire,
             timeoutS = timeoutS,
             extraBody = extraBody,
             transport = transport,
@@ -175,25 +293,29 @@ class OpenAICompatProvider(
         temperature: Double,
         thinking: Boolean,
         tools: JSONArray? = null,
-        turns: JSONArray? = null,
+        turns: List<ToolRound> = emptyList(),
         toolChoice: String? = null,
     ): JSONObject {
+        if (wire == Wire.RESPONSES) {
+            return responsesBody(system, messages, maxTokens, temperature, tools, turns, toolChoice)
+        }
         val body = JSONObject()
         body.put("model", model)
-        val wire = JSONArray()
+        val sent = JSONArray()
         val listed = buildMessages(system, messages, thinking, thinkingControl)
         // The tool calls and their results follow the conversation; the no-think prefill, when
         // used, stays last (`build_messages(turns=)`).
         val prefilled = !thinking && thinkingControl == ThinkingControl.PREFILL
         for (message in if (prefilled) listed.dropLast(1) else listed) {
-            wire.put(JSONObject().put("role", message.role).put("content", message.content))
+            sent.put(JSONObject().put("role", message.role).put("content", message.content))
         }
-        if (turns != null) for (index in 0 until turns.length()) wire.put(turns.get(index))
+        val rounds = chatTurns(turns)
+        for (index in 0 until rounds.length()) sent.put(rounds.get(index))
         if (prefilled) {
             val prefill = listed.last()
-            wire.put(JSONObject().put("role", prefill.role).put("content", prefill.content))
+            sent.put(JSONObject().put("role", prefill.role).put("content", prefill.content))
         }
-        body.put("messages", wire)
+        body.put("messages", sent)
         for ((key, value) in extraBody) body.put(key, wrap(value))
         if (tools != null && tools.length() > 0) {
             body.put("tools", tools)
@@ -210,6 +332,40 @@ class OpenAICompatProvider(
             body.put("temperature", temperature)
         }
         if (thinkingControl == ThinkingControl.PARAM) body.put("enable_thinking", thinking)
+        return body
+    }
+
+    /** [requestBody] on the Responses wire. `OpenAICompatProvider._responses_body`. */
+    private fun responsesBody(
+        system: String,
+        messages: List<ChatMessage>,
+        maxTokens: Int,
+        temperature: Double,
+        tools: JSONArray?,
+        turns: List<ToolRound>,
+        toolChoice: String?,
+    ): JSONObject {
+        val body = JSONObject()
+        body.put("model", model)
+        body.put("instructions", system)
+        body.put("input", responseInput(messages, turns))
+        // Nothing kept on the server: the reasoning travels encrypted with the items.
+        body.put("store", false)
+        for ((key, value) in extraBody) body.put(key, wrap(value))
+        if (tools != null && tools.length() > 0) {
+            body.put("tools", responseTools(tools))
+            if (!toolChoice.isNullOrEmpty()) body.put("tool_choice", toolChoice)
+        }
+        val effort = thinkingControl == ThinkingControl.EFFORT && !reasoningEffort.isNullOrEmpty()
+        body.put("max_output_tokens", maxOf(MIN_OUTPUT_TOKENS, maxTokens + (if (effort) REASONING_HEADROOM else 0)))
+        if (thinkingControl == ThinkingControl.EFFORT) {
+            if (!reasoningEffort.isNullOrEmpty()) {
+                body.put("reasoning", JSONObject().put("effort", reasoningEffort))
+                body.put("include", JSONArray().put("reasoning.encrypted_content"))
+            }
+        } else {
+            body.put("temperature", temperature)
+        }
         return body
     }
 
@@ -247,7 +403,7 @@ class OpenAICompatProvider(
         system: String,
         messages: List<ChatMessage>,
         tools: JSONArray,
-        turns: JSONArray,
+        turns: List<ToolRound>,
         maxTokens: Int,
         temperature: Double,
         toolChoice: String?,
@@ -264,13 +420,35 @@ class OpenAICompatProvider(
 
     private fun send(body: JSONObject): Completion {
         val started = System.nanoTime()
-        val reply = transport.post("$baseUrl/chat/completions", headers, body.toString(), timeoutMs)
+        val reply = transport.post(endpoint, headers, body.toString(), timeoutMs)
         if (reply.status != 200) {
             // The status code stays in the message: the callers' backoff keys on "429".
             throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
         }
         val data = JSONObject(reply.text)
         val elapsed = (System.nanoTime() - started) / 1e9
+        if (wire == Wire.RESPONSES) {
+            if (text(data, "status") == "failed") {
+                val error = data.optJSONObject("error") ?: JSONObject()
+                throw RuntimeException("failed: ${field(error, "code")}: ${field(error, "message")}")
+            }
+            val items = objects(data.optJSONArray("output"))
+            val out = outputRead(items)
+            val stats = linkedMapOf<String, Any?>("elapsed_s" to round3(elapsed))
+            stats.putAll(responseStats(data, out))
+            usage.record(
+                stats,
+                promptChars = chars(body),
+                completionChars = out.text.length + out.summary.length,
+            )
+            return Completion(
+                text = out.text,
+                reasoning = out.summary,
+                stats = stats,
+                toolCalls = out.calls,
+                items = items,
+            )
+        }
 
         val choices = data.optJSONArray("choices")
         val choice = choices?.optJSONObject(0) ?: JSONObject()
@@ -282,6 +460,7 @@ class OpenAICompatProvider(
             "elapsed_s" to round3(elapsed),
             "prompt_tokens" to number(usageJson, "prompt_tokens"),
             "cached_tokens" to number(promptDetails, "cached_tokens"),
+            "cache_write_tokens" to number(promptDetails, "cache_write_tokens"),
             "completion_tokens" to number(usageJson, "completion_tokens"),
             "reasoning_tokens" to number(completionDetails, "reasoning_tokens"),
             "finish_reason" to text(choice, "finish_reason"),
@@ -305,6 +484,7 @@ class OpenAICompatProvider(
 
     /** [chatStream]'s body; tool calls arrive in pieces, by index, and are put together. */
     private fun stream(request: JSONObject, onDelta: StreamCallback): Completion {
+        if (wire == Wire.RESPONSES) return responsesStream(request.put("stream", true), onDelta)
         val body = request
         body.put("stream", true)
         body.put("stream_options", JSONObject().put("include_usage", true))
@@ -317,7 +497,7 @@ class OpenAICompatProvider(
         var finish: String? = null
         var stopped = false
         val reply = transport.postLines(
-            "$baseUrl/chat/completions",
+            endpoint,
             headers,
             body.toString(),
             timeoutMs,
@@ -376,6 +556,7 @@ class OpenAICompatProvider(
             "first_token_s" to first?.let { round3(it) },
             "prompt_tokens" to number(usageJson, "prompt_tokens"),
             "cached_tokens" to number(promptDetails, "cached_tokens"),
+            "cache_write_tokens" to number(promptDetails, "cache_write_tokens"),
             "completion_tokens" to number(usageJson, "completion_tokens"),
             "reasoning_tokens" to number(completionDetails, "reasoning_tokens"),
             "finish_reason" to if (stopped) "stopped" else finish,
@@ -395,6 +576,86 @@ class OpenAICompatProvider(
             reasoning = thought,
             stats = stats,
             toolCalls = toolCalls(JSONArray(calls.values.toList())),
+        )
+    }
+
+    /**
+     * [stream] on the Responses wire: the text deltas to [onDelta], but for a preamble's
+     * ([outputRead]); the output items, the usage and the end from the completed response (or,
+     * stopped early, the items finished so far). An error in the stream raises, as a refused
+     * request does, and so does a stream that ends unfinished: its text is cut off where the
+     * connection was. `OpenAICompatProvider._responses_stream`.
+     */
+    private fun responsesStream(body: JSONObject, onDelta: StreamCallback): Completion {
+        val started = System.nanoTime()
+        var first: Double? = null
+        val parts = StringBuilder()
+        val items = sortedMapOf<Int, JSONObject>()
+        val preambles = HashSet<Int>() // the output items that are preambles, by index
+        var completed = JSONObject()
+        var stopped = false
+        val reply = transport.postLines(endpoint, headers, body.toString(), timeoutMs) line@{ line ->
+            if (!line.startsWith("data: ")) return@line true
+            val event = try {
+                JSONObject(line.substring(6))
+            } catch (_: JSONException) {
+                return@line true
+            }
+            when (text(event, "type")) {
+                "response.output_item.added" -> {
+                    if (text(event.optJSONObject("item") ?: JSONObject(), "phase") == "commentary") {
+                        preambles.add(event.optInt("output_index", 0))
+                    }
+                }
+                "response.output_text.delta" -> {
+                    val piece = text(event, "delta") ?: ""
+                    if (piece.isEmpty() || event.optInt("output_index", 0) in preambles) return@line true
+                    if (first == null) first = (System.nanoTime() - started) / 1e9
+                    parts.append(piece)
+                    if (!onDelta(piece)) {
+                        stopped = true
+                        return@line false
+                    }
+                }
+                "response.output_item.done" -> {
+                    items[event.optInt("output_index", 0)] = event.optJSONObject("item") ?: JSONObject()
+                }
+                "response.completed", "response.incomplete" -> {
+                    completed = event.optJSONObject("response") ?: JSONObject()
+                    return@line false
+                }
+                "response.failed" -> {
+                    val error = (event.optJSONObject("response") ?: JSONObject()).optJSONObject("error") ?: JSONObject()
+                    throw RuntimeException("failed: ${field(error, "code")}: ${field(error, "message")}")
+                }
+                "error" -> throw RuntimeException("error: ${field(event, "code")}: ${field(event, "message")}")
+            }
+            true
+        }
+        if (reply.status != 200) {
+            throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
+        }
+        val done = completed.length() > 0
+        if (!done && !stopped) throw RuntimeException("stream ended before the response completed")
+        val elapsed = (System.nanoTime() - started) / 1e9
+        val output = objects(completed.optJSONArray("output")).ifEmpty { items.values.toList() }
+        val out = outputRead(output)
+        // Stopped early, the text is what was handed on: the message has no item yet.
+        val answer = if (done) out.text else parts.toString().trim()
+        val stats = linkedMapOf<String, Any?>(
+            "elapsed_s" to round3(elapsed),
+            "first_token_s" to first?.let { round3(it) },
+        )
+        stats.putAll(responseStats(completed, out))
+        stats["streamed"] = true
+        if (stopped) stats["finish_reason"] = "stopped"
+        usage.record(stats, promptChars = chars(body), completionChars = answer.length + out.summary.length)
+        return Completion(
+            text = answer,
+            reasoning = out.summary,
+            stats = stats,
+            toolCalls = out.calls,
+            items = output,
         )
     }
 
@@ -422,39 +683,127 @@ class OpenAICompatProvider(
         }
 
         /**
-         * The model's calls as the wire gives them; arguments that are no JSON object come through
-         * under "_raw", for the tool to say so. `openai_compat._tool_calls`.
+         * One call of the model's; arguments that are no JSON object come through under "_raw",
+         * for the tool to say so. `openai_compat._call`.
          */
-        fun toolCalls(raw: JSONArray): List<ToolCall> = (0 until raw.length()).mapNotNull { i ->
-            val call = raw.optJSONObject(i) ?: return@mapNotNull null
-            val function = call.optJSONObject("function") ?: JSONObject()
-            val arguments = function.opt("arguments")
-            // Strict, as json.loads is: org.json took unquoted keys, single quotes and
-            // trailing text, and ran a tool the desktop told the arguments were unreadable
-            // (the parity audit, 2026-09-29).
-            val parsed = when (arguments) {
-                is JSONObject -> arguments
-                null, JSONObject.NULL -> JSONObject()
-                else -> {
-                    val written = arguments.toString().ifEmpty { "{}" }
-                    val loaded = pyJsonOr(written, null)
-                    if (loaded is Map<*, *>) JSONObject(loaded) else JSONObject().put("_raw", written)
-                }
+        private fun toolCall(callId: Any?, name: Any?, arguments: Any?, index: Int): ToolCall {
+            val parsed = if (arguments is JSONObject) {
+                arguments
+            } else {
+                val written = pyText(arguments).ifEmpty { "{}" }
+                // Strict, as json.loads is: org.json took unquoted keys, single quotes and
+                // trailing text, and ran a tool the desktop told the arguments were unreadable
+                // (the parity audit, 2026-09-29).
+                val loaded = pyJsonOr(written, null)
+                if (loaded is Map<*, *>) JSONObject(loaded) else JSONObject().put("_raw", written)
             }
-            ToolCall(
-                id = text(call, "id")?.ifEmpty { null } ?: "call_$i",
-                name = text(function, "name") ?: "",
+            return ToolCall(
+                id = pyText(callId).ifEmpty { "call_$index" },
+                name = pyText(name),
                 arguments = parsed,
             )
         }
 
-        /** The prompt's size in characters, for the estimate when no usage comes back. */
+        /** The model's calls as the chat wire gives them. `openai_compat._tool_calls`. */
+        fun toolCalls(raw: JSONArray): List<ToolCall> = (0 until raw.length()).mapNotNull { i ->
+            val one = raw.optJSONObject(i) ?: return@mapNotNull null
+            val function = one.optJSONObject("function") ?: JSONObject()
+            toolCall(one.opt("id"), function.opt("name"), function.opt("arguments"), i)
+        }
+
+        /**
+         * What a response's output items say: the reply, the reasoning's summary, the calls to
+         * run, and a refusal's words. `openai_compat._Output`.
+         */
+        private class Output(val text: String, val summary: String, val calls: List<ToolCall>, val refusal: String)
+
+        /**
+         * The Responses wire's output items read. A preamble -- a message of phase "commentary",
+         * written before tool calls in a tool-heavy turn -- is no part of the reply: it goes back
+         * with the items, and is never said. A call not "completed" (the token budget spent inside
+         * its arguments) is not run. `openai_compat._output_read`.
+         */
+        private fun outputRead(items: List<JSONObject>): Output {
+            val replies = ArrayList<String>()
+            val summary = ArrayList<String>()
+            val refusals = ArrayList<String>()
+            val calls = ArrayList<ToolCall>()
+            for (item in items) {
+                when (text(item, "type")) {
+                    "message" -> {
+                        val parts = objects(item.optJSONArray("content"))
+                        for (part in parts) {
+                            if (text(part, "type") == "refusal") refusals.add(pyText(part.opt("refusal")))
+                        }
+                        if (text(item, "phase") != "commentary") {
+                            replies.add(
+                                parts.filter { text(it, "type") == "output_text" }
+                                    .joinToString("") { pyText(it.opt("text")) },
+                            )
+                        }
+                    }
+                    "reasoning" -> {
+                        for (part in objects(item.optJSONArray("summary"))) summary.add(pyText(part.opt("text")))
+                    }
+                    "function_call" -> {
+                        val status = text(item, "status")
+                        if (status == null || status == "completed") {
+                            calls.add(toolCall(item.opt("call_id"), item.opt("name"), item.opt("arguments"), calls.size))
+                        }
+                    }
+                }
+            }
+            return Output(
+                text = replies.map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n\n"),
+                summary = summary.filter { it.isNotEmpty() }.joinToString("\n").trim(),
+                calls = calls,
+                refusal = refusals.filter { it.isNotEmpty() }.joinToString(" ").trim(),
+            )
+        }
+
+        /**
+         * A response's usage in the chat wire's terms, and its end as a finish reason: "stop",
+         * "tool_calls", "length" for the token budget, or what else cut it short; a refusal's
+         * words when the model refused. `openai_compat._response_stats`.
+         */
+        private fun responseStats(response: JSONObject, out: Output): Map<String, Any?> {
+            val usageJson = response.optJSONObject("usage") ?: JSONObject()
+            val details = usageJson.optJSONObject("input_tokens_details") ?: JSONObject()
+            val status = text(response, "status")
+            val finish = when (status) {
+                "completed" -> if (out.calls.isNotEmpty()) "tool_calls" else "stop"
+                "incomplete" -> {
+                    val reason = text(response.optJSONObject("incomplete_details") ?: JSONObject(), "reason")
+                    if (reason == "max_output_tokens") "length" else reason
+                }
+                else -> status
+            }
+            val stats = linkedMapOf<String, Any?>(
+                "prompt_tokens" to number(usageJson, "input_tokens"),
+                "cached_tokens" to number(details, "cached_tokens"),
+                "cache_write_tokens" to number(details, "cache_write_tokens"),
+                "completion_tokens" to number(usageJson, "output_tokens"),
+                "reasoning_tokens" to number(usageJson.optJSONObject("output_tokens_details") ?: JSONObject(), "reasoning_tokens"),
+                "finish_reason" to finish,
+            )
+            if (out.refusal.isNotEmpty()) stats["refusal"] = out.refusal
+            return stats
+        }
+
+        /**
+         * The prompt's size in characters, for the estimate when no usage comes back: the chat
+         * wire's messages, or the Responses wire's instructions and input items (a message's
+         * text, a call's result or its arguments).
+         */
         fun chars(body: JSONObject): Int {
-            val messages = body.optJSONArray("messages") ?: return 0
-            var total = 0
-            for (index in 0 until messages.length()) {
-                val message = messages.optJSONObject(index) ?: continue
-                total += (text(message, "content") ?: "").length
+            val parts = body.optJSONArray("messages")?.takeIf { it.length() > 0 }
+                ?: body.optJSONArray("input")
+                ?: JSONArray()
+            var total = pyText(body.opt("instructions")).length
+            for (index in 0 until parts.length()) {
+                val part = parts.optJSONObject(index) ?: continue
+                val said = listOf("content", "output", "arguments").map { part.opt(it) }.firstOrNull { truthy(it) }
+                total += pyText(said).length
             }
             return total
         }
@@ -464,6 +813,33 @@ class OpenAICompatProvider(
 
         private fun number(o: JSONObject, key: String): Int? =
             if (o.isNull(key)) null else (o.opt(key) as? Number)?.toInt()
+
+        /** A field as Python's f-string writes `o.get(key)`: "None" when it is missing or null. */
+        private fun field(o: JSONObject, key: String): String = text(o, key) ?: "None"
+
+        /** The objects of a JSON list, none when there is no list. */
+        private fun objects(array: JSONArray?): List<JSONObject> =
+            if (array == null) emptyList() else (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+
+        /** Python's truthiness of an org.json value: null, false, 0, "", [] and {} are false. */
+        private fun truthy(value: Any?): Boolean = when {
+            value == null || value == JSONObject.NULL -> false
+            value is String -> value.isNotEmpty()
+            value is Boolean -> value
+            value is Number -> value.toDouble() != 0.0
+            value is JSONArray -> value.length() > 0
+            value is JSONObject -> value.length() > 0
+            else -> true
+        }
+
+        /** `str(value or "")` of an org.json value: a list or an object as Python's repr of it. */
+        private fun pyText(value: Any?): String = when {
+            !truthy(value) -> ""
+            value is String -> value
+            value is JSONObject || value is JSONArray -> pyStr(pyJsonLoads(value.toString()))
+            value is Boolean -> "True"
+            else -> value.toString()
+        }
 
         private fun round3(value: Double): Double = Math.round(value * 1000.0) / 1000.0
 

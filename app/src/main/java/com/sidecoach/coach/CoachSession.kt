@@ -1,5 +1,6 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.positionKey
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.STARTING_FEN
@@ -14,6 +15,7 @@ import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameReview
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.insightWords
+import com.sidecoach.events.Line
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
@@ -1560,6 +1562,22 @@ class Coach(
     }
 
     /**
+     * The engine's lines the record shows for [board], when it is one of the game's positions
+     * still kept; none otherwise.
+     */
+    private fun sheetLines(board: Board?): List<Line> {
+        if (board == null) return emptyList()
+        val key = positionKey(board)
+        synchronized(lock) {
+            for (position in positions.values) {
+                val analysis = position.analysis ?: continue
+                if (positionKey(position.board) == key) return analysis.lines.toList()
+            }
+        }
+        return emptyList()
+    }
+
+    /**
      * The engine's word on the moves, pieces and squares the player's words name; one line per
      * probe, none when nothing was named. A piece or square named needs no engine; a line does.
      * What else the words mean is the model's to ask the engine about ([EngineTools]).
@@ -1578,6 +1596,8 @@ class Coach(
             // Pieces and squares as the board stands now, whatever position the question is
             // about.
             piecesBoard = board,
+            // The lines the sheet already shows: a move they start is read from them.
+            known = position.analysis?.lines ?: emptyList(),
         )
     } catch (exc: Exception) {
         speaker.lastError = "named analysis: ${exc::class.java.simpleName}: ${exc.message}"
@@ -1921,7 +1941,15 @@ class Coach(
         // from the board now or from before the last move ([EngineTools]).
         val namedEngine = engine
         val tools = if (trigger == Trigger.USER_ASK && namedEngine != null && !offline) {
-            EngineTools(this.board, lastBefore, namedEngine, userColour)
+            EngineTools(
+                this.board,
+                lastBefore,
+                namedEngine,
+                userColour,
+                // The lines the record shows for each: a move on one is read from it.
+                knownNow = sheetLines(this.board),
+                knownBefore = sheetLines(lastBefore),
+            )
         } else {
             null
         }
@@ -2870,11 +2898,14 @@ class Coach(
         } else {
             // What is kept back is the level line's to say: "never reveal that unless the sheet
             // lists it" stood here after the sheet had come to list everything (the prompt audit,
-            // 2026-09-28).
+            // 2026-09-28). A claim is theirs only when they make one: told to be honest about
+            // "their own claim", Luna answered a plain question with "You are right that g1 is
+            // controlled by your King" (Tai's puzzle, 2026-09-29).
             directive =
-                "Answer them directly, and be honest about their own claim, taking it as they " +
-                    "meant it: say what in it is right as plainly as what is wrong. When they propose a " +
-                    "move, or name a square or piece, say plainly whether it holds up and what it " +
+                "Answer them directly. What they state or take for granted, take as they meant " +
+                    "it: say what in it is right as plainly as what is wrong -- and credit them with " +
+                    "nothing they did not say: a question states nothing to agree with. When they " +
+                    "propose a move, or name a square or piece, say plainly whether it holds up and what it " +
                     "does or allows, from the engine's word on it where given above -- theirs to " +
                     "hear in full: the score after it, how far behind the best, the reply, what the " +
                     "move does; when the engine does not rate their move, say it is not the " +

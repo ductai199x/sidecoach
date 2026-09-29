@@ -4,7 +4,8 @@
 the ledger behind it; everything about them except the socket is pure. So the wire body is
 built and canonicalised here, the server's replies are canned and fed through the real
 `chat` and `chat_stream` with an httpx MockTransport, and the ledger is driven by hand.
-`llm/factory.py` is resolved against a fake environment.
+`llm/factory.py` is resolved against a fake environment. Both wires (desktop ce06c4e): chat
+completions, and OpenAI's Responses API, its replies shaped as the live API's of 2026-09-29.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_llm_fixtures.py
@@ -27,6 +28,7 @@ import httpx  # noqa: E402
 from sidecoach.config import LLMSettings  # noqa: E402
 from sidecoach.llm import factory as F  # noqa: E402
 from sidecoach.llm import usage as U  # noqa: E402
+from sidecoach.llm.base import Completion, ToolCall, ToolRound  # noqa: E402
 from sidecoach.llm.openai_compat import OpenAICompatProvider, build_messages  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
@@ -198,7 +200,9 @@ HEALTH_REPLIES: list[tuple[str, int, str]] = [
 ]
 
 
-def provider_for(body_of, *, control: str, effort: str | None = None, extra=None):
+def provider_for(
+    body_of, *, control: str, effort: str | None = None, extra=None, wire: str = "chat"
+):
     """A provider whose transport answers with `body_of(request)`."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -212,6 +216,7 @@ def provider_for(body_of, *, control: str, effort: str | None = None, extra=None
         api_key="k",
         thinking_control=control,  # type: ignore[arg-type]
         reasoning_effort=effort,
+        wire=wire,  # type: ignore[arg-type]
         extra_body=extra,
         transport=httpx.MockTransport(handler),
     )
@@ -223,9 +228,281 @@ def usage_json(usage: U.Usage) -> dict[str, Any]:
         "estimated": usage.estimated,
         "prompt": usage.prompt,
         "cached": usage.cached,
+        "written": usage.written,
         "completion": usage.completion,
         "reasoning": usage.reasoning,
     }
+
+
+def round_json(turn: ToolRound) -> dict[str, Any]:
+    """A round as the Kotlin rebuilds it: the reply's text, its calls (the arguments in their
+    own order, as `json.dumps` writes them back), its output items, and each result."""
+    return {
+        "text": turn.reply.text,
+        "calls": [[c.id, c.name, json.dumps(c.arguments)] for c in turn.reply.tool_calls],
+        "items": [json.dumps(item) for item in turn.reply.items],
+        "results": list(turn.results),
+    }
+
+
+def calls_json(completion: Completion) -> list[list[str]]:
+    return [[c.id, c.name, canon(c.arguments)] for c in completion.tool_calls]
+
+
+# --- OpenAI's Responses API: output items as the live API returned them (2026-09-29) ---------
+
+REASONING = {
+    "id": "rs_1",
+    "type": "reasoning",
+    "content": [],
+    "encrypted_content": "gAAAAABqu-ri...",
+    "summary": [],
+}
+SUMMARISED = {
+    **REASONING,
+    "summary": [
+        {"type": "summary_text", "text": "Weighing Nc6 against d6."},
+        {"type": "summary_text", "text": ""},
+        {"type": "summary_text", "text": " Nc6 develops. "},
+    ],
+}
+FUNCTION_CALL = {
+    "id": "fc_1",
+    "type": "function_call",
+    "status": "completed",
+    "arguments": '{"moves":["e4","e5","Nf3"]}',
+    "call_id": "call_1",
+    "name": "analyse",
+}
+MESSAGE = {
+    "id": "msg_1",
+    "type": "message",
+    "status": "completed",
+    "role": "assistant",
+    "phase": "final_answer",
+    "content": [{"type": "output_text", "annotations": [], "logprobs": [], "text": "About equal."}],
+}
+PREAMBLE = {
+    "id": "msg_0",
+    "type": "message",
+    "status": "completed",
+    "role": "assistant",
+    "phase": "commentary",
+    "content": [{"type": "output_text", "annotations": [], "text": "Let me ask the engine."}],
+}
+USAGE = {
+    "input_tokens": 372,
+    "input_tokens_details": {"cache_write_tokens": 64, "cached_tokens": 100},
+    "output_tokens": 38,
+    "output_tokens_details": {"reasoning_tokens": 9},
+    "total_tokens": 410,
+}
+CUT_CALL = {**FUNCTION_CALL, "status": "incomplete", "arguments": '{"moves":["e4",'}
+REFUSAL = {**MESSAGE, "content": [{"type": "refusal", "refusal": "I can't help with that."}]}
+
+RESPONSE_REPLIES: list[tuple[str, int, str]] = [
+    ("calls", 200, json.dumps({"status": "completed", "output": [REASONING, FUNCTION_CALL], "usage": USAGE})),
+    ("answer", 200, json.dumps({"status": "completed", "output": [MESSAGE], "usage": USAGE})),
+    (
+        "cut by the budget",
+        200,
+        json.dumps(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [REASONING],
+                "usage": USAGE,
+            }
+        ),
+    ),
+    (
+        "preamble, then the answer",
+        200,
+        json.dumps({"status": "completed", "output": [PREAMBLE, MESSAGE], "usage": USAGE}),
+    ),
+    (
+        "a call cut short",
+        200,
+        json.dumps(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [CUT_CALL],
+                "usage": USAGE,
+            }
+        ),
+    ),
+    ("refusal", 200, json.dumps({"status": "completed", "output": [REFUSAL], "usage": USAGE})),
+    (
+        "summary and two messages",
+        200,
+        json.dumps(
+            {
+                "status": "completed",
+                "output": [
+                    SUMMARISED,
+                    MESSAGE,
+                    {**MESSAGE, "id": "msg_2", "content": [
+                        {"type": "output_text", "text": "  Then "},
+                        {"type": "output_text", "text": "Bb5.  "},
+                    ]},
+                    {**MESSAGE, "id": "msg_3", "content": [{"type": "output_text", "text": "   "}]},
+                ],
+                "usage": USAGE,
+            }
+        ),
+    ),
+    (
+        "calls unreadable and unnamed",
+        200,
+        json.dumps(
+            {
+                "status": "completed",
+                "output": [
+                    {"type": "function_call", "arguments": "not json", "call_id": "call_a", "name": "square"},
+                    {"type": "function_call", "status": None, "arguments": "", "name": "analyse"},
+                    {"type": "function_call", "status": "in_progress", "arguments": "{}", "call_id": "x"},
+                    {"type": "function_call", "arguments": '{"square": "g1"}'},
+                ],
+            }
+        ),
+    ),
+    (
+        "cut for another reason",
+        200,
+        json.dumps(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "output": [MESSAGE],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            }
+        ),
+    ),
+    (
+        "failed",
+        200,
+        json.dumps({"status": "failed", "error": {"code": "server_error", "message": "try again"}}),
+    ),
+    ("failed, no error", 200, json.dumps({"status": "failed", "error": None})),
+    ("no usage", 200, json.dumps({"status": "completed", "output": [MESSAGE]})),
+    ("empty object", 200, "{}"),
+    ("rate limited", 429, '{"error": {"message": "slow down"}}'),
+]
+
+
+def events(*evs: dict[str, Any]) -> str:
+    """A stream as the API writes it: each event's type, then its data, then a blank line."""
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in evs)
+
+
+STREAMED = events(
+    {"type": "response.created", "response": {"status": "in_progress", "output": [], "usage": None}},
+    {"type": "response.in_progress", "response": {"status": "in_progress", "output": []}},
+    {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {"type": "message", "status": "in_progress", "content": [], "phase": "final_answer"},
+    },
+    {"type": "response.content_part.added", "output_index": 0, "part": {"type": "output_text", "text": ""}},
+    *(
+        {"type": "response.output_text.delta", "output_index": 0, "delta": piece}
+        for piece in ("About", "", " equal", ".")
+    ),
+    {"type": "response.output_text.done", "output_index": 0, "text": "About equal."},
+    {"type": "response.content_part.done", "output_index": 0},
+    {"type": "response.output_item.done", "output_index": 0, "item": MESSAGE},
+    {"type": "response.completed", "response": {"status": "completed", "output": [MESSAGE], "usage": USAGE}},
+)
+
+PREAMBLE_STREAM = events(
+    {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {"type": "message", "phase": "commentary", "content": []},
+    },
+    {"type": "response.output_text.delta", "output_index": 0, "delta": "Let me ask the engine."},
+    {"type": "response.output_item.done", "output_index": 0, "item": PREAMBLE},
+    {"type": "response.output_item.added", "output_index": 1, "item": {"type": "reasoning"}},
+    {"type": "response.output_item.done", "output_index": 1, "item": REASONING},
+    {"type": "response.output_item.done", "output_index": 2, "item": FUNCTION_CALL},
+    {
+        "type": "response.completed",
+        "response": {"status": "completed", "output": [PREAMBLE, REASONING, FUNCTION_CALL], "usage": USAGE},
+    },
+)
+
+RESPONSE_STREAMS: list[tuple[str, int, str, int]] = [
+    ("answer", 200, STREAMED, 99),
+    ("stopped early", 200, STREAMED, 1),
+    ("preamble, then a call", 200, PREAMBLE_STREAM, 99),
+    (
+        "items from the done events",
+        200,
+        events(
+            {"type": "response.output_item.done", "output_index": 1, "item": FUNCTION_CALL},
+            {"type": "response.output_item.done", "output_index": 0, "item": SUMMARISED},
+            {"type": "response.completed", "response": {"status": "completed", "output": [], "usage": USAGE}},
+        ),
+        99,
+    ),
+    (
+        "incomplete",
+        200,
+        events(
+            {"type": "response.output_text.delta", "output_index": 0, "delta": "About"},
+            {
+                "type": "response.incomplete",
+                "response": {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [{**MESSAGE, "content": [{"type": "output_text", "text": "About"}]}],
+                    "usage": USAGE,
+                },
+            },
+            {"type": "response.output_text.delta", "output_index": 0, "delta": " never heard"},
+        ),
+        99,
+    ),
+    (
+        "error event",
+        200,
+        events(
+            {"type": "response.created", "response": {"status": "in_progress"}},
+            {"type": "error", "code": "rate_limit_exceeded", "message": "slow down"},
+        ),
+        99,
+    ),
+    (
+        "failed",
+        200,
+        events(
+            {"type": "response.output_text.delta", "output_index": 0, "delta": "Abo"},
+            {
+                "type": "response.failed",
+                "response": {"status": "failed", "error": {"code": "server_error", "message": "try again"}},
+            },
+        ),
+        99,
+    ),
+    (
+        "cut off",
+        200,
+        events(
+            {"type": "response.created", "response": {"status": "in_progress"}},
+            {"type": "response.output_text.delta", "output_index": 0, "delta": "About"},
+        ),
+        99,
+    ),
+    (
+        "broken lines",
+        200,
+        "data: {not json}\n\ndata: [DONE]\n\n"
+        + events({"type": "response.completed", "response": {"status": "completed", "output": [MESSAGE]}}),
+        99,
+    ),
+    ("refused", 400, "bad tools", 99),
+]
 
 
 def prices_json(prices: U.Prices) -> dict[str, Any]:
@@ -315,6 +592,7 @@ def resolved(settings: LLMSettings) -> dict[str, Any]:
         "model": provider.model,
         "thinking_control": provider.thinking_control,
         "reasoning_effort": provider.reasoning_effort,
+        "wire": provider.wire,
         "timeout_s": provider.timeout_s,
         "extra_body": canon(provider.extra_body),
     }
@@ -449,19 +727,24 @@ def main() -> None:
     # a reply with tools read whole and handed on at once.
     from sidecoach.coach.engine_tools import SPECS as TOOL_SPECS
 
-    tool_turns = [
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "analyse", "arguments": '{"moves": ["Kg2"]}'},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "After 4. Kg2 (from the board now): ..."},
+    # The rounds as the coach hands them on (desktop ce06c4e: `ToolRound`, where it used to
+    # write the chat messages itself): a call with no text, and a reply with text and two calls,
+    # one with an argument json.dumps escapes; each provider writes them on its own wire.
+    tool_rounds = [
+        ToolRound(
+            Completion(text="", tool_calls=[ToolCall("c1", "analyse", {"moves": ["Kg2"]})]),
+            ["After 4. Kg2 (from the board now): ..."],
+        ),
+        ToolRound(
+            Completion(
+                text="Let me look at g1.",
+                tool_calls=[
+                    ToolCall("c2", "square", {"square": "g1", "start": "now", "why": "café"}),
+                    ToolCall("c3", "analyse", {"moves": [], "start": "before_last_move"}),
+                ],
+            ),
+            ["On g1: the player's rook – defended.", "Standing: about equal."],
+        ),
     ]
     tool_bodies = []
     for control, effort in (("prefill", None), ("effort", "none"), ("none", None)):
@@ -474,11 +757,17 @@ def main() -> None:
                 temperature=0.1,
                 thinking=False,
                 tools=TOOL_SPECS,
-                turns=tool_turns,
+                turns=tool_rounds,
                 tool_choice=choice,
             )
             tool_bodies.append(
-                {"control": control, "effort": effort, "tool_choice": choice, "body": canon(body)}
+                {
+                    "control": control,
+                    "effort": effort,
+                    "tool_choice": choice,
+                    "body": canon(body),
+                    "chars": OpenAICompatProvider._chars(body),
+                }
             )
     tool_chats = []
     for label, text in (
@@ -567,10 +856,119 @@ def main() -> None:
         )
     payload["tools"] = {
         "specs": canon(TOOL_SPECS),
-        "turns": canon(tool_turns),
+        "rounds": [round_json(turn) for turn in tool_rounds],
         "bodies": tool_bodies,
         "chats": tool_chats,
         "streams": tool_streams,
+    }
+
+    # 4d. OpenAI's Responses API (desktop ce06c4e): the body (instructions, input, the rounds
+    # as the reply's own output items or as its text and calls, the tools flattened, store
+    # false, the reasoning and its encrypted content only with an effort, never fewer than 16
+    # output tokens), and what `chat` and `chat_stream` make of each reply.
+    response_rounds = [
+        ToolRound(
+            Completion(
+                text="",
+                tool_calls=[ToolCall("call_1", "analyse", {"moves": ["e4", "e5", "Nf3"]})],
+                items=[REASONING, PREAMBLE, FUNCTION_CALL],
+            ),
+            ["Standing: about equal (0.52 for White). Lines: 2... Nc6 3. Bb5 a6."],
+        ),
+        *tool_rounds,
+    ]
+    response_bodies = []
+    for control, effort, extra in (
+        ("effort", "medium", None),
+        ("effort", "none", None),
+        ("effort", None, None),
+        ("none", None, None),
+        ("param", None, None),
+        ("effort", "medium", {"top_p": 0.9, "store": True}),
+    ):
+        provider = provider_for(
+            lambda r: (200, "{}"), control=control, effort=effort, extra=extra, wire="responses"
+        )
+        for thinking, max_tokens, temperature, tooled, choice in (
+            (False, 1500, 0.7, False, None),
+            (True, 5, 0.0, False, None),
+            (False, 100, 0.1, True, None),
+            (False, 100, 0.1, True, "none"),
+        ):
+            body = provider.request_body(
+                "SYSTEM",
+                CONVERSATIONS[2],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                thinking=thinking,
+                tools=TOOL_SPECS if tooled else (),
+                turns=response_rounds if tooled else (),
+                tool_choice=choice,
+            )
+            response_bodies.append(
+                {
+                    "conversation": 2,
+                    "control": control,
+                    "effort": effort,
+                    "extra": canon(extra or {}),
+                    "thinking": thinking,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "tools": tooled,
+                    "tool_choice": choice,
+                    "body": canon(body),
+                    "chars": OpenAICompatProvider._chars(body),
+                }
+            )
+
+    def reply_json(entry: dict[str, Any], completion: Completion) -> None:
+        entry["text"] = completion.text
+        entry["reasoning"] = completion.reasoning
+        entry["stats"] = canon(stats_without_timings(completion.stats))
+        entry["calls"] = calls_json(completion)
+        entry["items"] = canon(completion.items)
+
+    response_chats = []
+    for label, status, text in RESPONSE_REPLIES:
+        provider = provider_for(
+            lambda r, s=status, t=text: (s, t), control="effort", effort="medium", wire="responses"
+        )
+        entry = {"label": label, "status": status, "reply": text, "conversation": 1, "max_tokens": 100}
+        try:
+            reply_json(entry, provider.chat("SYSTEM", CONVERSATIONS[1], max_tokens=100, tools=TOOL_SPECS))
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["usage"] = usage_json(provider.usage)
+        response_chats.append(entry)
+    response_streams = []
+    for label, status, text, keep in RESPONSE_STREAMS:
+        provider = provider_for(
+            lambda r, s=status, t=text: (s, t), control="effort", effort="medium", wire="responses"
+        )
+        seen = []
+
+        def on_delta(piece: str, seen=seen, keep=keep) -> bool:
+            seen.append(piece)
+            return len(seen) < keep
+
+        entry = {"label": label, "status": status, "reply": text, "keep": keep, "conversation": 1, "max_tokens": 100}
+        try:
+            reply_json(
+                entry,
+                provider.chat_stream(
+                    "SYSTEM", CONVERSATIONS[1], max_tokens=100, on_delta=on_delta, tools=TOOL_SPECS
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        entry["deltas"] = list(seen)
+        entry["usage"] = usage_json(provider.usage)
+        response_streams.append(entry)
+    payload["responses"] = {
+        "rounds": [round_json(turn) for turn in response_rounds],
+        "bodies": response_bodies,
+        "chats": response_chats,
+        "streams": response_streams,
     }
 
     # 4b. What the healthcheck says of each answer to `GET /models`.
@@ -591,6 +989,11 @@ def main() -> None:
         ({"completion_tokens": 7}, 4002, 400),
         ({"prompt_tokens": None, "cached_tokens": None}, 3, 3),
         ({"prompt_tokens": 10.7, "completion_tokens": 3.2, "cached_tokens": 2.9}, 0, 0),
+        # Cache writes, billed at 1.25x the prompt price (desktop ce06c4e): 200 read, 500
+        # written, 300 fresh; then more written than the prompt, and a server that says none.
+        ({"prompt_tokens": 1000, "cached_tokens": 200, "cache_write_tokens": 500, "completion_tokens": 0}, 0, 0),
+        ({"prompt_tokens": 100, "cache_write_tokens": 2000, "completion_tokens": 5}, 0, 0),
+        ({"prompt_tokens": 50, "cache_write_tokens": None, "completion_tokens": 5}, 0, 0),
     ]
     price_sets = [
         U.Prices(),
@@ -685,6 +1088,7 @@ def main() -> None:
                             "model": provider.model,
                             "thinking_control": provider.thinking_control,
                             "reasoning_effort": provider.reasoning_effort,
+                            "wire": provider.wire,
                             "timeout_s": provider.timeout_s,
                             "extra_body": canon(provider.extra_body),
                         },
@@ -705,8 +1109,9 @@ def main() -> None:
     size = (OUT / "llm.json").stat().st_size
     print(
         f"{len(built)} message lists, {len(bodies)} bodies, {len(chats)} chats, "
-        f"{len(streams)} streams, {len(steps)} ledger steps, {len(SETTINGS)} settings "
-        f"-> {OUT / 'llm.json'} ({size / 1e3:.0f} kB)"
+        f"{len(streams)} streams, {len(response_bodies)}/{len(response_chats)}/"
+        f"{len(response_streams)} responses bodies/chats/streams, {len(steps)} ledger steps, "
+        f"{len(SETTINGS)} settings -> {OUT / 'llm.json'} ({size / 1e3:.0f} kB)"
     )
 
 

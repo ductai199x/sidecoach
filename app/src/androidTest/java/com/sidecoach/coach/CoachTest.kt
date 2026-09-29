@@ -35,6 +35,7 @@ import com.sidecoach.llm.LLMProvider
 import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.StreamCallback
 import com.sidecoach.llm.ToolCall
+import com.sidecoach.llm.ToolRound
 import com.sidecoach.llm.ToolsProvider
 import org.json.JSONArray
 import org.json.JSONObject
@@ -503,7 +504,7 @@ class CoachTest {
         assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(reply) && out[0].level == DisclosureLevel.IDEA)
         val directive = directiveOf(given(provider, 0))
         assertTrue(directive, "They asked what to aim for: answer with the hint at this rung." in directive)
-        assertTrue(directive, "be honest about their own claim" !in directive)
+        assertTrue(directive, "What they state or take for granted" !in directive)
     }
 
     /**
@@ -940,6 +941,9 @@ class CoachTest {
         assertTrue(request, "# The position they faced, before Bxf7+" in request)
         directive = directive(provider)
         assertTrue(directive, "Answer them directly" in directive && "do not say it again" in directive)
+        // A question is no claim to agree with (Luna: "You are right that g1 is controlled by your
+        // King", Tai's puzzle, 2026-09-29).
+        assertTrue(directive, "a question states nothing to agree with" in directive)
         assertTrue("a question may be offered on top of an answer", "with a question, if that serves" in directive)
     }
 
@@ -1714,7 +1718,7 @@ class CoachTest {
         messages(coach)
         val prompt = given(provider, 0).last().content
         assertTrue(prompt, "They asked for a hint" in prompt)
-        assertTrue(prompt, "their own claim" !in prompt && "anything said earlier" in prompt)
+        assertTrue(prompt, "What they state or take for granted" !in prompt && "anything said earlier" in prompt)
     }
 
     /** A re-read of the board is a message and the numbering restarts (`test_coach.py`). */
@@ -2166,8 +2170,8 @@ class CoachTest {
 
     /**
      * Luna with a reasoning effort takes no tools on chat completions: the 400 left the coach
-     * silent on every question. A refused request is asked again without the tools; a server
-     * that is down is not (`test_engine_tools.py`).
+     * silent on every question. A refused request is asked again without the tools, and the
+     * refusal is on the record; a server that is down is not asked again (`test_engine_tools.py`).
      */
     @Test
     fun aServerThatRefusesTheToolsIsAskedWithoutThem() {
@@ -2192,7 +2196,7 @@ class CoachTest {
                 system: String,
                 messages: List<ChatMessage>,
                 tools: JSONArray,
-                turns: JSONArray,
+                turns: List<ToolRound>,
                 maxTokens: Int,
                 temperature: Double,
                 toolChoice: String?,
@@ -2214,6 +2218,11 @@ class CoachTest {
             val said = messages(coach).map { it.text }
             assertEquals(error, answered, "The pawn on f7 is defended only by the King." in said)
             assertEquals(error, answered, synchronized(provider.seen) { false in provider.seen })
+            if (answered) {
+                // The refusal on the record: asked without the tools, the reply had none of them.
+                val stats = coach.spoken.last().calls.last().stats
+                assertEquals("400: tools not supported", stats["tools_refused"])
+            }
         }
     }
 
@@ -2223,7 +2232,7 @@ class CoachTest {
      * turns and the tool choice it was given (a plain call with none).
      */
     private class ToolModel(rounds: List<List<ToolCall>>, private val answer: String) : ToolsProvider {
-        class Call(val tools: JSONArray?, val turns: JSONArray?, val toolChoice: String?)
+        class Call(val tools: JSONArray?, val turns: List<ToolRound>?, val toolChoice: String?)
 
         override val name = "tool-model"
         private val script = ArrayDeque(rounds)
@@ -2246,7 +2255,7 @@ class CoachTest {
             system: String,
             messages: List<ChatMessage>,
             tools: JSONArray,
-            turns: JSONArray,
+            turns: List<ToolRound>,
             maxTokens: Int,
             temperature: Double,
             toolChoice: String?,
@@ -2288,17 +2297,14 @@ class CoachTest {
         assertTrue(out.map { it.text }.toString(), out.isNotEmpty() && out.last().text.startsWith("Qxf7# is mate"))
         val first = model.seen[0]
         val second = model.seen[1]
-        assertTrue("the first call carries the tools and no turns", first.tools!!.length() > 0 && first.turns!!.length() == 0)
+        assertTrue("the first call carries the tools and no turns", first.tools!!.length() > 0 && first.turns!!.isEmpty())
         // The engine's answer went back to the model as the call's result.
         val turns = second.turns!!
-        assertEquals(turns.toString(), 2, turns.length())
-        val call = turns.getJSONObject(0)
-        val result = turns.getJSONObject(1)
-        assertEquals("assistant", call.getString("role"))
-        assertEquals("analyse", call.getJSONArray("tool_calls").getJSONObject(0).getJSONObject("function").getString("name"))
-        assertEquals("tool", result.getString("role"))
-        assertEquals("c1", result.getString("tool_call_id"))
-        assertTrue(result.getString("content"), "The game is over there: checkmate, White wins." in result.getString("content"))
+        assertEquals(turns.toString(), 1, turns.size)
+        val turn = turns.single()
+        assertEquals(listOf("analyse"), turn.reply.toolCalls.map { it.name })
+        val result = turn.results.single()
+        assertTrue(result, "The game is over there: checkmate, White wins." in result)
         // The Task says what the tools are for; the call is on the record for the log.
         val logged = coach.spoken.last().calls.last()
         assertTrue(logged.prompt, TOOL_WORDS in logged.prompt)

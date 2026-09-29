@@ -3,6 +3,7 @@ package com.sidecoach.coach
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
 import com.sidecoach.events.Line
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -11,8 +12,8 @@ import org.junit.runner.RunWith
 
 /**
  * The engine at the coach model's call, held to the desktop's answers (`coach/engine_tools.py`,
- * desktop c80b64b; `tools/make_engine_tools_fixtures.py`). Both sides use an engine that plays
- * the first legal moves by UCI, so every answer is compared exactly.
+ * desktop c80b64b and ce06c4e; `tools/make_engine_tools_fixtures.py`). Both sides use an engine
+ * that plays the first legal moves by UCI, so every answer is compared exactly.
  */
 @RunWith(AndroidJUnit4::class)
 class EngineToolsTest {
@@ -59,7 +60,12 @@ class EngineToolsTest {
         for (i in 0 until cases.length()) {
             val case = cases.getJSONObject(i)
             val before = if (case.isNull("before")) null else Board(case.getString("before"))
-            val tools = EngineTools(Board(case.getString("now")), before, firstLegal, case.getBoolean("player_white"))
+            // The sheet's lines for each start: a move on one is read from it (desktop ce06c4e).
+            val tools = EngineTools(
+                Board(case.getString("now")), before, firstLegal, case.getBoolean("player_white"),
+                knownNow = lines(case.getJSONArray("known_now")),
+                knownBefore = lines(case.getJSONArray("known_before")),
+            )
             val calls = case.getJSONArray("calls")
             for (k in 0 until calls.length()) {
                 val call = calls.getJSONObject(k)
@@ -76,5 +82,14 @@ class EngineToolsTest {
             check("case $i frames", tools.frames.map { it.fen() }, (0 until frames.length()).map { frames.getString(it) })
         }
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->
+        val o = array.getJSONObject(i)
+        Line(
+            moves = o.getJSONArray("moves").let { a -> List(a.length()) { a.getString(it) } },
+            depth = o.getInt("depth"),
+            expectedScore = o.getDouble("expected_score"),
+        )
     }
 }

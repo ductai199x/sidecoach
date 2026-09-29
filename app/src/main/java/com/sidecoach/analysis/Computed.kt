@@ -1,9 +1,7 @@
 package com.sidecoach.analysis
 
 import com.sidecoach.chess.Board
-import com.sidecoach.chess.Move
 import com.sidecoach.events.Line
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -15,20 +13,20 @@ import kotlin.math.max
  * faces early and then deeper, and the positions ahead of the game while it would otherwise
  * idle. Each depth it finishes goes in here, and a reader takes the newest word on a position at
  * any time (Tai, 2026-09-28: "stockfish is a reactive producer ... everything else just consumes
- * it"). The coach's engine is such a reader ([ComputedFirst]): it searches only what is not
- * here, and puts what it found here too (Tai, 2026-09-29: "our harness must first look at what
- * was already computed, then if that's not computed only then invoke a call to stockfish to ask
- * for analysis over that specific line").
+ * it"). The coach's engine is such a reader ([ComputedFirst]): it searches only a position that
+ * is not here, and puts what it found here too (Tai, 2026-09-29: "our harness must first look at
+ * what was already computed, then if that's not computed only then invoke a call to stockfish to
+ * ask for analysis over that specific line").
  *
- * A position is here when it was measured, or when a line measured from another position passes
- * through it: the rest of that line is the engine's word on it. Read so, a move the lines already
- * play is answered as the lines play it -- a second, shallower search after 64. Bd2 answered it
- * with Kh6 where the lines had Rxh3, and the model, shown both, said Bd2 avoided Rxh3 (the dev
- * audit, 2026-09-26).
+ * A move on a line the model was shown is read from that line, before any position is looked up
+ * ([restOfLine], the coach's own step): a separate search of the position after it -- the
+ * look-ahead's, deeper or not -- can answer differently, and a second search after 64. Bd2
+ * answered it with Kh6 where the lines had Rxh3, and the model, shown both, said Bd2 avoided
+ * Rxh3 (the dev audit, 2026-09-26). Only positions measured are kept here: the lines passing
+ * through a position went stale as the search deepened, a move refuted at depth 18 still read
+ * off its line at depth 12 (the code review, 2026-09-29).
  *
- * One thread writes (the analyser's, or the coach's own search) while others read: the maps are
- * concurrent, as a Python dict's operations are atomic under the GIL, and what goes in is never
- * changed after.
+ * The analyser's thread and the coach's both write; a lock keeps each write whole.
  */
 
 /**
@@ -47,11 +45,12 @@ fun lineAfter(line: Line, plies: Int): Line {
     var mate: Int? = null
     val m = line.mate
     if (m != null && m != 0) {
-        // Whose mate it is, and how many of the mating side's moves the plies played.
+        // Whose mate it is, and how many of the mating side's moves the plies played; a mate
+        // past its count (a line carried on beyond it) is no mate this line knows.
         val moverMates = m > 0
         val played = if (moverMates) (plies + 1) / 2 else plies / 2
         val left = abs(m) - played
-        mate = if (moverMates != turned) left else -left
+        if (left > 0) mate = if (moverMates != turned) left else -left
     }
     val cp = line.scoreCp
     val wdl = line.wdl
@@ -65,22 +64,35 @@ fun lineAfter(line: Line, plies: Int): Line {
     )
 }
 
-/** The engine's lines of each position measured, and where each line leads. */
+/**
+ * The rest of the first of [lines] that begins with [moves] (UCI) and goes on past them, from
+ * the side to move after them; null when none does.
+ */
+fun restOfLine(lines: List<Line>, moves: List<String>): Line? {
+    val n = moves.size
+    if (n == 0) return null
+    for (line in lines) {
+        if (line.moves.size > n && line.moves.subList(0, n) == moves) return lineAfter(line, n)
+    }
+    return null
+}
+
+/** The engine's lines of each position measured. */
 class Computed {
+    private val lock = Any()
+
     /** Measured whole, the newest depth: the lines a coach's sheet shows. */
-    private val whole = ConcurrentHashMap<String, List<Line>>()
+    private val whole = HashMap<String, List<Line>>()
 
     /** Measured for a verdict only: the best line alone, at the full depth. */
-    private val thin = ConcurrentHashMap<String, List<Line>>()
-
-    /** The positions the lines pass through: the line, and how many of its plies lead there. */
-    private val through = ConcurrentHashMap<String, Pair<Line, Int>>()
+    private val thin = HashMap<String, List<Line>>()
 
     /** A new game: none of this is about it. */
     fun clear() {
-        whole.clear()
-        thin.clear()
-        through.clear()
+        synchronized(lock) {
+            whole.clear()
+            thin.clear()
+        }
     }
 
     /**
@@ -89,51 +101,32 @@ class Computed {
      */
     fun add(board: Board, lines: List<Line>, thin: Boolean = false) {
         if (lines.isEmpty()) return
-        val store = if (thin) this.thin else whole
         val key = positionKey(board)
-        val here = store[key]
-        if (here != null && here[0].depth > lines[0].depth) return
-        store[key] = lines.toList()
-        for (line in lines) index(board, line)
+        synchronized(lock) {
+            val store = if (thin) this.thin else whole
+            val here = store[key]
+            if (here == null || here[0].depth <= lines[0].depth) store[key] = lines.toList()
+        }
     }
 
     /**
-     * What is known of [board]: its own lines -- measured whole, else for a verdict -- or else the
-     * rest of the deepest line through it; none when nothing reaches it.
+     * What is known of [board]: its lines measured whole, else its verdict's line; none when it
+     * was not measured. Measured whole first, as the sheet shows it.
      */
     fun lines(board: Board): List<Line> {
         val key = positionKey(board)
-        val own = whole[key]?.takeIf { it.isNotEmpty() } ?: thin[key]
-        if (!own.isNullOrEmpty()) return own.toList()
-        val (line, plies) = through[key] ?: return emptyList()
-        return listOf(lineAfter(line, plies))
-    }
-
-    /**
-     * The positions [line] passes through with moves still to come, each kept with the deepest
-     * line through it (the newest of equals).
-     */
-    private fun index(board: Board, line: Line) {
-        val replay = board.copy(withStack = false)
-        for ((i, uci) in line.moves.dropLast(1).withIndex()) {
-            val plies = i + 1
-            val move = Move.fromUciOrNull(uci) ?: return
-            if (!replay.isLegal(move)) return
-            replay.push(move)
-            val key = positionKey(replay)
-            val here = through[key]
-            if (here == null || line.depth - plies >= here.first.depth - here.second) {
-                through[key] = line to plies
-            }
+        synchronized(lock) {
+            return (whole[key]?.takeIf { it.isNotEmpty() } ?: thin[key] ?: emptyList()).toList()
         }
     }
 }
 
 /**
- * The coach's engine: what is computed first ([Computed]), a search for the rest. The engine
+ * The coach's engine: a position computed read ([Computed]), a search for the rest. The engine
  * starts at its first search ([Engine.analyse] opens it), so a coach whose questions the analyser
- * has answered never starts a second Stockfish. [search] is the engine's search (the desktop's
- * `Searcher`), and [onClose] its close.
+ * has answered never starts a second Stockfish; closed, it searches no more -- a question still
+ * being answered as the coach closes would start a process nobody closes. [search] is the
+ * engine's search (the desktop's `Searcher`), and [onClose] its close.
  */
 class ComputedFirst(
     private val search: (Board, Int?) -> List<Line>,
@@ -147,14 +140,21 @@ class ComputedFirst(
     var searches = 0
         private set
 
+    @Volatile
+    var closed = false
+        private set
+
     fun analyse(board: Board, depth: Int?): List<Line> {
         val known = computed.lines(board)
-        if (known.isNotEmpty()) return known
+        if (known.isNotEmpty() || closed) return known
         searches += 1
         val lines = search(board, depth)
         computed.add(board, lines)
         return lines
     }
 
-    override fun close() = onClose()
+    override fun close() {
+        closed = true
+        onClose()
+    }
 }

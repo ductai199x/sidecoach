@@ -36,7 +36,7 @@ import com.sidecoach.ui.SettingsStore
  * had no engine's word to go on (the parity audit, 2026-09-29). [engine] is built by the
  * caller (`Assessing.coachEngine`) and asked only what the analyser has not computed
  * ([computed], `cli._named_engine`): a second process only once a question needs a position
- * nothing reaches.
+ * nothing has computed.
  */
 class CoachRunner(
     settings: SettingsStore,
@@ -45,7 +45,7 @@ class CoachRunner(
     computed: Computed? = null,
 ) {
 
-    private val coachEngine: ComputedFirst? = engine?.let { ComputedFirst(it, computed ?: Computed()) }
+    internal val coachEngine: ComputedFirst? = engine?.let { ComputedFirst(it, computed ?: Computed()) }
 
     val coach: Coach?
     var detail: String = "off"

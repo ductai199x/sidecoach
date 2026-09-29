@@ -28,7 +28,6 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 
-from sidecoach.analysis.computed import Computed, ComputedFirst  # noqa: E402
 from sidecoach.analysis.score import human_expected_score  # noqa: E402
 from sidecoach.coach import named as N  # noqa: E402
 from sidecoach.events import DisclosureLevel, Line  # noqa: E402
@@ -115,16 +114,6 @@ class RecordedEngine:
         ]
         return out
 
-    def close(self) -> None:
-        return
-
-
-def sheet_first(engine: RecordedEngine, board: chess.Board, lines: list[Line]) -> ComputedFirst:
-    """The engine as the coach has it: the sheet's own lines for `board` computed first."""
-    computed = Computed()
-    computed.add(board, lines)
-    return ComputedFirst(engine, computed)
-
 
 def probe_json(probe: N.Probe) -> dict:
     return {
@@ -153,8 +142,20 @@ def case_for(board: chess.Board) -> dict:
     moved = board.copy(stack=False)
     if any(True for _ in board.legal_moves):
         moved.push(next(iter(board.legal_moves)))
+    # The first move of the sheet's own line, and its first two: read off that line (`known`,
+    # desktop ce06c4e), where the fixed asks rarely name a move the line plays.
+    sheet = engine.analyse(board)
+    replay = board.copy(stack=False)
+    sans: list[str] = []
+    for uci in sheet[0].moves[:2] if sheet else []:
+        move = chess.Move.from_uci(uci)
+        sans.append(replay.san(move))
+        replay.push(move)
+    sheet_asks = [f"I would play {sans[0]}"] if sans else []
+    if len(sans) == 2:
+        sheet_asks.append(f"I would play {sans[0]} and then {sans[1]}")
     asks = []
-    for text in ASKS:
+    for text in [*ASKS, *sheet_asks]:
         probes = N.probes_by_words(text, board)
         entry: dict = {
             "text": text,
@@ -190,15 +191,10 @@ def case_for(board: chess.Board) -> dict:
                 "named_none": N.analyse_named(
                     text, board, None, user_colour=us, level=level, static=False
                 ),
-                # The lines the sheet already shows, computed first (a move they play is read
-                # from them), and the pieces read on the board as it stands now (TG-04).
+                # The lines the sheet already shows (a move they start is read from them), and
+                # the pieces read on the board as it stands now (TG-04).
                 "named_known": N.analyse_named(
-                    text,
-                    board,
-                    sheet_first(engine, board, before),
-                    user_colour=us,
-                    level=level,
-                    depth=14,
+                    text, board, engine, user_colour=us, level=level, depth=14, known=before
                 ),
                 "named_pieces": N.analyse_named(
                     text, board, None, user_colour=us, level=level, pieces_board=moved
@@ -330,13 +326,14 @@ def desktop_tests() -> dict:
         "parse_probe": lambda label, moves, board: {
             "label": label, "moves": list(moves), "fen": board_arg(board)
         },
-        "examine": lambda probe, board, engine, best, *, user_colour, level, depth=14: {
+        "examine": lambda probe, board, engine, best, *, user_colour, level, depth=14, known=(): {
             "probe": probe_arg(probe),
             "fen": board_arg(board),
             "best": None if best is None else line_json(best),
             "user_white": user_colour == chess.WHITE,
             "level": int(level),
             "depth": depth,
+            "known": [line_json(one) for one in known],
         },
         "examine_piece": lambda probe, board, *, user_colour: {
             "probe": probe_arg(probe), "fen": board_arg(board), "user_white": user_colour == chess.WHITE
@@ -344,7 +341,7 @@ def desktop_tests() -> dict:
         "spoken": lambda fact: {"fact": fact},
         "disclosed_frames": lambda board, facts: {"fen": board_arg(board), "facts": list(facts)},
         "analyse_named": lambda text, board, engine, *, user_colour, level, depth=14,
-        static=False, pieces_board=None: {
+        static=False, pieces_board=None, known=(): {
             "text": text,
             "fen": board_arg(board),
             "engine": engine is not None,
@@ -353,6 +350,7 @@ def desktop_tests() -> dict:
             "depth": depth,
             "static": static,
             "pieces_fen": None if pieces_board is None else pieces_board.fen(),
+            "known": [line_json(one) for one in known],
         },
         "check_draft": lambda text, board, *, after=(), us=None: {
             "text": text, "fen": board_arg(board), "after": [b.fen() for b in after], "us": us
@@ -430,7 +428,8 @@ def main() -> None:
     payload = {"cases": cases, "tests": desktop_tests()}
     (OUT / "named.json").write_text(json.dumps(payload), encoding="utf-8")
     size = (OUT / "named.json").stat().st_size
-    print(f"{len(cases)} positions x {len(ASKS)} asks -> {OUT / 'named.json'} ({size/1e6:.1f} MB)")
+    asks = sum(len(case["asks"]) for case in cases)
+    print(f"{len(cases)} positions, {asks} asks -> {OUT / 'named.json'} ({size/1e6:.1f} MB)")
 
 
 if __name__ == "__main__":

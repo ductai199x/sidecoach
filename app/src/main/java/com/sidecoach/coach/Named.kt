@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.Exchange
+import com.sidecoach.analysis.restOfLine
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_SQUARES
@@ -156,6 +157,19 @@ private fun controller(board: Board, at: Int, square: Int): String {
 }
 
 /**
+ * Which pieces of the side to move can legally go to [square], or that none can. Who covers a
+ * square is not who can get there: asked why they cannot block a check on g1, the model had "the
+ * player controls it with the king on h1" and answered that g1 was empty -- nothing said no piece
+ * of theirs could reach it (Luna on Tai's puzzle, 2026-09-29).
+ */
+fun whoCanMoveThere(board: Board, square: Int, player: Boolean): String {
+    val side = if (board.turn == player) "the player" else "the opponent"
+    val movers = board.legalMoves().filter { it.to == square }.map { it.from }.toSortedSet().toList()
+    if (movers.isEmpty()) return "none of $side's pieces can move there"
+    return "$side can move the " + movers.take(3).joinToString(" or the ") { nameOf(board, it) } + " there"
+}
+
+/**
  * The board on one piece or square: what stands there, where it can go, what it attacks and
  * defends, what attacks and defends it, whether it is pinned. Static facts of the position, no
  * search. Attack and defence are legal captures and recaptures ([Exchange]): a piece pinned to
@@ -183,6 +197,7 @@ fun examinePiece(probe: Probe, board: Board, userColour: Boolean): String {
             )
         }
         if (holders.isEmpty() && theirs.isEmpty()) parts.add("nobody controls it")
+        parts.add(whoCanMoveThere(board, square, userColour))
         return "$head " + parts.joinToString("; ") + "."
     }
     val whose = if (piece.colour == userColour) "the player's" else "the opponent's"
@@ -301,8 +316,9 @@ private fun replayMoves(board: Board, sans: List<String>): List<Move> {
 }
 
 /**
- * The engine's word on one probe, one line of text for the object. The coach's engine answers a
- * position the analyser's lines already reach from those lines ([com.sidecoach.analysis.Computed]).
+ * The engine's word on one probe, one line of text for the object. A probe that one of the
+ * position's own lines ([known], the sheet's) begins with is read from that line, as the model
+ * was shown it ([restOfLine]); any other goes to the engine.
  */
 fun examine(
     probe: Probe,
@@ -312,6 +328,7 @@ fun examine(
     userColour: Boolean,
     level: DisclosureLevel,
     depth: Int = 14,
+    known: List<Line> = emptyList(),
 ): String {
     val head = "Engine on ${probe.label}, which the player asked about:"
     if (probe.parsed.isEmpty()) return "$head ${probe.illegal} is not a legal move here."
@@ -324,7 +341,8 @@ fun examine(
         parts.add("the game is over after $played (${after.result()}).")
         return parts.joinToString(" ")
     }
-    val lines = engine.analyse(after, depth)
+    val own = if (probe.parsed.all { !it.isNull }) restOfLine(known, probe.parsed.map { it.uci() }) else null
+    val lines = if (own != null) listOf(own) else engine.analyse(after, depth)
     if (lines.isEmpty()) {
         return "$head the engine has nothing to say about the position after $played."
     }
@@ -468,6 +486,8 @@ fun spoken(fact: String): String {
         .replace("the opponent's", "their")
         .replace("the player controls", "you control")
         .replace("the opponent controls", "they control")
+        .replace("the player can move", "you can move")
+        .replace("the opponent can move", "they can move")
     val piece = PIECE_STANDS.find(body)
     if (piece != null) {
         val (whose, name, square) = piece.destructured
@@ -507,7 +527,8 @@ private fun gapWords(gap: Double): String = when {
 /**
  * The engine's word on what the player asked about: one line per probe, or none when their
  * words name nothing to examine. The moves named in the words are examined as one line, or the
- * pieces and squares named each on their own.
+ * pieces and squares named each on their own. [known]: the lines the sheet shows for [board],
+ * read before the engine.
  */
 fun analyseNamed(
     text: String,
@@ -518,6 +539,7 @@ fun analyseNamed(
     depth: Int = 14,
     static: Boolean = false,
     piecesBoard: Board? = null,
+    known: List<Line> = emptyList(),
 ): List<String> {
     var probes = probesByWords(text, board)
     if ((board.turn != userColour && engine != null) || (engine == null && !static)) {
@@ -529,7 +551,7 @@ fun analyseNamed(
     val out = ArrayList<String>()
     var best: Line? = null
     if (engine != null && probes.any { it.square == null }) {
-        val before = engine.analyse(board, depth)
+        val before = known.toList().ifEmpty { engine.analyse(board, depth) }
         best = before.firstOrNull()
     }
     for (p in probes) {
@@ -539,7 +561,7 @@ fun analyseNamed(
             // the player's bishop on b5 (the students' round 6).
             p.square != null -> out.add(examinePiece(p, piecesBoard ?: board, userColour))
             engine == null -> out.add(examineStatic(p, board))
-            else -> out.add(examine(p, board, engine, best, userColour, level, depth))
+            else -> out.add(examine(p, board, engine, best, userColour, level, depth, known = known))
         }
     }
     return out

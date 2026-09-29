@@ -2,13 +2,18 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.analysis.Computed
+import com.sidecoach.analysis.Engine
+import com.sidecoach.chess.Board
 import com.sidecoach.coach.CoachRunner
+import com.sidecoach.events.Line
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 /**
  * The settings page as the phone serves it (Tai, 2026-09-24: "when I go to settings, and then
@@ -185,6 +190,34 @@ class SettingsPhoneTest {
             assertEquals(null, runner.verifier(store, own))
         } finally {
             store.setSecret("DASHSCOPE_API_KEY", null)
+            store.save(saved)
+        }
+    }
+
+    /**
+     * The coach's engine answers from what the analyser computed and starts its Stockfish only at
+     * a miss (Tai, 2026-09-29); the coach closed, it is closed too, and searches no more
+     * (`test_cli_parts`, desktop ce06c4e). The binary is not there: a runner that started it
+     * would fail, and so would a search after the close.
+     */
+    @Test
+    fun theCoachsEngineReadsTheAnalysersStoreAndClosesWithTheCoach() {
+        val store = SettingsStore(app)
+        val saved = store.values()
+        try {
+            val values = store.values()
+            values.getJSONObject("llm").put("provider", "none")
+            store.save(values)
+            val computed = Computed()
+            val runner = CoachRunner(store, enabled = true, engine = Engine(File(app.filesDir, "no-stockfish"), null), computed = computed)
+            val engine = runner.coachEngine!!
+            assertTrue("the analyser's store", engine.computed === computed)
+            assertEquals("no Stockfish started before a search", 0, engine.searches)
+            runner.close()
+            assertTrue(engine.closed)
+            assertEquals(emptyList<Line>(), engine.analyse(Board(), 14))
+            assertEquals(0, engine.searches)
+        } finally {
             store.save(saved)
         }
     }
