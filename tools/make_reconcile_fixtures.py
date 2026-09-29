@@ -351,7 +351,6 @@ RECORDED: dict[str, list[str] | None] = {
         "test_a_game_joined_from_the_middle_is_adopted_without_being_asked",
         "test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock",
         "test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps",
-        "test_a_position_for_black_is_read_from_the_labels_and_coached_for_black",
         "test_flip_re_reads_a_joined_position_the_other_way_up",
         "test_a_resync_onto_a_board_the_other_way_up_reads_the_labels",
         "test_two_piece_sets_on_one_board_are_both_kept_and_each_read",

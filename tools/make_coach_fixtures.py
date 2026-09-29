@@ -424,7 +424,8 @@ IDEA_TESTS = [
     ("r3k3/p1pb4/2p2p2/2q1p1p1/2B3p1/2P4r/P1P2PQP/3RR1K1 w q - 4 21", "Qe4", 0.55, None, ["c5c4"], False),
     ("1k2r3/1p3ppp/3p4/2n5/1rPN4/1P3P2/P5PP/2KRR3 b - - 2 23", "Rxe1 Rxe1 Nd3+ Kd2 Nxe1", 0.95, None, [], True),
     # `tests/test_allowed.py` (desktop 25a3333): a blunder that drops a rook, a move that lets
-    # them trade into a won ending, a quiet line, a win far down the line, and g06's a3.
+    # them trade into a won ending, a quiet line, a win far down the line, and g06's a3 (the
+    # last two in `tests/test_rungs.py` since the consolidation of 2026-09-29).
     (
         "1n1qk2r/2pp1pp1/r7/3Qp2p/8/2B2P2/1PP3PP/R3K1NR b KQk - 0 13",
         "Rxa1+ Kf2 Qf6 Bxe5 Qf5 Qe4 Qxe4 fxe4",
@@ -463,8 +464,9 @@ IDEA_TESTS = [
         False,
     ),
     # `tests/test_rungs.py` (desktop 268990e): Tai's games g02-g04 -- a pawn that falls a move
-    # later, the right capture with the other rook, a lesson said of the better move, a mate in
-    # twelve, a forcing capture, and a pawn threat that gives way to the pawn ending's idea.
+    # later, the right capture with the other rook, a lesson said of the better move (in
+    # `tests/test_allowed.py` since 2026-09-29), a mate in twelve, a forcing capture, and a
+    # pawn threat that gives way to the pawn ending's idea.
     (
         "r1bq1rk1/2pnbppp/p2p4/1p1P4/3pP3/1B3P2/PPP1N1PP/R1BQK2R w KQ - 1 12",
         "O-O Nc5 Nxd4 Bd7 c3 Nxb3 axb3 a5",
@@ -1380,7 +1382,8 @@ def desktop_tests() -> dict:
     where the tests find them -- their own imports, and the modules a test imports from inside
     a test."""
     import importlib
-    import inspect
+
+    from desktop_tests import desktop_tests as each_test
 
     from sidecoach.analysis import phase as PH
 
@@ -1488,11 +1491,9 @@ def desktop_tests() -> dict:
                     saved.append((module, fn, real))
                     setattr(module, fn, wrap(real, fn))
         try:
-            for name, test in inspect.getmembers(tests, inspect.isfunction):
-                if not name.startswith("test_") or test.__module__ != tests.__name__:
-                    continue
-                if inspect.signature(test).parameters:
-                    continue
+            # Each case of a table as well: skipped, the effects and descriptions tables went
+            # unreplayed once the desktop's tests became tables (2026-09-28).
+            for name, test in each_test(tests):
                 current["test"] = f"{module_name}.{name}"
                 test()  # the desktop's own assertions hold as the calls are recorded
                 out["ran"].append(current["test"])

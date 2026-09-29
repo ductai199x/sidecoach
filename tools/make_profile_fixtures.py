@@ -413,7 +413,6 @@ ENDINGS = [
 # session's end, and at the end every table of every store it wrote. The phone replays them.
 SCENARIOS = [
     ("test_a_mistake_becomes_evidence_once_its_analysis_arrives", ()),
-    ("test_the_opponents_mistakes_and_fine_moves_are_not_evidence", ()),
     ("test_the_clock_makes_it_time_pressure", ()),
     ("test_the_game_ends_with_a_review_and_a_snapshot", ()),
     ("test_a_takeback_withdraws_the_moves_and_their_evidence", ()),
@@ -422,15 +421,15 @@ SCENARIOS = [
     ("test_a_correction_moves_the_evidence", ()),
     ("test_the_player_may_be_either_colour", (Side.WHITE,)),
     ("test_the_player_may_be_either_colour", (Side.BLACK,)),
-    ("test_the_review_waits_for_the_engines_last_verdicts", ()),
-    ("test_a_review_left_waiting_is_built_when_the_grace_period_is_up_or_at_the_close", ()),
-    ("test_the_next_game_flushes_the_last_games_review", ()),
+    # A review waiting on a verdict, built when the verdict lands, when the grace is up, or at
+    # the close (the desktop's consolidations of 2026-09-28/29 folded five tests into these).
+    ("test_a_review_waits_for_the_last_verdict_and_is_never_dropped", ("verdict",)),
+    ("test_a_review_waits_for_the_last_verdict_and_is_never_dropped", ("grace",)),
+    ("test_a_review_waits_for_the_last_verdict_and_is_never_dropped", ("close",)),
     ("test_the_players_words_after_a_lesson_are_kept_beside_the_mistake", ()),
-    ("test_a_position_is_coached_but_never_recorded", ()),
     ("test_a_game_joined_from_the_middle_is_still_a_game", ()),
     ("test_a_position_that_ends_early_leaves_nothing_behind", ()),
     ("test_puzzles_one_after_another_never_add_up_to_a_game", ()),
-    ("test_a_joined_game_whose_turn_the_clock_settles_is_still_a_game", ()),
     ("test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start", ()),
 ]
 
@@ -464,7 +463,7 @@ def scenarios() -> list[dict]:
             for module in (tp, feeds):
                 module.Profiler = real  # type: ignore[assignment]
         out.append({
-            "name": name + ("" if not args else f"[{args[0].value}]"),
+            "name": name + ("" if not args else f"[{getattr(args[0], 'value', args[0])}]"),
             "steps": steps,
             "tables": [tables(store) for _, store in sorted(stores.values(), key=lambda v: v[0])],
         })
