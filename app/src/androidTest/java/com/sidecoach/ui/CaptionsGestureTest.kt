@@ -402,8 +402,18 @@ class CaptionsGestureTest {
         Thread.sleep(300)
         val low = box()!!
 
+        // All the way down, beside the cross: the box parked at the very foot of the screen,
+        // captions still on -- the finger let go away from the cross, whatever the box covers
+        // (Tai, 2026-09-29: "the dismiss thing is STILL TOO FAR UP").
+        holdAndDrag(low.centerX() to low.centerY(), screen.widthPixels / 5 to screen.heightPixels - (8 * screen.density).toInt())
+        assertTrue("a box parked at the foot is not where it asked to be", waitFor { settled() })
+        assertTrue("captions went off with the box parked at the foot", Captions.enabled && box() != null)
+        Thread.sleep(300)
+        val foot = box()!!
+        assertTrue("the box did not go to the foot: $foot", foot.bottom > screen.heightPixels - (140 * screen.density).toInt())
+
         // Onto the cross at the foot of the screen: captions off.
-        holdAndDrag(low.centerX() to low.centerY(), crossX to crossY) {
+        holdAndDrag(foot.centerX() to foot.centerY(), crossX to crossY) {
             shot("6_over_the_cross")
         }
         assertTrue("the box is still up", waitFor { box() == null })

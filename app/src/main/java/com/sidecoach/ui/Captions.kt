@@ -392,17 +392,20 @@ object Captions {
     private fun screen(ctx: Context): Rect = ctx.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
 
     /**
-     * How near the cross a box's centre must be let go to turn captions off: a little past the
-     * cross as it grows under the box. At 110 dp the reach covered the foot of the screen, and
-     * a box moved low was turned off instead (Tai, 2026-09-29: "sometime I need to reposition
-     * it but I can't since I would accidentally dismiss it").
+     * The cross a box is carried onto to turn captions off: its centre this far above the foot of
+     * the screen, and how near it the finger must be let go --
+     * the finger, not the box. The box's centre near a cross 100 dp up made every box parked low
+     * a dismissal, whatever the reach (Tai, 2026-09-29: "sometime I need to reposition it but I
+     * can't since I would accidentally dismiss it"; then, the reach cut from 110 to 56 dp, "the
+     * dismiss thing is STILL TOO FAR UP. It's like nothing have changed whatsoever!").
      */
-    private const val CROSS_REACH_DP = 56f
+    private const val CROSS_LIFT_DP = 40f
+    private const val CROSS_REACH_DP = 44f
 
     /** The centre of the cross a box is dropped on to turn captions off, at the screen's foot. */
     internal fun crossCentre(ctx: Context): Pair<Int, Int> {
         val screen = screen(ctx)
-        return screen.centerX() to screen.bottom - dp(ctx, 100f)
+        return screen.centerX() to screen.bottom - dp(ctx, CROSS_LIFT_DP)
     }
 
     /**
@@ -608,14 +611,14 @@ object Captions {
                             params.x = startX + (event.rawX - downX).roundToInt()
                             params.y = startY + (event.rawY - downY).roundToInt()
                             windows.updateViewLayout(this, params)
-                            target?.near(centre())
+                            target?.near(event.rawX.roundToInt() to event.rawY.roundToInt())
                         }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         busy = false
                         if (moving) {
                             moving = false
-                            drop(centre())
+                            drop(event.rawX.roundToInt() to event.rawY.roundToInt())
                         } else {
                             rest()
                         }
@@ -691,8 +694,6 @@ object Captions {
          * the bar. */
         private fun boxHeight() =
             paddingTop + paddingBottom + dp(ctx, 34f + 10f) + lineHeight * shownLines() + dp(ctx, 20f)
-
-        private fun centre(): Pair<Int, Int> = (params.x + width / 2) to (params.y + height / 2)
 
         fun bounds(): Rect = Rect(params.x, params.y, params.x + width, params.y + height)
 
@@ -868,6 +869,8 @@ object Captions {
             return true
         }
 
+        /** The box let go with the finger at [at]: on the cross, captions off; anywhere else,
+         * kept there, off the board. */
         private fun drop(at: Pair<Int, Int>) {
             val bin = target
             target = null
