@@ -23,11 +23,11 @@ export const KEEP_CHARS = 1200;
 export const DOUBLE_CLICK_MS = 300;
 /** How far a pointer moves before a press is a drag, in CSS pixels. */
 export const SLOP = 4;
-/** The cross's centre above the foot of its monitor, and how near it a box's centre is let
- * go to turn captions off: a little past the cross as it grows (the phone's 56 dp: Tai,
- * 2026-09-29, the 110 of before dismissed a box he only wanted low on the screen). */
-export const CROSS_LIFT = 100;
-export const CROSS_REACH = 56;
+/** The cross's centre above the foot of its monitor's work area, and how near it the pointer
+ * is let go to turn captions off -- the pointer, not the box: the box's centre near a cross
+ * 100 px up made every box parked low a dismissal (the phone's, Tai, 2026-09-29: "the dismiss thing is STILL TOO FAR UP"). */
+export const CROSS_LIFT = 40;
+export const CROSS_REACH = 44;
 /** The sample line a change to the captions shows at once (the phone's `preview`). */
 export const PREVIEW = "This is how captions look. Spot on -- rooks belong on open files.";
 

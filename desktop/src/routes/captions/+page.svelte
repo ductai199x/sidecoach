@@ -299,6 +299,10 @@
   let dragged = false;
   let down = { x: 0, y: 0 };
   let start = { x: 0, y: 0 };
+  /** The pointer on the screen, in physical pixels, while the box is carried: where it is let go
+   * decides the cross, not the box. */
+  let pointer = { x: 0, y: 0 };
+  let grab = { x: 0, y: 0 };
   let moveFrame = 0;
 
   /** Which edges of the box a pointer is on: "n", "s", "e", "w" or two of them at a corner;
@@ -326,6 +330,8 @@
     dragged = false;
     down = { x: e.screenX, y: e.screenY };
     start = { x: pos.x, y: pos.y };
+    const ratio = window.devicePixelRatio || scale;
+    grab = { x: pos.x + e.clientX * ratio, y: pos.y + e.clientY * ratio };
     const edges = edgeAt(e);
     sizing = edges ? { edges, width, lines: expanded ? Math.max(lines, EXPANDED_LINES) : lines, x: pos.x, y: pos.y } : null;
     if (sizing) cancelHide();
@@ -353,6 +359,7 @@
     if (!moving || !shell) return;
     const ratio = window.devicePixelRatio || scale;
     pos = { ...pos, x: start.x + dx * ratio, y: start.y + dy * ratio };
+    pointer = { x: grab.x + dx * ratio, y: grab.y + dy * ratio };
     if (!moveFrame) {
       moveFrame = requestAnimationFrame(() => {
         moveFrame = 0;
@@ -440,7 +447,7 @@
 
   async function nearCross(): Promise<void> {
     if (!cross) return;
-    const now = Math.hypot(pos.x + pos.w / 2 - crossAt.x, pos.y + pos.h / 2 - crossAt.y) < CROSS_REACH * scale;
+    const now = Math.hypot(pointer.x - crossAt.x, pointer.y - crossAt.y) < CROSS_REACH * scale;
     if (now === hot) return;
     hot = now;
     const { emitTo } = await import("@tauri-apps/api/event");
