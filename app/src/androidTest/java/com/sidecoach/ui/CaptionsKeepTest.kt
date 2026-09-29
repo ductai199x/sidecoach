@@ -75,6 +75,17 @@ class CaptionsKeepTest {
             Captions.panelInFront(false)
             assertNotNull("the kept box went when the panel did", box())
 
+            // Sidecoach quit: the kept box goes, and a line said after does not bring it back;
+            // the panel opened again, it is back (Tai, 2026-09-29: "the live caption box doesn't automatically disappear/close when I quit the app on mobile").
+            Captions.quit()
+            assertTrue("the kept box stayed after Sidecoach quit", waitFor(3000) { box() == null })
+            Captions.show("Their rook takes on e1.")
+            Thread.sleep(1000)
+            assertTrue("a line brought the box back after Sidecoach quit", box() == null)
+            Captions.panelInFront(true)
+            assertTrue("the kept box did not come back with the panel", waitFor(3000) { box() != null })
+            Captions.panelInFront(false)
+
             // Captions turned on with the box kept: up at once, before the coach says anything.
             Captions.configure(app, false)
             assertTrue("the box stayed with captions off", waitFor(3000) { box() == null })

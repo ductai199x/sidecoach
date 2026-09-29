@@ -266,6 +266,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Quit (backed out of, or swiped from the recents): the caption box goes too.
+        if (isFinishing) Captions.quit()
         PanelEngine.onStart = null
         PanelEngine.onStop = null
         PanelListen.askPermission = null

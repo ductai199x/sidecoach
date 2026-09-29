@@ -92,6 +92,12 @@ class CaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /** Sidecoach swiped from the recents while a session runs: the caption box goes with it. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Captions.quit()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()

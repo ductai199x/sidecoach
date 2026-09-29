@@ -85,6 +85,9 @@ object Captions {
 
     @Volatile private var on = false
     @Volatile private var front = false
+
+    /** Sidecoach quit: no box until its panel is opened again ([quit]). */
+    @Volatile private var quitted = false
     @Volatile private var keep = false
 
     /** The box up now is the settings' sample line, which fades whatever [keep] says. */
@@ -169,7 +172,19 @@ object Captions {
     /** Sidecoach's own panel in front (true) or not: its page shows the words already. */
     fun panelInFront(inFront: Boolean) {
         front = inFront
+        if (inFront) quitted = false
         main.post { if (inFront && !keep) drop() else restore() }
+    }
+
+    /**
+     * Sidecoach quit -- its panel finished, or swiped from the recents: the box goes with it,
+     * kept on screen or not, and stays gone, words or not, until the panel is opened again
+     * (Tai, 2026-09-29: "the live caption box doesn't automatically disappear/close when I quit the app on mobile"; always on screen had
+     * brought it back as the panel went).
+     */
+    fun quit() {
+        quitted = true
+        main.post { drop() }
     }
 
     /**
@@ -177,7 +192,7 @@ object Captions {
      * front (Tai, 2026-09-29: "is it always on screen or not????").
      */
     private fun restore() {
-        if (!keep || !on || box != null) return
+        if (!keep || !on || quitted || box != null) return
         if (ensureBox()) box?.setText(said.toString())
     }
 
@@ -228,7 +243,7 @@ object Captions {
     // ---- the words ---------------------------------------------------------------------------
 
     private fun begin(text: String, speechMs: Long, force: Boolean = false) {
-        if (!on) return
+        if (!on || quitted) return
         if (front && !force && !keep) {
             if (!previewing) {
                 finish()
