@@ -222,7 +222,7 @@ export type PanelState = {
   /** The captions' settings, the words given to the voice (numbered, the last few), whether
    * it is speaking now, and the board the vision follows, on the screen (routes/captions). */
   captions?: Captions;
-  caption_lines?: [number, string][];
+  caption_lines?: [number, string, boolean?][];
   speaking?: boolean;
   board_screen?: [number, number, number, number] | null;
   [key: string]: unknown;

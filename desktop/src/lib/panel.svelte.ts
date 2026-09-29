@@ -10,6 +10,7 @@ export type CoachItem =
   | { kind: "message"; id: number; trigger: string; disclosure: number | string; ply: number | null; fallback: boolean; full: string; marks: Mark[]; fen: string | null }
   | { kind: "review"; id: number; review: Record<string, any>; insights: string[] }
   | { kind: "practice"; id: number; practice: Record<string, any> }
+  | { kind: "you"; id: number; text: string; spoken: boolean }
   | { kind: "pending"; id: number };
 
 export type ConvoTurn = {
@@ -182,6 +183,7 @@ export class PanelStore {
     if (line.chan === "coach" && d && d.full) this.addCoach(d);
     if (line.chan === "coach" && d && d.review) this.addReview(d);
     if (line.chan === "coach" && d && d.practice) this.coach.push({ kind: "practice", id: nextId++, practice: d.practice });
+    if (line.chan === "user" && line.text.startsWith("you: ")) this.addYou(line.text.slice(5), !!(d && d.spoken));
     this.addConvo(line);
     if (this.coach.length > MAX_COACH) this.coach.splice(0, this.coach.length - MAX_COACH);
     if (this.convo.length > MAX_CONVO) this.convo.splice(0, this.convo.length - MAX_CONVO);
@@ -208,6 +210,16 @@ export class PanelStore {
       ply: d.ply ?? null, fallback: !!d.fallback, full: d.full, marks, fen: d.fen ?? null,
     });
     this.latestMarks = { ply: d.ply ?? this.ply, marks };
+  }
+
+  /** What you asked, typed or spoken, in the pane with the coach's words (Tai, 2026-09-29: "similar to like a chat interface like one you find on iMessage"). Its
+   * reply is already on its way (the typing dots went up when it was sent): the question goes
+   * above them. */
+  private addYou(text: string, spoken: boolean): void {
+    const item: CoachItem = { kind: "you", id: nextId++, text, spoken };
+    const pending = this.coach.findIndex((c) => c.kind === "pending");
+    if (pending < 0) this.coach.push(item);
+    else this.coach.splice(pending, 0, item);
   }
 
   private addReview(d: Record<string, any>): void {

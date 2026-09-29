@@ -36,7 +36,7 @@ class FakeTTS:
 
 
 def _captioned(engine: PanelEngine) -> list[str]:
-    return [text for _, text in engine.poll()["state"]["caption_lines"]]
+    return [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
 
 
 def test_the_words_given_to_the_voice_are_captioned_whole_said_or_not(
@@ -64,8 +64,12 @@ def test_the_words_given_to_the_voice_are_captioned_whole_said_or_not(
     sink("The knight is loose.")
     sink("What defends it?")
     assert _captioned(engine) == [LONG, "Look at f7.", "The knight is loose.", "What defends it?"]
-    numbers = [n for n, _ in engine.poll()["state"]["caption_lines"]]
+    numbers = [n for n, _, _ in engine.poll()["state"]["caption_lines"]]
     assert numbers == [1, 2, 3, 4]
+    # Each reply starts a line of its own in the box; a streamed reply's later sentences run
+    # on from its first (Tai, 2026-09-29: the box had no new lines, hard to read).
+    continues = [c for _, _, c in engine.poll()["state"]["caption_lines"]]
+    assert continues == [False, False, False, True]
 
 
 def test_only_the_last_captions_are_kept_for_the_window_to_catch_up_on(
@@ -77,7 +81,8 @@ def test_only_the_last_captions_are_kept_for_the_window_to_catch_up_on(
     engine.caption("   ")  # nothing to show
     kept = engine.poll()["state"]["caption_lines"]
     assert len(kept) == CAPTIONS_KEPT
-    assert kept[0] == [6, "line 5"] and kept[-1] == [CAPTIONS_KEPT + 5, f"line {CAPTIONS_KEPT + 4}"]
+    assert kept[0] == [6, "line 5", False]
+    assert kept[-1] == [CAPTIONS_KEPT + 5, f"line {CAPTIONS_KEPT + 4}", False]
 
 
 def test_the_poll_says_whether_the_voice_is_speaking(

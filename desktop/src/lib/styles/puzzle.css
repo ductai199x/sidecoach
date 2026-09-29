@@ -140,6 +140,5 @@ html.stacked .puzzle-page .coach { min-height: 80px; }
 /* ---- the coach, the strip ---- */
 .puzzle-page #right { display: flex; flex-direction: column; gap: 10px; }
 .puzzle-page .coach { flex: 1 1 0; min-height: 200px; }
-.puzzle-page .msg.you { border-left-color: var(--ink); color: var(--ink); }
 .puzzle-page footer { border-top: 1px solid var(--line); }
 .puzzle-page .terminal { height: clamp(120px, 24vh, 260px); }

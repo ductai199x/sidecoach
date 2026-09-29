@@ -303,22 +303,43 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .badge.blunder::after    { content: "??"; }
 .moves-hint { font-size: 11px; color: var(--muted); padding: 2px 8px; }
 
-.coach { flex: 1 1 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 72px; padding-right: 2px; }
-.msg { background: var(--panel2); border-left: 3px solid var(--coach); border-radius: 5px; padding: 8px 10px; }
+/* ---- the conversation with the coach, as iMessage draws one (Tai, 2026-09-29: "similar to like a chat interface like one you find on iMessage"):
+   the coach's words on the left in warm grey, yours on the right in the app's green, a tail on
+   the last bubble of each run, cut out of the pane's own ground ---- */
+.coach {
+  --bubble-coach: var(--panel2); --bubble-you: #4a7a2a;
+  flex: 1 1 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 2px;
+  min-height: 72px; padding: 2px 10px 2px 12px;
+}
+.msg {
+  position: relative; align-self: flex-start; max-width: 82%;
+  background: var(--bubble-coach); color: var(--ink);
+  border-radius: 18px; padding: 7px 12px; line-height: 1.38; overflow-wrap: anywhere;
+}
+.msg.you { align-self: flex-end; background: var(--bubble-you); color: #fff; }
+.msg.tail { margin-bottom: 8px; }
+.msg.tail::before, .msg.tail::after { content: ""; position: absolute; bottom: 0; height: 17px; }
+.msg.tail::before { left: -7px; width: 20px; background: inherit; border-bottom-right-radius: 16px 14px; }
+.msg.tail::after { left: -26px; width: 26px; background: var(--panel); border-bottom-right-radius: 10px; }
+.msg.you.tail::before { left: auto; right: -7px; border-bottom-right-radius: 0; border-bottom-left-radius: 16px 14px; }
+.msg.you.tail::after { left: auto; right: -26px; border-bottom-right-radius: 0; border-bottom-left-radius: 10px; }
 .msg.linked { cursor: default; }
 .msg.linked:hover { background: var(--panel3); }
 .msg .meta { font-size: 10.5px; color: var(--muted); margin-bottom: 4px; letter-spacing: .3px; }
-.msg .meta .marks { color: #b08bd9; }
-/* a square or move the coach named: hover it to light it up on the board */
+/* a square or move named: hover it to light it up on the board */
 .msg .tok { color: #d9c8f2; border-bottom: 1px dotted #b08bd9; cursor: default; }
 .msg .tok:hover { background: #b08bd933; }
-/* a message the coach is still writing: the ask went out, the reply is on its way */
-.msg.pending { border-left-color: var(--muted); color: var(--muted); }
-.msg.pending .dots::after { content: "\2022\2022\2022"; letter-spacing: 3px; animation: dots 1.2s steps(4, end) infinite; }
-@keyframes dots { 0% { content: ""; } 25% { content: "\2022"; } 50% { content: "\2022\2022"; } 75%, 100% { content: "\2022\2022\2022"; } }
+.msg.you .tok { color: #fff; font-weight: 600; border-bottom-color: #ffffffa0; }
+.msg.you .tok:hover { background: #ffffff26; }
+/* the coach writing: the ask went out, the reply is on its way */
+.msg.typing { display: flex; gap: 4px; padding: 11px 14px; }
+.msg.typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); animation: typing 1.2s infinite ease-in-out; }
+.msg.typing span:nth-child(2) { animation-delay: .15s; }
+.msg.typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes typing { 0%, 60%, 100% { opacity: .35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 
-/* ---- the review card at the end of a game ---- */
-.msg.review { border-left-color: #b08bd9; }
+/* ---- the review card at the end of a game, and the practice: cards across the pane ---- */
+.msg.review { align-self: stretch; max-width: none; border-radius: 12px; border-left: 3px solid #b08bd9; margin: 6px 0; padding: 8px 10px; }
 .rv-head { font-weight: 600; margin-bottom: 6px; }
 .rv-tally { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .rv-chip { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel3); color: var(--ink); }

@@ -595,13 +595,10 @@
   <section id="right">
     <div class="panel-title">Coach</div>
     <div class="coach" bind:this={coachEl} use:stickToBottom>
-      {#each messages as m (m.id)}
-        <div class="msg" class:you={m.you} role="note" onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>
-          <div class="meta">{m.meta}</div>
-          <div>{m.text}</div>
-        </div>
+      {#each messages as m, i (m.id)}
+        <div class="msg" class:you={m.you} class:tail={pending && i === messages.length - 1 ? m.you : messages[i + 1]?.you !== m.you} role="note" title={m.meta} onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>{m.text}</div>
       {/each}
-      {#if pending}<div class="msg pending"><div class="meta">coach</div><div>thinking<span class="dots"></span></div></div>{/if}
+      {#if pending}<div class="msg typing tail" role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>{/if}
     </div>
     <div class="composer">
       <div class="box">

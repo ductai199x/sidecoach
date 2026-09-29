@@ -63,17 +63,50 @@ export function clear(
   return [cx, cy];
 }
 
-/** The words said so far and `text` after them: a line of its own when the box is new, the
- * oldest cut at a space past KEEP_CHARS; a dash as the coach writes it (two hyphens) read as
- * a dash. */
-export function joined(said: string, text: string, fresh: boolean): string {
+/** The words said so far and `text` after them: on a line of its own when it starts a message
+ * (Tai, 2026-09-29: "the text do not have any new lines what so ever so it's always really hard
+ * to read"), run on when it continues one; the oldest cut at a space past KEEP_CHARS; a dash as
+ * the coach writes it (two hyphens) read as a dash. */
+export function joined(said: string, text: string, ownLine: boolean): string {
   const line = text.trim().replaceAll(" -- ", " — ");
-  let out = said ? said + (fresh ? "\n" : " ") + line : line;
+  let out = said ? said + (ownLine ? "\n" : " ") + line : line;
   if (out.length > KEEP_CHARS) {
     const at = out.indexOf(" ", out.length - KEEP_CHARS);
     out = out.slice(at < 0 ? out.length - KEEP_CHARS : at + 1);
   }
   return out;
+}
+
+/** A move or a square as the coach writes it (SAN, castling, a bare square, or a square or a
+ * pawn move a sentence starts with a capital: "G4 was a miss"), and a piece named: the words
+ * a player looks for, set off in the box (Tai, 2026-09-29: "why are the pieces and their names
+ * and square names and SAN annotations not highlighted"). */
+const MOVE = String.raw`(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?`;
+const PIECE = String.raw`(?:[Kk]ing|[Qq]ueen|[Rr]ook|[Bb]ishop|[Kk]night|[Pp]awn)s?`;
+const TOKENS = new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${MOVE})|(${PIECE}))(?![A-Za-z0-9])`, "g");
+
+export type Run = { text: string; kind: "move" | "piece" | null };
+
+/** `text` as runs: the moves and squares, the pieces, and the words between. */
+export function runs(text: string): Run[] {
+  const out: Run[] = [];
+  let last = 0;
+  for (const m of text.matchAll(TOKENS)) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index), kind: null });
+    out.push({ text: m[0], kind: m[1] ? "move" : "piece" });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), kind: null });
+  return out;
+}
+
+/** The colour moves and squares stand out in, against `background`: a warm gold on a dark box,
+ * a deep amber on a light one. */
+export function accent(background: string): string {
+  const hex = /^#?([0-9a-f]{6})$/i.exec(background.trim())?.[1] ?? "1F1F1F";
+  const n = parseInt(hex, 16);
+  const luma = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
+  return luma < 140 ? "#FFD479" : "#8A5300";
 }
 
 /** A colour "#RRGGBB" and an opacity in percent as a CSS colour; a colour that does not read

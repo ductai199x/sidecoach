@@ -21,7 +21,7 @@
   import { connect, get, panel, put, type Captions, type PanelState } from "$lib/api";
   import {
     CONTROLS_MS, CROSS_LIFT, CROSS_REACH, DOUBLE_CLICK_MS, EDGE, EXPANDED_LINES, HIDE_AFTER_MS,
-    LINES, MAX_LINES, MIN_WIDTH, PREVIEW, SLOP, clear, fill, joined, type Rect,
+    LINES, MAX_LINES, MIN_WIDTH, PREVIEW, SLOP, accent, clear, fill, joined, runs, type Rect,
   } from "$lib/captions";
 
   const shell = isTauri();
@@ -97,10 +97,10 @@
       lastPreview = c.preview;
       preview();
     }
-    for (const [n, text] of numbered) {
+    for (const [n, text, continues] of numbered) {
       if (n > lastN) {
         lastN = n;
-        begin(text);
+        begin(text, false, !!continues);
       }
     }
     if (!shown) {
@@ -117,15 +117,15 @@
    * kept on screen comes back with it (Tai, 2026-09-29: "I don't see shit on my screen" -- an
    * answer asked for in Sidecoach's window, the window minimised, and the kept box had nothing
    * to show). */
-  function begin(text: string, force = false): void {
+  function begin(text: string, force = false, continues = false): void {
     if (front && !force && !look.keep) {
-      if (!previewing) said = joined(said, text, !shown);
+      if (!previewing) said = joined(said, text, !continues);
       return;
     }
     // The sample line is no word of the coach's: the coach's first word takes its place.
     if (previewing && !force) said = "";
     previewing = force;
-    said = joined(said, text, !shown);
+    said = joined(said, text, !continues);
     cancelHide();
     void showBox();
     void scrollWords();
@@ -606,7 +606,7 @@
   class:fading
   class:browser={!shell}
   bind:this={boxEl}
-  style="--text: {look.text}; --fill: {fill(look.background, look.opacity)}; --size: {look.size}px; --line: {lineHeight}px; width: {width}px; cursor: {CURSORS[hover] ?? 'default'}"
+  style="--text: {look.text}; --accent: {accent(look.background)}; --fill: {fill(look.background, look.opacity)}; --size: {look.size}px; --line: {lineHeight}px; width: {width}px; cursor: {CURSORS[hover] ?? 'default'}"
   role="presentation"
   onpointerdown={pressed}
   onpointermove={moved}
@@ -625,7 +625,7 @@
     <button class="chip" onclick={() => quick("move")}>Best move</button>
     <button class="chip" onclick={() => quick("line")}>Line</button>
   </div>
-  <div class="words" bind:this={wordsEl} style="height: {shownHeight}px">{said}</div>
+  <div class="words" bind:this={wordsEl} style="height: {shownHeight}px">{#each runs(said) as r, i (i)}{#if r.kind}<span class={r.kind}>{r.text}</span>{:else}{r.text}{/if}{/each}</div>
   {#if movesShown && moves.length}
     <div class="strip" bind:this={stripEl} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => { e.stopPropagation(); keepMoves(); }} role="presentation">
       {#each moves as m, i (i)}
@@ -663,6 +663,9 @@
   .box.browser { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); max-width: calc(100vw - 32px); }
 
   .words { overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* A move or a square the coach names, and a piece: what a player's eye looks for. */
+  .words .move { color: var(--accent); font-weight: 700; }
+  .words .piece { font-weight: 700; }
 
   .buttons { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .round {

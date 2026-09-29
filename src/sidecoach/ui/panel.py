@@ -1105,16 +1105,19 @@ class PanelEngine:
         state["speaking"] = bool(self._tts.busy)
         return {"state": state, "lines": self._log.since(since), "cursor": self._log.cursor}
 
-    def caption(self, text: str) -> None:
+    def caption(self, text: str, *, continues: bool = False) -> None:
         """Words given to the voice, for the captions' window, numbered: said or not -- muted,
         or held back for pace -- they are captioned whole, the moment they come, as the
-        phone's `Captions.show` is (the voice follows when it is made)."""
+        phone's `Captions.show` is (the voice follows when it is made). `continues`: a later
+        sentence of a reply written sentence by sentence, which the box runs on from the one
+        before; any other line starts a line of its own there."""
         text = text.strip()
         if not text:
             return
         with self._lock:
             self._captioned += 1
-            lines = [*self._state["caption_lines"], [self._captioned, text]][-CAPTIONS_KEPT:]
+            entry = [self._captioned, text, continues]
+            lines = [*self._state["caption_lines"], entry][-CAPTIONS_KEPT:]
             self._state["caption_lines"] = lines
 
     # ---- internals ------------------------------------------------------------------------
@@ -1391,6 +1394,7 @@ class PanelEngine:
                 return False
             with self._lock:
                 ply_now = int(self._state.get("ply") or 0)
+            continues = bool(started)
             if not started:
                 action = self.voice_action(
                     name, sentence, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
@@ -1402,7 +1406,9 @@ class PanelEngine:
                 started.append(action)
                 self._voicing = (name, ply)
                 self._await_audio(name, ply, sentence)
-            self.caption(sentence)  # each sentence as the model writes it; its voice follows
+            # Each sentence as the model writes it, the reply's later ones run on from the
+            # first; its voice follows.
+            self.caption(sentence, continues=continues)
             self._tts.say(sentence)
             self._emit("voice", "debug", f"speaking ({self.voice}): {elide(sentence, 60)}")
             return True
