@@ -270,6 +270,7 @@ def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
             annotator = type("Annotator", (), {"book": object()})()
             self.analyser = type("Analyser", (), {"annotator": annotator})() if self.on else None
             self.detail = "Stockfish, depth 18" if self.on else "no Stockfish found"
+            self.computed = None
             self.closed = False
             built.append(self.on)
 
@@ -305,7 +306,9 @@ def test_opening_tables_fetched_after_the_warm_up_reach_the_kept_engine(
     class _Stage:
         def __init__(self, _settings: Settings, enabled: bool, **_: object) -> None:
             self.on = enabled
-            self.analyser = type("A", (), {"annotator": GameAnnotator(engine=FakeEngine({}))})()
+            annotator = GameAnnotator(engine=FakeEngine({}))
+            self.analyser = type("A", (), {"annotator": annotator})()
+            self.computed = annotator.computed
             self.detail = "Stockfish, depth 18"
 
         def close(self) -> None:

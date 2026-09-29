@@ -76,7 +76,7 @@ class PuzzleRoom:
         # The engine and the coach of this room alone; the coach is told the position as
         # a game of kind "puzzle" and kept quiet: it speaks when asked.
         self._assessing = _Assessing(settings, analysis)
-        self._coaching = _Coaching(settings, coach and self._assessing.on)
+        self._coaching = _Coaching(settings, coach and self._assessing.on, self._assessing.computed)
         # The engine's lines are written for the console (rich markup); plain here.
         self._assessing.sink = lambda line: self._emit("engine", "debug", _plain(line))
         self._coaching.sink = self._on_message

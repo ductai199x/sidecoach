@@ -18,7 +18,6 @@ puzzle, 2026-09-28).
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -297,12 +296,10 @@ def examine(
     user_colour: chess.Color,
     level: DisclosureLevel,
     depth: int = 14,
-    known: Sequence[Line] = (),
 ) -> str:
-    """The engine's word on one probe, one line of text for the object. A probe that one
-    of the position's own lines (`known`) begins with is read from that line: a second,
-    shallower search after it answered Bd2 with Kh6 where the lines above had Rxh3, and the
-    model, shown both, said Bd2 avoided Rxh3 (the dev audit, 2026-09-26)."""
+    """The engine's word on one probe, one line of text for the object. The coach's engine
+    answers a position the analyser's lines already reach from those lines
+    (`analysis.computed`)."""
     head = f"Engine on {probe.label}, which the player asked about:"
     if not probe.parsed:
         return f"{head} {probe.illegal} is not a legal move here."
@@ -320,28 +317,7 @@ def examine(
     if after.is_game_over():
         parts.append(f"the game is over after {played} ({after.result()}).")
         return " ".join(parts)
-    moves = [m.uci() for m in probe.parsed]
-    own = next(
-        (
-            line
-            for line in known
-            if len(line.moves) > len(moves) and line.moves[: len(moves)] == moves
-        ),
-        None,
-    )
-    if own is not None and all(m != chess.Move.null() for m in probe.parsed):
-        lines = [
-            Line(
-                moves=own.moves[len(moves) :],
-                depth=own.depth,
-                # From the side to move after the probe, as a fresh search would give it.
-                expected_score=(
-                    own.expected_score if len(moves) % 2 == 0 else 1.0 - own.expected_score
-                ),
-            )
-        ]
-    else:
-        lines = engine.analyse(after, depth=depth)
+    lines = engine.analyse(after, depth=depth)
     if not lines:
         return f"{head} the engine has nothing to say about the position after {played}."
     score = lines[0].expected_score if after.turn == user_colour else 1.0 - lines[0].expected_score
@@ -522,7 +498,6 @@ def analyse_named(
     depth: int = 14,
     static: bool = False,
     pieces_board: chess.Board | None = None,
-    known: Sequence[Line] = (),
 ) -> list[str]:
     """The engine's word on what the player asked about: one line per probe, or none when
     their words name nothing to examine. The moves named in the words are examined as one
@@ -540,7 +515,7 @@ def analyse_named(
     out: list[str] = []
     best: Line | None = None
     if engine is not None and any(p.square is None for p in probes):
-        before = list(known) or engine.analyse(board, depth=depth)
+        before = engine.analyse(board, depth=depth)
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:
@@ -560,7 +535,6 @@ def analyse_named(
                     user_colour=user_colour,
                     level=level,
                     depth=depth,
-                    known=known,
                 )
             )
     return out

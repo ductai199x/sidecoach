@@ -3277,8 +3277,6 @@ class Coach:
                 # Pieces and squares as the board stands now, whatever position the question
                 # is about.
                 pieces_board=self.board,
-                # The lines the sheet already shows: a move they start is read from them.
-                known=position.analysis.lines if position.analysis is not None else (),
             )
         except Exception as exc:  # noqa: BLE001
             self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"

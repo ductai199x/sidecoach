@@ -569,7 +569,9 @@ class PanelEngine:
             self._assessing = assessing
             self._emit("sys", "info" if assessing.on else "warn", f"engine: {assessing.detail}")
         if self._coaching is None:
-            coaching = _Coaching(self.settings, self.coach and self._assessing.on)
+            coaching = _Coaching(
+                self.settings, self.coach and self._assessing.on, self._assessing.computed
+            )
             coaching.sink = lambda _message: None
             if coaching.coach is not None:
                 coaching.coach.stream_sink = self._stream_sink

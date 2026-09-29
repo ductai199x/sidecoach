@@ -6,6 +6,7 @@ from __future__ import annotations
 import chess
 import pytest
 
+from sidecoach.analysis.computed import Computed, ComputedFirst
 from sidecoach.coach import situation
 from sidecoach.coach.coach import _great_meaning, in_check_threat
 from sidecoach.coach.conversation import _also_stopped
@@ -106,6 +107,9 @@ class _NoSearch:
     def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
         raise AssertionError("a move the position's own lines play needs no second search")
 
+    def close(self) -> None:
+        return
+
 
 def test_a_named_move_the_lines_play_is_read_from_them():
     # 64.Bd2: engine line 2 had Rxh3, a second search after Bd2 had Kh6 -- and the model,
@@ -115,14 +119,15 @@ def test_a_named_move_the_lines_play_is_read_from_them():
         Line(moves=["f4f5", "h1h3", "e3g5"], depth=20, expected_score=0.50),
         Line(moves=["e3d2", "h1h3", "f4f5", "h3g3"], depth=20, expected_score=0.50),
     ]
+    computed = Computed()
+    computed.add(board, known)
     text = examine(
         parse_probe("your Bd2", ["Bd2"], board),
         board,
-        _NoSearch(),
+        ComputedFirst(_NoSearch(), computed),
         known[0],
         user_colour=chess.WHITE,
         level=DisclosureLevel.LINE,
-        known=known,
     )
     assert "the opponent's reply would be 64... Rxh3" in text
     assert "0.50 from the player's side" in text

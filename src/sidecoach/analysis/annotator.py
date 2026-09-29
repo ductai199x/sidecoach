@@ -23,6 +23,7 @@ from typing import Protocol
 import chess
 
 from sidecoach.analysis import exchange, motifs
+from sidecoach.analysis.computed import Computed
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines
 from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import (
@@ -134,12 +135,16 @@ class GameAnnotator:
     # the game has reached: what looking ahead saved.
     _ahead: set[str] = field(default_factory=set, init=False, repr=False)
     ahead_hits: int = field(default=0, init=False)
+    # Every search's lines as it finishes each usable depth, for any reader at any time (the
+    # coach's engine reads it before it searches).
+    computed: Computed = field(default_factory=Computed, init=False, repr=False)
 
     def reset(self) -> None:
         """Forget the cache; a new game shares no positions with the last one."""
         self._cache.clear()
         self._verdict_cache.clear()
         self._ahead.clear()
+        self.computed.clear()
         self._previous = None
 
     def look_ahead(self, board: chess.Board) -> Measured:
@@ -175,6 +180,7 @@ class GameAnnotator:
         if thin is not None:
             return thin
         lines = self.engine.analyse(board, depth=self.depth, multipv=1)
+        self.computed.add(board, lines, thin=True)
         thin = Measured(
             fen=key,
             lines=lines,
@@ -219,14 +225,25 @@ class GameAnnotator:
         early: bool = False,
         on_depth: Callable[[list[Line]], None] | None = None,
     ) -> Measured:
+        usable = min(EARLY_DEPTH, depth)
+
+        def finished(found: list[Line]) -> None:
+            """A depth done: kept from the first usable one, and handed on."""
+            if found and found[0].depth >= usable:
+                self.computed.add(board, found)
+            if on_depth is not None:
+                on_depth(found)
+
         lines = self.engine.analyse(
             board,
             depth=depth,
             multipv=self.multipv,
             # The best line carried on to its point costs seconds; the full depth does it.
             carry_best=not early,
-            on_depth=on_depth,
+            on_depth=finished,
         )
+        # Before the side searches: the lines are the news, and a reader has them now.
+        self.computed.add(board, lines)
         searched = self.with_threats
         return Measured(
             fen=board.fen(),

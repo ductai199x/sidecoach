@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from sidecoach.analysis.annotator import Analyser, Book, Tagger
     from sidecoach.analysis.chesscom import Overview
+    from sidecoach.analysis.computed import Computed, ComputedFirst
     from sidecoach.capture.base import CaptureBackend
     from sidecoach.coach.coach import Coach, DraftCheck
     from sidecoach.events import Event, MoveAssessment
@@ -342,7 +343,7 @@ def replay(
         assessing = _Assessing(
             settings, assess or coach, depth=depth, keep_every_position=profile is not None
         )
-        coaching = _Coaching(settings, coach and assessing.on)
+        coaching = _Coaching(settings, coach and assessing.on, assessing.computed)
         cache = None
         if themes:
             from sidecoach.vision.theme_cache import ThemeCache
@@ -855,6 +856,11 @@ class _Assessing:
     def on(self) -> bool:
         return self.analyser is not None
 
+    @property
+    def computed(self) -> Computed | None:
+        """What the engine has computed this game: the coach's engine reads it first."""
+        return self.analyser.annotator.computed if self.analyser is not None else None
+
     def submit(self, event: object) -> None:
         """A move to assess; or a position to measure, when a game begins from the middle
         (a puzzle, an analysis board, a game joined late) or jumps there (a resync): the
@@ -1005,8 +1011,10 @@ class _Coaching:
     thread; messages are printed on the tick that finds them.
     """
 
-    def __init__(self, settings: Settings, enabled: bool) -> None:
+    def __init__(self, settings: Settings, enabled: bool, computed: Computed | None = None) -> None:
         self.coach: Coach | None = None
+        # The coach's own engine, over what the analyser computed (`computed`).
+        self._engine: ComputedFirst | None = None
         self.log: TextIO | None = None
         # An optional sink for coach messages: when set (the panel), each message goes to it
         # instead of the terminal console. Left None, messages print as before.
@@ -1046,6 +1054,7 @@ class _Coaching:
         # No model (llm.provider none): nothing that would call one -- no claim extraction
         # from the user's words, no verifier; the templates and the board carry the coach.
         offline = bool(getattr(provider, "offline", False))
+        self._engine = _named_engine(settings, computed)
         self.coach = Coach(
             provider,
             policy=policy,
@@ -1055,7 +1064,7 @@ class _Coaching:
             # waited on a second full model call first (the runtime audit, 2026-09-25).
             claims=None if offline else _claims_check(_routine_provider(settings, provider)),
             verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
-            engine=_named_engine(settings),  # type: ignore[arg-type]
+            engine=self._engine,
             summarise_every=settings.coach.summarise_every,
             compact_record=settings.coach.compact_record,
             routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
@@ -1157,6 +1166,9 @@ class _Coaching:
         if self.coach is not None:
             self.coach.close()
             self.coach = None
+        if self._engine is not None:
+            self._engine.close()
+            self._engine = None
 
 
 class _Profiling:
@@ -1241,13 +1253,15 @@ def _draft_check() -> DraftCheck | None:
     return check
 
 
-def _named_engine(settings: Settings) -> object:
-    """A second Stockfish for the coach, for the moves the player names: the annotator's
-    engine is on its worker thread with the game's own positions. Bounded so a question
-    never waits on a slow position; None when Stockfish is not installed."""
+def _named_engine(settings: Settings, computed: Computed | None) -> ComputedFirst | None:
+    """The coach's engine, for the positions a question asks about: what the analyser has
+    computed (`computed`) first, and for the rest a second Stockfish, started at its first
+    search -- the annotator's is on its worker thread with the game's own positions. Bounded
+    so a question never waits on a slow position; None when Stockfish is not installed."""
     path = find_stockfish(settings)
     if path is None:
         return None
+    from sidecoach.analysis.computed import ComputedFirst
     from sidecoach.analysis.engine import Engine
 
     engine = Engine(
@@ -1259,8 +1273,7 @@ def _named_engine(settings: Settings) -> object:
         score_model=settings.engine.score_model,
         max_seconds=3.0,
     )
-    engine.open()
-    return engine
+    return ComputedFirst(engine, computed)
 
 
 def _routine_provider(settings: Settings, provider: object) -> object:
@@ -1885,7 +1898,7 @@ def watch(
     console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
 
     assessing = _Assessing(settings, analysis)
-    coaching = _Coaching(settings, coach and assessing.on)
+    coaching = _Coaching(settings, coach and assessing.on, assessing.computed)
     coaching.log = log
     profiling = _Profiling(settings, live=True)
     profiling.attach(coaching)

@@ -32,6 +32,7 @@ from providers import Metered  # noqa: E402
 
 from sidecoach import cli  # noqa: E402
 from sidecoach.analysis.annotator import GameAnnotator  # noqa: E402
+from sidecoach.analysis.computed import Computed  # noqa: E402
 from sidecoach.analysis.engine import Engine  # noqa: E402
 from sidecoach.coach.coach import Coach  # noqa: E402
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings  # noqa: E402
@@ -73,7 +74,7 @@ def wrong_move(board: chess.Board, solution: chess.Move) -> chess.Move:
     return sorted(forcing or others, key=lambda m: m.uci())[0]
 
 
-def build_coach(provider_name: str, ledger: Ledger | None) -> Coach:
+def build_coach(provider_name: str, ledger: Ledger | None, computed: Computed) -> Coach:
     """The coach the panel runs, on the model named (`none`: the offline templates)."""
     settings = load_settings()
     settings.llm.provider = provider_name
@@ -96,7 +97,7 @@ def build_coach(provider_name: str, ledger: Ledger | None) -> Coach:
         draft_check=cli._draft_check(),
         claims=None if offline else cli._claims_check(provider),
         verifier=None if offline else cli._verifier(settings, provider),  # type: ignore[arg-type]
-        engine=cli._named_engine(settings),  # type: ignore[arg-type]
+        engine=cli._named_engine(settings, computed),
         summarise_every=settings.coach.summarise_every,
         compact_record=settings.coach.compact_record,
         routine_provider=routine,  # type: ignore[arg-type]
@@ -141,7 +142,7 @@ def run(provider_name: str, seed: int, budget: int, show_record: int) -> None:
         if ledger is not None and ledger.over_budget():
             print("-- budget reached; stopped")
             break
-        coach = build_coach(provider_name, ledger)
+        coach = build_coach(provider_name, ledger, annotator.computed)
         board = chess.Board(puzzle["FEN"])
         moves = puzzle["Moves"].split()
         board.push_uci(moves[0])  # the opponent's move that sets the puzzle
