@@ -57,6 +57,12 @@ def _csv(tmp_path: Path) -> Path:
     return puzzle_file(tmp_path / "sample.csv", ROWS)
 
 
+def _store(tmp_path: Path) -> PuzzleStore:
+    puzzles = PuzzleStore(None)
+    puzzles.import_csv(_csv(tmp_path))
+    return puzzles
+
+
 def test_the_store_imports_the_csv_and_finds_puzzles_by_position_and_theme(
     tmp_path: Path,
 ) -> None:
@@ -130,11 +136,8 @@ def _fork_missed(f: object, san: str) -> None:
 
 
 def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> None:
-
-    puzzles = PuzzleStore(None)
-    puzzles.import_csv(_csv(tmp_path))
     f = Feed()
-    f.profiler = Profiler(f.store, session_id="s", ts=0.0, puzzles=puzzles)
+    f.profiler = Profiler(f.store, session_id="s", ts=0.0, puzzles=_store(tmp_path))
     f.send(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN))
     f.play("e4", label=Label.BOOK)
     f.play("e5", label=Label.BOOK)
@@ -152,8 +155,13 @@ def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> 
     assert f.store.recommended_ids() == [p.id for p in rec.puzzles]
 
 
-def _shown(board: chess.Board) -> chess.Board:
-    """The position as a cold read gives it: placement and side, no rights or counters."""
+def _faced(puzzles: PuzzleStore, puzzle_id: str) -> chess.Board:
+    """The puzzle's position after the site's first move, as a cold read gives it: placement
+    and side, no rights or counters."""
+    puzzle = puzzles.get(puzzle_id)
+    assert puzzle is not None
+    board = chess.Board(puzzle.fen)
+    board.push_uci(puzzle.moves[0])
     shown = chess.Board(None)
     for sq, piece in board.piece_map().items():
         shown.set_piece_at(sq, piece)
@@ -178,16 +186,11 @@ def _played(game_id: str, board: chess.Board, san: str) -> MovePlayed:
 
 
 def test_a_recommended_puzzle_opened_on_the_screen_is_scored(tmp_path: Path) -> None:
-    puzzles = PuzzleStore(None)
-    puzzles.import_csv(_csv(tmp_path))
+    puzzles = _store(tmp_path)
     store = Store(None)
     profiler = Profiler(store, session_id="s", ts=0.0, puzzles=puzzles)
     profiler._recommended_for["fork1"] = "fork"
-    fork = puzzles.get("fork1")
-    assert fork is not None
-    board = chess.Board(fork.fen)
-    board.push_uci("g8f6")
-    shown = _shown(board)
+    shown = _faced(puzzles, "fork1")
     started = GameStarted(game_id="p", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
     assert profiler.on_event(started, 1.0) == []
     out = profiler.on_event(_played("p", shown, "Nxe5"), 2.0)
@@ -196,11 +199,7 @@ def test_a_recommended_puzzle_opened_on_the_screen_is_scored(tmp_path: Path) -> 
     assert outcome.level == LEVEL_START + LEVEL_STEP and profiler.puzzle_level() == outcome.level
     assert store.attempts() == [("fork1", 2.0, True)]
     # A wrong move on the next one fails it and the level steps back.
-    pin = puzzles.get("pin01")
-    assert pin is not None
-    board = chess.Board(pin.fen)
-    board.push_uci("d7d6")
-    shown = _shown(board)
+    shown = _faced(puzzles, "pin01")
     started = GameStarted(game_id="q", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
     profiler.on_event(started, 3.0)
     out = profiler.on_event(_played("q", shown, "Nc3"), 4.0)
@@ -219,24 +218,15 @@ def test_the_next_puzzle_adopted_by_a_resync_is_scored_too(tmp_path: Path) -> No
     """The site puts the next puzzle up with no start the reconciler could see: it is
     adopted over the last, in the same game, and scored all the same (only the first of a
     run was)."""
-    puzzles = PuzzleStore(None)
-    puzzles.import_csv(_csv(tmp_path))
+    puzzles = _store(tmp_path)
     store = Store(None)
     profiler = Profiler(store, session_id="s", ts=0.0, puzzles=puzzles)
-    fork = puzzles.get("fork1")
-    assert fork is not None
-    board = chess.Board(fork.fen)
-    board.push_uci("g8f6")
-    shown = _shown(board)
+    shown = _faced(puzzles, "fork1")
     started = GameStarted(game_id="p", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
     profiler.on_event(started, 1.0)
     out = profiler.on_event(_played("p", shown, "Nxe5"), 2.0)
     assert next(e for e in out if isinstance(e, PuzzleOutcome)).puzzle_id == "fork1"
-    pin = puzzles.get("pin01")
-    assert pin is not None
-    board = chess.Board(pin.fen)
-    board.push_uci("d7d6")
-    shown = _shown(board)
+    shown = _faced(puzzles, "pin01")
     profiler.on_event(Resync(game_id="p", fen=shown.fen(), reason="position adopted"), 3.0)
     out = profiler.on_event(_played("p", shown, "Bb5+"), 4.0)
     outcome = next(e for e in out if isinstance(e, PuzzleOutcome))
@@ -245,7 +235,6 @@ def test_the_next_puzzle_adopted_by_a_resync_is_scored_too(tmp_path: Path) -> No
 
 
 def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
-
     coach, provider = scripted_coach([])
     coach.on_event(
         GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 0.0

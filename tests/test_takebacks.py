@@ -6,9 +6,11 @@ and the program lagged further behind with each one -- the engine measured every
 move before the replacement, a verdict on a withdrawn move was taken for the one that
 replaced it, and a board left unexplained for a while was sent downstream as a resync, so
 the coach and the engine restarted their numbering while the reconciler kept its own and
-the next takeback ("10 plies") meant nothing to them. Here the same shapes: a takeback of two
-plies with a different move after it, a stretch the reconciler cannot explain, and a
-takeback of eleven plies.
+the next takeback ("10 plies") meant nothing to them. Here the same shapes: a stretch the
+reconciler cannot explain and a takeback of eleven plies after it, and takebacks pressed
+again and again, two plies a press, then a different move. (A takeback of two plies, the
+Pixel game's, is the reconciler's in test_reconcile; through the engine it is the same as
+twelve.)
 """
 
 from __future__ import annotations
@@ -195,49 +197,6 @@ def _agree(c: Chain, since: int) -> None:
             )
 
 
-def test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said(tmp_path: Path) -> None:
-    """An engine a phone's speed behind the game, a takeback of two plies and a different
-    move: the replacement's verdict comes within two searches, where the withdrawn plies'
-    own searches came first (each a verdict and a whole analysis); and nothing about them is
-    said once the takeback is known."""
-    c = Chain(tmp_path)
-    try:
-        c.feed(c.frame(), 3)
-        c.play("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")
-        c.wait_for_engine()
-        search = 0.4
-        c.engine.seconds = search
-        c.play("c3", "Nf6")
-        withdrawn = c.board.board_fen()
-        c.take_back(2)
-        # Until a different move is played the board may only be browsing back, and the
-        # withdrawn moves still stand: the takeback is known, and let go of, from here.
-        since = len(c.drained)
-        c.engine.armed = True  # recorded from when the takeback is told
-        move = c.board.push_san("d3")
-        began = time.monotonic()
-        c.feed(c.frame(highlight=move), 3)
-        deadline = began + 10
-        while time.monotonic() < deadline and not any(
-            isinstance(e, MoveAssessment) and e.uci == "d2d3" for e in c.drained
-        ):
-            c.feed(c.frame(highlight=move), 1)
-            time.sleep(0.01)
-        waited = time.monotonic() - began
-        c.play("d6")
-        c.wait_for_engine()
-        c.engine.armed = c.engine.watching = False
-        assert [t.plies for t in c.events if isinstance(t, Takeback)] == [2]
-        # The rest of the search under way when the takeback came, then the replacement's
-        # own: 0.66 s here, where the withdrawn plies' searches first made it 1.05 s.
-        assert waited < 2.2 * search, f"the replacement's verdict took {waited:.2f} s"
-        # The engine was not asked about the withdrawn 4.c3 Nf6 once the takeback came.
-        assert withdrawn not in c.engine.asked
-        _agree(c, since)
-    finally:
-        c.close()
-
-
 def test_an_unexplained_stretch_keeps_the_numbering_for_a_long_takeback(tmp_path: Path) -> None:
     """The board unexplained for a long while, then back eleven plies with a different move:
     the reconciler, the engine glue and the coach count the same plies throughout."""
@@ -292,7 +251,11 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
     earlier position up for a frame or two -- the pieces caught sliding back in between --
     or lands ten plies back at once; then a different move. One takeback of ten plies, no
     resync, the plies counted alike everywhere, and the replacement's verdict prompt with
-    an engine a phone's speed behind."""
+    an engine a phone's speed behind: the rest of the search under way when the takeback
+    came, then its own, where the withdrawn plies' own searches came first (the takeback of
+    two plies on the Pixel: 0.66 s, where they made it 1.05 s); and nothing about the
+    withdrawn moves asked or said once the takeback is known
+    (test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said)."""
     c = Chain(tmp_path)
     try:
         c.feed(c.frame(), 3)

@@ -39,9 +39,9 @@ def sample_folder(tmp_path: Path) -> Path:
     return folder
 
 
-@pytest.fixture
-def book(tmp_path: Path) -> OpeningBook:
-    loaded = OpeningBook.load(sample_folder(tmp_path))
+@pytest.fixture(scope="module")
+def book(tmp_path_factory: pytest.TempPathFactory) -> OpeningBook:
+    loaded = OpeningBook.load(sample_folder(tmp_path_factory.mktemp("book")))
     assert loaded is not None
     return loaded
 
@@ -58,48 +58,41 @@ def test_fixture_loads(book: OpeningBook) -> None:
 
 
 def test_identify_takes_the_longest_match_and_grows_more_specific(book: OpeningBook) -> None:
+    italian = Opening("C50", "Italian Game", 5)
     assert book.identify(moves("1. e4")) == Opening("B00", "King's Pawn Game", 1)
     assert book.identify(moves("1. e4 e5")) == Opening("C20", "King's Pawn Game", 2)
     assert book.identify(moves("1. e4 e5 2. Nf3")) == Opening("C40", "King's Knight Opening", 3)
-    assert book.identify(moves("1. e4 e5 2. Nf3 Nc6 3. Bc4")) == Opening("C50", "Italian Game", 5)
+    assert book.identify(moves("1. e4 e5 2. Nf3 Nc6 3. Bc4")) == italian
+    # 3...Bc5 is in book but unnamed, so the game is still the Italian Game.
+    unnamed = moves("1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5")
+    assert book.in_book(unnamed) and book.identify(unnamed) == italian
     assert book.identify(moves("1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. d3")) == Opening(
         "C50", "Italian Game: Giuoco Pianissimo", 7
     )
 
 
-def test_unnamed_position_keeps_the_last_name(book: OpeningBook) -> None:
-    """3...Bc5 is in book but unnamed, so the game is still the Italian Game."""
-    line = moves("1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5")
-    assert book.in_book(line)
-    assert book.identify(line) == Opening("C50", "Italian Game", 5)
+# (case, the line, the ply it leaves the book at (None: it never does), the opening named).
+LINES = [
+    ("no moves", "", None, None),
+    ("off at the first move", "1. g4 d5", 0, None),
+    ("off mid-game", "1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. Nc3", 6, Opening("C50", "Italian Game", 5)),
+    (
+        "never off",
+        "1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6",
+        None,
+        Opening("B90", "Sicilian Defense: Najdorf Variation", 10),
+    ),
+]
 
 
-def test_empty_move_list(book: OpeningBook) -> None:
-    assert book.identify([]) is None
-    assert book.in_book([]) is True
-    assert book.deviation([]) is None
-
-
-def test_deviation_mid_game(book: OpeningBook) -> None:
-    line = moves("1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. Nc3")
-    assert book.in_book(line) is False
-    assert book.deviation(line) == 6
-    assert book.identify(line) == Opening("C50", "Italian Game", 5)
-
-
-def test_deviation_at_the_very_first_move(book: OpeningBook) -> None:
-    line = moves("1. g4")
-    assert book.deviation(line) == 0
-    assert book.in_book(line) is False
-    assert book.identify(line) is None
-    assert book.identify(moves("1. g4 d5")) is None
-
-
-def test_game_that_never_leaves_the_book(book: OpeningBook) -> None:
-    najdorf = moves("1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6")
-    assert book.deviation(najdorf) is None
-    assert book.in_book(najdorf) is True
-    assert book.identify(najdorf) == Opening("B90", "Sicilian Defense: Najdorf Variation", 10)
+@pytest.mark.parametrize(("case", "line", "leaves", "named"), LINES, ids=[r[0] for r in LINES])
+def test_a_line_is_in_book_until_it_deviates_and_keeps_the_last_name(
+    book: OpeningBook, case: str, line: str, leaves: int | None, named: Opening | None
+) -> None:
+    played = moves(line)
+    assert book.deviation(played) == leaves, case
+    assert book.in_book(played) is (leaves is None), case
+    assert book.identify(played) == named, case
 
 
 def test_transposition_matches_by_position(book: OpeningBook) -> None:

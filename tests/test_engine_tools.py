@@ -58,10 +58,17 @@ def test_analyse_plays_the_moves_and_gives_the_standing_the_lines_and_the_board(
     assert tools.log == ["analyse(Kg2 Rg1+)"]
 
 
-def test_a_move_that_cannot_be_played_stops_the_analysis_and_is_named() -> None:
+def test_a_call_the_tools_cannot_answer_is_told_what_was_wrong() -> None:
+    """A move that cannot be played stops the analysis and is named; so are a square that is
+    none, a start before a last move there is not, and a tool that does not exist."""
     tools = EngineTools(chess.Board(AFTER_RXF1), None, FirstLegal(), chess.BLACK)
-    out = tools.run("analyse", {"moves": ["Kg2", "Qd8"]})
-    assert "Qd8 is not a legal move there" in out
+    for name, arguments, said in (
+        ("analyse", {"moves": ["Kg2", "Qd8"]}, "Qd8 is not a legal move there"),
+        ("square", {"square": "z9"}, "is not a square"),
+        ("analyse", {"moves": [], "start": "before_last_move"}, "no last move"),
+        ("fly", {}, "No tool named 'fly'"),
+    ):
+        assert said in tools.run(name, arguments), (name, arguments)
 
 
 def test_before_the_last_move_is_where_the_move_was_played_from() -> None:
@@ -70,8 +77,6 @@ def test_before_the_last_move_is_where_the_move_was_played_from() -> None:
     )
     out = tools.run("analyse", {"moves": ["Rxf1+"], "start": "before_last_move"})
     assert out.startswith("After 3... Rxf1+ (from the position before the last move):")
-    none = EngineTools(chess.Board(AFTER_RXF1), None, FirstLegal(), chess.BLACK)
-    assert "no last move" in none.run("analyse", {"moves": [], "start": "before_last_move"})
 
 
 def test_square_says_what_stands_there_and_who_attacks_it() -> None:
@@ -82,26 +87,17 @@ def test_square_says_what_stands_there_and_who_attacks_it() -> None:
     assert "On g1: the player's rook." in out
     assert "Defended by the player's: bishop on a7." in out
     assert "Attacked by the opponent's: king on g2." in out
-    assert "is not a square" in tools.run("square", {"square": "z9"})
-
-
-def test_the_game_over_and_an_unknown_tool_are_said() -> None:
-    mate = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1")
-    tools = EngineTools(mate, None, FirstLegal(), chess.WHITE)
-    assert "The game is over there: checkmate, White wins." in tools.run(
-        "analyse", {"moves": ["Rd8#"]}
-    )
-    assert "No tool named 'fly'" in tools.run("fly", {})
 
 
 class ToolModel:
-    """A model that takes tools: it asks the engine first, then answers with what it got."""
+    """A model that takes tools: it makes the calls of each round in `rounds` in turn, then
+    answers with what it got."""
 
     name = "tool-model"
     tools_ok = True
 
-    def __init__(self, calls: Sequence[ToolCall], answer: str) -> None:
-        self.script = [list(calls)]
+    def __init__(self, rounds: Sequence[Sequence[ToolCall]], answer: str) -> None:
+        self.script = [list(calls) for calls in rounds]
         self.answer = answer
         self.seen: list[dict[str, Any]] = []
 
@@ -115,16 +111,21 @@ class ToolModel:
         return Completion(text=self.answer)
 
 
-def test_the_model_asks_the_engine_and_answers_from_what_it_returns() -> None:
-    engine = FirstLegal()
-    model = ToolModel(
-        [ToolCall(id="c1", name="analyse", arguments={"moves": ["Qxf7#"]})],
-        "Qxf7# is mate: the queen takes on f7 and the king has no square.",
-    )
-    coach = Coach(model, policy=_policy(), engine=engine)
+def _at_scholar(model: Any) -> Coach:
+    """The coach with `model` and the engine, the player to move at SCHOLAR, analysed."""
+    coach = Coach(model, policy=_policy(), engine=FirstLegal())
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     drain(coach)
+    return coach
+
+
+def test_the_model_asks_the_engine_and_answers_from_what_it_returns() -> None:
+    model = ToolModel(
+        [[ToolCall(id="c1", name="analyse", arguments={"moves": ["Qxf7#"]})]],
+        "Qxf7# is mate: the queen takes on f7 and the king has no square.",
+    )
+    coach = _at_scholar(model)
     model.seen.clear()
     coach.ask("what happens if I take on f7 with the queen?", 8.0)
     out = drain(coach)
@@ -143,12 +144,8 @@ def test_the_model_asks_the_engine_and_answers_from_what_it_returns() -> None:
 
 def test_a_model_that_keeps_asking_answers_after_the_last_round() -> None:
     calls = [ToolCall(id=f"c{i}", name="square", arguments={"square": "f7"}) for i in range(9)]
-    model = ToolModel([], "The pawn on f7 is defended only by the king.")
-    model.script = [[c] for c in calls]
-    coach = Coach(model, policy=_policy(), engine=FirstLegal())
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    drain(coach)
+    model = ToolModel([[c] for c in calls], "The pawn on f7 is defended only by the king.")
+    coach = _at_scholar(model)
     model.seen.clear()
     coach.ask("is f7 weak?", 8.0)
     out = drain(coach)
@@ -163,12 +160,7 @@ def test_the_line_asked_for_again_brings_the_engine_on_its_end() -> None:
     puzzle)."""
     from sidecoach.coach.coach import LINE_GIVEN
 
-    model = ToolModel([], "Qxf7# -- it is mate at once.")
-    model.script = []
-    coach = Coach(model, policy=_policy(), engine=FirstLegal())
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    drain(coach)
+    coach = _at_scholar(ToolModel([], "Qxf7# -- it is mate at once."))
     coach.ask("show me the line", 8.0)
     drain(coach)
     assert LINE_GIVEN not in coach.spoken[-1].calls[-1].prompt
@@ -198,10 +190,7 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
 
     for error, answered in (("400: tools not supported", True), ("503: down", False)):
         model = Refusing(error)
-        coach = Coach(model, policy=_policy(), engine=FirstLegal())
-        play_to_scholar(coach)
-        coach.on_event(mate_analysis(6, decisive=False), 7.0)
-        drain(coach)
+        coach = _at_scholar(model)
         model.seen.clear()
         coach.ask("is f7 weak?", 8.0)
         said = [m.text for m in drain(coach)]
@@ -210,12 +199,10 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
 
 
 def test_a_model_without_tools_is_asked_as_before() -> None:
+    """A provider that takes no tools (no `tools_ok`) is never sent them, the engine there or
+    not: its `chat` takes no `tools`, and the question is answered as before the tools."""
     from tests.fakes import ScriptedProvider
 
-    model = ScriptedProvider(["It is a fine square for the knight."])
-    coach = Coach(model, policy=_policy(), engine=FirstLegal())
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    drain(coach)
+    coach = _at_scholar(ScriptedProvider(["It is a fine square for the knight."]))
     coach.ask("is f7 weak?", 8.0)
     assert drain(coach)[-1].text == "It is a fine square for the knight."

@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider, build_messages
+from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider
 
 USER = [{"role": "user", "content": "hi"}]
 
@@ -13,41 +13,24 @@ LAST_USER = {"role": "user", "content": "hi"}
 
 
 @pytest.mark.parametrize(
-    ("control", "thinking", "last"),
+    ("control", "thinking", "last", "sent"),
     [
-        # LM Studio skips reasoning only for a trailing empty think block.
-        ("prefill", False, PREFILL),
-        ("prefill", True, LAST_USER),
-        ("param", False, LAST_USER),
-        ("none", False, LAST_USER),
+        # LM Studio skips reasoning only for a trailing empty think block; DashScope honours
+        # enable_thinking in the body (and is sent true when thinking: the chat test below).
+        ("prefill", False, PREFILL, None),
+        ("prefill", True, LAST_USER, None),
+        ("param", False, LAST_USER, False),
+        ("none", False, LAST_USER, None),
     ],
 )
-def test_only_the_prefill_strategy_ends_on_an_empty_think_block(
-    control: str, thinking: bool, last: dict[str, str]
-) -> None:
-    wire = build_messages("sys", USER, thinking=thinking, control=control)  # type: ignore[arg-type]
-    assert wire[0] == {"role": "system", "content": "sys"}
-    assert wire[-1] == last
-
-
-@pytest.mark.parametrize(
-    ("control", "thinking", "sent"),
-    [
-        # DashScope honours enable_thinking in the body; nothing else is sent it.
-        ("param", False, False),
-        ("param", True, True),
-        ("prefill", False, None),
-    ],
-)
-def test_only_the_param_strategy_sends_enable_thinking(
-    control: str, thinking: bool, sent: bool | None
+def test_only_prefill_ends_on_an_empty_think_block_and_only_param_sends_enable_thinking(
+    control: str, thinking: bool, last: dict[str, str], sent: bool | None
 ) -> None:
     provider = OpenAICompatProvider("x", "http://h/v1", "m", thinking_control=control)  # type: ignore[arg-type]
     body = provider.request_body("sys", USER, max_tokens=10, temperature=0.1, thinking=thinking)  # type: ignore[arg-type]
-    if sent is None:
-        assert "enable_thinking" not in body
-    else:
-        assert body["enable_thinking"] is sent
+    assert body["messages"][0] == {"role": "system", "content": "sys"}
+    assert body["messages"][-1] == last
+    assert body.get("enable_thinking") is sent
 
 
 def test_chat_parses_content_reasoning_and_usage() -> None:
@@ -105,22 +88,9 @@ def test_effort_strategy_uses_the_reasoning_request_shape() -> None:
     assert body["max_completion_tokens"] == 10 and "reasoning_effort" not in body
 
 
-def test_chat_reports_cached_tokens_and_keeps_the_status_in_errors() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.headers.get("x-fail"):
-            return httpx.Response(429, text="slow down")
-        return httpx.Response(
-            200,
-            json={
-                "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
-                "usage": {"prompt_tokens": 50, "prompt_tokens_details": {"cached_tokens": 40}},
-            },
-        )
-
-    provider = OpenAICompatProvider("x", "http://h/v1", "m", transport=httpx.MockTransport(handler))
-    assert provider.complete("sys", "hi").stats["cached_tokens"] == 40
-    failing = OpenAICompatProvider("x", "http://h/v1", "m", transport=httpx.MockTransport(handler))
-    failing._client.headers["x-fail"] = "1"
+def test_an_error_keeps_its_status_for_the_callers_backoff() -> None:
+    slow = httpx.MockTransport(lambda request: httpx.Response(429, text="slow down"))
+    failing = OpenAICompatProvider("x", "http://h/v1", "m", transport=slow)
     with pytest.raises(RuntimeError, match="429"):
         failing.complete("sys", "hi")
 

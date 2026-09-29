@@ -37,8 +37,8 @@ class FlakyBackend:
         pass
 
 
-def test_capture_loop_retries_failed_grabs() -> None:
-    backend = FlakyBackend(failures=2)
+def test_capture_loop_retries_failed_grabs_even_when_the_reopen_fails() -> None:
+    backend = FlakyBackend(failures=2, reopen_failures=2)
     frames = []
     for frame_id, _ts, frame in capture_loop(
         backend, Region(0, 0, 8, 8), fps=100, retry_delay=0.0, stop=lambda: len(frames) >= 3
@@ -47,17 +47,6 @@ def test_capture_loop_retries_failed_grabs() -> None:
         frames.append(frame_id)
     assert frames == [0, 1, 2]
     assert backend.reopened == 2 and backend.grabs == 5
-
-
-def test_capture_loop_survives_a_failed_reopen() -> None:
-    backend = FlakyBackend(failures=2, reopen_failures=2)
-    frames = []
-    for frame_id, _ts, _frame in capture_loop(
-        backend, Region(0, 0, 8, 8), fps=100, retry_delay=0.0, stop=lambda: len(frames) >= 2
-    ):
-        frames.append(frame_id)
-    assert frames == [0, 1]
-    assert backend.reopened == 2
 
 
 def test_capture_loop_gives_up_after_too_many_failures() -> None:

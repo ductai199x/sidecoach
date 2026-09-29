@@ -152,9 +152,6 @@ def test_a_knight_is_freed_never_uncovered():
     # 25...Ke7 stepped off the d-file, and the knight on d6, pinned there by the rook on d1,
     # could take on e4 again: "uncovers an attack ... by the knight on d6" was said back.
     board = chess.Board("7r/1p1k2p1/1Ppnbp2/r3p3/NRP1P2p/pK3P2/P3B1PP/3R4 b - - 2 25")
+    # (A piece that stood in the line does uncover it: test_effects_legal.py's discoveries.)
     effects = describe_effects(board, board.parse_san("Ke7"))
     assert "frees the knight on d6 to attack the pawn on e4" in effects
-    # A piece that stood in the line does uncover it.
-    line = chess.Board("7r/8/8/8/3N4/8/1B6/K6k w - - 0 1")
-    effects = describe_effects(line, line.parse_san("Nb5"))
-    assert "uncovers an attack on the rook on h8 by the bishop on b2" in effects

@@ -42,9 +42,12 @@ def test_voice_labels_read_as_accent_sex_and_name() -> None:
 
 
 def test_the_voice_list_falls_back_to_the_known_names(tmp_path: Path) -> None:
+    """With no voices file (and a missing one, as the settings describe it below) or one
+    that will not open, the known names are offered."""
     assert english_voices(None) == list(ENGLISH_VOICES)
-    assert english_voices(tmp_path / "missing.bin") == list(ENGLISH_VOICES)
-    assert english_voices(tmp_path / "not-a-file.bin") == list(ENGLISH_VOICES)
+    unreadable = tmp_path / "voices-v1.0.bin"
+    unreadable.write_bytes(b"not a voices bundle")
+    assert english_voices(unreadable) == list(ENGLISH_VOICES)
 
 
 def test_the_default_persona_is_the_evaluated_one_and_the_choices_match() -> None:

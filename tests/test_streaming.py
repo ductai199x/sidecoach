@@ -10,7 +10,14 @@ from collections.abc import Callable, Sequence
 
 import chess
 
-from sidecoach.coach.coach import Coach, Speaker, _FirstCandidate, _Request, _sample_reply
+from sidecoach.coach.coach import (
+    IDEA_DIRECTIVE,
+    Coach,
+    Speaker,
+    _FirstCandidate,
+    _Request,
+    directive_limits,
+)
 from sidecoach.coach.disclosure import DisclosureLevel, PositionFacts
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.events import GameStarted, Side, Trigger
@@ -99,6 +106,11 @@ def test_the_first_candidate_streams_sentence_by_sentence_and_closes_the_stream(
     assert spoken.streamed and spoken.message.text == "Nf3 was best. It develops with a threat."
     assert provider.stopped_early, "the other candidates were never written"
     assert not spoken.problems and speaker.fallbacks == 0
+    # A bare reply, without markers, is one candidate and streams too.
+    heard.clear()
+    speaker = Speaker(StreamingProvider("Just one plain reply. And a second sentence."))
+    assert speaker.speak_now(_request(lambda s: heard.append(s) or True)).streamed
+    assert heard == ["Just one plain reply.", "And a second sentence."]
 
 
 def test_a_sentence_that_fails_the_check_stops_the_stream_with_what_was_said() -> None:
@@ -156,29 +168,14 @@ def test_the_sink_can_stop_the_stream_when_the_board_moves_on() -> None:
     assert spoken.streamed and spoken.message.text == "One."
 
 
-def test_a_bare_reply_without_markers_streams_too() -> None:
-    provider = StreamingProvider("Just one plain reply. And a second sentence.")
-    speaker = Speaker(provider)
-    heard: list[str] = []
-    spoken = speaker.speak_now(_request(lambda s: heard.append(s) or True))
-    assert heard == ["Just one plain reply.", "And a second sentence."]
-    assert spoken.streamed
-
-
-def test_without_a_sink_the_reply_is_sampled_whole_as_before() -> None:
-    provider = StreamingProvider("[p=1.0] Whole reply.")
-    speaker = Speaker(provider)
-    spoken = speaker.speak_now(_request(None))
-    assert not spoken.streamed and spoken.message.text == "Whole reply."
-    assert provider.streamed_calls == 0
-
-
-def test_a_routine_request_takes_the_routine_provider() -> None:
+def test_without_a_sink_the_reply_is_sampled_whole_from_the_model_the_request_takes() -> None:
     main = StreamingProvider("[p=1.0] From the main model.")
     routine = StreamingProvider("[p=1.0] From the routine model.")
     speaker = Speaker(main, routine_provider=routine)
+    spoken = speaker.speak_now(_request(None))
+    assert not spoken.streamed and spoken.message.text == "From the main model."
+    assert main.streamed_calls == 0
     assert speaker.speak_now(_request(None, routine=True)).message.text == "From the routine model."
-    assert speaker.speak_now(_request(None)).message.text == "From the main model."
 
 
 def test_the_reader_handles_deltas_that_split_markers() -> None:
@@ -213,6 +210,19 @@ def test_a_stop_at_the_buffer_end_and_a_bare_move_number_are_not_sentences() -> 
     assert heard == ["6. d3 was good, costing 0.03; 6. Bxc6+ was better.", "And so on."], heard
 
 
+def test_the_stream_stops_at_the_tasks_length_and_its_slack() -> None:
+    """The runtime audit: with the voice on, an eight-sentence homily went out whole. The
+    length is the directive's own: the first hint's two or three sentences, and one more for
+    the question it offers on top ("then, if you like, one question"), which it does not
+    require (the prompt audit, 2026-09-28)."""
+    assert directive_limits(IDEA_DIRECTIVE) == (4, None)
+    heard: list[str] = []
+    reader = _FirstCandidate(lambda t: heard.append(t) is None, lambda t: [], limit=1)
+    reader.feed("One. Two. Three. Four. Five. ")
+    reader.finish()
+    assert sum(t.count(".") for t in heard) == 3, "the limit and its slack, no more"
+
+
 def test_the_coach_hands_its_sink_to_the_request() -> None:
     """The coach asks its sink factory for each request it makes (`stream_sink`, with the
     trigger and the ply) and hands the sink it gets to the request, which the Speaker then
@@ -238,4 +248,3 @@ def test_the_coach_hands_its_sink_to_the_request() -> None:
     coach.speaker._requests.put(queued)
     coach.speaker.run_pending()
     assert provider.streamed_calls == 1, "the reply was streamed to the sink"
-    assert _sample_reply([(1.0, "x")]) == "x"

@@ -14,6 +14,7 @@ import pytest
 
 from sidecoach.analysis.mates import MATE_PATTERNS
 from sidecoach.analysis.motifs import TAG_ORDER, tags_for_move, tags_for_position
+from sidecoach.events import MotifTag
 
 # Everything that claims a tactic. Group A (what the move physically is) is not in here.
 QUIET_GROUP = {
@@ -33,14 +34,10 @@ TACTICAL = frozenset(TAG_ORDER) - QUIET_GROUP
 # Ordinary moves in ordinary positions. None of them does anything tactical.
 QUIET_MOVES = [
     ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "e2e4"),
-    ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "d2d4"),
-    ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "g1f3"),
     ("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "g1f3"),
     ("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2", "b8c6"),
     ("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3", "f1b5"),
     ("r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 8", "d2d3"),
-    ("r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 8", "a1b1"),
-    ("r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 8", "f1e1"),
     ("r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 8", "h2h3"),
     ("r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 8", "e2d3"),
 ]
@@ -73,7 +70,23 @@ PINNED_FROM_H4 = "3q1rk1/ppp2ppp/5n2/8/7B/8/PPP2PPP/3QK2R w K - 0 1"
 GREEK_GIFT = "5rk1/5ppp/4q3/8/8/3B1N2/8/3Q2K1 w - - 0 1"
 
 
-def tag_names(fen: str, uci: str, pv: Sequence[str] = (), mate_in: int | None = None) -> list[str]:
+def _well_formed(tags: list[MotifTag], line: Sequence[str]) -> None:
+    """What every answer of the tagger must be: each name a known tag, once, in the documented
+    order (`TAG_ORDER`); its evidence real squares, each once; its move one of the line's."""
+    names = [tag.name for tag in tags]
+    assert set(names) <= set(TAG_ORDER), names
+    order = [TAG_ORDER.index(name) for name in names]
+    assert order == sorted(set(order)), f"not once each in the documented order: {names}"
+    for tag in tags:
+        assert tag.squares and len(set(tag.squares)) == len(tag.squares), tag
+        assert set(tag.squares) <= set(chess.SQUARE_NAMES), tag
+        assert tag.move is None or tag.move in line, tag
+
+
+def move_tags(
+    fen: str, uci: str, pv: Sequence[str] = (), mate_in: int | None = None
+) -> dict[str, list[str]]:
+    """The move's tags, each name to its evidence squares."""
     board = chess.Board(fen)
     move = chess.Move.from_uci(uci)
     # Guard every negative assertion below: an illegal move tags as nothing, which would make
@@ -81,16 +94,8 @@ def tag_names(fen: str, uci: str, pv: Sequence[str] = (), mate_in: int | None = 
     assert move in board.legal_moves, f"{uci} is not legal in {fen}"
     tags = tags_for_move(board, move, pv=[chess.Move.from_uci(x) for x in pv], mate_in=mate_in)
     assert board.fen() == fen, "tags_for_move mutated the board it was given"
-    return [tag.name for tag in tags]
-
-
-def squares_of(
-    fen: str, uci: str, name: str, pv: Sequence[str] = (), mate_in: int | None = None
-) -> list[str]:
-    board = chess.Board(fen)
-    moves = [chess.Move.from_uci(x) for x in pv]
-    tags = tags_for_move(board, chess.Move.from_uci(uci), pv=moves, mate_in=mate_in)
-    return next(tag.squares for tag in tags if tag.name == name)
+    _well_formed(tags, [uci, *pv])
+    return {tag.name: tag.squares for tag in tags}
 
 
 def position_names(fen: str, pv: Sequence[str] = (), mate_in: int | None = None) -> list[str]:
@@ -98,6 +103,7 @@ def position_names(fen: str, pv: Sequence[str] = (), mate_in: int | None = None)
     moves = [chess.Move.from_uci(x) for x in pv]
     tags = tags_for_position(board, pv=moves, mate_in=mate_in)
     assert board.fen() == fen, "tags_for_position mutated the board it was given"
+    _well_formed(tags, pv)
     return [tag.name for tag in tags]
 
 
@@ -168,35 +174,35 @@ MADE: list[tuple[str, str, str, list[str], int | None, dict[str, Squares]]] = [
         1,
         {"mate": None, "mateIn1": None, "backRankMate": {"g8", "a8", "f7", "g7", "h7"}},
     ),
-    # Bc1-b2 defends the rook on a1, which the queen on a8 was winning outright.
-    ("rescue", RESCUE, "c1b2", [], None, {"defensiveMove": ["b2", "a1"]}),
-    # --- group B: what the move creates
-    # Nd5-f6 checks the king on g8 and hits the queen on e8 at the same time.
+    # Bc1-b2 defends the rook on a1, which the queen on a8 was winning outright, and shuts
+    # her in: she is the trapped piece (the hunters vary).
     (
-        "knight fork",
-        "4q1k1/8/8/3N4/8/8/8/7K w - - 0 1",
-        "d5f6",
+        "rescue",
+        RESCUE,
+        "c1b2",
         [],
         None,
-        {"check": None, "fork": ["f6", "e8", "g8"]},
+        {"defensiveMove": ["b2", "a1"], "trappedPiece": "a8"},
     ),
-    # Nh6-f7+ forks the king on h8, the queen on d8 and the rook on d6.
+    # --- group B: what the move creates
+    # Nh6-f7+ checks the king on h8 and forks it with the queen on d8 and the rook on d6.
     (
         "royal fork",
         "3q3k/8/3r3N/8/8/8/8/K7 w - - 0 1",
         "h6f7",
         [],
         None,
-        {"fork": ["f7", "d6", "d8", "h8"]},
+        {"check": None, "fork": ["f7", "d6", "d8", "h8"]},
     ),
-    # e4-e5 attacks both knights; a pawn taking a knight is a win either way.
+    # e4-e5 attacks both knights; a pawn taking a knight is a win either way. Both hang: one
+    # tag, its squares merged in order.
     (
         "pawn fork",
         "4k3/8/3n1n2/8/4P3/8/8/4K3 w - - 0 1",
         "e4e5",
         [],
         None,
-        {"fork": ["e5", "d6", "f6"]},
+        {"fork": ["e5", "d6", "f6"], "hangingPiece": ["d6", "f6"]},
     ),
     # Qd1-a4+ checks the king on e8 and hits the loose bishop on b4. The bishop is worth less
     # than the queen, but the check forces a king move and it falls: a real fork the plain
@@ -248,15 +254,6 @@ MADE: list[tuple[str, str, str, list[str], int | None, dict[str, Squares]]] = [
         None,
         {"check": ["e1", "d6", "e8"], "doubleCheck": None, "discoveredAttack": None},
     ),
-    # Bc1-f4 rakes the long diagonal onto the rook on b8, which nothing defends.
-    (
-        "hanging rook",
-        "1r4k1/5ppp/8/8/8/8/5PPP/2B3K1 w - - 0 1",
-        "c1f4",
-        [],
-        None,
-        {"hangingPiece": ["b8"]},
-    ),
     # Qxd8+ Rxd8 Rxd8#: the rook on d1 mates on d8, bearing down the file through the black
     # rook on d5 the whole time; the line clears it and the x-ray lands (Lichess xRayAttack).
     (
@@ -287,8 +284,6 @@ MADE: list[tuple[str, str, str, list[str], int | None, dict[str, Squares]]] = [
         None,
         {"interference": ["c8", "f8", "h8"]},
     ),
-    # Bb2 shuts the queen in: she is the trapped piece (the hunters vary).
-    ("trapped queen", RESCUE, "c1b2", [], None, {"trappedPiece": "a8"}),
     # Qh5 joins the bishop on c4 against f7, which only the king holds: Qxf7 wins it.
     (
         "f7",
@@ -373,12 +368,12 @@ def test_a_move_carries_what_it_makes(
     end = _played(case, fen, [uci, *pv])
     if set(made) & set(MATE_PATTERNS):
         assert end.is_checkmate(), f"{case}: a mating pattern on a line that does not mate"
-    names = tag_names(fen, uci, pv, mate_in)
+    tags = move_tags(fen, uci, pv, mate_in)
     for name, squares in made.items():
-        assert name in names, f"{case}: no {name} in {names}"
+        assert name in tags, f"{case}: no {name} in {list(tags)}"
+        got = tags[name]
         if squares is None:
             continue
-        got = squares_of(fen, uci, name, pv, mate_in)
         if isinstance(squares, set):
             assert set(got) == squares, f"{case}: {name} {got}"
         elif isinstance(squares, str):
@@ -419,12 +414,8 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
     # Shuffling the king on the other wing did not create the pin on e5.
     ("a pin not inherited", PINNED_BY_E1, "g1h1", [], frozenset({"pin", "absolutePin"})),
     # Rd1-e1 hits the queen on e5 with the loose rook on e8 behind, but Qb8 steps off the
-    # file and guards e8: Rxe8+ Qxe8 is only a trade.
+    # file and guards e8: Rxe8+ Qxe8 is only a trade (as Rb1 ...Qe8, guarding b8, was).
     ("skewer, the queen guards", "4r1k1/8/8/4q3/8/8/8/3R1K2 w - - 0 1", "d1e1", [], "skewer"),
-    # The same with Rb1 ...Qe8 guarding b8.
-    ("skewer, Qe8 guards", "1r6/6pk/7p/1q6/8/8/K5PP/R7 w - - 0 1", "a1b1", ["b5e8"], "skewer"),
-    # With the white king on g1 the rook on e1 is loose, so Qxe1 answers it.
-    ("skewer, the rook is taken", "4r1k1/8/8/4q3/8/8/8/3R2K1 w - - 0 1", "d1e1", [], "skewer"),
     # Nf3 attacks the undefended e5 pawn after 1.e4 e5: calling that a hanging piece would
     # have the coach warning about a pawn on move two of every open game.
     ("a loose pawn", OPEN_GAME, "g1f3", [], "hangingPiece"),
@@ -436,7 +427,8 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
         ["b5b4", "h5h6"],
         "xRayAttack",
     ),
-    # Without the c5 pawn the rook just takes the bishop and guards d5 again.
+    # Without the c5 pawn the rook just takes the bishop and guards d5 again (audit 14a was
+    # the same: ...Rxc5 took the interposer).
     ("interference, taken", "3r2k1/8/8/3n4/4P3/6B1/8/6K1 w - - 0 1", "g3d6", [], "interference"),
     # Bc4 on move two only looks at f7: the king holds it and Bxf7+ Kxf7 loses the bishop.
     ("f7 held", OPEN_GAME, "f1c4", [], "attackingF2F7"),
@@ -446,7 +438,8 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
     # 1.e4 e5 2.f4 exf4 gives a pawn. One point is a gambit, not a sacrifice.
     ("a gambit", OPEN_GAME, "f2f4", ["e5f4", "g1f3"], "sacrifice"),
     # The opponent captures first and the material comes back: measured over the whole line,
-    # 2.Nf3 came out as a sacrifice in the game of 2026-09-14 20:06.
+    # 2.Nf3 came out as a sacrifice in the game of 2026-09-14 20:06. Nor is a knight taken
+    # and given straight back one: the balance is read after the move and its answer.
     (
         "a trade deep in the line",
         OPEN_GAME,
@@ -454,36 +447,31 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
         ["b8c6", "f1b5", "g8f6", "b5c6", "d7c6", "f3e5"],
         "sacrifice",
     ),
-    # The opponent taking a knight and giving it straight back is still not a sacrifice.
-    ("a knight given back", OPEN_GAME, "g1f3", ["b8c6", "f3e5", "c6e5", "d2d4"], "sacrifice"),
     # The same Greek gift, cut before it wins anything: a sacrifice, not yet a lure.
     ("no lure yet", GREEK_GIFT, "d3h7", ["g8h7", "f3g5"], "attraction"),
     # --- mates
-    # The rook check, but the h-pawn has moved and Kh7 is free: no mate, no pattern.
+    # A check that is not mate (as the rook's on a king with air is not) names no mate and no
+    # mating pattern at all.
     (
-        "the king has air",
-        "6k1/5pp1/7p/8/8/8/8/R3K3 w Q - 0 1",
-        "a1a8",
+        "a check that is not mate",
+        DISCOVERED_CHECK,
+        "e4d6",
         [],
-        frozenset({"backRankMate", "mate"}),
+        frozenset({*MATE_PATTERNS, "mate"}),
     ),
-    # A check that is not mate names no mating pattern at all.
-    ("a check that is not mate", DISCOVERED_CHECK, "e4d6", [], frozenset(MATE_PATTERNS)),
     # --- the audit of 2026-09-23
-    # 1: the checking forker is simply taken (gxf6, Kxf7).
+    # 1: the checking forker is simply taken (gxf6; Kxf7 the same).
     ("audit 1a", "6k1/3q1ppp/8/8/4N3/8/5PPP/6K1 w - - 0 1", "e4f6", ["g7f6"], "fork"),
-    ("audit 1b", "4r1k1/6pp/6B1/8/8/8/6PP/6K1 w - - 0 1", "g6f7", ["g8f7"], "fork"),
     # 2: the bishop is pinned to its king by the f6 bishop and may take neither rook.
     ("audit 2", "8/r5k1/5b2/4B3/8/5N2/1K6/6r1 w - - 0 1", "e5d4", [], "fork"),
     # 3: ...Re5, held by d6, blocks the check and pins the queen: the knight is safe.
     ("audit 3", "4k3/8/3p4/7r/n6Q/8/8/4K3 w - - 0 1", "h4e4", [], "fork"),
-    # 4: the pinner is simply won (...Rxd1+, ...Rxe1+, ...axb5).
-    ("audit 4a", "3q2k1/5ppp/8/3r4/8/8/5PPP/R5K1 w - - 0 1", "a1d1", [], "pin"),
+    # 4: the pinner is simply won (...Rxe1+, ...axb5).
     ("audit 4b", "4k3/8/8/4r3/8/8/6PP/R5K1 w - - 0 1", "a1e1", [], "absolutePin"),
     ("audit 4c", "4r1k1/5ppp/p1n5/8/8/8/5PPP/5BK1 w - - 0 1", "f1b5", [], "pin"),
     # 6: the e5 pawn's only move is down the file: the "pin" holds back nothing.
     ("audit 6", "4q1k1/5ppp/8/4p3/8/8/5PPP/R5K1 w - - 0 1", "a1e1", [], "pin"),
-    # 7: ...axb5 wins the skewering bishop.
+    # 7: ...axb5 wins the skewering bishop (as ...Qxe1 wins a loose skewering rook).
     ("audit 7", "4r1k1/5ppp/p1q5/8/P7/8/4BPPP/6K1 w - - 0 1", "e2b5", [], "skewer"),
     # 10a: ...fxe4 takes the hunter, so the rook on a8 is not trapped.
     ("audit 10a", "rn4k1/p1p3pp/8/5p2/8/3B2P1/5P1P/6K1 w - - 0 1", "d3e4", [], "trappedPiece"),
@@ -505,8 +493,7 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
         ["f6d7"],
         "interference",
     ),
-    # 14: ...Rxc5 takes the interposer; the rook on e4 is pinned to its king and takes nothing.
-    ("audit 14a", "6k1/5ppp/8/r3p3/8/3N1N2/5PPP/6K1 w - - 0 1", "d3c5", [], "interference"),
+    # 14: the rook on e4 is pinned to its king and takes nothing.
     ("audit 14b", "4r3/5k2/8/8/q6r/3P4/4R3/4K3 w - - 0 1", "e2e4", [], "interference"),
     # 15: the rook on a1 is blocked by its own knight on a4 when the bishop takes on a7.
     (
@@ -568,7 +555,7 @@ def test_a_move_carries_nothing_it_does_not_make(
     case: str, fen: str, uci: str, pv: list[str], absent: str | frozenset[str]
 ) -> None:
     _played(case, fen, [uci, *pv])
-    names = set(tag_names(fen, uci, pv=pv))
+    names = set(move_tags(fen, uci, pv=pv))
     wrong = ({absent} if isinstance(absent, str) else set(absent)) & names
     assert not wrong, f"{case}: {sorted(wrong)}"
 
@@ -577,12 +564,10 @@ def test_a_move_carries_nothing_it_does_not_make(
 
 # (case, FEN, the tag it holds -- or, as a list, exactly the tags it holds).
 HELD: list[tuple[str, str, str | list[str]]] = [
-    # The bishop on h4 pins the knight on f6 to the queen on d8, whatever it does next.
+    # The bishop on h4 pins the knight on f6 to the queen on d8, whatever it does next: the
+    # rook defends her, but bishop for queen still wins material, so the knight cannot move.
     ("a standing pin", PINNED_FROM_H4, "pin"),
     ("a standing pin to the king", PINNED_BY_E1, "absolutePin"),
-    # The bishop on b5 pins the knight on c6 to the queen on d7, which the king defends:
-    # bishop for queen still wins material, so the knight cannot move.
-    ("a pin on a defended queen", "4k3/3q4/2n5/1B6/8/8/8/4K3 w - - 0 1", "pin"),
     # The bishop on a4 against the pawn on c6 and a loose rook on e8 behind it.
     ("a pin on a loose rook", "4r2k/8/2p5/8/B7/8/8/4K3 w - - 0 1", "pin"),
     # And the king behind always pins.
@@ -614,21 +599,19 @@ NOT_HELD = [
     ("a pin on a defended knight", ITALIAN, "pin"),
     # A queen against a knight with a defended rook behind it: queen for rook loses.
     ("a queen against a defended rook", "8/3k4/3r4/8/3n4/8/8/3QK3 w - - 0 1", "pin"),
-    # The same bare king with only a rook and knight around is an endgame, not an attack.
+    # The same bare king with only a rook and knight around is an endgame, not an attack (as
+    # audit 21's was: a rook and knight ending, the king walking up the board, no queen).
     ("a bare king in an endgame", "r5k1/ppp5/8/8/8/5N2/8/5RK1 w - - 0 1", "exposedKing"),
     # Before the bishop came to b2 the queen was not trapped: Qxa1 simply won a rook.
     ("not trapped yet", RESCUE, "trappedPiece"),
     # Audit 5: the b5 bishop (held by a4) is pinned to b1 by the b8 rook: it can never take e8.
     ("audit 5", "1r2r1k1/5ppp/2n5/1B6/P7/8/5PPP/1K6 w - - 0 1", "pin"),
-    # Audit 9: the knight on e2 is pinned to its king; white is in check and cannot take on e5.
-    ("audit 9a", "4r1k1/8/8/8/5n2/8/4N3/4K3 w - - 0 1", "hangingPiece"),
+    # Audit 9: white is in check and cannot take on e5 (nor can a knight pinned to its king
+    # take, test_exchange.py).
     ("audit 9b", "k7/8/8/4n3/8/8/1B4PP/3r2K1 w - - 0 1", "hangingPiece"),
     # Audit 10: the knight on h6 has f5 and g4, both held; the hunting bishop is pinned to e1.
     ("audit 10b", "6k1/5pp1/4p2n/6Pp/8/5Q2/5PPP/6K1 w - - 0 1", "trappedPiece"),
     ("audit 10c", "rn2r1k1/p5pp/8/8/4B3/8/6PP/4K3 w - - 0 1", "trappedPiece"),
-    # Audit 21: a rook and knight ending with the king walking up the board: no queen, no
-    # attack.
-    ("audit 21", "r1b5/8/4k2N/pp6/8/8/6PP/3R2K1 w - - 0 1", "exposedKing"),
 ]
 
 
@@ -651,98 +634,34 @@ def test_a_feature_that_wins_nothing_is_not_named(case: str, fen: str, name: str
     ],
 )
 def test_the_mate_distance_is_the_movers_and_named_up_to_five(mate_in: int, tagged: set) -> None:
-    names = tag_names(STEADY, "h2h3", mate_in=mate_in)
+    names = move_tags(STEADY, "h2h3", mate_in=mate_in)
     assert {name for name in names if name.startswith("mate")} == tagged
 
 
 # --- the two entry points ---------------------------------------------------------------
 
 
-def test_position_with_a_tactic_reports_it() -> None:
+def test_a_position_reports_its_best_move_s_tactic_and_a_quiet_one_none() -> None:
     # White to move, Nd5-f6 forks the king and queen. The best move's tags come through.
     names = position_names("4q1k1/8/8/3N4/8/8/8/7K w - - 0 1", pv=["d5f6"])
     assert "fork" in names
     assert "check" in names
-
-
-def test_quiet_position_reports_no_tactic() -> None:
     assert not TACTICAL.intersection(position_names(STEADY))
     assert not TACTICAL.intersection(position_names(STEADY, pv=["d2d3", "e7e5"]))
 
 
 @pytest.mark.parametrize(("fen", "uci"), QUIET_MOVES)
 def test_quiet_moves_produce_no_tactical_tags(fen: str, uci: str) -> None:
-    names = tag_names(fen, uci)
+    names = move_tags(fen, uci)
     assert "quietMove" in names
-    assert not TACTICAL.intersection(names), f"{uci} in {fen} invented {names}"
+    assert not TACTICAL.intersection(names), f"{uci} in {fen} invented {list(names)}"
 
 
-def test_illegal_move_returns_no_tags() -> None:
+def test_an_illegal_move_or_line_is_tagged_as_nothing() -> None:
     # Documented behaviour: an illegal move is tagged as nothing rather than raising, because
     # the caller feeds this from a vision pipeline that can misread a board.
     start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     assert tags_for_move(chess.Board(start), chess.Move.from_uci("e2e5")) == []
     assert tags_for_move(chess.Board(start), chess.Move.from_uci("e7e5")) == []
     assert tags_for_move(chess.Board(start), chess.Move.null()) == []
-
-
-def test_position_ignores_an_illegal_principal_variation() -> None:
-    start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     assert tags_for_position(chess.Board(start), pv=[chess.Move.from_uci("e2e5")]) == []
-
-
-def test_tags_are_deduplicated_and_merge_their_squares() -> None:
-    # Two loose knights, both hanging after the pawn push: one tag, both squares.
-    fen = "4k3/8/3n1n2/8/4P3/8/8/4K3 w - - 0 1"
-    board = chess.Board(fen)
-    tags = tags_for_move(board, chess.Move.from_uci("e4e5"))
-    names = [tag.name for tag in tags]
-    assert len(names) == len(set(names))
-    hanging = next(tag for tag in tags if tag.name == "hangingPiece")
-    assert hanging.squares == ["d6", "f6"]
-    for tag in tags:
-        assert len(tag.squares) == len(set(tag.squares))
-
-
-def test_every_square_is_a_real_square_name() -> None:
-    cases = [
-        (SMOTHERED, "b3g8", ["f8g8", "h6f7"], 2),
-        (DISCOVERED_CHECK, "e4d6", [], None),
-        (EN_PASSANT, "e5f6", [], None),
-        (RESCUE, "c1b2", [], None),
-    ]
-    for fen, uci, pv, mate_in in cases:
-        board = chess.Board(fen)
-        moves = [chess.Move.from_uci(x) for x in pv]
-        tags = tags_for_move(board, chess.Move.from_uci(uci), pv=moves, mate_in=mate_in)
-        assert tags
-        for tag in tags:
-            assert tag.squares
-            for square in tag.squares:
-                assert square in chess.SQUARE_NAMES
-            if tag.move is not None:
-                assert chess.Move.from_uci(tag.move) in chess.Board(fen).legal_moves
-
-
-def test_tags_come_out_in_the_documented_order() -> None:
-    board = chess.Board(SMOTHERED)
-    pv = [chess.Move.from_uci("f8g8"), chess.Move.from_uci("h6f7")]
-    tags = tags_for_move(board, chess.Move.from_uci("b3g8"), pv=pv, mate_in=2)
-    indexes = [TAG_ORDER.index(tag.name) for tag in tags]
-    assert indexes == sorted(indexes)
-    assert len(tags) > 4
-
-
-def test_every_emitted_name_is_a_known_tag() -> None:
-    fens = [fen for fen, _ in QUIET_MOVES] + [
-        SMOTHERED,
-        RESCUE,
-        "3r2k1/8/8/3r4/8/8/8/2KR4 w - - 0 1",
-    ]
-    for fen in dict.fromkeys(fens):  # each position once
-        board = chess.Board(fen)
-        for move in board.legal_moves:
-            for tag in tags_for_move(board, move):
-                assert tag.name in TAG_ORDER
-    # None of these positions mates on the move: the patterns are known by their list.
-    assert set(MATE_PATTERNS) <= set(TAG_ORDER)

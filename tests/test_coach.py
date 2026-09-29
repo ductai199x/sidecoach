@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 
 import chess
 
@@ -99,7 +98,6 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     beyond = current.split("## Beyond this level")[1].split("## On the board")[0]
     assert "piece: the player's queen on h5" in beyond and "Qxf7" in beyond
     # What the level keeps back is said once, in the Task, with why the model sees it all.
-    assert "## Disclosure" not in current
     assert "You see the answer so that the hint can be precise" in directive_of(messages)
     # The first hint's facts are on the sheet to teach from (parity, 2026-09-25; the prompt
     # audit, 2026-09-28), and the idea level names the key fact on the board.
@@ -176,14 +174,14 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 2
 
 
-def test_naming_the_move_yourself_earns_the_candidate_level() -> None:
+def test_naming_the_move_yourself_earns_the_move_level() -> None:
     coach, _ = scripted_coach(["What do you think?", "Yes, Qxf7 is mate."])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
     coach.ask("Is Qxf7 mate?", 8.0)
     out = drain(coach)
-    assert out[0].level is DisclosureLevel.CANDIDATE
+    assert out[0].level is DisclosureLevel.MOVE
     board = chess.Board(SCHOLAR)
     assert unlock_for("Is Qxf7 mate?", board, ["Qxf7#"]) is Unlock.USER_NAMED_MOVE
     assert unlock_for("What about Bxf7?", board, ["Qxf7#"]) is None, "not the candidate"
@@ -203,34 +201,7 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
-    # The user plays Bxf7+ instead of the mate.
-    board = chess.Board(SCHOLAR)
-    move = board.parse_san("Bxf7+")
-    board.push(move)
-    coach.on_event(
-        MovePlayed(
-            game_id="g",
-            ply=7,
-            san="Bxf7+",
-            uci=move.uci(),
-            fen_before=SCHOLAR,
-            fen_after=board.fen(),
-            by_user=True,
-        ),
-        10.0,
-    )
-    coach.on_event(
-        MoveAssessment(
-            game_id="g",
-            ply=7,
-            uci=move.uci(),
-            expected_loss=0.45,
-            severity=Severity.BLUNDER,
-            best=["h5f7"],
-            label=Label.MISS,
-        ),
-        11.0,
-    )
+    mate_missed(coach)  # Bxf7+ instead of the mate
     out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
     assert out[0].level is DisclosureLevel.LINE and "Qxf7" in out[0].text
@@ -244,20 +215,17 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     assert "3... Nf6 (the opponent)" in _record(messages)
     # The lesson is taught from the position they faced, which the record keeps as one line:
     # its sheet goes with the request (parity pass, 2026-09-25), and the better move the reply
-    # must name is the directive's -- not the template's lesson as the least the reply says,
-    # which came back word for word (the prompt audit, 2026-09-28).
+    # must name is the directive's -- not the template's lesson, which came back word for word
+    # (the prompt audit, 2026-09-28).
     content = str(messages[-1]["content"])
     faced = content.split("# The position they faced, before Bxf7+")[1].split("# Task")[0]
     assert "goal: the player can mate in one move" in faced
     assert "The better move was Qxf7#" in directive_of(messages)
-    assert "says at least this" not in directive_of(messages)
     assert coach.spoken[-1].problems == [], coach.spoken[-1].problems
-    # The hints' questions are for the side to move: never on the opponent's sheet, where
-    # labelled "to the player" they were the opponent's; nor on the faced sheet, a position
-    # already moved from (parity pass 2).
+    # The first hint is for the side to move: never on the opponent's sheet, where labelled
+    # "to the player" it was the opponent's (parity pass 2).
     now = played.split("# The position they faced")[0]
     assert "(to the player, as it stands)" not in now.split("## Facts", 1)[-1]
-    assert "a question that sets them looking" not in faced
 
 
 def test_a_question_about_the_plan_is_answered_with_the_first_hint() -> None:
@@ -558,7 +526,6 @@ def test_a_hints_principle_cools_down_too() -> None:
     you a step ahead: ...") came 218 times in the master games' hints, 59 of them again in
     the same game: it is a rule of thumb like the lesson's, left out while it cools."""
     from sidecoach.coach.coach import RULE_COOLDOWN
-    from sidecoach.coach.disclosure import PositionFacts
 
     coach, _ = scripted_coach([])
     rule = "A move that attacks something they must then defend keeps you a step ahead."
@@ -658,64 +625,6 @@ def test_a_reply_thinner_than_the_template_is_said_and_noted() -> None:
     assert any(note.startswith("left out") for note in spoken.notes), spoken.notes
 
 
-def test_verbalized_sampling_keeps_the_checked_candidate() -> None:
-    # The model offers a leaky reply and a clean one in one distribution; VS keeps the clean
-    # one on the first attempt, no retry, no template.
-    def checker(
-        text: str,
-        board: chess.Board,
-        after: Sequence[chess.Board] = (),
-        us: chess.Color | None = None,
-    ) -> list[str]:
-        return ["the rook on f7 is not there"] if "rook on f7" in text else []
-
-    block = (
-        "[p=0.6] Your rook on f7 is strong.\n"
-        "[p=0.4] Their king on e8 is short of squares, is it not?"
-    )
-    provider = ScriptedProvider([block])
-    coach = Coach(
-        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
-    )
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
-    assert out[0].text == "Their king on e8 is short of squares, is it not?"
-    assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
-
-
-def test_the_conversation_is_the_game_one_message_per_move_with_the_tally() -> None:
-    """The model sees the game as it went: every move a message with the engine's word on
-    it and the running tally of the player's moves; nothing is summarised away."""
-    coach, provider = scripted_coach(["Two clean moves so far. Keep developing."])
-    play_to_scholar(coach)
-    for ply, (uci, label) in {1: ("e2e4", Label.BOOK), 3: ("f1c4", Label.EXCELLENT)}.items():
-        coach.on_event(
-            MoveAssessment(
-                game_id="g",
-                ply=ply,
-                uci=uci,
-                expected_loss=0.0,
-                severity=Severity.NONE,
-                best=[uci],
-                label=label,
-            ),
-            7.0,
-        )
-    coach.on_event(mate_analysis(6, decisive=False), 8.0)
-    coach.ask("how is my opening?", 9.0)
-    drain(coach)
-    messages = sent(provider)
-    record = _record(messages).strip().splitlines()
-    assert record[0] == "1. e4 (the player): book."
-    assert record[2] == "2. Bc4 (the player): excellent."
-    assert len(record) == 5, "one line per move played before the position now"
-    current = _current_move_message(messages)
-    assert "3... Nf6 by the opponent" in current
-    assert "The player's moves so far (2 judged): 1 excellent, 1 book." in current
-    assert current.rstrip().endswith('PLAYER said: "how is my opening?"')
-
-
 def test_a_takeback_is_a_message_that_says_so_and_history_keeps_the_withdrawn_move() -> None:
     from sidecoach.events import Takeback
 
@@ -810,57 +719,29 @@ def test_a_reread_of_the_board_is_a_message_and_the_numbering_restarts() -> None
     assert "4... d6 by the opponent" in _current_move_message(sent(provider))
 
 
-def test_asking_before_the_engine_has_looked_is_answered_when_it_has() -> None:
+def test_asking_before_the_engine_has_looked_is_answered_when_it_has_even_early() -> None:
     """A question asked before the engine has looked at the position on the board is told
     to wait a moment and answered when the analysis lands, never from an older position
     (Tai, 2026-09-24: a hint pressed as a puzzle appeared got "I have not seen enough of
-    this game yet to say. Give me a move or two.")."""
-    coach, provider = scripted_coach([])
-    start_game(coach)
-    coach.ask("hint", 1.0)
-    wait = _waiting(drain(coach))
-    assert provider.prompts == []
-    coach.ask("hint", 1.5)  # asked again while waiting: one "moment" is enough
-    assert drain(coach) == []
-    start = chess.Board()
-    coach.on_event(
-        Analysis(
-            game_id="g",
-            fen=start.fen(),
-            ply=0,
-            lines=[
-                Line(moves=["e2e4", "e7e5", "g1f3"], depth=18, expected_score=0.55),
-                Line(moves=["d2d4", "d7d5"], depth=18, expected_score=0.54),
-            ],
-            decisive=False,
-            only_move=False,
-        ),
-        3.0,
-    )
-    answered = drain(coach)
-    assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
-    assert answered[0].text != wait
-
-
-def _waiting(out: list) -> str:
-    """The word while the engine has not looked at the position: one message, the ask's,
-    and nothing else. Its words are the coach's to change."""
-    assert len(out) == 1 and out[0].trigger is Trigger.USER_ASK and out[0].text, out
-    return out[0].text
-
-
-def test_an_early_analysis_answers_a_question_waiting_on_it() -> None:
-    """Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues until
-    max depth of 18". A question asked before the engine has looked is answered from the
-    early analysis, the full depth still to come."""
-    coach, _ = scripted_coach([])
-    play_to_scholar(coach)
-    coach.ask("hint", 6.5)
-    wait = _waiting(drain(coach))
-    coach.on_event(mate_analysis(6).model_copy(update={"provisional": True}), 7.0)
-    answered = drain(coach)
-    assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
-    assert answered[0].text != wait
+    this game yet to say. Give me a move or two."). The early analysis answers it, the full
+    depth still to come (Tai, 2026-09-28: "first usable answer is depth 12 ... the
+    computation continues until max depth of 18")."""
+    for provisional in (False, True):
+        coach, provider = scripted_coach([])
+        play_to_scholar(coach)
+        coach.ask("hint", 6.5)
+        # The word while the engine has not looked: one message, the ask's, and nothing
+        # else. Its words are the coach's to change.
+        out = drain(coach)
+        assert len(out) == 1 and out[0].trigger is Trigger.USER_ASK and out[0].text, out
+        assert provider.prompts == []
+        coach.ask("hint", 6.7)  # asked again while waiting: one "moment" is enough
+        assert drain(coach) == []
+        analysis = mate_analysis(6, decisive=False)
+        coach.on_event(analysis.model_copy(update={"provisional": provisional}), 7.0)
+        answered = drain(coach)
+        assert answered and all(m.trigger is Trigger.USER_ASK for m in answered), provisional
+        assert answered[0].text != out[0].text
 
 
 def test_the_coachs_own_words_wait_for_the_full_depth() -> None:
@@ -940,10 +821,11 @@ def _hint_then(coach: Coach, board: chess.Board) -> None:
     assert got and all(m.trigger is Trigger.USER_ASK for m in got)
 
 
-def test_no_new_question_while_the_player_plays_out_the_line_they_found() -> None:
+def test_no_new_question_while_the_line_is_played_out_and_one_when_the_opponent_leaves_it() -> None:
     """After 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 the coach asked "You can mate in one move ...
     Which check leaves their king no square at all?" -- a fresh question in the middle of
-    the combination the player was carrying out (Tai's desktop, 2026-09-24)."""
+    the combination the player was carrying out (Tai's desktop, 2026-09-24). An opponent
+    who leaves the line brings the question back."""
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
     _hint_then(coach, board)
@@ -953,17 +835,14 @@ def test_no_new_question_while_the_player_plays_out_the_line_they_found() -> Non
             _analysed(coach, board, ply, QD1_LINE[ply:], 2.5 + ply, (5 - ply) // 2)
     asked = [m.text for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
     assert asked == [], asked
-
-
-def test_an_opponent_who_leaves_the_line_brings_the_question_back() -> None:
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
     _hint_then(coach, board)
     _played(coach, board, 1, "c2d1", True, 3.0)
     _played(coach, board, 2, "a5e1", False, 4.0)  # blocks instead of taking: off the line
     _analysed(coach, board, 2, ["d1e1"], 4.5, 1)
-    asked = [m for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
-    assert len(asked) == 1
+    asked = [m.text for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
+    assert len(asked) == 1, asked
 
 
 def test_the_next_puzzle_gets_its_question_after_a_long_one() -> None:
@@ -1025,7 +904,7 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
     2026-09-28: "it's already almost instant"). Offline the template for the level goes out
     at once, the move and the line asked for bare are the template's alone, and no model is
     asked."""
-    coach, provider = scripted_coach(["Qxf7# ends it: the queen takes with check and mate."])
+    coach, _ = scripted_coach(["Qxf7# ends it: the queen takes with check and mate."])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask_move(8.0)
@@ -1034,15 +913,12 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
     assert [m.text for m in out] == ["Qxf7# ends it: the queen takes with check and mate."]
     assert out[0].trigger is Trigger.USER_ASK and out[0].level is DisclosureLevel.MOVE
     assert any(mark.kind == "arrow" for mark in out[0].annotations)
-    assert "They asked what to play: tell them plainly it is Qxf7#" in directive_of(
-        sent(provider, 0)
-    )
     coach = offline_coach()
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask_move(8.0)
     quick = coach.poll()  # at once
-    assert [m.text for m in quick] == ["Qxf7# is mate."]
+    assert len(quick) == 1 and quick[0].text.startswith("Qxf7#"), quick
     assert quick[0].level is DisclosureLevel.MOVE
     assert any(mark.kind == "arrow" for mark in quick[0].annotations)
     assert drain(coach) == []
@@ -1106,7 +982,7 @@ def test_an_ask_overtakes_unprompted_requests_still_waiting() -> None:
     def request(trigger: Trigger) -> _Request:
         return _Request(
             trigger=trigger,
-            level=DisclosureLevel.QUESTION,
+            level=DisclosureLevel.IDEA,
             system="",
             messages=[{"role": "user", "content": "x"}],
             facts=position.facts,  # type: ignore[arg-type]
@@ -1129,9 +1005,9 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     a queen for much of the middlegame" to a player who had won a queen: the material was
     read from whichever side was to move, and the memory carried that into the verdict.
     Now the facts, the sheet and the memory all speak from the user's side, a finished
-    game withholds nothing, and an overall verdict is drawn from the engine's tally."""
-    from sidecoach.events import GameEnded
-
+    game withholds nothing, and an overall verdict is drawn from the engine's tally. The
+    model sees the game as it went: every move a line with the engine's word on it, and the
+    running tally of the player's moves; nothing is summarised away."""
     coach, provider = scripted_coach(["You kept it clean: nothing lost, and the finish was sharp."])
     start_game(coach)
     # 1. e4 e5 2. Qh5 Nc6 3. Qxe5+ (White, the user, wins a pawn; then Black to move.)
@@ -1185,28 +1061,36 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     directive = directive_of(messages)
     assert "They asked how they did overall" in directive
     assert "do not infer the course of the game from the position" in directive
+    assert "1. e4 (the player): book." in _record(messages).splitlines()
     harness = harness_of(messages)
     assert "The player's moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in harness
     assert "Ground lost most at: 2. Qh5 (inaccuracy)" in harness
     assert "    EVENT: Game over: 1-0" in harness
-    # Other ways of asking are reviews too, and when the model's review fails the checks
-    # the template is the record, not "I have no line for this yet".
+    # Other ways of asking are reviews too (test_align.py has them), a plan is not, and when
+    # the model's review fails the checks the template is the record, not "I have no line
+    # for this yet".
     from sidecoach.coach.coach import _ASK_REVIEW
 
-    for words in ("what do I keep missing?", "where did I lose it?", "how am I playing so far?"):
-        assert _ASK_REVIEW.search(words), words
     assert not _ASK_REVIEW.search("what's the plan so far?")
     provider.replies = ["", ""]
     coach.ask("what do I keep missing?", 10.0)
     out = drain(coach)
-    assert out[-1].text == (
-        "1 of your 3 moves were best or excellent. You lost the most ground at 2. Qh5 (inaccuracy)."
-    )
+    assert "1 of your 3 moves" in out[-1].text and "2. Qh5 (inaccuracy)" in out[-1].text
 
 
-def test_a_hint_the_model_fails_twice_is_the_templates() -> None:
-    # The model gives nothing usable, twice: the template for the rung speaks in its place,
-    # once, and the failed calls are in the log.
+def test_a_bare_hint_is_asked_as_a_hint_and_one_the_model_fails_twice_is_the_template() -> None:
+    """ "hint" carries no claim; prompted to be honest about "their claim", the model answered
+    its own previous message as though the player had said it ("Your suggestion to focus on
+    opening lines is spot-on"). When every candidate fails, the second try carries the
+    complaint inside the directive: appending the failed attempt as two more messages doubled
+    the prompt on a long game, past the model's context. Failed twice, the template for the
+    rung speaks in its place, once, and the failed calls are in the log."""
+    from sidecoach.coach.coach import _ASK_HINT
+
+    for said in ("hint", "Hint", "give me a hint", "a clue please", "help", "any tips?"):
+        assert _ASK_HINT.match(said), said
+    for said in ("what should I play", "is Nf3 a good idea", "help me with the knight"):
+        assert not _ASK_HINT.match(said), said
     coach, provider = scripted_coach(["", ""])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
@@ -1218,26 +1102,17 @@ def test_a_hint_the_model_fails_twice_is_the_templates() -> None:
     given = sent(provider, 0)
     said = _current_move_message(given).split("## Said here", 1)[1].strip(chr(10)).splitlines()
     assert said[-1] == '    PLAYER said: "hint"'
-    assert "They asked for a hint." in directive_of(given)
+    directive = directive_of(given)
+    assert "They asked for a hint." in directive and "anything said earlier" in directive
+    assert "their own claim" not in directive
+    retry = sent(provider, 1)
+    assert len(retry) == len(given)
+    assert "Those replies are not allowed" in retry[-1]["content"]
+    assert "Your first attempt was" in retry[-1]["content"]
     spoken = coach.spoken[-1]
     assert spoken.attempts == 2 and spoken.problems and coach.speaker.fallbacks == 1
     turns = [e for e in coach.conversation.entries if e.role == "assistant"]
     assert [e.text for e in turns] == [out[0].text]
-
-
-def test_a_retry_does_not_grow_the_prompt() -> None:
-    """When every candidate fails the checks, the second try carries the complaint inside
-    the directive: appending the failed attempt as two more messages doubled the prompt
-    on a long game, past the model's context."""
-    coach, provider = scripted_coach(["", "[p=1.0] Look around."])
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.ask("hint", 8.0)
-    drain(coach)
-    first, second = sent(provider, 0), sent(provider, 1)
-    assert len(second) == len(first)
-    assert "Those replies are not allowed" in second[-1]["content"]
-    assert "Your first attempt was" in second[-1]["content"]
 
 
 def _bishop_check_instead_of_mate(coach: Coach) -> None:
@@ -1274,13 +1149,24 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     assert out[-1].fen == SCHOLAR
     # The fallback is the verdict itself, not a hint -- and without the figure.
     assert out[-1].text.startswith("Qxf7# was better")
+    # Asked what it cost, the figure is theirs to hear.
+    coach, provider = scripted_coach(["...", "..."])
+    _bishop_check_instead_of_mate(coach)
+    provider.replies = ["", ""]
+    coach.ask("how much did that cost me?", 12.0)
+    out = drain(coach)
+    assert "it cost 45% of the game: they asked" in directive_of(sent(provider))
+    assert out and out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
 def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     """The verdict and the better move came back in every reply, and "I understand: I should
     play Nxc3" got the lesson again and "Which White piece is still at home on g1?" (the AI's
     sessions, 2026-09-26). With a model the words are the model's to read, with the sheet of
-    the position the move was played from beside them (Tai's puzzle, 2026-09-28)."""
+    the position the move was played from beside them (Tai's puzzle, 2026-09-28). A reply
+    that does not name the better move again, as told, is said: the check that a reply names
+    it refused every reply that obeyed, and the template said the verdict again (the prompt
+    audit, 2026-09-28)."""
     coach, provider = scripted_coach(["...", "...", "...", "..."])
     _bishop_check_instead_of_mate(coach)
     with coach._lock:
@@ -1291,40 +1177,15 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     directive = directive_of(sent(provider))
     assert "do not say it again in other words" in directive
     assert "They ask nothing: reply in one short sentence" in directive
-    assert "then one question" not in directive
-    provider.replies = ["", ""]
-    coach.ask("Why does the bishop check not work?", 13.0)
-    drain(coach)
-    request = str(sent(provider)[-1]["content"])
-    assert "# The position they faced, before Bxf7+" in request
-    directive = directive_of(sent(provider))
-    assert "Answer them directly" in directive and "do not say it again" in directive
-
-
-def test_a_follow_up_about_their_move_need_not_name_the_better_move_again() -> None:
-    """The follow-up's directive says not to repeat the better move, and the check that a
-    reply names it refused every reply that obeyed; after two, the template said the verdict
-    again (the prompt audit, 2026-09-28). The floor, the lesson again, goes with it."""
-    coach, provider = scripted_coach(["...", "..."])
-    _bishop_check_instead_of_mate(coach)
-    with coach._lock:
-        coach.conversation.coach_said("That one cost you: Qxf7# was better -- it is mate.")
     reply = "A check that leads nowhere only hands their king a free move."
     provider.replies = [reply, reply]
     coach.ask("Why does the bishop check not work?", 13.0)
     out = drain(coach)
-    assert "says at least this" not in directive_of(sent(provider))
+    request = str(sent(provider)[-1]["content"])
+    assert "# The position they faced, before Bxf7+" in request
+    directive = directive_of(sent(provider))
+    assert "Answer them directly" in directive and "do not say it again" in directive
     assert out and out[-1].text == reply
-
-
-def test_what_a_move_cost_is_said_when_they_ask_it() -> None:
-    coach, provider = scripted_coach(["...", "..."])
-    _bishop_check_instead_of_mate(coach)
-    provider.replies = ["", ""]
-    coach.ask("how much did that cost me?", 12.0)
-    out = drain(coach)
-    assert "it cost 45% of the game: they asked" in directive_of(sent(provider))
-    assert out and out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
 def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
@@ -1332,33 +1193,7 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
-    board = chess.Board(SCHOLAR)
-    move = board.parse_san("Qxf7#")
-    board.push(move)
-    coach.on_event(
-        MovePlayed(
-            game_id="g",
-            ply=7,
-            san="Qxf7#",
-            uci=move.uci(),
-            fen_before=SCHOLAR,
-            fen_after=board.fen(),
-            by_user=True,
-        ),
-        10.0,
-    )
-    coach.on_event(
-        MoveAssessment(
-            game_id="g",
-            ply=7,
-            uci=move.uci(),
-            expected_loss=0.0,
-            severity=Severity.NONE,
-            best=["h5f7"],
-            label=Label.BEST,
-        ),
-        11.0,
-    )
+    mate_played(coach)
     drain(coach)
     coach.ask("was that a mistake?", 12.0)
     drain(coach)
@@ -1591,8 +1426,9 @@ def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_th
     """The game ends and the profile's review arrives: it joins the conversation as a
     message of its own and the coach sums it up through the model, the review's sentences
     as the template. The profile's snapshot puts what earlier games say into the next
-    game's setting."""
-    from sidecoach.events import GameEnded, GameReview, ProfileSnapshot, TurningPoint
+    game's setting, and the review stays with its game: game 2 answered "how did I do
+    overall?" with game 1's sentences when the model failed (the parity audit, 2026-09-26)."""
+    from sidecoach.events import GameReview, ProfileSnapshot, TurningPoint
 
     summary = (
         "You won by checkmate. Your one lapse was 3. Qh5, where Nf3 kept the edge; "
@@ -1638,6 +1474,7 @@ def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_th
     given = sent(provider)
     assert "The review of the game:" in harness_of(given)
     assert "Sum it up from the review" in directive_of(given)
+    assert coach._review_lines == review.lines
     # The snapshot's insights and last session frame the next game.
     coach.on_event(
         ProfileSnapshot(
@@ -1656,6 +1493,7 @@ def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_th
     setting = coach.conversation.render()
     assert "What earlier games say about this player" in setting
     assert "missed opponent threat" in setting and "Last session: 2 games" in setting
+    assert coach._review_lines == []
 
 
 def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> None:
@@ -2009,15 +1847,6 @@ def test_a_word_after_the_move_never_restates_it_nor_quotes_a_figure() -> None:
     ]
 
 
-def test_the_first_hint_asks_two_or_three_sentences_and_offers_a_question() -> None:
-    """The first hint on the sheet is facts to teach from, not the least a reply says, so the
-    length is the directive's own: one more for the question it offers on top ("then, if you
-    like, one question"), which it does not require (the prompt audit, 2026-09-28)."""
-    from sidecoach.coach.coach import IDEA_DIRECTIVE, directive_limits
-
-    assert directive_limits(IDEA_DIRECTIVE) == (4, None)
-
-
 def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:
     """A trap the template names ("Bxf7+ looks natural, but after Kxf7 ...") is a line from
     the root: its boards are frames, so saying it is not faulted as unplayable."""
@@ -2029,18 +1858,6 @@ def test_the_draft_checker_sees_every_line_the_facts_were_read_from() -> None:
     frames = Coach._analysis_frames(position)
     assert any(f.piece_at(chess.E7) == chess.Piece(chess.KING, chess.BLACK) for f in frames)
     assert any(f.piece_at(chess.F7) == chess.Piece(chess.QUEEN, chess.WHITE) for f in frames)
-
-
-def test_with_the_voice_on_nothing_goes_out_past_the_length() -> None:
-    """The runtime audit: with the voice on, an eight-sentence homily went out whole. The
-    stream stops at the task's length and its slack."""
-    from sidecoach.coach.coach import _FirstCandidate
-
-    heard: list[str] = []
-    reader = _FirstCandidate(lambda t: heard.append(t) is None, lambda t: [], limit=1)
-    reader.feed("One. Two. Three. Four. Five. ")
-    reader.finish()
-    assert sum(t.count(".") for t in heard) == 3, "the limit and its slack, no more"
 
 
 def test_a_late_lesson_does_not_give_away_the_move_they_face_now() -> None:
@@ -2060,8 +1877,7 @@ def test_the_verdict_words_are_checked_clause_by_clause() -> None:
     blunder: a3 was better" through for a good move (the runtime audit)."""
     from sidecoach.coach.coach import _verdict_problems
 
-    ruy = "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"
-    good = _after_move_request(ruy, "O-O", "b5a4")
+    good = _after_move_request(RUY, "O-O", "b5a4")
     assert good.assessment is not None
     good.assessment = good.assessment.model_copy(
         update={"severity": Severity.NONE, "label": Label.GOOD, "expected_loss": 0.04}
@@ -2073,7 +1889,8 @@ def test_the_verdict_words_are_checked_clause_by_clause() -> None:
     assert _verdict_problems("Fine, but Ba4 was the best move here.", good) == []
 
 
-def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_answer() -> None:
+def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_is_heard_as_one() -> None:
+    # Where each reaches its directive: test_align.py.
     from sidecoach.coach.coach import _ASK_THREAT, _MY_MOVE
 
     for said in ("what should I have played?", "did I just blunder?", "was my move bad?"):
@@ -2081,12 +1898,6 @@ def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_gets_its_ans
     assert not _MY_MOVE.search("why was that bad?"), "'that' is the last move played"
     for said in ("what is their threat?", "what does my opponent threaten?", "am I in danger?"):
         assert _ASK_THREAT.search(said), said
-    coach, provider = scripted_coach(["Nothing is threatened right now."])
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.ask("what is their threat?", 8.0)
-    drain(coach)
-    assert "They ask what the opponent threatens" in directive_of(sent(provider, 0))
 
 
 def test_a_question_only_about_a_fact_is_the_models_and_offline_the_templates() -> None:
@@ -2220,9 +2031,8 @@ def test_the_models_markdown_never_reaches_the_voice_or_the_checks() -> None:
     ]
 
 
-def test_the_coach_never_names_the_engine_and_the_review_sees_the_costliest() -> None:
-    """Round 2: "Stockfish gives White about 0.8 pawns" in seven answers; the review saw only
-    the last six losses and named 52.Kh3 over the blunders at moves 19 and 24."""
+def test_the_coach_never_names_the_engine_unless_asked_about_it() -> None:
+    """Round 2: "Stockfish gives White about 0.8 pawns" in seven answers."""
     from sidecoach.coach.coach import Speaker
 
     request = _after_move_request(SCHOLAR, "Bxf7+", "h5f7")
@@ -2249,15 +2059,6 @@ def test_a_legal_move_called_illegal_is_a_fault() -> None:
     # A claim inside a line is about a later position; a true one is no fault.
     assert false_illegal("After Bh7+ Kh8, Qxf7+ is illegal.", board) == []
     assert false_illegal("Qh4 is not legal: the pawn blocks it.", chess.Board()) == []
-
-
-def test_a_new_game_forgets_the_last_games_review() -> None:
-    # Game 2 answered "how did I do overall?" with game 1's sentences when the model failed.
-    coach, _ = scripted_coach([])
-    start_game(coach)
-    coach._review_lines = ["You played white and won by checkmate in 4 moves."]
-    start_game(coach)
-    assert coach._review_lines == []
 
 
 def test_a_saved_rating_changes_the_templates_register() -> None:

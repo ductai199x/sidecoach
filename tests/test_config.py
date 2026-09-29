@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -16,11 +17,7 @@ def test_dotenv_sets_missing_and_keeps_existing(
     loaded = load_dotenv(dotenv)
 
     assert loaded == {"NEW_KEY": "quoted value"}
-    import os
-
     assert os.environ["NEW_KEY"] == "quoted value"
     assert os.environ["EXISTING"] == "from_env"
-
-
-def test_dotenv_missing_file_is_fine(tmp_path: Path) -> None:
+    # A missing file is fine.
     assert load_dotenv(tmp_path / "nope.env") == {}

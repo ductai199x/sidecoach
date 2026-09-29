@@ -1,8 +1,9 @@
 """What happens to the game window during a real session, end to end through the pipeline.
 
 Each scenario renders the same synthetic game and disturbs the window the way a player
-would: moving it, resizing it, covering it, minimising it, scrolling it off screen. The
-pipeline must never crash, and the game must come out right once the board is back.
+would: covering it, minimising it, moving it by a fraction of a cell. The pipeline must never
+crash, and the game must come out right once the board is back. Moves, resizes and scrolls
+of every kind are test_board_geometry's sweep.
 """
 
 import chess
@@ -64,16 +65,6 @@ class Session:
 
     def settle(self, frames: int = 3) -> list[str]:
         return self.feed(self.frame(), frames)
-
-
-def test_window_resized_mid_game() -> None:
-    s = Session()
-    s.start()
-    assert s.play("d4", "d5") == ["d4", "d5"]
-    s.cell = 48  # the window was resized: the board is three quarters as big
-    s.settle(6)
-    assert s.played == ["d4", "d5"]
-    assert s.play("c4", "e6") == ["c4", "e6"]
 
 
 def test_board_fully_covered_while_moves_happen() -> None:
@@ -141,7 +132,6 @@ def test_toast_over_a_corner_does_not_stall_the_game() -> None:
 @pytest.mark.parametrize(
     ("cell", "dx", "dy"),
     [
-        (50, 0.0, 2.4),
         (50, -2.4, 0.0),
         (50, 2.0, 0.0),
         (50, 0.0, -0.8),
@@ -156,9 +146,11 @@ def test_a_board_moved_any_fraction_of_a_cell_is_found_again(
     cell: int, dx: float, dy: float
 ) -> None:
     """Moves that kept the old lock: two cells and a fraction (the cells it left behind still
-    fit), 0.8 of a cell (the palette re-read inverted), two whole cells (a window part board
-    and part background ranked first), the diagonals. The lock follows within a few frames
-    and the game goes on (the parity audit's sweep, 2026-09-26)."""
+    fit; the same move down the board was a case too), 0.8 of a cell (the palette re-read
+    inverted), two whole cells (a window part board and part background ranked first), the
+    diagonals. The lock follows within a few frames and the game goes on (the parity audit's
+    sweep, 2026-09-26; moves and resizes of every kind are test_board_geometry's sweep, which
+    also holds a window resized mid-game: test_window_resized_mid_game)."""
     s = Session(x0=440, y0=200, cell=cell)
     s.start()
     assert s.play("e4", "e5") == ["e4", "e5"]

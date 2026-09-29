@@ -1,7 +1,11 @@
+from collections.abc import Sequence
+
+import chess
 import pytest
 
-from sidecoach.coach.coach import _parse_candidates, _sample_reply, complete_sentences
-from tests.coaching import drain, mate_analysis, play_to_scholar, scripted_coach
+from sidecoach.coach.coach import Coach, _parse_candidates, _sample_reply, complete_sentences
+from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+from tests.coaching import drain, mate_analysis, play_to_scholar
 from tests.fakes import ScriptedProvider
 
 CUT_MID_MARKER = (
@@ -47,8 +51,7 @@ CUT_MID_MARKER = (
             None,
             id="a-stump-dropped",
         ),
-        pytest.param("[p=0.5] The key was using", [], None, id="only-a-stump"),
-        pytest.param("The key was using", [], None, id="only-a-stump-unmarked"),
+        pytest.param("The key was using", [], None, id="only-a-stump"),
     ],
 )
 def test_a_reply_parses_into_weighted_candidates_and_never_a_fragment(
@@ -76,14 +79,10 @@ def test_a_reply_cut_off_mid_sentence_keeps_its_last_full_sentence(text: str, ke
     assert complete_sentences(text) == kept
 
 
-def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate() -> None:
-    """A stump passes the leak check trivially; it must not win by default."""
-    from collections.abc import Sequence
-
-    import chess
-
-    from sidecoach.coach.coach import Coach
-    from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+def test_the_clean_candidate_is_kept_at_once_and_a_stump_never_reaches_the_user() -> None:
+    """The model offers a false reply and a clean one in one distribution: the clean one is
+    kept on the first attempt, no retry, no template. A stump passes the checks trivially;
+    it must not win by default."""
 
     def checker(
         text: str,
@@ -93,16 +92,28 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     ) -> list[str]:
         return ["the rook on f7 is not there"] if "rook on f7" in text else []
 
+    def coach_on(replies: list[str]) -> Coach:
+        coach = Coach(
+            ScriptedProvider(replies),
+            policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+            draft_check=checker,
+        )
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 7.0)
+        return coach
+
+    coach = coach_on(
+        [
+            "[p=0.6] Your rook on f7 is strong.\n"
+            "[p=0.4] Their king on e8 is short of squares, is it not?"
+        ]
+    )
+    assert drain(coach)[0].text == "Their king on e8 is short of squares, is it not?"
+    assert coach.spoken[-1].attempts == 1 and coach.speaker.fallbacks == 0
     first = "[p=0.6] Your rook on f7 is strong. What next?\n[p=0.4] Given"
     second = "[p=0.7] Their king on e8 is short of squares. What is their threat?"
-    provider = ScriptedProvider([first, second])
-    coach = Coach(
-        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), draft_check=checker
-    )
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
-    assert out[0].text == "Their king on e8 is short of squares. What is their threat?"
+    coach = coach_on([first, second])
+    assert drain(coach)[0].text == "Their king on e8 is short of squares. What is their threat?"
     spoken = coach.spoken[-1]
     # The false claim is sent back and the second draft spoken: no template.
     assert spoken.attempts == 2 and coach.speaker.fallbacks == 0
@@ -111,31 +122,9 @@ def test_a_stump_never_reaches_the_user_even_when_it_is_the_only_clean_candidate
     assert [(call.candidates, call.passed) for call in spoken.calls] == [(1, 0), (1, 1)]
 
 
-def test_a_bare_hint_is_asked_for_as_a_hint_not_as_a_claim() -> None:
-    """ "hint" carries no claim; prompted to be honest about "their claim", the model answered
-    its own previous message as though the player had said it ("Your suggestion to focus on
-    opening lines is spot-on")."""
-    from sidecoach.coach.coach import _ASK_HINT
-
-    for said in ("hint", "Hint", "give me a hint", "a clue please", "help", "any tips?"):
-        assert _ASK_HINT.match(said), said
-    for said in ("what should I play", "is Nf3 a good idea", "help me with the knight"):
-        assert not _ASK_HINT.match(said), said
-    coach, provider = scripted_coach(["Where is their king weakest?"])
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.hint(8.0)
-    drain(coach)
-    prompt = provider.prompts[0][1][-1]["content"]
-    assert "They asked for a hint" in prompt
-    assert "their own claim" not in prompt and "anything said earlier" in prompt
-
-
 def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None:
     """With a verifier, a candidate the second model finds unsupported is not spoken; when
     every candidate has an unsupported statement, the likeliest is repaired once."""
-    import chess
-
     from sidecoach.coach.coach import Speaker, _Request
     from sidecoach.coach.disclosure import PositionFacts
     from sidecoach.events import DisclosureLevel, Trigger

@@ -1,16 +1,15 @@
 """What a mistake allowed (Tai's own games, 2026-09-24): the lesson after a mistake says what
 the move let the opponent do -- their best line in the position it left, read by the same
-idea reader -- and a win far down a line is not read out move by move."""
+idea reader. (A win far down that line is read as far as an ear can follow: test_rungs.py.)"""
 
 from __future__ import annotations
 
 import chess
 import pytest
 
-from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
-from sidecoach.coach.coach import focus_template, lesson_template
-from sidecoach.coach.facts import describe_tactic, facts_from_analysis
+from sidecoach.coach.coach import lesson_template
+from sidecoach.coach.facts import facts_from_analysis
 from tests.lines import analysed
 
 # What the move played let the opponent do (`idea_words.allowed`), read off their best line
@@ -85,6 +84,8 @@ def test_the_lesson_says_what_a_mistake_allowed(
 
 
 def test_the_lesson_says_what_the_move_allowed() -> None:
+    # Tai's game g03, 12.Be3 for 12.Qg4: "Qg4 was better -- goes after..." lacked its "it";
+    # what Be3 allowed follows as a sentence of its own.
     fen = "r2qk2r/p1p1bppp/2p5/4p3/2b1P3/2N4P/PPP2PP1/R1BQR1K1 w kq - 0 12"
     board = chess.Board(fen)
     facts = facts_from_analysis(board, analysed(fen, "Qg4 g6 b3 Be6", score=0.6))
@@ -94,27 +95,5 @@ def test_the_lesson_says_what_the_move_allowed() -> None:
         "That one cost you: Qg4 was better",
         allowed="after Be3, Qxd1 wins your queen",
     )
+    assert text.startswith("That one cost you: Qg4 was better -- it goes after their pawn on g7")
     assert "After Be3, Qxd1 wins your queen." in text
-
-
-def test_a_win_far_down_the_line_is_not_read_out_move_by_move() -> None:
-    # g01, 7.Be3 for 7.h4: the knight falls on the seventh move of the line.
-    fen = "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7"
-    board = chess.Board(fen)
-    line = "h4 d5 g4 Nxh4 Bg5 Be7 Bxh4 Bxh4 g5 Nc6 Rxh4 Rxh4 Nxh4 Qxg5"
-    idea = idea_of.read(board, analysed(fen, line, score=0.9))
-    assert idea.goal == "win" and idea.gain_ply > idea_words.LATER_READ
-    assert idea_words.why(idea, board, describe_tactic) == (
-        f"h4: you win {idea.won}, a few moves on"
-    )
-
-
-def test_the_focus_rung_names_no_stray_feature() -> None:
-    # g06, before 9.O-O: "your king is still in the centre and can still castle" when a3
-    # was the move and castling the inaccuracy.
-    fen = "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7"
-    facts = facts_from_analysis(chess.Board(fen), analysed(fen, "a3 d5", score=0.5))
-    facts = facts.model_copy(
-        update={"target": None, "plan": None, "ideas": ["a stray feature elsewhere"]}
-    )
-    assert "stray" not in focus_template(facts)

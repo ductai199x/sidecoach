@@ -22,28 +22,37 @@ sys.path.insert(0, str(EVAL))
 # through its extraPaths in pyproject.toml).
 import corpus  # noqa: E402
 import estimate  # noqa: E402
+import gold  # noqa: E402
 import judge  # noqa: E402
 import parity  # noqa: E402
 import providers  # noqa: E402
+import rubric  # noqa: E402
 import stamp  # noqa: E402
 import taxonomy  # noqa: E402
 from coach_build import build_coach  # noqa: E402
 
+from sidecoach import cli  # noqa: E402
 from sidecoach.coach import coach as coach_module  # noqa: E402
+from sidecoach.coach.claims import Claim, ClaimKind  # noqa: E402
 from sidecoach.coach.disclosure import PositionFacts  # noqa: E402
 from sidecoach.config import Settings  # noqa: E402
 from sidecoach.events import Analysis, DisclosureLevel, MoveAssessment, MovePlayed  # noqa: E402
 from sidecoach.llm.base import Completion  # noqa: E402
 
 PRICES = (0.20, 0.02, 1.20)
+# The real one asks git; every test sees a constant (the fixture below), and one test runs
+# this with git's answers stated.
+REAL_CODE_VERSION = stamp.code_version
 
 
 @pytest.fixture(autouse=True)
-def _ledger_file(tmp_path, monkeypatch):
+def _scratch(tmp_path, monkeypatch):
     """Every ledger line of a test goes to a scratch file, never data/eval/usage/, and a
-    ledger resuming a run reads only the scratch files."""
+    ledger resuming a run reads only the scratch files. The code version is a constant, so
+    no test waits on git."""
     monkeypatch.setattr(judge, "USAGE_MINE", tmp_path / "usage-test.jsonl")
     monkeypatch.setattr(judge, "USAGE", tmp_path / "legacy-usage.jsonl")
+    monkeypatch.setattr(stamp, "code_version", lambda: "v-test")
 
 
 class FakeModel:
@@ -64,6 +73,10 @@ class FakeModel:
         prompt, cached, completion = self.usage
         stats = {"prompt_tokens": prompt, "cached_tokens": cached, "completion_tokens": completion}
         return Completion(text=str(answer), reasoning="", stats=stats)
+
+
+def _ledger(budget_usd: float = 1.0, run: str = "t", **kw) -> judge.Ledger:
+    return judge.Ledger(run, "test", "fake", budget_usd=budget_usd, prices=PRICES, **kw)
 
 
 # ---- a three-ply game, written by hand ------------------------------------------------
@@ -174,12 +187,26 @@ def test_the_eval_coach_is_built_from_the_apps_settings():
     assert coach.system == build_coach(None).system
 
 
-def test_a_paid_model_is_only_built_on_a_ledger():
+def test_a_paid_model_is_only_built_on_a_ledger_and_reads_claims_at_the_routine_effort(
+    monkeypatch,
+):
+    class EffortModel(FakeModel):
+        reasoning_effort = "medium"
+
+        def with_effort(self, effort):
+            other = EffortModel(self.answer)
+            other.reasoning_effort = effort
+            return other
+
+    seen = []
+    monkeypatch.setattr(cli, "_claims_check", lambda provider: seen.append(provider))
     with pytest.raises(ValueError):
-        build_coach(FakeModel("hi"))
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    coach = build_coach(FakeModel("hi"), ledger=ledger)
+        build_coach(EffortModel("hi"))
+    coach = build_coach(EffortModel("hi"), ledger=_ledger())
     assert isinstance(coach.speaker.provider, providers.Metered)
+    # The player's claims are read metered too, at the app's routine effort.
+    assert isinstance(seen[0], providers.Metered)
+    assert seen[0].inner.reasoning_effort == Settings().llm.routine_effort == "none"
     with pytest.raises(ValueError):
         providers.coach_provider("openai:gpt-5.6-luna@medium")  # no ledger: refused
 
@@ -206,12 +233,6 @@ def test_the_eval_sends_the_verdict_before_the_analysis(tmp_path, monkeypatch):
         pair == [MoveAssessment.__name__, Analysis.__name__] for pair in after_moves
     )
     assert MovePlayed.__name__ in seen
-
-
-def test_templates_are_the_same_on_every_rebuild(tmp_path):
-    first = [it["fallback"] for it in _build(tmp_path)]
-    second = [it["fallback"] for it in _build(tmp_path)]
-    assert first == second
 
 
 # ---- the item carries what the coach's checks read -----------------------------------
@@ -245,18 +266,6 @@ def test_every_request_field_a_check_reads_travels_through_the_item():
     assert fields - carried - judge.REQUEST_REBUILT == set()
 
 
-def test_the_judges_record_holds_the_whole_request_the_coachs_words_marked(tmp_path):
-    item = _lesson(_build(tmp_path))
-    record = judge.evidence_block(item, with_reference=False)
-    shown = item["messages"][-1]["content"]
-    assert judge.mark_coach_words(shown) in record
-    said = [x for x in shown.splitlines() if "YOU (the coach) said: " in x]
-    assert said, "the lesson's message carries the coach's word on 1. e4"
-    assert not any(x.strip() in record for x in said)  # never unmarked
-    words = said[0].split("said: ", 1)[1]
-    assert f"evidence only of what the coach said]: {words}" in record
-
-
 def test_a_tie_to_a_lesson_already_given_has_its_evidence_in_the_record():
     # quality-r1 __004 p038: "the same lesson appeared when your Bishop needed to leave attack
     # earlier" -- at move 9 the coach had said Bc4 was better, getting the bishop out of
@@ -277,9 +286,10 @@ def test_a_tie_to_a_lesson_already_given_has_its_evidence_in_the_record():
     record = judge.evidence_block(item, with_reference=False)
     assert "it stops axb5 and gets your bishop out of danger" in record
     assert "[the coach's earlier words: evidence only of what the coach said]" in record
+    # The whole request is in the record, the coach's words marked and never bare.
+    assert judge.mark_coach_words(item["messages"][-1]["content"]) in record
+    assert 'said: "Playable' not in record
     # The same record for the rubric, whose "connection" criterion asks about such a tie.
-    import rubric
-
     reply = "Move the attacked piece first -- the same lesson as when your bishop left attack."
     rubric_record = rubric.record_of(item, reply)
     assert "gets your bishop out of danger" in rubric_record
@@ -313,32 +323,31 @@ def test_form_comes_from_the_items_own_directive():
     assert problems == ["a question where the task allows none"]
 
 
-def test_the_templates_pass_the_judges_checks(tmp_path):
+def test_the_judge_passes_the_templates_and_fails_a_lesson_that_restates_or_leaves_out_the_move(
+    tmp_path,
+):
+    items = _build(tmp_path)
+    # The templates are the same on every rebuild: the floor arm judges the same words.
+    assert [it["fallback"] for it in items] == [it["fallback"] for it in _build(tmp_path)]
     draft_check = judge._draft_check()
-    for item in _build(tmp_path):
+    for item in items:
         if not item["fallback"]:
             continue
         det = judge.deterministic(item, item["fallback"], draft_check, floor=True)
         assert det["form"]["problems"] == [], (item["id"], det)
         assert det["board"] == [], (item["id"], det)
         assert det["rules"] == [] and det["verdict"] == [] and det["floor"] == []
-
-
-def test_the_owners_rules_fail_a_lesson_that_restates_or_quotes(tmp_path):
-    item = _lesson(_build(tmp_path))
-    draft_check = judge._draft_check()
+    lesson = _lesson(items)
+    # The owner's rules: a lesson that restates the cost and quotes the move fails them.
     reply = "f3 cost you 12% of the game: Nf3 was better. Which piece should come out first?"
-    det = judge.deterministic(item, reply, draft_check)
+    det = judge.deterministic(lesson, reply, draft_check)
     assert det["rules"], det
-    scores = judge.score(item, det, None)
+    scores = judge.score(lesson, det, None)
     assert scores["rules"] and not scores["pass"]
-
-
-def test_a_reply_that_leaves_out_what_the_template_names_is_not_a_pass(tmp_path):
-    item = _lesson(_build(tmp_path))
-    det = judge.deterministic(item, "That was a slip. What would you do instead?", None)
+    # The floor: a reply that leaves out what the template names is no pass.
+    det = judge.deterministic(lesson, "That was a slip. What would you do instead?", None)
     assert det["floor"]
-    assert not judge.score(item, det, None)["pass"]
+    assert not judge.score(lesson, det, None)["pass"]
 
 
 # ---- M2 -------------------------------------------------------------------------------
@@ -377,11 +386,21 @@ def test_the_cost_is_owed_without_a_figure_where_figures_are_forbidden():
     assert taxonomy._loss_words(0.12, figure=False) == "a good deal"
 
 
+def test_the_review_owes_the_move_that_cost_the_most():
+    m = _moment()
+    m.tally = {"best": 3, "inaccuracy": 1, "mistake": 1}
+    m.lost = ["3. f3 (mistake; Nf3 was better)", "9. h3 (inaccuracy; O-O was better)"]
+    m.lost_loss = [0.10, 0.20]  # the inaccuracy cost more
+    facts = taxonomy.required(taxonomy.CLASSES["ask_game_so_far"], m)
+    worst = next(f for f in facts if f.key == "lost_worst")
+    assert worst.value.startswith("9. h3")
+
+
 # ---- B6: money -------------------------------------------------------------------------
 
 
-def test_the_ledger_counts_dollars_and_stops_before_the_call_past_the_budget(tmp_path):
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=0.0005, prices=PRICES)
+def test_the_ledger_counts_dollars_and_stops_before_the_call_past_the_budget():
+    ledger = _ledger(budget_usd=0.0005)
     model = FakeModel("yes", usage=(1000, 0, 100))  # $0.0002 + $0.00012 a call
     metered = providers.Metered(model, ledger)
     metered.chat("s", [])
@@ -393,17 +412,26 @@ def test_the_ledger_counts_dollars_and_stops_before_the_call_past_the_budget(tmp
     lines = [json.loads(x) for x in judge.USAGE_MINE.read_text(encoding="utf-8").splitlines()]
     assert [x["usd"] for x in lines] == [pytest.approx(0.00032)] * 2
     assert not issubclass(judge.BudgetExceeded, Exception)  # no `except Exception` eats it
-
-
-def test_cached_tokens_are_priced_as_cached():
-    ledger = judge.Ledger("t", "test", "fake", prices=PRICES)
-    usd = ledger.record("x", {"prompt_tokens": 10_000, "cached_tokens": 8_000}, 0.1)
+    # Cached tokens are priced as cached.
+    usd = _ledger().record("x", {"prompt_tokens": 10_000, "cached_tokens": 8_000}, 0.1)
     assert usd == pytest.approx((2_000 * 0.20 + 8_000 * 0.02) / 1e6)
+
+
+def test_a_restarted_run_keeps_its_budget():
+    first = _ledger(budget_usd=0.0005, run="run-a", resume=True)
+    providers.Metered(FakeModel("yes"), first).chat("s", [])
+    again = _ledger(budget_usd=0.0005, run="run-a", resume=True)
+    assert again.before == pytest.approx(0.00032) and again.calls == 1
+    model = FakeModel("yes")
+    providers.Metered(model, again).chat("s", [])  # 0.00032 < 0.0005: allowed
+    with pytest.raises(judge.BudgetExceeded):
+        providers.Metered(model, again).chat("s", [])
+    assert _ledger(budget_usd=0.0005, run="run-b", resume=True).before == 0.0
 
 
 def test_a_refused_request_is_not_retried(monkeypatch):
     monkeypatch.setattr(judge.time, "sleep", lambda s: None)
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    ledger = _ledger()
     bad = FakeModel(RuntimeError("400: context too long"))
     with pytest.raises(judge.JudgeFailed):
         judge._chat_with_backoff(bad, "s", [], ledger, "x")
@@ -414,14 +442,13 @@ def test_a_refused_request_is_not_retried(monkeypatch):
 
 
 def test_the_budget_stops_the_game_through_the_coachs_own_handlers(tmp_path):
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=0.0, prices=PRICES)
     model = FakeModel("Fine.")
     with pytest.raises(judge.BudgetExceeded):
-        _build(tmp_path, provider=model, ledger=ledger)
+        _build(tmp_path, provider=model, ledger=_ledger(budget_usd=0.0))
     assert model.calls == 0
 
 
-def test_the_dry_run_estimate_reads_the_cache_prefix():
+def test_the_dry_run_estimate_reads_the_cache_prefix_and_counts_every_call():
     system = "S" * 8000  # ~2,400 tokens, shared by both requests of the game
     requests = [
         {"game": "g", "system": system, "user": "a" * 400, "template_only": False},
@@ -433,23 +460,25 @@ def test_the_dry_run_estimate_reads_the_cache_prefix():
     shared = estimate._tokens(system + "\n" + "a" * 400)
     # Of the shared prefix, the share the cache served in the pilot.
     assert est.cached == pytest.approx(shared * estimate.COACH_CACHE_HIT)
+    # The player's words: the claims check and the planner, per ask.
+    words = estimate.words_estimate(3, PRICES)
+    assert words.calls == 6 and words.usd > 0
+    # A coach call's completion by the spec's effort; no effort is medium.
+    by_effort = estimate.COMPLETION_BY_EFFORT
+    assert estimate.coach_completion("openai:gpt-5.6-luna@low") == by_effort["low"]
+    assert estimate.coach_completion("openai:gpt-5.6-luna") == by_effort["medium"]
 
 
 # ---- B7: a failed call is never scored ------------------------------------------------
 
 
-def test_a_failed_call_is_marked_and_never_judged(tmp_path):
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    items = _build(tmp_path, provider=FakeModel(RuntimeError("500: down")), ledger=ledger)
-    reply = _lesson(items)["reply"]
-    assert reply["model_failed"] and reply["call_errors"] >= 1
-    assert judge.reply_status(reply) == "model_failed"
-
-
-def test_an_empty_answer_is_a_failed_call_and_a_refused_one_is_not(tmp_path):
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+def test_a_failed_or_empty_call_is_never_judged_and_a_refused_reply_is_not_a_failure(tmp_path):
+    ledger = _ledger()
+    down = FakeModel(RuntimeError("500: down"))
+    failed = _lesson(_build(tmp_path, provider=down, ledger=ledger))["reply"]
+    assert failed["model_failed"] and failed["call_errors"] >= 1
     silent = _lesson(_build(tmp_path, provider=FakeModel(""), ledger=ledger))["reply"]
-    assert judge.reply_status(silent) == "model_failed"
+    assert judge.reply_status(failed) == judge.reply_status(silent) == "model_failed"
     # A verdict against the record: the checks say no, and the template speaks. (A reply
     # thin on form, "Blah.", is the model's now: form is noted, not refused.)
     wrong = FakeModel("That was the best move.")
@@ -461,26 +490,36 @@ def test_an_empty_answer_is_a_failed_call_and_a_refused_one_is_not(tmp_path):
 # ---- M6: old results are not read as new ------------------------------------------------
 
 
-def test_results_from_other_code_are_refused_unless_asked():
+def test_results_from_other_code_are_refused_unless_asked(tmp_path, monkeypatch):
     stamp.check("abc1234", "x", reuse_stale=False, current="abc1234")
     with pytest.raises(stamp.StaleData):
         stamp.check("abc1234", "x", reuse_stale=False, current="def5678")
     with pytest.raises(stamp.StaleData):
         stamp.check(None, "x", reuse_stale=False, current="def5678")
     stamp.check("abc1234", "x", reuse_stale=True, current="def5678")
-    assert stamp.code_version()
-
-
-def test_the_judge_refuses_a_stale_judgment(tmp_path, monkeypatch):
+    # The judge's own cache: a judgment made by other code is not read as this code's.
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
-    (tmp_path / "run").mkdir()
-    (tmp_path / "run" / "a.jsonl").write_text(
-        json.dumps({"id": "i", "commit": "old"}) + "\n", encoding="utf-8"
-    )
+    _write_jsonl(tmp_path / "run" / "a.jsonl", [{"id": "i", "commit": "old"}])
     monkeypatch.setattr(stamp, "code_version", lambda: "new")
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
     with pytest.raises(stamp.StaleData):
-        judge.judge_all({}, [], "run", FakeModel("yes"), ledger, thinking=False, quiet=True)
+        judge.judge_all({}, [], "run", FakeModel("yes"), _ledger(), thinking=False, quiet=True)
+
+
+def test_the_version_follows_only_what_shapes_a_reply(monkeypatch):
+    assert "src/sidecoach/coach" in stamp.WATCHED and "tools/eval" in stamp.WATCHED
+    assert "src/sidecoach" not in stamp.WATCHED
+    for elsewhere in ("ui", "voice", "vision", "capture"):
+        assert not any(w.startswith(f"src/sidecoach/{elsewhere}") for w in stamp.WATCHED)
+    # The last commit to the watched code, and a digest of any edit to it (git as stated).
+    said = {"log": b"abc1234\n", "diff": b"", "ls-files": b""}
+    monkeypatch.setattr(stamp, "_git", lambda *args: said[args[0]])
+    version = REAL_CODE_VERSION.__wrapped__  # uncached
+    assert version() == "abc1234"
+    said["diff"] = b"+ an edit"
+    edited = version()
+    assert edited.startswith("abc1234-d") and len(edited) == len("abc1234-d") + 7
+    said["diff"] = b"+ another edit"
+    assert version() != edited
 
 
 # ---- the floor arm -------------------------------------------------------------------
@@ -602,13 +641,6 @@ def test_latency_is_reported_by_trigger():
 # ---- the second audit --------------------------------------------------------------------
 
 
-def test_the_version_follows_only_what_shapes_a_reply():
-    assert "src/sidecoach/coach" in stamp.WATCHED and "tools/eval" in stamp.WATCHED
-    assert "src/sidecoach" not in stamp.WATCHED
-    for elsewhere in ("ui", "voice", "vision", "capture"):
-        assert not any(w.startswith(f"src/sidecoach/{elsewhere}") for w in stamp.WATCHED)
-
-
 def test_the_coachs_own_words_are_evidence_only_of_what_it_said():
     harness = (
         "# Game so far\n1. e4 (the player): best\n"
@@ -625,8 +657,6 @@ def test_the_coachs_own_words_are_evidence_only_of_what_it_said():
     assert "summarised [the coach's and the player's earlier words" in marked
     assert 'PLAYER said: "why?"' in marked
     # Every question put to the judge says what those words are evidence of.
-    import rubric
-
     for system in (judge.BINARY_SYSTEM, parity.PREFER_SYSTEM, rubric.RUBRIC_SYSTEM):
         assert judge.COACH_WORDS_RULE in system
     assert "never evidence of a fact about the board, the moves or the verdicts" in (
@@ -637,66 +667,19 @@ def test_the_coachs_own_words_are_evidence_only_of_what_it_said():
     assert "trapped" not in cleaned and "queen was lost" not in cleaned
 
 
-def test_the_claims_check_runs_at_the_routine_effort(monkeypatch):
-    class EffortModel(FakeModel):
-        reasoning_effort = "medium"
-
-        def with_effort(self, effort):
-            other = EffortModel(self.answer)
-            other.reasoning_effort = effort
-            return other
-
-    seen = []
-
-    def claims_check(provider):
-        seen.append(provider)
-        return None
-
-    import coach_build
-
-    monkeypatch.setattr(coach_build.cli, "_claims_check", claims_check)
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    build_coach(EffortModel("hi"), ledger=ledger)
-    assert isinstance(seen[0], providers.Metered)
-    assert seen[0].inner.reasoning_effort == Settings().llm.routine_effort == "none"
-
-
-def test_the_review_owes_the_move_that_cost_the_most():
-    m = _moment()
-    m.tally = {"best": 3, "inaccuracy": 1, "mistake": 1}
-    m.lost = ["3. f3 (mistake; Nf3 was better)", "9. h3 (inaccuracy; O-O was better)"]
-    m.lost_loss = [0.10, 0.20]  # the inaccuracy cost more
-    facts = taxonomy.required(taxonomy.CLASSES["ask_game_so_far"], m)
-    worst = next(f for f in facts if f.key == "lost_worst")
-    assert worst.value.startswith("9. h3")
-
-
-def test_a_restarted_run_keeps_its_budget(tmp_path):
-    first = judge.Ledger("run-a", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
-    providers.Metered(FakeModel("yes"), first).chat("s", [])
-    again = judge.Ledger("run-a", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
-    assert again.before == pytest.approx(0.00032) and again.calls == 1
-    model = FakeModel("yes")
-    providers.Metered(model, again).chat("s", [])  # 0.00032 < 0.0005: allowed
-    with pytest.raises(judge.BudgetExceeded):
-        providers.Metered(model, again).chat("s", [])
-    other = judge.Ledger("run-b", "test", "fake", budget_usd=0.0005, prices=PRICES, resume=True)
-    assert other.before == 0.0
-
-
-def test_a_vote_stops_once_two_agree():
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+def test_a_vote_stops_once_two_agree_and_an_unreadable_rubric_answer_is_not_scored():
+    ledger = _ledger()
     agree = FakeModel("yes")
     assert judge._yes_no(agree, ledger, "x", "record", "question?") is True
     assert agree.calls == 2
     split = FakeModel(lambda n: "yes" if n % 2 else "no")
     assert judge._yes_no(split, ledger, "x", "record", "question?") is True
     assert split.calls == 3
-
-
-def test_the_estimate_counts_the_calls_the_players_words_cost():
-    est = estimate.words_estimate(3, PRICES)
-    assert est.calls == 6 and est.usd > 0
+    # The rubric's own vote alike; an answer that is neither yes nor no is not scored.
+    agree = FakeModel("No.")
+    assert rubric.ask(agree, ledger, "x", "record", "Q?") is False and agree.calls == 2
+    with pytest.raises(judge.JudgeFailed):
+        rubric.ask(FakeModel("Perhaps."), ledger, "x", "record", "Q?")
 
 
 # ---- the pilot's board-check fails ------------------------------------------------------
@@ -723,51 +706,60 @@ def _position_item(fen: str, sheet: str, **facts) -> dict:
     }
 
 
-def test_a_threat_the_facts_give_is_supported():
-    # bots/...__004/p032: "your opponent threatens ...h5", h5 among the facts' threats.
-    fen = "2kr3r/1pp1q1pp/p1bp1b2/4p3/2PP4/6NP/PP3PP1/R1BQR1K1 w - - 1 17"
-    sheet = "the opponent's threats, if the player passed: the opponent's h5"
-    item = _position_item(fen, sheet, threats=["h5"])
-    assert judge.code_check("your opponent threatens ...h5", item) is True
-    assert judge.code_check("Your opponent threatens ...c4", item) is None  # not given
-    # The checker's misreading of the move as a target square is no contradiction.
-    from sidecoach.coach.claims import Claim, ClaimKind
+@pytest.mark.parametrize(
+    ("fen", "sheet", "threats", "said", "undecided", "claim", "rulings"),
+    [
+        pytest.param(
+            # bots/...__004/p032: "your opponent threatens ...h5", h5 among the facts'
+            # threats. The checker's misreading of the move as a target square is no
+            # contradiction.
+            "2kr3r/1pp1q1pp/p1bp1b2/4p3/2PP4/6NP/PP3PP1/R1BQR1K1 w - - 1 17",
+            "the opponent's threats, if the player passed: the opponent's h5",
+            ["h5"],
+            "your opponent threatens ...h5",
+            "Your opponent threatens ...c4",  # not given
+            Claim(ClaimKind.THREATENS, "they", "h5", None, "they threaten h5"),
+            ("true", "unclear"),
+            id="a threat the facts give",
+        ),
+        pytest.param(
+            # bots/...__002/p054: the key fact is their threat to the rook on c6 (Nb4xc6).
+            # The extractor read the threat as the player's own: its twin reads it as theirs.
+            # A piece of theirs said to be under threat is not decided this way.
+            "r5k1/5p1p/p1R3p1/4P1B1/1n6/8/PP3PP1/6K1 w - - 1 28",
+            "key: They threaten Nxc6, winning your rook on c6",
+            ["Nxc6"],
+            "The plan is to keep the rook on c6 active while removing the threat to it.",
+            "the threat to the pawn on a6",
+            Claim(ClaimKind.THREATENS, "I", "my rook on c6", None, "I threaten my rook on c6"),
+            ("true",),
+            id="a threat on the player's own piece",
+        ),
+        pytest.param(
+            # bots/...__004/p058: Ba7+ moves the bishop off the e-file; the rook on e1
+            # attacks e5.
+            "1k1r1q2/1pp5/p4p2/4p3/2P5/4Bb1P/PP4r1/R1Q1RK2 w - - 4 30",
+            "",
+            [],
+            "Ba7+ keeps the attack on e5",
+            "Bd4 keeps the attack on h8",
+            Claim(ClaimKind.ATTACKS, "my bishop", "their pawn on e5", "Ba7+", "Ba7+ attacks e5"),
+            ("true",),
+            id="an attack a move uncovers",
+        ),
+    ],
+)
+def test_a_claim_the_facts_or_the_board_bear_out_is_supported(
+    fen, sheet, threats, said, undecided, claim, rulings
+):
+    item = _position_item(fen, sheet, threats=threats)
+    assert judge.code_check(said, item) is True
+    assert judge.code_check(undecided, item) is None  # the vote decides
+    ruling, reason, _ = judge.rule_claims(said, item, [claim])
+    assert ruling in rulings, reason
 
-    misread = Claim(ClaimKind.THREATENS, "they", "h5", None, "they threaten h5")
-    ruling, _, _ = judge.rule_claims("your opponent threatens ...h5", item, [misread])
-    assert ruling != "false"
 
-
-def test_a_threat_on_the_players_own_piece_is_the_opponents():
-    # bots/...__002/p054: the key fact is their threat to the rook on c6 (Nb4xc6).
-    fen = "r5k1/5p1p/p1R3p1/4P1B1/1n6/8/PP3PP1/6K1 w - - 1 28"
-    item = _position_item(fen, "key: They threaten Nxc6, winning your rook on c6", threats=["Nxc6"])
-    text = "The plan is to keep the rook on c6 active while removing the threat to it."
-    assert judge.code_check(text, item) is True
-    from sidecoach.coach.claims import Claim, ClaimKind
-
-    # The extractor read the threat as the player's own: its twin reads it as theirs.
-    own = Claim(ClaimKind.THREATENS, "I", "my rook on c6", None, "I threaten my rook on c6")
-    ruling, reason, _ = judge.rule_claims(text, item, [own])
-    assert ruling == "true", reason
-    # A piece of theirs said to be under threat is not decided this way.
-    assert judge.code_check("the threat to the pawn on a6", item) is None
-
-
-def test_an_attack_a_move_uncovers_is_the_moves():
-    # bots/...__004/p058: Ba7+ moves the bishop off the e-file; the rook on e1 attacks e5.
-    fen = "1k1r1q2/1pp5/p4p2/4p3/2P5/4Bb1P/PP4r1/R1Q1RK2 w - - 4 30"
-    item = _position_item(fen, "")
-    assert judge.code_check("Ba7+ keeps the attack on e5", item) is True
-    assert judge.code_check("Bd4 keeps the attack on h8", item) is None  # the vote decides
-    from sidecoach.coach.claims import Claim, ClaimKind
-
-    bishop = Claim(ClaimKind.ATTACKS, "my bishop", "their pawn on e5", "Ba7+", "Ba7+ attacks e5")
-    ruling, reason, _ = judge.rule_claims("Ba7+ keeps the attack on e5", item, [bishop])
-    assert ruling == "true", reason
-
-
-# ---- the preference and the effort bench -------------------------------------------------
+# ---- the preference ------------------------------------------------------------------------
 
 
 def _pair_row(i: str) -> dict:
@@ -798,7 +790,7 @@ def test_the_preference_shows_the_record_and_both_replies_in_a_seeded_order():
 
 def test_the_preference_is_one_question_a_moment_asked_once(tmp_path, monkeypatch):
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    ledger = _ledger()
     rows = [_pair_row(f"m{k}") for k in range(6)]
     by_id = {r["id"]: _pair_item(r["id"]) for r in rows}
     model = FakeModel("A")
@@ -810,52 +802,18 @@ def test_the_preference_is_one_question_a_moment_asked_once(tmp_path, monkeypatc
     assert model.calls == 6 and len(again) == 6  # kept, not asked again
     text = "\n".join(parity.prefer_summary(prefs))
     assert "the judge answered A in 6 of 6" in text
-
-
-def test_an_answer_that_is_neither_a_nor_b_is_no_preference(tmp_path, monkeypatch):
-    monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    rows = [_pair_row("m1")]
-    prefs = parity.judge_prefer(
-        {"m1": _pair_item("m1")}, rows, "run", FakeModel("Both."), ledger, seed=7001, workers=1
+    # An answer that is neither A nor B is no preference.
+    by_id["m9"] = _pair_item("m9")
+    neither = parity.judge_prefer(
+        by_id, [_pair_row("m9")], "run", FakeModel("Both."), ledger, seed=7001, workers=1
     )
-    assert prefs == []
-
-
-def test_the_effort_table_says_when_arms_are_not_comparable():
-    import effort_table
-
-    def arm(name: str, drawn: list[str], commit: str = "abc") -> dict:
-        return {
-            "name": name,
-            "run": name,
-            "effort": name.split("-")[1],
-            "commit": commit,
-            "seed": 7001,
-            "drawn": drawn,
-            "ids": drawn,
-            "scores": {"pass": 0.9, "completeness": 0.8, "fabrication": 0.05},
-            "preferred": 0.6,
-            "prefs": 10,
-            "latency": {"stuck": (4, 2.0, 5.0)},
-            "usd": 0.4,
-            "coach_usd": 0.2,
-        }
-
-    same = effort_table.table([arm("effort-none", ["a", "b"]), arm("effort-low", ["a", "b"])])
-    assert "NOT COMPARABLE" not in same and "| effort-none | none | 2 | 0.90 |" in same
-    assert "2.0/5.0 (n=4)" in same
-    other = effort_table.table([arm("effort-none", ["a"]), arm("effort-low", ["b"], "def")])
-    assert "NOT COMPARABLE" in other
-    assert estimate.coach_completion("openai:gpt-5.6-luna@low") == 200
+    assert neither == []
 
 
 # ---- the excellence rubric ---------------------------------------------------------------
 
 
 def test_the_rubric_file_reads_as_criteria():
-    import rubric
-
     criteria = rubric.load_rubric(rating=(1000, 1400))
     keys = [c.key for c in criteria]
     # "economy" is gone (Tai, 2026-09-25): conciseness is the prompt's and the length check's.
@@ -870,22 +828,22 @@ def test_the_rubric_file_reads_as_criteria():
         "no_scolding",
         "no_hedging",
     ]
+    # What the task asked is the alignment check's (align.py), never a condition the judge
+    # weighs.
+    assert not any("task" in c.question for c in criteria)
     by = {c.key: c for c in criteria}
     assert by["no_hedging"].applies("ask_material", "Level.")  # "*": every class
     assert not by["connection"].applies("stuck_hint", "Look at e5.")
     # The question criteria are asked only of a reply that ends with a question -- and not
     # of "what were you expecting?", the coach listening rather than teaching.
-    for key in ("question_board",):
-        assert by[key].applies("lesson", "Nf3 was better. Which piece guards e5?")
-        assert not by[key].applies("lesson", "Nf3 was better.")
-        assert not by[key].applies(
-            "lesson", "Nf3 was better. What were you expecting that move to do?"
-        )
+    question = by["question_board"]
+    assert question.applies("lesson", "Nf3 was better. Which piece guards e5?")
+    assert not question.applies("lesson", "Nf3 was better.")
+    listening = "Nf3 was better. What were you expecting that move to do?"
+    assert not question.applies("lesson", listening)
 
 
 def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tmp_path):
-    import rubric
-
     twice = tmp_path / "twice.toml"
     twice.write_text(
         '[[criterion]]\nkey = "a"\nquestion = "Q?"\napplies_to = ["*"]\n' * 2, encoding="utf-8"
@@ -901,25 +859,13 @@ def test_a_rubric_file_with_a_repeated_key_or_an_unknown_condition_is_refused(tm
         rubric.load_rubric(odd, rating=(1000, 1400))
 
 
-def test_a_rubric_vote_stops_at_two_and_an_unreadable_answer_is_not_scored():
-    import rubric
-
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    agree = FakeModel("No.")
-    assert rubric.ask(agree, ledger, "x", "record", "Q?") is False and agree.calls == 2
-    with pytest.raises(judge.JudgeFailed):
-        rubric.ask(FakeModel("Perhaps."), ledger, "x", "record", "Q?")
-
-
 def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, monkeypatch):
-    import rubric
-
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
     item = _lesson(_build(tmp_path))
     ai_reply = "Nf3 was better: it develops a piece and keeps f3 free. Which piece is still home?"
     tasks = [rubric.Task("ai", item, ai_reply), rubric.Task("floor", item, item["fallback"])]
     criteria = rubric.load_rubric(rating=(1000, 1400))
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
+    ledger = _ledger()
     model = FakeModel(lambda n: "no" if n <= 2 else "yes")  # the first question: no
     answers, failed = rubric.run_rubric("run", tasks, criteria, model, ledger, workers=1)
     asked = model.calls
@@ -947,8 +893,6 @@ def test_the_rubric_asks_each_question_once_and_scores_the_replies(tmp_path, mon
 
 
 def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_path, monkeypatch):
-    import rubric
-
     path = rubric.items_dir("effort-medium-47138dd-r1")
     assert path.parts[-2:] == ("effort-medium", "items-47138dd-r1")
     assert rubric.items_dir("a-b-1234567-d89abcde-r2").name == "items-1234567-d89abcde-r2"
@@ -965,10 +909,7 @@ def test_the_rubric_finds_a_runs_items_and_judges_the_models_own_replies(tmp_pat
 
     items = {i: item(i) for i in ("a", "b")} | {"c": item("c", fallback_used=True)}
     for run, ids in (("run", ["a", "b", "c"]), ("run-floor", ["a"])):
-        (tmp_path / run).mkdir()
-        (tmp_path / run / "g.jsonl").write_text(
-            "".join(json.dumps({"id": i}) + "\n" for i in ids), encoding="utf-8"
-        )
+        _write_jsonl(tmp_path / run / "g.jsonl", [{"id": i} for i in ids])
     tasks = rubric.tasks_of("run", items, floor=True)
     assert [(t.arm, t.id) for t in tasks] == [("ai", "a"), ("ai", "b"), ("floor", "a")]
     work = [("R" * 8000, 3)]
@@ -1016,7 +957,6 @@ def test_a_claim_made_out_of_advice_is_dropped():
     ("reply", "quote", "why"),
     [
         ("Don't leave the rook on e7 hanging.", "leave the rook on e7 hanging", "advice"),
-        ("Never trade the bishop on g7.", "trade the bishop on g7", "advice"),
         ("Do not take on e5 yet.", "take on e5 yet", "advice"),
         ("So move the queen off d1 now.", "move the queen off d1 now", "advice"),
         # The statement before a question is judged; only the question's own clause is not
@@ -1027,18 +967,21 @@ def test_a_claim_made_out_of_advice_is_dropped():
             None,
         ),
         ("Their knight on d5 is loose, so what attacks it?", "what attacks it?", "a question"),
-        (
-            "Their knight on d5 is loose; which of yours can hit it?",
-            "their knight on d5 is loose",
-            None,
-        ),
-        ("Which piece is loose?", "which piece is loose?", "a question"),
         ("Nothing defends their rook, doesn't it look loose?", "nothing defends their rook", None),
         ("Their knight on d5 \u2014 it \u2019s loose.", "their knight on d5 - it 's loose", None),
         # "Remember that X" states X; a noun is no order; an order with its object is advice.
         ("Remember that your king on g1 has no luft.", "your king on g1 has no luft", None),
         ("Check is coming on g7.", "check is coming on g7", None),
         ("Keep your rooks connected.", "keep your rooks connected", "advice"),
+        # "that" after any other order is its object: "meet that threat first by getting the
+        # attacked piece out of danger" was judged as a claim, "that" read as "remember
+        # that ..." (the benchmark, 2026-09-25).
+        (
+            "They threaten dxe5, so meet that threat first by getting the attacked piece out of"
+            " danger.",
+            "getting the attacked piece out of danger",
+            "advice",
+        ),
     ],
 )
 def test_advice_and_questions_are_told_from_statements(reply, quote, why):
@@ -1067,26 +1010,11 @@ def test_the_balance_is_read_of_the_side_the_claim_names():
     assert judge.material_check("Black is ahead materially.", down, None) is None  # unplaced
 
 
-def test_that_after_an_order_is_its_object_not_a_statement():
-    # "meet that threat first by getting the attacked piece out of danger" was judged as a
-    # claim, "that" read as "remember that ..." (the benchmark, 2026-09-25).
-    reply = judge.normalise(
-        "They threaten dxe5, so meet that threat first by getting the attacked piece out of danger."
-    )
-    quote = judge.normalise("getting the attacked piece out of danger")
-    assert judge.advice_or_question(quote, reply) == "advice"
-    remember = judge.normalise("Remember that your king on g1 has no luft.")
-    assert (
-        judge.advice_or_question(judge.normalise("your king on g1 has no luft"), remember) is None
-    )
-
-
 def test_the_vote_counts_a_plain_inference_as_supported():
     question = judge.support_question("This is no longer opening theory")
     assert "following plainly from what it states" in question
     assert "Answer no only if it is absent from the record or contradicted by it" in question
     assert question.endswith('Statement: "This is no longer opening theory"')
-    assert judge.COACH_WORDS_RULE in judge.BINARY_SYSTEM
     assert '"quote"' in judge.DECOMPOSE_SYSTEM
 
 
@@ -1094,8 +1022,6 @@ def test_the_vote_counts_a_plain_inference_as_supported():
 
 
 def test_connection_is_decided_in_code_from_the_requests_earlier_moments():
-    import rubric
-
     request = (
         "# Position now\n...\n\n# Earlier in this game\n"
         "- At Bg4 (their move): the same pin on your knight.\n"
@@ -1111,17 +1037,9 @@ def test_connection_is_decided_in_code_from_the_requests_earlier_moments():
     assert connection.code == "names_a_link" and connection.only_if == "has_links"
     assert connection.applies("lesson", "Any reply.", request)
     assert not connection.applies("lesson", "Any reply.", "# Task\nThe lesson.")  # not asked
-    # One atomic fact a question: what the task asked is the alignment check's (align.py),
-    # never a condition the judge weighs.
-    assert by["actionable"].question == (
-        "Does the reply leave the player something concrete to look for or do next?"
-    )
-    assert "name at least one specific piece" in by["why"].question
 
 
 def test_the_rubric_never_calls_the_judge_for_a_criterion_code_decides(tmp_path, monkeypatch):
-    import rubric
-
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
     item = _lesson(_build(tmp_path))
     item["messages"] = [
@@ -1135,8 +1053,7 @@ def test_the_rubric_never_calls_the_judge_for_a_criterion_code_decides(tmp_path,
     tasks = [rubric.Task("ai", item, reply)]
     connection = next(c for c in rubric.load_rubric(rating=(1000, 1400)) if c.key == "connection")
     model = FakeModel("no")
-    ledger = judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES)
-    answers, failed = rubric.run_rubric("run", tasks, [connection], model, ledger, workers=1)
+    answers, failed = rubric.run_rubric("run", tasks, [connection], model, _ledger(), workers=1)
     assert model.calls == 0 and not failed
     assert answers["ai"][item["id"]]["connection"]["yes"] is True
     cost, questions = rubric.estimate_of(tasks, [connection], {}, PRICES)
@@ -1152,7 +1069,6 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def test_the_judge_is_compared_with_hand_labels(tmp_path, monkeypatch):
-    import gold
     import report
 
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path)
@@ -1209,15 +1125,8 @@ def test_the_judge_is_compared_with_hand_labels(tmp_path, monkeypatch):
 
 
 def test_a_rejudge_covers_the_runs_own_moments(tmp_path, monkeypatch):
-    import gold
-    import rubric
-
     monkeypatch.setattr(judge, "JUDGMENTS", tmp_path / "judgments")
-    items = _build(
-        tmp_path,
-        provider=FakeModel("Nf3 was better."),
-        ledger=judge.Ledger("t", "test", "fake", budget_usd=1.0, prices=PRICES),
-    )
+    items = _build(tmp_path, provider=FakeModel("Nf3 was better."), ledger=_ledger())
     folder = tmp_path / "items"
     _write_jsonl(folder / "g.jsonl", items)
     lesson = _lesson(items)

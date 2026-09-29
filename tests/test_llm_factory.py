@@ -52,12 +52,6 @@ def test_dashscope_defaults_and_what_the_environment_and_settings_override(
     assert provider.base_url == "https://x.example/v1"
 
 
-def test_dashscope_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
-        make_provider(LLMSettings(provider="dashscope"))
-
-
 def test_the_factory_gives_the_offline_provider_and_it_reports_itself() -> None:
     """No model at all (llm.provider = none, llm/offline.py): the coach's templates speak,
     free and offline (Tai, 2026-09-21)."""
@@ -69,11 +63,17 @@ def test_the_factory_gives_the_offline_provider_and_it_reports_itself() -> None:
     assert provider.usage.calls == 0
 
 
-def test_unknown_provider_and_control() -> None:
-    with pytest.raises(ValueError, match="unknown llm.provider"):
-        make_provider(LLMSettings(provider="nope"))
+def test_a_provider_that_cannot_be_built_says_what_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A name that is no preset is a custom endpoint only once it has one.
+    with pytest.raises(ValueError, match="unknown llm.provider 'groq'.*llm.base_url and llm.model"):
+        make_provider(LLMSettings(provider="groq"))
     with pytest.raises(ValueError, match="thinking_control"):
         make_provider(LLMSettings(provider="local", thinking_control="maybe"))
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="DASHSCOPE_API_KEY"):
+        make_provider(LLMSettings(provider="dashscope"))
 
 
 def test_custom_endpoint_needs_only_base_url_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,8 +88,6 @@ def test_custom_endpoint_needs_only_base_url_and_model(monkeypatch: pytest.Monke
     )
     assert provider.name == "groq"
     assert provider.thinking_control == "none"
-    with pytest.raises(ValueError, match="custom OpenAI-compatible endpoint"):
-        make_provider(LLMSettings(provider="groq"))
 
 
 def test_provider_from_spec(monkeypatch: pytest.MonkeyPatch) -> None:

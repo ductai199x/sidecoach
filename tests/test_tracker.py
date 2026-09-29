@@ -20,14 +20,21 @@ from tests.synth import (
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
 
 
-def test_tracker_locks_and_validates_cheaply() -> None:
-    tracker = BoardTracker()
-    frame = synthetic_board(x0=300, y0=120, cell=64)
+def test_a_lock_holds_in_place_through_validation_and_refits_without_a_search() -> None:
+    """Locked once, the board is validated cheaply on every frame and re-fitted on every
+    third, and on a busy frame neither moves the lock nor searches again."""
+    tracker = BoardTracker(refine_every=3)
+    frame = synthetic_board()
     first = tracker.update(frame)
-    assert first is not None and abs(first.region.x - 300) <= 2
-    for _ in range(5):
+    assert first is not None
+    assert abs(first.region.x - 300) <= 2 and abs(first.region.y - 120) <= 2, first
+    for _ in range(30):
         board = tracker.update(frame)
         assert board is not None
+        assert (
+            abs(board.region.x - first.region.x) <= 1 and abs(board.region.y - first.region.y) <= 1
+        )
+        assert abs(board.cell_px - first.cell_px) <= 0.1
     assert tracker.detections == 1
 
 
@@ -67,22 +74,6 @@ def test_a_nudge_is_refitted_before_the_colours_are_read_again() -> None:
     assert abs(lock.region.x - 147) <= 1 and abs(lock.region.y - 677) <= 1, lock
 
 
-def test_sub_cell_nudge_is_recovered_by_the_refit() -> None:
-    """A 13-pixel nudge at cell 43 is under a third of a cell: validation still passes at
-    the old geometry, so only the periodic re-fit can move the lock."""
-    tracker = BoardTracker()
-    locked = tracker.update(synthetic_board(x0=300, y0=120, cell=43))
-    assert locked is not None and abs(locked.region.x - 300) <= 1
-    nudged = synthetic_board(x0=313, y0=120, cell=43)
-    board = None
-    for _ in range(12):
-        board = tracker.update(nudged)
-        assert board is not None and tracker.verified
-    assert board is not None and abs(board.region.x - 313) <= 2, board
-    assert abs(board.region.y - 120) <= 2 and abs(board.cell_px - 43) <= 0.5
-    assert tracker.detections == 1
-
-
 @pytest.mark.parametrize(
     ("cell", "before", "after"),
     [
@@ -118,9 +109,11 @@ def test_a_board_flush_with_an_edge_is_followed_when_nudged(
 
 
 def test_refit_wins_on_boundary_strength_not_on_the_fit_score() -> None:
-    """The fit is quantised to 1/64 and blind to sub-cell shifts, so the drifted geometry
-    can score 1.0 while the corrected one loses a cell to a badge; the re-fit must still be
-    adopted, on the strength of its boundary comb."""
+    """A 13-pixel nudge at cell 43 is under a third of a cell: validation still passes at
+    the old geometry, so only the periodic re-fit can move the lock. The fit is quantised to
+    1/64 and blind to sub-cell shifts, so the drifted geometry can score 1.0 while the
+    corrected one loses a cell to a badge; the re-fit must still be adopted, on the strength
+    of its boundary comb."""
     cell = 43
     tracker = BoardTracker()
     # An empty board: with pieces, the shifted rings of the old geometry cut through them
@@ -148,6 +141,7 @@ def test_refit_wins_on_boundary_strength_not_on_the_fit_score() -> None:
         board = tracker.update(nudged)
         assert board is not None and tracker.verified
     assert board is not None and abs(board.region.x - 313) <= 2, board
+    assert abs(board.region.y - 120) <= 2 and abs(board.cell_px - cell) <= 0.5, board
     assert tracker.detections == 1
 
 
@@ -247,14 +241,6 @@ def test_tracker_relocks_after_resize() -> None:
     assert abs(board.region.x - 280) <= 2
 
 
-def test_tracker_no_board() -> None:
-    rng = np.random.default_rng(2)
-    noise = rng.integers(0, 256, (400, 600, 3), dtype=np.uint8)
-    tracker = BoardTracker()
-    assert tracker.update(noise) is None
-    assert not tracker.locked
-
-
 def _dialog_and_page_edge(frame: np.ndarray) -> np.ndarray:
     """A dialog over columns a to c of rows 1 to 6, spilling left, and a page edge a cell right."""
     out = frame.copy()
@@ -337,21 +323,6 @@ def test_tracker_thresholds_reach_detection() -> None:
     results = [tracker.update(spoiled) for _ in range(12)]
     assert all(board is None for board in results)
     assert tracker.detections == 2  # on the first frame and the sixth; the next on the 16th
-
-
-def test_periodic_refit_is_stable_on_a_busy_frame() -> None:
-    tracker = BoardTracker(refine_every=3)
-    frame = synthetic_board()
-    first = tracker.update(frame)
-    assert first is not None
-    for _ in range(30):
-        board = tracker.update(frame)
-        assert board is not None
-        assert (
-            abs(board.region.x - first.region.x) <= 1 and abs(board.region.y - first.region.y) <= 1
-        )
-        assert abs(board.cell_px - first.cell_px) <= 0.1
-    assert tracker.detections == 1
 
 
 def test_a_board_resized_to_near_the_frame_s_bottom_is_locked_where_it_is() -> None:

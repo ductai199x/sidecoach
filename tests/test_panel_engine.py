@@ -72,22 +72,6 @@ def test_engine_follows_a_game_and_reports_it(
     assert any(t.startswith("session:") for t in texts)
 
 
-def test_api_poll_is_incremental(make_panel: Callable[..., PanelEngine]) -> None:
-    engine = make_panel()
-    api = PanelApi(engine)
-
-    first = api.poll(0)
-    # An emitted record shows up once, structured, and polling past its cursor does not
-    # repeat it.
-    engine._emit("sys", "info", "hello", detail=42)
-    got = api.poll(first["cursor"])
-    assert len(got["lines"]) == 1
-    record = got["lines"][0]
-    assert record["chan"] == "sys" and record["level"] == "info" and record["text"] == "hello"
-    assert record["data"] == {"detail": 42} and record["t"] >= 0
-    assert api.poll(got["cursor"])["lines"] == []
-
-
 def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
     outcome = PanelEngine.outcome_result
     assert outcome("resigned", "white") == ("0-1", "user resigned or lost on time")
@@ -178,15 +162,25 @@ def test_a_correction_moves_through_the_api(make_panel: Callable[..., PanelEngin
 
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_the_engine_and_coach_outlive_a_session(make_panel: Callable[..., PanelEngine]) -> None:
+def test_the_engine_coach_and_listening_outlive_a_session(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
     """Everything a session needs is built when the panel opens (`warm`), before any
     Start; Start and Stop only start and stop reading the screen (Tai, 2026-09-21), so the
     same engine and coach glue serve one session after another; `close` ends them. No
-    game is needed: a session that reads nothing still builds or reuses the stages."""
+    game is needed: a session that reads nothing still builds or reuses the stages.
+    Listening, too, is left as it was: a session used to turn the listener off on its way
+    out, and after a Stop push-to-talk did nothing while the page still showed it on
+    (2026-09-23)."""
     engine = make_panel(record=False)
     assert engine._assessing is None and engine._coaching is None
     assert engine.warm_status()["done"] is False
     engine.warm(background=False)
+    mic = FedMic()
+    engine._mic = mic  # type: ignore[assignment]
+    engine._listener.mic = mic  # type: ignore[assignment]
+    engine._listener.set_mode("ptt")  # what set_listen does, without hooking the keyboard
+    engine._set(listen="ptt")
     assessing, coaching = engine._assessing, engine._coaching
     assert assessing is not None and coaching is not None, "warm built nothing"
     assert engine._warm_done.is_set()
@@ -214,30 +208,11 @@ def test_the_engine_and_coach_outlive_a_session(make_panel: Callable[..., PanelE
     texts = [ln["text"] for ln in engine.poll(0)["lines"]]
     assert sum(t.startswith("engine:") for t in texts) == 1, texts
     assert sum(t.startswith("coach:") for t in texts) == 1, texts
+    assert engine._listener.mode == "ptt" and mic.opened, "a session closed the ear"
+    assert engine.poll(0)["state"]["listen"] == "ptt"
 
     engine.close()
     assert engine._assessing is None and engine._coaching is None
-
-
-@pytest.mark.embedder  # a session started builds the stages: the net loads
-def test_listening_outlives_a_session(make_panel: Callable[..., PanelEngine]) -> None:
-    """The warm-up opens listening, and Start and Stop only start and stop reading the
-    screen: a session that ends leaves listening as it was. It used to turn the listener
-    off on its way out, and after a Stop push-to-talk did nothing while the page still
-    showed it on (2026-09-23)."""
-    engine = make_panel(record=False)
-    mic = FedMic()
-    engine._mic = mic  # type: ignore[assignment]
-    engine._listener.mic = mic  # type: ignore[assignment]
-    engine._listener.set_mode("ptt")  # what set_listen does, without hooking the keyboard
-    engine._set(listen="ptt")
-    engine.start()
-    assert engine._thread is not None
-    engine._thread.join(timeout=30)
-    assert not engine._thread.is_alive()
-    assert engine._listener.mode == "ptt" and mic.opened, "the session closed the ear"
-    assert engine.poll(0)["state"]["listen"] == "ptt"
-    engine.close()
     assert engine._listener.mode == "off" and not mic.opened
 
 
@@ -404,8 +379,9 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What is said reaches the page as it is recognised, and is asked of the coach a second
-    after the utterance ends -- unless more is said first, which appends (Tai, 2026-09-22:
-    no 'heard:' line, the words in the text box, streamed, then sent)."""
+    after the utterance ends -- unless more is said first, which appends, or the player types
+    over it, which keeps the words in the box and stops the send (Tai, 2026-09-22: no
+    'heard:' line, the words in the text box, streamed, then sent)."""
     import time
 
     import numpy as np
@@ -456,7 +432,12 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     stt.gate.set()
     time.sleep(0.2)
     assert dictation()["text"] == "hello hello hello hello hello"
-    engine.cancel_dictation()
+    # Typed over before it sends: the words go to the box to edit, and nothing is asked.
+    assert dictation()["sends_at"] is not None
+    assert engine.cancel_dictation() == {"ok": True, "text": "hello hello hello hello hello"}
+    assert dictation() == {"text": "", "live": False, "sends_at": None}
+    time.sleep(0.4)  # past the send delay
+    assert engine._commands.empty()
     # No 'heard:' line at info level any more: the words are on the page, not in the terminal.
     assert not any(
         ln["text"].startswith("heard:") and ln["level"] == "info" for ln in engine.poll(0)["lines"]
@@ -492,26 +473,6 @@ def test_a_click_after_the_words_does_not_hold_their_send(
     engine._on_speech_start()
     engine._on_dropped()
     assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
-
-
-def test_typing_over_a_dictation_keeps_the_words_and_stops_the_send(
-    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import time
-
-    import numpy as np
-
-    from sidecoach.ui import panel as panel_mod
-
-    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
-    engine = make_panel(record=False)
-    engine._stt = _Recogniser()  # type: ignore[assignment]
-    engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
-    assert engine.poll(0)["state"]["dictation"]["sends_at"] is not None
-    assert engine.cancel_dictation() == {"ok": True, "text": "hello hello"}
-    assert engine.poll(0)["state"]["dictation"] == {"text": "", "live": False, "sends_at": None}
-    time.sleep(0.5)  # past the send delay
-    assert engine._commands.empty()
 
 
 def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(

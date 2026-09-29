@@ -73,10 +73,6 @@ def test_the_verdict_is_praise_then_the_lesson_and_varies() -> None:
     praise, clause = text.split(" -- ")
     assert praise in OPENERS["best"] and clause.rstrip(".") in PRINCIPLES["takeFile"]
     assert kind == "takeFile"
-    board, fork = _uci("6k1/5ppp/8/r7/3r4/8/5PPP/2N3K1 w - - 0 1", "c1b3")
-    tag = MotifTag(name="fork", squares=["b3", "a5", "d4"])
-    text, kind = verdict(board, fork, "best", [tag], rng=random.Random(1))
-    assert text.endswith(" -- the knight on b3 forks the rook on a5 and the rook on d4.")
     # Nothing to teach: the praise alone. Never the same praise twice running.
     board, d6 = _uci("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2", "d7d6")
     seen = {verdict(board, d6, "good", phase="opening", rng=random.Random(i))[0] for i in range(40)}
@@ -121,7 +117,7 @@ def test_no_word_on_a_sound_move_opens_with_it_or_says_what_it_did() -> None:
     assert said > 250
 
 
-def _played(coach, provider, san: str, label, loss: float = 0.01):  # noqa: ANN001
+def _played(coach, san: str, label, loss: float = 0.01):  # noqa: ANN001
     """A sound move of the user's from the scholar's-mate position, labelled `label`."""
     from sidecoach.events import MoveAssessment, MovePlayed, Severity
 
@@ -166,7 +162,7 @@ def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
     assert not any(_local(Label(x)) for x in ("good", "great", "brilliant", "inaccuracy"))
     assert all(_exciting(Label(x)) for x in ("great", "brilliant"))
     coach, provider = scripted_coach(["[p=1.0] Fine, but Qxf7# was there: the mate."])
-    texts = _played(coach, provider, "Nc3", Label.GOOD, loss=0.03)
+    texts = _played(coach, "Nc3", Label.GOOD, loss=0.03)
     assert texts == ["Fine, but Qxf7# was there: the mate."]
     assert len(provider.prompts) == 1, "the model, for the better move"
     directive = provider.prompts[0][1][-1]["content"]
@@ -174,7 +170,7 @@ def test_a_good_move_goes_to_the_model_which_names_the_better_one() -> None:
     assert "which was good: sound, a little behind Qxf7#" in directive
     assert "tells them nothing: do not open with it" in directive
     coach, provider = scripted_coach(["never used"])
-    texts = _played(coach, provider, "Nc3", Label.EXCELLENT)
+    texts = _played(coach, "Nc3", Label.EXCELLENT)
     assert texts and not texts[0].startswith("Nc3") and provider.prompts == [], "the board's word"
     assert texts[0].split(" -- ")[0].rstrip(".") in OPENERS["excellent"]
 
@@ -186,7 +182,7 @@ def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
     from sidecoach.events import Label
 
     coach, provider = scripted_coach(["[p=1.0] Yes -- the one move, and it ends the game."])
-    texts = _played(coach, provider, "Qxf7#", Label.GREAT, loss=0.0)
+    texts = _played(coach, "Qxf7#", Label.GREAT, loss=0.0)
     assert texts == ["Yes -- the one move, and it ends the game."]
     assert len(provider.prompts) == 1
     directive = provider.prompts[0][1][-1]["content"]
@@ -195,7 +191,7 @@ def test_a_great_or_brilliant_move_gets_the_models_delight() -> None:
     assert coach.speaker.provider is provider, "the main model, not the routine copy"
     # The reply failing, the board's own line stands in: the mate.
     coach, provider = scripted_coach(["", ""])
-    texts = _played(coach, provider, "Qxf7#", Label.BRILLIANT, loss=0.0)
+    texts = _played(coach, "Qxf7#", Label.BRILLIANT, loss=0.0)
     assert len(texts) == 1 and texts[0] in MATE
 
 

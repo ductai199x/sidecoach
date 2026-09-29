@@ -72,7 +72,9 @@ def test_moves_are_committed_after_settling() -> None:
 def test_first_move_is_not_committed_mid_drag() -> None:
     """The pawn is drawn over e4 under the cursor, off centre: still in the air. Then held
     exactly centred with the hovered square still outlined: not dropped yet either
-    (test_hover_outline_alone_blocks_a_commit: the outline alone blocks the commit)."""
+    (test_hover_outline_alone_blocks_a_commit: the outline alone blocks the commit). Eight
+    frames over its square, long enough for its cells to go stale, and still no move
+    (test_long_hover_over_destination_is_not_a_move)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
@@ -84,31 +86,6 @@ def test_first_move_is_not_committed_mid_drag() -> None:
     move = board.push_san("e4")
     _feed(model, rec, board, Side.WHITE, 1.0, highlight=move)
     assert sans_of(_feed(model, rec, board, Side.WHITE, 1.1, highlight=move)) == ["e4"]
-
-
-def test_drag_in_progress_is_held() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    lifted = board.copy()
-    lifted.remove_piece_at(chess.E2)
-    for i in range(5):
-        assert not sans_of(_feed(model, rec, lifted, Side.WHITE, 0.1 * i))
-    assert rec.board.fen() == chess.Board().fen()
-
-
-def test_long_hover_over_destination_is_not_a_move() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4"])
-
-    for i in range(8):
-        drag = (chess.E7, chess.E5, 0.15, -0.2)
-        assert not sans_of(_feed(model, rec, board, Side.WHITE, 0.3 + 0.1 * i, dragging=drag))
-    dropped = board.push_san("e5")
-    _feed(model, rec, board, Side.WHITE, 1.2, highlight=dropped)
-    assert sans_of(_feed(model, rec, board, Side.WHITE, 1.3, highlight=dropped)) == ["e5"]
 
 
 def test_browsing_history_is_not_a_takeback() -> None:
@@ -147,27 +124,49 @@ def test_browsing_history_is_not_a_takeback() -> None:
     assert rec.board.fen() == board.fen()
 
 
-def test_takeback_is_a_new_move_from_an_earlier_position() -> None:
+# (the game, the plies taken back, the moves played instead)
+TAKEBACKS = [
+    # A bot-game takeback: the user's Nf3 and the reply vanish, then a different move.
+    (("e4", "e5", "Nf3", "Nc6"), 2, ("d4",)),
+    # A move legal only in the earlier position, the bishop back on f1: it was once checked
+    # against the latest board and crashed (test_takeback_move_legal_only_in_the_earlier_position).
+    (("e4", "e5", "Nf3", "Nc6", "Bb5"), 1, ("Bc4",)),
+    # The bot answers at once: a takeback, not Ng1 Nb8 told as retreats
+    # (test_takeback_with_a_quick_reply_is_not_told_as_retreats).
+    (("e4", "e5", "Nf3", "Nc6"), 2, ("d4", "exd4")),
+]
+
+
+@pytest.mark.parametrize(
+    ("line", "back", "instead"), TAKEBACKS, ids=["bot-game", "legal-only-before", "quick-reply"]
+)
+def test_a_different_move_from_an_earlier_position_is_a_takeback(
+    line: tuple[str, ...], back: int, instead: tuple[str, ...]
+) -> None:
+    """The board steps back through the move list, which is browsing; a different move from
+    there takes the plies after it back, once the move has settled, and is told as the
+    game's next move (test_takeback_is_a_new_move_from_an_earlier_position)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6"])
-
-    # Bot-game takeback: the user's Nf3 and the reply vanish, then a different move.
-    board.pop()
-    board.pop()
-    for ts in (1.0, 1.1):
+    ts = _play(model, rec, board, list(line))
+    for _ in range(back):
+        board.pop()
+    for _ in range(2):
+        ts += 0.1
         _feed(model, rec, board, Side.WHITE, ts)
-    assert rec.viewing == 2
-    move = board.push_san("d4")
-    events = _feed(model, rec, board, Side.WHITE, 1.2, highlight=move)
-    assert not any(isinstance(e, Takeback) for e in events)
-    events = _feed(model, rec, board, Side.WHITE, 1.3, highlight=move)
-    takebacks = [e for e in events if isinstance(e, Takeback)]
-    assert len(takebacks) == 1 and takebacks[0].plies == 2
-    assert sans_of(events) == ["d4"]
-    assert rec.pgn() == "1. e4 e5 2. d4"
-    assert rec.board.fen() == board.fen()
+    assert rec.viewing == len(line) - back
+    for san in instead:
+        board.push_san(san)
+    events = []
+    for i in range(4):
+        ts += 0.1
+        new = _feed(model, rec, board, Side.WHITE, ts, highlight=board.peek())
+        assert i > 0 or not any(isinstance(e, Takeback) for e in new), "taken back on one frame"
+        events += new
+    assert [e.plies for e in events if isinstance(e, Takeback)] == [back]
+    assert sans_of(events) == list(instead)
+    assert rec.board.fen() == board.fen() and rec.board.move_stack == board.move_stack
 
 
 def test_animation_across_a_still_highlighted_square_is_not_a_move() -> None:
@@ -177,7 +176,6 @@ def test_animation_across_a_still_highlighted_square_is_not_a_move() -> None:
     _feed(model, rec, board, Side.WHITE, 0.0)
     _play(model, rec, board, ["e4", "c6", "Nc3", "d5", "Nb5"])
     reply = board.push_san("c5")  # c6-c5 highlights c6 and c5
-    _play(model, rec, board, [], ts=1.0)
     for ts in (1.1, 1.2):
         _feed(model, rec, board, Side.WHITE, ts, highlight=reply)
     assert rec.board.fen() == board.fen()
@@ -216,29 +214,28 @@ def test_red_marks_do_not_block_moves() -> None:
     assert sans_of(events) == ["e5"]
 
 
-def test_two_move_catch_up_when_one_move_was_missed() -> None:
+@pytest.mark.parametrize(
+    ("before", "missed"),
+    [((), ("e4", "c5")), (("e4", "e5"), ("Nf3", "Nc6", "Bb5", "a6"))],
+    ids=["the-first-move-missed", "four-while-the-window-was-hidden"],
+)
+def test_plies_missed_between_frames_are_caught_up(
+    before: tuple[str, ...], missed: tuple[str, ...]
+) -> None:
+    """Moves no frame showed, one or several, are told from the position after them
+    (test_two_move_catch_up_when_one_move_was_missed,
+    test_four_ply_catch_up_after_window_was_hidden)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
-    board.push_san("e4")
-    reply = board.push_san("c5")
-    events = []
-    for ts in (0.1, 0.2, 0.3):
-        events += _feed(model, rec, board, Side.WHITE, ts, highlight=reply)
-    assert sans_of(events) == ["e4", "c5"]
-    assert rec.board.fen() == board.fen()
-
-
-def test_four_ply_catch_up_after_window_was_hidden() -> None:
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5"])
-    for san in ("Nf3", "Nc6", "Bb5", "a6"):
+    ts = _play(model, rec, board, list(before))
+    for san in missed:
         board.push_san(san)
-    last = board.peek()
-    for ts in (1.0, 1.1, 1.2):
-        _feed(model, rec, board, Side.WHITE, ts, highlight=last)
+    events = []
+    for _ in range(3):
+        ts += 0.1
+        events += _feed(model, rec, board, Side.WHITE, ts, highlight=board.peek())
+    assert sorted(sans_of(events)) == sorted(missed)
     assert rec.board.fen() == board.fen()
 
 
@@ -386,26 +383,6 @@ def test_move_from_adopted_position_is_a_takeback_not_a_new_game() -> None:
     assert rec.board.fen().split()[0] == adopted.board_fen()
 
 
-def test_takeback_move_legal_only_in_the_earlier_position() -> None:
-    """Regression: the branch move was once checked against the latest board and crashed."""
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6", "Bb5"])
-    earlier = board.copy()
-    earlier.pop()  # back to after Nc6: the bishop is on f1 again
-    for ts in (1.0, 1.1):
-        _feed(model, rec, earlier, Side.WHITE, ts)
-    assert rec.viewing == 4
-    move = earlier.push_san("Bc4")  # legal only with the bishop on f1
-    events = []
-    for ts in (1.2, 1.3):
-        events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=move)
-    assert any(isinstance(e, Takeback) and e.plies == 1 for e in events)
-    assert sans_of(events) == ["Bc4"]
-    assert rec.board.fen() == earlier.fen()
-
-
 def test_illegal_commit_is_refused_not_fatal() -> None:
     rec = Reconciler(bottom=Side.WHITE)
     rec.start()
@@ -425,7 +402,9 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     """Several cells the game cannot explain for a long while: a note (`Unexplained`), and
     the game goes on as it stands. It was a Resync, which the coach and the engine read as
     the numbering starting again while the reconciler kept its own (Tai's game, 2026-09-23:
-    the takeback that came after was "10 plies" to one and "the last move" to the other)."""
+    the takeback that came after was "10 plies" to one and "the last move" to the other).
+    A piece lifted and held as long is a drag in progress: no move, no note
+    (test_drag_in_progress_is_held)."""
 
     model, rec = _setup()
     rec.stale_after = 2
@@ -451,7 +430,8 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     events = []
     for i in range(12):
         events += _feed(model2, rec2, lifted, Side.WHITE, 0.1 * i)
-    assert not any(isinstance(e, Resync | Unexplained) for e in events)
+    assert not any(isinstance(e, Resync | Unexplained | MovePlayed) for e in events)
+    assert rec2.board.fen() == chess.STARTING_FEN
 
 
 def test_badge_arriving_with_the_move_does_not_block_it() -> None:
@@ -558,8 +538,7 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     assert any(isinstance(e, GameEnded) for e in events)
 
 
-@pytest.mark.parametrize("frames", [3, 4, 5])
-def test_a_queen_nobody_can_read_is_not_moved_there_and_back(frames: int) -> None:
+def test_a_queen_nobody_can_read_is_not_moved_there_and_back() -> None:
     """Both queens read as pieces of no known kind for a whole game (a set whose queens the
     recogniser could not tell apart), so every cell a queen touches is a soft wildcard.
     After ...Qd7, h3, ...Qxg4, e4 (badged) the search once told d8-d7, h3, d7-d8, e4: a
@@ -567,7 +546,11 @@ def test_a_queen_nobody_can_read_is_not_moved_there_and_back(frames: int) -> Non
     another cadence a tour, d8-c7, h3, c7-h2, e4, onto a square that read empty but had
     gone stale. A piece that goes and comes straight back explains nothing, a second move
     told through wild cells alone is invented, and a stale exact reading may not be
-    contradicted by a story that changes its square. What is told is what was played."""
+    contradicted by a story that changes its square. What is told is what was played.
+    (It ran at three, four and five frames a move. On 2026-09-29 each rule was switched off
+    in turn: without the third every cadence failed alike, on the tour; without the first,
+    the second or both, every cadence passed. One cadence is kept.)"""
+    frames = 3
     model, rec = _setup(Side.BLACK)
     board = chess.Board()
     _feed(model, rec, board, Side.BLACK, 0.0)
@@ -668,42 +651,6 @@ def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
     assert sans_of(events) == ["e5"]
 
 
-def test_user_can_end_the_game_by_resigning() -> None:
-    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
-    rec.start()
-    for san in ("e4", "e5"):
-        rec._commit(rec.board.parse_san(san))
-    events = rec.end("0-1", "user resigned")
-    assert len(events) == 1 and isinstance(events[0], GameEnded)
-    assert events[0].result == "0-1" and events[0].pgn == "1. e4 e5"
-    assert rec.finished and rec.end("0-1", "again") == []
-
-
-def test_takeback_with_a_quick_reply_is_not_told_as_retreats() -> None:
-    """Browse back two plies, play d4, the bot answers at once: a takeback, not Ng1 Nb8."""
-    model, rec = _setup()
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    ts = _play(model, rec, board, ["e4", "e5", "Nf3", "Nc6"])
-    earlier = chess.Board()
-    for san in ("e4", "e5"):
-        earlier.push_san(san)
-    for _ in range(2):
-        ts += 0.1
-        _feed(model, rec, earlier, Side.WHITE, ts)
-    assert rec.viewing == 2
-    earlier.push_san("d4")
-    earlier.push_san("exd4")
-    events = []
-    for _ in range(4):
-        ts += 0.1
-        events += _feed(model, rec, earlier, Side.WHITE, ts, highlight=earlier.peek())
-    takebacks = [e for e in events if isinstance(e, Takeback)]
-    assert len(takebacks) == 1 and takebacks[0].plies == 2
-    assert sans_of(events) == ["d4", "exd4"]
-    assert rec.pgn() == "1. e4 e5 2. d4 exd4"
-
-
 MIDDLEGAME = "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6"
 
 
@@ -798,7 +745,9 @@ def test_resync_onto_a_mated_position_ends_the_game() -> None:
 def test_nothing_is_played_on_a_finished_game() -> None:
     """A mate on the board ends the game once, with its result and record; after it the
     board is a review board, and only the start position begins the next game, with no
-    second end for this one (test_checkmate_ends_the_game_once). A resignation likewise."""
+    second end for this one (test_checkmate_ends_the_game_once). A resignation likewise:
+    the user's word ends the game once, with its record
+    (test_user_can_end_the_game_by_resigning)."""
     model, rec = _setup()
     rec.resync_hold_s = 60.0  # a review board held long enough is another position; not here
     board = chess.Board()
@@ -841,7 +790,9 @@ def test_nothing_is_played_on_a_finished_game() -> None:
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     ts = _play(model, rec, board, ["e4", "e5"])
-    rec.end("0-1", "user resigned")
+    ended = rec.end("0-1", "user resigned")
+    assert [(e.result, e.pgn) for e in ended if isinstance(e, GameEnded)] == [("0-1", "1. e4 e5")]
+    assert len(ended) == 1 and rec.finished and rec.end("0-1", "again") == []
     move = board.push_san("Nf3")
     events = []
     for _ in range(3):

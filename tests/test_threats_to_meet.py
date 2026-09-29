@@ -1,6 +1,7 @@
 """Tactics that win something, and threats the opponent prepares (the master games' notes,
 2026-09-24): a tactic's capture must leave the player up, and a quiet move of theirs that
-would threaten mate or a piece next is a threat to meet when the best move takes it away."""
+would threaten mate or a piece next is a threat to meet when the best move takes it away --
+the move's reason, not a plan it also serves."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import pytest
 from sidecoach.analysis import motifs
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words
-from sidecoach.coach.facts import describe_tactic
+from sidecoach.coach.facts import describe_tactic, facts_from_analysis
 from sidecoach.events import MotifTag
 from tests.lines import analysed, boards_along, san_moves
 
@@ -77,9 +78,10 @@ SHORT_TIMMAN = "r1bq1rk1/1pp1ppbp/1nn3p1/p3P3/P7/1B3N1P/1PP1QPP1/RNB2RK1 b - - 0
 
 def test_a_quiet_move_that_prepares_to_win_the_queen_is_a_threat_to_meet() -> None:
     board = chess.Board(SHORT_TIMMAN)
-    idea = idea_of.read(
-        board, analysed(SHORT_TIMMAN, "Nd4 Nxd4 Qxd4 Re1", score=0.39, threats=["f1d1"])
-    )
+    analysis = analysed(SHORT_TIMMAN, "Nd4 Nxd4 Qxd4 Re1", score=0.39, threats=["f1d1"])
+    # Nd4 meets Rd1-Rxd8; that it also puts a knight in the centre is not why: no plan.
+    assert facts_from_analysis(board, analysis).plan is None
+    idea = idea_of.read(board, analysis)
     assert idea.goal == "defend" and idea.prepared and idea.threatened == "your queen"
     assert idea_words.goal(idea) == (
         "your opponent is preparing to win material: stop it before it comes"

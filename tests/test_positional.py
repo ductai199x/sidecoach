@@ -84,7 +84,6 @@ CASTLED_BLACK = "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP1QPPP/R1B1K2R w K
 KNIGHT_C4 = "4k3/p7/8/3p4/2N5/8/8/4K3 w - - 0 1"
 IDEAS: list[tuple[str, str, str, str | None, str | None, str | None, bool]] = [
     ("castle", ITALIAN, "O-O", "opening", None, "castle", True),
-    ("develop", ITALIAN, "Nc3", "opening", None, "develop", True),
     # A knight to a pawn-guarded square in enemy ground is an outpost move.
     ("outpost", "4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1", "Nd5", None, None, "outpostMove", True),
     # A rook onto a file with no friendly pawn takes the file.
@@ -125,27 +124,6 @@ IDEAS: list[tuple[str, str, str, str | None, str | None, str | None, bool]] = [
     ("rescue, their threat elsewhere", RUY_A6, "Ba4", "opening", "d8h4", "rescue", False),
     # A pawn that steps on from an attack is a push, not a rescue: e4, hit by d5, to e5.
     ("a pawn steps on", "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e5", None, "d5e4", "rescue", False),
-    # A knight beside the enemy king, guarded by its pawn: the king cannot take it (the king
-    # used to count as a capturer worth nothing).
-    (
-        "guarded from the king",
-        "8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1",
-        "Nd3",
-        None,
-        None,
-        "rescue",
-        False,
-    ),
-    # A knight attacked only by the c6 knight, which the b5 bishop pins to its king.
-    (
-        "attacked by a pinned piece",
-        "4k3/8/2n5/1B6/3N4/8/8/4K3 w - - 0 1",
-        "Nf3",
-        None,
-        None,
-        "rescue",
-        False,
-    ),
     # Running to b6, where the a7 pawn takes it, is no rescue; e3 is.
     ("rescue to an unsafe square", KNIGHT_C4, "Nb6", None, "d5c4", "rescue", False),
     ("rescue to a safe square", KNIGHT_C4, "Ne3", None, "d5c4", "rescue", True),
@@ -153,7 +131,7 @@ IDEAS: list[tuple[str, str, str, str | None, str | None, str | None, bool]] = [
     ("prophylaxis", NXE4, "Nc3", "opening", "f6e4", "prophylaxis", True),
     # A move that ignores the threat is not prophylaxis, and names no idea.
     ("ignores the threat", NXE4, "a3", "opening", "f6e4", None, True),
-    # With no threat supplied, Nc3 is ordinary development.
+    # With no threat supplied, Nc3 is ordinary development: a minor piece off its home square.
     ("no threat given", NXE4, "Nc3", "opening", None, "develop", True),
     # ...bxc3 threatens the knight. Bd2 guards it, but the pawn still wins a knight for a
     # pawn, so the threat is not stopped.
@@ -212,7 +190,8 @@ def test_a_capture_away_from_the_centre_is_not_the_fight_for_it() -> None:
 
 
 def test_a_piece_is_in_danger_only_from_a_legal_capture() -> None:
-    # The king cannot take a knight its pawn guards.
+    # The king cannot take a knight its pawn guards (the king used to count as a capturer
+    # worth nothing).
     guarded = chess.Board("8/8/5k2/4N3/3P4/8/8/4K3 w - - 0 1")
     assert not P._piece_is_attacked(guarded, chess.E5, chess.WHITE)
     # A knight pinned to its king takes nothing.

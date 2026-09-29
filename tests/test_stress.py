@@ -86,6 +86,24 @@ class Played:
     bottom: Side | None  # the side it read at the bottom from the start position
 
 
+def _render(sc: Scenario, board: chess.Board, **kw: object) -> np.ndarray:
+    """`board` drawn the way the scenario's site draws it."""
+    return synthetic_board(
+        width=8 * sc.cell + 600,
+        height=8 * sc.cell + 240,
+        board=board,
+        theme=sc.theme,
+        cell=sc.cell,
+        bottom=sc.bottom,
+        coordinates=sc.coordinates,
+        style=sc.style,
+        highlight_colour=sc.highlight_colour,
+        arrow_colour=sc.arrow_colour,
+        arrow_width=sc.arrow_width,
+        **kw,  # type: ignore[arg-type]
+    )
+
+
 def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
     rng = random.Random(sc.seed)
     pipe = GamePipeline()
@@ -95,26 +113,10 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
     ended = 0
     starts = 0
 
-    def frame_for(**kw: object) -> np.ndarray:
-        return synthetic_board(
-            width=8 * sc.cell + 600,
-            height=8 * sc.cell + 240,
-            board=board,
-            theme=sc.theme,
-            cell=sc.cell,
-            bottom=sc.bottom,
-            coordinates=sc.coordinates,
-            style=sc.style,
-            highlight_colour=sc.highlight_colour,
-            arrow_colour=sc.arrow_colour,
-            arrow_width=sc.arrow_width,
-            **kw,  # type: ignore[arg-type]
-        )
-
     def show(frames: int, **kw: object) -> None:
         nonlocal ts, ended, starts
         for _ in range(frames):
-            for event in pipe.process(frame_for(**kw), ts):
+            for event in pipe.process(_render(sc, board, **kw), ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                 elif isinstance(event, GameEnded):
@@ -180,7 +182,7 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
         other = GamePipeline(cache=cache)
         geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
         events = other.cold_start(
-            frame_for(), geometry, bottom=None if sc.coordinates else sc.bottom
+            _render(sc, board), geometry, bottom=None if sc.coordinates else sc.bottom
         )
         if any(isinstance(e, GameStarted) for e in events) and other.reconciler is not None:
             cold = other.reconciler.board.board_fen()
@@ -341,26 +343,10 @@ def play_ending(sc: Scenario, ending: Ending) -> Ended:
     phase = "clean"
     when: str | None = None
 
-    def frame_for(**kw: object) -> np.ndarray:
-        return synthetic_board(
-            width=8 * sc.cell + 600,
-            height=8 * sc.cell + 240,
-            board=board,
-            theme=sc.theme,
-            cell=sc.cell,
-            bottom=sc.bottom,
-            coordinates=sc.coordinates,
-            style=sc.style,
-            highlight_colour=sc.highlight_colour,
-            arrow_colour=sc.arrow_colour,
-            arrow_width=sc.arrow_width,
-            **kw,  # type: ignore[arg-type]
-        )
-
     def show(frames: int, **kw: object) -> None:
         nonlocal ts, when
         for _ in range(frames):
-            for event in pipe.process(frame_for(**kw), ts):
+            for event in pipe.process(_render(sc, board, **kw), ts):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                 elif isinstance(event, GameEnded):

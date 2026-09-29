@@ -1,9 +1,9 @@
 """The opponent's threat: what they would play if it were their turn.
 
 A null move hands them the move, so the engine's answer from the passed position is the
-threat the position carries. test_analysis.py checks this against a real engine; here a
-recording fake pins down the plumbing deterministically -- the guards that must not call the
-engine at all, and the null-move position it is handed.
+threat the position carries. test_analysis.py checks this against a real engine (what a
+quiet best move threatens); here a recording fake pins down the plumbing deterministically --
+the guards that must not call the engine at all, and the null-move position it is handed.
 """
 
 from __future__ import annotations
@@ -32,26 +32,18 @@ def test_the_engine_sees_the_position_with_the_move_handed_over() -> None:
     assert (engine.depths, engine.multipvs) == ([8], [2]), "depth and multipv are passed through"
     # The board the caller passed is untouched.
     assert board.turn is chess.WHITE and board.fen() == chess.STARTING_FEN
+    # The threats are the first move of each line.
+    assert threat_moves(engine, board, depth=8, multipv=2) == ["d8d1", "a7a5"]
 
 
-def test_threat_moves_are_the_first_move_of_each_line() -> None:
+def test_no_threat_and_no_engine_call_in_check_or_when_the_game_is_over() -> None:
     engine = FakeEngine(default=CANNED)
-    assert threat_moves(engine, chess.Board(), depth=8, multipv=2) == ["d8d1", "a7a5"]
-
-
-def test_no_threat_and_no_engine_call_when_in_check() -> None:
-    engine = FakeEngine(default=CANNED)
-    # White is in check from the queen on e2's... use a simple check: black queen checks e1.
+    # The black queen checks the king on e1: you cannot pass out of check.
     in_check = chess.Board("4k3/8/8/8/8/8/4q3/4K3 w - - 0 1")
     assert in_check.is_check() and not in_check.is_game_over()
     assert threat_lines(engine, in_check, depth=8) == [], "you cannot pass out of check"
+    # Stalemate, not in check: a finished game carries no threat to ask about.
+    stalemate = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+    assert stalemate.is_stalemate() and not stalemate.is_check()
+    assert threat_lines(engine, stalemate, depth=8) == [], "the game is over"
     assert engine.calls == [], "the engine is never asked"
-
-
-def test_no_threat_and_no_engine_call_when_the_game_is_over() -> None:
-    engine = FakeEngine(default=CANNED)
-    # Fool's mate: 1. f3 e5 2. g4 Qh4#. White is to move and mated.
-    mated = chess.Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
-    assert mated.is_checkmate()
-    assert threat_lines(engine, mated, depth=8) == []
-    assert engine.calls == [], "a finished game carries no threat to ask about"

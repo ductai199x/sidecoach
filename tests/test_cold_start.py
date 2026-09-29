@@ -99,7 +99,6 @@ def test_cold_start_reads_a_rendered_mid_game_board(tmp_path: Path, bottom: Side
     assert started[0].kind == "position", "a position: coached, not recorded"
     assert cold.reconciler is not None and cold.reconciler.kind == "position"
     assert cold.bottom == bottom, "the orientation was misread from the coordinates"
-    assert cold.reconciler is not None
     board = cold.reconciler.board
     assert board.is_valid()
     # Every one of the 64 squares: a single misread piece would poison the analysis.
@@ -126,17 +125,6 @@ def test_asked_to_reread_a_board_with_a_piece_left_selected(tmp_path: Path, them
     auto = GamePipeline(cache=cache)
     assert auto._cold_read(frame, GEOM, None) is None
     assert auto._cold_read(frame, GEOM, None, asked=True) is not None
-
-
-def test_cold_start_refuses_a_rendered_board_caught_mid_move(tmp_path: Path) -> None:
-    cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)
-    truth = chess.Board(MIDGAME)
-    # The c1 bishop in flight over f4, under the hover outline.
-    frame = synthetic_board(board=truth, coordinates=True, dragging=(chess.C1, chess.F4, 0.1, 0.1))
-    cold = GamePipeline(cache=cache)
-    assert cold.cold_start(frame, GEOM) == []
-    assert cold.reconciler is None and cold.model is None
 
 
 def test_cold_start_without_coordinates_takes_the_side_it_is_told(tmp_path: Path) -> None:
@@ -262,8 +250,10 @@ def test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock(
 def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
     tmp_path: Path,
 ) -> None:
-    """Four reads of a board mid-move, 0.6 s apart: a quiet one would have been adopted by
-    the third (COLD_START_HOLD reads)."""
+    """Four reads of a board mid-move, the c1 bishop in flight over f4 under the hover
+    outline, 0.6 s apart: a quiet one would have been adopted by the third (COLD_START_HOLD
+    reads). Asked for, the read refuses it too
+    (test_cold_start_refuses_a_rendered_board_caught_mid_move)."""
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)
     truth = chess.Board(MIDGAME)
@@ -273,6 +263,7 @@ def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
     live = GamePipeline(cache=cache)
     for i in range(4):
         assert not any(isinstance(e, GameStarted) for e in _tick(live, dragged, 0.6 * i))
+    assert live.cold_start(dragged, GEOM) == []
     assert live.model is None and live.reconciler is None
     # The start position is the bootstrap's, which learns the theme from it: no cold read.
     fresh = GamePipeline(cache=cache)
@@ -281,25 +272,6 @@ def test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps(
         _tick(fresh, start, 0.6 * i)
     assert fresh.bootstraps == 1 and fresh.reconciler is not None
     assert fresh.reconciler.base_fen == chess.STARTING_FEN
-
-
-def test_a_position_for_black_is_read_from_the_labels_and_coached_for_black(
-    tmp_path: Path,
-) -> None:
-    """A puzzle shown from Black's side: the labels say black is at the bottom, the
-    position is read that way, the solver is Black, and the presumed side to move is
-    the side at the bottom -- not White by default (a puzzle for Black was coached for
-    White, 2026-09-20)."""
-    cache = ThemeCache(tmp_path)
-    _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
-    truth = chess.Board(MIDGAME.replace(" w ", " b "))
-    frame = synthetic_board(board=truth, bottom=Side.BLACK, coordinates=True)
-    live = GamePipeline(cache=cache)
-    _join(live, frame)
-    rec = live.reconciler
-    assert rec is not None and live.bottom is Side.BLACK and rec.user_side is Side.BLACK
-    assert not _squares_off(rec.board, truth)
-    assert rec.turn_unknown and rec.board.turn == chess.BLACK, "the solver's move, meanwhile"
 
 
 def test_flip_re_reads_a_joined_position_the_other_way_up(tmp_path: Path) -> None:
@@ -330,7 +302,10 @@ def test_flip_re_reads_a_joined_position_the_other_way_up(tmp_path: Path) -> Non
 def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path) -> None:
     """The next puzzle comes up from the other side: the resync would keep the old
     orientation and adopt the position on its head; the labels say otherwise, and the
-    board is read again the right way, as a new game."""
+    board is read again the right way, as a new game. The solver is Black, the side at the
+    bottom, and so is the presumed side to move -- not White by default (a puzzle for Black
+    was coached for White, 2026-09-20:
+    test_a_position_for_black_is_read_from_the_labels_and_coached_for_black)."""
     from sidecoach.events import Resync
 
     cache = ThemeCache(tmp_path)
@@ -349,8 +324,10 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
             break
     assert not any(isinstance(e, Resync) for e in events), "no resync on its head"
     assert any(isinstance(e, GameStarted) for e in events), "a new game, the right way up"
-    assert live.bottom is Side.BLACK and live.reconciler is not None
-    assert not _squares_off(live.reconciler.board, second)
+    rec = live.reconciler
+    assert live.bottom is Side.BLACK and rec is not None and rec.user_side is Side.BLACK
+    assert not _squares_off(rec.board, second)
+    assert rec.turn_unknown and rec.board.turn == chess.BLACK, "the solver's move, meanwhile"
 
 
 # The puzzle Tai had up on the Pixel (2026-09-23), just after Black's d5xc4.

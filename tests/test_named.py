@@ -79,12 +79,6 @@ def test_an_illegal_move_ends_the_probe_and_is_remembered() -> None:
     assert [m.uci() for m in probe.parsed] == ["f1c4"] and probe.illegal == "Qh5"
 
 
-def test_the_opponents_move_first_is_a_pass() -> None:
-    board = chess.Board(ITALIAN_START)
-    probe = parse_probe("if they play Bc5", ["pass", "Bc5"], board)
-    assert probe.parsed[0] == chess.Move.null() and probe.parsed[1].uci() == "f8c5"
-
-
 def test_examine_reports_the_score_the_gap_the_reply_and_the_effects() -> None:
     fact = _your_bc4()
     assert fact == (

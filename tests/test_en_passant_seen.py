@@ -32,12 +32,9 @@ def test_the_highlighted_double_step_gives_the_en_passant_square() -> None:
     assert position.ep_square == chess.C3
     assert chess.Move.from_uci("b4c3") in position.legal_moves
     assert " c3 " in position.fen()
-
-
-def test_no_highlight_no_en_passant() -> None:
+    # No highlight, no en passant (test_no_highlight_no_en_passant).
     adopted = Reconciler._adopt_placement(_placement(), prefer=chess.BLACK)
-    assert adopted is not None
-    assert adopted[0].ep_square is None
+    assert adopted is not None and adopted[0].ep_square is None
 
 
 def test_a_one_square_advance_says_whose_move_it_is_and_no_en_passant() -> None:

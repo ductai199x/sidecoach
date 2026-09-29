@@ -124,12 +124,6 @@ def test_real_players_miss_less_as_they_get_stronger():
         assert measured == rates and measured == sorted(measured, reverse=True), key
 
 
-def test_the_student_misses_half_the_time_more_than_nova():
-    h = habits.HABITS["threat_blind"]
-    assert h.student(0.0) == habits.TAKEOVER
-    assert abs(h.student(0.2) - (habits.TAKEOVER + (1 - habits.TAKEOVER) * 0.2)) < 1e-9
-
-
 class _Fake:
     """An engine for `student_move`: e4 good, a3 a mistake that loses a knight; passing lets
     the opponent win `threat` pawns."""
@@ -157,10 +151,13 @@ class _Fake:
 
 
 def test_where_the_habit_bites_the_student_misses_at_its_target_rate(monkeypatch):
+    h = habits.HABITS["threat_blind"]
+    # The target: the habit takes over the move a share of the time, Nova's own miss the rest.
+    assert h.student(0.0) == habits.TAKEOVER
+    assert abs(h.student(0.2) - (habits.TAKEOVER + (1 - habits.TAKEOVER) * 0.2)) < 1e-9
     # a3's line loses a knight.
     monkeypatch.setattr(habits, "swing", lambda b, line, mate: 0 if len(line) == 1 else -3)
     probs = {chess.Move.from_uci(u): p for u, p in [("e2e4", 0.9), ("a2a3", 0.1)]}
-    h = habits.HABITS["threat_blind"]
     rng = random.Random(1)
     n = 1000
     # The evaluator's methods `student_move` calls, and no Stockfish.

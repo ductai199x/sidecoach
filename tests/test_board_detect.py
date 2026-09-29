@@ -24,17 +24,6 @@ def test_overlays_do_not_move_detection() -> None:
     assert busy_best.fit >= 0.85
 
 
-def test_detects_full_board_with_pieces() -> None:
-    frame = synthetic_board()
-    boards = detect_boards(frame)
-    assert boards, "no board found"
-    best = boards[0]
-    assert abs(best.region.x - 300) <= 2
-    assert abs(best.region.y - 120) <= 2
-    assert abs(best.cell_px - 64) <= 0.5
-    assert best.fit >= 0.9
-
-
 def test_detects_odd_cell_size_and_position() -> None:
     frame = synthetic_board(x0=17, y0=333, cell=37, seed=3)
     best = detect_boards(frame)[0]
@@ -105,19 +94,21 @@ def _checkerboard(frame: np.ndarray, x0: int, y0: int, cell: int, n: int) -> Non
 INVERTED: dict[str, Any] = {"light": (60, 60, 200), "dark": (200, 200, 60)}
 
 
-def test_inverted_luminance_theme_is_still_a_board() -> None:
-    """Which square colour is the brighter one depends on the theme."""
-    frame = synthetic_board(**INVERTED)
-    boards = detect_boards(frame)
-    assert boards and abs(boards[0].region.x - 300) <= 2 and abs(boards[0].region.y - 120) <= 2
-
-
 @pytest.mark.parametrize("theme", [{}, INVERTED], ids=["light-is-brighter", "light-is-darker"])
-def test_locked_colours_keep_the_theme_polarity(theme: dict[str, Any]) -> None:
-    """A lock's palette names the colours by position, so the fit must follow its polarity:
-    the board itself reads as a fit, and a whole-cell slide reads every cell wrong even
-    before the outer ring is consulted."""
-    gray = to_gray(synthetic_board(**theme))
+def test_a_board_of_either_polarity_is_found_and_its_locked_colours_keep_it(
+    theme: dict[str, Any],
+) -> None:
+    """Which square colour is the brighter one depends on the theme: a board with its pieces
+    is found where it is, at its size, either way. A lock's palette names the colours by
+    position, so the fit must follow its polarity: the board itself reads as a fit, and a
+    whole-cell slide reads every cell wrong even before the outer ring is consulted."""
+    frame = synthetic_board(**theme)
+    boards = detect_boards(frame)
+    assert boards, "no board found"
+    best = boards[0]
+    assert abs(best.region.x - 300) <= 2 and abs(best.region.y - 120) <= 2, best
+    assert abs(best.cell_px - 64) <= 0.5 and best.fit >= 0.9, best
+    gray = to_gray(frame)
     region = Region(300, 120, 512, 512)
     colours = square_colours(gray, region, 64.0)
     assert colours is not None

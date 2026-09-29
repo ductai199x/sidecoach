@@ -351,8 +351,12 @@ def play(seed: int) -> Outcome:
     return Outcome(got, list(sc.sans), same, locked, log)
 
 
-# The seeds a default run plays (tests/conftest.py; `--seeds` sweeps more).
-SEEDS = range(1, 5)
+# The seeds a default run plays (tests/conftest.py; `--seeds` sweeps more). The first four
+# play every event (moved, resized, covered, scrolled, dragged, jumped, shrunk) before, during
+# and after a move, 27 pairs in 403 frames, where seeds 1-4 played 22; 2 and 3 stay for the
+# two readings only they reach, a near-empty cell read as unknown and an 8 with no loops
+# (2026-09-29).
+SEEDS = (154, 287, 34, 175, 2, 3)
 
 
 def test_a_game_survives_the_board_moved_resized_covered_and_scrolled(seed: int) -> None:

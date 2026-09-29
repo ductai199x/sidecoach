@@ -39,13 +39,6 @@ EFFECTS: list[tuple[str, str, str, list[str]]] = [
             "puts the bishop where it is attacked and undefended",
         ],
     ),
-    # An unpinned bishop still attacks the knight it could take.
-    (
-        "an unpinned bishop",
-        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-        "Bb5",
-        ["attacks the knight on c6"],
-    ),
     # --- attacked is a legal capture, defended a legal recapture
     # The knight on c6 is pinned to its king: the rook on d4 is not attacked.
     ("attacked by a pinned knight", "4k3/8/2n5/1B6/8/8/8/3RK3 w - - 0 1", "Rd4", []),

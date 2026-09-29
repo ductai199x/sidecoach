@@ -20,7 +20,9 @@ from sidecoach.events import (
 from tests.coaching import directive_of, drain, offline_coach, scripted_coach, sent
 
 
-def _played(coach, ucis: list[str], mistake_at: int) -> None:
+def _played(coach, ucis: list[str], mistake_at: int) -> chess.Board:
+    """`ucis` played and judged, the player White, the move at `mistake_at` a blunder: the
+    board they reach."""
     board = chess.Board()
     coach.on_event(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=board.fen()), 0.0)
     for ply, uci in enumerate(ucis, 1):
@@ -52,6 +54,23 @@ def _played(coach, ucis: list[str], mistake_at: int) -> None:
             ),
             float(ply) + 0.5,
         )
+    return board
+
+
+def _analysed(coach, board: chess.Board, best: str, score: float, ts: float) -> None:
+    """The engine's look at `board`: `best` the one line."""
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=len(board.move_stack),
+            lines=[Line(moves=[best], depth=12, expected_score=score)],
+            decisive=False,
+            only_move=False,
+            tags=[],
+        ),
+        ts,
+    )
 
 
 ITALIAN = ["e2e4", "e7e5", "g1f3", "b8c6"]
@@ -102,22 +121,8 @@ def test_what_a_question_names_is_examined_aloud_and_what_a_statement_names_is_n
     assert question_part("After 12...h5 what then?") == "After 12...h5 what then?"
 
     def italian(coach) -> None:
-        _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6"], mistake_at=3)
-        board = chess.Board()
-        for uci in ("e2e4", "e7e5", "g1f3", "b8c6"):
-            board.push_uci(uci)
-        coach.on_event(
-            Analysis(
-                game_id="g",
-                fen=board.fen(),
-                ply=4,
-                lines=[Line(moves=["f1c4"], depth=12, expected_score=0.55)],
-                decisive=False,
-                only_move=False,
-                tags=[],
-            ),
-            4.5,
-        )
+        board = _played(coach, ITALIAN, mistake_at=3)
+        _analysed(coach, board, "f1c4", 0.55, 4.5)
         drain(coach)
 
     # Offline the examination is the answer: a question's pieces are read out, a statement's not.
@@ -140,22 +145,8 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     (the simulated students: "what Nc4 was expected to do was asked but not answered")."""
 
     coach, provider = scripted_coach(["You have it: the knight was loose.", "Right."])
-    _played(coach, ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"], mistake_at=7)
-    board = chess.Board()
-    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "f3g5"):
-        board.push_uci(uci)
-    coach.on_event(
-        Analysis(
-            game_id="g",
-            fen=board.fen(),
-            ply=7,
-            lines=[Line(moves=["d7d5"], depth=12, expected_score=0.45)],
-            decisive=False,
-            only_move=False,
-            tags=[],
-        ),
-        7.5,
-    )
+    board = _played(coach, NG5, mistake_at=7)
+    _analysed(coach, board, "d7d5", 0.45, 7.5)
     drain(coach)
     with coach._lock:
         coach.conversation.coach_said("What were you expecting that move to do?")
@@ -176,26 +167,11 @@ def test_a_piece_asked_about_is_read_on_the_board_as_it_stands() -> None:
     6): pieces and squares are read on the board as it stands."""
 
     coach = offline_coach()
-    ucis = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]
-    _played(coach, ucis, mistake_at=5)
-    board = chess.Board()
-    for ply, uci in enumerate(ucis, 1):
-        board.push_uci(uci)
-        if ply >= 4:
-            coach.on_event(
-                Analysis(
-                    game_id="g",
-                    fen=board.fen(),
-                    ply=ply,
-                    lines=[
-                        Line(moves=["a7a6" if ply == 5 else "f1b5"], depth=12, expected_score=0.5)
-                    ],
-                    decisive=False,
-                    only_move=False,
-                    tags=[],
-                ),
-                ply + 0.7,
-            )
+    board = _played(coach, [*ITALIAN, "f1b5"], mistake_at=5)
+    before = board.copy()
+    before.pop()
+    _analysed(coach, before, "f1b5", 0.5, 4.7)
+    _analysed(coach, board, "a7a6", 0.5, 5.7)
     drain(coach)
     assert not coach.user_to_move
     coach.ask("Is my bishop on b5 safe there?", 6.0)

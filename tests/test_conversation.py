@@ -4,58 +4,71 @@ from __future__ import annotations
 
 import chess
 
-from sidecoach.coach.conversation import Conversation
+from sidecoach.coach.conversation import Conversation, PlyRecord
 from sidecoach.events import GameStarted, Label, MoveAssessment, MovePlayed, Severity, Side
 from tests.coaching import sent
 from tests.fakes import ScriptedProvider
+
+
+def _conversation(side: Side = Side.WHITE, **kw: bool) -> Conversation:
+    convo = Conversation(**kw)
+    convo.new_game(GameStarted(game_id="g", user_side=side, start_fen=chess.Board().fen()))
+    return convo
+
+
+def _move(
+    convo: Conversation, board: chess.Board, ply: int, san: str, *, by_user: bool
+) -> PlyRecord:
+    """`san` played on `board`, which it leaves after the move, and its record."""
+    move = board.parse_san(san)
+    before = board.fen()
+    board.push(move)
+    return convo.move(
+        MovePlayed(
+            game_id="g",
+            ply=ply,
+            san=san,
+            uci=move.uci(),
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=by_user,
+        )
+    )
+
+
+def _judge(
+    convo: Conversation,
+    record: PlyRecord,
+    label: Label,
+    severity: Severity,
+    loss: float,
+    best: list[str],
+) -> None:
+    convo.assess(
+        MoveAssessment(
+            game_id="g",
+            ply=record.move.ply,
+            uci=record.move.uci,
+            expected_loss=loss,
+            severity=severity,
+            best=best,
+            label=label,
+        )
+    )
 
 
 def test_the_preferred_line_is_dropped_only_when_its_first_move_was_played() -> None:
     """After 10...O-O (a mistake) the engine's line was 10...Nxe4 11. Qxd4 Nf6 12. O-O:
     it ends on the move played, and the verdict lost the line entirely. The line is
     dropped only when its first move is the one played."""
-    convo = Conversation()
-    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
-    fen_before = "r1bqk2r/2p1bppp/p2p1n2/1p1P4/3pP3/1B6/PPP1NPPP/R1BQK2R b KQkq - 1 10"
-    board = chess.Board(fen_before)
-    move = board.parse_san("O-O")
-    board.push(move)
-    record = convo.move(
-        MovePlayed(
-            game_id="g",
-            ply=20,
-            san="O-O",
-            uci=move.uci(),
-            fen_before=fen_before,
-            fen_after=board.fen(),
-            by_user=False,
-        )
-    )
-    convo.assess(
-        MoveAssessment(
-            game_id="g",
-            ply=20,
-            uci=move.uci(),
-            expected_loss=0.13,
-            severity=Severity.MISTAKE,
-            best=["f6e4", "d1d4", "e4f6", "e1g1"],
-            label=Label.MISTAKE,
-        )
-    )
-    text = convo.render_ply(record)
-    assert "the engine preferred 10... Nxe4 11. Qxd4 Nf6 12. O-O" in text
+    convo = _conversation()
+    board = chess.Board("r1bqk2r/2p1bppp/p2p1n2/1p1P4/3pP3/1B6/PPP1NPPP/R1BQK2R b KQkq - 1 10")
+    record = _move(convo, board, 20, "O-O", by_user=False)
+    line = ["f6e4", "d1d4", "e4f6", "e1g1"]
+    _judge(convo, record, Label.MISTAKE, Severity.MISTAKE, 0.13, line)
+    assert "the engine preferred 10... Nxe4 11. Qxd4 Nf6 12. O-O" in convo.render_ply(record)
     # The line whose first move is the one played is not repeated back.
-    convo.assess(
-        MoveAssessment(
-            game_id="g",
-            ply=20,
-            uci=move.uci(),
-            expected_loss=0.01,
-            severity=Severity.NONE,
-            best=[move.uci(), "a2a4"],
-            label=Label.GOOD,
-        )
-    )
+    _judge(convo, record, Label.GOOD, Severity.NONE, 0.01, [record.move.uci, "a2a4"])
     assert "the engine preferred" not in convo.render_ply(record)
 
 
@@ -97,34 +110,10 @@ def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do()
     board = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
     assert "takes the open d-file" in describe_effects(board, board.parse_san("Qd1"))
     # In the message: the played move's effects and the better move's.
-    convo = Conversation()
-    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
-    fen_before = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
-    board = chess.Board(fen_before)
-    move = board.parse_san("Nc3")
-    board.push(move)
-    record = convo.move(
-        MovePlayed(
-            game_id="g",
-            ply=5,
-            san="Nc3",
-            uci=move.uci(),
-            fen_before=fen_before,
-            fen_after=board.fen(),
-            by_user=True,
-        )
-    )
-    convo.assess(
-        MoveAssessment(
-            game_id="g",
-            ply=5,
-            uci=move.uci(),
-            expected_loss=0.03,
-            severity=Severity.INACCURACY,
-            best=["f1b5"],
-            label=Label.INACCURACY,
-        )
-    )
+    convo = _conversation()
+    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    record = _move(convo, board, 5, "Nc3", by_user=True)
+    _judge(convo, record, Label.INACCURACY, Severity.INACCURACY, 0.03, ["f1b5"])
     text = convo.render_ply(record)
     assert "What Bb5 would do: attacks the knight on c6." in text
     assert "What Nc3 does:" not in text  # a quiet developing move: nothing the board can name
@@ -134,9 +123,7 @@ def test_the_setting_says_left_and_right_as_the_player_sees_them() -> None:
     """Playing Black, "he will just move away to the right" (Kh1-g2) was answered "their King
     cannot move to the right" (Tai's puzzle, 2026-09-28)."""
     for side, right in ((Side.WHITE, "h"), (Side.BLACK, "a")):
-        convo = Conversation()
-        convo.new_game(GameStarted(game_id="g", user_side=side, start_fen=chess.Board().fen()))
-        setting = convo.messages()[0]["content"]
+        setting = _conversation(side).messages()[0]["content"]
         assert f"'to the right' means toward the {right}-file" in setting, side
 
 
@@ -168,35 +155,11 @@ def test_the_position_sections_on_the_opponents_turn() -> None:
     from sidecoach.coach.facts import facts_from_analysis
     from sidecoach.events import Analysis, DisclosureLevel, Line
 
-    convo = Conversation()
-    convo.new_game(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=chess.Board().fen()))
+    convo = _conversation(Side.BLACK)
     # Black (the player) takes a knight on e6 that a pawn on d5 recaptures.
-    fen_before = "4k3/2n5/4N3/3P4/8/8/8/4K3 b - - 0 40"
-    board = chess.Board(fen_before)
-    move = board.parse_san("Nxe6")
-    board.push(move)
-    record = convo.move(
-        MovePlayed(
-            game_id="g",
-            ply=79,
-            san="Nxe6",
-            uci=move.uci(),
-            fen_before=fen_before,
-            fen_after=board.fen(),
-            by_user=True,
-        )
-    )
-    convo.assess(
-        MoveAssessment(
-            game_id="g",
-            ply=79,
-            uci=move.uci(),
-            expected_loss=0.0,
-            severity=Severity.NONE,
-            best=[move.uci()],
-            label=Label.BEST,
-        )
-    )
+    board = chess.Board("4k3/2n5/4N3/3P4/8/8/8/4K3 b - - 0 40")
+    record = _move(convo, board, 79, "Nxe6", by_user=True)
+    _judge(convo, record, Label.BEST, Severity.NONE, 0.0, [record.move.uci])
     analysis = Analysis(
         game_id="g",
         fen=board.fen(),
@@ -228,24 +191,10 @@ def test_the_earlier_dialogue_folds_into_a_summary_and_the_last_plies_stay_verba
     line with the move it followed; the last plies keep their words."""
     from sidecoach.coach.summarise import summarise
 
-    convo = Conversation()
-    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    convo = _conversation()
     board = chess.Board()
     for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"], start=1):
-        move = board.parse_san(san)
-        fen_before = board.fen()
-        board.push(move)
-        convo.move(
-            MovePlayed(
-                game_id="g",
-                ply=ply,
-                san=san,
-                uci=move.uci(),
-                fen_before=fen_before,
-                fen_after=board.fen(),
-                by_user=ply % 2 == 1,
-            )
-        )
+        _move(convo, board, ply, san, by_user=ply % 2 == 1)
         if ply == 1:
             convo.coach_said("A fine first move.")
         if ply == 2:
@@ -275,52 +224,16 @@ def test_the_compact_record_drops_stale_nods_and_runs_sound_moves_together() -> 
     as a move list; a move that lost ground keeps its line."""
     from sidecoach.coach.conversation import NOD_PLIES
 
-    convo = Conversation(compact_record=True)
-    convo.new_game(GameStarted(game_id="g", user_side=Side.WHITE, start_fen=chess.Board().fen()))
+    convo = _conversation(compact_record=True)
     board = chess.Board()
-    sans = [
-        "e4",
-        "e5",
-        "Nf3",
-        "Nc6",
-        "Bb5",
-        "a6",
-        "Ba4",
-        "Nf6",
-        "O-O",
-        "Be7",
-        "Re1",
-        "b5",
-        "Bb3",
-        "d6",
-    ]
+    sans = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5"]
+    sans += ["Bb3", "d6"]
     for ply, san in enumerate(sans, start=1):
-        move = board.parse_san(san)
-        fen_before = board.fen()
-        board.push(move)
-        convo.move(
-            MovePlayed(
-                game_id="g",
-                ply=ply,
-                san=san,
-                uci=move.uci(),
-                fen_before=fen_before,
-                fen_after=board.fen(),
-                by_user=ply % 2 == 1,
-            )
-        )
-        severity = Severity.INACCURACY if ply == 5 else Severity.NONE
-        convo.assess(
-            MoveAssessment(
-                game_id="g",
-                ply=ply,
-                uci=move.uci(),
-                expected_loss=0.05 if ply == 5 else 0.0,
-                severity=severity,
-                best=[move.uci()] if ply != 5 else ["f1c4"],
-                label=Label.INACCURACY if ply == 5 else Label.BOOK,
-            )
-        )
+        record = _move(convo, board, ply, san, by_user=ply % 2 == 1)
+        if ply == 5:
+            _judge(convo, record, Label.INACCURACY, Severity.INACCURACY, 0.05, ["f1c4"])
+        else:
+            _judge(convo, record, Label.BOOK, Severity.NONE, 0.0, [record.move.uci])
         if ply % 2 == 1:
             convo.coach_said(f"Nod after {san}.", nod=True)
         if ply == 6:
@@ -345,8 +258,6 @@ def test_a_capture_the_engine_takes_back_is_said_as_such_before_the_position_is_
     the engine's own line for the move names the recapture. Without it "up a queen for a
     pawn" was said, and the model called the queen trade a queen won (the dev audit,
     2026-09-26)."""
-    from sidecoach.coach.conversation import PlyRecord
-
     before = chess.Board("1r5r/pbp3p1/5nkp/4Qq2/8/2N2P2/PP2R1PP/R1B3K1 b - - 6 19")
     move = before.parse_san("Qxe5")
     after = before.copy()

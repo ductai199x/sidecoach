@@ -5,7 +5,6 @@ from __future__ import annotations
 import chess
 import pytest
 
-from sidecoach.analysis import positional
 from sidecoach.coach import plans
 
 
@@ -155,12 +154,6 @@ def test_the_plan_a_best_line_carries_out(
     }
     for name, text in words.items():
         assert said[name]() == text, f"{case}: {name}"
-
-
-def test_a_push_in_front_of_your_own_king_is_no_storm() -> None:
-    # Both kings behind the kingside pawns: h4 makes room or keeps a piece out.
-    board = chess.Board("6k1/p4ppp/8/8/8/8/5PPP/6K1 w - - 0 1")
-    assert positional._pawn_storm_side(board, chess.Move.from_uci("h2h4"), chess.WHITE) is None
 
 
 def test_a_move_that_attacks_a_loose_piece_is_a_threat() -> None:

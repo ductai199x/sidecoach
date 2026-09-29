@@ -51,7 +51,7 @@ class _StubReader(ClockReader):
         self.resets += 1
 
 
-def _oriented(reader: ClockReader, bottom: Side = Side.WHITE) -> GamePipeline:
+def _oriented(reader: ClockReader | None, bottom: Side = Side.WHITE) -> GamePipeline:
     pipe = GamePipeline(clock=reader)
     pipe.bottom = bottom
     pipe.board = BOARD
@@ -123,16 +123,9 @@ def test_a_broken_or_absent_clock_never_breaks_the_pipeline() -> None:
 
     assert _oriented(_Boom())._read_clock(FRAME, 1.0) == []  # an exception is swallowed
     assert _oriented(_StubReader(None))._read_clock(FRAME, 1.0) == []  # no clock drawn
-
-
-def test_default_pipeline_wires_no_clock_and_stays_inert() -> None:
-    # Constructed without a reader (as every existing test and the detect command do), the
-    # clock path does nothing at all, so nothing about the old behaviour changes.
-    pipe = GamePipeline()
-    pipe.bottom = Side.WHITE
-    pipe.board = BOARD
-    assert pipe.clock is None
-    assert pipe._read_clock(FRAME, 1.0) == []
+    # No reader wired, as a pipeline is built by default (the detect command, most tests):
+    # the clock path does nothing at all (test_default_pipeline_wires_no_clock_and_stays_inert).
+    assert GamePipeline().clock is None and _oriented(None)._read_clock(FRAME, 1.0) == []
 
 
 def test_a_reset_forgets_the_last_games_clock() -> None:

@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 
 from sidecoach.events import GameEnded, Side
-from sidecoach.state.pipeline import DIALOG_SECONDS, GamePipeline
+from sidecoach.state.pipeline import DIALOG_SECONDS
 from sidecoach.vision.squares import row_col
 from sidecoach.vision.tracker import BoardTracker
-from tests.games import recogniser, reconciler_at, sans_of
+from tests.games import Game, recogniser, reconciler_at, sans_of
 from tests.synth import GEOM, synthetic_board, with_dialog
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
@@ -58,27 +58,14 @@ def test_covered_cells_read_as_unknown_and_visible_cells_still_read(bottom: Side
 
 def test_mating_move_commits_while_the_game_over_dialog_covers_the_board() -> None:
     """The last move is seen only with the dialog already up, as chess.com does it."""
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    for _ in range(2):
-        pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    events = []
-    for san in ("f3", "e5", "g4"):
-        move = board.push_san(san)
-        for _ in range(2):
-            frame = synthetic_board(board=board, highlight=move)
-            events += pipe.process(frame, ts)
-            ts += 0.1
-    assert sans_of(events) == ["f3", "e5", "g4"]
+    g = Game(pipeline=True)
+    g.play("f3", "e5", "g4")
+    assert g.sans == ["f3", "e5", "g4"]
 
-    mate = board.push_san("Qh4#")  # d8 and h4 both lie outside the dialog
+    mate = g.board.push_san("Qh4#")  # d8 and h4 both lie outside the dialog
     events = []
     for _ in range(3):
-        frame = synthetic_board(board=board, highlight=mate)
-        events += pipe.process(with_dialog(frame, dark=True), ts)
-        ts += 0.1
+        events += g.process(with_dialog(g.frame(highlight=mate), dark=True))
     assert sans_of(events) == ["Qh4#"]
     ended = [e for e in events if isinstance(e, GameEnded)]
     assert ended and ended[0].result == "0-1"
@@ -218,45 +205,32 @@ def test_a_dialog_that_stays_over_a_live_board_covers_the_game_but_ends_nothing(
     next game ends it. One that flashes past counts for nothing."""
     from sidecoach.events import ScreenState, ScreenStateChanged
 
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    for _ in range(2):
-        pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    events = []
-    for san in ("e4", "e5"):
-        move = board.push_san(san)
-        for _ in range(2):
-            events += pipe.process(synthetic_board(board=board, highlight=move), ts)
-            ts += 0.1
-    assert sans_of(events) == ["e4", "e5"]
-    assert pipe.reconciler is not None and not pipe.reconciler.finished
+    g = Game(pipeline=True)
+    g.play("e4", "e5")
+    assert g.sans == ["e4", "e5"] and not g.rec.finished
+    assert g.pipe is not None
 
-    frame = synthetic_board(board=board)
+    frame = g.frame()
     events = []
     for _ in range(5):
-        events += pipe.process(with_dialog(frame, dark=True), ts)
-        ts += 0.1
-    events += pipe.process(frame, ts)
-    ts += 0.1
+        events += g.process(with_dialog(frame, dark=True))
+    events += g.process(frame)
     assert not [e for e in events if isinstance(e, (GameEnded, ScreenStateChanged))]
 
     events = []
     for _ in range(30):
-        events += pipe.process(with_dialog(frame, dark=True), ts)
-        ts += 0.1
+        events += g.process(with_dialog(frame, dark=True))
     states = [e.state for e in events if isinstance(e, ScreenStateChanged)]
     assert states == [ScreenState.COVERED]
     assert not [e for e in events if isinstance(e, GameEnded)]
-    assert not pipe.reconciler.finished
+    assert not g.rec.finished
     # The cover lifts: live again, same game.
-    events = pipe.process(frame, ts)
+    events = g.process(frame)
     assert [e.state for e in events if isinstance(e, ScreenStateChanged)] == [ScreenState.LIVE_GAME]
     # The user says how it ended.
-    settled = pipe.end_game("1-0", "opponent resigned or lost on time", ts)
+    settled = g.pipe.end_game("1-0", "opponent resigned or lost on time", g.ts)
     assert [e.result for e in settled if isinstance(e, GameEnded)] == ["1-0"]
-    assert pipe.end_game("0-1", "changed my mind", ts) == []
+    assert g.pipe.end_game("0-1", "changed my mind", g.ts) == []
 
 
 def test_the_dialog_confirms_a_mate_read_once() -> None:
@@ -274,32 +248,21 @@ def test_the_dialog_confirms_a_mate_read_once() -> None:
     the mate, and a story that nothing disagrees with is dropped (`Reconciler.update`). And
     the mate read twice, or with the opponent's move in sight, settles on its own frames
     (test_mating_move_commits_while_the_game_over_dialog_covers_the_board)."""
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    for _ in range(2):
-        pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    events = []
-    for san in ("e4", "e5", "Qh5", "Nc6", "Bc4"):
-        move = board.push_san(san)
-        for _ in range(2):
-            events += pipe.process(synthetic_board(board=board, highlight=move), ts)
-            ts += 0.1
-    assert sans_of(events) == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
-    board.push_san("Nd4")  # c6 and d4 lie under the dialog
-    mate = board.push_san("Qxf7#")  # h5 and f7 do not
-    frame = synthetic_board(board=board, highlight=mate)
-    events = pipe.process(frame, ts)  # one clean frame
-    ts += 0.1
+    g = Game(pipeline=True)
+    g.play("e4", "e5", "Qh5", "Nc6", "Bc4")
+    assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
+    g.board.push_san("Nd4")  # c6 and d4 lie under the dialog
+    mate = g.board.push_san("Qxf7#")  # h5 and f7 do not
+    frame = g.frame(highlight=mate)
+    events = g.process(frame)  # one clean frame
     assert not sans_of(events)
-    up = ts
+    up = g.ts
     for _ in range(30):
-        new = pipe.process(with_dialog(frame, dark=True), ts)
+        at = g.ts
+        new = g.process(with_dialog(frame, dark=True))
         if sans_of(new):
-            assert ts - up >= DIALOG_SECONDS, "settled under the dialog, not confirmed by it"
+            assert at - up >= DIALOG_SECONDS, "settled under the dialog, not confirmed by it"
         events += new
-        ts += 0.1
     assert sans_of(events) == ["Nd4", "Qxf7#"]
     ended = [e for e in events if isinstance(e, GameEnded)]
     assert ended and ended[0].result == "1-0"

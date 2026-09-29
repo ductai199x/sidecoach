@@ -38,7 +38,10 @@ def test_derive_screen_state_maps_the_game_lifecycle() -> None:
     assert pipe._derive_screen_state(board_present=True) is ScreenState.GAME_OVER
 
 
-def test_screen_state_goes_live_then_game_over_on_a_mate() -> None:
+def test_screen_state_goes_live_then_game_over_on_a_mate_then_unknown_without_a_board() -> None:
+    """Live once the game is recognised, game over on a mate, each announced once; and
+    unknown when the board is lost:
+    test_screen_state_falls_back_to_unknown_when_the_board_is_lost."""
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
@@ -67,21 +70,11 @@ def test_screen_state_goes_live_then_game_over_on_a_mate() -> None:
     assert _states(every).count(ScreenState.LIVE_GAME) == 1
     assert _states(every).count(ScreenState.GAME_OVER) == 1
 
-
-def test_screen_state_falls_back_to_unknown_when_the_board_is_lost() -> None:
-    pipe = GamePipeline()
-    board = chess.Board()
-    ts = 0.0
-    for _ in range(2):
-        pipe.process(synthetic_board(board=board), ts)
-        ts += 0.1
-    assert pipe._screen_state is ScreenState.LIVE_GAME
-
     # A blank screen: no board locks, so the state falls back to unknown (a lobby, a menu).
     blank = np.zeros((240, 320, 3), dtype=np.uint8)
-    events: list[Event] = []
+    events = []
     for _ in range(4):
         events += pipe.process(blank, ts)
         ts += 0.1
-    assert ScreenState.UNKNOWN in _states(events)
+    assert _states(events) == [ScreenState.UNKNOWN]
     assert pipe._screen_state is ScreenState.UNKNOWN

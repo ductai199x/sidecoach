@@ -7,9 +7,10 @@ a white pawn on e5 for as long as the arrow was drawn, and the reconciler took i
 cell with saturated colour over it is something drawn, and it waits -- that cell alone:
 a drawing is no drag, and the moves elsewhere on the board go on committing under it.
 
-The first three tests are the measure on hand-made patches; the next two render the
-arrow on the brown theme the game was on and run the recogniser and the whole pipeline;
-the last reads the real frames of that game (board crops under tests/fixtures).
+The first three tests are the measure on hand-made patches; the next four render arrows
+on the board -- the brown theme the game was on, and a coloured set -- and run the
+recogniser and the whole pipeline; the last reads the real frames of that game (board
+crops under tests/fixtures).
 """
 
 from __future__ import annotations

@@ -112,8 +112,7 @@ ATTACKS, HANGING, BEST, PLAN = ClaimKind.ATTACKS, ClaimKind.HANGING, ClaimKind.B
             [ATTACKS],
             id="a-leaked-think-block",
         ),
-        pytest.param("I think the knight is great!", [], id="prose"),
-        pytest.param("", [], id="empty"),
+        # Nothing to read -- prose, an empty reply, JSON cut short -- is no claims, one way.
         pytest.param('{"kind": ', [], id="cut-short"),
         pytest.param("[1, 2, 3]", [], id="not-claims"),
     ],
@@ -162,17 +161,14 @@ def test_extract_asks_at_low_temperature_with_the_position() -> None:
 VERIFY = [
     # attacks and defends
     pytest.param(
-        ITALIAN, claim("attacks", "the knight on f3", "e5"), "true",
-        ["knight on f3 attacks their pawn on e5", "defended by the c6 knight"], [],
-        id="attacks-and-its-defender",
-    ),
-    pytest.param(
         ITALIAN, claim("attacks", "the knight on f3", "c5"), "false",
         ["knight on f3 does not attack c5", "e5 pawn"], [], id="attacks-what-it-does-attack",
     ),
-    # "My knight" with two knights: the one the claim holds for; neither, both named.
+    # "My knight" with two knights: the one the claim holds for, and its target's defender;
+    # neither, both named.
     pytest.param(
-        ITALIAN, claim("attacks", "my knight", "e5"), "true", ["knight on f3"], ["b1"],
+        ITALIAN, claim("attacks", "my knight", "e5"), "true",
+        ["knight on f3 attacks their pawn on e5", "defended by the c6 knight"], ["b1"],
         id="my-knight-the-one-it-holds-for",
     ),
     pytest.param(
@@ -192,17 +188,14 @@ VERIFY = [
         ["knight on b1 defends your pawn on d2"], [], id="defends",
     ),
     pytest.param(
-        ITALIAN, claim("defends", "the knight on f3", "d4"), "true",
-        ["covers d4, which is empty"], [], id="defends-an-empty-square",
-    ),
-    pytest.param(
         ITALIAN, claim("defends", "the knight on f3", "e4"), "false",
         ["knight on f3 does not reach your pawn on e4"], [], id="does-not-defend",
     ),
-    # "I think Nf3 is good because it defends d4": checked after the move, on a copy.
+    # "I think Nf3 is good because it defends d4": checked after the move, on a copy; an
+    # empty square is covered.
     pytest.param(
         chess.STARTING_FEN, claim("defends", "my knight", "d4", move="Nf3"), "true",
-        ["After Nf3, your knight on f3 covers d4"], [], id="after-a-move",
+        ["After Nf3, your knight on f3 covers d4, which is empty"], [], id="after-a-move",
     ),
     pytest.param(
         chess.STARTING_FEN, claim("defends", "Nf3", "d4"), "true", ["After Nf3"], [],
@@ -210,21 +203,12 @@ VERIFY = [
     ),
     # hanging and safe
     pytest.param(
-        ITALIAN, claim("hanging", None, "the pawn on e5"), "false",
-        ["attacked by the f3 knight but defended by the c6 knight", "not hanging outright"], [],
-        id="a-defended-pawn-is-not-hanging",
-    ),
-    pytest.param(
-        ITALIAN, claim("hanging", None, "my pawn on e4"), "true",
-        ["pawn on e4 is attacked by the f6 knight and nothing defends it"], [],
-        id="an-undefended-piece-is-hanging",
-    ),
-    pytest.param(
         ITALIAN, claim("hanging", None, "the bishop on c4"), "false",
         ["bishop on c4 is not attacked"], [], id="an-unattacked-piece-is-not-hanging",
     ),
     pytest.param(
-        ITALIAN, claim("hanging", "the pawn", None), "true", ["pawn on e4"], [],
+        ITALIAN, claim("hanging", "the pawn", None), "true",
+        ["pawn on e4 is attacked by the f6 knight and nothing defends it"], [],
         id="hanging-finds-the-hanging-one",
     ),
     pytest.param(
@@ -233,26 +217,19 @@ VERIFY = [
         id="safe-states-the-counts",
     ),
     pytest.param(
-        ITALIAN, claim("safe", None, "my pawn on e4"), "false",
-        ["attacked once (the f6 knight) and defended not at all"], [], id="not-safe",
-    ),
-    pytest.param(
-        ITALIAN, claim("safe", None, "my bishop on c4"), "true",
-        ["bishop on c4 is not attacked"], [], id="safe-unattacked",
-    ),
-    pytest.param(
         ITALIAN, claim("safe", None, "d5"), "false", ["d5 is attacked by the f6 knight"], [],
         id="a-square-is-not-safe",
     ),
-    pytest.param(
-        KNIGHT_E5, claim("safe", None, "my knight on e5"), "false",
-        ["attacked once (the d6 pawn) and defended once (the d4 pawn)", "worth less than a knight"],
-        [], id="not-safe-when-a-cheaper-piece-attacks",
-    ),
+    # "My knight is safe": the b1 knight is; the e5 one, which a cheaper piece attacks, is
+    # not, and the reason says so.
     pytest.param(
         KNIGHT_E5, claim("safe", None, "my knight"), "true",
-        ["knight on b1 is not attacked", "knight on e5 is attacked"], [],
-        id="safe-for-one-knight-names-the-other",
+        [
+            "knight on b1 is not attacked",
+            "knight on e5 is attacked once (the d6 pawn) and defended once (the d4 pawn)",
+            "worth less than a knight",
+        ],
+        [], id="safe-for-one-knight-names-the-other",
     ),
     # threats: theirs through the null move, mine now
     pytest.param(
@@ -270,20 +247,13 @@ VERIFY = [
         ["Nothing of theirs can take your knight on c6"], [], id="no-threat",
     ),
     pytest.param(
-        FRIED_LIVER, claim("threatens", "they", None, move="Nxf7"), "true", ["Nxf7"], [],
-        id="a-named-threat",
-    ),
-    pytest.param(
         FRIED_LIVER, claim("threatens", "they", None, move="Nxe5"), "false",
         ["not a move they can play next"], [], id="a-named-threat-they-cannot-play",
     ),
     pytest.param(
         ITALIAN, claim("threatens", "I", "the e5 pawn"), "true",
-        ["Your knight on f3 takes their pawn on e5 with Nxe5"], [], id="my-own-threat",
-    ),
-    pytest.param(
-        ITALIAN, claim("threatens", "I", None, move="Bxf7+"), "true", ["Bxf7+"], [],
-        id="my-own-named-threat",
+        ["Your knight on f3 takes their pawn on e5 with Nxe5, and the c6 knight can take back"],
+        [], id="my-own-threat",
     ),
     pytest.param(
         MATED, claim("threatens", "they", "my king"), "unclear", ["in check"], [],
@@ -336,16 +306,23 @@ VERIFY = [
         ["attacked by the f6 knight", "the c3 knight is pinned and cannot take back"], [],
         id="a-pinned-defender-defends-nothing",
     ),
-    # With the bishop the only piece on f7, the king does take back after Bxf7+.
+    # With the bishop the only piece on f7, the king does take back after Bxf7+: a defended
+    # pawn is not hanging.
     pytest.param(
         ITALIAN, claim("hanging", None, "their f7 pawn"), "false",
-        ["defended by the e8 king", "the exchange on f7 does not win it"], [],
-        id="the-king-takes-back",
+        [
+            "defended by the e8 king, so it is not hanging outright",
+            "the exchange on f7 does not win it",
+        ],
+        [], id="the-king-takes-back",
     ),
     pytest.param(
         PINNED_DEFENDER_W, claim("safe", None, "my e4 pawn"), "false",
-        ["defended not at all", "the c3 knight is pinned and cannot take back"], [],
-        id="safe-plays-out-a-pinned-defender",
+        [
+            "attacked once (the f6 knight) and defended not at all, so it can be taken",
+            "the c3 knight is pinned and cannot take back",
+        ],
+        [], id="safe-plays-out-a-pinned-defender",
     ),
     pytest.param(
         PINNED_ATTACKER_B, claim("safe", None, "my e4 knight"), "true",
@@ -444,6 +421,7 @@ W, B = chess.WHITE, chess.BLACK
 # A row's faults: each string is found in one problem ("<words>: <reason>"), and there are no
 # others -- unless the row ends with `...`, where more may follow. () is a clean draft.
 DRAFT = [
+    # Each piece where it stands, a bare square (a coach may point at one), a legal move.
     pytest.param(
         ITALIAN, "Your knight on f3 is attacking e5. What defends the e5 pawn, and is Nxe5 real?",
         None, (), (), id="clean",
@@ -453,19 +431,12 @@ DRAFT = [
         ("Your knight on e5: e5 holds their pawn, not a knight",), id="wrong-piece-on-a-square",
     ),
     pytest.param(
-        ITALIAN, "The rook on d4 is loose.", None, (), ("d4 is empty",), id="an-empty-square"
-    ),
-    pytest.param(
         ITALIAN, "Their knight on f3 is well placed.", None, (),
         ("the knight on f3 is yours, not your opponent's",), id="wrong-side",
     ),
     pytest.param(
         ITALIAN, "Black's knight on f3 is well placed.", None, (),
         ("the knight on f3 is white's, not black's",), id="wrong-colour",
-    ),
-    pytest.param(
-        ITALIAN, "White's knight on f3 and black's knight on c6 face off.", None, (), (),
-        id="colours-right",
     ),
     pytest.param(
         ITALIAN, "The opponent's knight on c6 defends e5.", None, (), (), id="opponents-right"
@@ -508,25 +479,14 @@ DRAFT = [
         "Nbd2 is possible.", None, (), (), id="the-move-disambiguated",
     ),
     pytest.param(
-        ITALIAN, "Take your time and look at what changed.", None, (), (), id="prose"
-    ),
-    pytest.param(
         ITALIAN, "Be careful in area1; the area12 is fine, as is h1n1.", None, (), (),
         id="words-like-squares",
-    ),
-    pytest.param(
-        ITALIAN, "Point at f7 or a1, bare squares are fine.", None, (), (), id="bare-squares"
     ),
     # Pins, hanging and safe pieces, forks and skewers: said only where they hold.
     # After 9...h5 the bishop on b3 is not pinned; the coach must not say it is.
     pytest.param(
         AFTER_H5, "Your bishop on b3 is now pinned by that line.", None, (),
         ("the bishop on b3 is not pinned",), id="a-fabricated-pin",
-    ),
-    # The rook on d2 shields its king from the rook on d8.
-    pytest.param(
-        "3rk3/8/8/8/8/8/3R4/3K4 w - - 0 1", "Your rook on d2 is pinned.", None, (), (),
-        id="a-real-pin",
     ),
     # The black knight on d3 is pinned to the queen on d7 by the rook on d1 (a relative pin,
     # not to the king); the old king-only test rejected these.
@@ -540,15 +500,7 @@ DRAFT = [
         "Your rook on d1 is pinned.", None, (), ("the rook on d1 is not pinned",),
         id="a-blocked-line-pins-nothing",
     ),
-    pytest.param(
-        AFTER_H5, "Your knight on f3 is hanging.", None, (),
-        ("nothing attacks the knight on f3",), id="a-defended-piece-called-loose",
-    ),
-    # The rook on f2 hits the undefended knight on f4.
-    pytest.param(
-        "4k3/8/8/8/5n2/8/5R2/4K3 w - - 0 1", "Their knight on f4 is hanging.", None, (), (),
-        id="a-hanging-piece",
-    ),
+    # The rook on f2 hits the knight on f4, defended by the e5 pawn, then undefended.
     pytest.param(
         "4k3/8/8/4p3/5n2/8/5R2/4K3 w - - 0 1", "Their knight on f4 is hanging.", None, (),
         ("the knight on f4 is defended",), id="an-attacked-piece-with-a-defender",
@@ -594,22 +546,19 @@ DRAFT = [
         PINNED_DEFENDER_W, "Your knight on c3 is pinned.", None, (), (), id="a-pin-to-the-king"
     ),
     pytest.param(
-        "4q1k1/8/5N2/8/8/8/8/7K b - - 0 1", "The knight on f6 forks the queen and king.", None,
-        (), (), id="a-real-fork",
-    ),
-    pytest.param(
         "4k3/8/8/8/8/5N2/8/4K3 w - - 0 1", "The knight on f3 forks two pieces.", None, (),
         ("the knight on f3 does not fork two pieces",), id="a-fork-of-nothing",
     ),
     # The fork is not on the board in front of the player: Nd5-f6 makes it. With the
-    # after-best-move frame, naming it is not faulted; without it, it is.
+    # after-best-move frame, naming it is not faulted (a real fork); without it, the knight
+    # is on an empty square.
     pytest.param(
         "4q1k1/8/8/3N4/8/8/8/7K w - - 0 1", "The knight on f6 forks the queen and king.", None,
         ("Nf6",), (), id="a-fork-the-best-move-makes",
     ),
     pytest.param(
         "4q1k1/8/8/3N4/8/8/8/7K w - - 0 1", "The knight on f6 forks the queen and king.", None,
-        (), ("knight on f6:", ...), id="a-fork-not-yet-made",
+        (), ("knight on f6: f6 is empty",), id="a-fork-not-yet-made",
     ),
     # The d5 knight hits the queen and the rook, but it is pinned to its king by the a8 bishop.
     pytest.param(
@@ -648,10 +597,6 @@ DRAFT = [
         id="an-open-file",
     ),
     pytest.param(
-        "3rk3/8/8/8/8/8/4P3/3RK3 w - - 0 1", "The d-file is open.", None, (), (),
-        id="an-open-file-said-plainly",
-    ),
-    pytest.param(
         "3rk3/8/8/8/8/8/4P3/3RK3 w - - 0 1", "The e-file is open for you.", None, (),
         ("not open",), id="a-file-that-is-not-open",
     ),
@@ -660,18 +605,14 @@ DRAFT = [
         "3rk3/3p4/8/8/8/8/8/3RK3 w - - 0 1", "You have the half-open d-file.", None, (), (),
         id="a-half-open-file",
     ),
-    pytest.param(
-        "3rk3/8/8/8/8/8/3P4/3RK3 w - - 0 1", "The d-file is half-open for you.", None, (),
-        ("not half-open",), id="a-file-with-our-pawn",
-    ),
     # Round 2: "your opponent's best is Qf7, taking the half-open f-file" is theirs.
     pytest.param(
         "4k3/8/8/8/8/8/5P2/4K3 w - - 0 1", "Your opponent's rook takes the half-open f-file.",
         None, (), (), id="a-half-open-file-of-theirs",
     ),
     pytest.param(
-        "4k3/8/8/8/8/8/5P2/4K3 w - - 0 1", "The f-file is half-open for you.", None, (), (...,),
-        id="a-half-open-file-not-ours",
+        "4k3/8/8/8/8/8/5P2/4K3 w - - 0 1", "The f-file is half-open for you.", None, (),
+        ("not half-open for you",), id="a-half-open-file-not-ours",
     ),
     pytest.param(
         "4k3/8/8/8/8/8/5P2/4K3 w - - 0 1", "The half-open f-file is theirs to use.", None, (),

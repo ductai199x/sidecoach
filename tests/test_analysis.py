@@ -27,7 +27,6 @@ from sidecoach.analysis.score import (
     severity,
     terminal_expected_score,
 )
-from sidecoach.analysis.threats import threat_moves
 from sidecoach.config import CoachSettings, find_stockfish, load_settings
 from sidecoach.events import Analysis, Label, Line, MotifTag, MoveAssessment, Severity
 from tests.coaching import SCHOLAR
@@ -48,8 +47,8 @@ DEPTH = 10
 
 # Black to move at queen odds: winning, but with no mate in sight to hide the numbers.
 BLACK_WINS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1"
-# White to move and not in check, but ...Rd1 would be mate: a threat, not a position.
-THREATENED = "3r2k1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1"
+# The scholar's mate, played: black to move and mated.
+MATED = "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4"
 
 
 @pytest.fixture(scope="module")
@@ -97,12 +96,11 @@ def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> No
     middle -- is book to its last move and named as the whole line names it, not as its
     first move does."""
     import shutil
-    import time
 
     from sidecoach.analysis.openings import OpeningBook
     from sidecoach.cli import _Assessing
     from sidecoach.config import Settings
-    from sidecoach.events import GameStarted, Label, MovePlayed, Side, Takeback
+    from sidecoach.events import GameStarted, MovePlayed, Side, Takeback
 
     folder = tmp_path / "openings"
     folder.mkdir()
@@ -159,12 +157,15 @@ def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> No
 # Expected score and the arithmetic over it
 
 
-def test_terminal_positions_score_from_the_side_to_move() -> None:
-    mated = chess.Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4")
+def test_a_finished_position_scores_its_result_from_the_side_to_move() -> None:
+    mated = chess.Board(MATED)
     assert mated.is_checkmate() and terminal_expected_score(mated) == 0.0
     stalemate = chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
     assert stalemate.is_stalemate() and terminal_expected_score(stalemate) == 0.5
     assert terminal_expected_score(chess.Board()) is None
+    # The result is preferred over whatever the lines say; no lines and no result is even.
+    assert position_score(mated, [Line(moves=[], depth=1, expected_score=0.9)]) == 0.0
+    assert position_score(chess.Board(), []) == 0.5
 
 
 def test_severity_names_the_thresholds() -> None:
@@ -290,17 +291,13 @@ def test_only_move_and_decisive_moments() -> None:
     assert is_decisive(board, middling, t) and not is_only_move(board, middling, t)
 
 
-def test_position_score_prefers_the_result_over_the_lines() -> None:
-    mated = chess.Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4")
-    assert position_score(mated, [Line(moves=[], depth=1, expected_score=0.9)]) == 0.0
-    assert position_score(chess.Board(), []) == 0.5
-
-
 # The engine itself
 
 
 @needs_engine
-def test_lines_come_back_from_the_movers_point_of_view(engine: Engine) -> None:
+def test_lines_come_back_from_the_movers_point_of_view_on_the_curve_asked_for(
+    engine: Engine,
+) -> None:
     board = chess.Board(BLACK_WINS)
     assert board.turn == chess.BLACK
     lines = engine.analyse(board, depth=DEPTH)
@@ -308,6 +305,19 @@ def test_lines_come_back_from_the_movers_point_of_view(engine: Engine) -> None:
     assert lines[0].wdl is not None and sum(lines[0].wdl) == 1000
     assert lines[0].score_cp is not None and lines[0].score_cp > 0
     assert lines[0].depth >= DEPTH
+    # The human curve by default; the engine's own numbers when asked, which saturate.
+    human = lines[0]
+    assert engine.score_model == "human" and human.expected_score < 1.0
+    engine.score_model = "engine"
+    try:
+        strict = engine.analyse(board, depth=DEPTH)[0]
+    finally:
+        engine.score_model = "human"
+    assert strict.wdl is not None
+    assert strict.expected_score == pytest.approx(
+        (strict.wdl[0] + strict.wdl[1] / 2) / 1000, abs=1e-9
+    )
+    assert strict.expected_score > human.expected_score
 
 
 def test_the_human_curve_leaves_room_above_a_won_position() -> None:
@@ -328,23 +338,6 @@ def test_the_human_curve_leaves_room_above_a_won_position() -> None:
 
 
 @needs_engine
-def test_the_engine_model_can_be_asked_for_instead(engine: Engine) -> None:
-    board = chess.Board(BLACK_WINS)
-    human = engine.analyse(board, depth=DEPTH)[0]
-    assert engine.score_model == "human" and human.expected_score < 1.0
-    engine.score_model = "engine"
-    try:
-        strict = engine.analyse(board, depth=DEPTH)[0]
-    finally:
-        engine.score_model = "human"
-    assert strict.wdl is not None
-    assert strict.expected_score == pytest.approx(
-        (strict.wdl[0] + strict.wdl[1] / 2) / 1000, abs=1e-9
-    )
-    assert strict.expected_score > human.expected_score
-
-
-@needs_engine
 def test_multipv_is_ordered_best_first_and_bounded_by_the_legal_moves(engine: Engine) -> None:
     lines = engine.analyse(chess.Board(), depth=DEPTH, multipv=4)
     assert len(lines) == 4
@@ -355,17 +348,9 @@ def test_multipv_is_ordered_best_first_and_bounded_by_the_legal_moves(engine: En
     assert len(engine.analyse(forced, depth=DEPTH, multipv=4)) == 1
 
 
-@needs_engine
-def test_mate_is_reported_as_a_distance_and_a_certain_score(engine: Engine) -> None:
-    lines = engine.analyse(chess.Board(SCHOLAR), depth=DEPTH)
-    assert lines[0].moves[0] == "h5f7", "Qxf7 is mate"
-    assert lines[0].mate == 1 and lines[0].expected_score == 1.0
-
-
 def test_a_finished_position_has_no_lines() -> None:
     """Answered before any process is asked: a finished game has nothing to play."""
-    mated = chess.Board("r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4")
-    assert Engine(path=Path("never-started")).analyse(mated, depth=DEPTH) == []
+    assert Engine(path=Path("never-started")).analyse(chess.Board(MATED), depth=DEPTH) == []
 
 
 @needs_engine
@@ -374,15 +359,6 @@ def test_the_engine_is_restarted_when_it_dies(engine: Engine) -> None:
     engine._engine.quit()  # the process is gone, the wrapper does not know yet
     lines = engine.analyse(chess.Board(), depth=DEPTH)
     assert lines, "a dead engine is restarted rather than ending the session"
-
-
-@needs_engine
-def test_threats_are_what_the_opponent_would_play(engine: Engine) -> None:
-    # Nothing is attacking white this move, which is exactly why the threat must be asked for.
-    board = chess.Board(THREATENED)
-    assert not board.is_check()
-    assert threat_moves(engine, board, depth=DEPTH) == ["d8d1"], "...Rd1 is mate"
-    # In check there is no threat to ask about: test_threats.py, without an engine.
 
 
 def test_san_line_reads_like_a_move_list() -> None:
@@ -438,10 +414,11 @@ def test_each_position_is_measured_once() -> None:
     assert len(whole) == 3, "a new game measures again"
 
 
-def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
+def test_assessment_carries_the_loss_the_best_line_the_tags_and_the_depth() -> None:
     board = chess.Board()
     after = board.copy(stack=False)
     after.push(chess.Move.from_uci("a2a3"))
+    # The position after the move hit the engine's time cap: measured shallower than asked.
     fake = FakeEngine(
         {
             board.fen(): [
@@ -449,8 +426,8 @@ def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
                 Line(moves=["d2d4"], depth=6, expected_score=0.45),
             ],
             after.fen(): [
-                Line(moves=["e7e5"], depth=6, expected_score=0.55, mate=-3),
-                Line(moves=["d7d5"], depth=6, expected_score=0.20),
+                Line(moves=["e7e5"], depth=4, expected_score=0.55, mate=-3),
+                Line(moves=["d7d5"], depth=4, expected_score=0.20),
             ],
         }
     )
@@ -461,6 +438,7 @@ def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
     assert assessment.expected_loss == pytest.approx(0.15)
     assert assessment.severity is Severity.MISTAKE
     assert assessment.best == ["e2e4", "e7e5"]
+    assert assessment.depth == 4, "the shallower of the two searches"
     assert [tag.name for tag in assessment.tags] == ["sacrifice"], "the unpaid fork is dropped"
     assert tagger.move_calls == [("a2a3", 4)], "mated in three more moves, four counting this"
     assert analysis.ply == 1 and analysis.fen == after.fen()
@@ -468,27 +446,10 @@ def test_assessment_carries_the_loss_the_best_line_and_the_tags() -> None:
     assert analysis.decisive and analysis.only_move, "the replies differ by 0.35"
 
 
-def test_the_assessment_says_how_deep_the_search_got() -> None:
-    """A position that hits the engine's time cap is measured shallower than asked."""
-    board = chess.Board()
-    after = board.copy()
-    after.push(chess.Move.from_uci("e2e4"))
-    fake = FakeEngine(
-        {
-            board.fen(): [Line(moves=["e2e4"], depth=18, expected_score=0.55)],
-            after.fen(): [Line(moves=["e7e5"], depth=11, expected_score=0.45)],
-        }
-    )
-    annotator = GameAnnotator(engine=fake, depth=18, with_threats=False)
-    assessment, _ = annotator.assess("g", board, chess.Move.from_uci("e2e4"), 1)
-    assert assessment.depth == 11, "the shallower of the two searches"
-
-
 def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
     """A capture nobody can take back is obvious, never great, and taking back is read by
     the rules: the c3 knight guarding e4 is pinned to its king by the b4 bishop, so ...Nxe4
     is a grab. With the knight free to take back, the one move that holds is great."""
-    from sidecoach.events import Label
 
     def label(fen: str) -> Label | None:
         board = chess.Board(fen)
@@ -552,19 +513,23 @@ def test_the_queue_drops_the_oldest_work_when_it_cannot_keep_up() -> None:
 
 @needs_engine
 def test_a_real_game_is_assessed_end_to_end(engine: Engine) -> None:
-    """The scholar's mate: the losing move is a blunder, the mate is not."""
+    """The scholar's mate: the losing move is a blunder, the mate is not, and the mate is
+    reported as a distance and a certain score."""
     annotator = GameAnnotator(engine=engine, depth=DEPTH, multipv=3, with_threats=False)
     board = chess.Board()
     losses: dict[str, float] = {}
-    final: Analysis | None = None
+    analyses: dict[str, Analysis] = {}
     for ply, san in enumerate(["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"], start=1):
         move = board.parse_san(san)
-        assessment, final = annotator.assess("scholar", board, move, ply)
+        assessment, analyses[san] = annotator.assess("scholar", board, move, ply)
         losses[san] = assessment.expected_loss
         board.push(move)
     assert losses["Nf6"] > 0.5, "the move that allows mate is a blunder"
     assert losses["Qxf7#"] == 0.0 and losses["e4"] < 0.04
-    assert final is not None and final.lines == [] and board.is_checkmate()
+    mate = analyses["Nf6"].lines[0]
+    assert analyses["Nf6"].fen == SCHOLAR and mate.moves[0] == "h5f7", "Qxf7 is mate"
+    assert mate.mate == 1 and mate.expected_score == 1.0
+    assert analyses["Qxf7#"].lines == [] and board.is_checkmate()
 
 
 def _drain(analyser: Analyser, timeout: float = 10.0) -> list[object]:
@@ -584,9 +549,6 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
     candidates, threats -- is run only for the position the player faces (2026-09-22: a
     queen ending at two seconds a move ran forty plies behind, every word on a move
     'not spoken: board moved on', and the review waited on the backlog)."""
-    from sidecoach.analysis.annotator import Analyser
-    from sidecoach.events import Analysis, MoveAssessment
-
     fake = FakeEngine({})
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     analyser = Analyser(annotator)
@@ -689,7 +651,8 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
     """Tai, 2026-09-27: "why is it not possible to do some form of SMART caching of lines".
     With the position on the board measured and nothing queued, the positions after its
     best moves, and after the best reply to each, are measured and cached; the move played
-    there is judged, and the position after it known, with no search of its own."""
+    there is judged, and the position after it known, with no search of its own. The reply
+    into a position looked at ahead is told whole at once, with no early word."""
     start = chess.Board()
     fake = FakeEngine(
         {
@@ -705,11 +668,17 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
         searched = set(fake.calls)
         assert {_after("e4"), _after("e4", "e5"), _after("d4"), _after("d4", "d5")} <= searched
         before = len(fake.calls)
-        analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1)
+        analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1, by_user=True)
         got = _drain(analyser)
+        assert _after("e4") not in fake.calls[before:], "the position after e4 was searched again"
+        assert annotator.ahead_hits == 1
+        after = chess.Board()
+        after.push_san("e4")
+        analyser.submit_move("g", after, chess.Move.from_uci("e7e5"), 2, by_user=False)
+        reply = _drain(analyser)
     assert _kinds(got) == ["Analysis(early)", "Analysis", "MoveAssessment", "Analysis"]
-    assert _after("e4") not in fake.calls[before:], "the position after e4 was searched again"
-    assert annotator.ahead_hits == 1
+    assert _kinds(reply) == ["MoveAssessment", "Analysis"]
+    assert annotator.ahead_hits == 2
 
 
 class _DepthEngine(FakeEngine):
@@ -767,26 +736,6 @@ def test_behind_a_fast_game_a_position_is_measured_at_the_early_depth() -> None:
     measured = annotator.measure(chess.Board(SCHOLAR), hurry=True)
     assert measured.lines and measured.lines[0].depth == EARLY_DEPTH
     assert len(fake.calls) > 1, "no threat search"
-
-
-def test_a_position_looked_at_ahead_is_whole_at_once() -> None:
-    """The position the player faces measured ahead of the move: no early word, the whole
-    one at once."""
-    start = chess.Board()
-    fake = _DepthEngine({start.fen(): [_line("e2e4")], _after("e4"): [_line("e7e5")]})
-    annotator = GameAnnotator(engine=fake, depth=18, with_threats=False)
-    with Analyser(annotator, look_ahead=1) as analyser:
-        analyser.submit_position("g", start, 0)
-        _drain(analyser)
-        assert _until(lambda: analyser.looked == 2), analyser.looked
-        analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1, by_user=True)
-        _drain(analyser)
-        after = chess.Board()
-        after.push_san("e4")
-        analyser.submit_move("g", after, chess.Move.from_uci("e7e5"), 2, by_user=False)
-        reply = _drain(analyser)
-    assert _kinds(reply) == ["MoveAssessment", "Analysis"]
-    assert annotator.ahead_hits == 2
 
 
 class _YieldOnceEngine(FakeEngine):

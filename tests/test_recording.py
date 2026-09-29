@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from sidecoach.events import MovePlayed, Region
+from sidecoach.events import Region
 from sidecoach.replay.recording import (
     Recorder,
     Recording,
@@ -37,22 +37,19 @@ def _half(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, (32, 24), interpolation=cv2.INTER_AREA)
 
 
-def test_frames_differ_threshold() -> None:
-    a = _frame(1)
-    b = a.copy()
-    assert not frames_differ(a, b)
-    b[10, 10, 0] = np.uint8((int(b[10, 10, 0]) + 100) % 256)
-    assert frames_differ(a, b)
-
-
-def test_frames_differ_min_fraction_ignores_small_changes() -> None:
+def test_frames_differ_counts_the_pixels_changed_past_the_threshold() -> None:
     a = np.zeros((100, 100, 3), dtype=np.uint8)
     b = a.copy()
-    b[0:5, 0:5] = 255  # 25 of 10,000 pixels
+    assert not frames_differ(a, b)
+    b[50, 50, 0] = 100  # one channel of one pixel
     assert frames_differ(a, b)
+    # `min_fraction` ignores small changes.
+    b[0:5, 0:5] = 255  # 26 of 10,000 pixels
     assert not frames_differ(a, b, min_fraction=0.01)
     b[20:60, 20:60] = 255  # 1,600 more pixels
     assert frames_differ(a, b, min_fraction=0.01)
+    # A zero-area region never changes.
+    assert not frames_differ(a, b, region=Region(0, 0, 0, 10))
 
 
 def test_roundtrip_stores_only_changes_and_replays_every_tick(tmp_path: Path) -> None:
@@ -78,31 +75,36 @@ def test_roundtrip_stores_only_changes_and_replays_every_tick(tmp_path: Path) ->
     assert [t.frame_id for t, _ in rec.stored_frames()] == [0, 2, 5]
 
 
-def test_change_region_and_keyframe_gating(tmp_path: Path) -> None:
-    region = Region(0, 0, 64, 48)
+def test_the_change_gate_stores_what_changed_in_its_region_and_keyframes_like_the_recorder(
+    tmp_path: Path,
+) -> None:
+    """A change outside the watched region is ignored, one inside is stored, a repeat is
+    not, and a keyframe is stored when one is due. The unrecorded live path must see the
+    same `changed` stream a recording would."""
+    from sidecoach.replay.recording import ChangeGate
+
     watch = Region(40, 30, 20, 15)
     recorder = Recorder(
         tmp_path / "rec",
         monitor=0,
-        region=region,
+        region=Region(0, 0, 64, 48),
         fps=10,
         change_region=watch,
         keyframe_interval_s=1.0,
     )
+    gate = ChangeGate(region=watch, keyframe_interval_s=1.0)
     base = _frame(7)
     outside = base.copy()
     outside[2:10, 2:10] = 255  # busy desktop outside the watched region
     inside = base.copy()
     inside[35:40, 45:50] = 0  # a change inside the watched region
-    stored = [
-        recorder.write(base, 0.0).stored,
-        recorder.write(outside, 0.1).stored,  # ignored: outside region, too soon for keyframe
-        recorder.write(inside, 0.2).stored,  # stored: inside region changed
-        recorder.write(inside, 0.3).stored,  # ignored
-        recorder.write(inside, 1.25).stored,  # stored: keyframe due
-    ]
+    frames = [base, outside, inside, inside, inside]
+    times = [0.0, 0.1, 0.2, 0.3, 1.25]  # the last one a keyframe by time
+    stored = [recorder.write(f, ts).stored for f, ts in zip(frames, times, strict=True)]
     recorder.close()
     assert stored == [0, None, 1, None, 2]
+    live = [gate.changed(f, ts) for f, ts in zip(frames, times, strict=True)]
+    assert live == [s is not None for s in stored]
     rec = Recording(tmp_path / "rec")
     assert rec.meta.change_region == (40, 30, 20, 15)
     assert rec.meta.keyframe_interval_s == 1.0
@@ -115,72 +117,6 @@ def test_wrong_frame_size_rejected(tmp_path: Path) -> None:
             recorder.write(_frame(1, (10, 10, 3)), ts=0.0)
     finally:
         recorder.close()
-
-
-@pytest.mark.vision  # the synthetic vision pipeline reads the shrunk game
-def test_shrink_keeps_the_ticks_and_the_game_at_half_scale(tmp_path: Path) -> None:
-    import chess
-
-    from sidecoach.state.pipeline import GamePipeline
-    from tests.synth import synthetic_board
-
-    region = Region(0, 0, 1280, 800)
-    recorder = Recorder(tmp_path / "full", monitor=0, region=region, fps=10)
-    board = chess.Board()
-    frames = [synthetic_board(board=board, cell=96, x0=200, y0=20)] * 3
-    for san in ("e4", "e5", "Nf3"):
-        move = board.push_san(san)
-        frames += [synthetic_board(board=board, cell=96, x0=200, y0=20, highlight=move)] * 3
-    for i, frame in enumerate(frames):
-        recorder.write(frame, ts=float(i) / 10)
-    recorder.close()
-
-    full = Recording(tmp_path / "full")
-    small = shrink_recording(tmp_path / "full", tmp_path / "half", 0.5)
-    assert len(small.ticks) == len(full.ticks)
-    assert [t.stored is None for t in small.ticks] == [t.stored is None for t in full.ticks]
-    assert (small.meta.width, small.meta.height, small.meta.scale) == (640, 400, 0.5)
-    assert (small.region.w, small.region.h) == (1280, 800)  # still the screen region
-
-    pipe = GamePipeline()
-    played = []
-    for tick, frame in small.frames():
-        assert frame.shape[:2] == (400, 640)
-        for event in pipe.process(frame, tick.ts, changed=tick.stored is not None):
-            if isinstance(event, MovePlayed):
-                played.append(event.san)
-    assert played == ["e4", "e5", "Nf3"]
-
-
-def test_change_gate_matches_the_recorder(tmp_path: Path) -> None:
-    """The unrecorded live path must see the same `changed` stream a recording would."""
-    from sidecoach.replay.recording import ChangeGate
-
-    region = Region(0, 0, 64, 48)
-    gate_region = Region(8, 8, 40, 30)
-    recorder = Recorder(
-        tmp_path / "rec", monitor=0, region=region, fps=10, change_region=gate_region
-    )
-    gate = ChangeGate(region=gate_region)
-    base = _frame(1)
-    edited = base.copy()
-    edited[20:30, 20:30] = 0  # inside the gate
-    outside = base.copy()
-    outside[0:3, 0:3] = 0  # outside the gate
-    frames = [base, base, outside, edited, edited, base]
-    times = [0.0, 0.1, 0.2, 0.3, 0.4, 2.0]  # the last one is a keyframe by time
-    recorded = [
-        recorder.write(f, ts).stored is not None for f, ts in zip(frames, times, strict=True)
-    ]
-    recorder.close()
-    live = [gate.changed(f, ts) for f, ts in zip(frames, times, strict=True)]
-    assert recorded == live == [True, False, False, True, False, True]
-
-
-def test_zero_area_gate_never_changes() -> None:
-    a = _frame(1)
-    b = _frame(2)
-    assert not frames_differ(a, b, region=Region(0, 0, 0, 10))
 
 
 def test_off_frame_board_gates_on_the_whole_frame() -> None:
@@ -196,15 +132,19 @@ def test_off_frame_board_gates_on_the_whole_frame() -> None:
 
 
 def test_concat_joins_shrunk_copies_and_keeps_their_size_and_scale(tmp_path: Path) -> None:
+    """A shrunk copy keeps every tick, its stored flags and the screen region, with the frames
+    resized; parts of one size and scale join. (That the pipeline reads a board shrunk this
+    way, INTER_AREA, is test_board_sizes'.)"""
     a, b = _frame(1), _frame(2)
-    _record(tmp_path / "full", [a, a, b, b])
+    full = _record(tmp_path / "full", [a, a, b, b])
     half = shrink_recording(tmp_path / "full", tmp_path / "half", 0.5)
     assert (half.meta.width, half.meta.height, half.meta.scale) == (32, 24, 0.5)
+    assert half.region == full.region, "still the screen region"
+    assert [(t.frame_id, t.stored) for t in half.ticks] == [(0, 0), (1, None), (2, 1), (3, None)]
 
     joined = concat_recordings([(tmp_path / "half", None, None)] * 2, tmp_path / "joined")
     assert (joined.meta.width, joined.meta.height) == (half.meta.width, half.meta.height)
     assert joined.meta.scale == 0.5
-    assert [t.frame_id for t in joined.ticks] == list(range(8))
     assert [t.stored for t in joined.ticks] == [0, None, 1, None, 2, None, 3, None]
     frames = [f for _, f in joined.frames()]
     assert len(frames) == 8

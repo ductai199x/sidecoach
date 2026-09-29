@@ -12,6 +12,7 @@ import chess
 import pytest
 
 from sidecoach.analysis.mates import MATE_PATTERNS, mating_pattern_tags
+from sidecoach.analysis.motifs import TAG_ORDER
 
 
 def mate_tags(fen: str, san: str) -> dict[str, list[str]]:
@@ -28,24 +29,16 @@ def mate_tags(fen: str, san: str) -> dict[str, list[str]]:
 
 # (pattern, FEN before the mating move, the mating move, the evidence squares)
 POSITIVES = [
-    # GwU59: the queen takes on the back rank, the king shut in by its own g7 and h7.
-    ("backRankMate", "Q1q4k/6pp/8/4p3/1p6/6PK/7P/5n2 w - - 1 37", "Qxc8#", None),
-    # The audit's kill box (below) is still a back-rank mate.
+    # The audit's kill box (below) is a back-rank mate, as GwU59's Qxc8# is.
     ("backRankMate", "R4rk1/4Qppp/8/8/8/8/5PPP/6K1 w - - 0 1", "Rxf8#", None),
     # ytp8R: the knight mates a king whose every square holds its own men.
     ("smotheredMate", "knR5/pn6/1p6/1N2p1p1/4q3/P7/5PPP/1R4K1 w - - 1 32", "Nc7#", None),
-    # Constructed: Nf7 mates the king on h8, hemmed in by its own g7, h7 and the g8 rook.
-    ("smotheredMate", "6rk/6pp/8/6N1/8/8/8/4K3 w - - 0 1", "Nf7#", None),
     # VeMvr: the rook mates beside the cornered king, held by the knight on f6.
     ("arabianMate", "5Rrk/8/1p3N1p/3p3P/4b3/3n4/6p1/6K1 w - - 8 54", "Rxg8#", ["h8", "g8", "f6"]),
-    # Constructed: Rh7 mates in the corner, held by the knight on f6, which also covers g8.
-    ("arabianMate", "7k/R7/5N2/8/8/8/8/6K1 w - - 0 1", "Rh7#", None),
     # The audit's hook (below) is still an Arabian mate.
     ("arabianMate", "7k/R7/5N2/4P3/8/8/8/6K1 w - - 0 1", "Rh7#", None),
-    # OCiND: down the h-file, g7 blocked by the king's own pawn, the knight on e7 on g8/g6.
-    ("anastasiaMate", "4r3/R3Npk1/6p1/1P6/8/8/PP2nPPK/5R2 b - - 0 29", "Rh8#", None),
     # Constructed: the king on h7 held to the edge by its own g7 pawn; the knight on e7
-    # covers g6 and g8, and Rh4 comes down the h-file.
+    # covers g6 and g8, and Rh4 comes down the h-file (as in OCiND's Rh8#).
     ("anastasiaMate", "8/4N1pk/8/8/R7/8/8/1K6 w - - 0 1", "Rh4#", None),
     # The queen version the old tagger missed: Qh4 down the file, the knight still needed.
     ("anastasiaMate", "8/4N1pk/8/8/Q7/8/8/1K6 w - - 0 1", "Qh4#", ["h7", "h4", "e7", "g7"]),
@@ -57,25 +50,18 @@ POSITIVES = [
     ("vukovicMate", "6r1/4R3/k2p4/p2P3p/NPP2n1K/8/P4P1P/1R6 b - - 2 38", "Rg4#", None),
     # eN0bT: Bxa6 and the bishop on g3 cross at the king.
     ("bodenMate", "2kr4/3n4/p1p1p3/8/4P3/1Pb3B1/1PP1B1rP/1K5R w - - 0 26", "Bxa6#", None),
-    # Constructed: Ba6 checks the king on c8 along a6-c8 while the f4 bishop covers b8 along
-    # f4-b8; the diagonals cross, the king walled in by its own d7 pawn and d8 rook.
-    ("bodenMate", "2kr4/p2p4/8/8/2B2B2/8/8/6K1 w - - 0 1", "Ba6#", None),
-    # qy80M: two bishops on neighbouring diagonals, the king's own bishop on h2.
-    ("doubleBishopMate", "8/b7/P1bP4/3B2k1/8/2P5/7B/7K b - - 2 59", "Bxd5#", None),
     # Constructed: Bb2 checks the king on h8 along a1-h8 and the d3 bishop covers h7 along
-    # b1-h7: the diagonals run the same way. Black's own bishop on g8 takes the last square
-    # and is on the wrong colour to interpose.
+    # b1-h7: the diagonals run the same way (as qy80M's do). Black's own bishop on g8 takes
+    # the last square and is on the wrong colour to interpose.
     ("doubleBishopMate", "6bk/8/8/8/8/B2B4/8/7K w - - 0 1", "Bb2#", None),
-    # GgkHn: Qe5 diagonal to the king on d6; c6 and d7, out of its reach, hold its own men.
-    ("dovetailMate", "7k/3Q2p1/2PK1p1p/1q6/6P1/4PP2/8/8 b - - 15 62", "Qe5#", None),
     # Constructed: Qe6 mates the king on d7 from a diagonal, held by the f5 pawn, with the
-    # king's own c7 pawn and d8 rook on the two squares beside it: the dove's tail.
+    # king's own c7 pawn and d8 rook on the two squares beside it: the dove's tail (GgkHn's
+    # Qe5#, below, is one too).
     ("dovetailMate", "3r4/2pk4/B7/5P2/8/4Q3/8/7K w - - 0 1", "Qe6#", None),
     # jj9Rd: the queen straight in front, the two squares behind the king its own men.
     ("swallowstailMate", "8/1b3k2/1p5p/p3P1p1/2q5/4K1P1/1P1Q1P2/4R3 b - - 0 37", "Qe4#", None),
-    # un2Lg: check down the b-file, the king's own pawns on a3 and c3 on its shoulders.
-    ("epauletteMate", "R1Q5/p7/1p6/1k6/6p1/PKP5/3r3P/3r4 b - - 4 55", "Rb1#", None),
-    # Constructed: Rg7 checks beside the king on g8, its own rooks on f8 and h8.
+    # Constructed: Rg7 checks beside the king on g8, its own rooks on f8 and h8 (un2Lg's
+    # pawns on a3 and c3 the same shoulders).
     ("epauletteMate", "5rkr/R7/8/5N2/4P3/8/8/1K6 w - - 0 1", "Rg7#", None),
     # zjsBG: queen f7 and rook h7 on the two near corners of the king's rank below.
     ("triangleMate", "6k1/3Q3R/2p3r1/pp4p1/4p3/P1q1P3/6PP/7K w - - 1 32", "Qf7#", None),
@@ -85,9 +71,8 @@ POSITIVES = [
     ("cornerMate", "1R6/p1p3p1/k1p4p/2P3r1/4R3/P2n4/P4P1P/7K b - - 0 32", "Nxf2#", None),
     # 6CeKP: the rook beside the king, defended by the bishop on e4.
     ("operaMate", "1RQ5/5pk1/6p1/P6p/4bb2/6PP/7K/4r3 b - - 0 40", "Rh1#", None),
-    # g8oJt: the rook mates from h5, the bishop on f2 takes g1.
-    ("pillsburysMate", "4R3/pk5p/6p1/1p1r4/8/2P3P1/PP3bP1/R6K b - - 0 36", "Rh5#", None),
-    # Constructed: Rh7 mates the king on h6, the d8 bishop taking g5.
+    # Constructed: Rh7 mates the king on h6, the d8 bishop taking g5 (as g8oJt's f2 bishop,
+    # below, takes g1).
     ("pillsburysMate", "3B4/R7/6Pk/5P2/8/6N1/8/1K6 w - - 0 1", "Rh7#", None),
     # Nbxh2: the bishop mates, the rook on g2 takes the g-file.
     ("morphysMate", "8/p7/1b5k/3R4/7K/5N1P/6r1/8 b - - 3 40", "Bf2#", None),
@@ -114,32 +99,25 @@ NEGATIVES = [
     ("arabianMate", "r4r1k/2R5/1p2p2N/p3n1Np/7P/8/PP4P1/5bK1 w - - 2 32", "Rh7#"),
     # Down the h-file with the knight on e7, but g7 is empty and a bishop covers it.
     ("anastasiaMate", "8/4N2k/8/8/R7/8/1B6/1K6 w - - 0 1", "Rh4#"),
-    # Audit 25: an Arabian mate with no pawn of the king's to hook onto.
+    # Audit 25: an Arabian mate with no pawn of the king's to hook onto (nor has the
+    # constructed epaulette's or Pillsbury's king one beside it).
     ("hookMate", "7k/R7/5N2/4P3/8/8/8/6K1 w - - 0 1", "Rh7#"),
-    # The constructed Arabian: no hook either, and the knight is not a Vukovic's.
-    ("hookMate", "7k/R7/5N2/8/8/8/8/6K1 w - - 0 1", "Rh7#"),
+    # Rh7 mates in the corner, held by the knight on f6, which also covers g8: an Arabian,
+    # and the knight is not a Vukovic's.
     ("vukovicMate", "7k/R7/5N2/8/8/8/8/6K1 w - - 0 1", "Rh7#"),
-    # The constructed epaulette: a hook needs a pawn of theirs beside the king, and the e4
-    # pawn behind the knight is not needed; nor is it an Arabian.
-    ("hookMate", "5rkr/R7/8/5N2/4P3/8/8/1K6 w - - 0 1", "Rg7#"),
-    ("arabianMate", "5rkr/R7/8/5N2/4P3/8/8/1K6 w - - 0 1", "Rg7#"),
-    # Audit 26: a back-rank mate; the queen on e7 covers nothing the rook does not.
+    # Audit 26: a back-rank mate; the queen on e7 covers nothing the rook does not (nor does
+    # a queen beside the rook rather than on the box's far corner).
     ("killBoxMate", "R4rk1/4Qppp/8/8/8/8/5PPP/6K1 w - - 0 1", "Rxf8#"),
-    # Rh7 beside the king on h8 with the queen on g6 beside it: a kill box needs rook and
-    # queen on opposite corners of the 3x3 box, guarding each other across it.
-    ("killBoxMate", "7k/R7/6Q1/8/8/8/8/1K6 w - - 0 1", "Rh7#"),
-    ("arabianMate", "7k/R7/6Q1/8/8/8/8/1K6 w - - 0 1", "Rh7#"),
     # Audit 24: the knight on e6 does nothing; the king on f7 holds g7 and g8.
     ("vukovicMate", "7k/5K1p/4N3/8/8/8/8/6R1 w - - 0 1", "Rg8#"),
-    # The constructed Pillsbury: the rook already covers h5 through the king, so the knight
-    # on g3 is not needed -- no Vukovic, no Arabian, no hook.
-    ("vukovicMate", "3B4/R7/6Pk/5P2/8/6N1/8/1K6 w - - 0 1", "Rh7#"),
+    # The constructed Pillsbury: the king on h6 is off the corner, so no Arabian (nor the
+    # epaulette's on g8).
     ("arabianMate", "3B4/R7/6Pk/5P2/8/6N1/8/1K6 w - - 0 1", "Rh7#"),
-    ("hookMate", "3B4/R7/6Pk/5P2/8/6N1/8/1K6 w - - 0 1", "Rh7#"),
     # Audit 23: the bishop on e5 only eyes the king's own pawn; the knight and rook mate.
     ("bodenMate", "2kr4/2p5/2N5/4B3/2B5/8/5PPP/3R2K1 w - - 0 1", "Ba6#"),
     ("doubleBishopMate", "2kr4/2p5/2N5/4B3/2B5/8/5PPP/3R2K1 w - - 0 1", "Ba6#"),
-    # The constructed Boden: crossing diagonals, not parallel ones; and the other way round.
+    # Ba6 checks the king on c8 along a6-c8 while the f4 bishop covers b8 along f4-b8: the
+    # diagonals cross, a Boden, not parallel ones; and the other way round.
     ("doubleBishopMate", "2kr4/p2p4/8/8/2B2B2/8/8/6K1 w - - 0 1", "Ba6#"),
     ("bodenMate", "6bk/8/8/8/8/B2B4/8/7K w - - 0 1", "Bb2#"),
     # Audit 22: d5 and e6 are empty; the rook and the knights take them, not the king's men.
@@ -173,6 +151,8 @@ def test_pattern_is_not_named(pattern: str, fen: str, san: str) -> None:
 def test_every_pattern_has_a_positive_and_a_negative() -> None:
     assert {p for p, *_ in POSITIVES} == set(MATE_PATTERNS)
     assert {p for p, *_ in NEGATIVES} == set(MATE_PATTERNS)
+    # And a place in the motif tagger's order, which names them with the rest.
+    assert set(MATE_PATTERNS) <= set(TAG_ORDER)
 
 
 def test_a_check_that_is_not_mate_names_nothing() -> None:

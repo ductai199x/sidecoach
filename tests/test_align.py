@@ -10,6 +10,7 @@ from pathlib import Path
 import chess
 import pytest
 
+from sidecoach.coach.coach import NO_FIGURES, NOT_THE_MOVE, _hold_rule
 from sidecoach.events import DisclosureLevel, Label, MoveAssessment, Severity, Trigger
 from tests.coaching import SCHOLAR, mate_analysis, mate_missed, play_to_scholar, scripted_coach
 
@@ -105,44 +106,38 @@ def _item(directive: str, required: list[dict], cls: str = "verdict_weaker") -> 
     }
 
 
-def test_a_demand_the_directive_does_not_make_is_a_gap():
-    from sidecoach.coach.coach import NO_FIGURES, NOT_THE_MOVE
+# A directive after an inaccuracy that asks for all the judge demands, and the fact it is
+# judged on.
+ASKED = (
+    "The player just played a3, which was an inaccuracy: sound, a little behind Rc1. One or "
+    "two sentences: the better move, what it does, and the idea behind it as a lesson to "
+    f"keep, with how theirs rated in passing. No question. {NOT_THE_MOVE} {NO_FIGURES}"
+)
+LABEL = [{"key": "label", "value": "inaccuracy", "how": "sense"}]
 
+
+def test_a_demand_the_directive_does_not_make_is_a_gap():
     criteria = rubric.load_rubric()
-    asked = (
-        "The player just played a3, which was an inaccuracy: sound, a little behind Rc1. One or "
-        "two sentences: the better move, what it does, and the idea behind it as a lesson to "
-        f"keep, with how theirs rated in passing. No question. {NOT_THE_MOVE} {NO_FIGURES}"
-    )
-    label = [{"key": "label", "value": "inaccuracy", "how": "sense"}]
-    assert align.gaps(_item(asked, label), criteria) == []
+    assert align.gaps(_item(ASKED, LABEL), criteria) == []
     # Told only that it was fine: the judge's label and "why" are never asked for.
-    vague = asked.replace("an inaccuracy", "fine").replace(", what it does,", "")
-    problems = align.gaps(_item(vague, label), criteria)
+    vague = ASKED.replace("an inaccuracy", "fine").replace(", what it does,", "")
+    problems = align.gaps(_item(vague, LABEL), criteria)
     assert "fact label (inaccuracy): not asked" in problems
     assert "rubric why: not asked" in problems
     # A check the coach runs and the directive never states is a gap too.
-    silent = asked.replace(NO_FIGURES, "")
-    assert "check figures: applied, never stated" in align.gaps(_item(silent, label), criteria)
+    silent = ASKED.replace(NO_FIGURES, "")
+    assert "check figures: applied, never stated" in align.gaps(_item(silent, LABEL), criteria)
     # And a fact with no rule is a gap until align.py has one.
     novel = [{"key": "brand_new", "value": "x", "how": "sense"}]
-    assert "fact brand_new: no rule in align.py" in align.gaps(_item(asked, novel), criteria)
+    assert "fact brand_new: no rule in align.py" in align.gaps(_item(ASKED, novel), criteria)
 
 
 def test_a_rule_held_back_is_not_asked_for_and_not_judged():
     """While a rule of thumb cools down (2026-09-27) the directive asks for none, and the
     rubric's "transfer" is not asked of the reply: the inputs still match the judge."""
-    from sidecoach.coach.coach import NO_FIGURES, NOT_THE_MOVE, _hold_rule
-
     criteria = rubric.load_rubric()
-    asked = (
-        "The player just played a3, which was an inaccuracy: sound, a little behind Rc1. One or "
-        "two sentences: the better move, what it does, and the idea behind it as a lesson to "
-        f"keep, with how theirs rated in passing. No question. {NOT_THE_MOVE} {NO_FIGURES}"
-    )
-    held = _hold_rule(asked)
+    held = _hold_rule(ASKED)
     assert "lesson to keep" not in held and "pattern to keep" not in held
-    label = [{"key": "label", "value": "inaccuracy", "how": "sense"}]
-    assert align.gaps(_item(held, label), criteria) == []
+    assert align.gaps(_item(held, LABEL), criteria) == []
     transfer = next(c for c in criteria if c.key == "transfer")
-    assert transfer.applies("lesson", "", asked) and not transfer.applies("lesson", "", held)
+    assert transfer.applies("lesson", "", ASKED) and not transfer.applies("lesson", "", held)

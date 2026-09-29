@@ -120,7 +120,8 @@ def test_kokoro_loads_once_and_a_voice_change_reloads_nothing(
 # ---- the endpointer ----------------------------------------------------------------------------
 
 
-def test_speech_starts_after_two_frames_and_ends_after_silence() -> None:
+def test_speech_starts_after_two_frames_over_the_bar_and_ends_after_silence() -> None:
+    """A blip too short to be an ask is dropped: test_an_utterance_that_comes_to_nothing_is_said."""
     ep = Endpointer(end_ms=96, min_utterance_ms=64)  # 3 silent frames end it; 2 frames is an ask
     assert ep.feed(0.9) is None  # one confident frame is not yet speech
     assert ep.feed(0.9) == "start"
@@ -131,15 +132,8 @@ def test_speech_starts_after_two_frames_and_ends_after_silence() -> None:
     assert ep.feed(0.1) is None
     assert ep.feed(0.1) == "end"
     assert not ep.speaking
-
-
-def test_a_blip_is_dropped_and_the_coach_talking_raises_the_bar() -> None:
-    ep = Endpointer(end_ms=64, min_utterance_ms=320)
-    ep.feed(0.9)
-    assert ep.feed(0.9) == "start"
-    assert ep.feed(0.1) is None
-    assert ep.feed(0.1) == "drop"  # 64 ms of speech is a click, not an ask
-    # While the coach speaks, the mic hears the speakers: 0.6 is not a start, 0.9 is.
+    # While the coach speaks, the mic hears the speakers and the bar is raised: 0.6 is not a
+    # start, 0.9 is.
     ep = Endpointer()
     assert ep.feed(0.6, coach_speaking=True) is None
     assert ep.feed(0.6, coach_speaking=True) is None

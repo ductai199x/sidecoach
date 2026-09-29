@@ -66,11 +66,9 @@ def test_the_exchange_in_progress_is_what_the_last_captures_took() -> None:
 
 
 # The goal of a line after the opponent captured (`idea.read`, `idea_words.goal`). (case,
-# the FEN (None: the start), the moves played on it, the line in SAN, its score, whether it
-# wins back what was taken, the goal in words.)
-GOALS: list[tuple[str, str | None, list[str], str, float, bool, str]] = [
-    # 4.Bxc6: Black takes back.
-    ("a plain recapture", None, [*RUY, "b5c6"], "dxc6 O-O", 0.5, True, "you can win back a bishop"),
+# the FEN, the move played on it, the line in SAN, its score, whether it wins back what was
+# taken, the goal in words.) The plain recapture, 4.Bxc6 dxc6, is the live coach's below.
+GOALS: list[tuple[str, str, list[str], str, float, bool, str]] = [
     # Lichess 00tMQ: 20...Nxh5 took the bishop; Qxh5 takes the knight back.
     (
         "00tMQ",
@@ -119,7 +117,7 @@ GOALS: list[tuple[str, str | None, list[str], str, float, bool, str]] = [
     ("case", "fen", "played", "sans", "score", "back", "words"), GOALS, ids=[r[0] for r in GOALS]
 )
 def test_taking_back_is_winning_back(
-    case: str, fen: str | None, played: list[str], sans: str, score: float, back: bool, words: str
+    case: str, fen: str, played: list[str], sans: str, score: float, back: bool, words: str
 ) -> None:
     idea, goal = _goal(_board(fen, played), sans, score=score)
     assert idea.back is back and goal == words, f"{case}: {goal}"
@@ -127,7 +125,8 @@ def test_taking_back_is_winning_back(
 
 def test_the_live_coach_keeps_the_moves_that_led_to_a_position() -> None:
     """The coach built each position from the move's FEN, so the exchange in progress was
-    never seen live: the fix reached only the benches (the Android port's review, 2026-09-26)."""
+    never seen live: the fix reached only the benches (the Android port's review, 2026-09-26).
+    After 4.Bxc6 the plain recapture dxc6 is "you can win back a bishop"."""
     coach, _ = scripted_coach([])
     start = chess.Board().fen()
     coach.on_event(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=start), 0.0)

@@ -30,23 +30,29 @@ def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_p
     assert client.get("/api/poll").status_code == 401
     assert client.post("/api/start").status_code == 401
     auth = {"Authorization": "Bearer s3cret"}
-    assert set(client.get("/api/poll", headers=auth).json()) == {"state", "lines", "cursor"}
+    first = client.get("/api/poll", headers=auth).json()
+    assert set(first) == {"state", "lines", "cursor"}
     # The page's meter lands in data/perf/<label>.jsonl, the label kept to a safe name.
     sample = {"host": "tauri", "fps": 143.9, "long_frames": 2, "poll_p95": 6}
     res = client.post("/api/perf", json={"label": "tauri idle/1", "sample": sample}, headers=auth)
     assert res.json() == {"ok": True}
     line = json.loads((tmp_path / "perf" / "tauriidle1.jsonl").read_text(encoding="utf-8"))
     assert line["fps"] == 143.9 and line["host"] == "tauri" and line["t"] > 0
-    # A page's own error lands in the terminal, on the sys channel, with the page named.
+    # A page's own error lands in the terminal, on the sys channel, with the page named. The
+    # poll is incremental: past its cursor, only what came after, and once.
     res = client.post(
         "/api/client_log",
         json={"text": "TypeError: x is undefined @ app.js:12", "page": "/settings"},
         headers=auth,
     )
     assert res.json() == {"ok": True}
-    lines = client.get("/api/poll", headers=auth).json()["lines"]
-    said = [ln for ln in lines if ln["chan"] == "sys" and ln["text"].startswith("page [/settings]")]
-    assert said and said[-1]["level"] == "error" and "TypeError" in said[-1]["text"]
+    got = client.get("/api/poll", params={"since": first["cursor"]}, headers=auth).json()
+    [said] = got["lines"]
+    assert said["chan"] == "sys" and said["text"].startswith("page [/settings]")
+    assert said["level"] == "error" and "TypeError" in said["text"]
+    assert (
+        client.get("/api/poll", params={"since": got["cursor"]}, headers=auth).json()["lines"] == []
+    )
     # The static page is not behind the token; the shell's origins are allowed by CORS.
     assert client.get("/").status_code == 200
     pre = client.options(

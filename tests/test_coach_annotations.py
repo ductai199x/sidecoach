@@ -55,8 +55,8 @@ def test_focus_level_tints_the_region_marks_the_target_and_rings_the_piece() -> 
     assert not any(m.kind == "arrow" for m in marks), "the move is not disclosed yet"
 
 
-def test_candidate_level_draws_the_move_and_the_threat() -> None:
-    marks = annotations_for(FACTS, DisclosureLevel.CANDIDATE, BOARD, trigger=Trigger.USER_ASK)
+def test_move_level_draws_the_move_and_the_threat() -> None:
+    marks = annotations_for(FACTS, DisclosureLevel.MOVE, BOARD, trigger=Trigger.USER_ASK)
     arrows = [(tuple(m.squares), m.color) for m in marks if m.kind == "arrow"]
     assert (("b5", "a4"), "good") in arrows  # Ba4
     assert (("a6", "b5"), "threat") in arrows  # ...axb5, read after a null move

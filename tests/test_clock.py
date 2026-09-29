@@ -49,7 +49,6 @@ def test_reads_both_clocks_at_several_scales_and_themes(cell: int, colours) -> N
         colours=colours,
     )
     reading = read(frame, board)
-    assert reading is not None
     assert reading.top_ms == (16 * 60 + 18) * 1000
     assert reading.bottom_ms == (15 * 60 + 34) * 1000
     assert reading.confidence > 0.35
@@ -93,37 +92,29 @@ def test_parse_clock_covers_the_formats_chesscom_draws() -> None:
     assert parse_clock("0:75") is None
 
 
-def _running_frames(cell: int = 43) -> tuple[np.ndarray, np.ndarray, BoardCandidate]:
-    """Two frames a tenth of a second apart with the bottom clock ticking: its icon hand
-    has swept on and its value has fallen, while the top clock has not moved a pixel."""
+@pytest.mark.parametrize(
+    ("clocks", "icon_angles", "runs"),
+    [
+        (("10:00", "9:40"), (None, math.pi / 2), "bottom"),
+        (("10:00", "9:41"), (None, math.pi / 2), "bottom"),
+        (("10:00", "9:51"), (0.0, None), "top"),
+    ],
+    ids=["icon and falling value", "icon alone", "a rise"],
+)
+def test_the_running_clock_is_read_from_what_moved(
+    clocks: tuple[str, str], icon_angles: tuple[float | None, float | None], runs: str
+) -> None:
+    """Two frames a tenth of a second apart, the bottom clock's icon shown on the first: its
+    hand swept on and its value fallen, or its hand alone, while the top clock has not moved
+    a pixel, is the bottom clock running; a clock that rose has taken its increment and
+    stopped, and the other runs. Nothing has moved on the first frame, and neither clock runs
+    once that evidence goes stale."""
     first, board = board_with_clocks("10:00", "9:41", icon_angles=(None, 0.0))
-    second, _ = board_with_clocks("10:00", "9:40", icon_angles=(None, math.pi / 2))
-    return first, second, board
-
-
-def test_running_comes_from_the_icon_and_the_falling_value() -> None:
-    first, second, board = _running_frames()
+    second, _ = board_with_clocks(*clocks, icon_angles=icon_angles)
     reader = ClockReader()
-    assert running(reader, first, board, 0.0) is None  # nothing has moved yet
-    assert running(reader, second, board, 0.1) == "bottom"
-    # Neither clock runs once that evidence goes stale.
+    assert running(reader, first, board, 0.0) is None
+    assert running(reader, second, board, 0.1) == runs
     assert running(reader, second, board, 10.0) is None
-
-
-def test_a_clock_that_only_moves_its_icon_is_still_the_running_one() -> None:
-    first, board = board_with_clocks("10:00", "9:41", icon_angles=(None, 0.0))
-    second, _ = board_with_clocks("10:00", "9:41", icon_angles=(None, math.pi / 2))
-    reader = ClockReader()
-    reader.read(first, board, 0.0)
-    assert running(reader, second, board, 0.1) == "bottom"
-
-
-def test_a_clock_that_rises_has_taken_its_increment_and_stopped() -> None:
-    first, board = board_with_clocks("10:00", "9:41", icon_angles=(None, 0.0))
-    second, _ = board_with_clocks("10:00", "9:51", icon_angles=(0.0, None))
-    reader = ClockReader()
-    reader.read(first, board, 0.0)
-    assert running(reader, second, board, 0.1) == "top"
 
 
 def test_no_clock_drawn_reads_as_none() -> None:

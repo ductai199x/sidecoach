@@ -50,6 +50,7 @@ def test_facts_name_the_theme_region_piece_and_candidates() -> None:
     assert facts.threats == ["Nxh5"], "what the opponent would play if it were their turn"
     assert facts.line == ["Qxf7#"]
     assert facts.decisive and facts.last_move == "Nf6"
+    assert facts.plan is None, "decisive: the tactic is the point, no second headline"
 
 
 def test_facts_survive_a_line_the_board_cannot_play() -> None:
@@ -90,16 +91,6 @@ def test_an_incidental_tactic_is_demoted_and_the_strategic_plan_leads() -> None:
     assert facts.theme is None and facts.focus == [] and facts.tactic is None
     assert facts.plan == "finishing your development"
     assert facts.ideas, "the position's static features are given as ideas"
-
-
-def test_a_decisive_tactic_still_leads_and_no_plan_competes() -> None:
-    board = chess.Board(SCHOLAR)
-    analysis = _analysis(
-        SCHOLAR, tags=[MotifTag(name="mateIn1", squares=["f7", "e8"], move="h5f7")]
-    )
-    facts = facts_from_analysis(board, analysis, last_move="Nf6")
-    assert facts.theme == "a mating attack"  # decisive: the tactic is the point
-    assert facts.plan is None, "no second headline when a tactic leads"
 
 
 def test_theme_ranks_the_most_specific_tag_first() -> None:
@@ -163,13 +154,10 @@ def test_a_threat_read_off_the_analysis_becomes_the_prophylaxis_plan() -> None:
     # only exercises with an explicit threat argument.
     fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"
     board = chess.Board(fen)
-    analysis = Analysis(
-        game_id="g",
-        fen=fen,
-        ply=6,
+    analysis = _analysis(
+        fen,
         lines=[Line(moves=["b1c3"], depth=12, expected_score=0.3)],
         decisive=False,
-        only_move=False,
         threats=["f6e4"],
     )
     facts = facts_from_analysis(board, analysis)
@@ -220,19 +208,11 @@ DESCRIBED: list[tuple[str, str, str, list[str], str | None, str | None]] = [
         "the knight on c6 is pinned to the king on e8 by the bishop on b5",
     ),
     ("a loose piece", RUY, "hangingPiece", ["e5"], None, "the pawn on e5 is loose"),
-    # A fork, given as [forker, then the forked].
-    (
-        "a fork",
-        "3r1r2/8/4N3/8/8/8/8/4K1k1 w - - 0 1",
-        "fork",
-        ["e6", "d8", "f8"],
-        None,
-        "the knight on e6 forks the rook on d8 and the rook on f8",
-    ),
     # When the squares do not hold what the tag claims, nothing is said.
     ("squares that hold nothing", RUY, "pin", ["a1", "a2", "a3"], None, None),
-    # The fork is not on the board yet: the knight forks only after it lands, and the board
-    # after the best move is tried, so it still reads true.
+    # A fork, given as [forker, then the forked]. This one is not on the board yet: the
+    # knight forks only after it lands, and the board after the best move is tried, so it
+    # still reads true.
     (
         "a fork the best move creates",
         "5rkr/8/8/4N3/8/8/8/4K3 w - - 0 1",
@@ -290,7 +270,8 @@ DESCRIBED: list[tuple[str, str, str, list[str], str | None, str | None]] = [
         None,
         "the queen on g7 forks the king on h6, the pawn on f6 and the pawn on f7",
     ),
-    # A fork whose targets are not both the enemy's is not described.
+    # A fork whose targets are not both the enemy's (the knight on e6 against a rook of each
+    # side) is not described.
     (
         "a fork of our own rook",
         "3r1R2/8/4N3/8/8/8/8/4K1k1 w - - 0 1",
@@ -321,78 +302,44 @@ def test_in_check_the_question_is_the_check() -> None:
 
     # 1.e4 e5 2.Nf3 d6 3.Bb5+: Black answers the check with the quiet ...c6.
     fen = "rnbqkbnr/ppp2ppp/3p4/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3"
-    analysis = Analysis(
-        game_id="g",
-        fen=fen,
-        ply=5,
-        lines=[Line(moves=["c7c6"], depth=12, expected_score=0.45)],
-        decisive=False,
-        only_move=False,
+    analysis = _analysis(
+        fen, lines=[Line(moves=["c7c6"], depth=12, expected_score=0.45)], decisive=False
     )
     facts = facts_from_analysis(chess.Board(fen), analysis)
     assert facts.question == IN_CHECK_QUESTION
     assert facts.nature == IN_CHECK_NATURE
 
 
-def test_the_nature_of_the_best_move_is_forcing_or_quiet() -> None:
+def test_the_nature_of_the_best_move_is_forcing_a_tactic_or_quiet() -> None:
     """From the question level the sheet says whether the answer is a check, a capture or a
     promotion, or a quiet improving move: it names nothing, and it stops the stuck hint
     from being the same pawn-advance homily in every position (the first live game's
     endgame had a promotion with mate to find and got "support your central pawns", four
-    times over)."""
+    times over). And it looks down the line: "Quiet: there is no tactic to find here" was
+    said of a won position whose best move, a quiet knight move, uncovered a rook on the
+    queen."""
     from sidecoach.coach.disclosure import visible_facts
     from sidecoach.events import DisclosureLevel
 
-    def analysed(fen: str, best: str) -> Analysis:
-        return Analysis(
-            game_id="g",
-            fen=fen,
-            ply=6,
-            lines=[Line(moves=[best], depth=12, expected_score=0.8)],
-            decisive=False,
-            only_move=False,
-        )
+    def analysed(fen: str, line: list[str], score: float = 0.8) -> Analysis:
+        return _analysis(fen, lines=[Line(moves=line, depth=12, expected_score=score)])
 
-    mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, "h5f7"))
-    assert mate.nature is not None and mate.nature.startswith("forcing")
+    def nature(fen: str, line: list[str], score: float = 0.8) -> str:
+        return str(facts_from_analysis(chess.Board(fen), analysed(fen, line, score)).nature)
+
+    mate = facts_from_analysis(chess.Board(SCHOLAR), analysed(SCHOLAR, ["h5f7"]))
     shown = visible_facts(mate, DisclosureLevel.QUESTION)
     assert shown["nature"] == "forcing -- the answer is a check, a capture or a promotion"
     # The first hint names the board -- the target may be named -- but never the move or
     # the piece that makes it (Tai, 2026-09-24).
     assert not any("Qxf7" in str(v) or "queen" in str(v) for v in shown.values())
     # The trial game's endgame: a rook up, a pawn on d7, dxe8=Q+ leads to mate.
-    fen = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
-    promote = facts_from_analysis(chess.Board(fen), analysed(fen, "d7e8q"))
-    assert promote.nature is not None and promote.nature.startswith("forcing")
+    promote = "1q2r2k/3P4/p6p/1pRQ2p1/8/5P2/PP4PP/5R1K w - - 1 34"
+    assert nature(promote, ["d7e8q"]).startswith("forcing")
     quiet_fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"
-    quiet = facts_from_analysis(chess.Board(quiet_fen), analysed(quiet_fen, "b1c3"))
-    assert quiet.nature is not None and quiet.nature.startswith("quiet")
-    assert str(visible_facts(quiet, DisclosureLevel.QUESTION)["nature"]).startswith("quiet")
-
-
-def test_a_quiet_move_whose_line_wins_material_is_a_tactic_not_quiet() -> None:
-    """ "Quiet: there is no tactic to find here" was said of a won position whose best move,
-    a quiet knight move, uncovered a rook on the queen: the nature looks down the line."""
+    assert nature(quiet_fen, ["b1c3"]).startswith("quiet")
     # White to move: Nh6, a quiet move, uncovers the rook on g6; the line wins the knight.
-    fen = "5k2/3n1p2/b5p1/3P4/5QN1/qr1p2RP/5PPK/8 w - - 0 34"
-    line = ["g4h6", "d7f6", "f4f6", "a3a2"]
-    analysis = Analysis(
-        game_id="g",
-        fen=fen,
-        ply=66,
-        lines=[Line(moves=line, depth=20, expected_score=0.97)],
-        decisive=True,
-        only_move=True,
-    )
-    facts = facts_from_analysis(chess.Board(fen), analysis)
-    assert facts.nature is not None and facts.nature.startswith("a tactic")
     # The same first move with no line given is judged by the move alone.
-    alone = Analysis(
-        game_id="g",
-        fen=fen,
-        ply=66,
-        lines=[Line(moves=["g4h6"], depth=20, expected_score=0.97)],
-        decisive=True,
-        only_move=True,
-    )
-    assert str(facts_from_analysis(chess.Board(fen), alone).nature).startswith("quiet")
+    fen = "5k2/3n1p2/b5p1/3P4/5QN1/qr1p2RP/5PPK/8 w - - 0 34"
+    assert nature(fen, ["g4h6", "d7f6", "f4f6", "a3a2"], 0.97).startswith("a tactic")
+    assert nature(fen, ["g4h6"], 0.97).startswith("quiet")

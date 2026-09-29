@@ -34,34 +34,45 @@ def test_the_shipped_manifest_names_pypi_wheels(tag: str, mark: str) -> None:
     assert gpu.pack_size(m) == m["size"]
 
 
+def _one_wheel_pack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    version: str,
+    sha256: str | None = None,
+) -> Path:
+    """A manifest of one wheel holding `files`, served from a file URL, put in place of the
+    shipped one; the wheel's path. `sha256` stands in for the wheel's real digest."""
+    wheel = tmp_path / "foo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        for name, text in files.items():
+            z.writestr(name, text)
+    entry = {
+        "name": "foo",
+        "version": "1.0",
+        "filename": wheel.name,
+        "url": wheel.as_uri(),
+        "size": wheel.stat().st_size,
+        "sha256": sha256 or hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    }
+    manifest = {"version": version, "platform": gpu.platform_tag(), "wheels": [entry]}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(gpu, "PACK_MANIFEST_OVERRIDE", str(tmp_path / "manifest.json"))
+    return wheel
+
+
 def test_install_fetches_verifies_and_unpacks_the_wheels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A manifest of one wheel served from a file URL: the wheel's packages and its
     `.data/purelib` land in site-packages, its scripts do not, the wheel is not kept."""
-    wheel = tmp_path / "foo-1.0-py3-none-any.whl"
-    with zipfile.ZipFile(wheel, "w") as z:
-        z.writestr("foo/__init__.py", "VALUE = 1\n")
-        z.writestr("foo-1.0.dist-info/METADATA", "Name: foo\nVersion: 1.0\n")
-        z.writestr("foo-1.0.data/purelib/bar.py", "BAR = 2\n")
-        z.writestr("foo-1.0.data/scripts/foo-cli", "#!/bin/sh\n")
-    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    manifest = {
-        "version": "7",
-        "platform": gpu.platform_tag(),
-        "wheels": [
-            {
-                "name": "foo",
-                "version": "1.0",
-                "filename": wheel.name,
-                "url": wheel.as_uri(),
-                "size": wheel.stat().st_size,
-                "sha256": digest,
-            }
-        ],
+    files = {
+        "foo/__init__.py": "VALUE = 1\n",
+        "foo-1.0.dist-info/METADATA": "Name: foo\nVersion: 1.0\n",
+        "foo-1.0.data/purelib/bar.py": "BAR = 2\n",
+        "foo-1.0.data/scripts/foo-cli": "#!/bin/sh\n",
     }
-    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(gpu, "PACK_MANIFEST_OVERRIDE", str(tmp_path / "manifest.json"))
+    wheel = _one_wheel_pack(tmp_path, monkeypatch, files, "7")
     settings = Settings(data_dir=tmp_path / "data")
     seen: list[tuple[int, int | None]] = []
     pack = gpu.install(settings, lambda done, total: seen.append((done, total)))
@@ -79,25 +90,7 @@ def test_install_fetches_verifies_and_unpacks_the_wheels(
 
 
 def test_a_wrong_digest_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    wheel = tmp_path / "foo-1.0-py3-none-any.whl"
-    with zipfile.ZipFile(wheel, "w") as z:
-        z.writestr("foo/__init__.py", "")
-    manifest = {
-        "version": "1",
-        "platform": gpu.platform_tag(),
-        "wheels": [
-            {
-                "name": "foo",
-                "version": "1.0",
-                "filename": wheel.name,
-                "url": wheel.as_uri(),
-                "size": 1,
-                "sha256": "0" * 64,
-            }
-        ],
-    }
-    (tmp_path / "m.json").write_text(json.dumps(manifest), encoding="utf-8")
-    monkeypatch.setattr(gpu, "PACK_MANIFEST_OVERRIDE", str(tmp_path / "m.json"))
+    _one_wheel_pack(tmp_path, monkeypatch, {"foo/__init__.py": ""}, "1", sha256="0" * 64)
     settings = Settings(data_dir=tmp_path / "data")
     with pytest.raises(RuntimeError, match="checksum"):
         gpu.install(settings)

@@ -34,31 +34,10 @@ def _uci(*ucis: str) -> tuple[str, ...]:
 
 
 @pytest.mark.parametrize("bottom", BOTTOMS)
-def test_a_single_premove_executes_with_the_opponents_move(bottom: Side) -> None:
-    g = Game(bottom)
-    if bottom == Side.WHITE:
-        g.play("e4", "e5", "Nf3")
-        premove = g.queue(_uci("f3g5"))
-        g.show(frames=4, premoves=premove)  # the queue forms; nothing has happened
-        assert g.sans == ["e4", "e5", "Nf3"]
-        reply = g.board.push_san("Nc6")
-        executed = g.board.push_san("Ng5")
-        g.show(frames=3, highlight=executed)
-        assert g.sans == ["e4", "e5", "Nf3", "Nc6", "Ng5"], g.sans
-        del reply
-    else:
-        g.play("e4", "e5")
-        premove = g.queue(_uci("g8f6"))
-        g.show(frames=4, premoves=premove)
-        assert g.sans == ["e4", "e5"]
-        g.board.push_san("Nf3")
-        executed = g.board.push_san("Nf6")
-        g.show(frames=3, highlight=executed)
-        assert g.sans == ["e4", "e5", "Nf3", "Nf6"], g.sans
-
-
-@pytest.mark.parametrize("bottom", BOTTOMS)
 def test_a_queue_of_two_steps_executes_one_step_per_opponent_move(bottom: Side) -> None:
+    """While the queue forms nothing has happened; each opponent move executes one step, and
+    the last, a queue of one, is a single premove executing with the opponent's move
+    (test_a_single_premove_executes_with_the_opponents_move)."""
     g = Game(bottom)
     if bottom == Side.WHITE:
         g.play("e4", "e5", "Nf3")
@@ -89,55 +68,6 @@ def test_a_queue_of_two_steps_executes_one_step_per_opponent_move(bottom: Side) 
         assert g.sans == ["e4", "e5", "d4", "Nf6", "Nc3", "Ng4"], g.sans
 
 
-def test_two_pieces_queued_at_once_execute_in_order() -> None:
-    """The third live game's shape: two queens premoved, the first executes on the
-    opponent's move, the second stays queued, then executes on the next."""
-    g = Game(Side.WHITE)
-    g.play("e4", "e5", "Qh5", "Nc6", "Bc4")
-    queues = g.queue(_uci("h5h4"), _uci("c4b3"))
-    g.show(frames=4, premoves=queues)
-    assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
-    g.board.push_san("Nf6")
-    executed = g.board.push_san("Qh4")
-    g.show(frames=3, highlight=executed, premoves=g.queue(_uci("c4b3")))
-    assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4", "Nf6", "Qh4"], g.sans
-    g.board.push_san("d6")
-    executed = g.board.push_san("Bb3")
-    g.show(frames=3, highlight=executed)
-    assert g.sans[-2:] == ["d6", "Bb3"], g.sans
-
-
-def test_a_real_move_seen_only_in_flight_before_the_queue_formed_is_recovered() -> None:
-    """The user moves and premoves within half a second: the real move's settled frame is
-    never captured, only one frame with the piece in flight, then the queue picture with
-    the piece's real square red and empty. Undoing the queue recovers the real move."""
-    g = Game(Side.WHITE)
-    g.play("e4", "e5", "Nf3", "Nc6")
-    # Bf1-c4 is played: one frame mid-drag, never a settled one.
-    real = g.board.push_san("Bc4")
-    g.show(frames=1, highlight=real, dragging=(chess.C4, chess.C4, 0.15, 0.1))
-    assert g.sans == ["e4", "e5", "Nf3", "Nc6"]
-    # Then the queue: the bishop, really on c4, is drawn at b3 with c4 red and empty.
-    g.show(frames=4, highlight=real, premoves=g.queue(_uci("c4b3")))
-    assert g.sans == ["e4", "e5", "Nf3", "Nc6", "Bc4"], g.sans
-    g.board.push_san("Nf6")
-    executed = g.board.push_san("Bb3")
-    g.show(frames=3, highlight=executed)
-    assert g.sans[-2:] == ["Nf6", "Bb3"], g.sans
-
-
-def test_a_queued_capture_is_drawn_over_its_victim() -> None:
-    g = Game(Side.WHITE)
-    g.play("e4", "e5", "Qh5", "Nc6", "Bc4")
-    g.show(frames=4, premoves=g.queue(_uci("h5f7")))  # Qxf7 queued: drawn over the f7 pawn
-    assert g.sans == ["e4", "e5", "Qh5", "Nc6", "Bc4"]
-    g.board.push_san("Nf6")
-    executed = g.board.push_san("Qxf7#")
-    g.show(frames=3, highlight=executed)
-    assert g.sans[-2:] == ["Nf6", "Qxf7#"], g.sans
-    assert g.ended and g.ended[0].result == "1-0"
-
-
 def test_a_premove_the_opponents_move_makes_illegal_is_cleared() -> None:
     """A check clears the queue: the piece snaps back to its square, nothing executes. The
     site paints the checked king's square red, and with a queue on the board a moment
@@ -157,7 +87,11 @@ def test_a_premove_the_opponents_move_makes_illegal_is_cleared() -> None:
 def test_premoves_that_end_in_mate_under_the_dialog_commit_the_real_line() -> None:
     """The third live game's finish, move for move: 65. Qgg3 (seen only in flight) Kc2
     66. Qhh2+ Kd1 67. Qgg1#, both queens premoved, the mate's one clean frame followed
-    by the game-over dialog."""
+    by the game-over dialog. The real move, seen only in flight before the queue formed,
+    is recovered from the queue picture, its square red and empty
+    (test_a_real_move_seen_only_in_flight_before_the_queue_formed_is_recovered); the two
+    queens queued at once execute in order, the second staying queued until the next
+    opponent move (test_two_pieces_queued_at_once_execute_in_order)."""
     g = Game(Side.WHITE, fen="8/8/4K3/6Q1/7Q/8/8/1k6 w - - 0 65", pipeline=True)
     assert g.sans == []
     real = g.board.push_san("Qgg3")
@@ -234,22 +168,42 @@ def _run_queue(
 # White: K g1, Q d1; Black: K h8, pawns g7 h7 a7. The queen climbs the d-file square by
 # square while Black pushes the a-pawn, and Qd8 is mate on the back rank.
 LADDER = "7k/p5pp/8/8/8/8/8/3Q2K1 w - - 0 1"
-
-
-@pytest.mark.parametrize("frames_per_state", [3, 1])
-def test_a_six_step_queue_of_one_piece_ends_in_mate(frames_per_state: int) -> None:
-    g = Game(Side.WHITE, fen=LADDER, pipeline=True)
-    _run_queue(
-        g,
+# The ladder from either side at the bottom: the position, the real move, the queue, the
+# replies, the frames of each picture, what is told and the result.
+LADDERS = {
+    "white": (
+        Side.WHITE,
+        LADDER,
         "Qd2",
         _uci("d2d3", "d3d4", "d4d5", "d5d6", "d6d8"),
         _uci("a6", "a5", "a4", "a3", "a2"),
-        frames_per_state=frames_per_state,
-    )
-    assert g.sans == ["Qd2", "a6", "Qd3", "a5", "Qd4", "a4", "Qd5", "a3", "Qd6", "a2", "Qd8#"], (
-        g.sans
-    )
-    assert g.ended and g.ended[0].result == "1-0"
+        3,
+        ["Qd2", "a6", "Qd3", "a5", "Qd4", "a4", "Qd5", "a3", "Qd6", "a2", "Qd8#"],
+        "1-0",
+    ),
+    # Black at the bottom, ...Qd1 mate (test_black_runs_a_long_queue_to_mate), a frame a
+    # picture: one the reconciler cannot settle on alone (the white ladder's
+    # frames_per_state=1 case).
+    "black": (
+        Side.BLACK,
+        "3q2k1/8/8/8/8/8/P5PP/7K b - - 0 1",
+        "Qd7",
+        _uci("d7d6", "d6d5", "d5d4", "d4d3", "d3d1"),
+        _uci("a3", "a4", "a5", "a6", "a7"),
+        1,
+        ["Qd7", "a3", "Qd6", "a4", "Qd5", "a5", "Qd4", "a6", "Qd3", "a7", "Qd1#"],
+        "0-1",
+    ),
+}
+
+
+@pytest.mark.parametrize("side", sorted(LADDERS))
+def test_a_six_step_queue_of_one_piece_ends_in_mate(side: str) -> None:
+    bottom, fen, first, queue, replies, frames, told, result = LADDERS[side]
+    g = Game(bottom, fen=fen, pipeline=True)
+    _run_queue(g, first, queue, replies, frames_per_state=frames)
+    assert g.sans == told, g.sans
+    assert g.ended and g.ended[0].result == result
 
 
 def test_a_long_queue_against_a_bot_faster_than_the_capture() -> None:
@@ -278,6 +232,9 @@ TWO_PIECES = "7k/pp4pp/8/8/8/1Q6/8/K1R5 w - - 0 1"
 
 
 def test_a_seven_step_queue_over_two_pieces_ends_in_mate() -> None:
+    """The two queues run side by side, one step per opponent move, and the rook's is spent
+    a step before the queen's, which goes on alone
+    (test_two_queues_of_different_lengths_finish_at_different_times)."""
     g = Game(Side.WHITE, fen=TWO_PIECES, pipeline=True)
     _run_queue(
         g,
@@ -442,39 +399,6 @@ def test_a_pawn_run_to_a_queen_queued_behind_the_queen_that_leaves_its_first_squ
     assert not [e for e in g.events if isinstance(e, Resync)]
 
 
-def test_black_runs_a_long_queue_to_mate() -> None:
-    """The same ladder from Black's side, black at the bottom: the queen climbs the d-file
-    while White pushes a pawn, and ...Qd1 is mate. A frame a picture: three frames a
-    picture are the six-step ladder's, from White's side."""
-    fen = "3q2k1/8/8/8/8/8/P5PP/7K b - - 0 1"
-    g = Game(Side.BLACK, fen=fen, pipeline=True)
-    _run_queue(
-        g,
-        "Qd7",
-        _uci("d7d6", "d6d5", "d5d4", "d4d3", "d3d1"),
-        _uci("a3", "a4", "a5", "a6", "a7"),
-        frames_per_state=1,
-    )
-    assert g.sans == ["Qd7", "a3", "Qd6", "a4", "Qd5", "a5", "Qd4", "a6", "Qd3", "a7", "Qd1#"], (
-        g.sans
-    )
-    assert g.ended and g.ended[0].result == "0-1"
-
-
-def test_two_queues_of_different_lengths_finish_at_different_times() -> None:
-    """A one-step queue and a three-step queue at once: the short one is spent after the
-    first opponent move and the long one keeps going."""
-    g = Game(Side.WHITE, fen="7k/pp4pp/8/8/8/1Q6/8/K1R5 w - - 0 1")
-    _run_queue(
-        g,
-        "Rc2",
-        _uci("b3b4", "c2c3", "c3c4", "c4c5"),
-        _uci("a6", "a5", "a4", "b6"),
-        frames_per_state=2,
-    )
-    assert g.sans == ["Rc2", "a6", "Qb4", "a5", "Rc3", "a4", "Rc4", "b6", "Rc5"], g.sans
-
-
 # ---- at the reconciler, from a fixed endgame: the promotion and the king cases -------
 
 # After 59...Kf7 in the game of 2026-09-14 20:06: white Kc7, pawns a4 b6 f4 g3 h4, Be5.
@@ -507,24 +431,29 @@ class _Feed:
         return played
 
 
-def test_pawn_drawn_on_the_last_rank_waits_for_the_promotion_choice() -> None:
-    """Before the piece is chosen a pawn sits on a8; the bot's move then cuts the queue."""
+@pytest.mark.parametrize(
+    ("queued", "step", "after"),
+    [
+        # Before the piece is chosen a pawn sits on a8; the bot's move then cuts the queue
+        # (test_pawn_drawn_on_the_last_rank_waits_for_the_promotion_choice).
+        ((chess.A5, chess.A8, "P"), "a6", (chess.A6, chess.A7, "P")),
+        # A single king step (test_single_king_premove_still_waits_for_the_opponent).
+        ((chess.C7, chess.C6, "K"), "Kc6", None),
+    ],
+    ids=["pawn-on-the-last-rank", "king"],
+)
+def test_a_premove_from_the_endgame_waits_for_the_opponent(
+    queued: tuple[chess.Square, chess.Square, str],
+    step: str,
+    after: tuple[chess.Square, chess.Square, str] | None,
+) -> None:
+    """The user's piece drawn at its queue's end is no move until the opponent's reply
+    executes the first step."""
     model, rec, board = reconciler_at(ENDGAME)
     feed = _Feed(model, rec)
     board.push_san("a5")
     assert feed(board, 2) == ["a5"]
-    assert feed(_displayed(board, chess.A5, chess.A8, "P"), 3) == []
+    assert feed(_displayed(board, *queued), 3) == []
     board.push_san("Kg6")
-    board.push_san("a6")
-    assert feed(_displayed(board, chess.A6, chess.A7, "P"), 3) == ["Kg6", "a6"]
-
-
-def test_single_king_premove_still_waits_for_the_opponent() -> None:
-    model, rec, board = reconciler_at(ENDGAME)
-    feed = _Feed(model, rec)
-    board.push_san("a5")
-    assert feed(board, 2) == ["a5"]
-    assert feed(_displayed(board, chess.C7, chess.C6, "K"), 3) == []
-    board.push_san("Kg6")
-    board.push_san("Kc6")
-    assert feed(board, 3) == ["Kg6", "Kc6"]
+    board.push_san(step)
+    assert feed(board if after is None else _displayed(board, *after), 3) == ["Kg6", step]
