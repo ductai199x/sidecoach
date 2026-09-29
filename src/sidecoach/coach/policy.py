@@ -102,8 +102,13 @@ class InterjectionPolicy:
         """A new game, or a position adopted: move numbers start again, so the decisive stretch
         pointed at in the last one says nothing about this one. A puzzle's first position was
         skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
-        desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later)."""
+        desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later). Nor
+        do its counts: kept by ply, the last puzzles' words at their first positions left a
+        new puzzle "gave the idea and the focus here" before a hint (Tai's phone,
+        2026-09-29)."""
         self._last_decisive_ply = None
+        self._spoken.clear()
+        self._said_ts = None
 
     def set_remaining(self, remaining_ms: int | None) -> None:
         """The user's clock, when the screen shows one."""
@@ -192,6 +197,11 @@ class InterjectionPolicy:
         self._spoken[ply] = self._spoken.get(ply, 0) + 1
         if ply == self._ply and ts is not None:
             self._said_ts = ts
+
+    def exhausted(self, ply: int) -> None:
+        """The hints unasked for the position at `ply` are all given, here or earlier in the
+        same combination: nothing more comes until they ask."""
+        self._spoken[ply] = max(self._spoken.get(ply, 0), UNPROMPTED_PER_POSITION)
 
     def stuck_threshold(self) -> float:
         """Seconds on the move before a hint, shorter as the clock runs down."""

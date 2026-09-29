@@ -202,6 +202,23 @@ class Disclosure:
         self.history.append((unlock, self.level))
         return self.level
 
+    @property
+    def hinted(self) -> DisclosureLevel:
+        """The highest level said here before the player moved: every unlock but the move
+        played, which opens a past position to its line."""
+        return max(
+            (level for unlock, level in self.history if unlock is not Unlock.MOVE_PLAYED),
+            default=DisclosureLevel.SILENT,
+        )
+
+    def carry(self, level: DisclosureLevel) -> None:
+        """Start from the hints already given for the combination this position continues
+        (`Coach._ladder`): each level is said once, and none below the highest (Tai,
+        2026-09-29: the stuck hint's idea at a puzzle's start came again as the question
+        after the move was found and the reply left the engine's line)."""
+        if level > self.level:
+            self.level = level
+
 
 # Where a piece word is never a hint at the piece to move: an opening's name, the material
 # balance, a check or capture said of the move just played.

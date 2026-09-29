@@ -246,22 +246,19 @@ def test_a_question_about_the_plan_is_answered_with_the_first_hint() -> None:
     assert "be honest about their own claim" not in directive
 
 
-def test_a_stuck_hint_after_the_move_was_asked_stays_at_the_focus() -> None:
-    """Tai's game, 2026-09-28: a question had opened the move's level, and the stuck hint
-    after it told the model not to name the move while its template and its check were the
-    move's; both replies, focus hints as asked, went for "d5: your bishop on c8 is still
-    shut in", twice. A hint nobody asked for stays at the focus, template and check too."""
-    focus = "Use your queen: their king on e8 has one square left. Which check takes it away?"
-    coach, provider = scripted_coach(["Qxf7# is mate at once.", focus])
+def test_no_hint_unasked_comes_after_the_move_was_given() -> None:
+    """Tai, 2026-09-29: "Each level can only be said once and if the level higher was said
+    then the lower one can't be said." Once a question had the move, no stuck hint follows:
+    the focus is below it (on 2026-09-28 one did, and both replies went for "d5: your bishop
+    on c8 is still shut in", twice). A stuck template stays at the focus all the same."""
+    coach, provider = scripted_coach(["Qxf7# is mate at once."])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask("what should I play?", 8.0)
     assert [m.text for m in drain(coach)] == ["Qxf7# is mate at once."]
-    coach.tick(17.0)
-    out = drain(coach)
-    assert [m.text for m in out] == [focus] and out[0].trigger is Trigger.STUCK
-    assert "Do not name the move" in directive_of(sent(provider, 1))
-    assert coach.spoken[-1].notes == [], "the focus hint is what its check asks for"
+    for ts in (17.0, 40.0, 90.0):
+        coach.tick(ts)
+    assert drain(coach) == [] and len(provider.prompts) == 1
     position = coach._current
     assert position is not None
     _, template = coach._instruction(
@@ -818,11 +815,14 @@ def _hint_then(coach: Coach, board: chess.Board) -> None:
     assert got and all(m.trigger is Trigger.USER_ASK for m in got)
 
 
-def test_no_new_question_while_the_line_is_played_out_and_one_when_the_opponent_leaves_it() -> None:
+def test_no_new_question_while_the_line_is_played_out_nor_a_hint_said_twice() -> None:
     """After 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 the coach asked "You can mate in one move ...
     Which check leaves their king no square at all?" -- a fresh question in the middle of
-    the combination the player was carrying out (Tai's desktop, 2026-09-24). An opponent
-    who leaves the line brings the question back."""
+    the combination the player was carrying out (Tai's desktop, 2026-09-24). And a reply
+    off the engine's line brought the idea back: the stuck hint's "a tactic that wins a
+    knight ... a pin" at a puzzle's start came again as the question after the move was found
+    (Tai's phone, 2026-09-29: "Each level can only be said once and if the level higher was
+    said then the lower one can't be said"). The next hint unasked is the focus."""
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
     _hint_then(coach, board)
@@ -832,14 +832,21 @@ def test_no_new_question_while_the_line_is_played_out_and_one_when_the_opponent_
             _analysed(coach, board, ply, QD1_LINE[ply:], 2.5 + ply, (5 - ply) // 2)
     asked = [m.text for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
     assert asked == [], asked
+    # The question at the start, the move found, a reply off the line: no question again.
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
-    _hint_then(coach, board)
+    _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+    first = drain(coach)
+    assert [(m.trigger, m.level) for m in first] == [
+        (Trigger.DECISIVE_QUESTION, DisclosureLevel.IDEA)
+    ]
     _played(coach, board, 1, "c2d1", True, 3.0)
     _played(coach, board, 2, "a5e1", False, 4.0)  # blocks instead of taking: off the line
     _analysed(coach, board, 2, ["d1e1"], 4.5, 1)
-    asked = [m.text for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
-    assert len(asked) == 1, asked
+    assert [m for m in drain(coach) if m.trigger is not Trigger.POST_MOVE] == []
+    coach.tick(4.0 + coach.policy.stuck_threshold() + 1)
+    stuck = [m for m in drain(coach) if m.trigger is Trigger.STUCK]
+    assert [m.level for m in stuck] == [DisclosureLevel.FOCUS], stuck
 
 
 def test_the_next_puzzle_gets_its_question_after_a_long_one() -> None:
@@ -859,6 +866,25 @@ def test_the_next_puzzle_gets_its_question_after_a_long_one() -> None:
     )
     _analysed(coach, chess.Board(QD1), 0, QD1_LINE, 21.0, 3)
     assert [m.trigger for m in drain(coach)] == [Trigger.DECISIVE_QUESTION]
+
+
+def test_a_new_puzzle_gets_its_hints_whatever_the_last_one_had() -> None:
+    """The counts of what was said unasked were kept by ply, and every puzzle starts at ply
+    0: after one puzzle's question and focus there, the next puzzle's log said "gave the idea
+    and the focus here" before a word of it (Tai's phone, 2026-09-29)."""
+    from sidecoach.events import Resync
+
+    coach, _ = scripted_coach([])
+    board = _puzzle(coach)
+    _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
+    coach.tick(1.0 + coach.policy.stuck_threshold() + 1)
+    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
+    coach.on_event(
+        Resync(game_id="g", fen="6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", reason="adopted"), 100.0
+    )
+    _analysed(coach, chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1"), 0, ["g8f8"], 101.0, None)
+    coach.tick(101.0 + coach.policy.stuck_threshold() + 1)
+    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
 
 
 def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:

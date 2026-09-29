@@ -2374,7 +2374,12 @@ class Coach:
             return
         if self._current.board.is_game_over():
             return  # nothing to be stuck on: the game is over on the board
-        level = self._current.disclosure.apply(Unlock.STUCK) or self._current.disclosure.level
+        # A hint unasked only ever climbs: at the top of its ladder it is not said again.
+        self._current.disclosure.carry(self._ladder(self._current))
+        level = self._current.disclosure.apply(Unlock.STUCK)
+        if level is None:
+            self.policy.exhausted(self._current.ply)
+            return
         self.policy.said(self._current.ply, ts)
         self._speak(trigger, self._current, level, ts)
 
@@ -2420,6 +2425,8 @@ class Coach:
             )
             return
         unlock = unlock_for(text, position.board, position.facts.candidates)
+        # A hint asked for climbs from what the combination has had already.
+        position.disclosure.carry(self._ladder(position))
         if unlock is not None:
             position.disclosure.apply(unlock)
         level = max(position.disclosure.level, DisclosureLevel.IDEA)
@@ -2925,17 +2932,47 @@ class Coach:
             )
             trigger = self.policy.on_position_analysed(event.ply, decisive=decisive)
             if trigger is not None:
-                level = position.disclosure.apply(Unlock.DECISIVE) or position.disclosure.level
+                # The question is the combination's first word: once its idea was given, at
+                # this move or at an earlier one of it, it is not asked again.
+                position.disclosure.carry(self._ladder(position))
+                level = position.disclosure.apply(Unlock.DECISIVE)
+                if level is None:
+                    return
                 self.policy.said(position.ply, ts)
                 self._speak(trigger, position, level, ts)
+
+    def _ladder(self, position: _Position) -> DisclosureLevel:
+        """The highest hint the combination this position continues has had: back through
+        the player's positions while the move they played there was the engine's best, the
+        levels said before they moved (Tai, 2026-09-29: "Each level can only be said once
+        and if the level higher was said then the lower one can't be said"). A move off the
+        best line starts a new one; a puzzle's wrong moves are taken back."""
+        level = DisclosureLevel.SILENT
+        ply = position.ply
+        while True:
+            own = self.moves.get(ply - 1)
+            before = self.positions.get(ply - 2)
+            if own is None or not own.by_user or before is None or not self._was_best(before, own):
+                return level
+            level = max(level, before.disclosure.hinted)
+            ply -= 2
+
+    @staticmethod
+    def _was_best(position: _Position, move: MovePlayed) -> bool:
+        """Whether `move` was the engine's best from `position`."""
+        analysis = position.analysis
+        if analysis is not None and analysis.lines and analysis.lines[0].moves:
+            return analysis.lines[0].moves[0] == move.uci
+        facts = position.facts
+        return facts is not None and bool(facts.candidates) and facts.candidates[0] == move.san
 
     def _carrying_out(self, position: _Position) -> bool:
         """The player's last move and the reply to it are the first two moves of the engine's
         line from a decisive position: they found the idea and are playing it out, so a
         question about the next step asks what they already know (Tai's desktop, 2026-09-24:
         after Qd1+ Rxd1 Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king
-        no square at all?", heard as the puzzle's hint). An opponent who leaves the line
-        keeps the question."""
+        no square at all?", heard as the puzzle's hint). An opponent who leaves the line gets
+        the question, unless the combination's idea was given already (`_ladder`)."""
         own = self.moves.get(position.ply - 1)
         reply = self.moves.get(position.ply)
         before = self.positions.get(position.ply - 2)
