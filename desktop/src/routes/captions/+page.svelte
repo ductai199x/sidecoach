@@ -2,15 +2,17 @@
   // The captions' box: the coach's words in a window of their own over the other windows, the
   // way Live Caption shows speech (the phone's `ui/Captions.kt`; Tai, 2026-09-29: "really
   // useful in fast games"). The words come up the moment the coach has them, newest at the
-  // bottom; the box fades a few seconds after the voice stops, or stays with the last words
-  // when the setting keeps it. Drag it anywhere; drag an edge or a corner to size it, as a
+  // bottom; the box fades a few seconds after the voice stops. Always on screen, it is up all
+  // the time, words or not, over every window (Tai, 2026-09-29: "is it always on screen or not????").
+  // Drag it anywhere; drag an edge or a corner to size it, as a
   // window is (Tai, 2026-09-29: "give me the ability to tune the sizing both horizontal and
   // vertical"); double-click it for more lines; click it for the game's moves. Its buttons
   // -- mute, and the panel's three quick pills -- are always up (Tai, 2026-09-29: "they are
   // handy"). Drag it onto the cross at the foot of the screen to turn captions off. Its place
   // and size are kept between runs. It keeps off the chess board (the vision reads the board
-  // from the screen, and a box over it would hide squares) and steps aside while Sidecoach's
-  // own window is in front, which shows the words already. The shell builds the window
+  // from the screen, and a box over it would hide squares) and, unless always on screen, steps
+  // aside while Sidecoach's own window is in front, which shows the words already. The shell
+  // builds the window
   // (`open_captions`): over every other, frameless, and never focused, so a click here leaves
   // the keyboard with the game. Outside the shell (a browser, for a test) the box is drawn in
   // the page.
@@ -46,7 +48,7 @@
   let wordsEl = $state<HTMLDivElement | null>(null);
   let stripEl = $state<HTMLDivElement | null>(null);
 
-  let previewing = false; // the box up now is the sample line, which fades whatever `keep` says
+  let previewing = false; // the box up now is the sample line, which fades unless kept
   let front = false; // Sidecoach's own window in front
   let lastN = -1; // the last caption taken
   let lastPreview = -1;
@@ -83,8 +85,10 @@
       // Kept on screen: back with the words, and no fade; not kept: the fade once quiet.
       lastKeep = c.keep;
       if (c.keep) {
-        if (!previewing) cancelHide();
+        cancelHide();
         restore();
+      } else if (front) {
+        drop();
       } else if (shown && !next.speaking) {
         hideSoon();
       }
@@ -114,7 +118,7 @@
    * answer asked for in Sidecoach's window, the window minimised, and the kept box had nothing
    * to show). */
   function begin(text: string, force = false): void {
-    if (front && !force) {
+    if (front && !force && !look.keep) {
       if (!previewing) said = joined(said, text, !shown);
       return;
     }
@@ -136,16 +140,17 @@
     begin(PREVIEW, true);
   }
 
-  /** A box kept on screen, back with the words said so far once Sidecoach is not in front. */
+  /** Always on screen: the box up, with the words said so far or none yet, whatever window is
+   * in front. */
   function restore(): void {
-    if (!look.keep || !look.on || front || shown || !said) return;
+    if (!look.keep || !look.on || shown) return;
     void showBox();
     void scrollWords();
   }
 
   function hideSoon(): void {
     cancelHide();
-    if (look.keep && !previewing) return;
+    if (look.keep) return;
     hideTimer = setTimeout(hide, HIDE_AFTER_MS);
   }
 
@@ -564,7 +569,7 @@
       unlisten = await getCurrentWebviewWindow().listen<boolean>("panel-front", (e) => {
         told = true;
         front = !!e.payload;
-        if (front) drop();
+        if (front && !look.keep) drop();
         else restore();
       });
       const m = await import("@tauri-apps/api/window");

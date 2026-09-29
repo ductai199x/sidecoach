@@ -663,10 +663,10 @@ class VoiceSettings(BaseModel):
     )
     captions_keep: bool = Field(
         default=False,
-        description="Keeps the caption box on screen all the time, with the coach's last "
-        "words in it. Off, the box fades a few seconds after the coach stops talking and comes "
-        "back when it speaks again. Either way it steps aside while Sidecoach's own window is "
-        "in front.",
+        description="Keeps the caption box on screen all the time, over every window, "
+        "Sidecoach's too: its buttons, and the coach's last words once it has spoken. Off, the "
+        "box comes up when the coach speaks, fades a few seconds after, and steps aside while "
+        "Sidecoach's own window is in front.",
         json_schema_extra=_extra(
             applies="now", label="Keep captions on screen", section="Captions"
         ),
