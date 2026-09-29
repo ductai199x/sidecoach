@@ -156,7 +156,9 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     drain(coach)
     directive = directive_of(sent(provider))
     assert "They are answering the question you just asked" in directive
-    assert "then one question" not in directive
+    # The question the answer would otherwise be offered on top (the parity audit,
+    # 2026-09-29: "then one question" was asserted absent, which no directive says).
+    assert "with a question, if that serves" not in directive
     # Once answered, the thread is closed: words after the coach's reply answer nothing.
     assert not coach._answering_our_question("ok")
 

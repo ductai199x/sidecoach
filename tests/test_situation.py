@@ -96,6 +96,70 @@ def test_a_trap_is_the_capture_that_looks_free_and_is_not(
         assert words is not None and words.startswith(said[:-3]), f"{case}: {words}"
 
 
+def test_the_wrong_piece_to_take_back_with_is_the_trap() -> None:
+    """Tai's game g03, 13.Raxd1 for Rexd1: the queen taken back with the wrong rook, and after
+    ...Bb4 the balance is gone. With the best move known, the trap is said as the recapture
+    it is; without it, as a capture that looks free (the parity audit, 2026-09-29)."""
+    board = chess.Board("r3k2r/p1p1bppp/2p5/4p3/2b1P3/2N1B2P/PPP2PP1/R2qR1K1 w kq - 0 13")
+    trap = _line(["a1d1", "e7b4"], 0.3)
+    assert situation.trap_words(board, trap, None, 0.54, chess.Move.from_uci("e1d1")) == (
+        f"{situation.RIGHT_PIECE}, though: Raxd1 looks natural, but after Raxd1 Bb4, you are "
+        "left clearly worse"
+    )
+    assert situation.trap_words(board, trap, None, 0.54) == (
+        "careful, though: Raxd1 looks like it wins a queen, but after Raxd1 Bb4, you are left "
+        "clearly worse"
+    )
+
+
+def test_the_trap_on_the_target_comes_first_then_mate_then_the_worst() -> None:
+    """Capablanca-Marshall, 16.Re2: of the captures that lose, the one that takes the rook
+    the line wins later ("not yet") is said first, then the one that walks into mate, then
+    the rest by score; with no target, mate leads (the parity audit, 2026-09-29)."""
+    board = chess.Board("r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16")
+    grab = _line(["f3f2", "h4f2", "g1f2", "c8e6"], 0.35)
+    mated = _line(["f3f2", "d6h2", "g1f1", "h2g1"], 0.0, mate=-4)
+    early = _line(["f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"], 0.0, mate=-8)
+    assert situation.ranked_traps([grab, mated, early], chess.A8) == [early, mated, grab]
+    assert situation.ranked_traps([grab, mated, early], None) == [mated, early, grab]
+    best = chess.Move.from_uci("e1e2")
+    assert [situation.trap_words(board, t, chess.A8, 0.68, best) for t in (early, mated)] == [
+        "their rook on a8 can be won, but not at once: Qxa8 right away runs into Nxh3+, and they "
+        "have mate",
+        "careful, though: Qxf2 looks like it wins a knight, but after Qxf2 Bh2+, they have mate",
+    ]
+
+
+def test_their_threat_to_the_square_the_best_move_takes_is_said_by_their_piece() -> None:
+    """Lichess vgdbX: were White to pass, ...e6 would come, and then exd5 wins the queen --
+    and e6 is White's own answer. "They are preparing e6" named it; the key names their pawn
+    instead, never the move (the parity audit, 2026-09-29)."""
+    from sidecoach.coach.facts import facts_from_analysis
+    from sidecoach.events import Analysis
+
+    fen = "1rbqkb1r/3npppp/2B5/p2QP3/8/5N2/PPP2nPP/R1B1K2R w KQk - 0 12"
+    board = chess.Board(fen)
+    line = [
+        "e5e6", "f7e6", "d5e6", "f2g4", "f3g5", "g4h6", "c1e3", "d8c7",
+        "a1d1", "g7g6", "e1g1", "b8b4", "a2a3", "b4b2", "h2h3", "b2c2",
+    ]  # fmt: skip
+
+    def key(threats: list[str]) -> str | None:
+        analysis = Analysis(
+            game_id="g",
+            fen=fen,
+            ply=0,
+            lines=[_line(line, 0.905)],
+            decisive=True,
+            only_move=True,
+            threats=threats,
+        )
+        return facts_from_analysis(board, analysis, last_move="e4").key
+
+    assert key(["e7e6"]) == "Their pawn on e7 is one move from winning material"
+    assert key([]) != key(["e7e6"]), "the key is their threat's"
+
+
 def test_a_trap_is_worse_than_the_best_by_a_margin() -> None:
     # Johner-Nimzowitsch, 34.Kxh3: mate, 0.06 below the best, is worse; 0.02 is not.
     trap = _line(["h2h3", "h7f5", "g3g4", "g7g4", "g1g4", "f5g4", "h3h2", "g4g1"], 0.0, mate=-9)

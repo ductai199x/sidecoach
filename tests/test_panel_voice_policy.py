@@ -23,6 +23,25 @@ LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends 
 SHORT = "exf5: good."
 
 
+class FakeTTS:
+    """A voice that writes down what it is asked to do."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.busy = False
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "fake"
+
+    def say(self, text: str) -> None:
+        self.calls.append("say:" + text)
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+
+
 def test_a_message_about_a_position_the_board_left_is_not_spoken() -> None:
     act = PanelEngine.voice_action
     # A verdict on the user's move (made from ply 10) is still the news after the move (11)
@@ -80,22 +99,6 @@ def test_the_voice_holds_its_word_in_a_fast_game_and_says_it_when_the_player_slo
 def test_speak_records_the_action_and_stops_before_cutting_in(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
-    class FakeTTS:
-        name = "fake"
-
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-            self.busy = False
-
-        def healthcheck(self) -> tuple[bool, str]:
-            return True, "fake"
-
-        def say(self, text: str) -> None:
-            self.calls.append("say:" + text)
-
-        def stop(self) -> None:
-            self.calls.append("stop")
-
     engine = make_panel()
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
@@ -119,6 +122,53 @@ def test_speak_records_the_action_and_stops_before_cutting_in(
     assert fake.calls == []
     engine.muted = True
     assert engine._speak("stuck", LONG, ply=12) == "muted"
+
+
+def test_a_word_held_in_a_fast_game_is_said_once_the_player_slows(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """A word the fast game kept on the page is said once the player has been thinking in
+    that position for PACE_RESUME_S (`_say_held_word`), and said once; one about a position
+    the board has left, or held when the game is over, is dropped (the parity audit,
+    2026-09-29: pinned before only by the phone)."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui.panel import PACE_RESUME_S
+    from tests.coaching import SCHOLAR_MOVES, offline_coach, play, start_game
+
+    coach = offline_coach()
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES, think_ms=1000)  # a second a move; Nf6, ply 6, at 6 s
+    assert coach.fast_now(7.0)
+    engine = make_panel()
+    fake = FakeTTS()
+    engine._tts = fake  # type: ignore[assignment]
+    coaching = SimpleNamespace(coach=coach)
+    engine._coaching = coaching
+    engine._loop_ts = 7.0
+    engine._state["ply"] = 6
+    assert engine._speak("post_move", "Nf6: good.", ply=5) == "text"
+    assert fake.calls == []
+    engine._say_held_word(coaching, 7.0)  # a second into the position: still fast
+    assert fake.calls == []
+    engine._say_held_word(coaching, 6.0 + PACE_RESUME_S + 1)  # the game slowed
+    assert fake.calls == ["say:Nf6: good."]
+    engine._say_held_word(coaching, 20.0)
+    assert len(fake.calls) == 1, "said once"
+    # A word about a position the board has left is dropped, not said late.
+    assert engine._speak("stuck", "Look at f7.", ply=6) == "text"
+    engine._state["ply"] = 7
+    engine._say_held_word(coaching, 30.0)
+    engine._state["ply"] = 6
+    engine._say_held_word(coaching, 30.0)
+    assert len(fake.calls) == 1, "a hint the board left is dropped"
+    # Nor after the game: the review speaks, not a late verdict.
+    assert engine._speak("post_move", "Nf6: good.", ply=5) == "text"
+    coach.finished = True
+    engine._say_held_word(coaching, 30.0)
+    coach.finished = False
+    engine._say_held_word(coaching, 30.0)
+    assert len(fake.calls) == 1, "a word held at the game's end is dropped"
 
 
 def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:

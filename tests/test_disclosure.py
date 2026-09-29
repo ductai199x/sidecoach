@@ -76,6 +76,9 @@ def test_visible_facts_hide_moves_below_the_move_level_and_show_all_at_the_line(
         ("Have you considered Ng5, hitting f7?", L.IDEA, ["move Ng5", "square f7"]),
         ("A knight on g5 would be strong.", L.IDEA, ["square g5"]),
         ("Maybe d3 or Nc3 here, then a plan on the queenside?", L.IDEA, []),
+        # The player's later move in the line is theirs to find too (the parity audit,
+        # 2026-09-29: the phone held this case, the desktop did not).
+        ("Try Ng5, then Nxf7.", L.IDEA, ["move Ng5", "move Nxf7"]),
         # The opponent's move in the line is not the player's answer.
         ("If they push d5, the centre opens.", L.IDEA, []),
         # At the move level the move may be said, the rest of the line not.

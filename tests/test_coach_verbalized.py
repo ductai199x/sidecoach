@@ -1,10 +1,18 @@
+import json
 from collections.abc import Sequence
 
 import chess
 import pytest
 
-from sidecoach.coach.coach import Coach, _parse_candidates, _sample_reply, complete_sentences
+from sidecoach.coach.coach import (
+    REPAIR_SYSTEM,
+    Coach,
+    _parse_candidates,
+    _sample_reply,
+    complete_sentences,
+)
 from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
+from sidecoach.llm.base import ChatMessage, Completion
 from tests.coaching import drain, mate_analysis, play_to_scholar
 from tests.fakes import ScriptedProvider
 
@@ -122,6 +130,39 @@ def test_the_clean_candidate_is_kept_at_once_and_a_stump_never_reaches_the_user(
     assert [(call.candidates, call.passed) for call in spoken.calls] == [(1, 0), (1, 1)]
 
 
+class _Verifier:
+    """A verifier that answers by the candidate it is shown, not by the order of its calls:
+    the candidates are checked on threads of their own, in any order (`Speaker._verify`).
+    `unsupported` maps a phrase to what is found wrong with a candidate holding it; a repair
+    is answered with `repair`. (A script answered in call order passed or failed by which
+    thread asked first: the parity audit, 2026-09-29.)"""
+
+    name = "scripted-verifier"
+
+    def __init__(self, unsupported: dict[str, str], repair: str = "") -> None:
+        self.unsupported = unsupported
+        self.repair = repair
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "ok"
+
+    def chat(
+        self,
+        system: str,
+        messages: Sequence[ChatMessage],
+        *,
+        max_tokens: int = 1500,
+        temperature: float = 0.7,
+        thinking: bool = False,
+    ) -> Completion:
+        if system == REPAIR_SYSTEM:
+            return Completion(text=json.dumps({"reply": self.repair}))
+        content = str(messages[-1]["content"])
+        reply = content.split('The coach\'s reply:\n"""\n', 1)[1].split('\n"""', 1)[0]
+        found = [fault for phrase, fault in self.unsupported.items() if phrase in reply]
+        return Completion(text=json.dumps({"unsupported": found}))
+
+
 def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None:
     """With a verifier, a candidate the second model finds unsupported is not spoken; when
     every candidate has an unsupported statement, the likeliest is repaired once."""
@@ -160,7 +201,7 @@ def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None
         ["[p=0.6] Nf3 develops and eyes e5.\n[p=0.4] Nf3 develops a piece."]
     )
     # The first candidate invents "eyes e5"; the second is clean.
-    verifier = ScriptedProvider(['{"unsupported": ["eyes e5"]}', '{"unsupported": []}'])
+    verifier = _Verifier({"eyes e5": "eyes e5"})
     speaker = Speaker(coach_model, verifier=verifier)  # type: ignore[arg-type]
     spoken = speaker.speak_now(_request())
     assert spoken.message.text == "Nf3 develops a piece."
@@ -170,13 +211,11 @@ def test_a_verifier_keeps_the_clean_candidate_and_repairs_when_none_is() -> None
     coach_model = ScriptedProvider(
         ["[p=0.7] Nf3 develops and eyes e5.\n[p=0.3] Nf3 pins the knight."]
     )
-    verifier = ScriptedProvider(
-        [
-            '{"unsupported": ["eyes e5"]}',
-            '{"unsupported": ["pins the knight"]}',
-            '{"reply": "Nf3 develops a piece."}',
-        ]
+    verifier = _Verifier(
+        {"eyes e5": "eyes e5", "pins the knight": "pins the knight"},
+        repair="Nf3 develops a piece.",
     )
     speaker = Speaker(coach_model, verifier=verifier)  # type: ignore[arg-type]
     spoken = speaker.speak_now(_request())
     assert spoken.message.text == "Nf3 develops a piece." and spoken.repaired
+    assert spoken.verified == [["eyes e5"], ["pins the knight"]]

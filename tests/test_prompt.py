@@ -31,6 +31,29 @@ def test_the_system_message_is_persona_contract_and_rules_in_order() -> None:
     assert "Lessons from earlier games" not in text, "no C without it"
 
 
+def test_no_persona_or_an_unknown_one_is_the_default_and_the_rating_sets_the_pitch() -> None:
+    """A persona left empty or named wrong (a settings file from another version) is the
+    default one, warm and direct; every persona keeps the aim, and with a rating band says
+    the level to pitch at (the parity audit, 2026-09-29: pinned before only by the phone's
+    replay of the prompts)."""
+    default = prompt.persona_text(prompt.DEFAULT_PERSONA)
+    assert prompt.DEFAULT_PERSONA == "warm_direct"
+    for name in (None, "", "no such persona"):
+        assert prompt.persona_text(name) == default, name
+        assert prompt.system_message(with_corrections=False, persona=name).startswith(default)
+    rating = (
+        " The player is rated about 1000 to 1200: pitch what you say at that level -- name "
+        "the pattern in plain words, assume the basics, and do not explain what a player of "
+        "that strength already knows."
+    )
+    for name, (_, manner) in prompt.PERSONAS.items():
+        plain = prompt.persona_text(name)
+        assert manner in plain and rating not in plain, name
+        assert prompt.persona_text(name, (1000, 1200)) == plain + rating, name
+        others = [m for n, (_, m) in prompt.PERSONAS.items() if n != name]
+        assert not any(m in plain for m in others), name
+
+
 def test_corrections_are_appended_only_when_the_file_has_content(
     tmp_path: Path, monkeypatch
 ) -> None:

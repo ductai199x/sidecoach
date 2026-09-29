@@ -90,6 +90,21 @@ def test_end_game_refuses_unknown_outcomes(make_panel: Callable[..., PanelEngine
     assert engine._commands.get_nowait() == ("end", "draw")
 
 
+def test_with_no_session_flip_re_read_and_end_wait_for_the_next_start(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """With no session running, Flip, Re-read and End game are queued for the loop the next
+    Start runs, in the order pressed; an ask between them is answered at once and not queued
+    (the parity audit, 2026-09-29: the phone pinned the queue, the desktop only the end)."""
+    engine = make_panel(record=False)
+    api = PanelApi(engine)
+    assert api.flip() and api.analyze() and api.end("resigned") and api.ask("hint")
+    queued = []
+    while not engine._commands.empty():
+        queued.append(engine._commands.get_nowait())
+    assert queued == [("flip", None), ("analyze", None), ("end", "resigned")]
+
+
 def test_legal_move_dots_are_not_a_degraded_reading(make_panel: Callable[..., PanelEngine]) -> None:
     """A picked-up rook puts a dot on a dozen squares, each too small to be a piece and read
     as unknown; the first live game logged "reading degraded" on nearly every endgame move

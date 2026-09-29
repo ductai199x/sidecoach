@@ -1,7 +1,7 @@
 """From analysis to the fact sheet (`coach/facts.py`): the theme, region, piece and
-candidates it names, a tactic demoted where the plan leads, the phase and the material in the
-player's words, the prophylaxis wiring (a threat read off the analysis becomes the strategic
-plan), and the move and tactic describers the coach leans on."""
+candidates it names, no theme for a quiet developing move (the plan leads), the phase and the
+material in the player's words, the prophylaxis wiring (a threat read off the analysis becomes
+the strategic plan), and the move and tactic describers the coach leans on."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from sidecoach.coach.facts import (
     phase_of,
     region_of,
 )
-from sidecoach.events import Analysis, Line, MotifTag
+from sidecoach.events import Analysis, Line
 from tests.coaching import SCHOLAR
 
 
@@ -35,11 +35,7 @@ def _analysis(fen: str, **kw: object) -> Analysis:
 
 def test_facts_name_the_theme_region_piece_and_candidates() -> None:
     board = chess.Board(SCHOLAR)
-    analysis = _analysis(
-        SCHOLAR,
-        tags=[MotifTag(name="mateIn1", squares=["f7", "e8"], move="h5f7")],
-        threats=["f6h5"],
-    )
+    analysis = _analysis(SCHOLAR, threats=["f6h5"])
     facts = facts_from_analysis(board, analysis, last_move="Nf6")
     assert facts.side_to_move == "white" and facts.phase == "opening"
     assert facts.theme == "a mating attack"
@@ -74,9 +70,11 @@ def test_near_equal_candidates_are_all_named() -> None:
     assert facts_from_analysis(board, analysis).candidates == ["e4", "d4"]
 
 
-def test_an_incidental_tactic_is_demoted_and_the_strategic_plan_leads() -> None:
-    # A pin sits on the e-file but the best move (Bf1-e2, developing) has nothing to do with
-    # it and the position is not decisive, so the tactic is withheld and the plan takes over.
+def test_a_quiet_developing_move_gives_no_theme_and_the_plan_leads() -> None:
+    """The theme is the best line's tactic, read by the idea reader: a best move that only
+    develops (Bf1-e2), in a position that is not decisive, names no tactic, and the plan takes
+    the headline. (It once held a pin tag the analysis carried; the sheet has not read the
+    analysis's tags since 5f353ef: the parity audit, 2026-09-29.)"""
     fen = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/4P3/2NP1N2/PPP2PPP/R1BQKB1R w KQkq - 0 9"
     board = chess.Board(fen)
     analysis = _analysis(
@@ -84,7 +82,6 @@ def test_an_incidental_tactic_is_demoted_and_the_strategic_plan_leads() -> None:
         lines=[Line(moves=["f1e2"], depth=12, expected_score=0.40)],
         decisive=False,
         only_move=False,
-        tags=[MotifTag(name="pin", squares=["e5", "e4", "e1"], move=None)],
     )
     facts = facts_from_analysis(board, analysis)
     assert facts.theme is None and facts.focus == [] and facts.tactic is None
@@ -109,6 +106,12 @@ def test_phase_and_material_in_the_users_words() -> None:
         "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 12"
     )
     assert phase_of(middlegame) == "middlegame"
+    assert phase_of(middlegame, in_book=True) == "opening", "a book position is the opening"
+    # What is left decides before the move number and the book: a puzzle's position starts
+    # at move 1, and a rook and a minor piece each were read as the opening (Tai's puzzle,
+    # 2026-09-28, af25f62; pinned here by the parity audit, 2026-09-29).
+    puzzle = chess.Board("5rk1/5p2/P7/8/8/8/5R2/5RK1 w - - 0 1")
+    assert phase_of(puzzle) == "endgame" and phase_of(puzzle, in_book=True) == "endgame"
     assert material_text(chess.Board()) == "level"
     assert material_text(
         chess.Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1")

@@ -79,17 +79,46 @@ def test_reads_tenths_under_a_minute() -> None:
     assert reading.bottom_ms == 64_000
 
 
-def test_parse_clock_covers_the_formats_chesscom_draws() -> None:
-    assert parse_clock("15:00") == 900_000
-    assert parse_clock("0:59.9") == 59_900
-    assert parse_clock("1:02:03") == 3_723_000
-    assert parse_clock("0:00") == 0
+# Clock strings, readable and not, and the milliseconds read (None: not a clock). The phone's
+# parser is held to the cases of make_clock_fixtures.py's PARSE_CASES too, which the desktop
+# did not pin (the parity audit, 2026-09-29).
+PARSED: list[tuple[str, int | None]] = [
+    ("15:00", 900_000),
+    ("3:07", 187_000),
+    ("0:09", 9_000),
+    ("12:34", 754_000),
+    ("59:59", 3_599_000),
+    ("0:00", 0),
+    ("0:59.9", 59_900),
+    ("0:00.0", 0),
+    ("1:02:03", 3_723_000),
+    ("1:23:45", 5_025_000),
     # A tenths dot read as a colon: seconds always have two digits, so a lone digit after
-    # the last separator is tenths whichever glyph matched.
-    assert parse_clock("0:12:3") == 12_300
-    assert parse_clock("") is None
-    assert parse_clock("1:2") is None
-    assert parse_clock("0:75") is None
+    # the last separator is tenths whichever glyph matched...
+    ("0:12:3", 12_300),
+    # ...and what that leaves must still be a clock: 10:2.3 and 1:2.3 have one-digit seconds.
+    ("10:2:3", None),
+    ("1:2:3", None),
+    # Out of range: sixty seconds, sixty minutes under an hour, three digits of minutes.
+    ("9:60", None),
+    ("0:75", None),
+    ("1:60:00", None),
+    ("100:00", None),
+    # No clock at all.
+    ("", None),
+    ("::", None),
+    ("5", None),
+    ("5:", None),
+    (":30", None),
+    ("1:2", None),
+    ("abc", None),
+    ("1.2", None),
+]
+
+
+@pytest.mark.parametrize(("text", "ms"), PARSED, ids=[text or "empty" for text, _ in PARSED])
+def test_parse_clock_covers_the_formats_chesscom_draws(text: str, ms: int | None) -> None:
+    assert parse_clock(text) == ms
 
 
 @pytest.mark.parametrize(

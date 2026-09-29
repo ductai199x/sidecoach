@@ -1600,10 +1600,11 @@ def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
         played,
         elicit=True,
     )
-    # What they expected, in the coach's own words: the directive never spells out the
-    # "missed it or misjudged it" question the model would then repeat verbatim.
+    # What they expected, in the coach's own words: the directive asks for that, and spells
+    # out no question for the model to repeat verbatim (told to ask whether they "missed the
+    # idea altogether or misjudged the line", the model said exactly that; no directive has
+    # said it since, so its absence is not asserted: the parity audit, 2026-09-29).
     assert "what they expected their move to do" in instruction
-    assert "misjudge" not in instruction and "altogether" not in instruction
     assert fallback.endswith("What were you expecting that move to do?")
 
     # Every third mistake -- while the player answers. The first answered within a

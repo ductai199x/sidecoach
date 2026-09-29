@@ -361,6 +361,29 @@ def test_the_engine_is_restarted_when_it_dies(engine: Engine) -> None:
     assert lines, "a dead engine is restarted rather than ending the session"
 
 
+@needs_engine
+def test_the_best_line_is_carried_on_for_the_coach(engine: Engine) -> None:
+    """`carry_best`: the best line is kept to MIN_BEST_PLIES, searched on from its end when
+    Stockfish's own stops short, every move of it legal where it stands; the other lines are
+    cut as always, and a verdict's search (no `carry_best`) like the rest (the parity audit,
+    2026-09-29: the phone's EngineTest held the only test of it)."""
+    from sidecoach.analysis.engine import MIN_BEST_PLIES
+
+    board = chess.Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+    carried = engine.analyse(board, depth=DEPTH, pv_plies=4, carry_best=True)
+    plain = engine.analyse(board, depth=DEPTH, pv_plies=4)
+    assert carried and plain
+    best = carried[0].moves
+    end = board.copy(stack=False)
+    for uci in best:
+        move = chess.Move.from_uci(uci)
+        assert move in end.legal_moves, f"{uci} is not legal where the carried line has it"
+        end.push(move)
+    assert len(best) == MIN_BEST_PLIES or end.is_game_over(claim_draw=True), best
+    assert all(len(line.moves) <= 4 for line in carried[1:]), "another line was carried on"
+    assert len(plain[0].moves) <= 4, "a verdict's line was carried on"
+
+
 def test_san_line_reads_like_a_move_list() -> None:
     board = chess.Board()
     assert san_line(board, ["e2e4", "e7e5", "g1f3"]) == "1. e4 e5 2. Nf3"

@@ -110,7 +110,9 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
     )
     directive = directive_of(sent(provider, 1))
     assert "Under 'Earlier in this game'" in directive and TIE_TO_THE_GAME not in directive
-    assert "(as with Bg4)" not in directive, "no example move for the model to copy"
+    # The move named is the list's own, not an example to copy ("(as with Bg4)" was asserted
+    # absent, which no directive has said since 134b2ea: the parity audit, 2026-09-29).
+    assert "naming its move bare, as the list does" in directive
     # The first reply named 3. Qh5, an earlier move not listed: told so, and redone. Its
     # move number is form, and only noted (Tai, 2026-09-28).
     retry = str(sent(provider, 2)[-1]["content"])
