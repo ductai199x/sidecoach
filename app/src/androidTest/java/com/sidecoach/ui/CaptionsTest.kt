@@ -1,6 +1,10 @@
 package com.sidecoach.ui
 
 import android.graphics.Rect
+import android.graphics.Typeface
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,6 +37,29 @@ class CaptionsTest {
         assertEquals(line.length, Captions.revealed(line, 2000, 2000))
         // A line not spoken is out at once.
         assertEquals(line.length, Captions.revealed(line, 0, 0))
+    }
+
+    /** Tai, 2026-09-29: "why are the pieces and their names and square names and SAN
+     * annotations not highlighted". */
+    @Test
+    fun movesSquaresAndPiecesAreSetOffAndTheProseIsNot() {
+        val text = "Play Be3+. Your bishop from f4 checks the King; G4 was a miss, and a plan is O-O."
+        val styled = Captions.styled(text, 0xEB1F1F1F.toInt()) as Spanned
+        fun marks(word: String): Pair<Boolean, Int?> {
+            val at = text.indexOf(word)
+            val bold = styled.getSpans(at, at + word.length, StyleSpan::class.java).any { it.style == Typeface.BOLD }
+            val colour = styled.getSpans(at, at + word.length, ForegroundColorSpan::class.java).firstOrNull()?.foregroundColor
+            return bold to colour
+        }
+        val gold = 0xFFFFD479.toInt()
+        for (move in listOf("Be3+", "f4", "G4", "O-O")) assertEquals(move, true to gold, marks(move))
+        for (piece in listOf("bishop", "King")) assertEquals(piece, true to null, marks(piece))
+        for (word in listOf("Play", "checks", "plan")) assertEquals(word, false to null, marks(word))
+        // " a plan": the article is no square.
+        assertEquals(false to null, marks(" a "))
+        // On a light box the moves are a deep amber, not gold.
+        val light = Captions.styled("Nf3", 0xFFF2F2F2.toInt()) as Spanned
+        assertEquals(0xFF8A5300.toInt(), light.getSpans(0, 3, ForegroundColorSpan::class.java).single().foregroundColor)
     }
 
     @Test

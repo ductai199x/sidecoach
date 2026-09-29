@@ -217,11 +217,14 @@ object Captions {
      * A line of the coach's, shown whole the moment it comes: its voice follows. While the panel
      * is in front, which shows it already, it is kept for when the panel is not: a box kept on
      * screen comes back with it (Tai, 2026-09-29: "I don't see shit on my screen" -- an answer
-     * asked for on the panel, the panel left, and the kept box had nothing to show).
+     * asked for on the panel, the panel left, and the kept box had nothing to show). Each
+     * message starts a line of its own; [continues], a later sentence of a reply written sentence
+     * by sentence, runs on from the one before (Tai, 2026-09-29: "the text do not have any new
+     * lines what so ever so it's always really hard to read").
      */
-    fun show(text: String) {
+    fun show(text: String, continues: Boolean = false) {
         if (!on) return
-        main.post { begin(text, 0) }
+        main.post { begin(text, 0, continues = continues) }
     }
 
     /**
@@ -242,21 +245,20 @@ object Captions {
 
     // ---- the words ---------------------------------------------------------------------------
 
-    private fun begin(text: String, speechMs: Long, force: Boolean = false) {
+    private fun begin(text: String, speechMs: Long, force: Boolean = false, continues: Boolean = false) {
         if (!on || quitted) return
         if (front && !force && !keep) {
             if (!previewing) {
                 finish()
-                if (said.isNotEmpty()) said.append(if (box == null) "\n" else " ")
+                if (said.isNotEmpty()) said.append(if (continues) " " else "\n")
                 said.append(line(text))
                 trim()
             }
             return
         }
         previewing = force
-        val fresh = box == null
         finish()
-        if (said.isNotEmpty()) said.append(if (fresh) "\n" else " ")
+        if (said.isNotEmpty()) said.append(if (continues) " " else "\n")
         trim()
         saying = line(text)
         sayingFrom = SystemClock.uptimeMillis()
@@ -270,6 +272,36 @@ object Captions {
         main.removeCallbacks(tick)
         box?.let { if (it.movesShown) it.showMoves() }
         tick.run()
+    }
+
+    /**
+     * A move or a square as the coach writes it (SAN, castling, a bare square, or a square or a
+     * pawn move a sentence starts with a capital: "G4 was a miss"), and a piece named: the words
+     * a player looks for, set off in the box -- the moves and squares in [accent] and bold, the
+     * pieces bold (Tai, 2026-09-29: "why are the pieces and their names and square names and SAN
+     * annotations not highlighted"). The desktop's `captions.runs`.
+     */
+    private const val MOVE = """(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?"""
+    private const val PIECE = """(?:[Kk]ing|[Qq]ueen|[Rr]ook|[Bb]ishop|[Kk]night|[Pp]awn)s?"""
+    private val TOKENS = Regex("""(?<![A-Za-z0-9])(?:($MOVE)|($PIECE))(?![A-Za-z0-9])""")
+
+    internal fun styled(text: String, fill: Int): CharSequence {
+        val out = SpannableStringBuilder(text)
+        val colour = accent(fill)
+        for (m in TOKENS.findAll(text)) {
+            val from = m.range.first
+            val to = m.range.last + 1
+            out.setSpan(StyleSpan(Typeface.BOLD), from, to, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (m.groups[1] != null) out.setSpan(ForegroundColorSpan(colour), from, to, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        return out
+    }
+
+    /** The colour moves and squares stand out in, against the box's [fill]: a warm gold on a
+     * dark box, a deep amber on a light one (the desktop's `captions.accent`). */
+    internal fun accent(fill: Int): Int {
+        val luma = 0.2126 * ((fill shr 16) and 255) + 0.7152 * ((fill shr 8) and 255) + 0.0722 * (fill and 255)
+        return if (luma < 140) 0xFFFFD479.toInt() else 0xFF8A5300.toInt()
     }
 
     /** The coach writes a dash as two hyphens; read, it is a dash. */
@@ -740,7 +772,7 @@ object Captions {
         fun shownText(): String = words.text.toString()
 
         fun setText(text: String) {
-            words.text = text
+            words.text = styled(text, style.fill)
             words.post {
                 val layout = words.layout ?: return@post
                 val bottom = layout.getLineBottom(max(0, layout.lineCount - 1))

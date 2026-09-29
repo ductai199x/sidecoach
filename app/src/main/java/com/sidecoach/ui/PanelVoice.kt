@@ -237,6 +237,7 @@ object PanelVoice {
         return sink@{ sentence ->
             if (muted) return@sink false
             val speaker = voiceOut() ?: return@sink false
+            val continues = started
             if (!started) {
                 val action = voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
                 if (action == "supersede") speaker.stop()
@@ -245,7 +246,9 @@ object PanelVoice {
                 voicing = name to ply
                 awaitAudio(name, ply, sentence)
             }
-            Captions.show(sentence)  // each sentence as the model writes it; its voice follows
+            // Each sentence as the model writes it, the reply's later ones run on from the first;
+            // its voice follows.
+            Captions.show(sentence, continues)
             speaker.say(sentence)
             PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(sentence, 60)}")
             true

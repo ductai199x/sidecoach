@@ -53,6 +53,20 @@ class CaptionsKeepTest {
             assertTrue("no caption box", waitFor(3000) { box() != null })
             assertTrue("the box did not fade", waitFor(9000) { box() == null })
 
+            // Each message on a line of its own; a reply's later sentences run on (Tai,
+            // 2026-09-29: "the text do not have any new lines what so ever").
+            Captions.keep(true)
+            Captions.show("Nice move.")
+            Captions.show("Your bishop is loose.")
+            Captions.show("What defends it?", continues = true)
+            var lines: String? = null
+            assertTrue("the messages did not keep lines of their own: $lines", waitFor(3000) {
+                instrumentation.runOnMainSync { lines = Captions.wordsShown() }
+                lines?.endsWith("Nice move.\nYour bishop is loose. What defends it?") == true
+            })
+            Captions.keep(false)
+            assertTrue("the box did not fade", waitFor(9000) { box() == null })
+
             // On: still up long after the fade would have come.
             Captions.keep(true)
             Captions.show("Their knight on e4 attacks your queen on d6.")
