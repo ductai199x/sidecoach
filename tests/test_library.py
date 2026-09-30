@@ -273,3 +273,18 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
     store.delete_library_game(older.key)
     assert store.library_game(older.key) is None and store.review(older.key, "standard") is None
     store.close()
+
+
+def test_the_end_of_game_card_offers_game_review_only_for_a_game_it_opens() -> None:
+    from types import SimpleNamespace
+
+    from sidecoach.ui.panel import PanelEngine
+
+    store = Store(None)
+    profiler = SimpleNamespace(store=store)
+    game = _watch(store, "g-long", SANS, 1000.0)
+    _watch(store, "g-short", SANS[:6], 2000.0)  # a puzzle's line, not a game
+    assert PanelEngine._reviewable(profiler, "g-long") == game
+    assert PanelEngine._reviewable(profiler, "g-short") is None
+    assert PanelEngine._reviewable(profiler, "no-such-game") is None
+    store.close()

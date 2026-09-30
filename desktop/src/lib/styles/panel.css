@@ -465,6 +465,14 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 .rv-puzzle-link:hover { color: var(--ink); background: var(--panel3); }
 
 .rv-notes, .rv-insights { font-size: 12px; color: var(--muted); margin-top: 6px; }
+/* The card's way into Game Review: the big green button, as chess.com's at a game's end. */
+.msg.review .rv-open {
+  display: flex; justify-content: center; margin-top: 10px; padding: 9px 14px; border-radius: 6px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 15px;
+  text-decoration: none; box-shadow: 0 3px 0 #5f8a36;
+}
+.msg.review .rv-open:hover { background: var(--accent-hover); }
+.msg.review .rv-open:active { transform: translateY(2px); box-shadow: 0 1px 0 #5f8a36; }
 .rv-insights { color: #d9c8f2; }
 
 /* ---- the composer: one rounded box, the ask on the left, the voice on the right ---- */

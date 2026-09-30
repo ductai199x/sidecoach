@@ -8,7 +8,7 @@ export type TermRow = { key: string; count: number; line: LogLine; open: boolean
 
 export type CoachItem =
   | { kind: "message"; id: number; trigger: string; disclosure: number | string; ply: number | null; fallback: boolean; full: string; marks: Mark[]; fen: string | null }
-  | { kind: "review"; id: number; review: Record<string, any>; insights: string[] }
+  | { kind: "review"; id: number; review: Record<string, any>; insights: string[]; reviewKey: string | null }
   | { kind: "practice"; id: number; practice: Record<string, any> }
   | { kind: "you"; id: number; text: string; spoken: boolean }
   | { kind: "pending"; id: number };
@@ -224,7 +224,7 @@ export class PanelStore {
 
   private addReview(d: Record<string, any>): void {
     this.dropPending();
-    this.coach.push({ kind: "review", id: nextId++, review: d.review, insights: d.insights || [] });
+    this.coach.push({ kind: "review", id: nextId++, review: d.review, insights: d.insights || [], reviewKey: d.review_key ?? null });
   }
 
   private addConvo(line: LogLine): void {

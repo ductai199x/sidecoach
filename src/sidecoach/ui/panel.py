@@ -1928,6 +1928,18 @@ class PanelEngine:
 
     # ---- log sources ------------------------------------------------------------------------
 
+    @staticmethod
+    def _reviewable(profiler: Any, game_id: str) -> str | None:
+        """The key Game Review opens a game Sidecoach watched by (the end-of-game card's button),
+        when the library holds it as a game: finished, and its moves play out (library)."""
+        from sidecoach.profile import library
+
+        key = f"watched:{game_id}"
+        try:
+            return key if library.find(profiler.store, key) is not None else None
+        except Exception:  # noqa: BLE001 - no button is better than a broken card
+            return None
+
     def _profile(
         self, profiler: Any, events: list[Any], *, tick: bool = False, flush: bool = False
     ) -> list[Any]:
@@ -1966,6 +1978,7 @@ class PanelEngine:
                     "review: " + elide(" ".join(event.lines), 80),
                     review=review,
                     insights=insights,
+                    review_key=self._reviewable(profiler, event.game_id),
                 )
             elif isinstance(event, Recommendation):
                 practice = event.model_dump(exclude={"ts", "source_frame_id"})
