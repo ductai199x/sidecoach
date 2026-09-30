@@ -116,6 +116,14 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 /* The board is its own measure: the badge on a square scales with it, whatever sets its size. */
 .rv-board { container-type: inline-size; }
 .rv-board .sq.cls { background-image: linear-gradient(var(--tint), var(--tint)); }
+/* What the coach's words point at, as chess.com marks a board (Tai 2026-09-30): a piece or a
+   square in its marked red; a move's squares in its played-move green-yellow, the one it left
+   the deeper; a file end to end, a double-ended arrow in the marked red. Over the move's own. */
+.rv-board .board.cb .sq.spot.light { background: #ea7c69; background-image: none; }
+.rv-board .board.cb .sq.spot.dark { background: #d26b4f; background-image: none; }
+.rv-board .board.cb .sq.lk-from { background: #bac944; background-image: none; }
+.rv-board .board.cb .sq.lk-to { background: #f4f581; background-image: none; }
+.rv-arrow.file { --arrow: #d9674c; opacity: 0.85; }
 .rv-mark {
   position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; z-index: 3;
 }
@@ -190,6 +198,83 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 /* Retry: the coach's hint set apart in the bubble. */
 .rv-bubble p.hint { background: #eef4fa; border-left: 3px solid var(--cls-great); border-radius: 6px; padding: 7px 10px; color: #312e2b; }
 .rv-bubble p.muted { color: #8b8987; }
+
+/* The AI coach's words, asked for on the summary a game at a time: the card that asks (what it
+   covers and costs; working, done, or why it cannot), then in each key move's bubble the lesson
+   set apart, the better move behind a reveal until the answer is out, and a mark whose words
+   they are. */
+.rv-ai {
+  position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px; background: var(--panel2); box-shadow: inset 0 0 0 1px #ffffff0d; overflow: hidden;
+}
+.rv-ai .spark { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #81b64c24; }
+.rv-ai .spark svg { width: 19px; height: 19px; fill: var(--accent); }
+.rv-ai.busy .spark svg { animation: rv-ai-pulse 1.4s ease-in-out infinite; }
+.rv-ai .txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rv-ai .txt b { font-size: 14px; }
+.rv-ai .txt small { font-size: 12px; line-height: 1.35; color: var(--muted); }
+.rv-ai .txt small.err { color: #f08a7e; }
+.rv-ask {
+  height: 34px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff;
+  font-size: 14px; font-weight: 700; text-shadow: 0 1px 0 #0000002e; box-shadow: 0 3px 0 #5f8a36;
+}
+.rv-ask:hover:not(:disabled) { background: var(--accent-hover); }
+.rv-ask:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 #5f8a36; }
+.rv-ask:disabled { opacity: 0.4; cursor: default; }
+.rv-ai .bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+  background-size: 40% 100%; animation: rv-ai-bar 1.3s linear infinite;
+}
+@keyframes rv-ai-bar { from { background-position: -60% 0; } to { background-position: 160% 0; } }
+@keyframes rv-ai-pulse { 50% { opacity: 0.4; transform: scale(0.86); } }
+@media (prefers-reduced-motion: reduce) { .rv-ai .bar, .rv-ai.busy .spark svg { animation: none; } }
+.rv-bubble p.rv-lesson { background: #f1f6ea; border-left: 3px solid var(--cls-best); border-radius: 6px; padding: 7px 10px; color: #312e2b; }
+.rv-lesson b {
+  display: block; margin-bottom: 1px; font-size: 10.5px; font-weight: 800; letter-spacing: 0.07em;
+  text-transform: uppercase; color: #5f8a36;
+}
+.rv-better { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 6px; background: #f3f2f0; }
+.rv-better .head { display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 700; color: #312e2b; }
+.rv-reveal {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px 0 9px;
+  border: 0; border-radius: 6px; background: #ecebe8; color: #312e2b; font-size: 13px; font-weight: 600;
+}
+.rv-reveal:hover { background: #e2e0dc; }
+.rv-reveal svg { width: 17px; height: 17px; fill: #6b6865; }
+/* Its links to the board (lib/review/AiText): a move bold in its arrow's colour (the better line
+   gold, the player's blue, the opponent's red), a piece, square or file on a soft chip, a term
+   underlined; each darker while it shows on the board. A term's meaning floats over it. */
+.lk { cursor: pointer; border-radius: 4px; transition: background 120ms, box-shadow 120ms; }
+/* A short link keeps to one line ("half-open d-file" never breaks at its hyphen). */
+.lk.k-move, .lk.k-square, .lk.k-file, .lk.k-term { white-space: nowrap; }
+.lk:focus-visible { outline: 2px solid var(--cls-great); outline-offset: 1px; }
+.lk.k-move { font-weight: 700; padding: 0 2px; }
+.lk.r-best { color: #a26b00; }
+.lk.r-idea { color: #2d6fae; }
+.lk.r-threat { color: #c0392b; }
+.lk.k-move:hover, .lk.k-move.on { background: color-mix(in srgb, currentColor 13%, transparent); }
+.lk.k-piece, .lk.k-square, .lk.k-file {
+  padding: 0 3px; background: #efe9dc; color: #3a342b; box-decoration-break: clone; -webkit-box-decoration-break: clone;
+}
+.lk.k-square, .lk.k-file { font-weight: 600; }
+.lk.k-piece:hover, .lk.k-square:hover, .lk.k-file:hover, .lk.k-piece.on, .lk.k-square.on, .lk.k-file.on {
+  background: #e3d6b8; box-shadow: 0 0 0 1px #d2c09a;
+}
+.lk.k-term { color: #3f6f1c; text-decoration: underline dotted #6f9f45; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.lk.k-term:hover, .lk.k-term.on { background: #e5f0d8; text-decoration-style: solid; }
+.rv-tip {
+  position: fixed; z-index: 60; transform: translate(-50%, -100%); width: max-content; max-width: 260px;
+  padding: 7px 10px; border-radius: 7px; background: #262522; color: #e6e5e3; box-shadow: 0 6px 18px #0007;
+  font-size: 12.5px; font-weight: 500; line-height: 1.4; text-align: left; pointer-events: none;
+}
+.rv-tip.below { transform: translate(-50%, 0); }
+.rv-bubble-foot { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.rv-ai-mark {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600; color: #9b9895;
+}
+.rv-ai-mark svg { width: 12px; height: 12px; fill: currentColor; }
 /* A line in the bubble: its moves to click, the one shown marked, those to come faded; the
    chevrons step it either way. */
 .rv-line-nav { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
@@ -289,8 +374,8 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-tries .head { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .rv-tries > span:not(.head) { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .rv-tries .kb { width: 18px; height: 18px; }
-.rv-step.ended { overflow-y: auto; }
-.rv-step.ended .rv-movebox { flex: 0 0 auto; overflow: visible; }
+.rv-step.ended, .rv-step.long { overflow-y: auto; }
+.rv-step.ended .rv-movebox, .rv-step.long .rv-movebox { flex: 0 0 auto; min-height: 0; overflow: visible; }
 /* The game's end, headed as a section of the card (the coach's bubble is the move's above). */
 .rv-end { display: flex; flex-direction: column; gap: 4px; }
 .rv-end p { margin: 0; font-size: 14px; line-height: 1.45; }
@@ -353,9 +438,11 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-pick .seg .segbtn { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-settings .note { font-size: 11.5px; color: var(--muted); }
 
-/* The step-through: the card stays, the move list scrolls under it. */
-.rv-step { overflow: hidden; }
+/* The step-through: the card, the move list under it scrolling in the room left. A long card
+   (the AI coach's words) leaves the list 150px, the area scrolling as a whole. */
+.rv-step { overflow-y: auto; }
 .rv-movebox { flex: 1 1 0; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+.rv-step .rv-movebox { min-height: 150px; }
 
 /* The move list, as chess.com's: a row a move number, every other row striped; each move a
    chip that hugs it, the key moves' badge and colour on it, the one shown marked. */
@@ -409,7 +496,7 @@ html.stacked .rv-foot .rv-graph { display: none; }
 html.stacked .rv-step { overflow-y: auto; }
 html.stacked main.summary .rv-left { display: none; }
 html.stacked .rv-step .rv-movebox {
-  flex: 0 0 auto; display: flex; align-items: center; height: 40px; margin: 0 -14px; padding: 0 10px;
+  flex: 0 0 auto; display: flex; align-items: center; height: 40px; min-height: 0; margin: 0 -14px; padding: 0 10px;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
   mask-image: linear-gradient(to right, transparent 0, #000 16px, #000 calc(100% - 16px), transparent);
 }

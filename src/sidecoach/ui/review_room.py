@@ -26,7 +26,7 @@ import chess.pgn
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import STRENGTHS, THREADS, Strength, review_game, workers_for
 from sidecoach.analysis.score import Thresholds, position_score
-from sidecoach.coach import review_words
+from sidecoach.coach import review_links, review_words
 from sidecoach.config import Settings, find_stockfish
 from sidecoach.events import GameSummary, Line, ReviewedGame, Side
 from sidecoach.llm.usage import prices_for
@@ -91,6 +91,7 @@ class ReviewRoom:
         self.words: dict[str, Any] | None = None
         self.words_status = "none"
         self.words_error: str | None = None
+        self._estimated: tuple[str | None, float | None] | None = None  # by model name
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -103,7 +104,8 @@ class ReviewRoom:
 
     def state(self) -> dict[str, Any]:
         self.touched = time.monotonic()
-        unavailable = self._model()[1] if self._model is not None else NO_AI
+        model, unavailable = self._model() if self._model is not None else (None, NO_AI)
+        estimate = self._estimate(model)
         with self._lock:
             return {
                 "key": self.key,
@@ -131,9 +133,24 @@ class ReviewRoom:
                     "error": self.words_error,
                     "words": self.words,
                     "unavailable": unavailable,
+                    "moves": len(review_words.key_plies(self.reviewed)) if self.reviewed else 0,
+                    "estimate": estimate,
                 },
                 "closed": self.closed,
             }
+
+    def _estimate(self, model: Any | None) -> float | None:
+        """What the AI coach's words would cost with `model` (dollars), made once a model; None
+        when its prices are not known (a model on this computer's)."""
+        name = getattr(model, "model", None)
+        if model is None or self.reviewed is None:
+            return None
+        if self._estimated is None or self._estimated[0] != name:
+            opening = _opening(self.reviewed)
+            prices = prices_for(self.settings, name)
+            cost = review_words.estimate(self.reviewed, self.row.user_side, opening, prices)
+            self._estimated = (name, cost)
+        return self._estimated[1]
 
     def write_words(self) -> str | None:
         """Set the AI coach writing on the key moves, in the background; why it cannot, else
@@ -154,33 +171,33 @@ class ReviewRoom:
         return None
 
     def _write_words(self, reviewed: ReviewedGame, model: Any) -> None:
-        opening = next((m.after.opening for m in reversed(reviewed.moves) if m.after.opening), None)
         try:
             words = review_words.write(
                 reviewed,
                 model,
                 user=self.row.user_side,
-                opening=opening,
+                opening=_opening(reviewed),
                 prices=prices_for(self.settings, getattr(model, "model", None)),
                 # Luna reasons at its own effort; a local model reasons worse about chess, not
                 # better (Tai, 2026-09-30).
                 thinking=getattr(model, "thinking_control", None) == "effort",
             )
-        except Exception as exc:  # noqa: BLE001 - a failed call is said, not raised
+            saved = {
+                "model": words.model,
+                "cost": words.cost,
+                "texts": {str(ply): parts for ply, parts in words.texts.items()},
+                "reveals": sorted(words.reveals),
+            }
+            shown = self._shown(saved, reviewed)
+        except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"
             with self._lock:
                 self.words_status, self.words_error = "failed", str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
             return
-        saved = {
-            "model": words.model,
-            "cost": words.cost,
-            "texts": {str(ply): parts for ply, parts in words.texts.items()},
-            "reveals": sorted(words.reveals),
-        }
         with contextlib.suppress(Exception):  # a room closed meanwhile keeps them unsaved
             self.store.set_review_words(self.key, self.strength.name, json.dumps(saved))
         with self._lock:
-            self.words, self.words_status = saved, "ready"
+            self.words, self.words_status = shown, "ready"
         cost = f", ${words.cost:.4f}" if words.cost is not None else ""
         self._emit(
             "sys",
@@ -190,6 +207,12 @@ class ReviewRoom:
         )
         for ply, why in sorted(words.dropped.items()):
             self._emit("sys", "warn", f"AI words on ply {ply} dropped: {why}")
+
+    def _shown(self, saved: dict[str, Any], reviewed: ReviewedGame) -> dict[str, Any]:
+        """The saved words as the page draws them: each paragraph also as its links to the
+        board (coach/review_links.py), made on showing so they follow the linking's rules."""
+        links = review_links.linked(saved.get("texts", {}), reviewed, self.row.user_side)
+        return {**saved, "links": links}
 
     def close(self) -> None:
         self._stop.set()
@@ -227,10 +250,9 @@ class ReviewRoom:
         if saved is None or saved.version != REVIEW_VERSION:
             return False
         reviewed = ReviewedGame.model_validate_json(saved.report)
-        self._ready(reviewed, GameSummary.model_validate_json(saved.summary or "{}"))
-        if saved.words:
-            with self._lock:
-                self.words, self.words_status = json.loads(saved.words), "ready"
+        # Its words ready with it: the page stops asking once the review is.
+        words = self._shown(json.loads(saved.words), reviewed) if saved.words else None
+        self._ready(reviewed, GameSummary.model_validate_json(saved.summary or "{}"), words)
         self._emit("sys", "info", f"review of {self.key} loaded ({self.strength.name})")
         return True
 
@@ -291,7 +313,9 @@ class ReviewRoom:
         finally:
             puzzles.close()
 
-    def _ready(self, reviewed: ReviewedGame, summary: GameSummary) -> None:
+    def _ready(
+        self, reviewed: ReviewedGame, summary: GameSummary, words: dict[str, Any] | None = None
+    ) -> None:
         moves = move_views(reviewed)
         practice = self._practice(reviewed)
         retries = Retries(
@@ -305,6 +329,8 @@ class ReviewRoom:
             self.reviewed, self.summary, self._moves = reviewed, summary, moves
             self.practice = practice
             self.retries = retries
+            if words is not None:
+                self.words, self.words_status = words, "ready"
             self.status = "ready"
             self.done = self.total = len(reviewed.moves) + 1
 
@@ -381,6 +407,11 @@ def review_row(
     )
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
+
+
+def _opening(reviewed: ReviewedGame) -> str | None:
+    """The opening the game reached, as the book last named it."""
+    return next((m.after.opening for m in reversed(reviewed.moves) if m.after.opening), None)
 
 
 def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:

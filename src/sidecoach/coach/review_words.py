@@ -46,6 +46,9 @@ MOST = 16
 # paragraphs while the words are made right (Tai, 2026-09-30: "let's first get it right before
 # get it concise"); to come down to about a cent a game at gpt-5.6-luna's prices after.
 ANSWER_TOKENS = 1500
+# A move's answer as it comes, reasoning included: gpt-5.6-luna at medium effort wrote 764
+# tokens a move, 482 of them reasoning, over 55 key moves of Tai's games (2026-09-30).
+TYPICAL_ANSWER = 770
 # The coach's facts a review needs; the rest serve a hint in play (the question to ask, the nudge),
 # repeat others (the choices, the situation) or the board itself (the FEN).
 DROP = frozenset(
@@ -687,9 +690,8 @@ def write(
 def estimate(
     game: ReviewedGame, user: str | None, opening: str | None, prices: Prices
 ) -> float | None:
-    """The most the calls can cost at `prices` (dollars): the prompts as sent, and every token
-    the answers may use, the provider's thinking headroom included."""
-    from sidecoach.llm.openai_compat import REASONING_HEADROOM
+    """What the calls come to at `prices` (dollars), as the button says it: the prompts as sent,
+    and a typical answer a move (TYPICAL_ANSWER)."""
     from sidecoach.llm.usage import CHARS_PER_TOKEN
 
     if not prices.known:
@@ -697,5 +699,5 @@ def estimate(
     assert prices.prompt is not None and prices.completion is not None
     plies = key_plies(game)
     sent = sum(len(SYSTEM) + len(prompt(game, ply, user, opening)) for ply in plies)
-    answers = len(plies) * (ANSWER_TOKENS + REASONING_HEADROOM)
+    answers = len(plies) * TYPICAL_ANSWER
     return sent / CHARS_PER_TOKEN / 1e6 * prices.prompt + answers / 1e6 * prices.completion

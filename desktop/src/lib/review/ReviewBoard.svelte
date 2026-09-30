@@ -3,7 +3,8 @@
   // the move that led here tinted in its class's colour on both squares and its badge on the
   // destination's corner, as chess.com marks a reviewed move (a line's move is lit yellow, as a
   // move on any board); the arrows the review draws (the best move, a line being shown); the
-  // player's own marks. Given `legal`, it takes the player's moves (Retry): the hand is the
+  // player's own marks; the squares the coach's words point at (`spots`). Given `legal`, it
+  // takes the player's moves (Retry): the hand is the
   // puzzle board's (lib/moveinput), a tried move is `onplay`'s, and a `wrong` one shows red
   // until `redraw` puts the position back.
   import Badge from "$lib/Badge.svelte";
@@ -12,8 +13,9 @@
   import { PieceLayer } from "$lib/pieces";
   import { arrow } from "./arrows";
 
-  // The review's arrows: the best move (gold), a threat (red), the move's idea (blue).
-  type Arrow = { from: string; to: string; kind: "best" | "threat" | "idea" };
+  // The review's arrows: the best move (gold), a threat (red), the move's idea (blue); a file the
+  // coach's words name, end to end (`both`).
+  type Arrow = { from: string; to: string; kind: "best" | "threat" | "idea" | "file"; both?: boolean };
 
   let {
     fen,
@@ -25,6 +27,8 @@
     side = "white",
     wrong = null,
     redraw = 0,
+    spots = [],
+    trail = null,
     onplay,
   }: {
     fen: string;
@@ -32,6 +36,11 @@
     cls?: string | null;
     bottom?: string;
     arrows?: Arrow[];
+    /** Squares the coach's words point at (a piece, a square, a pawn structure), marked as
+     *  chess.com marks a square. */
+    spots?: string[];
+    /** A move the coach's words name: its squares lit, as chess.com lights a move played. */
+    trail?: [string, string] | null;
     legal?: Record<string, string[]> | null;
     side?: string;
     wrong?: string | null;
@@ -112,6 +121,9 @@
         class:grab={!!legal && !wrong && !!occupied[sq.name] && colourOf(occupied[sq.name]) === side}
         class:hover={input.hover === sq.name}
         class:marked={input.marked.includes(sq.name)}
+        class:spot={spots.includes(sq.name)}
+        class:lk-from={trail?.[0] === sq.name}
+        class:lk-to={trail?.[1] === sq.name}
         style={cls && lit ? `--tint: color-mix(in srgb, var(--cls-${cls}) ${sq.name === from ? 38 : 52}%, transparent)` : undefined}
       >
         {#if sq.rankLabel}<span class="coord rank">{sq.rankLabel}</span>{/if}
@@ -121,11 +133,12 @@
   </div>
   <div class="pieces" bind:this={piecesEl}></div>
   <svg class="overlay rv-arrows" viewBox="0 0 8 8" aria-hidden="true">
-    {#each [...arrows.map((a) => ({ ...a, id: a.kind + a.from + a.to })), ...input.arrows.map(([from, to]) => ({ from, to, kind: "user", id: "user" + from + to }))] as a (a.id)}
-      {@const d = arrow(a.from, a.to, bottom)}
+    {#each [...arrows.map((a) => ({ ...a, id: a.kind + a.from + a.to })), ...input.arrows.map(([from, to]) => ({ from, to, kind: "user", both: false, id: "user" + from + to }))] as a (a.id)}
+      {@const d = arrow(a.from, a.to, bottom, !!a.both)}
       <g class="rv-arrow {a.kind}">
         <polyline points={d.shaft} stroke-width={d.width} />
         <polygon points={d.head} />
+        {#if d.tail}<polygon points={d.tail} />{/if}
       </g>
     {/each}
   </svg>

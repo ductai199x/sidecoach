@@ -8,9 +8,11 @@ const SHAFT = 0.2;
 const HEAD_WIDTH = 0.5;
 const HEAD_LENGTH = 0.38;
 
-export type Drawn = { shaft: string; head: string; width: number };
+export type Drawn = { shaft: string; head: string; tail: string | null; width: number };
 
-export function arrow(from: string, to: string, bottom: string): Drawn {
+/** An arrow from `from` to `to`; `both` ends headed (a file or a line marked end to end, as
+ *  chess notation marks one). */
+export function arrow(from: string, to: string, bottom: string, both = false): Drawn {
   const a = cellOf(from, bottom), b = cellOf(to, bottom);
   const start = { x: a.x + 0.5, y: a.y + 0.5 };
   const tip = { x: b.x + 0.5, y: b.y + 0.5 };
@@ -24,10 +26,14 @@ export function arrow(from: string, to: string, bottom: string): Drawn {
   // The shaft stops where the head begins; the head's base across the direction of travel.
   const base = { x: tip.x - ux * HEAD_LENGTH, y: tip.y - uy * HEAD_LENGTH };
   const nx = -uy * (HEAD_WIDTH / 2), ny = ux * (HEAD_WIDTH / 2);
-  const points = [corner ? `${start.x},${start.y} ${corner.x},${corner.y}` : `${start.x},${start.y}`, `${base.x},${base.y}`];
+  // Headed at both ends (straight lines only): the shaft starts where the tail's head ends.
+  const back = both && !corner ? { x: start.x + ux * HEAD_LENGTH, y: start.y + uy * HEAD_LENGTH } : null;
+  const first = back ?? start;
+  const points = [corner ? `${first.x},${first.y} ${corner.x},${corner.y}` : `${first.x},${first.y}`, `${base.x},${base.y}`];
   return {
     shaft: points.join(" "),
     head: `${base.x + nx},${base.y + ny} ${tip.x},${tip.y} ${base.x - nx},${base.y - ny}`,
+    tail: back ? `${back.x + nx},${back.y + ny} ${start.x},${start.y} ${back.x - nx},${back.y - ny}` : null,
     width: SHAFT,
   };
 }

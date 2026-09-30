@@ -10,12 +10,13 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import "$lib/styles/review.css";
-  import { beacon, connect, review as reviewApi, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
+  import { beacon, connect, review as reviewApi, type AiLink, type AiPiece, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
   import { inShell, openWindow } from "$lib/shell.svelte";
   import { placement } from "$lib/chess";
   import { boardHandle, layoutMode, splitter } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
   import { captureSound, moveSound } from "$lib/sounds";
+  import AiText from "$lib/review/AiText.svelte";
   import EvalBar from "$lib/review/EvalBar.svelte";
   import { RetryDesk } from "$lib/review/retry.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
@@ -90,17 +91,20 @@
   // The arrows the settings turn on, on the position the move left: the best move in gold when
   // the move was not it; the reply that punishes a bad move in red, or what a sound move threatens
   // in blue. Retrying, only the third hint's (the move, in gold).
-  type Drawn = { from: string; to: string; kind: "best" | "threat" | "idea" };
+  type Drawn = { from: string; to: string; kind: "best" | "threat" | "idea" | "file"; both?: boolean };
   const arrows = $derived.by(() => {
     const out: Drawn[] = [];
-    const add = (uci: string | null | undefined, kind: Drawn["kind"]) => {
-      if (uci && !out.some((a) => a.from === uci.slice(0, 2) && a.to === uci.slice(2, 4))) out.push({ from: uci.slice(0, 2), to: uci.slice(2, 4), kind });
+    const add = (uci: string | null | undefined, kind: Drawn["kind"], both = false) => {
+      if (uci && !out.some((a) => a.from === uci.slice(0, 2) && a.to === uci.slice(2, 4))) out.push({ from: uci.slice(0, 2), to: uci.slice(2, 4), kind, both });
     };
     if (retry) {
       if (retry.hintBest && !retry.solved) add(retry.hintBest, "best");
       return out;
     }
     if (line || !move || view !== "moves") return out;
+    // What the coach's words name, while it is shown: a move's arrow, a file end to end.
+    if (shownLink?.arrow) add(shownLink.arrow[0] + shownLink.arrow[1], shownLink.arrow[2]);
+    if (shownLink?.span) add(shownLink.span[0] + shownLink.span[1], "file", true);
     if (look.arrow && move.best_uci !== move.uci) add(move.best_uci, "best");
     if (look.ideas) {
       if (BAD.has(move.label ?? "")) add(move.follow_line[0]?.uci, "threat");
@@ -128,6 +132,66 @@
   });
   // The moves a retry improved on: You played / New move.
   const improvedMoves = $derived(moves.filter((m) => retried[m.ply] && (retried[m.ply].accuracy ?? 0) > (m.accuracy ?? 0)));
+
+  // ---- the AI coach's words: asked for on the summary, a game at a time (ui/review_room.py) ----
+  const ai = $derived(room?.ai ?? null);
+  let asking = $state(false);
+  // Whether the better move is out at a ply: the player asked (What was better?), played Best, or
+  // found it (or gave up) in Retry, or the gold arrow shows it. "Better" opens then, on every move
+  // (the bubble stays short); on the player's own -- every move when their side is not known --
+  // a "why" that names it waits too. The opponent's moves are not theirs to find.
+  let revealed = $state<Record<number, boolean>>({});
+  function reveal(at: number): void {
+    if (!revealed[at]) revealed = { ...revealed, [at]: true };
+  }
+  $effect(() => {
+    if (retry?.solved) reveal(retry.ply);
+  });
+  const betterOut = (m: ReviewMove): boolean => look.arrow || !!revealed[m.ply];
+  function answerOut(m: ReviewMove): boolean {
+    const own = !room?.game.user_side || m.side === room.game.user_side;
+    return !own || betterOut(m);
+  }
+  const said = $derived(move && ai?.words ? (ai.words.texts[String(move.ply)] ?? null) : null);
+  // Each part of it as its links to the board (the text whole when it has none).
+  const saidLinks = $derived(move && ai?.words ? (ai.words.links?.[String(move.ply)] ?? {}) : {});
+  const linksOf = (part: "why" | "better" | "lesson"): AiPiece[] => saidLinks[part] ?? [said?.[part] ?? ""];
+  // A link shown on the board: the one the pointer is on, else the one clicked (or tapped) till
+  // another click; none on another move.
+  let hovered = $state<AiLink | null>(null);
+  let pinned = $state<AiLink | null>(null);
+  const shownLink = $derived(hovered ?? pinned);
+  function mark(link: AiLink | null, pin: boolean): void {
+    if (pin) pinned = pinned === link ? null : link;
+    else hovered = link;
+  }
+  $effect(() => {
+    void ply;
+    hovered = pinned = null;
+  });
+  // The AI's "why" once it may be read: one that names the better move waits for the answer, the
+  // review's own sentence standing in.
+  const aiWhy = $derived(move && said?.why && (!ai?.words?.reveals.includes(move.ply) || answerOut(move)) ? said.why : null);
+  const aiCount = $derived(Object.keys(ai?.words?.texts ?? {}).length);
+
+  /** Dollars as the card says them: "about 2¢", "under 1¢"; spent, to a tenth: "1.7¢". */
+  function cents(usd: number, spent = false): string {
+    const c = usd * 100;
+    if (spent) return `${c < 0.1 ? "<0.1" : c.toFixed(1)}¢`;
+    return c < 1 ? "under 1¢" : `about ${Math.round(c)}¢`;
+  }
+
+  async function explain(): Promise<void> {
+    if (asking || !room) return;
+    asking = true;
+    try {
+      const asked = await api.explain();
+      if (!asked.ok && room) room = { ...room, ai: { ...room.ai, status: "failed", error: asked.error } };
+      else poll();
+    } finally {
+      asking = false;
+    }
+  }
 
   // ---- Retry ----
   async function startRetry(): Promise<void> {
@@ -228,6 +292,7 @@
     stopLine();
     const steps = kind === "best" ? move.best_line : move.follow_line;
     if (!steps.length) return;
+    if (kind === "best") reveal(move.ply);
     line = { kind, steps, from: kind === "best" ? move.fen_before : move.fen_after, i: -1 };
     const advance = () => {
       if (!line || line.i >= line.steps.length - 1) { playing = null; return; }
@@ -261,7 +326,7 @@
     if (view === "summary") return verdict(summary, room.game.result);
     if (retry) return retry.tried && !retry.gaveUp ? tryWords(retry.tried) : retry.hintText || null;
     if (line || !move) return null;
-    return `${headline(move)}. ${sentence(move, whiteBefore, look.arrow)}`;
+    return [`${headline(move)}.`, aiWhy ?? sentence(move, whiteBefore, look.arrow), said?.lesson].filter(Boolean).join(" ");
   });
   $effect(() => {
     const text = spoken, on = voiceOn && voiceReady;
@@ -273,6 +338,13 @@
     prefs.setStr("reviewVoice", voiceOn ? null : "off");
     if (!voiceOn) api.hush();
   }
+
+  // A card read from its top: a new move's (the AI coach's words run long) starts there.
+  let stepEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    void ply;
+    if (stepEl) stepEl.scrollTop = 0;
+  });
 
   // The move shown stays in view in the list, as the arrows step past its edge: out of view,
   // or at the very edge, it goes to the middle, so the moves around it show too -- down the
@@ -321,15 +393,21 @@
   }
 
   // ---- the room ----
+  // Polled while it analyses, and while the AI coach writes; one loop at a time.
+  let polling = false;
   async function poll(): Promise<void> {
-    if (closed) return;
+    if (closed || polling) return;
+    polling = true;
+    let again = true;
     try {
       const res = await api.poll(0);
       if (res.state) take(res.state);
-      if (res.closed && !res.state) { failure = "This review was closed."; return; }
-      if (res.state && (res.state.status === "ready" || res.state.status === "failed" || res.state.closed)) return;
+      if (res.closed && !res.state) { failure = "This review was closed."; again = false; }
+      const s = res.state;
+      if (s && ((s.status === "ready" && s.ai.status !== "writing") || s.status === "failed" || s.closed)) again = false;
     } catch { /* a poll missed */ }
-    setTimeout(poll, 400);
+    polling = false;
+    if (again) setTimeout(poll, 400);
   }
 
   function take(s: ReviewState): void {
@@ -498,6 +576,37 @@
   {/if}
 {/snippet}
 
+{#snippet spark()}
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2.5 12.1 8.4 18 10.5 12.1 12.6 10 18.5 7.9 12.6 2 10.5 7.9 8.4z" /><path d="M18.5 14 19.5 16.5 22 17.5 19.5 18.5 18.5 21 17.5 18.5 15 17.5 17.5 16.5z" /></svg>
+{/snippet}
+
+{#snippet explainCard()}
+  {#if ai && ai.moves > 0}
+    <div class="rv-ai" class:busy={ai.status === "writing"} role={ai.status === "writing" ? "status" : undefined}>
+      <span class="spark">{@render spark()}</span>
+      <div class="txt">
+        {#if ai.status === "writing"}
+          <b>Going over the key moves…</b>
+          <small>The AI coach is writing on {ai.moves} key moves.</small>
+        {:else if ai.status === "ready" && ai.words}
+          <b>The key moves explained</b>
+          <small>By the AI coach, on {aiCount} moves{ai.words.cost != null ? ` · ${cents(ai.words.cost, true)}` : ""}. Step through to read them.</small>
+        {:else if ai.status === "failed"}
+          <b>The AI coach could not finish</b>
+          <small class="err">{ai.error ?? "Something went wrong."}</small>
+        {:else}
+          <b>Explain the key moves</b>
+          <small>{ai.unavailable ?? `The AI coach on ${ai.moves} key moves${ai.estimate != null ? `, ${cents(ai.estimate)}` : ""}.`}</small>
+        {/if}
+      </div>
+      {#if ai.status === "none" || ai.status === "failed"}
+        <button class="rv-ask" disabled={!!ai.unavailable || asking} title={ai.unavailable ?? "Ask the AI coach why each key move mattered"} onclick={explain}>{ai.status === "failed" ? "Try again" : "Explain"}</button>
+      {/if}
+      {#if ai.status === "writing"}<i class="bar"></i>{/if}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet rating()}
   {#if summary && (summary.white.performance || summary.black.performance)}
     <span class="lbl" title="The rating the game was played at, read from the moves alone">Game rating</span>
@@ -508,7 +617,7 @@
   {/if}
 {/snippet}
 
-<svelte:window bind:innerHeight={windowHeight} onkeydown={onKey} onpointerdown={(e) => { if (settingsOpen && !(e.target as HTMLElement).closest(".rv-set")) settingsOpen = false; }} />
+<svelte:window bind:innerHeight={windowHeight} onkeydown={onKey} onpointerdown={(e) => { const at = e.target as HTMLElement; if (settingsOpen && !at.closest(".rv-set")) settingsOpen = false; if (pinned && !at.closest(".lk")) pinned = null; }} />
 <svelte:head><title>sidecoach · review</title></svelte:head>
 
 <header id="bar">
@@ -607,6 +716,8 @@
           {bottom}
           {arrows}
           redraw={desk.redraw}
+          spots={!line && !retry ? (shownLink?.squares ?? []) : []}
+          trail={!line && !retry && shownLink?.arrow ? [shownLink.arrow[0], shownLink.arrow[1]] : null}
           legal={retry && !retry.solved && !retry.busy ? retry.legal : null}
           side={retry?.side ?? "white"}
           wrong={retry?.wrong ?? null}
@@ -650,6 +761,7 @@
     {:else if view === "summary"}
       <div class="rv-scroll">
         <div class="rv-coach"><i class="who"></i><div class="rv-bubble"><p class="first">{verdict(summary, game?.result ?? null)}</p></div></div>
+        {@render explainCard()}
         <EvalGraph {graph} marks={keyMoments} height={80} onpick={(p) => go(p)} />
         <div class="rv-sum">
           {@render sides()}
@@ -682,7 +794,7 @@
         <button class="rv-go" onclick={() => go(1, true)}>Start Review</button>
       </div>
     {:else}
-      <div class="rv-scroll rv-step" class:ended={ply === moves.length && !retry && !line}>
+      <div class="rv-scroll rv-step" bind:this={stepEl} class:ended={ply === moves.length && !retry && !line} class:long={!!said && !retry && !line}>
         {#if retry}
           <div class="rv-coach">
             <i class="who"></i>
@@ -724,7 +836,26 @@
                 <span>{headline(move)}</span>
                 <span class="pill {evalSide(move.eval)}">{evalText(move.eval)}</span>
               </div>
-              <p>{sentence(move, whiteBefore, look.arrow)}</p>
+              {#if aiWhy}
+                <p><AiText pieces={linksOf("why")} shown={shownLink} onmark={mark} /></p>
+              {:else}
+                <p>{sentence(move, whiteBefore, look.arrow)}</p>
+              {/if}
+              {#if said?.lesson}<p class="rv-lesson"><b>Lesson</b><AiText pieces={linksOf("lesson")} shown={shownLink} onmark={mark} /></p>{/if}
+              {#if said?.better && betterOut(move)}
+                <div class="rv-better">
+                  <span class="head"><Badge kind="best" size={18} />{move.best_san ?? "The better move"} was better</span>
+                  <p><AiText pieces={linksOf("better")} shown={shownLink} onmark={mark} /></p>
+                </div>
+              {/if}
+              {#if said}
+                <div class="rv-bubble-foot">
+                  {#if said.better && !betterOut(move)}
+                    <button class="rv-reveal" onclick={() => reveal(move!.ply)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>What was better?</button>
+                  {/if}
+                  <span class="rv-ai-mark" title="Written by the AI coach ({ai?.words?.model})">{@render spark()}AI coach</span>
+                </div>
+              {/if}
             </div>
           </div>
           {#if ply === moves.length}

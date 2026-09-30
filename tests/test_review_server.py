@@ -230,6 +230,20 @@ def test_a_move_is_retried_and_graded_as_the_review_graded_it(
     assert [h["best"] is not None for h in hints] == [False, False, True]
 
 
+def review_room_game(engine: PanelEngine, key: str) -> Any:
+    """The review saved for a game, as the room reads it."""
+    from sidecoach.events import ReviewedGame
+    from sidecoach.profile.store import Store
+
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    try:
+        saved = store.latest_review(key)
+        assert saved is not None
+        return ReviewedGame.model_validate_json(saved.report)
+    finally:
+        store.close()
+
+
 def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,7 +286,14 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     ai = _until_ready(client, key)["state"]["ai"]
-    assert ai == {"status": "none", "error": None, "words": None, "unavailable": review_room.NO_AI}
+    assert ai == {
+        "status": "none",
+        "error": None,
+        "words": None,
+        "unavailable": review_room.NO_AI,
+        "moves": len(review_room.review_words.key_plies(review_room_game(engine, key))),
+        "estimate": None,
+    }
     refused = client.post(f"/api/review/{key}/ai").json()
     assert refused == {"ok": False, "error": review_room.NO_AI} and not asked
 
@@ -282,13 +303,31 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     while ai["status"] != "ready" and time.monotonic() < deadline:
         ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
         time.sleep(0.05)
+    why = "Your knight on c6 guards your pawn on e5."
     words = {
         "model": "local-model",
         "cost": 0.0,
-        "texts": {"4": {"why": "Your knight on c6 guards your pawn on e5."}},
+        "texts": {"4": {"why": why}},
         "reveals": [4],
+        # Shown with its links to the board (coach/review_links.py).
+        "links": {
+            "4": {
+                "why": [
+                    {"text": "Your knight on c6", "kind": "piece", "squares": ["c6"]},
+                    " guards ",
+                    {"text": "your pawn on e5", "kind": "piece", "squares": ["e5"]},
+                    ".",
+                ]
+            }
+        },
     }
-    assert (ai["status"], ai["words"], ai["unavailable"]) == ("ready", words, None)
+    # A model on this computer: no prices, so no cost to say.
+    assert (ai["status"], ai["words"], ai["unavailable"], ai["estimate"]) == (
+        "ready",
+        words,
+        None,
+        None,
+    )
     assert [(a["user"], a["thinking"]) for a in asked] == [("black", False)]
     assert any(Model.usage in source() for source in engine.extra_usage)
 

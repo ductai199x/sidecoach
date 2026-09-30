@@ -235,6 +235,41 @@ export type Practice = { motif: string; missed: number; puzzles: { id: string; r
 export type RetryPosition = { ply: number; fen: string; side: "white" | "black"; legal: Record<string, string[]> };
 export type Tried = { ply: number; uci: string; san: string; fen: string; label: string | null; loss: number; accuracy: number | null; only: boolean };
 
+/** The AI coach's words on a review's key moves (coach/review_words.py), by ply: why the move
+ * mattered, a lesson, and for a bad move the better one; `reveals` the plies whose "why" names
+ * the better move, shown only once the answer is out. */
+export type ReviewWords = {
+  model: string;
+  cost: number | null;
+  texts: Record<string, { why?: string; better?: string; lesson?: string }>;
+  reveals: number[];
+  /** Each paragraph as its links to the board, by ply then part (coach/review_links.py). */
+  links: Record<string, Record<string, AiPiece[]>>;
+};
+/** A link in the AI coach's words: a move (its arrow, coloured by whose it is), a piece, square
+ * or file (its squares), a term (its meaning, and the move's motif's squares when tagged). */
+export type AiLink = {
+  text: string;
+  kind: "move" | "piece" | "square" | "file" | "term";
+  squares?: string[];
+  arrow?: [string, string, "best" | "threat" | "idea"];
+  /** A file end to end, drawn as a double-ended arrow. */
+  span?: [string, string];
+  meaning?: string;
+};
+export type AiPiece = string | AiLink;
+/** The words asked for only by the player: none yet, being written, ready, or failed; why they
+ * cannot be (no AI coach set up); the key moves they cover and what they should cost (dollars,
+ * none when the model's prices are not known). */
+export type ReviewAi = {
+  status: "none" | "writing" | "ready" | "failed";
+  error: string | null;
+  words: ReviewWords | null;
+  unavailable: string | null;
+  moves: number;
+  estimate: number | null;
+};
+
 export type ReviewState = {
   key: string;
   status: "starting" | "analysing" | "ready" | "failed";
@@ -246,6 +281,7 @@ export type ReviewState = {
   summary: GameSummary | null;
   moves: ReviewMove[];
   practice: Practice[];
+  ai: ReviewAi;
   closed: boolean;
 };
 
@@ -258,6 +294,8 @@ export const review = (key: string) => {
     /** The card said in the panel's voice, cutting off the one before; hush stops it. */
     say: (text: string) => post<{ ok: boolean }>(`${p}/say`, { text }),
     hush: () => post<{ ok: boolean }>(`${p}/hush`),
+    /** The AI coach set writing on the key moves; the polls bring the words. */
+    explain: () => post<{ ok: boolean; error: string | null }>(`${p}/ai`),
     retry: (ply: number) => get<{ ok: boolean; error?: string } & RetryPosition>(`${p}/retry?ply=${ply | 0}`),
     attempt: (ply: number, uci: string) => post<{ ok: boolean; error?: string } & Tried>(`${p}/try`, { ply, uci }),
     hint: (ply: number, level: number) =>
