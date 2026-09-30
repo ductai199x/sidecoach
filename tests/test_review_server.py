@@ -100,6 +100,12 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     # Six moves a side say too little to name the rating they were played at.
     assert summary["white"]["performance"] is None
     assert state["progress"]["done"] == state["progress"]["total"] == 13
+    # Its facts kept for Stats as it is saved.
+    from sidecoach.profile.store import Store
+
+    kept = Store(engine.settings.data_dir / "profile.sqlite")
+    assert [g["key"] for g in kept.stat_games()] == [key] and len(kept.stat_moves([key])) == 12
+    kept.close()
 
     # Listed with its accuracies now; opened again, the saved review is read, not redone.
     row = next(g for g in client.get("/api/games").json()["games"] if g["key"] == key)

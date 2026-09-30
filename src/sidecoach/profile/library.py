@@ -155,6 +155,13 @@ def from_lichess(
             own.close()
 
 
+def find(store: Store, key: str) -> LibraryRow | None:
+    """A game of the library by its key: imported, or one Sidecoach watched."""
+    if key.startswith("watched:"):
+        return next((r for r in from_watched(store) if r.key == key), None)
+    return store.library_game(key)
+
+
 def from_watched(store: Store, limit: int = 200) -> list[LibraryRow]:
     """The games Sidecoach watched to their end, as the library shows them: their moves as
     recorded (withdrawn ones left out), the player named "You", the opponent as recorded."""

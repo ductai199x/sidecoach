@@ -26,6 +26,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -151,6 +152,38 @@ CREATE TABLE IF NOT EXISTS reviews (
     summary TEXT,
     words TEXT,
     PRIMARY KEY (key, strength)
+);
+-- Stats (docs/stats-plan.md; profile/stat_facts.py): a reviewed game's facts, kept when it is
+-- reviewed so the Stats window adds them up at once.
+CREATE TABLE IF NOT EXISTS stat_games (
+    key TEXT PRIMARY KEY,
+    strength TEXT NOT NULL,
+    source TEXT,
+    time_class TEXT,
+    played_at REAL,
+    user_side TEXT,
+    bot INTEGER NOT NULL,
+    result TEXT,
+    opening TEXT,
+    termination TEXT
+);
+CREATE TABLE IF NOT EXISTS stat_moves (
+    key TEXT NOT NULL,
+    ply INTEGER NOT NULL,
+    side TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    loss REAL NOT NULL,
+    label TEXT,
+    accuracy REAL,
+    score REAL NOT NULL,
+    chance TEXT,
+    found INTEGER NOT NULL,
+    allowed TEXT,
+    structure TEXT NOT NULL,
+    endgame TEXT,
+    spent_ms INTEGER,
+    clock_ms INTEGER,
+    PRIMARY KEY (key, ply)
 );
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
@@ -847,11 +880,68 @@ class Store:
         return None if row is None else LibraryRow(**dict(row))
 
     def delete_library_game(self, key: str) -> None:
-        """A game out of the library, and its reviews with it."""
+        """A game out of the library, and its reviews and stats with it."""
         with self._lock:
-            self._db.execute("DELETE FROM reviews WHERE key = ?", (key,))
-            self._db.execute("DELETE FROM library WHERE key = ?", (key,))
+            for table in ("stat_moves", "stat_games", "reviews", "library"):
+                self._db.execute(f"DELETE FROM {table} WHERE key = ?", (key,))
             self._db.commit()
+
+    # ---- Stats: a reviewed game's facts (profile/stat_facts.py) --------------------------------
+
+    def save_stats(self, strength: str, game: dict[str, Any], moves: list[dict[str, Any]]) -> None:
+        """A game's facts from its review at `strength`, in place of any before."""
+        with self._lock:
+            key = game["key"]
+            self._db.execute("DELETE FROM stat_moves WHERE key = ?", (key,))
+            self._db.execute(
+                "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at,"
+                " user_side, bot, result, opening, termination) VALUES"
+                " (:key, :strength, :source, :time_class, :played_at, :user_side, :bot, :result,"
+                " :opening, :termination)",
+                {**game, "strength": strength, "bot": int(game["bot"])},
+            )
+            self._db.executemany(
+                "INSERT INTO stat_moves (key, ply, side, phase, loss, label, accuracy, score,"
+                " chance, found, allowed, structure, endgame, spent_ms, clock_ms) VALUES"
+                " (:key, :ply, :side, :phase, :loss, :label, :accuracy, :score, :chance, :found,"
+                " :allowed, :structure, :endgame, :spent_ms, :clock_ms)",
+                [{**m, "key": key, "found": int(m["found"])} for m in moves],
+            )
+            self._db.commit()
+
+    def stat_games(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM stat_games ORDER BY played_at").fetchall()
+        return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
+
+    def stat_moves(self, keys: list[str]) -> list[dict[str, Any]]:
+        """The facts of the games' moves, in order."""
+        if not keys:
+            return []
+        marks = ",".join("?" * len(keys))
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT * FROM stat_moves WHERE key IN ({marks}) ORDER BY key, ply", keys
+            ).fetchall()
+        return [{**dict(r), "found": bool(r["found"])} for r in rows]
+
+    def unreviewed(self) -> list[LibraryRow]:
+        """The library's imported games no review covers yet, the latest played first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews)"
+                " ORDER BY COALESCE(played_at, added_at) DESC"
+            ).fetchall()
+        return [LibraryRow(**dict(r)) for r in rows]
+
+    def reviews_without_stats(self) -> list[ReviewRow]:
+        """Each game's latest review whose facts are not kept yet."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
+                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
+            ).fetchall()
+        return [ReviewRow(**dict(r)) for r in rows]
 
     def save_review(
         self,

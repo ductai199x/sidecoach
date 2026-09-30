@@ -22,12 +22,13 @@ import chess
 import chess.pgn
 
 from sidecoach.analysis.engine import Engine
-from sidecoach.analysis.game_review import STRENGTHS, THREADS, review_game, workers_for
+from sidecoach.analysis.game_review import STRENGTHS, THREADS, Strength, review_game, workers_for
 from sidecoach.analysis.score import Thresholds, position_score
 from sidecoach.config import Settings, find_stockfish
 from sidecoach.events import GameSummary, Line, ReviewedGame, Side
 from sidecoach.profile import library
 from sidecoach.profile.game_summary import missed_motifs, summarize
+from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries
@@ -152,65 +153,27 @@ class ReviewRoom:
         return True
 
     def _review(self) -> None:
-        games = library.games_in(self.row.pgn)
-        if not games:
-            raise ValueError("the game's PGN has no moves")
-        game = games[0]
-        path = find_stockfish(self.settings)
-        if path is None:
-            raise RuntimeError("no Stockfish to review with")
         workers = workers_for()
         with self._lock:
             self.status = "analysing"
-            self.total = sum(1 for _ in game.mainline_moves()) + 1
         self._emit(
             "sys",
             "info",
-            f"reviewing {self.key}: {self.total - 1} plies, depth {self.strength.depth}, "
-            f"{workers} engines",
+            f"reviewing {self.key}: depth {self.strength.depth}, {workers} engines",
         )
-        engine = self.settings.engine
-        with contextlib.ExitStack() as stack:
-            engines = [
-                stack.enter_context(
-                    (self._make_engine or Engine)(
-                        path=path,
-                        threads=THREADS,
-                        hash_mb=min(engine.hash_mb, 128),
-                        multipv=self.strength.multipv,
-                        pv_plies=engine.pv_plies,
-                        score_model=engine.score_model,
-                        max_seconds=engine.max_seconds,
-                    )
-                )
-                for _ in range(workers)
-            ]
-            from sidecoach.cli import _load_book, _load_tagger
-
-            reviewed = review_game(
-                game,
-                engines,
-                depth=self.strength.depth,
-                multipv=self.strength.multipv,
-                thresholds=Thresholds.from_settings(self.settings.coach),
-                tagger=_load_tagger(),
-                book=_load_book(self.settings),
-                strength=self.strength.name,
-                game_id=self.key,
-                on_progress=self._progress,
-                stop=self._stop,
-            )
-        if self._stop.is_set():
+        done = review_row(
+            self.settings,
+            self.row,
+            self.store,
+            self.strength,
+            workers=workers,
+            make_engine=self._make_engine,
+            on_progress=self._progress,
+            stop=self._stop,
+        )
+        if done is None:
             return
-        summary = summarize(reviewed)
-        self.store.save_review(
-            self.key,
-            self.strength.name,
-            REVIEW_VERSION,
-            time.time(),
-            reviewed.model_dump_json(),
-            summary.model_dump_json(),
-        )
+        reviewed, summary = done
         self._ready(reviewed, summary)
         self._emit("sys", "info", f"reviewed in {reviewed.seconds:.1f}s")
 
@@ -268,6 +231,74 @@ class ReviewRoom:
         if self._mirror is not None:
             with contextlib.suppress(Exception):
                 self._mirror("review", level, f"{self.key} {chan}: {text}", **data)
+
+
+def review_row(
+    settings: Settings,
+    row: LibraryRow,
+    store: Store,
+    strength: Strength,
+    *,
+    workers: int,
+    make_engine: Callable[..., Engine] | None = None,
+    low_priority: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
+    stop: threading.Event | None = None,
+) -> tuple[ReviewedGame, GameSummary] | None:
+    """A game of the library reviewed whole on `workers` engines of its own, summed up, and
+    saved with its facts for Stats; None when stopped part way. The review room's, and the
+    background reviewer's (ui/backlog.py) with its engines at a low priority."""
+    games = library.games_in(row.pgn)
+    if not games:
+        raise ValueError("the game's PGN has no moves")
+    path = find_stockfish(settings)
+    if path is None:
+        raise RuntimeError("no Stockfish to review with")
+    engine = settings.engine
+    with contextlib.ExitStack() as stack:
+        engines = [
+            stack.enter_context(
+                (make_engine or Engine)(
+                    path=path,
+                    threads=THREADS,
+                    hash_mb=min(engine.hash_mb, 128),
+                    multipv=strength.multipv,
+                    pv_plies=engine.pv_plies,
+                    score_model=engine.score_model,
+                    max_seconds=engine.max_seconds,
+                    low_priority=low_priority,
+                )
+            )
+            for _ in range(workers)
+        ]
+        from sidecoach.cli import _load_book, _load_tagger
+
+        reviewed = review_game(
+            games[0],
+            engines,
+            depth=strength.depth,
+            multipv=strength.multipv,
+            thresholds=Thresholds.from_settings(settings.coach),
+            tagger=_load_tagger(),
+            book=_load_book(settings),
+            strength=strength.name,
+            game_id=row.key,
+            on_progress=on_progress,
+            stop=stop,
+        )
+    if stop is not None and stop.is_set():
+        return None
+    summary = summarize(reviewed)
+    store.save_review(
+        row.key,
+        strength.name,
+        REVIEW_VERSION,
+        time.time(),
+        reviewed.model_dump_json(),
+        summary.model_dump_json(),
+    )
+    keep_stats(store, strength.name, reviewed, row)
+    return reviewed, summary
 
 
 def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
@@ -373,11 +404,14 @@ class ReviewRooms:
         """A game of the library by its key: imported, or one Sidecoach watched."""
         store = Store(self.store_path)
         try:
-            if key.startswith("watched:"):
-                return next((r for r in library.from_watched(store) if r.key == key), None)
-            return store.library_game(key)
+            return library.find(store, key)
         finally:
             store.close()
+
+    def busy(self) -> bool:
+        """Whether a room is reviewing a game now (the background reviewer waits for it)."""
+        with self._lock:
+            return any(r.status == "analysing" and not r.closed for r in self._rooms.values())
 
     def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
         with self._lock:

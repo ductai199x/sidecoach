@@ -12,10 +12,14 @@ thresholds in centipawns, because 50 centipawns at +8 is nothing and at 0.0 is a
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import chess
 import chess.engine
@@ -40,6 +44,12 @@ EXTEND_TRIES = 3
 # python-chess's model for turning centipawns into win-draw-loss when an engine will not.
 WDL_MODEL = "sf"
 DEFAULT_SCORE_MODEL = "human"
+
+
+def _lower_priority() -> None:
+    """In the engine's process before it starts (POSIX): below the player's own work."""
+    if sys.platform != "win32":
+        os.nice(5)
 
 
 class EngineUnavailable(RuntimeError):
@@ -70,6 +80,9 @@ class Engine:
     # minutes, and one of those in a post-game review stalls the whole run. Whichever
     # limit comes first wins, and the depth actually reached is reported on every line.
     max_seconds: float | None = 5.0
+    # Work the player is not waiting on (the background review of imported games) yields
+    # the processor to everything else: the process runs below normal priority.
+    low_priority: bool = False
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -95,8 +108,13 @@ class Engine:
     def open(self) -> None:
         if self._engine is not None:
             return
+        popen: dict[str, Any] = {}
+        if self.low_priority and sys.platform == "win32":
+            popen["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        elif self.low_priority:
+            popen["preexec_fn"] = _lower_priority
         try:
-            engine = chess.engine.SimpleEngine.popen_uci(str(self.path))
+            engine = chess.engine.SimpleEngine.popen_uci(str(self.path), **popen)
         except Exception as exc:  # noqa: BLE001
             raise EngineUnavailable(f"cannot start {self.path}: {exc}") from exc
         options: dict[str, str | int | bool | None] = {}

@@ -163,9 +163,11 @@ class _Ids(BaseModel):
     ids: list[str] | None = None
 
 
-def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
+def build_app(engine: PanelEngine, token: str = "", *, background: bool = False) -> FastAPI:
     """A FastAPI app serving the panel UI and the control API over `engine`. With `token`,
-    every /api route but /api/health wants `Authorization: Bearer <token>`."""
+    every /api route but /api/health wants `Authorization: Bearer <token>`. With
+    `background`, the library's games are reviewed in the background for Stats (the panel
+    that owns the data directory: `serve`)."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
@@ -374,6 +376,15 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
 
     store_path = engine.settings.data_dir / "profile.sqlite"
     reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+    backlog = None
+    if background:
+        from sidecoach.ui.backlog import Backlog
+
+        backlog = Backlog(
+            engine.settings, store_path, busy=lambda: engine.running or reviews.busy()
+        )
+        backlog.start()
+    app.state.backlog = backlog  # closed with the panel (`serve`)
 
     @app.get("/games")
     @app.get("/review/{key}")
@@ -382,7 +393,8 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
 
     @app.get("/api/games")
     def games() -> dict[str, Any]:
-        return _library(engine, store_path)
+        # And how far the background reviewer has got (none beside another panel).
+        return {**_library(engine, store_path), "backlog": backlog and backlog.state()}
 
     @app.post("/api/games/import")
     def games_import(body: _Import) -> dict[str, Any]:
@@ -874,9 +886,10 @@ def run_server(
         stt_device=stt_device,
         listen=listen,
     )
-    app = build_app(engine, token=token)
     lock = settings.data_dir / LOCK_FILE
     other = _attached_port(settings, host)
+    # One background reviewer per data directory: none beside the app's, none for a replay.
+    app = build_app(engine, token=token, background=other is None and replay is None)
     if other is None:
         with contextlib.suppress(OSError):
             lock.parent.mkdir(parents=True, exist_ok=True)
@@ -887,8 +900,16 @@ def run_server(
         print(f"another panel serves this data directory on port {other}; its lock file stays")
     # Everything a session needs loads now, so Start only starts the screen.
     engine.warm()
+
+    def close() -> None:
+        backlog = app.state.backlog
+        if backlog is not None:
+            backlog.close()
+            backlog.join(10.0)
+        engine.close()  # the session, then Stockfish and the coach
+
     if parent_pid is not None:
-        _watch_parent(parent_pid, engine.close, lock)
+        _watch_parent(parent_pid, close, lock)
     if replay is not None:
         engine.start()  # a recording plays on its own; live capture waits for the Start button
     url = f"http://{host}:{port}/"
@@ -903,7 +924,7 @@ def run_server(
         uvicorn.Server(config).run(sockets=[sock])
     finally:
         with contextlib.suppress(Exception):
-            engine.close()  # the session, then Stockfish and the coach
+            close()
         with contextlib.suppress(OSError):
             if (
                 lock.exists()
