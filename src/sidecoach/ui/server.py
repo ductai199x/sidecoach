@@ -142,6 +142,16 @@ class _Card(BaseModel):
     text: str
 
 
+class _Try(BaseModel):
+    ply: int
+    uci: str
+
+
+class _Hint(BaseModel):
+    ply: int
+    level: int
+
+
 class _Rect(BaseModel):
     x: int
     y: int
@@ -414,6 +424,42 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
         review_hush()
         review_speak(body.text)
         return {"ok": True}
+
+    # Retry (ui/review_retry.py): the position a move was played from, a new move graded as the
+    # review graded the game's, and the coach's hints there.
+    def _retries(key: str) -> Any:
+        room = reviews.get(key)
+        return room.retries if room is not None else None
+
+    @app.get("/api/review/{key}/retry")
+    def review_retry(key: str, ply: int) -> dict[str, Any]:
+        retries = _retries(key)
+        if retries is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **retries.position(ply)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/try")
+    def review_try(key: str, body: _Try) -> dict[str, Any]:
+        retries = _retries(key)
+        if retries is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **retries.attempt(body.ply, body.uci)}
+        except (ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/hint")
+    def review_hint(key: str, body: _Hint) -> dict[str, Any]:
+        retries = _retries(key)
+        if retries is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **retries.hint(body.ply, body.level)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
 
     @app.post("/api/review/{key}/hush")
     def review_quiet(key: str) -> dict[str, bool]:

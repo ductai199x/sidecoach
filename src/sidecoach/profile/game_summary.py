@@ -13,7 +13,7 @@ player's game sides it is 5.8 points apart on average, with no lean either way (
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from statistics import fmean
 
 import chess
@@ -32,6 +32,7 @@ from sidecoach.events import (
     SideSummary,
 )
 from sidecoach.profile import performance
+from sidecoach.profile.causes import tactical
 
 PHASES = ("opening", "middlegame", "endgame")
 # A phase needs this many of a side's moves to be graded: a king move or two into an
@@ -46,6 +47,8 @@ KEY_LABELS = (
     Label.MISS,
     Label.BLUNDER,
 )
+# The moves that passed up something better: where the game's lessons are.
+MISSED = (Label.INACCURACY, Label.MISTAKE, Label.MISS, Label.BLUNDER)
 # A phase's accuracy as the kind of move it amounts to, from the top.
 GRADES = (
     (90.0, Label.BEST),
@@ -156,6 +159,21 @@ def summarize(game: ReviewedGame) -> GameSummary:
         graph=[round(g, 4) for g in graph],
         shape=shape_of(graph, headers.get("Result")),
     )
+
+
+def missed_motifs(game: ReviewedGame, sides: Collection[Side]) -> list[tuple[str, int]]:
+    """The tactics the sides' mistakes passed up, most often first: for each inaccuracy,
+    mistake, miss or blunder, the motif of the position's best line (what the move could have
+    done instead) -- what the game says to practise."""
+    counts: dict[str, int] = {}
+    for i, move in enumerate(game.moves):
+        if move.side not in sides or move.assessment.label not in MISSED:
+            continue
+        before = game.start if i == 0 else game.moves[i - 1].after
+        motif = tactical(before.tags)
+        if motif is not None:
+            counts[motif] = counts.get(motif, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
 def _side(

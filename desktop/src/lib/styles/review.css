@@ -213,6 +213,30 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .rv-actions button { flex: 1 1 auto; }
 
+/* Retry: the card over the position, the coach's hint set apart. */
+.rv-retry .head { color: var(--ink); }
+.rv-card .words.hint { background: var(--panel2); border-radius: 8px; padding: 8px 10px; border-left: 3px solid var(--cls-great); }
+.rv-card .words .badge { width: 18px; height: 18px; font-size: 11px; vertical-align: -3px; margin-right: 4px; }
+.after { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.after b { color: var(--ink); }
+.after .up { color: var(--accent); }
+
+/* The last card: the game summed up, what the retries changed, what to practise. */
+.rv-last { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; border-top: 1px solid var(--line); }
+.rv-last-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.rv-last-side { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--muted); }
+.rv-last-side .name { color: var(--ink); font-weight: 700; }
+.rv-last-side .acc { font-size: 14px; }
+.rv-tries { grid-template-columns: 40px 1fr 1fr; font-size: 13px; }
+.rv-tries .badge { width: 16px; height: 16px; font-size: 10px; vertical-align: -3px; }
+.rv-practice { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.rv-practice .label { font-weight: 700; }
+.rv-practice .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.rv-practice .row > span:first-child { text-transform: capitalize; }
+.rv-practice .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.rv-practice .chip { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--panel3); color: var(--ink); text-decoration: none; }
+.rv-practice .chip:hover { background: var(--accent); color: var(--accent-ink); }
+
 /* The review's settings: a card under the gear. */
 .rv-set { position: relative; }
 .rv-settings {

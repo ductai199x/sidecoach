@@ -162,6 +162,36 @@ def test_each_side_is_given_the_rating_it_played_at() -> None:
     assert summarize(short).white.performance is None
 
 
+def test_what_the_mistakes_passed_up_is_what_to_practise() -> None:
+    from sidecoach.events import MotifTag
+    from sidecoach.profile.game_summary import missed_motifs
+
+    game = _game(
+        [
+            ("e4", Label.BOOK, 100, 0.52),
+            ("e5", Label.BOOK, 100, 0.48),
+            ("Nf3", Label.BEST, 100, 0.52),
+            ("Nc6", Label.MISTAKE, 40, 0.40),
+            ("Bc4", Label.BLUNDER, 10, 0.20),
+            ("Nf6", Label.GOOD, 70, 0.75),
+        ]
+    )
+    fork = MotifTag(name="fork", squares=["d4"])
+    pin = MotifTag(name="pin", squares=["b5"])
+    # The positions Black's Nc6 and White's Bc4 were played from held a fork and a pin.
+    moves = list(game.moves)
+    moves[2] = moves[2].model_copy(
+        update={"after": moves[2].after.model_copy(update={"tags": [fork]})}
+    )
+    moves[3] = moves[3].model_copy(
+        update={"after": moves[3].after.model_copy(update={"tags": [pin]})}
+    )
+    game = game.model_copy(update={"moves": moves})
+    assert missed_motifs(game, {Side.WHITE, Side.BLACK}) == [("fork", 1), ("pin", 1)]
+    assert missed_motifs(game, {Side.BLACK}) == [("fork", 1)]
+    assert missed_motifs(game, {Side.WHITE}) == [("pin", 1)]
+
+
 def test_the_shape_of_a_game_from_its_graph() -> None:
     even = [0.5] * 20
     # Close all game and drawn: balanced.

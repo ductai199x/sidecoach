@@ -8,7 +8,8 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import "$lib/styles/review.css";
-  import { beacon, connect, review as reviewApi, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
+  import { beacon, connect, review as reviewApi, type LineStep, type RetryPosition, type ReviewMove, type ReviewState, type Tried } from "$lib/api";
+  import { inShell, openWindow } from "$lib/shell.svelte";
   import { placement } from "$lib/chess";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
@@ -16,7 +17,8 @@
   import EvalBar from "$lib/review/EvalBar.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
-  import { BAD, CLASSES, FOLDED, KEY, className, evalSide, evalText, headline, numbered, openingName, sentence, verdict } from "$lib/review/words";
+  import { BAD, CLASSES, FOLDED, KEY, SOLVED, className, evalSide, evalText, headline, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
+  import { motifWords } from "$lib/chess";
 
   const key = decodeURIComponent(page.params.key ?? "");
   const api = reviewApi(key);
@@ -32,6 +34,24 @@
   let line = $state<{ kind: "best" | "follow"; steps: LineStep[]; from: string; i: number } | null>(null);
   let playing: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  // Retry (the plan's D): another move found in the position a move was played from, graded as
+  // the review graded the game's (ui/review_retry.py). `wrong`: a try shown red, then put back;
+  // `hint`: the coach's hints given (the third draws the move); the best arrow stays hidden.
+  type Retry = RetryPosition & {
+    tried: Tried | null;
+    wrong: string | null;
+    busy: boolean;
+    hint: number;
+    hintText: string;
+    hintBest: string | null;
+    solved: boolean;
+    gaveUp: boolean;
+  };
+  let retry = $state<Retry | null>(null);
+  let redraw = $state(0);
+  // The best try at each move retried: what "accuracy after retries" counts.
+  let retried = $state<Record<number, Tried>>({});
+  const WRONG_MS = 900;
 
   // ---- the review's settings (the plan's H), kept for the next review ----
   type Look = { arrow: boolean; marks: boolean; keys: "both" | "white" | "black"; spent: boolean };
@@ -60,8 +80,12 @@
     (summary?.key_moments ?? []).filter((k) => k.kind !== "book" && (look.keys === "both" || k.side === look.keys)),
   );
 
-  // What the board shows: the game at `ply`, or a line's step.
+  // What the board shows: the game at `ply`, a line's step, or the position being retried.
   const shown = $derived.by(() => {
+    if (retry) {
+      const kept = retry.solved && retry.tried;
+      return { fen: kept ? retry.tried!.fen : retry.fen, uci: kept ? retry.tried!.uci : null, cls: kept && look.marks ? retry.tried!.label : null };
+    }
     if (line) {
       const step = line.i >= 0 ? line.steps[line.i] : null;
       return { fen: step ? step.fen : line.from, uci: step ? step.uci : null, cls: null as string | null };
@@ -72,12 +96,89 @@
   });
   // The best move's arrow, on the position the move left, when the move was not it: shown
   // unless a line is playing or the settings turn it off.
+  // Retrying, only the third hint's arrow.
   const arrows = $derived.by(() => {
+    if (retry) return retry.hintBest && !retry.solved ? [{ from: retry.hintBest.slice(0, 2), to: retry.hintBest.slice(2, 4), kind: "best" as const }] : [];
     if (!look.arrow || line || !move || !move.best_uci || move.best_uci === move.uci || view !== "moves") return [];
     return [{ from: move.best_uci.slice(0, 2), to: move.best_uci.slice(2, 4), kind: "best" as const }];
   });
-  const barScore = $derived(line ? whiteBefore : (graph[ply] ?? 0.5));
-  const barEval = $derived(line ? null : (move?.eval ?? null));
+  const barScore = $derived(line || retry ? whiteBefore : (graph[ply] ?? 0.5));
+  const barEval = $derived(line || retry ? null : (move?.eval ?? null));
+
+  // Each side's accuracy with its retried moves' best tries in their place (chess.com's
+  // "accuracy after retries"): the plain mean, as the review's own.
+  const afterRetries = $derived.by(() => {
+    const out: Partial<Record<"white" | "black", { before: number; after: number }>> = {};
+    for (const side of ["white", "black"] as const) {
+      const own = moves.filter((m) => m.side === side);
+      if (!own.some((m) => retried[m.ply])) continue;
+      const mean = (pick: (m: ReviewMove) => number) => own.reduce((s, m) => s + pick(m), 0) / own.length;
+      out[side] = {
+        before: mean((m) => m.accuracy ?? 0),
+        after: mean((m) => Math.max(m.accuracy ?? 0, retried[m.ply]?.accuracy ?? 0)),
+      };
+    }
+    return out;
+  });
+  // The moves a retry improved on: You played / New move.
+  const improvedMoves = $derived(moves.filter((m) => retried[m.ply] && (retried[m.ply].accuracy ?? 0) > (m.accuracy ?? 0)));
+
+  // ---- Retry ----
+  async function startRetry(): Promise<void> {
+    if (!move) return;
+    stopLine();
+    const at = await api.retry(move.ply);
+    if (!at.ok) return;
+    retry = { ply: at.ply, fen: at.fen, side: at.side, legal: at.legal, tried: null, wrong: null, busy: false, hint: 0, hintText: "", hintBest: null, solved: false, gaveUp: false };
+  }
+
+  function endRetry(): void {
+    retry = null;
+    redraw++;
+  }
+
+  // A try: on the board already (the hand put it there); graded; a solving move stays, any
+  // other shows red and goes back.
+  async function playTry(uci: string): Promise<void> {
+    if (!retry || retry.busy) return;
+    soundOf(retry.fen, uci);
+    retry = { ...retry, busy: true };
+    const graded = await api.attempt(retry.ply, uci);
+    if (!retry) return;
+    if (!graded.ok) { retry = { ...retry, busy: false }; redraw++; return; }
+    const best = retried[graded.ply];
+    if (!best || (graded.accuracy ?? 0) > (best.accuracy ?? 0)) retried = { ...retried, [graded.ply]: graded };
+    if (SOLVED.has(graded.label ?? "")) {
+      retry = { ...retry, tried: graded, busy: false, solved: true, hintBest: null };
+      return;
+    }
+    retry = { ...retry, tried: graded, wrong: uci };
+    setTimeout(() => {
+      if (!retry || retry.wrong !== uci) return;
+      retry = { ...retry, wrong: null, busy: false };
+      redraw++;
+    }, WRONG_MS);
+  }
+
+  async function nextHint(): Promise<void> {
+    if (!retry || retry.hint >= 3) return;
+    const got = await api.hint(retry.ply, retry.hint + 1);
+    if (!retry || !got.ok) return;
+    retry = { ...retry, hint: got.level, hintText: got.text, hintBest: got.best };
+  }
+
+  // Given up: the best move, on the board.
+  function showMove(): void {
+    if (!retry || !move || !move.best_line.length) return;
+    const first = move.best_line[0];
+    retry = {
+      ...retry,
+      tried: { ply: retry.ply, uci: first.uci, san: first.san, fen: first.fen, label: "best", loss: 0, accuracy: 100, only: false },
+      solved: true,
+      gaveUp: true,
+      hintBest: null,
+    };
+  }
 
   // ---- going through the game ----
   function soundOf(fen: string, uci: string): void {
@@ -95,6 +196,7 @@
 
   function go(to: number, heard = false): void {
     stopLine();
+    retry = null;
     const next = Math.max(0, Math.min(moves.length, to));
     if (heard && next === ply + 1 && moves[next - 1]) soundOf(moves[next - 1].fen_before, moves[next - 1].uci);
     ply = next;
@@ -139,6 +241,7 @@
     else if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); go(0); }
     else if (e.key === "End" || e.key === "ArrowDown") { e.preventDefault(); go(moves.length); }
     else if (e.key === "Escape" && settingsOpen) { e.preventDefault(); settingsOpen = false; }
+    else if (e.key === "Escape" && retry) { e.preventDefault(); endRetry(); }
     else if (e.key === "Escape" && line) { e.preventDefault(); stopLine(); }
     else if (e.key === "f") bottom = bottom === "white" ? "black" : "white";
   }
@@ -153,6 +256,7 @@
   const spoken = $derived.by(() => {
     if (!room || room.status !== "ready" || !summary) return null;
     if (view === "summary") return verdict(summary, room.game.result);
+    if (retry) return retry.tried && !retry.gaveUp ? tryWords(retry.tried) : retry.hintText || null;
     if (line || !move) return null;
     return `${headline(move)}. ${sentence(move, whiteBefore)}`;
   });
@@ -374,7 +478,18 @@
     <div class="rv-boardrow">
       <EvalBar score={barScore} value={barEval} {bottom} />
       {#if shown}
-        <ReviewBoard fen={shown.fen} uci={shown.uci} cls={shown.cls} {bottom} {arrows} />
+        <ReviewBoard
+          fen={shown.fen}
+          uci={shown.uci}
+          cls={shown.cls}
+          {bottom}
+          {arrows}
+          {redraw}
+          legal={retry && !retry.solved && !retry.busy ? retry.legal : null}
+          side={retry?.side ?? "white"}
+          wrong={retry?.wrong ?? null}
+          onplay={playTry}
+        />
       {:else}
         <div class="board-wrap rv-board rv-blank"></div>
       {/if}
@@ -417,6 +532,10 @@
               <div class="name">{summary[side].name ?? className(side)}</div>
               {#if summary[side].rating}<div class="rating">{summary[side].rating}</div>{/if}
               <b class="acc {side === 'white' ? 'w' : 'b'}" title="Accuracy">{summary[side].accuracy?.toFixed(1) ?? "–"}</b>
+              {#if afterRetries[side]}
+                {@const r = afterRetries[side]!}
+                <div class="after" title="Accuracy with your retries in place of the moves played">after retries <b>{r.after.toFixed(1)}</b> <span class="up">(+{(r.after - r.before).toFixed(1)})</span></div>
+              {/if}
             </div>
           {/each}
         </div>
@@ -455,7 +574,26 @@
       </div>
     {:else}
       <div class="rv-scroll rv-step">
-        {#if line}
+        {#if retry}
+          <div class="rv-card rv-retry">
+            <div class="head">{retry.solved ? (retry.gaveUp ? "The move" : "Found it") : `Find a better move for ${className(retry.side)}`}</div>
+            {#if retry.tried}
+              <div class="words">
+                {#if retry.tried.label}<i class="badge {retry.tried.label}"></i>{/if}
+                <span class="cls-text {retry.tried.label ?? ''}">{retry.gaveUp ? `${retry.tried.san} was the move.` : tryWords(retry.tried)}</span>
+              </div>
+            {/if}
+            {#if retry.busy && !retry.wrong}<div class="words muted" role="status">Checking the move…</div>{/if}
+            {#if retry.hintText && !retry.solved}<div class="words hint">{retry.hintText}</div>{/if}
+            <div class="rv-actions">
+              {#if !retry.solved}
+                <button onclick={nextHint} disabled={retry.hint >= 3} title="The coach's hints: the idea, where to look, then the move">{retry.hint ? `Hint ${retry.hint + 1 > 3 ? 3 : retry.hint + 1} of 3` : "Hint"}</button>
+                <button onclick={showMove}>Show the move</button>
+              {/if}
+              <button class={retry.solved ? "primary" : "ghost"} onclick={endRetry}>Back to the game</button>
+            </div>
+          </div>
+        {:else if line}
           <div class="rv-card">
             <div class="head">{line.kind === "best" ? "The best line" : "What follows"}</div>
             <div class="words">
@@ -472,13 +610,58 @@
             </div>
             <div class="words">{sentence(move, whiteBefore)}</div>
             <div class="rv-actions">
+              {#if BAD.has(move.label ?? "")}
+                <button class="primary" onclick={startRetry} title="Find a better move yourself">Retry</button>
+              {/if}
               {#if move.best_line.length && move.best_uci !== move.uci}
-                <button class={BAD.has(move.label ?? "") ? "primary" : ""} onclick={() => playLine("best")}>Best: {move.best_san}</button>
+                <button onclick={() => playLine("best")}>Best: {move.best_san}</button>
               {/if}
               {#if move.follow_line.length}<button onclick={() => playLine("follow")}>Show follow-up</button>{/if}
               <button onclick={nextKey} title="The next move worth a word">Next key move ›</button>
             </div>
           </div>
+          {#if ply === moves.length}
+            <div class="rv-last">
+              <div class="rv-say"><i class="who"></i><div class="bubble">{verdict(summary, game?.result ?? null)}</div></div>
+              <div class="rv-last-grid">
+                {#each ["white", "black"] as const as side (side)}
+                  {@const s = summary[side]}
+                  {@const r = afterRetries[side]}
+                  <div class="rv-last-side">
+                    <div class="name">{s.name ?? className(side)}</div>
+                    <div><b class="acc {side === 'white' ? 'w' : 'b'}">{s.accuracy?.toFixed(1) ?? "–"}</b> accuracy</div>
+                    {#if r}<div class="after">after retries <b>{r.after.toFixed(1)}</b> <span class="up">(+{(r.after - r.before).toFixed(1)})</span></div>{/if}
+                    {#if s.performance}<div title="Somewhere from {s.performance.low} to {s.performance.high}">game rating <b>{s.performance.rating}</b></div>{/if}
+                  </div>
+                {/each}
+              </div>
+              {#if improvedMoves.length}
+                <div class="rv-table rv-tries">
+                  <span></span><span class="label">You played</span><span class="label">New move</span>
+                  {#each improvedMoves as m (m.ply)}
+                    <span class="muted">{Math.ceil(m.ply / 2)}{m.side === 'white' ? '.' : '...'}</span>
+                    <span class="cls-text {m.label ?? ''}"><i class="badge {m.label}"></i> {m.san}</span>
+                    <span class="cls-text {retried[m.ply].label ?? ''}"><i class="badge {retried[m.ply].label}"></i> {retried[m.ply].san}</span>
+                  {/each}
+                </div>
+              {/if}
+              {#if room?.practice.length}
+                <div class="rv-practice">
+                  <div class="label">Practise what this game missed</div>
+                  {#each room.practice as p (p.motif)}
+                    <div class="row">
+                      <span>{motifWords(p.motif)} <span class="muted">· missed {p.missed}×</span></span>
+                      <span class="chips">
+                        {#each p.puzzles as z (z.id)}
+                          <a class="chip" href="/puzzle/{encodeURIComponent(z.id)}" target="_blank" rel="noopener" onclick={(e) => { if (inShell()) { e.preventDefault(); openWindow('puzzle/' + encodeURIComponent(z.id)); } }}>puzzle · {z.rating}</a>
+                        {/each}
+                      </span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
         {:else}
           <div class="rv-say"><i class="who"></i><div class="bubble">{summary.opening ? `The ${openingName(summary.opening)}.` : "The start."} Step through with the arrows, or jump to a key move.</div></div>
         {/if}

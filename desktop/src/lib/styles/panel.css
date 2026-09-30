@@ -248,6 +248,50 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 #voice[aria-pressed="false"] .ic-off { display: block; }
 #voice[aria-pressed="false"] { color: var(--warn); }
 
+/* ---- a board that takes moves (the puzzle's, the review's Retry; lib/moveinput) ---- */
+.board-wrap { user-select: none; -webkit-user-select: none; touch-action: none; }
+.board.cb .sq { position: relative; }
+.board.cb .sq.light.hl { background: var(--sq-light-hl); }
+.board.cb .sq.dark.hl { background: var(--sq-dark-hl); }
+/* The picked-up piece's square: chess.com's yellow. */
+.board.cb .sq.sel.light { background: var(--sq-light-hl); }
+.board.cb .sq.sel.dark { background: var(--sq-dark-hl); }
+/* Where it may go: a dot on an empty square, a ring around a piece to take. */
+.board.cb .sq.target::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 30%; height: 30%; border-radius: 50%;
+  transform: translate(-50%, -50%); background: #00000026; pointer-events: none;
+}
+.board.cb .sq.target.occupied::after {
+  width: 100%; height: 100%; background: transparent; box-shadow: inset 0 0 0 min(0.6vw, 7px) #00000026;
+}
+/* The king in check: chess.com's red glow. */
+.board.cb .sq.check { background-image: radial-gradient(circle at center, #ff0000cc 0%, #e70000aa 25%, #e7000000 90%); }
+/* A wrong move's landing square, for a moment. */
+.board.cb .sq.wrong.light { background: #eb7d6a; }
+.board.cb .sq.wrong.dark { background: #d36c50; }
+/* The square under a dragged piece: chess.com's white outline. */
+.board.cb .sq.hover { box-shadow: inset 0 0 0 calc(var(--board) * 0.0075) #ffffffa6; }
+
+body.grabbing, body.grabbing * { cursor: grabbing !important; }
+.board.cb .sq.grab { cursor: grab; }
+
+/* The promotion picker: a column of the four pieces over the promotion square. */
+.promo {
+  position: absolute; width: 12.5%; display: flex; flex-direction: column; z-index: 10;
+  background: #fff; box-shadow: 0 4px 16px #0008; border-radius: 4px; overflow: hidden;
+}
+.promo.down { flex-direction: column-reverse; }
+.promo button {
+  width: 100%; aspect-ratio: 1 / 1; padding: 0; border: 0; border-radius: 0; background: #fff;
+  background-repeat: no-repeat; background-position: center; background-size: 90% 90%;
+}
+.promo button:hover { background-color: #e8e8e8; }
+.promo button.x { aspect-ratio: auto; height: 28px; background: #ddd; color: #333; font-size: 14px; }
+.promo .wQ { background-image: url(/pieces/wQ.svg); } .promo .wR { background-image: url(/pieces/wR.svg); }
+.promo .wB { background-image: url(/pieces/wB.svg); } .promo .wN { background-image: url(/pieces/wN.svg); }
+.promo .bQ { background-image: url(/pieces/bQ.svg); } .promo .bR { background-image: url(/pieces/bR.svg); }
+.promo .bB { background-image: url(/pieces/bB.svg); } .promo .bN { background-image: url(/pieces/bN.svg); }
+
 /* The player's own marks on a board that takes them (the puzzle's, the review's): a
    right-clicked square red, a right-dragged arrow green, as chess.com's. */
 .board.cb .sq.marked.light { background: #eb7d6a; }

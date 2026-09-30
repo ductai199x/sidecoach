@@ -25,11 +25,12 @@ from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import STRENGTHS, THREADS, review_game, workers_for
 from sidecoach.analysis.score import Thresholds, position_score
 from sidecoach.config import Settings, find_stockfish
-from sidecoach.events import GameSummary, Line, ReviewedGame
+from sidecoach.events import GameSummary, Line, ReviewedGame, Side
 from sidecoach.profile import library
-from sidecoach.profile.game_summary import summarize
+from sidecoach.profile.game_summary import missed_motifs, summarize
 from sidecoach.profile.store import LibraryRow, Store
 from sidecoach.ui.log import DebugLog
+from sidecoach.ui.review_retry import Retries
 
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
@@ -38,6 +39,9 @@ TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
 # The lines a move's card plays on the board (the best, and what follows the move), in plies.
 LINE_PLIES = 6
+# The last card's training: the motifs the game missed most, and puzzles of each.
+PRACTICE_MOTIFS = 2
+PRACTICE_PUZZLES = 3
 
 
 class ReviewRoom:
@@ -68,6 +72,8 @@ class ReviewRoom:
         self.reviewed: ReviewedGame | None = None
         self.summary: GameSummary | None = None
         self._moves: list[dict[str, Any]] = []
+        self.practice: list[dict[str, Any]] = []
+        self.retries: Retries | None = None
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -101,6 +107,7 @@ class ReviewRoom:
                 "start_fen": self.reviewed.start.fen if self.reviewed else None,
                 "summary": self.summary.model_dump(mode="json") if self.summary else None,
                 "moves": self._moves,
+                "practice": self.practice,
                 "closed": self.closed,
             }
 
@@ -131,6 +138,8 @@ class ReviewRoom:
         finally:
             self.closed = True
             self.store.close()
+            if self.retries is not None:
+                self.retries.close()
 
     def _load(self) -> bool:
         """The review saved at this strength, when it is of the current format."""
@@ -209,10 +218,48 @@ class ReviewRoom:
         with self._lock:
             self.done, self.total = done, total
 
+    def _practice(self, reviewed: ReviewedGame) -> list[dict[str, Any]]:
+        """Puzzles for what the game passed up (the last card's training): the motifs the
+        player's mistakes missed -- both sides' when the library does not know which was the
+        player's -- each with puzzles of it at the player's puzzle level."""
+        from sidecoach.profile.puzzles import open_store, puzzle_level
+
+        user = self.row.user_side
+        sides = {Side(user)} if user else {Side.WHITE, Side.BLACK}
+        motifs = missed_motifs(reviewed, sides)[:PRACTICE_MOTIFS]
+        puzzles = open_store(self.settings.data_dir) if motifs else None
+        if puzzles is None:
+            return []
+        try:
+            level = puzzle_level(self.store)
+            return [
+                {
+                    "motif": motif,
+                    "missed": missed,
+                    "puzzles": [
+                        {"id": p.id, "rating": p.rating}
+                        for p in puzzles.pick(motif, level, count=PRACTICE_PUZZLES)
+                    ],
+                }
+                for motif, missed in motifs
+            ]
+        finally:
+            puzzles.close()
+
     def _ready(self, reviewed: ReviewedGame, summary: GameSummary) -> None:
         moves = move_views(reviewed)
+        practice = self._practice(reviewed)
+        retries = Retries(
+            self.settings,
+            reviewed,
+            self.strength,
+            game_id=self.key,
+            make_engine=self._make_engine,
+        )
         with self._lock:
             self.reviewed, self.summary, self._moves = reviewed, summary, moves
+            self.practice = practice
+            self.retries = retries
             self.status = "ready"
             self.done = self.total = len(reviewed.moves) + 1
 

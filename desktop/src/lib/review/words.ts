@@ -51,6 +51,21 @@ export function headline(m: ReviewMove): string {
   return `${m.san} ${IS[m.label ?? ""] ?? "was played"}`;
 }
 
+/** A retried move that solves the position: it stays on the board. */
+export const SOLVED = new Set(["brilliant", "great", "best", "excellent"]);
+
+/** What a retried move earns, in chess.com's manner. */
+export function tryWords(t: { san: string; label: string | null; only: boolean }): string {
+  const label = t.label ?? "";
+  if (label === "best" || label === "great" || label === "brilliant") {
+    return t.only ? `${t.san} is best — the only move that works!` : `${t.san} ${IS[label]}!`;
+  }
+  if (label === "excellent") return `${t.san} is excellent — nearly the best.`;
+  if (label === "good") return `${t.san} is good, but there's better. Try again.`;
+  if (BAD.has(label)) return t.only ? `${t.san} ${IS[label]} — only one move worked there. Try again.` : `${t.san} ${IS[label]}. Try again.`;
+  return `${t.san}. Try again.`;
+}
+
 /** The eval as chess.com writes it, from White's side: +1.24, -0.3, M3, -M2, 1-0. */
 export function evalText(e: Eval | null | undefined): string {
   if (!e) return "";

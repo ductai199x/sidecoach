@@ -59,7 +59,9 @@ export function squareAt(x: number, y: number, bottom: string): string | null {
 /** The squares and moves a coach message names, so hovering one can light its square. */
 export const SQ_TOKEN = /(?<![A-Za-z0-9])((?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]?|[a-h][1-8])(?![A-Za-z0-9])/g;
 
-export const motifWords = (m: string | null | undefined): string => (m || "").replace(/([a-z])([A-Z0-9])/g, "$1 $2").toLowerCase();
+/** A tagger name in words, as the coach says it: xRayAttack -> "x-ray attack". */
+export const motifWords = (m: string | null | undefined): string =>
+  (m || "").replace(/([a-z])([A-Z0-9])/g, "$1 $2").toLowerCase().replace("x ray", "x-ray");
 
 export const kilo = (n: number): string => (n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n));
 

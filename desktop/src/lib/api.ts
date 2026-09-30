@@ -226,6 +226,13 @@ export type GameSummary = {
   shape: string | null;
 };
 
+/** The last card's training: a motif the game's mistakes passed up, and puzzles of it. */
+export type Practice = { motif: string; missed: number; puzzles: { id: string; rating: number }[] };
+
+/** Retry: the position a move was played from, and a new move from it graded. */
+export type RetryPosition = { ply: number; fen: string; side: "white" | "black"; legal: Record<string, string[]> };
+export type Tried = { ply: number; uci: string; san: string; fen: string; label: string | null; loss: number; accuracy: number | null; only: boolean };
+
 export type ReviewState = {
   key: string;
   status: "starting" | "analysing" | "ready" | "failed";
@@ -236,6 +243,7 @@ export type ReviewState = {
   start_fen: string | null;
   summary: GameSummary | null;
   moves: ReviewMove[];
+  practice: Practice[];
   closed: boolean;
 };
 
@@ -248,6 +256,10 @@ export const review = (key: string) => {
     /** The card said in the panel's voice, cutting off the one before; hush stops it. */
     say: (text: string) => post<{ ok: boolean }>(`${p}/say`, { text }),
     hush: () => post<{ ok: boolean }>(`${p}/hush`),
+    retry: (ply: number) => get<{ ok: boolean; error?: string } & RetryPosition>(`${p}/retry?ply=${ply | 0}`),
+    attempt: (ply: number, uci: string) => post<{ ok: boolean; error?: string } & Tried>(`${p}/try`, { ply, uci }),
+    hint: (ply: number, level: number) =>
+      post<{ ok: boolean; error?: string; level: number; text: string; best: string | null }>(`${p}/hint`, { ply, level }),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };

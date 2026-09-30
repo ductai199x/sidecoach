@@ -21,6 +21,7 @@
   import "$lib/styles/puzzle.css";
   import { beacon, connect, puzzle as puzzleApi, type LogLine, type Mark, type PuzzlePosition, type PuzzleState } from "$lib/api";
   import { FILES, cellOf, colourOf, motifWords, placement, squareAt } from "$lib/chess";
+  import { MoveInput } from "$lib/moveinput.svelte";
   import { PieceLayer } from "$lib/pieces";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
@@ -40,14 +41,9 @@
   let closed = false;
 
   // ---- what is on the board ------------------------------------------------------------------
-  let selected = $state<string | null>(null);
-  let targets = $state<string[]>([]);
-  let marked = $state<string[]>([]);
-  let arrows = $state<[string, string][]>([]);
   let coachMarks = $state<Mark[] | null>(null);
   let wrongShown = $state<string | null>(null);
   let occupied = $state<Record<string, string>>({});  // square -> letter, for the marks
-  let hover = $state<string | null>(null);  // the square under a dragged piece
   let retracting = false;
 
   // ---- which position is shown -----------------------------------------------------------
@@ -83,10 +79,10 @@
         if (wrongShown && name === wrongShown.slice(0, 2)) cls.push("hl");
         if (wrongShown && name === wrongShown.slice(2, 4)) cls.push("wrong");
         if (!optimistic && position?.check === name) cls.push("check");
-        if (selected === name) cls.push("sel");
-        if (targets.includes(name)) { cls.push("target"); if (occupied[name]) cls.push("occupied"); }
-        if (marked.includes(name)) cls.push("marked");
-        if (hover === name) cls.push("hover");
+        if (input.selected === name) cls.push("sel");
+        if (input.targets.includes(name)) { cls.push("target"); if (occupied[name]) cls.push("occupied"); }
+        if (input.marked.includes(name)) cls.push("marked");
+        if (input.hover === name) cls.push("hover");
         out.push({ name, dark: (rank + file) % 2 === 0, odd: y % 2 === 1, rankLabel: x === 0 ? String(rank + 1) : null, fileLabel: y === 7 ? FILES[file] : null, cls: cls.join(" ") });
       }
     }
@@ -104,9 +100,6 @@
 
   // ---- the pieces: a layer of their own, moved by transforms so they slide -----------------
   let layer: PieceLayer | null = null;
-  const pieceAt = (square: string) => layer?.nodes.get(square);
-  const place = (node: HTMLDivElement, square: string) => layer?.place(node, square);
-  const placeNow = (node: HTMLDivElement, square: string) => layer?.placeNow(node, square);
   // The pieces as `fen` has them; `uci`, the move that made it, names the piece that moves.
   function renderPieces(fen: string, uci: string | null = null) {
     if (!piecesEl) return;
@@ -114,40 +107,17 @@
     occupied = layer.render(fen, uci);
   }
 
-  // ---- what the player does ------------------------------------------------------------------
-  let drag: { square: string; node: HTMLDivElement; moved: boolean; startX: number; startY: number } | null = null;
-  let rightDrag: { from: string | null } | null = null;
-  let promo = $state<{ square: string; x: number; y: number; down: boolean; resolve: (p: string | null) => void } | null>(null);
-
-  function squareUnder(clientX: number, clientY: number): string | null {
-    if (!boardEl) return null;
-    const r = boardEl.getBoundingClientRect();
-    const x = Math.floor(((clientX - r.left) / r.width) * 8);
-    const y = Math.floor(((clientY - r.top) / r.height) * 8);
-    return squareAt(x, y, bottom);
-  }
-
-  function select(square: string) {
-    const node = pieceAt(square);
-    if (!room || !canMove || !node || colourOf(node.dataset.letter!) !== bottom) {
-      selected = null; targets = []; return;
-    }
-    selected = square;
-    targets = room.legal[square] ?? [];
-  }
-
-  function isPromotion(from: string, to: string): boolean {
-    const node = pieceAt(from);
-    if (!node || node.dataset.letter!.toUpperCase() !== "P") return false;
-    return to[1] === "8" || to[1] === "1";
-  }
-
-  function promotionPicker(square: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const { x, y } = cellOf(square, bottom);
-      promo = { square, x, y, down: y > 3, resolve: (p) => { promo = null; resolve(p); } };
-    });
-  }
+  // ---- what the player does: the hand (lib/moveinput), and what a move means here -----------
+  const input = new MoveInput({
+    board: () => boardEl,
+    wrap: () => wrapEl,
+    layer: () => layer,
+    bottom: () => bottom,
+    canMove: () => canMove,
+    side: () => bottom,
+    legal: () => room?.legal ?? {},
+    play,
+  });
 
   // The sound of a move made from `fen`: a capture when it lands on a piece, or a pawn steps
   // aside onto an empty square (en passant); a move otherwise.
@@ -158,21 +128,9 @@
     if (takes) captureSound(); else moveSound();
   }
 
-  // The solver's move: on the board at once -- dropped where it was let go, or slid there
-  // from a click -- and sent; the answer brings the reply, or shows it wrong.
-  async function tryMove(from: string, to: string, dropped: boolean): Promise<boolean> {
-    if (!targets.includes(to)) return false;
-    selected = null; targets = [];
-    const node = pieceAt(from);
-    let uci = from + to;
-    if (isPromotion(from, to)) {
-      if (node) placeNow(node, to);
-      const piece = await promotionPicker(to);
-      if (!piece) { if (node) placeNow(node, from); return false; }
-      uci += piece;
-    } else if (node) {
-      if (dropped) placeNow(node, to); else place(node, to);
-    }
+  // The solver's move, on the board already: sent; the answer brings the reply, or shows it
+  // wrong.
+  async function play(uci: string): Promise<void> {
     if (room) sound(room.positions[shown].fen, uci);
     optimistic = uci;
     inFlight = room?.version ?? null;
@@ -180,89 +138,6 @@
     inFlight = null;
     if (res && res.state) render(res.state);
     else { optimistic = null; if (room) renderPieces(room.positions[shown].fen); }
-    return true;
-  }
-
-  // Under the pointer: a piece picked up is centred on it, as on chess.com.
-  function follow(node: HTMLDivElement, clientX: number, clientY: number) {
-    if (!boardEl) return;
-    const r = boardEl.getBoundingClientRect();
-    const cell = r.width / 8;
-    const px = clientX - r.left - cell / 2, py = clientY - r.top - cell / 2;
-    node.style.transform = `translate(${(px / cell) * 100}%, ${(py / cell) * 100}%)`;
-  }
-
-  function onPointerDown(e: PointerEvent) {
-    if (!wrapEl) return;
-    if (e.button === 2) { // a right-click: a mark, or an arrow if dragged
-      e.preventDefault();
-      rightDrag = { from: squareUnder(e.clientX, e.clientY) };
-      wrapEl.setPointerCapture(e.pointerId);
-      return;
-    }
-    if (e.button !== 0) return;
-    if (marked.length || arrows.length) { marked = []; arrows = []; } // a left-click clears the user's marks
-    const square = squareUnder(e.clientX, e.clientY);
-    if (!square) return;
-    if (selected && targets.includes(square)) { tryMove(selected, square, false); return; }
-    const node = pieceAt(square);
-    if (node && canMove && colourOf(node.dataset.letter!) === bottom) {
-      // Lifted at the press, centred under the pointer.
-      drag = { square, node, moved: false, startX: e.clientX, startY: e.clientY };
-      wrapEl.setPointerCapture(e.pointerId);
-      node.classList.add("dragging");
-      follow(node, e.clientX, e.clientY);
-      hover = square;
-      select(square);
-    } else if (selected) {
-      selected = null; targets = [];
-    }
-  }
-
-  function onPointerMove(e: PointerEvent) {
-    if (!drag) return;
-    if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) >= 4) {
-      drag.moved = true;
-      document.body.classList.add("grabbing");
-    }
-    follow(drag.node, e.clientX, e.clientY);
-    hover = squareUnder(e.clientX, e.clientY);
-  }
-
-  // A piece put down, from a drag: on a legal square it is the move, landed where it was
-  // dropped; anywhere else it is back on its square at once, still picked.
-  function putDown(d: { square: string; node: HTMLDivElement }, to: string | null) {
-    hover = null;
-    document.body.classList.remove("grabbing");
-    if (to && to !== d.square && targets.includes(to)) {
-      tryMove(d.square, to, true);
-    } else {
-      placeNow(d.node, d.square);
-    }
-    d.node.classList.remove("dragging");
-  }
-
-  function onPointerUp(e: PointerEvent) {
-    if (rightDrag) {
-      const to = squareUnder(e.clientX, e.clientY);
-      const from = rightDrag.from;
-      rightDrag = null;
-      if (from && to && from !== to) {
-        const i = arrows.findIndex(([a, b]) => a === from && b === to);
-        if (i >= 0) arrows = arrows.filter((_, j) => j !== i); else arrows = [...arrows, [from, to]];
-      } else if (from) {
-        marked = marked.includes(from) ? marked.filter((m) => m !== from) : [...marked, from];
-      }
-      return;
-    }
-    if (!drag) return;
-    const d = drag; drag = null;
-    putDown(d, d.moved ? squareUnder(e.clientX, e.clientY) : null); // a click: stays picked
-  }
-
-  function onPointerCancel() {
-    if (drag) { putDown(drag, null); drag = null; }
-    rightDrag = null;
   }
 
   // ---- the coach and the log ------------------------------------------------------------------
@@ -306,9 +181,9 @@
     if (s.wrong && !wrongShown) {
       wrongShown = s.wrong;
       optimistic = null;
-      const node = pieceAt(s.wrong.slice(0, 2));
-      if (node) place(node, s.wrong.slice(2, 4));
-      selected = null; targets = [];
+      const node = layer?.nodes.get(s.wrong.slice(0, 2));
+      if (node) layer?.place(node, s.wrong.slice(2, 4));
+      input.clear();
       if (!retracting) {
         retracting = true;
         setTimeout(async () => {
@@ -481,10 +356,10 @@
       bind:this={wrapEl}
       role="application"
       aria-label="Chess board"
-      onpointerdown={onPointerDown}
-      onpointermove={onPointerMove}
-      onpointerup={onPointerUp}
-      onpointercancel={onPointerCancel}
+      onpointerdown={input.down}
+      onpointermove={input.move}
+      onpointerup={input.up}
+      onpointercancel={input.cancel}
       oncontextmenu={(e) => e.preventDefault()}
     >
       <div class="board cb" bind:this={boardEl}>
@@ -514,12 +389,13 @@
             <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-{m.color}" opacity={m.opacity == null ? 1 : m.opacity} marker-end="url(#ah-{m.color})" />
           {/if}
         {/each}
-        {#each arrows as [from, to] (from + to)}
+        {#each input.arrows as [from, to] (from + to)}
           {@const l = arrowLine(from, to)}
           <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-user user" opacity="0.85" marker-end="url(#ah-user)" />
         {/each}
       </svg>
-      {#if promo}
+      {#if input.promo}
+        {@const promo = input.promo}
         <div class="promo" class:down={promo.down} style="left: {promo.x * 12.5}%; top: {(promo.down ? (promo.y - 3) * 12.5 : promo.y * 12.5)}%">
           {#each ["Q", "R", "B", "N"] as p (p)}
             <button class="{bottom === 'white' ? 'w' : 'b'}{p}" title={p} aria-label="Promote to {p}" onclick={(e) => { e.stopPropagation(); promo?.resolve(p.toLowerCase()); }}></button>

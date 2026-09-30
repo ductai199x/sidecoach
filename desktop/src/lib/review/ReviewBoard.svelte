@@ -2,14 +2,15 @@
   // The review's board: the position the review is at, its pieces sliding from move to move;
   // the move that led here tinted in its class's colour on both squares and its badge on the
   // destination's corner, as chess.com marks a reviewed move (a line's move is lit yellow, as a
-  // move on any board); the arrows the review draws
-  // (the best move, a line being shown); and the player's own marks -- a right-click lights a
-  // square, a right-drag draws an arrow, a left-click clears them.
-  import { onMount } from "svelte";
-  import { FILES, cellOf, squareAt } from "$lib/chess";
+  // move on any board); the arrows the review draws (the best move, a line being shown); the
+  // player's own marks. Given `legal`, it takes the player's moves (Retry): the hand is the
+  // puzzle board's (lib/moveinput), a tried move is `onplay`'s, and a `wrong` one shows red
+  // until `redraw` puts the position back.
+  import { FILES, cellOf, colourOf, squareAt } from "$lib/chess";
+  import { MoveInput } from "$lib/moveinput.svelte";
   import { PieceLayer } from "$lib/pieces";
 
-  export type Arrow = { from: string; to: string; kind: "best" | "follow" };
+  type Arrow = { from: string; to: string; kind: "best" | "follow" };
 
   let {
     fen,
@@ -17,13 +18,40 @@
     cls = null,
     bottom = "white",
     arrows = [],
-  }: { fen: string; uci?: string | null; cls?: string | null; bottom?: string; arrows?: Arrow[] } = $props();
+    legal = null,
+    side = "white",
+    wrong = null,
+    redraw = 0,
+    onplay,
+  }: {
+    fen: string;
+    uci?: string | null;
+    cls?: string | null;
+    bottom?: string;
+    arrows?: Arrow[];
+    legal?: Record<string, string[]> | null;
+    side?: string;
+    wrong?: string | null;
+    redraw?: number;
+    onplay?: (uci: string) => void;
+  } = $props();
 
   let boardEl = $state<HTMLDivElement | null>(null);
+  let wrapEl = $state<HTMLDivElement | null>(null);
   let piecesEl = $state<HTMLDivElement | null>(null);
   let layer: PieceLayer | null = null;
-  let marked = $state<string[]>([]);
-  let drawn = $state<[string, string][]>([]);
+  let occupied = $state<Record<string, string>>({}); // square -> letter: a capture's ring
+
+  const input = new MoveInput({
+    board: () => boardEl,
+    wrap: () => wrapEl,
+    layer: () => layer,
+    bottom: () => bottom,
+    canMove: () => !!legal && !wrong,
+    side: () => side,
+    legal: () => legal ?? {},
+    play: (move) => onplay?.(move),
+  });
 
   const from = $derived(uci ? uci.slice(0, 2) : null);
   const to = $derived(uci ? uci.slice(2, 4) : null);
@@ -48,59 +76,48 @@
     return { x1, y1, x2: x2 - dx * k, y2: y2 - dy * k };
   }
 
-  // The pieces follow the position; the move that made it slides.
+  // The pieces follow the position; the move that made it slides. `redraw` puts a tried move
+  // back.
   $effect(() => {
     const at = fen, move = uci;
+    void redraw;
     if (!piecesEl) return;
     layer ??= new PieceLayer(piecesEl, bottom);
     if (layer.bottom !== bottom) layer.turn(bottom);
-    layer.render(at, move);
-    marked = [];
-    drawn = [];
+    occupied = layer.render(at, move);
+    input.clear();
+    input.clearMarks();
   });
-
-  // ---- the player's own marks ----
-  let rightFrom: string | null = null;
-  function squareUnder(e: PointerEvent): string | null {
-    if (!boardEl) return null;
-    const r = boardEl.getBoundingClientRect();
-    return squareAt(Math.floor(((e.clientX - r.left) / r.width) * 8), Math.floor(((e.clientY - r.top) / r.height) * 8), bottom);
-  }
-  function down(e: PointerEvent) {
-    if (e.button === 2) { rightFrom = squareUnder(e); return; }
-    if (e.button === 0) { marked = []; drawn = []; }
-  }
-  function up(e: PointerEvent) {
-    if (e.button !== 2 || !rightFrom) return;
-    const a = rightFrom, b = squareUnder(e);
-    rightFrom = null;
-    if (b && b !== a) {
-      const i = drawn.findIndex(([p, q]) => p === a && q === b);
-      drawn = i >= 0 ? drawn.filter((_, j) => j !== i) : [...drawn, [a, b]];
-    } else marked = marked.includes(a) ? marked.filter((m) => m !== a) : [...marked, a];
-  }
-
-  onMount(() => () => { layer = null; });
 </script>
 
 <div
   class="board-wrap rv-board"
-  role="img"
+  class:takes={!!legal}
+  bind:this={wrapEl}
+  role="application"
   aria-label="The position"
-  onpointerdown={down}
-  onpointerup={up}
+  onpointerdown={input.down}
+  onpointermove={input.move}
+  onpointerup={input.up}
+  onpointercancel={input.cancel}
   oncontextmenu={(e) => e.preventDefault()}
 >
   <div class="board cb" bind:this={boardEl}>
     {#each squares as sq (sq.name)}
+      {@const lit = sq.name === from || sq.name === to}
       <div
         class="sq {sq.dark ? 'dark' : 'light'}"
         class:odd={sq.odd}
-        class:cls={cls && (sq.name === from || sq.name === to)}
-        class:hl={!cls && (sq.name === from || sq.name === to)}
-        class:from={sq.name === from}
-        class:marked={marked.includes(sq.name)}
-        style={cls && (sq.name === from || sq.name === to) ? `--tint: color-mix(in srgb, var(--cls-${cls}) ${sq.name === from ? 38 : 52}%, transparent)` : undefined}
+        class:cls={cls && lit}
+        class:hl={!cls && lit && !wrong}
+        class:wrong={wrong && sq.name === wrong.slice(2, 4)}
+        class:sel={input.selected === sq.name}
+        class:target={input.targets.includes(sq.name)}
+        class:occupied={input.targets.includes(sq.name) && !!occupied[sq.name]}
+        class:grab={!!legal && !wrong && !!occupied[sq.name] && colourOf(occupied[sq.name]) === side}
+        class:hover={input.hover === sq.name}
+        class:marked={input.marked.includes(sq.name)}
+        style={cls && lit ? `--tint: color-mix(in srgb, var(--cls-${cls}) ${sq.name === from ? 38 : 52}%, transparent)` : undefined}
       >
         {#if sq.rankLabel}<span class="coord rank">{sq.rankLabel}</span>{/if}
         {#if sq.fileLabel}<span class="coord file">{sq.fileLabel}</span>{/if}
@@ -118,12 +135,21 @@
       {@const l = line(a.from, a.to)}
       <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-{a.kind}" marker-end="url(#rv-ah-{a.kind})" />
     {/each}
-    {#each drawn as [a, b] (a + b)}
+    {#each input.arrows as [a, b] (a + b)}
       {@const l = line(a, b)}
       <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-user user" marker-end="url(#rv-ah-user)" />
     {/each}
   </svg>
   {#if cls && badgeAt}
     <div class="rv-mark" style="left: {badgeAt.x * 12.5}%; top: {badgeAt.y * 12.5}%"><i class="badge {cls}"></i></div>
+  {/if}
+  {#if input.promo}
+    {@const promo = input.promo}
+    <div class="promo" class:down={promo.down} style="left: {promo.x * 12.5}%; top: {promo.down ? (promo.y - 3) * 12.5 : promo.y * 12.5}%">
+      {#each ["Q", "R", "B", "N"] as p (p)}
+        <button class="{side === 'white' ? 'w' : 'b'}{p}" title={p} aria-label="Promote to {p}" onclick={(e) => { e.stopPropagation(); promo.resolve(p.toLowerCase()); }}></button>
+      {/each}
+      <button class="x" onclick={(e) => { e.stopPropagation(); promo.resolve(null); }}>×</button>
+    </div>
   {/if}
 </div>

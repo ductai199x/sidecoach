@@ -169,6 +169,51 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     assert voice.heard[-2:] == ["stop", "stop"]
 
 
+def test_a_move_is_retried_and_graded_as_the_review_graded_it(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from sidecoach.ui import review_retry, review_room
+    from sidecoach.ui.server import build_app
+
+    for module in (review_room, review_retry):
+        monkeypatch.setattr(module, "find_stockfish", lambda _settings: Path("stockfish"))
+    made: list[FakeEngine] = []
+
+    def engine_for(**_: Any) -> FakeEngine:
+        made.append(FakeEngine())
+        return made[-1]
+
+    for module in (review_room, review_retry):
+        monkeypatch.setattr(module, "Engine", engine_for)
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    client = TestClient(build_app(make_panel()))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    moves = _until_ready(client, key)["state"]["moves"]
+    reviewing = len(made)
+
+    # The position Black's 3...Nf6 was played from, with every legal move.
+    position = client.get(f"/api/review/{key}/retry", params={"ply": 6}).json()
+    assert position["ok"] and position["side"] == "black"
+    assert position["fen"] == moves[5]["fen_before"] and "f6" in position["legal"]["g8"]
+    # The game's own move again: the review's verdict, searched for nothing new.
+    again = client.post(f"/api/review/{key}/try", json={"ply": 6, "uci": "g8f6"}).json()
+    played = moves[5]
+    assert (again["san"], again["label"], again["loss"]) == ("Nf6", played["label"], played["loss"])
+    assert made[reviewing:] and not made[-1].calls, "the game's positions are the review's"
+    # Another move: graded, the position it leads to searched.
+    other = client.post(f"/api/review/{key}/try", json={"ply": 6, "uci": "d7d6"}).json()
+    assert other["ok"] and other["san"] == "d6" and other["label"] and made[-1].calls
+    assert not client.post(f"/api/review/{key}/try", json={"ply": 6, "uci": "e1e2"}).json()["ok"]
+    # The coach's hints, the move only at the third.
+    hint_path = f"/api/review/{key}/hint"
+    hints = [client.post(hint_path, json={"ply": 6, "level": n}).json() for n in (1, 2, 3)]
+    assert all(h["ok"] and h["text"] for h in hints)
+    assert [h["best"] is not None for h in hints] == [False, False, True]
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
