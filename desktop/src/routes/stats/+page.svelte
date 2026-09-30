@@ -12,7 +12,7 @@
   import Board from "$lib/Board.svelte";
   import { prefs } from "$lib/panel.svelte";
   import { className } from "$lib/review/words";
-  import { inShell, openWindow } from "$lib/shell.svelte";
+  import { inShell, onAnnounce, openWindow } from "$lib/shell.svelte";
   import Sparkline from "$lib/stats/Sparkline.svelte";
   import TrendChart from "$lib/stats/TrendChart.svelte";
 
@@ -266,10 +266,16 @@
     fit();
     window.addEventListener("resize", fit);
     (async () => { await connect(); await load(); })();
-    // While games are still being reviewed in the background, the figures grow: read them again.
+    // While games are still being reviewed in the background, the figures grow: read them again;
+    // at once when games come in or are reviewed (the Games window says), or on coming back.
     const again = setInterval(() => { if (backlog && (backlog.waiting || backlog.reviewing)) void load(); }, 30_000);
+    const stopGames = onAnnounce("games", () => void load());
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
     return () => {
       clearInterval(again);
+      stopGames();
+      window.removeEventListener("focus", onFocus);
       window.removeEventListener("resize", fit);
       document.documentElement.classList.remove("stacked");
       document.body.classList.remove("stats-page");

@@ -142,6 +142,44 @@ export async function openWindow(route: string): Promise<void> {
   await invoke("open_window", { route }).catch((e) => console.warn("open window:", e));
 }
 
+/** Settings, at one setting ("profile.chesscom_user"): its tab open, the field in view and lit
+ *  for a moment. */
+export function openSetting(field: string): Promise<void> {
+  return openWindow(`settings#${field}`);
+}
+
+// What one window changed that the others show: "settings" saved, "games" brought in or
+// reviewed. Across the shell's windows by its events; in a browser, between its tabs.
+type Topic = "settings" | "games";
+const CHANNEL = "sidecoach";
+
+/** Tell every other window `topic` changed. */
+export async function announce(topic: Topic): Promise<void> {
+  if (isTauri()) {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(`${CHANNEL}:${topic}`).catch((e) => console.warn("announce:", e));
+    return;
+  }
+  const channel = new BroadcastChannel(CHANNEL);
+  channel.postMessage(topic);
+  channel.close();
+}
+
+/** `run` whenever another window says `topic` changed; returns the unsubscribe. */
+export function onAnnounce(topic: Topic, run: () => void): () => void {
+  if (isTauri()) {
+    let stop: (() => void) | null = null;
+    let gone = false;
+    import("@tauri-apps/api/event").then(({ listen }) =>
+      listen(`${CHANNEL}:${topic}`, () => run()).then((un) => { if (gone) un(); else stop = un; }),
+    );
+    return () => { gone = true; stop?.(); };
+  }
+  const channel = new BroadcastChannel(CHANNEL);
+  channel.onmessage = (e) => { if (e.data === topic) run(); };
+  return () => channel.close();
+}
+
 
 /** The updater: a signed `latest.json` on the release page. Asked from Help, and once
  * a day on its own; the download and the install happen only after a yes. */

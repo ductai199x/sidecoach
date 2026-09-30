@@ -118,10 +118,25 @@ def _changed(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list
     return sorted(changed)
 
 
+def _merged(base: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
+    """`base` with `change` laid over it, section by section: a field not in the change keeps
+    its value."""
+    out = dict(base)
+    for key, value in change.items():
+        both = isinstance(value, dict) and isinstance(out.get(key), dict)
+        out[key] = _merged(out[key], value) if both else value
+    return out
+
+
 def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
-    """Validate, save, store the secrets, apply what can be applied, and say what waits."""
+    """Validate, save, store the secrets, apply what can be applied, and say what waits. The
+    settings sent are what changed, laid over the settings as they are now: a page opened
+    before another saved cannot put back what that one changed (a Settings window left open
+    wrote the chess.com username back to empty, Tai 2026-09-30)."""
     try:
-        new = Settings.model_validate(body.settings)
+        new = Settings.model_validate(
+            _merged(engine.settings.model_dump(mode="json"), body.settings)
+        )
     except ValidationError as exc:
         return {"ok": False, "errors": exc.errors(include_url=False)}
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")

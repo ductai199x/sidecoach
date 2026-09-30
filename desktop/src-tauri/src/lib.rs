@@ -195,10 +195,14 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
     if let Some(dir) = data_dir(app) {
         let _ = std::fs::create_dir_all(&dir);
         cmd.env("SIDECOACH_DATA_DIR", dir);
-        // The settings file beside the shell's own, in the config dir; keys never in it.
-        if let Ok(config) = app.path().app_config_dir() {
-            let _ = std::fs::create_dir_all(&config);
-            cmd.env("SIDECOACH_CONFIG", config.join("sidecoach.toml"));
+        // The settings file beside the shell's own, in the config dir; keys never in it. One
+        // named already is kept, as the data directory is: a run of the installed app on a
+        // copy of someone's data must not write their own settings.
+        if std::env::var_os("SIDECOACH_CONFIG").is_none() {
+            if let Ok(config) = app.path().app_config_dir() {
+                let _ = std::fs::create_dir_all(&config);
+                cmd.env("SIDECOACH_CONFIG", config.join("sidecoach.toml"));
+            }
         }
     }
     if let Ok(extra) = std::env::var("SIDECOACH_SIDECAR_ARGS") {
@@ -514,23 +518,25 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
         let _ = w.unminimize();
         let _ = w.set_focus();
         if let Some(place) = place {
-            let _ = w.eval(format!("location.hash = {:?}", format!("#{place}")));
+            // Emptied first, so the same place asked for again is a change the page hears.
+            let _ = w.eval(format!("location.hash = ''; location.hash = {:?}", format!("#{place}")));
         }
         return Ok(());
     }
-    let (title, width, height) = if route.starts_with("puzzle/") {
+    // The window's title and size by its page, whatever place in it was asked for.
+    let (title, width, height) = if page.starts_with("puzzle/") {
         (
-            format!("Sidecoach · {}", route.replace("puzzle/", "puzzle ")),
+            format!("Sidecoach · {}", page.replace("puzzle/", "puzzle ")),
             1180.0,
             820.0,
         )
-    } else if route.starts_with("review/") {
+    } else if page.starts_with("review/") {
         ("Sidecoach · Game Review".to_string(), 1320.0, 880.0)
-    } else if route == "stats" {
+    } else if page == "stats" {
         ("Sidecoach · Stats".to_string(), 1180.0, 860.0)
-    } else if route == "games" {
+    } else if page == "games" {
         ("Sidecoach · Games".to_string(), 1040.0, 800.0)
-    } else if route == "settings" {
+    } else if page == "settings" {
         ("Sidecoach · Settings".to_string(), 900.0, 760.0)
     } else {
         ("Sidecoach".to_string(), 900.0, 700.0)

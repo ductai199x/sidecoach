@@ -2,14 +2,17 @@
   // The games page (/games): every game Game Review can open, the latest played first --
   // the ones Sidecoach watched, and the ones brought in from chess.com (the official public
   // archive), Lichess, or a PGN -- each with its accuracies once reviewed, and Review. The
-  // library lives on the sidecar (profile/library.py, the store's library table).
+  // library lives on the sidecar (profile/library.py, the store's library table). It follows
+  // the other windows: a username saved in Settings shows at once, and the background
+  // reviewer's progress fills the accuracies in as it goes.
   import { onMount } from "svelte";
   import "$lib/styles/review.css";
-  import { connect, games as gamesApi, type LibraryGame } from "$lib/api";
-  import { inShell, openWindow } from "$lib/shell.svelte";
+  import { connect, games as gamesApi, type Backlog, type LibraryGame } from "$lib/api";
+  import { announce, inShell, onAnnounce, openSetting, openWindow } from "$lib/shell.svelte";
 
   let list = $state<LibraryGame[]>([]);
   let users = $state({ chesscom: "", lichess: "" });
+  let backlog = $state<Backlog>(null);
   let loaded = $state(false);
   let source = $state<"chesscom" | "lichess" | "pgn">("chesscom");
   let months = $state(3);
@@ -17,29 +20,66 @@
   let busy = $state(false);
   let said = $state("");
   let saidBad = $state(false);
+  // The setting to fix when the site knows no such player ("profile.chesscom_user").
+  let saidField = $state<string | null>(null);
   let show = $state<"all" | LibraryGame["source"]>("all");
   let outcome = $state<"all" | "won" | "lost" | "drawn">("all");
 
   const SOURCES: Record<LibraryGame["source"], string> = { watched: "watched", chesscom: "chess.com", lichess: "Lichess", pgn: "PGN" };
+  const SITE = { chesscom: "chess.com", lichess: "Lichess" } as const;
+  // While the background reviewer works, the list is asked again this often: its accuracies
+  // come in game by game.
+  const FOLLOW_MS = 4000;
+  let following: ReturnType<typeof setTimeout> | null = null;
+  // Just after games came in, followed until the reviewer takes them up (it answers "nothing
+  // to do" for a moment before it has looked).
+  const EXPECT_MS = 12000;
+  let expectUntil = 0;
 
   async function load(): Promise<void> {
-    const res = await gamesApi.list();
+    const res = await gamesApi.list().catch(() => null);
+    if (!res) return;
+    const reviewedBefore = list.filter((g) => g.reviewed).length;
+    // A username changed in Settings: what was said of the old one goes with it.
+    if (loaded && (res.users.chesscom !== users.chesscom || res.users.lichess !== users.lichess)) {
+      said = "";
+      saidField = null;
+    }
     list = res.games;
     users = res.users;
+    backlog = res.backlog;
+    // A game reviewed since: Stats has one more to count.
+    if (loaded && list.filter((g) => g.reviewed).length > reviewedBefore) void announce("games");
+    if (!loaded && !users.chesscom && users.lichess) source = "lichess";
     loaded = true;
-    if (!users.chesscom && users.lichess) source = "lichess";
+    if (following) clearTimeout(following);
+    const working = !!backlog && (backlog.waiting > 0 || !!backlog.reviewing);
+    if (working) expectUntil = 0;
+    following = working || Date.now() < expectUntil ? setTimeout(load, working ? FOLLOW_MS : 1000) : null;
   }
 
   async function bringIn(): Promise<void> {
     busy = true;
-    said = source === "pgn" ? "Reading the PGN…" : `Asking ${source === "chesscom" ? "chess.com" : "Lichess"}…`;
+    said = source === "pgn" ? "Reading the PGN…" : `Asking ${SITE[source]} for your games…`;
     saidBad = false;
-    const res = await gamesApi.bringIn(source, pgn, months).catch((e) => ({ ok: false, error: String(e) }) as { ok: boolean; added?: number; error?: string });
+    saidField = null;
+    const res = await gamesApi.bringIn(source, pgn, months).catch(() => ({ ok: false, error: "Sidecoach did not answer. Try again in a moment." }) as Awaited<ReturnType<typeof gamesApi.bringIn>>);
     busy = false;
-    if (!res.ok) { said = res.error || "Nothing came in."; saidBad = true; return; }
-    said = res.added ? `${res.added} game${res.added === 1 ? "" : "s"} in the library.` : "No games found.";
-    if (source === "pgn" && res.added) pgn = "";
+    if (!res.ok) {
+      said = res.error || "Nothing came in.";
+      saidBad = true;
+      saidField = res.field ?? null;
+      return;
+    }
+    const added = res.added ?? 0, already = res.already ?? 0;
+    const games = (n: number) => `${n} game${n === 1 ? "" : "s"}`;
+    if (!added && !already) said = source === "pgn" ? "No games in that PGN." : `No games in the last ${months} month${months === 1 ? "" : "s"}.`;
+    else if (!added) said = `Nothing new: ${already === 1 ? "that game was" : `all ${already} were`} already here.`;
+    else said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. They are reviewed in the background; each shows its accuracy when done.`;
+    if (source === "pgn" && added) pgn = "";
+    if (added && backlog) expectUntil = Date.now() + EXPECT_MS;
     await load();
+    if (added) void announce("games");
   }
 
   function readFile(e: Event): void {
@@ -61,8 +101,9 @@
     openWindow("review/" + encodeURIComponent(key));
   }
 
-  function openSettings(): void {
-    if (inShell()) openWindow("settings"); else location.href = "/settings";
+  /** Settings at the username for `site`: its tab, the field lit. */
+  function toUsername(site: "chesscom" | "lichess"): void {
+    void openSetting(`profile.${site}_user`);
   }
 
   // The game's outcome for the player, when the library knows which side was theirs.
@@ -88,7 +129,16 @@
   onMount(() => {
     document.body.classList.add("games-page");
     (async () => { await connect(); await load(); })();
-    return () => document.body.classList.remove("games-page");
+    // A username saved in Settings, games brought in or reviewed elsewhere: shown at once.
+    const stops = [onAnnounce("settings", () => void load()), onAnnounce("games", () => void load())];
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.body.classList.remove("games-page");
+      for (const stop of stops) stop();
+      window.removeEventListener("focus", onFocus);
+      if (following) clearTimeout(following);
+    };
   });
 </script>
 
@@ -121,7 +171,7 @@
       {@const user = source === "chesscom" ? users.chesscom : users.lichess}
       {#if user}
         <div class="gm-row">
-          <span class="gm-as">Your games as <b>{user}</b></span>
+          <span class="gm-as">Your games as <b>{user}</b> <button type="button" class="gm-link" onclick={() => toUsername(source as "chesscom" | "lichess")}>change</button></span>
           {#if source === "chesscom"}
             <label class="gm-months">from the last
               <select bind:value={months}>
@@ -135,12 +185,17 @@
         </div>
       {:else}
         <div class="gm-row">
-          <span class="gm-as">Your {source === "chesscom" ? "chess.com" : "Lichess"} username is not set.</span>
-          <button class="ghost" onclick={openSettings}>Set it in Settings</button>
+          <span class="gm-as">Your {SITE[source]} username is not set.</span>
+          <button class="ghost" onclick={() => toUsername(source as "chesscom" | "lichess")}>Set it in Settings</button>
         </div>
       {/if}
     {/if}
-    {#if said}<div class="gm-said" class:bad={saidBad} role="status">{said}</div>{/if}
+    {#if said}
+      <div class="gm-said" class:bad={saidBad} role="status">
+        {#if busy}<i class="gm-spin" aria-hidden="true"></i>{/if}{said}
+        {#if saidField}<button type="button" class="gm-link" onclick={() => void openSetting(saidField!)}>Fix it in Settings</button>{/if}
+      </div>
+    {/if}
   </section>
 
   <section class="gm-list" aria-label="The library">
@@ -156,6 +211,15 @@
           <button class="segbtn" aria-pressed={outcome === o} onclick={() => (outcome = o as typeof outcome)}>{o === "all" ? "Any result" : o[0].toUpperCase() + o.slice(1)}</button>
         {/each}
       </div>
+      {#if backlog && (backlog.waiting > 0 || backlog.reviewing)}
+        <span class="gm-backlog" role="status" title="Each game is reviewed on its own, below normal priority, so Stats counts every game">
+          {#if backlog.paused}
+            Background review paused while you play or review
+          {:else}
+            <i class="gm-spin" aria-hidden="true"></i>Reviewing in the background · {backlog.waiting} to go
+          {/if}
+        </span>
+      {/if}
     </div>
     {#if loaded && !shown.length}
       <div class="gm-empty">{list.length ? "No game matches." : "No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN."}</div>

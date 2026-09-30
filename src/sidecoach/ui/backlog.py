@@ -42,6 +42,7 @@ class Backlog:
         self._busy = busy
         self._make_engine = make_engine
         self._stop = threading.Event()
+        self._wake = threading.Event()  # games came in: the rest ends now
         self._failed: set[str] = set()  # games that cannot be reviewed, skipped this session
         self.reviewing: str | None = None
         self.waiting = 0
@@ -53,6 +54,12 @@ class Backlog:
 
     def close(self) -> None:
         self._stop.set()
+        self._wake.set()
+
+    def nudge(self) -> None:
+        """Games came into the library: look for work now, not at the end of the rest (the
+        Games window shows the progress from the first game on)."""
+        self._wake.set()
 
     def join(self, timeout: float) -> None:
         """Until the review under way has stopped (its engines closed), at most `timeout`."""
@@ -76,7 +83,8 @@ class Backlog:
                 todo = self._todo(store)
                 self.waiting = len(todo)
                 if not todo:
-                    self._stop.wait(REST_S)
+                    self._wake.wait(REST_S)
+                    self._wake.clear()
                     continue
                 self._review(store, todo[0])
         finally:

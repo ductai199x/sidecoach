@@ -67,6 +67,20 @@ def test_a_save_writes_the_file_and_says_what_applies_when(
     assert (tmp_path / "sidecoach.toml").read_text(encoding="utf-8") == before
 
 
+def test_a_save_changes_only_what_it_sends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A page sends what it changed; the rest stays as it is now: a Settings window opened
+    before another saved put the chess.com username back to empty (Tai 2026-09-30)."""
+    client, engine = _client(tmp_path, monkeypatch)
+    assert client.put(
+        "/api/settings", json={"settings": {"profile": {"chesscom_user": "nosegazm"}}}
+    ).json()["ok"]
+    res = client.put("/api/settings", json={"settings": {"coach": {"stuck_seconds": 60}}}).json()
+    assert res["ok"] and res["now"] == ["coach.stuck_seconds"]
+    written = tomllib.loads((tmp_path / "sidecoach.toml").read_text(encoding="utf-8"))
+    assert written["profile"]["chesscom_user"] == "nosegazm"
+    assert engine.settings.profile.chesscom_user == "nosegazm"
+
+
 def test_a_save_goes_back_to_the_file_the_settings_came_from(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

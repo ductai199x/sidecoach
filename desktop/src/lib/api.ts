@@ -168,10 +168,16 @@ export type LibraryGame = {
   performance: { white: number | null; black: number | null } | null;
 };
 
+/** The background reviewer (ui/backlog.py): the games it has still to review, the one under
+ * way, whether it waits for the player's own work; null beside another panel. */
+export type Backlog = { waiting: number; reviewing: string | null; paused: boolean } | null;
+
 export const games = {
-  list: () => get<{ games: LibraryGame[]; users: { chesscom: string; lichess: string } }>("/api/games"),
+  list: () => get<{ games: LibraryGame[]; users: { chesscom: string; lichess: string }; backlog: Backlog }>("/api/games"),
+  /** Games in: how many are new and how many were there already; on a failure, what to do,
+   * and the setting to fix when the username is at fault (`field`). */
   bringIn: (source: "pgn" | "chesscom" | "lichess", text = "", months = 3) =>
-    post<{ ok: boolean; added?: number; keys?: string[]; error?: string }>("/api/games/import", { source, text, months }),
+    post<{ ok: boolean; added?: number; already?: number; keys?: string[]; error?: string; field?: string }>("/api/games/import", { source, text, months }),
   remove: (key: string) => del<{ ok: boolean }>(`/api/games/${encodeURIComponent(key)}`),
 };
 
@@ -369,8 +375,6 @@ export type StatPosition = {
   played_at: number | null;
   opening: string | null;
 };
-
-export type Backlog = { waiting: number; reviewing: string | null; paused: boolean } | null;
 
 const statsQuery = (f: StatsFilter) => `time_class=${encodeURIComponent(f.time_class)}&days=${f.days | 0}&opponents=${f.opponents}`;
 

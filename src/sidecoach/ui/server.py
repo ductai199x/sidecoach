@@ -401,7 +401,10 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     @app.post("/api/games/import")
     def games_import(body: _Import) -> dict[str, Any]:
-        return _import(engine, store_path, body)
+        done = _import(engine, store_path, body)
+        if done.get("added") and backlog is not None:
+            backlog.nudge()  # reviewed from now, the progress shown at once
+        return done
 
     @app.delete("/api/games/{key}")
     def games_delete(key: str) -> dict[str, bool]:
@@ -669,34 +672,54 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
 def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
     """Games into the library: a pasted PGN, or the player's recent games on chess.com or
-    Lichess (their usernames from the settings). Network failures are said, not raised."""
+    Lichess (their usernames from the settings). What came in says how many are new and how
+    many were there already; a failure says what to do, and names the setting when the
+    username is at fault (`field`: the page links to it)."""
+    import httpx
+
     from sidecoach.profile import library
     from sidecoach.profile.store import Store
 
     profile = engine.settings.profile
     names = [n for n in (profile.chesscom_user, profile.lichess_user) if n]
+    site = {"chesscom": "chess.com", "lichess": "Lichess"}.get(body.source, "")
+    field = f"profile.{body.source}_user" if site else None
     try:
         if body.source == "pgn":
             rows = library.from_pgn(body.text, user_names=names)
         elif body.source == "chesscom":
             if not profile.chesscom_user:
-                return {"ok": False, "error": "Add your chess.com username in Settings first."}
+                return {"ok": False, "error": "Add your chess.com username first.", "field": field}
             rows = library.from_chesscom(profile.chesscom_user, months=max(1, body.months))
         elif body.source == "lichess":
             if not profile.lichess_user:
-                return {"ok": False, "error": "Add your Lichess username in Settings first."}
+                return {"ok": False, "error": "Add your Lichess username first.", "field": field}
             rows = library.from_lichess(profile.lichess_user)
         else:
             return {"ok": False, "error": f"no source {body.source}"}
-    except Exception as exc:  # noqa: BLE001 - a site down or a name mistyped is said
-        return {"ok": False, "error": f"could not bring the games in: {exc}"}
+    except library.NoPlayer as exc:
+        return {"ok": False, "error": f"{exc} Check the spelling.", "field": field}
+    except httpx.HTTPError:
+        return {
+            "ok": False,
+            "error": f"Could not reach {site}. Check the connection and try again.",
+        }
+    except Exception as exc:  # noqa: BLE001 - anything else is said, never raised
+        return {"ok": False, "error": f"Could not bring the games in: {exc}"}
     store = Store(store_path)
     try:
+        new = [row for row in rows if store.library_game(row.key) is None]
         for row in rows:
             store.add_library_game(row)
+        library.reconcile(store)  # a game Sidecoach watched, now imported: one game
     finally:
         store.close()
-    return {"ok": True, "added": len(rows), "keys": [r.key for r in rows]}
+    return {
+        "ok": True,
+        "added": len(new),
+        "already": len(rows) - len(new),
+        "keys": [r.key for r in rows],
+    }
 
 
 def _drills(work: list[dict[str, Any]], data_dir: Path, store: Any) -> None:

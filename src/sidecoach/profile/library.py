@@ -29,6 +29,10 @@ LICHESS_GAMES = "https://lichess.org/api/games/user/{user}"
 TIMEOUT_S = 20.0
 
 
+class NoPlayer(Exception):
+    """The site knows no player by that name: a username mistyped in Settings."""
+
+
 def games_in(text: str) -> list[chess.pgn.Game]:
     """Every game in a PGN text that has moves; a text that is no PGN gives none."""
     out: list[chess.pgn.Game] = []
@@ -97,10 +101,16 @@ def from_chesscom(
     archive; the newest month can lag the site by up to a day, their documentation says)."""
     own = client or httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT_S)
     try:
-        archives = own.get(CHESSCOM_ARCHIVES.format(user=user.lower())).json().get("archives", [])
+        answer = own.get(CHESSCOM_ARCHIVES.format(user=user.lower()))
+        if answer.status_code == 404:
+            raise NoPlayer(f'chess.com has no player named "{user}".')
+        answer.raise_for_status()
+        archives = answer.json().get("archives", [])
         rows: list[LibraryRow] = []
         for month in archives[-months:] if months > 0 else archives:
-            for entry in own.get(month).json().get("games", []):
+            got = own.get(month)
+            got.raise_for_status()
+            for entry in got.json().get("games", []):
                 if entry.get("rules") != "chess" or not entry.get("pgn"):
                     continue
                 for game in games_in(entry["pgn"]):
@@ -136,6 +146,9 @@ def from_lichess(
             },
             headers={"Accept": "application/x-chess-pgn"},
         )
+        if response.status_code == 404:
+            raise NoPlayer(f'Lichess has no player named "{user}".')
+        response.raise_for_status()
         rows = []
         for game in games_in(response.text):
             if game.headers.get("Variant", "Standard") != "Standard":
@@ -163,19 +176,27 @@ def find(store: Store, key: str) -> LibraryRow | None:
     return store.library_game(key)
 
 
+# A watched record is a game when it finished with a result and its moves play out from where
+# it began for this many plies at least: a puzzle's mating line recorded from the starting
+# position, or a game cut off when the board was turned round, is not one (Tai's app, 09-28).
+WATCHED_PLIES = 10
+
+
 def from_watched(store: Store, limit: int = 200) -> list[LibraryRow]:
     """The games Sidecoach watched to their end, as the library shows them: their moves as
-    recorded (withdrawn ones left out), the player named "You", the opponent as recorded."""
+    recorded (withdrawn ones left out), the player named "You", the opponent as recorded. A
+    record with no result, or whose moves do not play out as a game, is left out."""
     rows = []
     for game in store.games(limit):
         moves = store.moves(game.game_id)
-        if not moves:
+        if not moves or game.result not in ("1-0", "0-1", "1/2-1/2"):
             continue
         pgn = chess.pgn.Game()
         board = chess.Board(game.start_fen)
         if game.start_fen != chess.STARTING_FEN:
             pgn.setup(board)
         node: chess.pgn.GameNode = pgn
+        played = 0
         for row in sorted(moves, key=lambda m: (m.segment, m.ply)):
             try:
                 move = board.parse_san(row.san)
@@ -183,6 +204,9 @@ def from_watched(store: Store, limit: int = 200) -> list[LibraryRow]:
                 break  # a resync's new line: the review stops where the record does
             node = node.add_variation(move)
             board.push(move)
+            played += 1
+        if played < WATCHED_PLIES:
+            continue
         you, them = "You", game.opponent or "Opponent"
         pgn.headers["White"] = you if game.user_side == "white" else them
         pgn.headers["Black"] = you if game.user_side == "black" else them
@@ -292,18 +316,25 @@ def _agreeing(seen: list[str], played: list[str]) -> float | None:
 
 
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")
+# As Sidecoach words the clock it read at a game's start (profile/profiler.py): "10 min", "30 s".
+_WATCHED_CONTROL = re.compile(r"^(\d+(?:\.\d+)?) (min|s)$")
 
 
 def time_class_of(control: str) -> str | None:
-    """The time class of a PGN `TimeControl`, by its expected length (the base plus forty
-    increments): bullet under 3 minutes, blitz under 10, rapid under 60, classical beyond;
-    "1/86400" and the like are correspondence ("daily")."""
+    """The time class of a PGN `TimeControl` ("600+5"), or of the clock Sidecoach read ("10
+    min"), by its expected length (the base plus forty increments): bullet under 3 minutes,
+    blitz under 10, rapid under 60, classical beyond; "1/86400" and the like are
+    correspondence ("daily")."""
     if control.startswith("1/"):
         return "daily"
+    watched = _WATCHED_CONTROL.match(control)
     match = _CONTROL.match(control)
-    if not match:
+    if watched:
+        seconds = float(watched.group(1)) * (60 if watched.group(2) == "min" else 1)
+    elif match:
+        seconds = int(match.group(1)) + 40 * int(match.group(2) or 0)
+    else:
         return None
-    seconds = int(match.group(1)) + 40 * int(match.group(2) or 0)
     if seconds < 180:
         return "bullet"
     if seconds < 600:

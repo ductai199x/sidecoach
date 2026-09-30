@@ -3,9 +3,12 @@
   // schema the sidecar serves (descriptions, choices, ranges, and when a change applies),
   // the API keys into the OS credential store, the audio devices by name, and the
   // shell's own two switches (what closing the window does, start with the system).
-  import { onDestroy, onMount } from "svelte";
+  // Opened at a setting (`#profile.chesscom_user`, from another window's link), its tab shows
+  // and the field lights up; a save sends what changed and tells the other windows, and what
+  // another window saved comes in here too.
+  import { onDestroy, onMount, tick } from "svelte";
   import { connect, get, post, put } from "$lib/api";
-  import { inShell, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
+  import { announce, inShell, onAnnounce, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
 
   type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
@@ -197,14 +200,80 @@
     return parts.length ? "Saved. " + parts.join(" ") : "Saved.";
   }
 
-  onMount(async () => {
+  // The settings as saved, field by field: what the page has that differs is what it sends.
+  let saved: Record<string, any> = {};
+
+  /** Each field of `now` that differs from `before`, section by section. */
+  function changes(now: Record<string, any>, before: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [key, value] of Object.entries(now)) {
+      const was = before[key];
+      if (value && typeof value === "object" && !Array.isArray(value) && was && typeof was === "object") {
+        const inner = changes(value, was);
+        if (Object.keys(inner).length) out[key] = inner;
+      } else if (JSON.stringify(value) !== JSON.stringify(was)) {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  /** What another window saved, taken in: every field this page has not changed itself. */
+  async function refresh(): Promise<void> {
+    const fresh = await get<Described>("/api/settings").catch(() => null);
+    if (!fresh) return;
+    const mine = changes($state.snapshot(values), saved);
+    data = fresh;
+    const next = structuredClone(fresh.settings);
+    for (const [sec, fields] of Object.entries(mine)) {
+      if (fields && typeof fields === "object" && next[sec]) Object.assign(next[sec], fields);
+      else next[sec] = fields;
+    }
+    values = next;
+    saved = structuredClone(fresh.settings);
+  }
+
+  // A setting asked for by another window (`#profile.chesscom_user`): its tab, the field in
+  // view, focused, and lit for a moment.
+  async function reveal(): Promise<void> {
+    const place = decodeURIComponent(location.hash.slice(1));
+    const [sec, key] = place.split(".");
+    if (!data || !sec || !key || !shownSections.some(([id]) => id === sec)) return;
+    section = sec;
+    if (data.schema.$defs && fields(sec).every(([k]) => k !== key)) advanced = true;
+    await tick();
+    const input = document.getElementById(`${sec}-${key}`);
+    const box = input?.closest(".field");
+    if (!input || !box) return;
+    box.scrollIntoView({ block: "center", behavior: "smooth" });
+    input.focus({ preventScroll: true });
+    box.classList.remove("flash");
+    void (box as HTMLElement).offsetWidth; // the animation starts over when asked again
+    box.classList.add("flash");
+  }
+
+  onMount(() => {
     void pollGpu();
     gpuTimer = setInterval(() => void pollGpu(), 5000);
-    await connect();
-    data = await get<Described>("/api/settings");
-    values = structuredClone($state.snapshot(data).settings);
-    shell = await shellSettings();
-    shellSaved = structuredClone($state.snapshot(shell));
+    const stop = onAnnounce("settings", () => void refresh());
+    const onFocus = () => void refresh();
+    const onHash = () => void reveal();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("hashchange", onHash);
+    (async () => {
+      await connect();
+      data = await get<Described>("/api/settings");
+      values = structuredClone($state.snapshot(data).settings);
+      saved = structuredClone($state.snapshot(data).settings);
+      shell = await shellSettings();
+      shellSaved = structuredClone($state.snapshot(shell));
+      await reveal();
+    })();
+    return () => {
+      stop();
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("hashchange", onHash);
+    };
   });
 
   function setValue(sec: string, key: string, p: Prop, raw: string | boolean) {
@@ -229,15 +298,20 @@
     // A custom service's key lives under one name; the settings say which.
     if (values.llm && values.llm.provider === "custom" && !values.llm.api_key_env) values.llm.api_key_env = CUSTOM_KEY;
     try {
-      result = await put("/api/settings", { settings: values, secrets: sec });
+      // What changed here, and only that: a field another window saved since stays as it
+      // saved it.
+      result = await put("/api/settings", { settings: changes($state.snapshot(values), saved), secrets: sec });
       if (result?.ok) {
         const shellChanged = shell.close !== shellSaved.close || shell.autostart !== shellSaved.autostart;
         await setShellSettings(shell);
         shellSaved = structuredClone($state.snapshot(shell));
         result = { ...result, shellChanged };
         data = await get<Described>("/api/settings");
+        values = structuredClone($state.snapshot(data).settings);
+        saved = structuredClone($state.snapshot(data).settings);
         secrets = {};
         clearSecrets = {};
+        void announce("settings");
       }
     } finally {
       saving = false;
@@ -433,7 +507,15 @@
   h3 { margin: 22px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
   .listen:disabled { opacity: 0.6; cursor: default; }
-  .field { margin: 0 0 14px; max-width: 720px; }
+  .field { margin: 0 0 14px; max-width: 720px; border-radius: 8px; }
+  /* A setting another window asked for: lit twice, softly, over a second. */
+  .field:global(.flash) { animation: field-flash 1.1s ease-out; }
+  @keyframes field-flash {
+    0%, 45% { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 22%, transparent); }
+    22%, 70% { background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 6%, transparent); }
+    100% { background: transparent; box-shadow: 0 0 0 8px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) { .field:global(.flash) { animation-duration: 0.01s; } }
   .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .field.test { margin-top: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
   input.color { width: 56px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer; }

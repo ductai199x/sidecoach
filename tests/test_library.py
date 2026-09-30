@@ -9,9 +9,11 @@ import chess
 import httpx
 
 from sidecoach.profile.library import (
+    NoPlayer,
     from_chesscom,
     from_lichess,
     from_pgn,
+    from_watched,
     reconcile,
     time_class_of,
 )
@@ -68,6 +70,24 @@ def test_time_classes_by_the_expected_length_of_a_game() -> None:
         "daily",
         None,
     ]
+    # As Sidecoach words the clock it read at a watched game's start.
+    assert [time_class_of(c) for c in ("30 s", "3 min", "15 min", "2.5 min")] == [
+        "bullet",
+        "blitz",
+        "rapid",
+        "bullet",
+    ]
+
+
+def test_a_username_the_site_does_not_know_is_said_as_such() -> None:
+    """A mistyped username: the site's 404, not "no games found"."""
+    import pytest
+
+    missing = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(404, json={})))
+    with pytest.raises(NoPlayer, match='chess.com has no player named "nosegazmm"'):
+        from_chesscom("nosegazmm", client=missing)
+    with pytest.raises(NoPlayer, match="Lichess has no player"):
+        from_lichess("nosegazmm", client=missing)
 
 
 def test_chesscom_games_come_from_the_public_archive_one_month_at_a_time() -> None:
@@ -207,6 +227,20 @@ def test_a_watched_game_imported_too_is_one_game(tmp_path) -> None:  # noqa: ANN
     # The import taken out of the library: the watched game is its own again.
     store.delete_library_game(row.key)
     assert twin not in store.twins()
+    store.close()
+
+
+def test_a_watched_record_that_is_no_game_stays_out(tmp_path) -> None:  # noqa: ANN001
+    """What Sidecoach recorded is a game when it finished and its moves play out from where it
+    began: a puzzle's mating line recorded from the start position, a game never finished,
+    six plies -- the records in Tai's app on 09-28 -- are not listed (nor reviewed, nor
+    counted)."""
+    store = Store(tmp_path / "profile.sqlite")
+    good = _watch(store, "g1", SANS, 1000.0)
+    _watch(store, "g2", ["Rxf2", "Rg3+", "Kf7", "Qg6+", "Kf8", "Qg8#"], 2000.0, result="1-0")
+    _watch(store, "g3", SANS, 3000.0, result="*")
+    _watch(store, "g4", SANS[:6], 4000.0)
+    assert [r.key for r in from_watched(store)] == [good]
     store.close()
 
 

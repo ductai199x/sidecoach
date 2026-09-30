@@ -68,8 +68,11 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
 
     # Brought in from a pasted PGN, and listed, not yet reviewed.
     added = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()
-    assert added["ok"] and added["added"] == 1
+    assert added["ok"] and (added["added"], added["already"]) == (1, 0)
     key = added["keys"][0]
+    # The same game again: nothing new, and said so.
+    again = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()
+    assert (again["added"], again["already"]) == (0, 1)
     listed = client.get("/api/games").json()
     assert listed["users"]["chesscom"] == "NoseGazm"
     row = next(g for g in listed["games"] if g["key"] == key)

@@ -49,6 +49,9 @@ PRACTICE_MOTIFS = 2
 PRACTICE_PUZZLES = 3
 # A model call on one key move may take this long (a model that reasons first is slow).
 AI_TIMEOUT_S = 300.0
+# The review's words reason at this effort (Tai 2026-09-30: "Reasoning none is usually not
+# very accurate"), though the live coach may be set to none for speed.
+REVIEW_EFFORT = "medium"
 NO_AI = "No AI coach is set up: choose one in Settings."
 
 # The model the review's words are asked of, or why there is none.
@@ -171,6 +174,12 @@ class ReviewRoom:
         return None
 
     def _write_words(self, reviewed: ReviewedGame, model: Any) -> None:
+        # A model that reasons by its effort (luna) reasons at REVIEW_EFFORT here, whatever the
+        # live coach is set to; a local model does not reason: it reasons worse about chess,
+        # not better (Tai, 2026-09-30).
+        reasons = getattr(model, "thinking_control", None) == "effort"
+        if reasons:
+            model = model.with_effort(REVIEW_EFFORT)
         try:
             words = review_words.write(
                 reviewed,
@@ -178,9 +187,7 @@ class ReviewRoom:
                 user=self.row.user_side,
                 opening=_opening(reviewed),
                 prices=prices_for(self.settings, getattr(model, "model", None)),
-                # Luna reasons at its own effort; a local model reasons worse about chess, not
-                # better (Tai, 2026-09-30).
-                thinking=getattr(model, "thinking_control", None) == "effort",
+                thinking=reasons,
             )
             saved = {
                 "model": words.model,
