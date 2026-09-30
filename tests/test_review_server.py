@@ -230,6 +230,75 @@ def test_a_move_is_retried_and_graded_as_the_review_graded_it(
     assert [h["best"] is not None for h in hints] == [False, False, True]
 
 
+def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No AI coach set up: the page is told why. With one, asked: the words are written in the
+    background, from the player's side and without reasoning for a local model, counted in the
+    panel's strip, and opened again with the saved review."""
+    from fastapi.testclient import TestClient
+
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.llm import factory
+    from sidecoach.llm.usage import Usage
+    from sidecoach.ui import review_room
+    from sidecoach.ui.server import build_app
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", lambda **_: FakeEngine())
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+
+    class Model:
+        model = "local-model"
+        usage = Usage()
+
+    asked: list[dict[str, Any]] = []
+
+    def write(game: Any, model: Any, **told: Any) -> ReviewWords:
+        asked.append(told)
+        return ReviewWords(
+            texts={4: {"why": "Your knight on c6 guards your pawn on e5."}},
+            reveals={4},
+            model=model.model,
+            cost=0.0,
+        )
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    engine = make_panel()
+    engine.settings.profile.chesscom_user = "NoseGazm"
+    engine.settings.llm.provider = "none"
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    ai = _until_ready(client, key)["state"]["ai"]
+    assert ai == {"status": "none", "error": None, "words": None, "unavailable": review_room.NO_AI}
+    refused = client.post(f"/api/review/{key}/ai").json()
+    assert refused == {"ok": False, "error": review_room.NO_AI} and not asked
+
+    engine.settings.llm.provider = "local"
+    assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
+    deadline = time.monotonic() + 10
+    while ai["status"] != "ready" and time.monotonic() < deadline:
+        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
+        time.sleep(0.05)
+    words = {
+        "model": "local-model",
+        "cost": 0.0,
+        "texts": {"4": {"why": "Your knight on c6 guards your pawn on e5."}},
+        "reveals": [4],
+    }
+    assert (ai["status"], ai["words"], ai["unavailable"]) == ("ready", words, None)
+    assert [(a["user"], a["thinking"]) for a in asked] == [("black", False)]
+    assert any(Model.usage in source() for source in engine.extra_usage)
+
+    client.post(f"/api/review/{key}/close")
+    time.sleep(0.5)
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    assert _until_ready(client, key)["state"]["ai"]["words"] == words
+    assert len(asked) == 1, "kept, not written again"
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

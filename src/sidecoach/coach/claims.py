@@ -1008,8 +1008,9 @@ _PIECE_ADJECTIVES = (
     r"light-squared|dark-squared|central|strong|weak|exposed|stranded|"
     r"overloaded)\s+){0,2}"
 )
+# A pawn may carry its file: "your isolated f-pawn on f2" (the AI review, 2026-09-30).
 _PIECE_ON = re.compile(
-    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?P<piece>{_PIECE_WORD})s?"
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?(?P<piece>{_PIECE_WORD})s?"
     r"\s+(?:on|at)\s+"
     r"(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,

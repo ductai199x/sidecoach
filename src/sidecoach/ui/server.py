@@ -376,6 +376,8 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     store_path = engine.settings.data_dir / "profile.sqlite"
     reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+    # The AI coach's words on reviews count in the panel's strip with the game's.
+    engine.extra_usage.append(reviews.usages)
     backlog = None
     if background:
         from sidecoach.ui.backlog import Backlog
@@ -429,6 +431,16 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         if room is None:
             return {"ok": False, "closed": True}
         return {"ok": True, **room.poll(since)}
+
+    # The AI coach's words on the key moves: only when the player asks, a call a move; the page
+    # reads them at its next polls.
+    @app.post("/api/review/{key}/ai")
+    def review_ai(key: str) -> dict[str, Any]:
+        room = reviews.get(key)
+        if room is None:
+            return {"ok": False, "error": "the review is not open"}
+        refused = room.write_words()
+        return {"ok": refused is None, "error": refused}
 
     @app.post("/api/review/{key}/say")
     def review_say(key: str, body: _Card) -> dict[str, bool]:

@@ -6,12 +6,14 @@ of the current format, else the game reviewed whole (`analysis.game_review`) on 
 room's own, side by side, its progress shown as it goes, then summed up
 (`profile.game_summary`) and saved beside the profile. The page polls the room as the panel
 polls the engine: the state -- the review's status, the summary, every move as the page draws
-it -- and the room's log lines.
+it, the AI coach's words on the key moves -- and the room's log lines. Those words are written
+only when the player asks (`write_words`; coach/review_words.py) and kept with the review.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -24,8 +26,10 @@ import chess.pgn
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import STRENGTHS, THREADS, Strength, review_game, workers_for
 from sidecoach.analysis.score import Thresholds, position_score
+from sidecoach.coach import review_words
 from sidecoach.config import Settings, find_stockfish
 from sidecoach.events import GameSummary, Line, ReviewedGame, Side
+from sidecoach.llm.usage import prices_for
 from sidecoach.profile import library
 from sidecoach.profile.game_summary import missed_motifs, summarize
 from sidecoach.profile.stat_facts import keep_stats
@@ -43,6 +47,12 @@ LINE_PLIES = 6
 # The last card's training: the motifs the game missed most, and puzzles of each.
 PRACTICE_MOTIFS = 2
 PRACTICE_PUZZLES = 3
+# A model call on one key move may take this long (a model that reasons first is slow).
+AI_TIMEOUT_S = 300.0
+NO_AI = "No AI coach is set up: choose one in Settings."
+
+# The model the review's words are asked of, or why there is none.
+Model = Callable[[], tuple[Any | None, str | None]]
 
 
 class ReviewRoom:
@@ -55,6 +65,7 @@ class ReviewRoom:
         strength: str = "standard",
         make_engine: Callable[..., Engine] | None = None,
         mirror: Callable[..., None] | None = None,
+        model: Model | None = None,
     ) -> None:
         self.settings = settings
         self.row = row
@@ -75,6 +86,11 @@ class ReviewRoom:
         self._moves: list[dict[str, Any]] = []
         self.practice: list[dict[str, Any]] = []
         self.retries: Retries | None = None
+        self._model = model
+        # The AI coach's words on the key moves, as saved: none yet | writing | ready | failed.
+        self.words: dict[str, Any] | None = None
+        self.words_status = "none"
+        self.words_error: str | None = None
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -87,6 +103,7 @@ class ReviewRoom:
 
     def state(self) -> dict[str, Any]:
         self.touched = time.monotonic()
+        unavailable = self._model()[1] if self._model is not None else NO_AI
         with self._lock:
             return {
                 "key": self.key,
@@ -109,8 +126,70 @@ class ReviewRoom:
                 "summary": self.summary.model_dump(mode="json") if self.summary else None,
                 "moves": self._moves,
                 "practice": self.practice,
+                "ai": {
+                    "status": self.words_status,
+                    "error": self.words_error,
+                    "words": self.words,
+                    "unavailable": unavailable,
+                },
                 "closed": self.closed,
             }
+
+    def write_words(self) -> str | None:
+        """Set the AI coach writing on the key moves, in the background; why it cannot, else
+        None (already writing is no reason)."""
+        model, unavailable = self._model() if self._model is not None else (None, NO_AI)
+        with self._lock:
+            if self.status != "ready" or self.reviewed is None:
+                return "the review is not ready"
+            if self.words_status == "writing":
+                return None
+            if model is None:
+                return unavailable
+            self.words_status, self.words_error = "writing", None
+            reviewed = self.reviewed
+        threading.Thread(
+            target=self._write_words, args=(reviewed, model), name=f"words-{self.key}", daemon=True
+        ).start()
+        return None
+
+    def _write_words(self, reviewed: ReviewedGame, model: Any) -> None:
+        opening = next((m.after.opening for m in reversed(reviewed.moves) if m.after.opening), None)
+        try:
+            words = review_words.write(
+                reviewed,
+                model,
+                user=self.row.user_side,
+                opening=opening,
+                prices=prices_for(self.settings, getattr(model, "model", None)),
+                # Luna reasons at its own effort; a local model reasons worse about chess, not
+                # better (Tai, 2026-09-30).
+                thinking=getattr(model, "thinking_control", None) == "effort",
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed call is said, not raised
+            with self._lock:
+                self.words_status, self.words_error = "failed", str(exc)
+            self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
+            return
+        saved = {
+            "model": words.model,
+            "cost": words.cost,
+            "texts": {str(ply): parts for ply, parts in words.texts.items()},
+            "reveals": sorted(words.reveals),
+        }
+        with contextlib.suppress(Exception):  # a room closed meanwhile keeps them unsaved
+            self.store.set_review_words(self.key, self.strength.name, json.dumps(saved))
+        with self._lock:
+            self.words, self.words_status = saved, "ready"
+        cost = f", ${words.cost:.4f}" if words.cost is not None else ""
+        self._emit(
+            "sys",
+            "info",
+            f"AI words on {len(words.texts)} of {len(review_words.key_plies(reviewed))} key "
+            f"moves ({words.model}{cost})",
+        )
+        for ply, why in sorted(words.dropped.items()):
+            self._emit("sys", "warn", f"AI words on ply {ply} dropped: {why}")
 
     def close(self) -> None:
         self._stop.set()
@@ -149,6 +228,9 @@ class ReviewRoom:
             return False
         reviewed = ReviewedGame.model_validate_json(saved.report)
         self._ready(reviewed, GameSummary.model_validate_json(saved.summary or "{}"))
+        if saved.words:
+            with self._lock:
+                self.words, self.words_status = json.loads(saved.words), "ready"
         self._emit("sys", "info", f"review of {self.key} loaded ({self.strength.name})")
         return True
 
@@ -385,7 +467,7 @@ def _white_eval(board: chess.Board, lines: list[Line]) -> dict[str, int | str | 
 
 
 class ReviewRooms:
-    """The open review rooms by library key."""
+    """The open review rooms by library key, and the model their words are asked of."""
 
     def __init__(
         self,
@@ -401,6 +483,32 @@ class ReviewRooms:
         self._mirror = mirror
         self._rooms: dict[str, ReviewRoom] = {}
         self._lock = threading.Lock()
+        # The model as the settings name it, made once for them.
+        self._model: Any | None = None
+        self._model_for: tuple[Any, ...] | None = None
+
+    def model(self) -> tuple[Any | None, str | None]:
+        """The model the reviews' words are asked of, and why there is none."""
+        llm = self.settings.llm
+        if llm.provider == "none":
+            return None, NO_AI
+        named = (llm.provider, llm.model, llm.base_url, llm.reasoning_effort)
+        with self._lock:
+            if named != self._model_for:
+                from sidecoach.llm.factory import make_provider
+
+                try:
+                    self._model = make_provider(llm, timeout_s=AI_TIMEOUT_S)
+                except (RuntimeError, ValueError) as exc:  # a key not given, a name not known
+                    return None, str(exc)
+                self._model_for = named
+            return self._model, None
+
+    def usages(self) -> list[Any]:
+        """The model calls of the reviews' words (llm.usage.Usage), for the panel's strip."""
+        with self._lock:
+            usage = getattr(self._model, "usage", None)
+        return [usage] if usage is not None else []
 
     def row(self, key: str) -> LibraryRow | None:
         """A game of the library by its key: imported, or one Sidecoach watched."""
@@ -432,6 +540,7 @@ class ReviewRooms:
                 strength=strength,
                 make_engine=self._make_engine,
                 mirror=self._mirror,
+                model=self.model,
             )
             self._rooms[key] = room
             return room

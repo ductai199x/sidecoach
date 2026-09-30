@@ -18,8 +18,17 @@ session's research report; the screenshots are not committed.
    there's no point having the retry feature"): the best move in gold, and threats (red) and
    ideas (blue), each a switch in the review's settings. With the gold arrow off, the coach's
    sentence does not name the better move either; Best shows it.
-3. **The coach's words on every move**, written by the model and **prepared ahead of time** for
-   all moves, not on demand.
+3. **The model's words only when asked, on the key moves, about a cent a game** (changed
+   2026-09-30: "the user themselves need to consciously press a button to generate AI review for
+   any game ... it costs around 1 cent per game and only on key moves"). Every move has the
+   review's own words; a button asks the model for the key moves of that one game. Never
+   ahead of time, never for the games the background review goes through. One call a key
+   move, all at once (Tai: "why not just analyze the moves individually?"): told every move
+   together, luna lent one move's facts to another and one unreadable answer lost the game.
+   The model names the sides only as White and Black, and code turns them into "you" and
+   "your opponent" (`coach/review_words.py`): asked to say "you" itself, it spoke to whoever
+   played the move about one paragraph in four. Each paragraph checked against the board and
+   the game before it is shown; luna at medium effort, 1.5-1.8¢ for 16 key moves (measured).
 4. **The review opens in a window of its own** (as puzzles do); a full-screen route on the phone.
 5. **No per-game chess.com link import** (its only instant source is an unofficial endpoint).
    Games come from what Sidecoach watched, chess.com by username through the official public
@@ -116,7 +125,7 @@ Better, from what their users complain about most:
 | 1 | Review engine and imports | Every game source; the parallel analysis with presets; the `reviews` cache and endpoints; tests. |
 | 2 | Summary and step-through (desktop) | B, C and H with graph, eval bar, overlays, template words, voice and captions; run end to end in the real app. |
 | 3 | Retry and the last card | D and E. |
-| 4 | The model's words | Every move prepared ahead, checked; tactic chips drawing on the board; the opening panel. |
+| 4 | The model's words | A button a game: the key moves' words from the model, about a cent a game, checked; kept with the review. |
 | 5 | Self analysis, library, insights, share | F and G; annotated PGN export. |
 | 6 | Phone | The 1:1 port, parity fixtures green, installed on both. |
 
