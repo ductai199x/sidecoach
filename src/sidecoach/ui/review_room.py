@@ -333,6 +333,8 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
                 "best_san": line[0]["san"] if line else None,
                 "best_line": line,
                 "follow_line": _steps(after, follow),
+                # What the move threatens: the mover's best next move were it their turn again.
+                "idea": move.after.threats[0] if move.after.threats else None,
                 "eval": _white_eval(after, move.after.lines),
                 "white_score": round(_white_score(after, move.after.lines), 4),
                 "tags": sorted({t.name for t in move.assessment.tags}),

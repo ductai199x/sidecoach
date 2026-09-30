@@ -1,0 +1,108 @@
+/* The Stats window (routes/stats): chess.com's Advanced Stats in its layout -- a menu of
+   sections on the left, the filters on top, a section's figure and its trend, then cards of
+   rows that open to what a figure means and the positions behind it -- in the panel's tokens. */
+
+.stats-page main {
+  display: grid; grid-template-columns: 210px minmax(0, 820px); column-gap: 18px;
+  justify-content: center; align-items: start; overflow-y: auto; padding: 16px;
+}
+
+/* the menu */
+.st-menu {
+  position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border-radius: 8px; padding: 8px;
+}
+.st-item {
+  display: flex; align-items: center; gap: 10px; background: transparent; border: 0; border-radius: 6px;
+  padding: 10px 12px; color: var(--ink); font-weight: 600; text-align: left;
+}
+.st-item:hover { background: var(--panel2); }
+.st-item svg { width: 20px; height: 20px; fill: var(--muted); flex: 0 0 auto; }
+.st-item .kb { width: 20px; height: 20px; }
+.st-item[aria-current="page"] { background: var(--panel3); }
+.st-item[aria-current="page"] svg { fill: var(--accent); }
+
+/* a section */
+.st-content { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.st-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.st-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
+.st-head h2 { margin: 0 auto 0 0; font-size: 20px; }
+.st-big { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.st-change { color: var(--accent); font-weight: 700; }
+.st-change.down { color: var(--error); }
+.st-head-seg { flex-basis: 100%; }
+
+/* the trend */
+.st-chart {
+  --st-line: #62b4e6;
+  display: block; width: 100%; height: auto; background: var(--panel); border-radius: 8px;
+}
+.st-chart .line { fill: none; stroke: var(--st-line); stroke-width: 2.4; stroke-linejoin: round; }
+.st-chart .dot { fill: #62b4e670; }
+.st-chart .tick { stroke: #ffffff12; }
+.st-chart .lab { fill: var(--muted); font-size: 11px; }
+.st-chart .lab.end { text-anchor: end; }
+.st-chart.empty { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+
+/* the overview's tiles */
+.st-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.st-tiles div { display: flex; flex-direction: column; gap: 2px; background: var(--panel); border-radius: 8px; padding: 10px 12px; }
+.st-tiles span { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); }
+.st-tiles b { font-size: 26px; font-variant-numeric: tabular-nums; }
+.st-tiles .won span { color: var(--accent); }
+.st-tiles .lost span { color: var(--error); }
+
+/* cards of rows */
+.st-card { background: var(--panel); border-radius: 8px; overflow: hidden; }
+.st-card-title {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 10px;
+  padding: 12px 14px; font-weight: 700; border-bottom: 1px solid var(--line);
+}
+.st-row { border-bottom: 1px solid #ffffff08; }
+.st-row:last-child { border-bottom: 0; }
+.st-row-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 44px 20px; align-items: center; gap: 10px;
+  width: 100%; padding: 11px 14px; background: transparent; border: 0; border-radius: 0; text-align: left; font-weight: 500;
+}
+.st-row-head:hover { background: var(--panel2); }
+.st-row .value { font-weight: 700; font-variant-numeric: tabular-nums; color: #7fc4ef; }
+.st-row .n { font-size: 12px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-row .chev { width: 18px; height: 18px; fill: var(--muted); transition: transform 150ms ease; }
+.st-row.open .chev { transform: rotate(180deg); }
+.st-row.small .value { color: var(--muted); }
+.st-more { display: flex; flex-direction: column; gap: 10px; padding: 2px 14px 14px; font-size: 13px; color: var(--muted); }
+.st-more p { margin: 0; }
+.st-link-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 20px; align-items: center; gap: 10px;
+  width: 100%; padding: 12px 14px; background: transparent; border: 0; border-radius: 0; text-align: left;
+  border-bottom: 1px solid #ffffff08;
+}
+.st-link-row:last-child { border-bottom: 0; }
+.st-link-row:hover { background: var(--panel2); }
+.st-link-row b { font-variant-numeric: tabular-nums; color: #7fc4ef; }
+.st-link-row svg { width: 18px; height: 18px; fill: var(--muted); }
+.st-grid { display: grid; gap: 7px 12px; padding: 12px 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.st-grid.ends { grid-template-columns: minmax(0, 1fr) 60px 60px 60px; }
+.st-grid.openings { grid-template-columns: minmax(0, 1fr) 56px 64px 70px; }
+.st-grid .cap { text-transform: capitalize; }
+.st-grid .small { color: var(--muted); }
+.st-empty { padding: 30px 10px; text-align: center; color: var(--muted); }
+
+/* the positions behind a figure, and the gallery: boards with the move drawn */
+.st-boards { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
+.st-gallery { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.st-mini { display: flex; flex-direction: column; gap: 5px; color: var(--ink); text-decoration: none; }
+.st-miniboard { --board: 100%; display: block; border-radius: 4px; }
+.st-miniboard .board-wrap, .st-miniboard .board { width: 100%; height: auto; aspect-ratio: 1 / 1; }
+.st-miniboard .coord { display: none; }
+.st-mini:hover .st-miniboard { outline: 2px solid var(--accent); outline-offset: 1px; }
+.st-mini .cap { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.st-mini .cap small { margin-left: auto; color: var(--muted); }
+.st-mini .cap .kb { width: 15px; height: 15px; }
+
+/* stacked (a phone, a narrow window): the menu becomes a row of tabs above */
+html.stacked .stats-page main { display: flex; flex-direction: column; gap: 12px; height: auto; padding: 10px; }
+html.stacked .st-menu { position: static; flex-direction: row; overflow-x: auto; padding: 4px; }
+html.stacked .st-item { flex: 0 0 auto; padding: 8px 10px; }
+html.stacked .st-item svg { display: none; }
+html.stacked .st-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }

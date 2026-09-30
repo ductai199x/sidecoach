@@ -99,7 +99,9 @@ function standing(score: number): string {
 }
 
 /** A sentence or two on the move, from what the review knows. */
-export function sentence(m: ReviewMove, whiteBefore: number): string {
+// `reveal`: whether a move the player could retry names the better one. Off while the best
+// move's arrow is off, as the arrow would: Retry asks the player to find it, Best shows it.
+export function sentence(m: ReviewMove, whiteBefore: number, reveal: boolean): string {
   const [before, after] = moverScores(m, whiteBefore);
   const label = m.label ?? "";
   const motifs = m.tags.filter((t) => !UNSAID.has(t)).map(motifWords).filter(Boolean);
@@ -110,12 +112,13 @@ export function sentence(m: ReviewMove, whiteBefore: number): string {
   else if (label === "great") parts.push("The one move that holds everything together here.");
   else if (label === "best") parts.push("The engine's first choice.");
   else if (label === "excellent" || label === "good") parts.push(better ? `Close to the best, ${better}.` : "A sound move.");
-  else if (label === "miss") parts.push(better ? `${better} was there, and it won more.` : "A chance to win more went by.");
-  else if (BAD.has(label)) parts.push(better ? `${better} was best.` : "There was a better move.");
+  else if (label === "miss") parts.push(better && reveal ? `${better} was there, and it won more.` : "A chance to win more went by.");
+  else if (BAD.has(label)) parts.push(better && reveal ? `${better} was best.` : "There was a better move.");
   if (BAD.has(label) && standing(before) !== standing(after)) {
     parts.push(`${m.side === "white" ? "White" : "Black"} was ${standing(before)}; after it, ${standing(after)}.`);
   }
   if (motifs.length) parts.push(`${motifs.length === 1 ? "Theme" : "Themes"}: ${motifs.join(", ")}.`);
+  if (BAD.has(label) && better && !reveal) parts.push("Retry to find it, or Best to see it.");
   return parts.join(" ");
 }
 

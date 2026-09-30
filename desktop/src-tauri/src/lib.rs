@@ -497,10 +497,15 @@ async fn open_captions(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
     let route = route.trim_start_matches('/').to_string();
+    // A place in the page (`review/<key>#ply-12`, from Stats) is not another window: the page's
+    // own window is named without it, and one already open is sent there.
+    let (page, place) = match route.split_once('#') {
+        Some((page, place)) => (page.to_string(), Some(place.to_string())),
+        None => (route.clone(), None),
+    };
     let label: String = format!(
         "w-{}",
-        route
-            .chars()
+        page.chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect::<String>()
     );
@@ -508,6 +513,9 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        if let Some(place) = place {
+            let _ = w.eval(format!("location.hash = {:?}", format!("#{place}")));
+        }
         return Ok(());
     }
     let (title, width, height) = if route.starts_with("puzzle/") {
@@ -518,6 +526,8 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
         )
     } else if route.starts_with("review/") {
         ("Sidecoach · Game Review".to_string(), 1320.0, 880.0)
+    } else if route == "stats" {
+        ("Sidecoach · Stats".to_string(), 1180.0, 860.0)
     } else if route == "games" {
         ("Sidecoach · Games".to_string(), 1040.0, 800.0)
     } else if route == "settings" {

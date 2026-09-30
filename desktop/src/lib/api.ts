@@ -196,6 +196,8 @@ export type ReviewMove = {
   best_san: string | null;
   best_line: LineStep[];
   follow_line: LineStep[];
+  /** What the move threatens (UCI): the mover's best next move were it their turn again. */
+  idea: string | null;
   eval: Eval;
   white_score: number;
   tags: string[];
@@ -263,6 +265,55 @@ export const review = (key: string) => {
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };
+};
+
+// ---- Stats: the player's games added up (profile/stats.py) ------------------------------------
+
+/** A mean with how many it is of; a rate with its hits. */
+export type Figure = { value: number | null; n: number };
+export type Rate = Figure & { hits: number };
+
+export type StatsFilter = { time_class: string; days: number; opponents: "all" | "people" | "bots" };
+
+export type StatsNumbers = {
+  overview: { games: number; wins: number; draws: number; losses: number; accuracy: Figure; moves: number };
+  openings: {
+    accuracy: Figure;
+    mistakes: Figure;
+    book_moves: Figure;
+    by_opening: { opening: string; side: "white" | "black"; games: number; score: number | null; accuracy: number | null }[];
+  };
+  tactics: { found: Record<string, Rate>; allowed: Record<string, Rate>; overall: Rate };
+  strategy: Record<string, Record<string, Figure>>;
+  endgames: { win: Record<string, Figure>; accuracy: Record<string, Figure> };
+  time: { by_phase: Record<string, Figure>; pressure: Rate; calm: Rate; lost_on_time: number; lost_on_time_winning: number };
+  results: Record<string, { won: number; drawn: number; lost: number }>;
+  galleries: Record<string, number>;
+  /** Game by game, oldest first: the game rating, and each category's figure. */
+  trends: Record<string, { t: number | null; key: string; v: number }[]>;
+};
+
+/** A move of the player's behind a figure: its game, and the position it was played from. */
+export type StatPosition = {
+  key: string;
+  ply: number;
+  fen: string;
+  uci: string;
+  san: string;
+  label: string | null;
+  side: "white" | "black";
+  played_at: number | null;
+  opening: string | null;
+};
+
+export type Backlog = { waiting: number; reviewing: string | null; paused: boolean } | null;
+
+const statsQuery = (f: StatsFilter) => `time_class=${encodeURIComponent(f.time_class)}&days=${f.days | 0}&opponents=${f.opponents}`;
+
+export const stats = {
+  get: (f: StatsFilter) => get<{ ok: boolean; stats: StatsNumbers; backlog: Backlog }>(`/api/stats?${statsQuery(f)}`),
+  positions: (what: string, arg: string, f: StatsFilter) =>
+    get<{ ok: boolean; positions: StatPosition[] }>(`/api/stats/positions?what=${encodeURIComponent(what)}&arg=${encodeURIComponent(arg)}&${statsQuery(f)}`),
 };
 
 // ---- what the sidecar sends -------------------------------------------------------------------

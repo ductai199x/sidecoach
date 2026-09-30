@@ -85,6 +85,20 @@ def test_the_centre_pawns_make_a_position_open_semi_open_or_closed() -> None:
     assert structure_of(exchanged) == "open", "no pawn on the d- or e-file"
 
 
+def test_the_strategy_themes_come_from_the_positional_layer() -> None:
+    from sidecoach.profile.stat_facts import themes_of
+
+    assert themes_of(chess.Board()) == [], "nothing to say at the start"
+    # White's pawns on c4, d5 and e4 against Black's on d6 and e7: White has the room.
+    space = "rnbq1rk1/ppp1ppbp/3p1np1/3P4/2P1P3/2N5/PP3PPP/R1BQKBNR w KQ - 0 6"
+    assert "space" in themes_of(chess.Board(space))
+    assert "space" not in themes_of(chess.Board(space.replace(" w ", " b "))), "Black is cramped"
+    assert themes_of(chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")) == ["activity"], "an open file"
+    # The isolated queen's pawn on d4.
+    iqp = "r1bq1rk1/pp2bppp/2n1pn2/8/3P4/2NB1N2/PP3PPP/R1BQ1RK1 w - - 0 10"
+    assert "structure" in themes_of(chess.Board(iqp))
+
+
 def test_an_endgame_is_named_by_what_is_left_besides_kings_and_pawns() -> None:
     assert endgame_of(chess.Board("8/5k2/4p3/8/3P4/8/5K2/8 w - - 0 1")) == "pawn"
     assert endgame_of(chess.Board("3r4/5k2/4p3/8/3P4/8/5K2/3R4 w - - 0 1")) == "rook"

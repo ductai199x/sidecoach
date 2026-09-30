@@ -16,6 +16,7 @@
   // (`open_captions`): over every other, frameless, and never focused, so a click here leaves
   // the keyboard with the game. Outside the shell (a browser, for a test) the box is drawn in
   // the page.
+  import Badge from "$lib/Badge.svelte";
   import { onDestroy, onMount, tick } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import { connect, get, panel, put, type Captions, type PanelState } from "$lib/api";
@@ -629,7 +630,7 @@
   {#if movesShown && moves.length}
     <div class="strip" bind:this={stripEl} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => { e.stopPropagation(); keepMoves(); }} role="presentation">
       {#each moves as m, i (i)}
-        {#if m.num}<span class="num">{m.num}</span>{/if}<span class="san" class:last={m.last}>{m.san}{#if m.label}<i class="badge {m.label}" title={m.label}></i>{/if}</span>
+        {#if m.num}<span class="num">{m.num}</span>{/if}<span class="san" class:last={m.last}>{m.san}{#if m.label}<Badge kind={m.label} />{/if}</span>
       {/each}
     </div>
   {/if}

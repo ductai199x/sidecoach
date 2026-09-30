@@ -171,6 +171,9 @@ CREATE TABLE IF NOT EXISTS stat_moves (
     key TEXT NOT NULL,
     ply INTEGER NOT NULL,
     side TEXT NOT NULL,
+    fen TEXT NOT NULL,
+    uci TEXT NOT NULL,
+    san TEXT NOT NULL,
     phase TEXT NOT NULL,
     loss REAL NOT NULL,
     label TEXT,
@@ -180,6 +183,7 @@ CREATE TABLE IF NOT EXISTS stat_moves (
     found INTEGER NOT NULL,
     allowed TEXT,
     structure TEXT NOT NULL,
+    themes TEXT NOT NULL,
     endgame TEXT,
     spent_ms INTEGER,
     clock_ms INTEGER,
@@ -901,10 +905,12 @@ class Store:
                 {**game, "strength": strength, "bot": int(game["bot"])},
             )
             self._db.executemany(
-                "INSERT INTO stat_moves (key, ply, side, phase, loss, label, accuracy, score,"
-                " chance, found, allowed, structure, endgame, spent_ms, clock_ms) VALUES"
-                " (:key, :ply, :side, :phase, :loss, :label, :accuracy, :score, :chance, :found,"
-                " :allowed, :structure, :endgame, :spent_ms, :clock_ms)",
+                "INSERT INTO stat_moves (key, ply, side, fen, uci, san, phase, loss, label,"
+                " accuracy, score, chance, found, allowed, structure, themes, endgame, spent_ms,"
+                " clock_ms)"
+                " VALUES"
+                " (:key, :ply, :side, :fen, :uci, :san, :phase, :loss, :label, :accuracy, :score,"
+                " :chance, :found, :allowed, :structure, :themes, :endgame, :spent_ms, :clock_ms)",
                 [{**m, "key": key, "found": int(m["found"])} for m in moves],
             )
             self._db.commit()

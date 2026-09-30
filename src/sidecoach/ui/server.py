@@ -387,6 +387,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     app.state.backlog = backlog  # closed with the panel (`serve`)
 
     @app.get("/games")
+    @app.get("/stats")
     @app.get("/review/{key}")
     def review_pages(key: str = "") -> Any:
         return FileResponse(WEB / "index.html")
@@ -487,6 +488,35 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         if review_hush is not None:
             review_hush()
         return {"ok": room is not None}
+
+    # ---- Stats: the player's games added up (profile/stats.py; docs/stats-plan.md) ---------
+    from sidecoach.profile import stats as stat_sums
+    from sidecoach.profile.store import Store
+
+    def _filter(time_class: str, days: int, opponents: str) -> stat_sums.Filter:
+        return stat_sums.Filter(
+            time_class=time_class or None, days=days or None, opponents=opponents
+        )
+
+    @app.get("/api/stats")
+    def stats_now(time_class: str = "", days: int = 0, opponents: str = "all") -> dict[str, Any]:
+        store = Store(store_path)
+        try:
+            numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
+        finally:
+            store.close()
+        return {"ok": True, "stats": numbers, "backlog": backlog and backlog.state()}
+
+    @app.get("/api/stats/positions")
+    def stats_positions(
+        what: str, arg: str = "", time_class: str = "", days: int = 0, opponents: str = "all"
+    ) -> dict[str, Any]:
+        store = Store(store_path)
+        try:
+            found = stat_sums.positions(store, _filter(time_class, days, opponents), what, arg)
+        finally:
+            store.close()
+        return {"ok": True, "positions": found}
 
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
     @app.get("/api/settings")

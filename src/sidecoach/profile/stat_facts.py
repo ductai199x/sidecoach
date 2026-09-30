@@ -13,6 +13,10 @@ The definitions are ours, as chess.com publishes none, and each is shown on the 
   defender, free piece, sacrifice, other.
 - **Structure** of the position the move was played from: open (a pawn or none on the d- and
   e-files), closed (a d- or e-pawn blocked head on by an enemy pawn), else semi-open.
+- **Themes** of strategy there, from the positional layer (`analysis.positional`): *space*
+  when the mover has more of it, *activity* when a rook or queen of theirs stands on an open
+  file or a minor piece on an outpost, *structure* when either side has a weak pawn (isolated,
+  backward, doubled, hanging, the isolated queen's pawn).
 - **Endgames** where the review's phases put them (`analysis.phase`), by what is left besides
   kings and pawns: pawn, rook, queen, other; entered better, equal or worse by the mover's
   expected score then (0.6 and 0.4).
@@ -25,6 +29,7 @@ from dataclasses import asdict, dataclass
 
 import chess
 
+from sidecoach.analysis import positional
 from sidecoach.analysis.phase import phase_of
 from sidecoach.analysis.score import position_score
 from sidecoach.events import Analysis, MotifTag, ReviewedGame
@@ -60,6 +65,7 @@ BLOW_PLIES = 3  # the line's first plies: the mover's first two moves are its fi
 TACTICS = TACTICAL | {"doubleCheck"}
 BETTER, WORSE = 0.6, 0.4
 ENDGAMES = ("pawn", "rook", "queen", "other")
+THEMES = ("space", "activity", "structure")
 STRUCTURES = ("open", "semi-open", "closed")
 
 
@@ -67,6 +73,9 @@ STRUCTURES = ("open", "semi-open", "closed")
 class MoveFact:
     ply: int
     side: str
+    fen: str  # the position the move was played from
+    uci: str
+    san: str
     phase: str
     loss: float
     label: str | None
@@ -76,6 +85,7 @@ class MoveFact:
     found: bool
     allowed: str | None  # the tactic the move handed the opponent, by kind
     structure: str
+    themes: str  # the strategy themes there, comma-separated
     endgame: str | None
     spent_ms: int | None
     clock_ms: int | None
@@ -141,6 +151,24 @@ def structure_of(board: chess.Board) -> str:
     return "semi-open"
 
 
+def themes_of(board: chess.Board) -> list[str]:
+    """The strategy themes of the position for the side to move (`THEMES`)."""
+    us = board.turn
+    out = []
+    if any(f.kind == "spaceAdvantage" for f in positional.space_plan(board, us)):
+        out.append("space")
+    if positional.open_files(board, us) or positional.outposts(board, us):
+        out.append("activity")
+    if (
+        positional.pawn_weaknesses(board, us)
+        or positional.hanging_pawns(board, us)
+        or positional.hanging_pawns(board, not us)
+        or positional.isolated_d_pawn(board, us)
+    ):
+        out.append("structure")
+    return out
+
+
 def endgame_of(board: chess.Board) -> str:
     """An endgame's kind by what is left besides kings and pawns."""
     left = {p.piece_type for p in board.piece_map().values()} - {chess.KING, chess.PAWN}
@@ -187,6 +215,9 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
             MoveFact(
                 ply=move.ply,
                 side=move.side.value,
+                fen=move.fen_before,
+                uci=move.assessment.uci,
+                san=move.san,
                 phase=phase,
                 loss=round(move.assessment.expected_loss, 4),
                 label=label.value if label is not None else None,
@@ -196,6 +227,7 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
                 found=chance is not None and move.assessment.expected_loss < FOUND_LOSS,
                 allowed=chance_in(move.after),
                 structure=structure_of(board),
+                themes=",".join(themes_of(board)),
                 endgame=endgame_of(board) if phase == "endgame" else None,
                 spent_ms=move.spent_ms,
                 clock_ms=move.clock_ms,

@@ -3,6 +3,7 @@
   // marks: brilliant, great, best, inaccuracy, mistake, miss, blunder; good and book stay
   // plain). Hovering a move shows its position on the board; clicking pins it there, and
   // clicking it again (or Escape) comes back to the live board.
+  import Badge from "$lib/Badge.svelte";
   import { store } from "./panel.svelte";
   import { stacked } from "./layout";
   import { tick } from "svelte";
@@ -66,7 +67,7 @@
               onmouseleave={() => store.hoverPly(null)}
               onclick={() => store.pinPly(c.ply)}
               onkeydown={(e) => { if (e.key === "Enter") store.pinPly(c.ply); }}
-            >{c.san}{#if c.label}<i class="badge {c.label}" title={c.label}></i>{/if}</span>
+            >{c.san}{#if c.label}<Badge kind={c.label} />{/if}</span>
           {:else}
             <span class="mv"></span>
           {/if}

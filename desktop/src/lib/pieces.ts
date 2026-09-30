@@ -2,6 +2,10 @@
 // taken piece fades: the boards that play moves (the puzzle page, the review) share it.
 import { cellOf, placement, spriteOf } from "./chess";
 
+// A taken piece's fade (panel.css .piece.fading: it waits for the capturer to arrive), and then
+// its node goes.
+const FADE_MS = 240;
+
 export class PieceLayer {
   /** square -> the piece's node */
   nodes = new Map<string, HTMLDivElement>();
@@ -49,18 +53,19 @@ export class PieceLayer {
         const [[, , node]] = gone.splice(i, 1);
         this.place(node, sq);
         next.set(sq, node);
-      } else {
+      } else { // a piece back on the board (a move taken back over a capture): fades in
         const node = document.createElement("div");
-        node.className = "piece " + spriteOf(letter);
+        node.className = "piece appearing " + spriteOf(letter);
         node.dataset.letter = letter;
         this.placeNow(node, sq);
         this.el.appendChild(node);
+        requestAnimationFrame(() => node.classList.remove("appearing"));
         next.set(sq, node);
       }
     }
-    for (const [, , node] of gone) { // taken, or a promoted pawn: fades out
+    for (const [, , node] of gone) { // taken, or a promoted pawn: fades under the piece arriving
       node.classList.add("fading");
-      setTimeout(() => node.remove(), 140);
+      setTimeout(() => node.remove(), FADE_MS);
     }
     this.nodes = next;
     const occupied: Record<string, string> = {};

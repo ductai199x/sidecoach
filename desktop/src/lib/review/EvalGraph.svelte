@@ -41,7 +41,7 @@
 
 <div
   class="rv-graph"
-  style="height: {height}px"
+  style="height: {height}px; --dot: {height < 60 ? 6 : 8}px"
   bind:this={el}
   role="slider"
   tabindex="-1"
@@ -61,13 +61,16 @@
     {#if at !== null}<line class="at" x1={at} y1="0" x2={at} y2="100" />{/if}
   </svg>
   {#each dots as d (d.ply)}
-    <i class="gdot" style="left: {d.x}%; top: {d.y}%; background: var(--cls-{d.kind})" title="{d.kind}, move {Math.ceil(d.ply / 2)}"></i>
+    <i class="gdot" class:on={d.ply === at} style="left: {d.x}%; top: {d.y}%; background: var(--cls-{d.kind})" title="{d.kind}, move {Math.ceil(d.ply / 2)}"></i>
   {/each}
 </div>
 
 <style>
+  /* A dot in scale with the graph (--dot: smaller on the short one under the step-through);
+     the move shown ringed white. */
   .gdot {
-    position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
-    box-shadow: 0 0 0 1.5px #262522; pointer-events: none;
+    position: absolute; width: var(--dot); height: var(--dot); margin: calc(var(--dot) / -2) 0 0 calc(var(--dot) / -2);
+    border-radius: 50%; box-shadow: 0 0 0 1.5px #262522; pointer-events: none;
   }
+  .gdot.on { box-shadow: 0 0 0 2px #fff; z-index: 1; }
 </style>

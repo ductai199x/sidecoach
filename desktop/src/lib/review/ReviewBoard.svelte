@@ -6,11 +6,14 @@
   // player's own marks. Given `legal`, it takes the player's moves (Retry): the hand is the
   // puzzle board's (lib/moveinput), a tried move is `onplay`'s, and a `wrong` one shows red
   // until `redraw` puts the position back.
+  import Badge from "$lib/Badge.svelte";
   import { FILES, cellOf, colourOf, squareAt } from "$lib/chess";
   import { MoveInput } from "$lib/moveinput.svelte";
   import { PieceLayer } from "$lib/pieces";
+  import { arrow } from "./arrows";
 
-  type Arrow = { from: string; to: string; kind: "best" | "follow" };
+  // The review's arrows: the best move (gold), a threat (red), the move's idea (blue).
+  type Arrow = { from: string; to: string; kind: "best" | "threat" | "idea" };
 
   let {
     fen,
@@ -68,14 +71,6 @@
   });
   const badgeAt = $derived(to ? cellOf(to, bottom) : null);
 
-  function line(a: string, b: string) {
-    const p = cellOf(a, bottom), q = cellOf(b, bottom);
-    const x1 = p.x + 0.5, y1 = p.y + 0.5, x2 = q.x + 0.5, y2 = q.y + 0.5;
-    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
-    const k = 0.32 / len; // stop short of the centre so the head lands on it
-    return { x1, y1, x2: x2 - dx * k, y2: y2 - dy * k };
-  }
-
   // The pieces follow the position; the move that made it slides. `redraw` puts a tried move
   // back.
   $effect(() => {
@@ -125,23 +120,19 @@
     {/each}
   </div>
   <div class="pieces" bind:this={piecesEl}></div>
-  <svg class="overlay" viewBox="0 0 8 8" aria-hidden="true">
-    <defs>
-      {#each ["best", "follow", "user"] as c (c)}
-        <marker id="rv-ah-{c}" class="mk-{c}" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" /></marker>
-      {/each}
-    </defs>
-    {#each arrows as a (a.kind + a.from + a.to)}
-      {@const l = line(a.from, a.to)}
-      <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-{a.kind}" marker-end="url(#rv-ah-{a.kind})" />
-    {/each}
-    {#each input.arrows as [a, b] (a + b)}
-      {@const l = line(a, b)}
-      <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2} class="mk-user user" marker-end="url(#rv-ah-user)" />
+  <svg class="overlay rv-arrows" viewBox="0 0 8 8" aria-hidden="true">
+    {#each [...arrows.map((a) => ({ ...a, id: a.kind + a.from + a.to })), ...input.arrows.map(([from, to]) => ({ from, to, kind: "user", id: "user" + from + to }))] as a (a.id)}
+      {@const d = arrow(a.from, a.to, bottom)}
+      <g class="rv-arrow {a.kind}">
+        <polyline points={d.shaft} stroke-width={d.width} />
+        <polygon points={d.head} />
+      </g>
     {/each}
   </svg>
   {#if cls && badgeAt}
-    <div class="rv-mark" style="left: {badgeAt.x * 12.5}%; top: {badgeAt.y * 12.5}%"><i class="badge {cls}"></i></div>
+    {#key fen}
+      <div class="rv-mark" style="left: {badgeAt.x * 12.5}%; top: {badgeAt.y * 12.5}%"><Badge kind={cls} /></div>
+    {/key}
   {/if}
   {#if input.promo}
     {@const promo = input.promo}

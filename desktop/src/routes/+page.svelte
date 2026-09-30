@@ -14,7 +14,7 @@
   import Strip from "$lib/Strip.svelte";
   import Terminal from "$lib/Terminal.svelte";
   import { panel } from "$lib/api";
-  import { fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter, stacked } from "$lib/layout";
+  import { boardHandle, fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
   import { buildTray, checkForUpdates, inShell, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
@@ -95,35 +95,9 @@
     if (prefs.get("term") !== null) root.style.setProperty("--term", prefs.get("term") + "px");
 
     // The phone's handle: the desktop's dividers are off when stacked, this one is only on.
-    if (splitMobile) {
-      const handle = splitMobile;
-      const down = (e: PointerEvent) => {
-        if (!stacked()) return;
-        e.preventDefault();
-        handle.setPointerCapture(e.pointerId);
-        const origin = e.clientY;
-        const start = (handle.parentElement as HTMLElement).getBoundingClientRect().width;
-        handle.classList.add("live");
-        const move = (ev: PointerEvent) => {
-          const w = start + (ev.clientY - origin);
-          mobileBoard(w);
-          prefs.set("mboard", w);
-        };
-        const done = () => {
-          handle.removeEventListener("pointermove", move);
-          handle.removeEventListener("pointerup", done);
-          handle.removeEventListener("pointercancel", done);
-          handle.classList.remove("live");
-        };
-        handle.addEventListener("pointermove", move);
-        handle.addEventListener("pointerup", done);
-        handle.addEventListener("pointercancel", done);
-      };
-      const reset = () => { prefs.set("mboard", null); mobileBoard(null); };
-      handle.addEventListener("pointerdown", down);
-      handle.addEventListener("dblclick", reset);
-      cleanups.push(() => { handle.removeEventListener("pointerdown", down); handle.removeEventListener("dblclick", reset); });
-    }
+    if (splitMobile) cleanups.push(boardHandle(splitMobile,
+      (w) => { mobileBoard(w); prefs.set("mboard", w); },
+      () => { prefs.set("mboard", null); mobileBoard(null); }));
     mobileBoard(prefs.get("mboard"));
 
     // The header's height, for the first screen's sum (it is one row stacked, but a row

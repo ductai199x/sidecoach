@@ -42,6 +42,33 @@ export function fitBoard(mainEl: HTMLElement | null, divider: HTMLElement | null
   root.style.setProperty("--board", side + "px");
 }
 
+/** Stacked, the handle under the board: dragged down the board grows, up it shrinks (`apply`
+ * gets the width wanted); a double-tap restores the default. Off side by side, where the
+ * dividers are on. */
+export function boardHandle(handle: HTMLElement, apply: (width: number) => void, reset: () => void): () => void {
+  const down = (e: PointerEvent) => {
+    if (!stacked()) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const origin = e.clientY;
+    const start = (handle.parentElement as HTMLElement).getBoundingClientRect().width;
+    handle.classList.add("live");
+    const move = (ev: PointerEvent) => apply(start + (ev.clientY - origin));
+    const done = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", done);
+      handle.removeEventListener("pointercancel", done);
+      handle.classList.remove("live");
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", done);
+    handle.addEventListener("pointercancel", done);
+  };
+  handle.addEventListener("pointerdown", down);
+  handle.addEventListener("dblclick", reset);
+  return () => { handle.removeEventListener("pointerdown", down); handle.removeEventListener("dblclick", reset); };
+}
+
 /** A divider the pointer drags: `size` reads the size it controls at the start of a drag,
  * `apply` gets that and the distance moved; a double-click restores the default. */
 export function splitter(handle: HTMLElement, axis: "x" | "y", size: () => number, apply: (start: number, d: number) => void, reset: () => void): () => void {

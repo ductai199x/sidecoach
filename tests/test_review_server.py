@@ -106,6 +106,16 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     kept = Store(engine.settings.data_dir / "profile.sqlite")
     assert [g["key"] for g in kept.stat_games()] == [key] and len(kept.stat_moves([key])) == 12
     kept.close()
+    # Added up in Stats (the player was Black): six moves of theirs.
+    assert client.get("/stats").status_code == 200, "the Stats window's page"
+    numbers = client.get("/api/stats").json()["stats"]
+    assert (numbers["overview"]["games"], numbers["overview"]["moves"]) == (1, 6)
+    assert (
+        client.get("/api/stats", params={"opponents": "bots"}).json()["stats"]["overview"]["games"]
+        == 0
+    )
+    listed = client.get("/api/stats/positions", params={"what": "gallery", "arg": "best"}).json()
+    assert listed["ok"] and all(p["side"] == "black" for p in listed["positions"])
 
     # Listed with its accuracies now; opened again, the saved review is read, not redone.
     row = next(g for g in client.get("/api/games").json()["games"] if g["key"] == key)
