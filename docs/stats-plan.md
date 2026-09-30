@@ -131,7 +131,7 @@ true move number, there and in `human_facts.py`.)
 | S1 | Facts and the backlog | Per-move facts stored at review; the background review of imported games (low priority, paused while watching); the definitions above with tests on known positions. |
 | S2 | Peers and ratings | Done 2026-09-30 (above): the peers from 1,800 judged real sides by band; the category ratings fitted and their held-out error reported. |
 | S3 | The window | Advanced Stats' layout; overview, openings, tactics, strategy, endgames, time, results, galleries; filters and chips; positions as boards opening the review at the move; every window size; run end to end. |
-| S4 | Work on this | Done 2026-09-30 but the model's words: every costly move counted in one area (a tactic missed or handed over by kind, else the endgame's by kind, the opening's, a quiet position's), each area's cost a game a figure with its peers; the three dearest with their positions and puzzles of their motif at the player's puzzle level. The coach's line is a template for now; the model's, from the positions, comes with Game Review's phase 4. |
+| S4 | Work on this | Done 2026-09-30: every costly move counted in one area (a tactic missed or handed over by kind, else the endgame's by kind, the opening's, a quiet position's), each area's cost a game a figure with its peers; the three dearest with their positions and puzzles of their motif at the player's puzzle level. The coach's line is the page's own words for each area, no model (Tai, 2026-09-30: a model call here could cost a lot). |
 | S5 | Phone | The 1:1 port with parity fixtures. |
 
 Cost: no paid development spend.
