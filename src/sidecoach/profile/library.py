@@ -11,6 +11,7 @@ names the app; nothing is sent to the player's accounts.
 from __future__ import annotations
 
 import calendar
+import difflib
 import hashlib
 import io
 import re
@@ -20,7 +21,7 @@ from collections.abc import Iterable
 import chess.pgn
 import httpx
 
-from sidecoach.profile.store import LibraryRow, Store
+from sidecoach.profile.store import GameRow, LibraryRow, MoveRow, Store
 
 USER_AGENT = "Sidecoach (a personal chess coach)"
 CHESSCOM_ARCHIVES = "https://api.chess.com/pub/player/{user}/games/archives"
@@ -204,6 +205,90 @@ def from_watched(store: Store, limit: int = 200) -> list[LibraryRow]:
             )
         )
     return rows
+
+
+# A watched game and an import are one game when the import started at most TWIN_BEFORE_S
+# before Sidecoach began following it (it can join late, never early) and no later than
+# TWIN_AFTER_S after, and nearly every move Sidecoach recorded -- TWIN_SHARE of them, TWIN_PLIES
+# at least -- turns up in the import in order: Sidecoach can misread a move or miss a few, so
+# the record need not agree move for move (Tai, 2026-09-30: "sometimes our app is a bit
+# inaccurate").
+TWIN_BEFORE_S = 3 * 3600.0
+TWIN_AFTER_S = 600.0
+TWIN_SHARE = 0.9
+TWIN_PLIES = 12
+# An import that says when in the day it started (chess.com, Lichess); else a date alone.
+_TIMED = re.compile(r'^\[UTCTime "', re.MULTILINE)
+
+
+def reconcile(store: Store) -> dict[str, str]:
+    """Each game Sidecoach watched that was imported too, from chess.com, Lichess or a PGN:
+    the import is the game's record -- every move, the clocks, the names, the ratings -- and
+    stands for the watched one in the library, the background review and Stats. Pairs found
+    are kept in the store; returns them all, watched key -> imported key."""
+    twins = store.twins()
+    imported = store.library()
+    moves_of: dict[str, list[str] | None] = {}  # an import's moves, read once
+    for game in store.games(limit=200):
+        key = f"watched:{game.game_id}"
+        if key in twins:
+            continue
+        seen = [m.san.rstrip("+#") for m in sorted(store.moves(game.game_id), key=_order)]
+        best: tuple[float, str] | None = None
+        for row in imported:
+            if not _may_be(game, row):
+                continue
+            if row.key not in moves_of:
+                moves_of[row.key] = _sans(row.pgn)
+            share = _agreeing(seen, moves_of[row.key] or [])
+            if share is not None and (best is None or share > best[0]):
+                best = (share, row.key)
+        if best is not None:
+            store.add_twin(key, best[1])
+            twins[key] = best[1]
+    return twins
+
+
+def _order(move: MoveRow) -> tuple[int, int]:
+    return move.segment, move.ply
+
+
+def _may_be(game: GameRow, row: LibraryRow) -> bool:
+    """Whether an import can be the watched game at all: the same side, the same result when
+    both are known, started in the window (a date alone, the same day or the next)."""
+    if row.user_side is not None and row.user_side != game.user_side:
+        return False
+    if row.result and game.result and row.result != "*" and row.result != game.result:
+        return False
+    if row.played_at is None:
+        return True
+    if not _TIMED.search(row.pgn):
+        return abs(row.played_at - game.started_at) <= 36 * 3600
+    return game.started_at - TWIN_BEFORE_S <= row.played_at <= game.started_at + TWIN_AFTER_S
+
+
+def _sans(pgn: str) -> list[str] | None:
+    games = games_in(pgn)
+    if not games:
+        return None
+    board = games[0].board()
+    out = []
+    for move in games[0].mainline_moves():
+        out.append(board.san(move).rstrip("+#"))
+        board.push(move)
+    return out
+
+
+def _agreeing(seen: list[str], played: list[str]) -> float | None:
+    """The share of the moves Sidecoach recorded that the import has in the same order, when
+    it is enough to call them one game; None otherwise."""
+    if not seen or not played:
+        return None
+    matcher = difflib.SequenceMatcher(a=seen, b=played, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    share = matched / len(seen)
+    enough = matched >= min(TWIN_PLIES, len(played))
+    return share if share >= TWIN_SHARE and enough else None
 
 
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")

@@ -622,14 +622,17 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
 
 def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
-    """The games Game Review can open, the latest played first -- imported and watched --
-    each with its review's accuracies when it has one, and the player's usernames."""
+    """The games Game Review can open, the latest played first -- imported and watched, a
+    watched game its import stands for once, as the import -- each with its review's
+    accuracies when it has one, and the player's usernames."""
     from sidecoach.profile import library
     from sidecoach.profile.store import Store
 
     store = Store(store_path)
     try:
-        rows = [*store.library(), *library.from_watched(store)]
+        twins = library.reconcile(store)
+        watched = [r for r in library.from_watched(store) if r.key not in twins]
+        rows = [*store.library(), *watched]
         rows.sort(key=lambda r: r.played_at or r.added_at, reverse=True)
         out = []
         for row in rows:

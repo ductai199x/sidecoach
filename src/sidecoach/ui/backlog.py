@@ -98,8 +98,14 @@ class Backlog:
         return False
 
     def _todo(self, store: Store) -> list[LibraryRow]:
-        """The games no review covers, the latest played first."""
-        watched = [r for r in library.from_watched(store) if store.latest_review(r.key) is None]
+        """The games no review covers, the latest played first; a watched game its import
+        stands for is the import's to review."""
+        twins = library.reconcile(store)
+        watched = [
+            r
+            for r in library.from_watched(store)
+            if r.key not in twins and store.latest_review(r.key) is None
+        ]
         rows = [*store.unreviewed(), *watched]
         rows = [r for r in rows if r.key not in self._failed]
         return sorted(rows, key=lambda r: r.played_at or r.added_at, reverse=True)

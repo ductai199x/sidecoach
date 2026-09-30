@@ -5,9 +5,16 @@ from __future__ import annotations
 
 import json
 
+import chess
 import httpx
 
-from sidecoach.profile.library import from_chesscom, from_lichess, from_pgn, time_class_of
+from sidecoach.profile.library import (
+    from_chesscom,
+    from_lichess,
+    from_pgn,
+    reconcile,
+    time_class_of,
+)
 from sidecoach.profile.store import Store
 
 GAME = """[Event "Live Chess"]
@@ -121,6 +128,86 @@ def test_lichess_games_come_as_pgn_with_their_clocks() -> None:
 
     rows = from_lichess("nosegazm", client=httpx.Client(transport=httpx.MockTransport(answer)))
     assert [r.key for r in rows] == ["lichess:AbCdEfGh"]  # the atomic game left out
+
+
+LONG = (
+    "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. d3 Bc5 5. c3 d6 6. O-O O-O 7. Re1 a6 8. Bb3 Ba7"
+    " 9. h3 h6 10. Nbd2 Re8 0-1"
+)
+SANS = [t for t in LONG.split() if not t[0].isdigit()]  # 20 plies
+
+
+def _watch(store: Store, game_id: str, sans: list[str], started_at: float, **kw: str) -> str:
+    """A game as Sidecoach records one it watched: its moves as read, in order."""
+    store.start_game(
+        game_id, started_at, kw.get("side", "black"), kw.get("fen", chess.STARTING_FEN)
+    )
+    for ply, san in enumerate(sans, start=1):
+        store.add_move(
+            game_id, 0, ply, move_number=(ply + 1) // 2, san=san, uci="0000", by_user=ply % 2 == 0,
+            fen_before="-", fen_after="-", phase=None, think_ms=None, clock_ms=None,
+            capture=False, gives_check=False, material=None, ts=started_at + ply,
+        )  # fmt: skip
+    store.end_game(game_id, started_at + 900, kw.get("result", "0-1"), "resignation")
+    return f"watched:{game_id}"
+
+
+def _stats(store: Store, key: str) -> None:
+    store.save_stats(
+        "standard",
+        {"key": key, "source": key.split(":")[0], "time_class": "rapid", "played_at": 0.0,
+         "user_side": "black", "bot": False, "result": "0-1", "opening": None,
+         "termination": None},
+        [],
+    )  # fmt: skip
+
+
+def test_a_watched_game_imported_too_is_one_game(tmp_path) -> None:  # noqa: ANN001
+    """The import stands for the watched game when nearly every move Sidecoach read is in it,
+    in order -- a misread move and the last moves missed are no matter -- and the game started
+    in the window; the library, the background review and Stats have it once."""
+    store = Store(tmp_path / "profile.sqlite")
+    (row,) = from_pgn(
+        GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), user_names=["nosegazm"]
+    )
+    store.add_library_game(row)
+    start = row.played_at or 0.0
+    misread = [*SANS[:6], "d4", *SANS[7:18]]  # 4. d3 read as d4, the last two moves missed
+    twin = _watch(store, "g1", misread, start + 60)
+    # Joined mid-game: the moves from its 7th ply on.
+    late = _watch(store, "g2", SANS[6:], start + 300)
+    # Another game, the same opening for six plies, then its own way.
+    own_way = [
+        "c3",
+        "O-O",
+        "d4",
+        "exd4",
+        "cxd4",
+        "Bb4+",
+        "Bd2",
+        "Bxd2+",
+        "Nbxd2",
+        "d5",
+        "exd5",
+        "Nxd5",
+        "Qb3",
+    ]
+    other = _watch(store, "g3", [*SANS[:6], *own_way], start + 120)
+    # The same moves, but hours after the import had started: not that game.
+    too_late = _watch(store, "g4", SANS, start + 5 * 3600)
+    twins = reconcile(store)
+    assert twins == {twin: row.key, late: row.key}
+    assert other not in twins and too_late not in twins
+    assert store.twins() == twins, "kept"
+
+    # Stats has the game once, as the import.
+    for key in (row.key, twin, other):
+        _stats(store, key)
+    assert {g["key"] for g in store.stat_games()} == {row.key, other}
+    # The import taken out of the library: the watched game is its own again.
+    store.delete_library_game(row.key)
+    assert twin not in store.twins()
+    store.close()
 
 
 def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: ANN001

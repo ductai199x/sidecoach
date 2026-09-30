@@ -12,9 +12,10 @@ Tables: games; moves, each with the engine's verdict once it arrives; evidence, 
 per mistake of the player's with its cause and motif (user-correctable); dialogue,
 what the player and the coach said; sessions, with their summaries; library, the games
 Game Review can open -- imported from chess.com, Lichess or a PGN -- and reviews, a game
-reviewed whole with its summary and the coach's words on every move. Recordings stay on
-disk. Everything is written as it happens, so a session that ends
-abruptly loses at most the last game's summary. `Store(None)` is in memory, for tests
+reviewed whole with its summary and the coach's words on every move; twins, the watched
+games that were imported too (the import stands for them). Recordings stay on disk.
+Everything is written as it happens, so a session that ends abruptly loses at most the last
+game's summary. `Store(None)` is in memory, for tests
 and for replays, which must not teach the profile anything.
 """
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +190,13 @@ CREATE TABLE IF NOT EXISTS stat_moves (
     spent_ms INTEGER,
     clock_ms INTEGER,
     PRIMARY KEY (key, ply)
+);
+-- A game Sidecoach watched that was imported too (profile/library.py `reconcile`): the import is
+-- its record, the watched one stands aside in the library, the background review and Stats.
+CREATE TABLE IF NOT EXISTS twins (
+    watched TEXT PRIMARY KEY,
+    imported TEXT NOT NULL,
+    found_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
@@ -884,11 +893,28 @@ class Store:
         return None if row is None else LibraryRow(**dict(row))
 
     def delete_library_game(self, key: str) -> None:
-        """A game out of the library, and its reviews and stats with it."""
+        """A game out of the library, and its reviews and stats with it; a watched game it
+        stood for comes back."""
         with self._lock:
             for table in ("stat_moves", "stat_games", "reviews", "library"):
                 self._db.execute(f"DELETE FROM {table} WHERE key = ?", (key,))
+            self._db.execute("DELETE FROM twins WHERE imported = ?", (key,))
             self._db.commit()
+
+    def add_twin(self, watched: str, imported: str) -> None:
+        """A watched game's import (library keys): the import stands for it from now on."""
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO twins (watched, imported, found_at) VALUES (?, ?, ?)",
+                (watched, imported, time.time()),
+            )
+            self._db.commit()
+
+    def twins(self) -> dict[str, str]:
+        """The watched games that were imported too: watched key -> imported key."""
+        with self._lock:
+            rows = self._db.execute("SELECT watched, imported FROM twins").fetchall()
+        return {str(r["watched"]): str(r["imported"]) for r in rows}
 
     # ---- Stats: a reviewed game's facts (profile/stat_facts.py) --------------------------------
 
@@ -916,8 +942,13 @@ class Store:
             self._db.commit()
 
     def stat_games(self) -> list[dict[str, Any]]:
+        """The reviewed games' facts, each game once: a watched game its import stands for is
+        left out."""
         with self._lock:
-            rows = self._db.execute("SELECT * FROM stat_games ORDER BY played_at").fetchall()
+            rows = self._db.execute(
+                "SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins)"
+                " ORDER BY played_at"
+            ).fetchall()
         return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
 
     def stat_moves(self, keys: list[str]) -> list[dict[str, Any]]:
@@ -941,10 +972,12 @@ class Store:
         return [LibraryRow(**dict(r)) for r in rows]
 
     def reviews_without_stats(self) -> list[ReviewRow]:
-        """Each game's latest review whose facts are not kept yet."""
+        """Each game's latest review whose facts are not kept yet (a watched game its import
+        stands for needs none)."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
+                " AND r.key NOT IN (SELECT watched FROM twins)"
                 " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
             ).fetchall()
         return [ReviewRow(**dict(r)) for r in rows]
