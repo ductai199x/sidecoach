@@ -84,12 +84,50 @@ training; every game counted (other sites, over the board).
   controls apart by default, every definition a click away.
 - **Data**: each reviewed game's facts kept per move when it is reviewed, so the page is at once.
 
+## S2: peers and category ratings (done 2026-09-30)
+
+`tools/review/fit_stats.py` on the 1,800 judged Lichess rapid sides (six bands of 300, 800 to
+2300 and up; `tools/review/human_facts.py`), strategy themes read again from the sample's
+positions.
+
+- **Peers:** each band added up by Stats' own functions (`stats.figures`, the code that adds up
+  the player's games), and each figure a line through the bands, value against the band's mean
+  rating, weighted by its count (`profile/peers.json`). Left out: book moves before leaving book
+  (needs the opponent's moves) and time a move (the sample's increment is unknown). **The peers
+  are players of the player's rating**, the mean of the ratings their games against people
+  record, as chess.com's are; the level of their play when no game records one. Not the level of
+  their play always: against weaker players accuracy comes easier, so a player who plays above
+  their rating reads ahead of their play's peers figure for figure (Tai's games against ~1000s:
+  opening accuracy 80 against 73 for Lichess 2300s), which says nothing.
+- **Grade:** how many rating points ahead of the peers the figure is, read back along the line
+  (its slope carries whether higher is better), as the kinds of move: brilliant from +400, great
+  +250, best +125, excellent +40, good within 40, inaccuracy to -125, mistake to -250, blunder
+  below. A figure of a few is pulled towards the peers' as if it had ten more at their value; a
+  figure whose line fits with a weighted r² under 0.5 gets the peers' value but no grade (checkmates
+  found, open positions, queen endings, the score from an equal or worse endgame).
+- **Category ratings:** the game rating's model fitted on each category's moves alone
+  (`profile/categories.json`), shown from 20 of its moves. Held out (542 sides of players the fit
+  never saw), mean absolute error in rating points:
+
+  | Category | Moves a game | One game | Ten games pooled | Game model, same moves |
+  |---|---|---|---|---|
+  | Openings | 28 | 324 | 154 | 325 / 165 |
+  | Tactics | 1.8 | (too few) | 279 | 384 / 399 |
+  | Strategy | 32 | 336 | 138 | 337 / 163 |
+  | Endgames | 6 | 411 | 344 | 426 / 586 |
+  | All moves (the game model) | 35 | 328 | 176 | |
+
+- **Pooled, not averaged:** a mean of one-game ratings leans to the middle (each game's prior
+  pulls it): +310 for players of 900-1200, -233 at 1800-2100, -386 at 2100-2400 (ten games).
+  Their moves pooled lean under 100 either way. So Stats' rating, and its trend, pool the last
+  ten games' moves; each game's own rating is a dot.
+
 ## Phases
 
 | # | Phase | Finish line |
 |---|---|---|
 | S1 | Facts and the backlog | Per-move facts stored at review; the background review of imported games (low priority, paused while watching); the definitions above with tests on known positions. |
-| S2 | Peers and ratings | The facts of the 3,409 judged real sides by band (peers); the category ratings fitted and their held-out error reported. |
+| S2 | Peers and ratings | Done 2026-09-30 (above): the peers from 1,800 judged real sides by band; the category ratings fitted and their held-out error reported. |
 | S3 | The window | Advanced Stats' layout; overview, openings, tactics, strategy, endgames, time, results, galleries; filters and chips; positions as boards opening the review at the move; every window size; run end to end. |
 | S4 | Work on this | Ranked weaknesses, puzzles by motif, the coach's words. |
 | S5 | Phone | The 1:1 port with parity fixtures. |

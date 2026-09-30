@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
   import "$lib/styles/review.css";
   import "$lib/styles/stats.css";
-  import { connect, stats as statsApi, type Backlog, type Figure, type Rate, type StatPosition, type StatsFilter, type StatsNumbers } from "$lib/api";
+  import { connect, stats as statsApi, type Backlog, type Figure, type Rate, type StatPosition, type StatRating, type StatsFilter, type StatsNumbers } from "$lib/api";
   import Board from "$lib/Board.svelte";
   import { prefs } from "$lib/panel.svelte";
   import { className } from "$lib/review/words";
@@ -113,18 +113,35 @@
 
   // ---- how a figure reads ----
   const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
-  const pct = (f: Figure | Rate | undefined) => (f?.value == null ? "–" : `${Math.round(f.value)}%`);
+  // A figure's value (or the peers') as the page writes it.
+  type Show = (v: number | null | undefined) => string;
+  const tenth: Show = (v) => (v == null ? "–" : v.toFixed(1));
+  const percent: Show = (v) => (v == null ? "–" : `${Math.round(v)}%`);
+  const seconds: Show = (v) => (v == null ? "–" : `${v.toFixed(1)} s`);
+  const whole: Show = (v) => (v == null ? "–" : String(Math.round(v)));
+  const pct = (f: Figure | Rate | undefined) => percent(f?.value);
   const num = (f: Figure | undefined, unit = "") => (f?.value == null ? "–" : `${f.value}${unit}`);
+  // A grade's badge said in words: how far ahead of the peers or behind the figure is.
+  const GRADE_WORDS: Record<string, string> = {
+    brilliant: "Far ahead of your peers",
+    great: "Well ahead of your peers",
+    best: "Ahead of your peers",
+    excellent: "A little ahead of your peers",
+    good: "On a par with your peers",
+    inaccuracy: "A little behind your peers",
+    mistake: "Behind your peers",
+    blunder: "Well behind your peers",
+  };
   const small = (n: number | undefined) => (n ?? 0) < SMALL;
   const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
   const moveNo = (p: StatPosition) => `${Math.ceil(p.ply / 2)}${p.side === "white" ? "." : "..."}`;
-  const mean = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
 
-  // The game rating now (the last ten games' mean) and how it moved (against the ten before).
+  // The rating now (the last ten games' moves pooled, the trend's last point) and how it moved
+  // against the ten games before them (said only once there are twenty).
   const rating = $derived.by(() => {
     const vs = (numbers?.trends.rating ?? []).map((p) => p.v);
-    const now = mean(vs.slice(-10));
-    const before = vs.length >= 20 ? mean(vs.slice(-20, -10)) : null; // ten games against ten, or no change said
+    const now = vs.length ? vs[vs.length - 1] : null;
+    const before = vs.length >= 20 ? vs[vs.length - 11] : null;
     return { now, change: now != null && before != null ? now - before : null, games: vs.length };
   });
 
@@ -144,11 +161,16 @@
   const cards = $derived.by(() => {
     if (!numbers) return [];
     const n = numbers, tm = n.time.by_phase;
+    // A category with a rating shows it, its key figure after; without one, the figure alone.
+    const rated = (id: "openings" | "tactics" | "strategy" | "endgames", figure: string, unit: string) => {
+      const r = n.ratings[id];
+      return r ? { value: String(r.rating), unit: `rating · ${figure} ${unit}` } : { value: figure, unit };
+    };
     return [
-      { id: "openings" as Section, name: "Openings", value: num(n.openings.accuracy), unit: "accuracy", trend: n.trends.openings, sub: "" },
-      { id: "tactics" as Section, name: "Tactics", value: pct(n.tactics.overall), unit: "found", trend: n.trends.tactics, sub: "" },
-      { id: "strategy" as Section, name: "Strategy", value: num(n.strategy.all.overall), unit: "accuracy", trend: n.trends.strategy, sub: "" },
-      { id: "endgames" as Section, name: "Endgames", value: num(n.endgames.accuracy.overall), unit: "accuracy", trend: n.trends.endgames, sub: "" },
+      { id: "openings" as Section, name: "Openings", ...rated("openings", num(n.openings.accuracy), "accuracy"), trend: n.trends.openings, sub: "" },
+      { id: "tactics" as Section, name: "Tactics", ...rated("tactics", pct(n.tactics.overall), "found"), trend: n.trends.tactics, sub: "" },
+      { id: "strategy" as Section, name: "Strategy", ...rated("strategy", num(n.strategy.all.overall), "accuracy"), trend: n.trends.strategy, sub: "" },
+      { id: "endgames" as Section, name: "Endgames", ...rated("endgames", num(n.endgames.accuracy.overall), "accuracy"), trend: n.trends.endgames, sub: "" },
       { id: "time" as Section, name: "Time", value: pct(n.time.pressure), unit: "mistakes short of time", trend: null, sub: ["opening", "middlegame", "endgame"].map((p) => `${className(p)} ${num(tm[p], "s")}`).join(" · ") },
       { id: "moves" as Section, name: "Brilliant Moves", value: String(n.galleries.brilliant ?? 0), unit: "brilliant", trend: null, sub: `${n.galleries.great ?? 0} great · ${n.galleries.miss ?? 0} misses · ${n.galleries.blunder ?? 0} blunders` },
     ].map((c) => ({ ...c, icon: icon(c.id) }));
@@ -197,19 +219,23 @@
 
 <svelte:head><title>sidecoach · stats</title></svelte:head>
 
-<!-- A figure's row: its name, its value, how many it counts; opened, what it means and the
-     positions behind it. -->
-{#snippet row(id: string, label: string, value: string, n: number | undefined, basis: string, def: string, what = "", arg = "")}
-  <div class="st-row" class:small={small(n)} class:open={opened === id}>
+<!-- A figure's row: its name, the grade against the peers, yours, the peers', what it rests on;
+     opened, what it means and the positions behind it. -->
+{#snippet row(id: string, label: string, f: Figure | undefined, show: Show, basis: string, def: string, what = "", arg = "")}
+  {@const few = small(f?.n)}
+  <div class="st-row" class:small={few} class:open={opened === id}>
     <button class="st-row-head" aria-expanded={opened === id} onclick={() => toggle(id, what, arg)}>
       <span class="label">{label}</span>
-      <span class="value">{value}</span>
-      <span class="n">{n ? basis : ""}</span>
+      <span class="grade">{#if f?.grade && !few}<Badge kind={f.grade} size={20} title={GRADE_WORDS[f.grade]} />{/if}</span>
+      <span class="value">{show(f?.value)}</span>
+      <span class="peers">{f?.peers != null ? show(f.peers) : ""}</span>
+      <span class="n">{f?.n ? basis : ""}</span>
       <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" /></svg>
     </button>
     {#if opened === id}
       <div class="st-more">
         <p>{def}</p>
+        {#if f?.n}<p class="st-basis">Based on {basis}{#if f.peers != null}; your peers: {show(f.peers)}{/if}{#if f.grade && !few}. {GRADE_WORDS[f.grade]}{/if}.</p>{/if}
         {#if what}
           {@const found = behind[`${what}:${arg}`]}
           {#if !found}
@@ -231,7 +257,27 @@
 
 <!-- The columns of a card of rows. -->
 {#snippet cols()}
-  <div class="st-cols" aria-hidden="true"><span></span><span>You</span><span>Based on</span><span></span></div>
+  <div class="st-cols" aria-hidden="true"><span></span><span>Grade</span><span>You</span><span>Peers</span><span>Based on</span><span></span></div>
+{/snippet}
+
+<!-- A section's head: the category's rating (its figure when too few moves rate it), and the
+     level the peers are read at. -->
+{#snippet head(title: string, r: StatRating | undefined, figure: string, unit: string)}
+  <div class="st-head">
+    <h2>{title}</h2>
+    {#if r}
+      <span class="st-big" title="Most likely {r.rating}; from {r.low} to {r.high} on {plural(r.moves, 'move')}">{r.rating}</span><span class="muted">rating · {figure} {unit}</span>
+    {:else}
+      <span class="st-big">{figure}</span><span class="muted">{unit}</span>
+    {/if}
+  </div>
+  {@render peersNote()}
+{/snippet}
+
+{#snippet peersNote()}
+  {#if numbers?.peers}
+    <p class="st-note">Your peers: players rated about {numbers.peers.rating}, {numbers.peers.from === "rating" ? "your rating in these games" : "the level of your moves in these games"}.</p>
+  {/if}
 {/snippet}
 
 {#snippet mini(p: StatPosition)}
@@ -299,7 +345,7 @@
         {#if rating.change}<span class="st-change" class:down={rating.change < 0}>{rating.change > 0 ? "↑" : "↓"} {Math.abs(rating.change)}</span>{/if}
         <span class="muted st-span">{rating.games >= 10 ? "your last 10 games" : `your ${plural(rating.games, "game")}`}</span>
       </div>
-      <TrendChart points={numbers.trends.rating} smooth={10} />
+      <TrendChart points={numbers.trends.rating} />
       <div class="st-card st-results">
         <div class="st-card-title">Results <span class="muted">{plural(o.games, "game")}</span></div>
         <div class="st-bar" role="img" aria-label="{o.wins} won, {o.draws} drawn, {o.losses} lost">
@@ -340,14 +386,14 @@
       </div>
     {:else if section === "openings"}
       {@const op = numbers.openings}
-      <div class="st-head"><h2>Openings</h2><span class="st-big">{num(op.accuracy)}</span><span class="muted">accuracy</span></div>
+      {@render head("Openings", numbers.ratings.openings, num(op.accuracy), "accuracy")}
       <TrendChart points={numbers.trends.openings} smooth={5} />
       <div class="st-card">
         <div class="st-card-title">Opening stats</div>
         {@render cols()}
-        {@render row("op.acc", "Opening accuracy", num(op.accuracy), op.accuracy.n, plural(op.accuracy.n, "move"), DEF.openingAccuracy)}
-        {@render row("op.mis", "Mistakes in the opening, a game", num(op.mistakes), op.mistakes.n, plural(op.mistakes.n, "game"), DEF.openingMistakes, "opening.mistakes")}
-        {@render row("op.book", "Book moves before you leave book", num(op.book_moves), op.book_moves.n, plural(op.book_moves.n, "game"), DEF.bookMoves)}
+        {@render row("op.acc", "Opening accuracy", op.accuracy, tenth, plural(op.accuracy.n, "move"), DEF.openingAccuracy)}
+        {@render row("op.mis", "Mistakes in the opening, a game", op.mistakes, tenth, plural(op.mistakes.n, "game"), DEF.openingMistakes, "opening.mistakes")}
+        {@render row("op.book", "Book moves before you leave book", op.book_moves, tenth, plural(op.book_moves.n, "game"), DEF.bookMoves)}
       </div>
       <div class="st-card">
         <div class="st-card-title">
@@ -371,7 +417,7 @@
       </div>
     {:else if section === "tactics"}
       {@const t = numbers.tactics}
-      <div class="st-head"><h2>Tactics</h2><span class="st-big">{pct(t.overall)}</span><span class="muted">found</span></div>
+      {@render head("Tactics", numbers.ratings.tactics, pct(t.overall), "found")}
       <TrendChart points={numbers.trends.tactics} smooth={5} unit="%" />
       <div class="st-card">
         <div class="st-card-title">
@@ -385,16 +431,16 @@
         {#each KINDS as kind (kind)}
           {#if tacticsView === "found"}
             {@const r = t.found[kind]}
-            {@render row(`tf.${kind}`, KIND_NAMES[kind], pct(r), r?.n, r ? `${r.hits} of ${r.n}` : "", DEF.found, "tactics.missed", kind)}
+            {@render row(`tf.${kind}`, KIND_NAMES[kind], r, percent, r ? `${r.hits} of ${r.n}` : "", DEF.found, "tactics.missed", kind)}
           {:else}
             {@const r = t.allowed[kind]}
-            {@render row(`ta.${kind}`, KIND_NAMES[kind], num(r), r?.hits, r ? plural(r.hits ?? 0, "time") : "", DEF.allowed, "tactics.allowed", kind)}
+            {@render row(`ta.${kind}`, KIND_NAMES[kind], r, tenth, r ? plural(r.hits ?? 0, "time") : "", DEF.allowed, "tactics.allowed", kind)}
           {/if}
         {/each}
       </div>
     {:else if section === "strategy"}
       {@const s = numbers.strategy[structure]}
-      <div class="st-head"><h2>Strategy</h2><span class="st-big">{num(numbers.strategy.all.overall)}</span><span class="muted">accuracy in quiet positions</span></div>
+      {@render head("Strategy", numbers.ratings.strategy, num(numbers.strategy.all.overall), "accuracy in quiet positions")}
       <TrendChart points={numbers.trends.strategy} smooth={5} />
       <div class="st-card">
         <div class="st-card-title">
@@ -406,48 +452,49 @@
           </div>
         </div>
         {@render cols()}
-        {@render row("st.all", "Strategic accuracy", num(s.overall), s.overall.n, plural(s.overall.n, "move"), DEF.overall, "strategy.mistakes", structure)}
-        {@render row("st.att", "Attacking accuracy", num(s.attacking), s.attacking.n, plural(s.attacking.n, "move"), DEF.attacking)}
-        {@render row("st.def", "Defending accuracy", num(s.defending), s.defending.n, plural(s.defending.n, "move"), DEF.defending)}
-        {@render row("st.space", "With more space", num(s.space), s.space.n, plural(s.space.n, "move"), DEF.space)}
-        {@render row("st.act", "With active pieces", num(s.activity), s.activity.n, plural(s.activity.n, "move"), DEF.activity)}
-        {@render row("st.pawns", "Around weak pawns", num(s.structure), s.structure.n, plural(s.structure.n, "move"), DEF.structure)}
+        {@render row("st.all", "Strategic accuracy", s.overall, tenth, plural(s.overall.n, "move"), DEF.overall, "strategy.mistakes", structure)}
+        {@render row("st.att", "Attacking accuracy", s.attacking, tenth, plural(s.attacking.n, "move"), DEF.attacking)}
+        {@render row("st.def", "Defending accuracy", s.defending, tenth, plural(s.defending.n, "move"), DEF.defending)}
+        {@render row("st.space", "With more space", s.space, tenth, plural(s.space.n, "move"), DEF.space)}
+        {@render row("st.act", "With active pieces", s.activity, tenth, plural(s.activity.n, "move"), DEF.activity)}
+        {@render row("st.pawns", "Around weak pawns", s.structure, tenth, plural(s.structure.n, "move"), DEF.structure)}
       </div>
     {:else if section === "endgames"}
       {@const e = numbers.endgames}
-      <div class="st-head"><h2>Endgames</h2><span class="st-big">{num(e.accuracy.overall)}</span><span class="muted">accuracy</span></div>
+      {@render head("Endgames", numbers.ratings.endgames, num(e.accuracy.overall), "accuracy")}
       <TrendChart points={numbers.trends.endgames} smooth={5} />
       <div class="st-card">
         <div class="st-card-title">Your score from the endgame's start</div>
         {@render cols()}
-        {@render row("eg.better", "From a better position", pct(e.win.better), e.win.better.n, plural(e.win.better.n, "game"), DEF.win)}
-        {@render row("eg.equal", "From an equal position", pct(e.win.equal), e.win.equal.n, plural(e.win.equal.n, "game"), DEF.win)}
-        {@render row("eg.worse", "From a worse position", pct(e.win.worse), e.win.worse.n, plural(e.win.worse.n, "game"), DEF.win)}
+        {@render row("eg.better", "From a better position", e.win.better, percent, plural(e.win.better.n, "game"), DEF.win)}
+        {@render row("eg.equal", "From an equal position", e.win.equal, percent, plural(e.win.equal.n, "game"), DEF.win)}
+        {@render row("eg.worse", "From a worse position", e.win.worse, percent, plural(e.win.worse.n, "game"), DEF.win)}
       </div>
       <div class="st-card">
         <div class="st-card-title">Endgame accuracy by kind</div>
         {@render cols()}
         {#each [["overall", "All endgames"], ["pawn", "King and pawn"], ["rook", "Rook"], ["queen", "Queen"], ["other", "Other"]] as [kind, name] (kind)}
-          {@render row(`eg.${kind}`, name, num(e.accuracy[kind]), e.accuracy[kind]?.n, plural(e.accuracy[kind]?.n ?? 0, "move"), DEF.endgameAccuracy, "endgame.mistakes", kind)}
+          {@render row(`eg.${kind}`, name, e.accuracy[kind], tenth, plural(e.accuracy[kind]?.n ?? 0, "move"), DEF.endgameAccuracy, "endgame.mistakes", kind)}
         {/each}
       </div>
     {:else if section === "time"}
       {@const tm = numbers.time}
       <div class="st-head"><h2>Time</h2></div>
+      {@render peersNote()}
       <div class="st-card">
         <div class="st-card-title">Time a move</div>
         {@render cols()}
         {#each ["opening", "middlegame", "endgame"] as phase (phase)}
-          {@render row(`tm.${phase}`, className(phase), num(tm.by_phase[phase], " s"), tm.by_phase[phase]?.n, plural(tm.by_phase[phase]?.n ?? 0, "move"), DEF.timePhase)}
+          {@render row(`tm.${phase}`, className(phase), tm.by_phase[phase], seconds, plural(tm.by_phase[phase]?.n ?? 0, "move"), DEF.timePhase)}
         {/each}
       </div>
       <div class="st-card">
         <div class="st-card-title">Mistakes, by the clock</div>
         {@render cols()}
-        {@render row("tm.press", "Mistakes when short of time", pct(tm.pressure), tm.pressure.n, plural(tm.pressure.n, "move"), DEF.pressure, "time.pressure")}
-        {@render row("tm.calm", "Mistakes with time to think", pct(tm.calm), tm.calm.n, plural(tm.calm.n, "move"), DEF.pressure)}
-        {@render row("tm.lost", "Games lost on time", `${tm.lost_on_time}`, numbers.overview.games, plural(numbers.overview.games, "game"), DEF.lostOnTime)}
-        {@render row("tm.won", "… while winning", `${tm.lost_on_time_winning}`, tm.lost_on_time, plural(tm.lost_on_time, "loss", "losses"), DEF.lostOnTimeWinning)}
+        {@render row("tm.press", "Mistakes when short of time", tm.pressure, percent, plural(tm.pressure.n, "move"), DEF.pressure, "time.pressure")}
+        {@render row("tm.calm", "Mistakes with time to think", tm.calm, percent, plural(tm.calm.n, "move"), DEF.pressure)}
+        {@render row("tm.lost", "Games lost on time", { value: tm.lost_on_time, n: numbers.overview.games }, whole, plural(numbers.overview.games, "game"), DEF.lostOnTime)}
+        {@render row("tm.won", "… while winning", { value: tm.lost_on_time_winning, n: tm.lost_on_time }, whole, plural(tm.lost_on_time, "loss", "losses"), DEF.lostOnTimeWinning)}
       </div>
     {:else}
       <div class="st-head">

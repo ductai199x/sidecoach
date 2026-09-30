@@ -269,8 +269,12 @@ export const review = (key: string) => {
 
 // ---- Stats: the player's games added up (profile/stats.py) ------------------------------------
 
-/** A mean with how many it is of; a rate with its hits. */
-export type Figure = { value: number | null; n: number };
+/** A mean with how many it is of; a rate with its hits. With the player's level known: the
+ * peers' figure there, and a grade for how far ahead of it the player's is (a kind of move's
+ * badge; none where the peers' figure hardly follows the rating). */
+export type Figure = { value: number | null; n: number; peers?: number; grade?: string | null };
+/** A rating on the page's scale, from so many moves; a category's with its likely range. */
+export type StatRating = { rating: number; moves: number; low?: number; high?: number } | null;
 export type Rate = Figure & { hits: number };
 
 export type StatsFilter = { time_class: string; days: number; opponents: "all" | "people" | "bots" };
@@ -289,8 +293,14 @@ export type StatsNumbers = {
   time: { by_phase: Record<string, Figure>; pressure: Rate; calm: Rate; lost_on_time: number; lost_on_time_winning: number };
   results: Record<string, { won: number; drawn: number; lost: number }>;
   galleries: Record<string, number>;
-  /** Game by game, oldest first: the game rating, and each category's figure. */
-  trends: Record<string, { t: number | null; key: string; v: number }[]>;
+  /** Game by game, oldest first: the rating as of each game (the last ten games' moves pooled;
+   * `game`, the game's own), and each category's figure. */
+  trends: Record<string, { t: number | null; key: string; v: number; game?: number }[]>;
+  /** The player's rating over every move here, and each category's. */
+  ratings: { overall: StatRating; openings: StatRating; tactics: StatRating; strategy: StatRating; endgames: StatRating };
+  /** Who the peers are: players of this rating, the player's own in their games ("rating") or,
+   * when none is recorded, of their play ("play"). */
+  peers: { rating: number; from: "rating" | "play" } | null;
 };
 
 /** A move of the player's behind a figure: its game, and the position it was played from. */

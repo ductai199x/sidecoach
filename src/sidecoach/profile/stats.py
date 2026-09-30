@@ -2,15 +2,25 @@
 each review keeps (profile/stat_facts.py), for the player's own moves in the games the filter
 takes. Every figure carries how many it counts (`n`), so the page can grey a small sample; the
 positions behind a figure come from `positions` with the same selector.
+
+Beside the player's figures: a rating a category (the game rating's model fitted on that
+category's moves alone, `categories.json`), and every figure the peers' -- the same figure for
+real players of the player's rating (of their play, when no game records it), from the same
+functions run over the judged Lichess sides (`peers.json`; both fitted by
+`tools/review/fit_stats.py`) -- with a grade for how far ahead or behind the player's figure
+is, in rating points.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
 from statistics import fmean
 from typing import Any
 
@@ -22,6 +32,36 @@ BAD = ("mistake", "miss", "blunder")
 # A move under this much clock is played under time pressure, by the time control.
 PRESSURE_MS = {"bullet": 10_000, "blitz": 20_000, "rapid": 60_000}
 GALLERIES = ("brilliant", "great", "miss", "blunder")
+
+# The moves each category is rated on, and its trend and figures drawn from.
+CATEGORIES: dict[str, Callable[[dict[str, Any]], bool]] = {
+    "openings": lambda m: m["phase"] == "opening",
+    "tactics": lambda m: m["chance"] is not None,
+    "strategy": lambda m: m["chance"] is None and m["label"] != "book",
+    "endgames": lambda m: m["phase"] == "endgame",
+}
+CATEGORIES_PATH = Path(__file__).with_name("categories.json")
+PEERS_PATH = Path(__file__).with_name("peers.json")
+# A grade: how far ahead of the peers the player's figure is, in rating points (the peers' line
+# read backwards), as the kinds of move say it; below the last, a blunder.
+GRADES = (
+    (400, "brilliant"),
+    (250, "great"),
+    (125, "best"),
+    (40, "excellent"),
+    (-40, "good"),
+    (-125, "inaccuracy"),
+    (-250, "mistake"),
+)
+# A figure of a few is pulled towards the peers' as if it had so many more at their value; a
+# figure the peers' line hardly follows (its fit's weighted r² below this) gets no grade.
+SHRINK = 10
+FOLLOWS = 0.5
+# A category's rating from this many of its moves: a tactic chance comes about twice a game, and
+# ten games' chances still leave the rating some 280 points out (tools/review/fit_stats.py).
+CATEGORY_MOVES = 20
+# The games the rating's trend pools at each game (the game and those before it).
+RATING_GAMES = 10
 
 
 @dataclass(frozen=True)
@@ -97,26 +137,56 @@ def termination_kind(text: str | None) -> str:
 
 
 class _Data:
-    """The filter's games and the player's moves in them."""
+    """Games (their `key`, `user_side`, `result`...) and their moves, both sides'; the player's
+    moves apart. From the store (`of`), or from any rows shaped as its (the peers' sample)."""
 
-    def __init__(self, store: Store, f: Filter) -> None:
-        self.filter = f
-        self.games = _games(store, f)
-        by_key = {g["key"]: g for g in self.games}
+    def __init__(self, games: list[dict[str, Any]], moves: Iterable[dict[str, Any]]) -> None:
+        self.games = games
+        by_key = {g["key"]: g for g in games}
         self.moves_by_game: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.all_by_game: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for m in store.stat_moves(list(by_key)):
+        for m in moves:
             self.all_by_game[m["key"]].append(m)
             if m["side"] == by_key[m["key"]]["user_side"]:
                 self.moves_by_game[m["key"]].append(m)
-        self.moves = [m for g in self.games for m in self.moves_by_game[g["key"]]]
+        self.moves = [m for g in games for m in self.moves_by_game[g["key"]]]
+
+    @classmethod
+    def of(cls, store: Store, f: Filter) -> _Data:
+        """The filter's games in the store, each with the player's rating in it when the game
+        records one (the library's copy of its headers)."""
+        games = _games(store, f)
+        for g in games:
+            row = store.library_game(g["key"])
+            elo = (
+                None
+                if row is None
+                else row.white_elo
+                if g["user_side"] == "white"
+                else row.black_elo
+            )
+            g["user_elo"] = elo
+        return cls(games, store.stat_moves([g["key"] for g in games]))
 
 
 def stats(store: Store, f: Filter) -> dict[str, Any]:
-    """Every section's numbers for the filter's games."""
-    d = _Data(store, f)
+    """Every section's numbers for the filter's games, the ratings, and the peers beside each
+    figure."""
+    d = _Data.of(store, f)
+    out = {"filter": f.__dict__, **figures(d), "trends": _trends(d)}
+    level = _level(d)
+    out["ratings"] = _ratings(d, level)
+    peers = _peers_level(d, level)
+    out["peers"] = None
+    if peers is not None:
+        compare(out, peers[0])
+        out["peers"] = {"rating": performance.for_site(peers[0], _site(d)), "from": peers[1]}
+    return out
+
+
+def figures(d: _Data) -> dict[str, Any]:
+    """The sections' figures for `d`: the player's, or the peers' (the same code for both)."""
     return {
-        "filter": f.__dict__,
         "overview": _overview(d),
         "openings": _openings(d),
         "tactics": _tactics(d),
@@ -125,8 +195,114 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
         "time": _time(d),
         "results": _results(d),
         "galleries": {k: sum(1 for m in d.moves if m["label"] == k) for k in GALLERIES},
-        "trends": _trends(d),
     }
+
+
+def walk(section: Any, path: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
+    """Every figure of a section (a dict with its `value` and `n`), by its dotted path."""
+    if not isinstance(section, dict):
+        return
+    if "value" in section and "n" in section:
+        yield path, section
+        return
+    for key, inner in section.items():
+        yield from walk(inner, f"{path}.{key}" if path else key)
+
+
+# ---- the ratings and the peers ---------------------------------------------------------------
+
+
+def _rated(moves: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Moves as the rating model reads them: the plies before each (the store counts White's
+    first move as ply 1), the loss, the mover's expected score."""
+    return [{"ply": m["ply"] - 1, "loss": m["loss"], "score": m["score"]} for m in moves]
+
+
+def _site(d: _Data) -> str | None:
+    """The scale the page speaks: Lichess's when every game is a Lichess game."""
+    return "lichess" if d.games and all(g["source"] == "lichess" for g in d.games) else None
+
+
+def _level(d: _Data) -> float | None:
+    """The player's rating over all their moves here (Lichess rapid), their level of play. None
+    for too few moves."""
+    if len(d.moves) < performance.MIN_MOVES:
+        return None
+    return float(performance.estimate(_rated(d.moves)).rating)
+
+
+def _peers_level(d: _Data, level: float | None) -> tuple[float, str] | None:
+    """Who the player is compared with, on Lichess's scale, and why: players of their rating (the
+    mean of the ratings their games against people record, as chess.com's peers are), else of
+    their level of play (`level`). Against weaker players accuracy comes easier, so one who plays
+    above their rating is ahead of their rating's peers and, figure for figure, often of their
+    play's too: their own rating is the comparison that holds."""
+    rated = [
+        g["user_elo"] if g["source"] == "lichess" else performance.lichess(g["user_elo"])
+        for g in d.games
+        if g.get("user_elo") and not g["bot"]
+    ]
+    if rated:
+        return fmean(rated), "rating"
+    return None if level is None else (level, "play")
+
+
+@cache
+def _category_models() -> dict[str, Any]:
+    return json.loads(CATEGORIES_PATH.read_text(encoding="utf-8"))
+
+
+@cache
+def _peer_lines() -> dict[str, dict[str, float]]:
+    return json.loads(PEERS_PATH.read_text(encoding="utf-8"))["figures"]
+
+
+def _ratings(d: _Data, level: float | None) -> dict[str, Any]:
+    """The player's rating over all their moves, and each category's over its own moves, on the
+    page's scale; None where the moves are too few."""
+    site = _site(d)
+    overall = None if level is None else performance.for_site(level, site)
+    out: dict[str, Any] = {
+        "overall": None if overall is None else {"rating": overall, "moves": len(d.moves)}
+    }
+    for name, select in CATEGORIES.items():
+        moves = [m for m in d.moves if select(m)]
+        if len(moves) < CATEGORY_MOVES:
+            out[name] = None
+            continue
+        p = performance.estimate(_rated(moves), model=_category_models()[name])
+        out[name] = {
+            "rating": performance.for_site(p.rating, site),
+            "low": performance.for_site(p.low, site),
+            "high": performance.for_site(p.high, site),
+            "moves": p.moves,
+        }
+    return out
+
+
+def grade(value: float, n: int, line: dict[str, float], level: float) -> tuple[float, str | None]:
+    """The peers' figure at `level` (Lichess rapid) by their fitted line, and the player's grade:
+    how many rating points ahead of it the figure is (read back along the line), a figure of a
+    few pulled towards the peers' first. No grade where the line hardly follows the rating."""
+    rating = min(max(level, line["lo"]), line["hi"])  # the sample's range, not beyond
+    peer = line["a"] + line["b"] * rating
+    if line["r2"] < FOLLOWS or line["b"] == 0:
+        return peer, None
+    shrunk = (n * value + SHRINK * peer) / (n + SHRINK)
+    ahead = (shrunk - peer) / line["b"]
+    return peer, next((kind for edge, kind in GRADES if ahead >= edge), "blunder")
+
+
+def compare(out: dict[str, Any], level: float) -> None:
+    """Every figure with a peers' line gets the peers' value and the player's grade, in place."""
+    lines = _peer_lines()
+    for path, figure in walk(out):
+        line = lines.get(path)
+        if line is None or figure["value"] is None:
+            continue
+        peer, kind = grade(figure["value"], figure["n"], line, level)
+        figure["peers"] = round(peer, 2 if path.startswith("tactics.allowed") else 1)
+        figure["grade"] = kind
 
 
 def _game_rating(game: dict[str, Any], moves: list[dict[str, Any]]) -> int | None:
@@ -140,9 +316,14 @@ def _game_rating(game: dict[str, Any], moves: list[dict[str, Any]]) -> int | Non
 
 
 def _trends(d: _Data) -> dict[str, list[dict[str, Any]]]:
-    """Game by game, oldest first: the player's game rating, and each category's figure in the
-    games that have one (the opening's accuracy, the tactics found, the strategic accuracy, the
-    endgame's accuracy)."""
+    """Game by game, oldest first: the player's rating as of each game (`v`, their moves over it
+    and the games before it, RATING_GAMES in all, pooled; `game`, the game's own), and each
+    category's figure in the games that have one (the opening's accuracy, the tactics found, the
+    strategic accuracy, the endgame's accuracy).
+
+    Pooled, not a mean of each game's estimate: one game's estimate is pulled to the middle by the
+    prior it needs, so their mean is too (on the held-out sides of tools/review/fit_stats.py, 300
+    to 400 points for players over 2100 or under 1200); the moves of ten games pooled are not."""
 
     def mean(moves: list[dict[str, Any]]) -> float | None:
         return round(fmean(m["accuracy"] or 0.0 for m in moves), 1) if moves else None
@@ -152,17 +333,22 @@ def _trends(d: _Data) -> dict[str, list[dict[str, Any]]]:
         return round(100 * sum(m["found"] for m in chances) / len(chances), 1) if chances else None
 
     pickers: dict[str, Callable[[dict[str, Any], list[dict[str, Any]]], float | None]] = {
-        "rating": _game_rating,
         "openings": lambda _g, ms: mean([m for m in ms if m["phase"] == "opening"]),
         "tactics": lambda _g, ms: found(ms),
-        "strategy": lambda _g, ms: mean(
-            [m for m in ms if m["chance"] is None and m["label"] != "book"]
-        ),
+        "strategy": lambda _g, ms: mean([m for m in ms if CATEGORIES["strategy"](m)]),
         "endgames": lambda _g, ms: mean([m for m in ms if m["phase"] == "endgame"]),
     }
-    out: dict[str, list[dict[str, Any]]] = {name: [] for name in pickers}
+    out: dict[str, list[dict[str, Any]]] = {"rating": [], **{name: [] for name in pickers}}
+    site = _site(d)
+    recent: list[list[dict[str, Any]]] = []
     for g in d.games:
         moves = d.moves_by_game[g["key"]]
+        own = _game_rating(g, moves)
+        if own is not None:
+            recent = [*recent[-(RATING_GAMES - 1) :], moves]
+            pooled = performance.estimate(_rated(m for ms in recent for m in ms)).rating
+            point = {"t": g["played_at"], "key": g["key"], "v": performance.for_site(pooled, site)}
+            out["rating"].append({**point, "game": own})
         for name, pick in pickers.items():
             value = pick(g, moves)
             if value is not None:
@@ -261,7 +447,7 @@ def _tactics(d: _Data) -> dict[str, Any]:
 
 
 def _strategy(d: _Data) -> dict[str, Any]:
-    quiet = [m for m in d.moves if m["chance"] is None and m["label"] != "book"]
+    quiet = [m for m in d.moves if CATEGORIES["strategy"](m)]
     out = {}
     for structure in ("all", *STRUCTURES):
         moves = quiet if structure == "all" else [m for m in quiet if m["structure"] == structure]
@@ -379,7 +565,7 @@ def positions(store: Store, f: Filter, what: str, arg: str = "") -> list[dict[st
     select = _SELECT.get(what)
     if select is None:
         return []
-    d = _Data(store, f)
+    d = _Data.of(store, f)
     out = []
     for g in reversed(d.games):
         limit = PRESSURE_MS.get(g["time_class"] or "")

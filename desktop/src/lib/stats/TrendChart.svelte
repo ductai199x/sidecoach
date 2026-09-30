@@ -2,19 +2,23 @@
   // A figure game by game, as chess.com's Stats draw a rating: a filled line, the scale's round
   // values in a gutter on the left, the dates along the bottom; the pointer on it shows a game's
   // value and date. With `smooth`, the line is a running mean of that many games (one game says
-  // little) and the games themselves are dots. Drawn at the size it is shown, so its text is the
-  // page's size at any width.
+  // little) and the games themselves are dots; points that carry their `game`'s own value (the
+  // rating, whose line is already pooled over games) are dotted at it. Drawn at the size it is
+  // shown, so its text is the page's size at any width.
   let {
     points,
     smooth = 0,
     height = 170,
     unit = "",
-  }: { points: { t: number | null; v: number }[]; smooth?: number; height?: number; unit?: string } = $props();
+  }: { points: { t: number | null; v: number; game?: number }[]; smooth?: number; height?: number; unit?: string } = $props();
 
   const PAD = { l: 44, r: 14, t: 14, b: 26 };
   let width = $state(600);
   let hover = $state<number | null>(null);
 
+  // Each game's own value, dotted: the point's `game` where it has one, else (smoothed) its value.
+  const dotted = $derived(smooth > 0 || points.some((p) => p.game != null));
+  const own = (p: { v: number; game?: number }) => p.game ?? p.v;
   const line = $derived.by(() => {
     if (!smooth) return points.map((p) => p.v);
     return points.map((_, i) => {
@@ -25,7 +29,7 @@
 
   // Round values for the scale: a step of 1, 2, 2.5 or 5 times a power of ten, about four of them.
   const scale = $derived.by(() => {
-    const all = [...points.map((p) => p.v), ...line];
+    const all = [...points.map(own), ...line];
     let lo = all.length ? Math.min(...all) : 0, hi = all.length ? Math.max(...all) : 1;
     if (hi - lo < 2) { lo -= 1; hi += 1; }
     const raw = (hi - lo) / 3;
@@ -81,8 +85,8 @@
         <text class="lab" x={d.x} y={height - 7} text-anchor={d.anchor}>{d.text}</text>
       {/each}
       {#if area}<path d={area} fill="url(#st-fill)" />{/if}
-      {#if smooth}
-        {#each points as p, i (i)}<circle class="dot" cx={x(i)} cy={y(p.v)} r="2.4" />{/each}
+      {#if dotted}
+        {#each points as p, i (i)}<circle class="dot" cx={x(i)} cy={y(own(p))} r="2.4" />{/each}
       {/if}
       {#if line.length > 1}<path class="line" d={path} />{/if}
       {#if hover !== null}
@@ -96,7 +100,7 @@
       {@const p = points[hover]}
       <div class="st-tip" style="left: {x(hover)}px; top: {y(line[hover])}px" class:flip={x(hover) > width - 130}>
         <b>{fmt(line[hover])}</b>
-        {#if smooth && points.length > 1}<span>this game {fmt(p.v)}</span>{/if}
+        {#if dotted && points.length > 1}<span>this game {fmt(own(p))}</span>{/if}
         <small>{date(p.t)}</small>
       </div>
     {/if}

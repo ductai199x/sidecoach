@@ -137,6 +137,15 @@ def chesscom(lichess: float) -> int:
     return max(100, round(c0 + (lichess - l0) * (c1 - c0) / (l1 - l0)))
 
 
+def lichess(chesscom_rating: float) -> float:
+    """A chess.com rapid rating on Lichess's rapid scale: `CHESSCOM_LICHESS` read the other way."""
+    points = CHESSCOM_LICHESS
+    i = bisect.bisect_left([p[0] for p in points], chesscom_rating)
+    i = min(max(i, 1), len(points) - 1)
+    (c0, l0), (c1, l1) = points[i - 1], points[i]
+    return l0 + (chesscom_rating - c0) * (l1 - l0) / (c1 - c0)
+
+
 def for_site(lichess: float, site: str | None) -> int:
     """The rating on the scale of the site the game was played on: Lichess's for a Lichess
     game, chess.com's otherwise (a game Sidecoach watched is on chess.com)."""
