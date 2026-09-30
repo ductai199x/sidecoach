@@ -15,8 +15,8 @@ android {
         // foreground-service and projection rules this app is built around do not hold.
         minSdk = 33
         targetSdk = 37
-        versionCode = 138
-        versionName = "0.1.38"
+        versionCode = 139
+        versionName = "0.1.39"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // OpenCV and onnxruntime each ship four ABIs and the APK came to 323 MB. The
