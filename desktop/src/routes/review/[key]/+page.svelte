@@ -33,12 +33,32 @@
   let playing: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
 
+  // ---- the review's settings (the plan's H), kept for the next review ----
+  type Look = { arrow: boolean; marks: boolean; keys: "both" | "white" | "black"; spent: boolean };
+  const LOOK: Look = { arrow: true, marks: true, keys: "both", spent: false };
+  let look = $state<Look>(readLook());
+  let settingsOpen = $state(false);
+  function readLook(): Look {
+    try {
+      return { ...LOOK, ...JSON.parse(prefs.getStr("reviewLook") ?? "{}") };
+    } catch {
+      return { ...LOOK };
+    }
+  }
+  function setLook(change: Partial<Look>): void {
+    look = { ...look, ...change };
+    prefs.setStr("reviewLook", JSON.stringify(look));
+  }
+
   const moves = $derived(room?.moves ?? []);
   const summary = $derived(room?.summary ?? null);
   const graph = $derived(summary?.graph ?? []);
   const move = $derived<ReviewMove | null>(ply > 0 ? (moves[ply - 1] ?? null) : null);
   const whiteBefore = $derived(graph[ply - 1] ?? 0.5);
-  const keyMoments = $derived((summary?.key_moments ?? []).filter((k) => k.kind !== "book"));
+  // The moves the review stops at: every side's, or the one side the settings name.
+  const keyMoments = $derived(
+    (summary?.key_moments ?? []).filter((k) => k.kind !== "book" && (look.keys === "both" || k.side === look.keys)),
+  );
 
   // What the board shows: the game at `ply`, or a line's step.
   const shown = $derived.by(() => {
@@ -48,12 +68,12 @@
     }
     if (!room) return null;
     if (!move) return { fen: room.start_fen ?? "", uci: null, cls: null };
-    return { fen: move.fen_after, uci: move.uci, cls: move.label };
+    return { fen: move.fen_after, uci: move.uci, cls: look.marks ? move.label : null };
   });
   // The best move's arrow, on the position the move left, when the move was not it: shown
-  // unless a line is playing.
+  // unless a line is playing or the settings turn it off.
   const arrows = $derived.by(() => {
-    if (line || !move || !move.best_uci || move.best_uci === move.uci || view !== "moves") return [];
+    if (!look.arrow || line || !move || !move.best_uci || move.best_uci === move.uci || view !== "moves") return [];
     return [{ from: move.best_uci.slice(0, 2), to: move.best_uci.slice(2, 4), kind: "best" as const }];
   });
   const barScore = $derived(line ? whiteBefore : (graph[ply] ?? 0.5));
@@ -118,8 +138,33 @@
     else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
     else if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); go(0); }
     else if (e.key === "End" || e.key === "ArrowDown") { e.preventDefault(); go(moves.length); }
+    else if (e.key === "Escape" && settingsOpen) { e.preventDefault(); settingsOpen = false; }
     else if (e.key === "Escape" && line) { e.preventDefault(); stopLine(); }
     else if (e.key === "f") bottom = bottom === "white" ? "black" : "white";
+  }
+
+  // ---- the coach's voice: the summary's line, then each card, said as it is shown ----
+  // A card is said once the player stops on it (SAY_MS), so stepping through quickly says
+  // only where they stop; a new one cuts off the last. On unless turned off here.
+  const SAY_MS = 450;
+  let voiceReady = $state(false);
+  let voiceOn = $state(prefs.getStr("reviewVoice") !== "off");
+  let saying: ReturnType<typeof setTimeout> | null = null;
+  const spoken = $derived.by(() => {
+    if (!room || room.status !== "ready" || !summary) return null;
+    if (view === "summary") return verdict(summary, room.game.result);
+    if (line || !move) return null;
+    return `${headline(move)}. ${sentence(move, whiteBefore)}`;
+  });
+  $effect(() => {
+    const text = spoken, on = voiceOn && voiceReady;
+    if (saying) clearTimeout(saying);
+    saying = on && text ? setTimeout(() => api.say(text), SAY_MS) : null;
+  });
+  function toggleVoice(): void {
+    voiceOn = !voiceOn;
+    prefs.setStr("reviewVoice", voiceOn ? null : "off");
+    if (!voiceOn) api.hush();
   }
 
   // The move shown stays in view in the list, as the arrows step past its edge: the list's
@@ -189,8 +234,31 @@
     await connect();
     const opened = await api.open();
     if (!opened.ok) { failure = opened.error || "There is no such game."; return; }
+    voiceReady = !!opened.voice;
     if (opened.state) take(opened.state);
     poll();
+  }
+
+  // Reviewed again at another strength (a strength reviewed before opens at once).
+  async function reviewAt(strength: string): Promise<void> {
+    if (!room || room.strength === strength) return;
+    stopLine();
+    const opened = await api.open(strength);
+    if (!opened.ok || !opened.state) return;
+    room = null;
+    view = "summary";
+    ply = 0;
+    take(opened.state);
+    poll();
+  }
+
+  /** Time spent on a move as chess.com writes it: 0.4s, 12s, 1m 5s. */
+  function spentText(ms: number | null): string {
+    if (ms == null) return "";
+    const s = ms / 1000;
+    if (s < 9.95) return `${s.toFixed(1)}s`;
+    const whole = Math.round(s);
+    return whole < 60 ? `${whole}s` : `${Math.floor(whole / 60)}m ${whole % 60}s`;
   }
 
   async function leave(): Promise<void> {
@@ -242,7 +310,7 @@
   });
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={onKey} onpointerdown={(e) => { if (settingsOpen && !(e.target as HTMLElement).closest(".rv-set")) settingsOpen = false; }} />
 <svelte:head><title>sidecoach · review</title></svelte:head>
 
 <header id="bar">
@@ -257,7 +325,42 @@
     </div>
   </div>
   <div class="group controls">
+    {#if voiceReady}
+      <button id="voice" class="iconbtn small" aria-pressed={voiceOn} title="The coach reads each move aloud" aria-label="The coach's voice" onclick={toggleVoice}>
+        <svg class="ic-on" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
+        <svg class="ic-off" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
+      </button>
+    {/if}
     <button class="ghost small" title="Turn the board round (F)" onclick={() => (bottom = top)}>Flip board</button>
+    <div class="rv-set">
+      <button class="iconbtn small" aria-expanded={settingsOpen} aria-label="Review settings" title="Review settings" onclick={() => (settingsOpen = !settingsOpen)}>
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7 7 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54a7 7 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.66 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.61.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54a7 7 0 0 0 1.63-.94l2.39.96c.22.08.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
+      {#if settingsOpen}
+        <div class="rv-settings" role="dialog" aria-label="Review settings">
+          <div class="row">
+            <span>How deep the engine looks</span>
+            <div class="seg small">
+              {#each ["fast", "standard", "deep"] as s (s)}
+                <button class="segbtn" aria-pressed={room?.strength === s} onclick={() => reviewAt(s)}>{className(s)}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="hint">Deeper finds more and takes longer. A depth reviewed before opens at once.</div>
+          <label class="row"><span>The best move's arrow</span><input type="checkbox" checked={look.arrow} onchange={(e) => setLook({ arrow: e.currentTarget.checked })} /></label>
+          <label class="row"><span>Each move's kind on the board</span><input type="checkbox" checked={look.marks} onchange={(e) => setLook({ marks: e.currentTarget.checked })} /></label>
+          <label class="row"><span>Time spent on each move</span><input type="checkbox" checked={look.spent} onchange={(e) => setLook({ spent: e.currentTarget.checked })} /></label>
+          <div class="row">
+            <span>Key moves to stop at</span>
+            <div class="seg small">
+              {#each [["both", "Both"], ["white", game?.white ?? "White"], ["black", game?.black ?? "Black"]] as [value, name] (value)}
+                <button class="segbtn" aria-pressed={look.keys === value} onclick={() => setLook({ keys: value as Look["keys"] })}>{name}</button>
+              {/each}
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
   </div>
 </header>
 
@@ -387,6 +490,7 @@
                 <span class="mv" class:at={m.ply === ply} class:row-odd={i % 2 === 1} role="button" tabindex="-1" onclick={() => go(m.ply)} onkeydown={(e) => { if (e.key === "Enter") go(m.ply); }}>
                   {#if m.label && KEY.has(m.label)}<i class="badge {m.label}"></i>{/if}
                   <span class={m.label && KEY.has(m.label) ? `cls-text ${m.label}` : ""}>{m.san}</span>
+                  {#if look.spent && m.spent_ms != null}<small class="spent">{spentText(m.spent_ms)}</small>{/if}
                 </span>
               {:else}
                 <span class="mv" class:row-odd={i % 2 === 1}></span>

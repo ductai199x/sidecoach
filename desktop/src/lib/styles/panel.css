@@ -239,6 +239,15 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .pc.bR { background-image: url(/pieces/bR.svg); } .pc.bB { background-image: url(/pieces/bB.svg); }
 .pc.bN { background-image: url(/pieces/bN.svg); } .pc.bP { background-image: url(/pieces/bP.svg); }
 
+/* A window of its own (a puzzle, a review): a link drawn as a button, and the switch for the
+   coach's voice there -- the speaker, struck through and yellow when off. */
+.linkbtn { display: inline-flex; align-items: center; text-decoration: none; }
+#voice.iconbtn { width: 30px; height: 30px; }
+#voice .ic-on, #voice .ic-off { display: none; }
+#voice[aria-pressed="true"] .ic-on { display: block; }
+#voice[aria-pressed="false"] .ic-off { display: block; }
+#voice[aria-pressed="false"] { color: var(--warn); }
+
 /* The player's own marks on a board that takes them (the puzzle's, the review's): a
    right-clicked square red, a right-dragged arrow green, as chess.com's. */
 .board.cb .sq.marked.light { background: #eb7d6a; }

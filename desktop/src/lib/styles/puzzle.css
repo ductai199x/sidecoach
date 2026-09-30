@@ -12,12 +12,6 @@
 .pz-msg { color: var(--muted); font-size: 13px; }
 .pz-msg.good { color: var(--accent); font-weight: 600; }
 .pz-msg.bad { color: var(--error); font-weight: 600; }
-.linkbtn { display: inline-flex; align-items: center; text-decoration: none; }
-#voice.iconbtn { width: 30px; height: 30px; }
-#voice .ic-on, #voice .ic-off { display: none; }
-#voice[aria-pressed="true"] .ic-on { display: block; }
-#voice[aria-pressed="false"] .ic-off { display: block; }
-#voice[aria-pressed="false"] { color: var(--warn); }
 
 /* ---- the board ---- */
 .board-wrap { user-select: none; -webkit-user-select: none; touch-action: none; }

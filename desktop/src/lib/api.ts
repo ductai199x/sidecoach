@@ -243,8 +243,11 @@ export const review = (key: string) => {
   const p = `/api/review/${encodeURIComponent(key)}`;
   type Polled = { ok: boolean; closed?: boolean; error?: string; state?: ReviewState; lines?: LogLine[]; cursor?: number };
   return {
-    open: (strength = "standard") => post<Polled>(`${p}/open`, { strength }),
+    open: (strength = "standard") => post<Polled & { voice?: boolean }>(`${p}/open`, { strength }),
     poll: (since: number) => get<Polled>(`${p}/poll?since=${since | 0}`),
+    /** The card said in the panel's voice, cutting off the one before; hush stops it. */
+    say: (text: string) => post<{ ok: boolean }>(`${p}/say`, { text }),
+    hush: () => post<{ ok: boolean }>(`${p}/hush`),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };

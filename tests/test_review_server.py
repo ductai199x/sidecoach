@@ -121,6 +121,54 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     assert all(g["key"] != key for g in client.get("/api/games").json()["games"])
 
 
+class RecordingVoice:
+    """The panel's voice, keeping what it was told."""
+
+    name = "recording"
+    busy = False
+
+    def __init__(self) -> None:
+        self.heard: list[str] = []
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "recording"
+
+    def say(self, text: str) -> None:
+        self.heard.append(f"say {text}")
+
+    def stop(self) -> None:
+        self.heard.append("stop")
+
+
+def test_a_card_is_said_in_the_panels_voice_and_captioned(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from sidecoach.ui import review_room
+    from sidecoach.ui.server import build_app
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", lambda **_: FakeEngine())
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    engine = make_panel()
+    voice = RecordingVoice()
+    engine._tts = voice  # type: ignore[assignment]
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    assert client.post(f"/api/review/{key}/open", json={"strength": "fast"}).json()["voice"]
+
+    # A card cuts off the one before it, is said, and is captioned as the panel's words are.
+    assert client.post(f"/api/review/{key}/say", json={"text": "Na5 is a mistake."}).json()["ok"]
+    assert voice.heard == ["stop", "say Na5 is a mistake."]
+    captioned = [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
+    assert "Na5 is a mistake." in captioned
+    # Hushed, and closing the review silences it too.
+    assert client.post(f"/api/review/{key}/hush").json()["ok"]
+    client.post(f"/api/review/{key}/close")
+    assert voice.heard[-2:] == ["stop", "stop"]
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

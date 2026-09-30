@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -135,6 +136,10 @@ class _Import(BaseModel):
 
 class _Review(BaseModel):
     strength: str = "standard"
+
+
+class _Card(BaseModel):
+    text: str
 
 
 class _Rect(BaseModel):
@@ -384,12 +389,16 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
             store.close()
         return {"ok": True}
 
+    # The card on the move shown, said in the panel's voice and captioned: a new card cuts off
+    # the one before, as the player steps on; closing the review silences it.
+    review_speak, review_hush = _room_voice(engine)
+
     @app.post("/api/review/{key}/open")
     def review_open(key: str, body: _Review) -> dict[str, Any]:
         room = reviews.open(key, body.strength)
         if room is None:
             return {"ok": False, "error": f"no game {key} in the library"}
-        return {"ok": True, **room.poll()}
+        return {"ok": True, "voice": review_speak is not None, **room.poll()}
 
     @app.get("/api/review/{key}/poll")
     def review_poll(key: str, since: int = 0) -> dict[str, Any]:
@@ -398,11 +407,27 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
             return {"ok": False, "closed": True}
         return {"ok": True, **room.poll(since)}
 
+    @app.post("/api/review/{key}/say")
+    def review_say(key: str, body: _Card) -> dict[str, bool]:
+        if review_speak is None or review_hush is None:
+            return {"ok": False}
+        review_hush()
+        review_speak(body.text)
+        return {"ok": True}
+
+    @app.post("/api/review/{key}/hush")
+    def review_quiet(key: str) -> dict[str, bool]:
+        if review_hush is not None:
+            review_hush()
+        return {"ok": review_hush is not None}
+
     @app.post("/api/review/{key}/close")
     def review_close(key: str) -> dict[str, bool]:
         room = reviews.get(key)
         if room is not None:
             room.close()
+        if review_hush is not None:
+            review_hush()
         return {"ok": room is not None}
 
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
@@ -580,28 +605,14 @@ def _rooms_for(engine: PanelEngine) -> Any:
     puzzles = None
     with contextlib.suppress(Exception):
         puzzles = open_store(engine.settings.data_dir)
-    # The panel's voice when it speaks, not when the rooms were made: a reload swaps it
-    # (`_reload_voice`), and the rooms spoke on through the old one, over the new (the
-    # parity audit, 2026-09-29; the phone looks it up at each call).
-    voiced = getattr(engine, "_tts", None) is not None
-
-    def speak(text: str) -> None:
-        # The words captioned as the panel's are (the phone's rooms: `Captions.show`).
-        caption = getattr(engine, "caption", None)
-        if caption is not None:
-            caption(text)
-        engine._tts.say(text)
-
-    def stop() -> None:
-        engine._tts.stop()
-
+    speak, stop = _room_voice(engine)
     rooms = PuzzleRooms(
         engine.settings,
         store_path=engine.settings.data_dir / "profile.sqlite",
         puzzles=puzzles,
         data_dir=engine.settings.data_dir,
-        speak=speak if voiced else None,
-        stop_speaking=stop if voiced else None,
+        speak=speak,
+        stop_speaking=stop,
         analysis=engine.analysis,
         coach=engine.coach,
         mirror=engine._emit,
@@ -610,6 +621,30 @@ def _rooms_for(engine: PanelEngine) -> Any:
     # The rooms' model calls count in the panel's strip with the game's.
     engine.extra_usage.append(rooms.usages)
     return rooms
+
+
+def _room_voice(
+    engine: PanelEngine,
+) -> tuple[Callable[[str], None] | None, Callable[[], None] | None]:
+    """The panel's voice for a room of its own (a puzzle, a review): speak -- the words
+    captioned as the panel's are, then said -- and stop; (None, None) when the panel has no
+    voice. The voice is looked up when it speaks, not when the room was made: a reload swaps
+    it (`_reload_voice`), and the rooms spoke on through the old one, over the new (the parity
+    audit, 2026-09-29; the phone looks it up at each call)."""
+    if getattr(engine, "_tts", None) is None:
+        return None, None
+
+    def speak(text: str) -> None:
+        # The phone's rooms: `Captions.show`.
+        caption = getattr(engine, "caption", None)
+        if caption is not None:
+            caption(text)
+        engine._tts.say(text)
+
+    def stop() -> None:
+        engine._tts.stop()
+
+    return speak, stop
 
 
 def _room_command(rooms: Any, puzzle_id: str, name: str, payload: Any = None) -> bool:

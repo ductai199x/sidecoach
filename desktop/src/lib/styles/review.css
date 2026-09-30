@@ -19,9 +19,11 @@
 .badge.excellent { background: var(--cls-excellent); }
 .badge.good      { background: var(--cls-good); }
 .badge.book      { background: var(--cls-book); }
-.badge.excellent::after { content: "\1F44D\FE0E"; font: 700 9.5px/1 "Segoe UI Symbol", "Segoe UI", sans-serif; letter-spacing: 0; }
+/* The two with no glyph in the font: a white icon the badge's size. */
+.badge.excellent::after, .badge.book::after { content: ""; width: 64%; height: 64%; background: center / contain no-repeat; }
+.badge.excellent::after { background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z'/></svg>"); }
 .badge.good::after      { content: "\2713"; font-size: 11px; letter-spacing: 0; }
-.badge.book::after      { content: ""; width: 10px; height: 8px; border: 1.6px solid #fff; border-top-width: 1.2px; border-radius: 1px 1px 2px 2px; box-sizing: border-box; background: linear-gradient(90deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%); }
+.badge.book::after { background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='white' d='M12 6.5C9.6 4.9 6.2 4.6 3 5.6v13c3.2-1 6.6-.7 9 .9 2.4-1.6 5.8-1.9 9-.9v-13c-3.2-1-6.6-.7-9 .9zm-1 11.2c-2-.9-4.4-1.1-6.5-.6V7.1c2.2-.5 4.6-.2 6.5.9v9.7zm2 0V8c1.9-1.1 4.3-1.4 6.5-.9v10c-2.1-.5-4.5-.3-6.5.6z'/></svg>"); }
 .cls-text.brilliant { color: var(--cls-brilliant); } .cls-text.great { color: var(--cls-great); }
 .cls-text.best, .cls-text.excellent { color: var(--cls-best); } .cls-text.good { color: var(--cls-good); }
 .cls-text.book { color: var(--cls-book); } .cls-text.inaccuracy { color: var(--cls-inaccuracy); }
@@ -29,7 +31,6 @@
 .cls-text.blunder { color: var(--cls-blunder); }
 
 .muted { color: var(--muted); }
-.linkbtn { display: inline-flex; align-items: center; text-decoration: none; }
 a.primary.linkbtn {
   background: var(--accent); color: var(--accent-ink); border-radius: 5px; padding: 5px 12px;
   font-weight: 700; box-shadow: 0 3px 0 #5f8a36; white-space: nowrap;
@@ -211,6 +212,19 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-card .chip { font-size: 11.5px; padding: 1px 8px; border-radius: 9px; background: var(--panel3); }
 .rv-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .rv-actions button { flex: 1 1 auto; }
+
+/* The review's settings: a card under the gear. */
+.rv-set { position: relative; }
+.rv-settings {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; width: 340px; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px #0009;
+}
+.rv-settings .row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; }
+.rv-settings .row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.rv-settings .hint { font-size: 11.5px; color: var(--muted); margin-top: -6px; }
+.rv-settings .seg .segbtn { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-moves .mv .spent { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 11px; font-variant-numeric: tabular-nums; }
 
 /* The step-through: the card stays, the move list scrolls under it. */
 .rv-step { overflow: hidden; }
