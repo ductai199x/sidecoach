@@ -1,6 +1,6 @@
 [package]
 name = "sidecoach-desktop"
-version = "0.1.38"
+version = "0.1.39"
 description = "Sidecoach: the chess coaching companion, as a desktop app"
 authors = ["Tai Duc Nguyen"]
 edition = "2021"

@@ -1,7 +1,10 @@
-cburnett chess piece set
-Copyright (c) Colin M.L. Burnett. Licensed under CC BY-SA 3.0
-(https://creativecommons.org/licenses/by-sa/3.0/), as distributed by Lichess
-(https://github.com/lichess-org/lila/tree/master/public/piece/cburnett).
+Sidecoach piece set
+Sidecoach's own chess pieces (2026-09-30), made for Sidecoach and distributed with it under
+the same terms as the rest of Sidecoach. No third-party artwork is included.
 
-Used unmodified as the panel's piece graphics. The board colours are a plain green/cream
-palette and carry no third-party assets.
+How they were made (tools/pieces/README.md): concept sheets generated with OpenAI's
+gpt-image-2.5 from our own written brief, the chosen sheet (tools/pieces/round5-sheet.png)
+segmented and traced to these SVGs by tools/pieces/to_svg.py. The pieces follow the Staunton
+pattern of 1849, which is in the public domain.
+
+The board colours are a plain green/cream palette and carry no third-party assets.

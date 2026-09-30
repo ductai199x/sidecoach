@@ -231,13 +231,14 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .sq.light .coord { color: var(--sq-dark); }
 .sq.dark .coord { color: var(--sq-light); }
 
-/* Lichess "cburnett" set (CC BY-SA 3.0, Colin M.L. Burnett) — see pieces/LICENSE.txt */
-.pc.wK { background-image: url(/pieces/wK.svg); } .pc.wQ { background-image: url(/pieces/wQ.svg); }
-.pc.wR { background-image: url(/pieces/wR.svg); } .pc.wB { background-image: url(/pieces/wB.svg); }
-.pc.wN { background-image: url(/pieces/wN.svg); } .pc.wP { background-image: url(/pieces/wP.svg); }
-.pc.bK { background-image: url(/pieces/bK.svg); } .pc.bQ { background-image: url(/pieces/bQ.svg); }
-.pc.bR { background-image: url(/pieces/bR.svg); } .pc.bB { background-image: url(/pieces/bB.svg); }
-.pc.bN { background-image: url(/pieces/bN.svg); } .pc.bP { background-image: url(/pieces/bP.svg); }
+/* Sidecoach's own piece set (tools/pieces/README.md) -- see pieces/LICENSE.txt. The ?v= tag changes
+   with the set: browsers and web views held on to the old images under the same URL. */
+.pc.wK { background-image: url(/pieces/wK.svg?v=own1); } .pc.wQ { background-image: url(/pieces/wQ.svg?v=own1); }
+.pc.wR { background-image: url(/pieces/wR.svg?v=own1); } .pc.wB { background-image: url(/pieces/wB.svg?v=own1); }
+.pc.wN { background-image: url(/pieces/wN.svg?v=own1); } .pc.wP { background-image: url(/pieces/wP.svg?v=own1); }
+.pc.bK { background-image: url(/pieces/bK.svg?v=own1); } .pc.bQ { background-image: url(/pieces/bQ.svg?v=own1); }
+.pc.bR { background-image: url(/pieces/bR.svg?v=own1); } .pc.bB { background-image: url(/pieces/bB.svg?v=own1); }
+.pc.bN { background-image: url(/pieces/bN.svg?v=own1); } .pc.bP { background-image: url(/pieces/bP.svg?v=own1); }
 
 /* A window of its own (a puzzle, a review): a link drawn as a button, and the switch for the
    coach's voice there -- the speaker, struck through and yellow when off. */
@@ -287,10 +288,10 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 }
 .promo button:hover { background-color: #e8e8e8; }
 .promo button.x { aspect-ratio: auto; height: 28px; background: #ddd; color: #333; font-size: 14px; }
-.promo .wQ { background-image: url(/pieces/wQ.svg); } .promo .wR { background-image: url(/pieces/wR.svg); }
-.promo .wB { background-image: url(/pieces/wB.svg); } .promo .wN { background-image: url(/pieces/wN.svg); }
-.promo .bQ { background-image: url(/pieces/bQ.svg); } .promo .bR { background-image: url(/pieces/bR.svg); }
-.promo .bB { background-image: url(/pieces/bB.svg); } .promo .bN { background-image: url(/pieces/bN.svg); }
+.promo .wQ { background-image: url(/pieces/wQ.svg?v=own1); } .promo .wR { background-image: url(/pieces/wR.svg?v=own1); }
+.promo .wB { background-image: url(/pieces/wB.svg?v=own1); } .promo .wN { background-image: url(/pieces/wN.svg?v=own1); }
+.promo .bQ { background-image: url(/pieces/bQ.svg?v=own1); } .promo .bR { background-image: url(/pieces/bR.svg?v=own1); }
+.promo .bB { background-image: url(/pieces/bB.svg?v=own1); } .promo .bN { background-image: url(/pieces/bN.svg?v=own1); }
 
 /* The player's own marks on a board that takes them (the puzzle's, the review's): a
    right-clicked square red, a right-dragged arrow green, as chess.com's. */
@@ -315,12 +316,12 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
    back on the board fades in. */
 .piece.fading { opacity: 0; z-index: 0; transition: opacity 110ms ease-out 110ms; }
 .piece.appearing { opacity: 0; transition: none; }
-.piece.wK { background-image: url(/pieces/wK.svg); } .piece.wQ { background-image: url(/pieces/wQ.svg); }
-.piece.wR { background-image: url(/pieces/wR.svg); } .piece.wB { background-image: url(/pieces/wB.svg); }
-.piece.wN { background-image: url(/pieces/wN.svg); } .piece.wP { background-image: url(/pieces/wP.svg); }
-.piece.bK { background-image: url(/pieces/bK.svg); } .piece.bQ { background-image: url(/pieces/bQ.svg); }
-.piece.bR { background-image: url(/pieces/bR.svg); } .piece.bB { background-image: url(/pieces/bB.svg); }
-.piece.bN { background-image: url(/pieces/bN.svg); } .piece.bP { background-image: url(/pieces/bP.svg); }
+.piece.wK { background-image: url(/pieces/wK.svg?v=own1); } .piece.wQ { background-image: url(/pieces/wQ.svg?v=own1); }
+.piece.wR { background-image: url(/pieces/wR.svg?v=own1); } .piece.wB { background-image: url(/pieces/wB.svg?v=own1); }
+.piece.wN { background-image: url(/pieces/wN.svg?v=own1); } .piece.wP { background-image: url(/pieces/wP.svg?v=own1); }
+.piece.bK { background-image: url(/pieces/bK.svg?v=own1); } .piece.bQ { background-image: url(/pieces/bQ.svg?v=own1); }
+.piece.bR { background-image: url(/pieces/bR.svg?v=own1); } .piece.bB { background-image: url(/pieces/bB.svg?v=own1); }
+.piece.bN { background-image: url(/pieces/bN.svg?v=own1); } .piece.bP { background-image: url(/pieces/bP.svg?v=own1); }
 
 .gameinfo {
   display: flex; gap: 14px; align-items: center; flex-wrap: wrap;

@@ -375,7 +375,7 @@
     {#each stages as s, i (s.name)}
       <div class="sq {s.state}" class:light={i % 2 === 1} title={s.detail ? `${s.label}: ${s.detail}` : s.label}>
         {#if s.state === "done" || s.state === "off"}
-          <img src={`/pieces/${RANK[i] ?? "wP"}.svg`} alt={s.label} draggable="false" />
+          <img src={`/pieces/${RANK[i] ?? "wP"}.svg?v=own1`} alt={s.label} draggable="false" />
         {/if}
       </div>
     {/each}
