@@ -12,9 +12,10 @@ research folder, not committed.
 
 ## Decisions (Tai, 2026-09-30)
 
-1. **A window of its own that works like the puzzle screen:** the board on the left shows the
-   positions behind whatever is chosen (a missed fork, a lost endgame), to step through and retry;
-   the stats on the right.
+1. **A window of its own**, as the puzzles have one (Tai, 02:40: "similar to puzzles" meant a
+   separate window, not the puzzle screen's layout), laid out as chess.com's Advanced Stats: a menu
+   of the sections, the filters, each section's figures; a figure opens its positions as small
+   boards, each opening the game's review at that move (where Retry is).
 2. **Every game**, with filter chips for games against people and against bots (and the time
    control, the date range, the source).
 3. **Imported games are reviewed on their own in the background**, at low priority, paused while
@@ -60,8 +61,8 @@ training; every game counted (other sites, over the board).
 
 ## How ours is built
 
-- **Every number opens its positions**: a grid of boards; one chosen goes on the board, to step
-  through or retry (Game Review's Retry), and opens the game's review at that move.
+- **Every number opens its positions**: a grid of small boards, each opening the game's review at
+  that move, where it can be stepped through and retried (Game Review's Retry).
 - **Work on this**: the three weaknesses that cost the most expected score, each with its
   positions, puzzles of its motif (the Lichess set), and the coach's one line on why.
 - **Definitions (ours, shown on the page):**
@@ -89,7 +90,7 @@ training; every game counted (other sites, over the board).
 |---|---|---|
 | S1 | Facts and the backlog | Per-move facts stored at review; the background review of imported games (low priority, paused while watching); the definitions above with tests on known positions. |
 | S2 | Peers and ratings | The facts of the 3,409 judged real sides by band (peers); the category ratings fitted and their held-out error reported. |
-| S3 | The window | The puzzle-screen layout; overview, openings, tactics, strategy, endgames, time, results, galleries; filters and chips; positions to the board with Retry; run end to end. |
+| S3 | The window | Advanced Stats' layout; overview, openings, tactics, strategy, endgames, time, results, galleries; filters and chips; positions as boards opening the review at the move; every window size; run end to end. |
 | S4 | Work on this | Ranked weaknesses, puzzles by motif, the coach's words. |
 | S5 | Phone | The 1:1 port with parity fixtures. |
 

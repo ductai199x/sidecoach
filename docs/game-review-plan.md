@@ -14,7 +14,10 @@ session's research report; the screenshots are not committed.
 
 1. **Performance rating per game: yes**, a fitted estimate that does not use the players'
    ratings (chess.com's is criticised for echoing them).
-2. **Best-move arrow:** shown by default, hidden while the player retries a position.
+2. **Arrows off by default** (changed 2026-09-30: "if the gold best move arrows are on then
+   there's no point having the retry feature"): the best move in gold, and threats (red) and
+   ideas (blue), each a switch in the review's settings. With the gold arrow off, the coach's
+   sentence does not name the better move either; Best shows it.
 3. **The coach's words on every move**, written by the model and **prepared ahead of time** for
    all moves, not on demand.
 4. **The review opens in a window of its own** (as puzzles do); a full-screen route on the phone.
@@ -42,7 +45,7 @@ Better, from what their users complain about most:
 | Game Rating echoes the players' ratings | Fitted on games at known strength; ratings not an input. |
 | Retry and Hint were removed (May 2026) | Kept, with the three-level hint ladder (idea, where to look, the move). |
 | Redesigns lost the whole-game overview | Graph and two-column move list always visible on the desktop. |
-| The best-move arrow gives the answer away | Hidden while retrying. |
+| The best-move arrow gives the answer away | Off by default, and the words keep the move back while it is off. |
 | The coach, voice and pop-ups intrude | Voice and avatar each have a switch. |
 
 ## The screens, in chess.com's order
@@ -57,7 +60,8 @@ Better, from what their users complain about most:
   grades for opening / middlegame / endgame (a class icon, the phase accuracy on hover); the
   game's shape (Smooth, Balanced, Sharp, Sudden, Intense, Wild, Giveaway); **Start Review**.
 - **C. Step-through:** the move's squares tinted in its class colour and its badge on the
-  destination's corner; the best move as a green arrow, the coach's own arrows orange; an eval
+  destination's corner; the arrows the settings turn on (gold the best move, red a threat, blue
+  an idea); an eval
   bar by the board (vertical on the desktop, horizontal on top on the phone). The coach's card:
   "Rc2 is a blunder", an eval pill (+3.11, M2), one to three sentences with tactic words
   (fork, pin...) as chips that draw on the board, and the fitting button (Show Follow-Up, Show

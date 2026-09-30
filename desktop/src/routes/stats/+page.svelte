@@ -13,6 +13,7 @@
   import { prefs } from "$lib/panel.svelte";
   import { className } from "$lib/review/words";
   import { inShell, openWindow } from "$lib/shell.svelte";
+  import Sparkline from "$lib/stats/Sparkline.svelte";
   import TrendChart from "$lib/stats/TrendChart.svelte";
 
   type Section = "overview" | "openings" | "tactics" | "strategy" | "endgames" | "time" | "moves";
@@ -39,6 +40,7 @@
     other: "Other tactics",
   };
   const SMALL = 5; // a figure of fewer is shown greyed
+  const STACK_BELOW = 760; // px: the menu (210) beside a section of at least about 520
 
   let filter = $state<StatsFilter>(readFilter());
   let section = $state<Section>((prefs.getStr("statsSection") as Section) || "overview");
@@ -67,6 +69,9 @@
     if (!got.ok || !("stats" in got)) { failure = "error" in got ? got.error : "Stats could not be read."; return; }
     numbers = got.stats;
     backlog = got.backlog;
+    // The openings open on the side the player has games with.
+    const sides = new Set(numbers.openings.by_opening.map((o) => o.side));
+    if (!sides.has(openingSide) && sides.size) openingSide = [...sides][0] as "white" | "black";
     behind = {};
     if (section === "moves") void positions("gallery", gallery);
   }
@@ -101,8 +106,14 @@
     openWindow(`review/${encodeURIComponent(p.key)}#ply-${p.ply}`);
   }
 
+  function leave(): void {
+    window.close();
+    if (history.length > 1) history.back();
+  }
+
   // ---- how a figure reads ----
-  const pct = (f: Figure | Rate | undefined) => (f?.value == null ? "–" : `${f.value}%`);
+  const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  const pct = (f: Figure | Rate | undefined) => (f?.value == null ? "–" : `${Math.round(f.value)}%`);
   const num = (f: Figure | undefined, unit = "") => (f?.value == null ? "–" : `${f.value}${unit}`);
   const small = (n: number | undefined) => (n ?? 0) < SMALL;
   const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
@@ -113,8 +124,34 @@
   const rating = $derived.by(() => {
     const vs = (numbers?.trends.rating ?? []).map((p) => p.v);
     const now = mean(vs.slice(-10));
-    const before = mean(vs.slice(-20, -10));
+    const before = vs.length >= 20 ? mean(vs.slice(-20, -10)) : null; // ten games against ten, or no change said
     return { now, change: now != null && before != null ? now - before : null, games: vs.length };
+  });
+
+  // The results: won, drawn, lost.
+  const results = $derived(
+    numbers
+      ? [
+          { kind: "won", name: "Won", n: numbers.overview.wins },
+          { kind: "drawn", name: "Drawn", n: numbers.overview.draws },
+          { kind: "lost", name: "Lost", n: numbers.overview.losses },
+        ]
+      : [],
+  );
+
+  // The overview's cards: each section's figure, its trend where it has one, else a line on it.
+  const icon = (id: Section) => SECTIONS.find((s) => s.id === id)?.icon ?? "";
+  const cards = $derived.by(() => {
+    if (!numbers) return [];
+    const n = numbers, tm = n.time.by_phase;
+    return [
+      { id: "openings" as Section, name: "Openings", value: num(n.openings.accuracy), unit: "accuracy", trend: n.trends.openings, sub: "" },
+      { id: "tactics" as Section, name: "Tactics", value: pct(n.tactics.overall), unit: "found", trend: n.trends.tactics, sub: "" },
+      { id: "strategy" as Section, name: "Strategy", value: num(n.strategy.all.overall), unit: "accuracy", trend: n.trends.strategy, sub: "" },
+      { id: "endgames" as Section, name: "Endgames", value: num(n.endgames.accuracy.overall), unit: "accuracy", trend: n.trends.endgames, sub: "" },
+      { id: "time" as Section, name: "Time", value: pct(n.time.pressure), unit: "mistakes short of time", trend: null, sub: ["opening", "middlegame", "endgame"].map((p) => `${className(p)} ${num(tm[p], "s")}`).join(" · ") },
+      { id: "moves" as Section, name: "Brilliant Moves", value: String(n.galleries.brilliant ?? 0), unit: "brilliant", trend: null, sub: `${n.galleries.great ?? 0} great · ${n.galleries.miss ?? 0} misses · ${n.galleries.blunder ?? 0} blunders` },
+    ].map((c) => ({ ...c, icon: icon(c.id) }));
   });
 
   // What each figure means (ours: chess.com publishes none), shown when the row opens.
@@ -141,11 +178,18 @@
 
   onMount(() => {
     document.body.classList.add("stats-page");
+    // Stacked (the menu a row of tabs above the section) when the window is too narrow for the
+    // menu beside a section: by width alone, there being no board.
+    const fit = () => document.documentElement.classList.toggle("stacked", window.innerWidth < STACK_BELOW);
+    fit();
+    window.addEventListener("resize", fit);
     (async () => { await connect(); await load(); })();
     // While games are still being reviewed in the background, the figures grow: read them again.
     const again = setInterval(() => { if (backlog && (backlog.waiting || backlog.reviewing)) void load(); }, 30_000);
     return () => {
       clearInterval(again);
+      window.removeEventListener("resize", fit);
+      document.documentElement.classList.remove("stacked");
       document.body.classList.remove("stats-page");
     };
   });
@@ -155,12 +199,12 @@
 
 <!-- A figure's row: its name, its value, how many it counts; opened, what it means and the
      positions behind it. -->
-{#snippet row(id: string, label: string, value: string, n: number | undefined, def: string, what = "", arg = "")}
+{#snippet row(id: string, label: string, value: string, n: number | undefined, basis: string, def: string, what = "", arg = "")}
   <div class="st-row" class:small={small(n)} class:open={opened === id}>
     <button class="st-row-head" aria-expanded={opened === id} onclick={() => toggle(id, what, arg)}>
       <span class="label">{label}</span>
       <span class="value">{value}</span>
-      <span class="n" title="How many this counts">{n ?? ""}</span>
+      <span class="n">{n ? basis : ""}</span>
       <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z" /></svg>
     </button>
     {#if opened === id}
@@ -185,6 +229,11 @@
   </div>
 {/snippet}
 
+<!-- The columns of a card of rows. -->
+{#snippet cols()}
+  <div class="st-cols" aria-hidden="true"><span></span><span>You</span><span>Based on</span><span></span></div>
+{/snippet}
+
 {#snippet mini(p: StatPosition)}
   <a class="st-mini" href="/review/{encodeURIComponent(p.key)}#ply-{p.ply}" target="_blank" rel="noopener" title="Open in Game Review at this move" onclick={(e) => openReview(p, e)}>
     <span class="st-miniboard"><Board fen={p.fen} bottom={p.side} marks={[{ kind: "arrow", squares: [p.uci.slice(0, 2), p.uci.slice(2, 4)], color: p.label === "brilliant" || p.label === "great" || p.label === "best" ? "good" : "bad" }]} /></span>
@@ -194,11 +243,14 @@
 
 <header id="bar">
   <div class="group">
+    <button class="iconbtn rv-back" aria-label="Close Stats" title="Close Stats" onclick={leave}>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    </button>
     <img class="rv-logo" src="/logo.svg" alt="" draggable="false" />
     <div>
       <div class="rv-name">Your stats</div>
       <div class="rv-sub">
-        {#if numbers}{numbers.overview.games} games{/if}{#if backlog && (backlog.waiting || backlog.reviewing)} · {backlog.waiting} more being reviewed in the background{backlog.paused ? " (paused while you play)" : ""}{/if}
+        {#if numbers}{plural(numbers.overview.games, "game")} reviewed{/if}{#if backlog && (backlog.waiting || backlog.reviewing)}{" · "}{backlog.waiting} more being reviewed{backlog.paused ? " (paused while you play)" : ""}{/if}
       </div>
     </div>
   </div>
@@ -243,28 +295,46 @@
       {@const o = numbers.overview}
       <div class="st-head">
         <h2>Game rating</h2>
-        <span class="st-big" title="The rating your last ten games were played at, from their moves alone">{rating.now ?? "–"}</span>
+        <span class="st-big" title="The rating your games were played at, from their moves alone">{rating.now ?? "–"}</span>
         {#if rating.change}<span class="st-change" class:down={rating.change < 0}>{rating.change > 0 ? "↑" : "↓"} {Math.abs(rating.change)}</span>{/if}
+        <span class="muted st-span">{rating.games >= 10 ? "your last 10 games" : `your ${plural(rating.games, "game")}`}</span>
       </div>
       <TrendChart points={numbers.trends.rating} smooth={10} />
-      <div class="st-tiles">
-        <div><span>Games</span><b>{o.games}</b></div>
-        <div class="won"><span>Won {o.games ? Math.round((100 * o.wins) / o.games) : 0}%</span><b>{o.wins}</b></div>
-        <div class="drawn"><span>Drawn {o.games ? Math.round((100 * o.draws) / o.games) : 0}%</span><b>{o.draws}</b></div>
-        <div class="lost"><span>Lost {o.games ? Math.round((100 * o.losses) / o.games) : 0}%</span><b>{o.losses}</b></div>
+      <div class="st-card st-results">
+        <div class="st-card-title">Results <span class="muted">{plural(o.games, "game")}</span></div>
+        <div class="st-bar" role="img" aria-label="{o.wins} won, {o.draws} drawn, {o.losses} lost">
+          {#each results as r (r.kind)}
+            {#if r.n}<i class={r.kind} style="flex: {r.n}"></i>{/if}
+          {/each}
+        </div>
+        <div class="st-legend">
+          {#each results as r (r.kind)}
+            <span class={r.kind}><i></i>{r.name} <b>{r.n}</b> <small>{o.games ? Math.round((100 * r.n) / o.games) : 0}%</small></span>
+          {/each}
+        </div>
       </div>
-      <div class="st-card">
-        <div class="st-card-title">Your play</div>
-        {#each [["openings", "Openings", `${num(numbers.openings.accuracy)} accuracy`], ["tactics", "Tactics", `${pct(numbers.tactics.overall)} found`], ["strategy", "Strategy", `${num(numbers.strategy.all.overall)} accuracy`], ["endgames", "Endgames", `${num(numbers.endgames.accuracy.overall)} accuracy`], ["moves", "Brilliant Moves", `${numbers.galleries.brilliant ?? 0}`]] as [id, name, value] (id)}
-          <button class="st-link-row" onclick={() => go(id as Section)}><span>{name}</span><b>{value}</b><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" /></svg></button>
+      <div class="st-cats">
+        {#each cards as c (c.id)}
+          <button class="st-cat" onclick={() => go(c.id)}>
+            <span class="name">
+              {#if c.icon}<svg viewBox="0 0 24 24" aria-hidden="true"><path d={c.icon} /></svg>{:else}<Badge kind="brilliant" size={20} />{/if}
+              {c.name}
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" /></svg>
+            </span>
+            <span class="fig"><b>{c.value}</b> <small>{c.unit}</small></span>
+            {#if c.trend}<Sparkline points={c.trend} />{:else}<span class="sub">{c.sub}</span>{/if}
+          </button>
         {/each}
       </div>
       <div class="st-card">
         <div class="st-card-title">How your games ended</div>
-        <div class="st-grid ends">
-          <span></span><span class="muted">Won</span><span class="muted">Drawn</span><span class="muted">Lost</span>
+        <div class="st-table ends">
+          <span class="h first"></span><span class="h">Won</span><span class="h">Drawn</span><span class="h">Lost</span>
           {#each Object.entries(numbers.results) as [kind, r] (kind)}
-            <span class="cap">{kind}</span><span>{r.won}</span><span>{r.drawn}</span><span>{r.lost}</span>
+            <span class="first kind">{kind}</span>
+            <b class="won" class:zero={!r.won}>{r.won}</b>
+            <b class:zero={!r.drawn}>{r.drawn}</b>
+            <b class="lost" class:zero={!r.lost}>{r.lost}</b>
           {/each}
         </div>
       </div>
@@ -274,9 +344,10 @@
       <TrendChart points={numbers.trends.openings} smooth={5} />
       <div class="st-card">
         <div class="st-card-title">Opening stats</div>
-        {@render row("op.acc", "Opening accuracy", num(op.accuracy), op.accuracy.n, DEF.openingAccuracy)}
-        {@render row("op.mis", "Mistakes in the opening, a game", num(op.mistakes), op.mistakes.n, DEF.openingMistakes, "opening.mistakes")}
-        {@render row("op.book", "Book moves before you leave book", num(op.book_moves), op.book_moves.n, DEF.bookMoves)}
+        {@render cols()}
+        {@render row("op.acc", "Opening accuracy", num(op.accuracy), op.accuracy.n, plural(op.accuracy.n, "move"), DEF.openingAccuracy)}
+        {@render row("op.mis", "Mistakes in the opening, a game", num(op.mistakes), op.mistakes.n, plural(op.mistakes.n, "game"), DEF.openingMistakes, "opening.mistakes")}
+        {@render row("op.book", "Book moves before you leave book", num(op.book_moves), op.book_moves.n, plural(op.book_moves.n, "game"), DEF.bookMoves)}
       </div>
       <div class="st-card">
         <div class="st-card-title">
@@ -286,12 +357,15 @@
             <button class="segbtn" aria-pressed={openingSide === "black"} onclick={() => (openingSide = "black")}>As Black</button>
           </div>
         </div>
-        <div class="st-grid openings">
-          <span class="muted">Opening</span><span class="muted">Games</span><span class="muted">Score</span><span class="muted">Accuracy</span>
+        <div class="st-table openings">
+          <span class="h first">Opening</span><span class="h">Games</span><span class="h">Score</span><span class="h">Accuracy</span>
           {#each op.by_opening.filter((o) => o.side === openingSide) as o (o.opening)}
-            <span class:small={small(o.games)}>{o.opening}</span><span>{o.games}</span><span>{o.score == null ? "–" : `${o.score}%`}</span><span>{o.accuracy ?? "–"}</span>
+            <span class="first" class:small={small(o.games)} title={o.opening}>{o.opening}</span>
+            <b class:zero={small(o.games)}>{o.games}</b>
+            <b class:zero={o.score == null}>{o.score == null ? "–" : `${Math.round(o.score)}%`}</b>
+            <b class:zero={o.accuracy == null}>{o.accuracy ?? "–"}</b>
           {:else}
-            <span class="muted" style="grid-column: 1 / -1">No games as {openingSide} here.</span>
+            <span class="none">No games as {openingSide} here.</span>
           {/each}
         </div>
       </div>
@@ -307,13 +381,14 @@
             <button class="segbtn" aria-pressed={tacticsView === "allowed"} onclick={() => (tacticsView = "allowed")}>Allowed</button>
           </div>
         </div>
+        {@render cols()}
         {#each KINDS as kind (kind)}
           {#if tacticsView === "found"}
             {@const r = t.found[kind]}
-            {@render row(`tf.${kind}`, KIND_NAMES[kind], r?.n ? `${pct(r)} · ${r.hits} of ${r.n}` : "–", r?.n, DEF.found, "tactics.missed", kind)}
+            {@render row(`tf.${kind}`, KIND_NAMES[kind], pct(r), r?.n, r ? `${r.hits} of ${r.n}` : "", DEF.found, "tactics.missed", kind)}
           {:else}
             {@const r = t.allowed[kind]}
-            {@render row(`ta.${kind}`, KIND_NAMES[kind], num(r), r?.hits, DEF.allowed, "tactics.allowed", kind)}
+            {@render row(`ta.${kind}`, KIND_NAMES[kind], num(r), r?.hits, r ? plural(r.hits ?? 0, "time") : "", DEF.allowed, "tactics.allowed", kind)}
           {/if}
         {/each}
       </div>
@@ -330,12 +405,13 @@
             {/each}
           </div>
         </div>
-        {@render row("st.all", "Strategic accuracy", num(s.overall), s.overall.n, DEF.overall, "strategy.mistakes", structure)}
-        {@render row("st.att", "Attacking accuracy", num(s.attacking), s.attacking.n, DEF.attacking)}
-        {@render row("st.def", "Defending accuracy", num(s.defending), s.defending.n, DEF.defending)}
-        {@render row("st.space", "With more space", num(s.space), s.space.n, DEF.space)}
-        {@render row("st.act", "With active pieces", num(s.activity), s.activity.n, DEF.activity)}
-        {@render row("st.pawns", "Around weak pawns", num(s.structure), s.structure.n, DEF.structure)}
+        {@render cols()}
+        {@render row("st.all", "Strategic accuracy", num(s.overall), s.overall.n, plural(s.overall.n, "move"), DEF.overall, "strategy.mistakes", structure)}
+        {@render row("st.att", "Attacking accuracy", num(s.attacking), s.attacking.n, plural(s.attacking.n, "move"), DEF.attacking)}
+        {@render row("st.def", "Defending accuracy", num(s.defending), s.defending.n, plural(s.defending.n, "move"), DEF.defending)}
+        {@render row("st.space", "With more space", num(s.space), s.space.n, plural(s.space.n, "move"), DEF.space)}
+        {@render row("st.act", "With active pieces", num(s.activity), s.activity.n, plural(s.activity.n, "move"), DEF.activity)}
+        {@render row("st.pawns", "Around weak pawns", num(s.structure), s.structure.n, plural(s.structure.n, "move"), DEF.structure)}
       </div>
     {:else if section === "endgames"}
       {@const e = numbers.endgames}
@@ -343,14 +419,16 @@
       <TrendChart points={numbers.trends.endgames} smooth={5} />
       <div class="st-card">
         <div class="st-card-title">Your score from the endgame's start</div>
-        {@render row("eg.better", "From a better position", pct(e.win.better), e.win.better.n, DEF.win)}
-        {@render row("eg.equal", "From an equal position", pct(e.win.equal), e.win.equal.n, DEF.win)}
-        {@render row("eg.worse", "From a worse position", pct(e.win.worse), e.win.worse.n, DEF.win)}
+        {@render cols()}
+        {@render row("eg.better", "From a better position", pct(e.win.better), e.win.better.n, plural(e.win.better.n, "game"), DEF.win)}
+        {@render row("eg.equal", "From an equal position", pct(e.win.equal), e.win.equal.n, plural(e.win.equal.n, "game"), DEF.win)}
+        {@render row("eg.worse", "From a worse position", pct(e.win.worse), e.win.worse.n, plural(e.win.worse.n, "game"), DEF.win)}
       </div>
       <div class="st-card">
         <div class="st-card-title">Endgame accuracy by kind</div>
+        {@render cols()}
         {#each [["overall", "All endgames"], ["pawn", "King and pawn"], ["rook", "Rook"], ["queen", "Queen"], ["other", "Other"]] as [kind, name] (kind)}
-          {@render row(`eg.${kind}`, name, num(e.accuracy[kind]), e.accuracy[kind]?.n, DEF.endgameAccuracy, "endgame.mistakes", kind)}
+          {@render row(`eg.${kind}`, name, num(e.accuracy[kind]), e.accuracy[kind]?.n, plural(e.accuracy[kind]?.n ?? 0, "move"), DEF.endgameAccuracy, "endgame.mistakes", kind)}
         {/each}
       </div>
     {:else if section === "time"}
@@ -358,20 +436,22 @@
       <div class="st-head"><h2>Time</h2></div>
       <div class="st-card">
         <div class="st-card-title">Time a move</div>
+        {@render cols()}
         {#each ["opening", "middlegame", "endgame"] as phase (phase)}
-          {@render row(`tm.${phase}`, className(phase), num(tm.by_phase[phase], " s"), tm.by_phase[phase]?.n, DEF.timePhase)}
+          {@render row(`tm.${phase}`, className(phase), num(tm.by_phase[phase], " s"), tm.by_phase[phase]?.n, plural(tm.by_phase[phase]?.n ?? 0, "move"), DEF.timePhase)}
         {/each}
       </div>
       <div class="st-card">
         <div class="st-card-title">Mistakes, by the clock</div>
-        {@render row("tm.press", "Short of time", pct(tm.pressure), tm.pressure.n, DEF.pressure, "time.pressure")}
-        {@render row("tm.calm", "With time to think", pct(tm.calm), tm.calm.n, DEF.pressure)}
-        {@render row("tm.lost", "Games lost on time", `${tm.lost_on_time}`, tm.lost_on_time, DEF.lostOnTime)}
-        {@render row("tm.won", "… while winning", `${tm.lost_on_time_winning}`, tm.lost_on_time, DEF.lostOnTimeWinning)}
+        {@render cols()}
+        {@render row("tm.press", "Mistakes when short of time", pct(tm.pressure), tm.pressure.n, plural(tm.pressure.n, "move"), DEF.pressure, "time.pressure")}
+        {@render row("tm.calm", "Mistakes with time to think", pct(tm.calm), tm.calm.n, plural(tm.calm.n, "move"), DEF.pressure)}
+        {@render row("tm.lost", "Games lost on time", `${tm.lost_on_time}`, numbers.overview.games, plural(numbers.overview.games, "game"), DEF.lostOnTime)}
+        {@render row("tm.won", "… while winning", `${tm.lost_on_time_winning}`, tm.lost_on_time, plural(tm.lost_on_time, "loss", "losses"), DEF.lostOnTimeWinning)}
       </div>
     {:else}
       <div class="st-head">
-        <h2>Brilliant Moves</h2><span class="st-big">{numbers.galleries.brilliant ?? 0}</span>
+        <h2>Brilliant Moves</h2><span class="st-big">{numbers.galleries[gallery] ?? 0}</span>
         <div class="seg small st-head-seg">
           {#each [["brilliant", "Brilliant"], ["great", "Great"], ["miss", "Misses"], ["blunder", "Blunders"]] as [label, name] (label)}
             <button class="segbtn" aria-pressed={gallery === label} onclick={() => { gallery = label; void positions("gallery", label); }}>{name} · {numbers.galleries[label] ?? 0}</button>
