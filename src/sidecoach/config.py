@@ -548,6 +548,23 @@ class ProfileSettings(BaseModel):
         description="The top of that band.",
         json_schema_extra=_extra(applies="now", label="Your rating, to", section="Your rating"),
     )
+    chesscom_user: str = Field(
+        default="",
+        description="Your username on chess.com. Game Review brings in your recent games with "
+        "it and knows which side you played. Only your public games are read, through "
+        "chess.com's public data; nothing is sent to your account.",
+        json_schema_extra=_extra(
+            applies="now", label="Your chess.com username", section="Your accounts"
+        ),
+    )
+    lichess_user: str = Field(
+        default="",
+        description="Your username on Lichess, for the same: your recent public games, and "
+        "which side was yours.",
+        json_schema_extra=_extra(
+            applies="now", label="Your Lichess username", section="Your accounts"
+        ),
+    )
 
 
 class VoiceSettings(BaseModel):

@@ -10,8 +10,10 @@ and the tests run those queries against a database built from a game.
 
 Tables: games; moves, each with the engine's verdict once it arrives; evidence, one row
 per mistake of the player's with its cause and motif (user-correctable); dialogue,
-what the player and the coach said; sessions, with their summaries. Recordings and
-PGNs stay on disk. Everything is written as it happens, so a session that ends
+what the player and the coach said; sessions, with their summaries; library, the games
+Game Review can open -- imported from chess.com, Lichess or a PGN -- and reviews, a game
+reviewed whole with its summary and the coach's words on every move. Recordings stay on
+disk. Everything is written as it happens, so a session that ends
 abruptly loses at most the last game's summary. `Store(None)` is in memory, for tests
 and for replays, which must not teach the profile anything.
 """
@@ -126,6 +128,30 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS library (
+    key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    played_at REAL,
+    white TEXT,
+    black TEXT,
+    white_elo INTEGER,
+    black_elo INTEGER,
+    result TEXT,
+    time_class TEXT,
+    user_side TEXT,
+    pgn TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+    key TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    reviewed_at REAL NOT NULL,
+    report TEXT NOT NULL,
+    summary TEXT,
+    words TEXT,
+    PRIMARY KEY (key, strength)
+);
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
 CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts);
@@ -228,6 +254,41 @@ class CellRow:
     errors: int
     chances: int
     expected_loss: float
+
+
+@dataclass(frozen=True)
+class LibraryRow:
+    """A game Game Review can open: where it came from (`source`: chesscom, lichess, pgn),
+    who played it, and its PGN. `key` is the source and its own id ("chesscom:174300959956");
+    `user_side` the side the player had, when their name for that site is known."""
+
+    key: str
+    source: str
+    added_at: float
+    pgn: str
+    played_at: float | None = None
+    white: str | None = None
+    black: str | None = None
+    white_elo: int | None = None
+    black_elo: int | None = None
+    result: str | None = None
+    time_class: str | None = None
+    user_side: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewRow:
+    """A game reviewed whole at one strength: the review (`analysis.game_review`'s
+    ReviewedGame, as JSON), its summary and the coach's words on the moves (JSON, written as
+    they are prepared). `version` is the review's format: an older one is done again."""
+
+    key: str
+    strength: str
+    version: int
+    reviewed_at: float
+    report: str
+    summary: str | None
+    words: str | None
 
 
 @dataclass(frozen=True)
@@ -744,6 +805,96 @@ class Store:
                 (before,),
             ).fetchone()
         return None if row is None else SessionRow(**dict(row))
+
+    # ---- the review's library and its reviews ----------------------------------------------
+
+    def add_library_game(self, row: LibraryRow) -> None:
+        """A game imported for review; the same game imported again replaces its row."""
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO library (key, source, added_at, played_at, white, black,"
+                " white_elo, black_elo, result, time_class, user_side, pgn)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row.key,
+                    row.source,
+                    row.added_at,
+                    row.played_at,
+                    row.white,
+                    row.black,
+                    row.white_elo,
+                    row.black_elo,
+                    row.result,
+                    row.time_class,
+                    row.user_side,
+                    row.pgn,
+                ),
+            )
+            self._db.commit()
+
+    def library(self, limit: int = 500) -> list[LibraryRow]:
+        """The imported games, the latest played first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [LibraryRow(**dict(r)) for r in rows]
+
+    def library_game(self, key: str) -> LibraryRow | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM library WHERE key = ?", (key,)).fetchone()
+        return None if row is None else LibraryRow(**dict(row))
+
+    def delete_library_game(self, key: str) -> None:
+        """A game out of the library, and its reviews with it."""
+        with self._lock:
+            self._db.execute("DELETE FROM reviews WHERE key = ?", (key,))
+            self._db.execute("DELETE FROM library WHERE key = ?", (key,))
+            self._db.commit()
+
+    def save_review(
+        self,
+        key: str,
+        strength: str,
+        version: int,
+        reviewed_at: float,
+        report: str,
+        summary: str | None,
+    ) -> None:
+        """A game reviewed whole; its words, if any were prepared for an older review, go."""
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO reviews"
+                " (key, strength, version, reviewed_at, report, summary, words)"
+                " VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (key, strength, version, reviewed_at, report, summary),
+            )
+            self._db.commit()
+
+    def review(self, key: str, strength: str) -> ReviewRow | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM reviews WHERE key = ? AND strength = ?", (key, strength)
+            ).fetchone()
+        return None if row is None else ReviewRow(**dict(row))
+
+    def latest_review(self, key: str) -> ReviewRow | None:
+        """The game's latest review, at whatever strength."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", (key,)
+            ).fetchone()
+        return None if row is None else ReviewRow(**dict(row))
+
+    def set_review_words(self, key: str, strength: str, words: str) -> None:
+        """The coach's words on a review's moves, as far as they are prepared."""
+        with self._lock:
+            self._db.execute(
+                "UPDATE reviews SET words = ? WHERE key = ? AND strength = ?",
+                (words, key, strength),
+            )
+            self._db.commit()
 
     # ---- read-only SQL from the coach -----------------------------------------------------
 

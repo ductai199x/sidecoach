@@ -16,7 +16,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -336,6 +336,13 @@ class GameAnnotator:
     def measured(self, board: chess.Board) -> bool:
         """Whether the position is measured whole already (the game's own, or ahead of it)."""
         return board.fen() in self._cache
+
+    def adopt(self, measured: Iterable[Measured]) -> None:
+        """Positions measured whole by another annotator -- another engine, on another thread,
+        for a review measuring a game's positions side by side (`game_review`) -- kept as if
+        measured here: the walk through the game's moves then searches nothing."""
+        for m in measured:
+            self._cache[m.fen] = m
 
     def assess(
         self, game_id: str, before: chess.Board, move: chess.Move, ply: int

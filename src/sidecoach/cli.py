@@ -1489,7 +1489,9 @@ def review(
     depth: Annotated[int | None, typer.Option(help="Search depth per position")] = None,
     game: Annotated[int, typer.Option(help="Which game in the file")] = 1,
     side: Annotated[str, typer.Option(help="Whose moves to list: white, black, both")] = "both",
-    threats: Annotated[bool, typer.Option(help="Also ask what the opponent threatened")] = False,
+    workers: Annotated[
+        int | None, typer.Option(help="Engines measuring side by side (default: by the cores)")
+    ] = None,
     quiet: Annotated[bool, typer.Option(help="Only the summary, no move table")] = False,
     out: Annotated[Path | None, typer.Option(help="Write the assessments as JSON")] = None,
     compare: Annotated[
@@ -1502,14 +1504,17 @@ def review(
 
     Every position is searched to the same depth, so the loss of a move is the difference
     between two comparable numbers. Losses are in expected score, where 1.0 is a win: a
-    0.20 loss is a blunder whatever the material on the board.
+    0.20 loss is a blunder whatever the material on the board. The positions are measured
+    by several engines side by side, as the app's Game Review does (`analysis.game_review`).
     """
+    import contextlib
+
     import chess
     import chess.pgn
 
-    from sidecoach.analysis.annotator import GameAnnotator
     from sidecoach.analysis.engine import Engine, san_line
-    from sidecoach.analysis.score import Thresholds
+    from sidecoach.analysis.game_review import THREADS, review_game, workers_for
+    from sidecoach.analysis.score import Thresholds, game_accuracy, position_score
 
     settings = load_settings(config)
     path = find_stockfish(settings)
@@ -1541,24 +1546,6 @@ def review(
         f"{headers.get('Result', '*')}, {len(moves)} plies"
     )
     search_depth = depth or settings.engine.depth
-    engine = Engine(
-        path=path,
-        threads=settings.engine.threads,
-        hash_mb=settings.engine.hash_mb,
-        multipv=settings.engine.multipv,
-        pv_plies=settings.engine.pv_plies,
-        score_model=settings.engine.score_model,
-        max_seconds=settings.engine.max_seconds,
-    )
-    annotator = GameAnnotator(
-        engine=engine,
-        depth=search_depth,
-        multipv=settings.engine.multipv,
-        thresholds=Thresholds.from_settings(settings.coach),
-        tagger=_load_tagger(),
-        book=_load_book(settings),
-        with_threats=threats,
-    )
     reference: dict[int, object] = {}
     overview: Overview | None = None
     if compare is not None:
@@ -1577,6 +1564,32 @@ def review(
             + (", with the overview" if overview else "")
         )
 
+    with contextlib.ExitStack() as stack:
+        engines = [
+            stack.enter_context(
+                Engine(
+                    path=path,
+                    threads=THREADS,
+                    hash_mb=settings.engine.hash_mb,
+                    multipv=settings.engine.multipv,
+                    pv_plies=settings.engine.pv_plies,
+                    score_model=settings.engine.score_model,
+                    max_seconds=settings.engine.max_seconds,
+                )
+            )
+            for _ in range(workers or workers_for())
+        ]
+        reviewed = review_game(
+            parsed,
+            engines,
+            depth=search_depth,
+            multipv=settings.engine.multipv,
+            thresholds=Thresholds.from_settings(settings.coach),
+            tagger=_load_tagger(),
+            book=_load_book(settings),
+            game_id=headers.get("Site", "review"),
+        )
+
     table = Table(box=None, pad_edge=False)
     columns = ["move", "", "loss", "label", "better", "motifs"]
     if reference:
@@ -1584,7 +1597,6 @@ def review(
     for column in columns:
         table.add_column(column, overflow="fold")
 
-    board = parsed.board()
     counts = {"inaccuracy": 0, "mistake": 0, "blunder": 0}
     total_loss = {chess.WHITE: 0.0, chess.BLACK: 0.0}
     plies = {chess.WHITE: 0, chess.BLACK: 0}
@@ -1593,82 +1605,71 @@ def review(
     agreements: list[tuple[str, str, str]] = []  # move, ours, theirs
     rows: list[dict[str, object]] = []
     opening: str | None = None
-    started = time.perf_counter()
-    try:
-        with engine:
-            for ply, move in enumerate(moves, start=1):
-                mover = board.turn
-                san = board.san(move)
-                assessment, analysis = annotator.assess(
-                    headers.get("Site", "review"), board, move, ply
-                )
-                opening = analysis.opening or opening
-                total_loss[mover] += assessment.expected_loss
-                plies[mover] += 1
-                if assessment.accuracy is not None:
-                    accuracies[mover].append(assessment.accuracy)
-                ours = assessment.label.value if assessment.label else "?"
-                labels[mover][ours] = labels[mover].get(ours, 0) + 1
-                if assessment.severity.value in counts:
-                    counts[assessment.severity.value] += 1
-                show = wanted == "both" or (wanted == "white") == (mover == chess.WHITE)
-                number = board.fullmove_number
-                label = f"{number}." if mover == chess.WHITE else f"{number}..."
-                theirs = getattr(reference.get(ply), "label", None)
-                if reference and (theirs is not None or ours in _NOTABLE):
-                    agreements.append((f"{label} {san}", ours, theirs or "unlabelled"))
-                better = (
-                    san_line(board, assessment.best, limit=4)
-                    if assessment.severity.value != "none"
-                    else ""
-                )
-                tags = ", ".join(dict.fromkeys(tag.name for tag in assessment.tags))
-                rows.append(
-                    {
-                        "ply": ply,
-                        "san": san,
-                        "uci": assessment.uci,
-                        "loss": round(assessment.expected_loss, 4),
-                        "severity": assessment.severity.value,
-                        "best": assessment.best,
-                        "tags": [tag.model_dump() for tag in assessment.tags],
-                        "threats": analysis.threats,
-                        "decisive": analysis.decisive,
-                        "label": ours,
-                        "accuracy": assessment.accuracy,
-                        "depth": assessment.depth,
-                        "chesscom": theirs,
-                        "before_score": round(annotator.measure(board).score, 4),
-                        "only_move": annotator.measure(board).only_move,
-                    }
-                )
-                if show and not quiet:
-                    colour = _LABEL_COLOUR.get(ours, "white")
-                    marker = "*" if ours in _NOTABLE else ""
-                    cells = [
-                        label,
-                        f"{san}{marker}",
-                        f"{assessment.expected_loss:.2f}",
-                        f"[{colour}]{ours}[/{colour}]" if ours not in _QUIET_LABELS else "",
-                        better,
-                        tags,
-                    ]
-                    if reference:
-                        theirs_colour = _LABEL_COLOUR.get(theirs or "", "white")
-                        cells.insert(
-                            4, f"[{theirs_colour}]{theirs}[/{theirs_colour}]" if theirs else ""
-                        )
-                    table.add_row(*cells)
-                board.push(move)
-    except KeyboardInterrupt:
-        console.print("[yellow]stopped[/yellow]")
+    before_lines = reviewed.start.lines
+    for item in reviewed.moves:
+        board = chess.Board(item.fen_before)
+        mover = board.turn
+        assessment, analysis = item.assessment, item.after
+        opening = analysis.opening or opening
+        total_loss[mover] += assessment.expected_loss
+        plies[mover] += 1
+        if assessment.accuracy is not None:
+            accuracies[mover].append(assessment.accuracy)
+        ours = assessment.label.value if assessment.label else "?"
+        labels[mover][ours] = labels[mover].get(ours, 0) + 1
+        if assessment.severity.value in counts:
+            counts[assessment.severity.value] += 1
+        show = wanted == "both" or (wanted == "white") == (mover == chess.WHITE)
+        number = board.fullmove_number
+        label = f"{number}." if mover == chess.WHITE else f"{number}..."
+        theirs = getattr(reference.get(item.ply), "label", None)
+        if reference and (theirs is not None or ours in _NOTABLE):
+            agreements.append((f"{label} {item.san}", ours, theirs or "unlabelled"))
+        better = (
+            san_line(board, assessment.best, limit=4) if assessment.severity.value != "none" else ""
+        )
+        tags = ", ".join(dict.fromkeys(tag.name for tag in assessment.tags))
+        rows.append(
+            {
+                "ply": item.ply,
+                "san": item.san,
+                "uci": assessment.uci,
+                "loss": round(assessment.expected_loss, 4),
+                "severity": assessment.severity.value,
+                "best": assessment.best,
+                "tags": [tag.model_dump() for tag in assessment.tags],
+                "threats": analysis.threats,
+                "decisive": analysis.decisive,
+                "label": ours,
+                "accuracy": assessment.accuracy,
+                "depth": assessment.depth,
+                "chesscom": theirs,
+                "before_score": round(position_score(board, before_lines), 4),
+                "clock_ms": item.clock_ms,
+                "spent_ms": item.spent_ms,
+            }
+        )
+        before_lines = analysis.lines
+        if show and not quiet:
+            colour = _LABEL_COLOUR.get(ours, "white")
+            marker = "*" if ours in _NOTABLE else ""
+            cells = [
+                label,
+                f"{item.san}{marker}",
+                f"{assessment.expected_loss:.2f}",
+                f"[{colour}]{ours}[/{colour}]" if ours not in _QUIET_LABELS else "",
+                better,
+                tags,
+            ]
+            if reference:
+                theirs_colour = _LABEL_COLOUR.get(theirs or "", "white")
+                cells.insert(4, f"[{theirs_colour}]{theirs}[/{theirs_colour}]" if theirs else "")
+            table.add_row(*cells)
 
     if not quiet:
         console.print(table)
     if opening:
         console.print(f"opening: {opening}")
-    from sidecoach.analysis.score import game_accuracy
-
     for colour, name in ((chess.WHITE, "white"), (chess.BLACK, "black")):
         if plies[colour]:
             accuracy = game_accuracy(accuracies[colour])
@@ -1690,7 +1691,7 @@ def review(
         f"[cyan]{counts['inaccuracy']} inaccuracies[/cyan], "
         f"[yellow]{counts['mistake']} mistakes[/yellow], "
         f"[red]{counts['blunder']} blunders[/red] "
-        f"at depth {search_depth} in {time.perf_counter() - started:.1f}s"
+        f"at depth {search_depth} in {reviewed.seconds:.1f}s with {len(engines)} engines"
     )
     if out is not None:
         import json

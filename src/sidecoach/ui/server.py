@@ -127,6 +127,16 @@ class _OnOff(BaseModel):
     on: bool
 
 
+class _Import(BaseModel):
+    source: str  # pgn | chesscom | lichess
+    text: str = ""  # the PGN, for "pgn"
+    months: int = 3  # how far back on chess.com
+
+
+class _Review(BaseModel):
+    strength: str = "standard"
+
+
 class _Rect(BaseModel):
     x: int
     y: int
@@ -343,6 +353,58 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     def puzzle_close(puzzle_id: str) -> dict[str, bool]:
         return {"ok": _room_command(rooms, puzzle_id, "close")}
 
+    # ---- Game Review: the library of games, and a review in a window of its own ----------
+    # (profile/library.py, ui/review_room.py; docs/game-review-plan.md)
+    from sidecoach.ui.review_room import ReviewRooms
+
+    store_path = engine.settings.data_dir / "profile.sqlite"
+    reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+
+    @app.get("/games")
+    @app.get("/review/{key}")
+    def review_pages(key: str = "") -> Any:
+        return FileResponse(WEB / "index.html")
+
+    @app.get("/api/games")
+    def games() -> dict[str, Any]:
+        return _library(engine, store_path)
+
+    @app.post("/api/games/import")
+    def games_import(body: _Import) -> dict[str, Any]:
+        return _import(engine, store_path, body)
+
+    @app.delete("/api/games/{key}")
+    def games_delete(key: str) -> dict[str, bool]:
+        from sidecoach.profile.store import Store
+
+        store = Store(store_path)
+        try:
+            store.delete_library_game(key)
+        finally:
+            store.close()
+        return {"ok": True}
+
+    @app.post("/api/review/{key}/open")
+    def review_open(key: str, body: _Review) -> dict[str, Any]:
+        room = reviews.open(key, body.strength)
+        if room is None:
+            return {"ok": False, "error": f"no game {key} in the library"}
+        return {"ok": True, **room.poll()}
+
+    @app.get("/api/review/{key}/poll")
+    def review_poll(key: str, since: int = 0) -> dict[str, Any]:
+        room = reviews.get(key)
+        if room is None:
+            return {"ok": False, "closed": True}
+        return {"ok": True, **room.poll(since)}
+
+    @app.post("/api/review/{key}/close")
+    def review_close(key: str) -> dict[str, bool]:
+        room = reviews.get(key)
+        if room is not None:
+            room.close()
+        return {"ok": room is not None}
+
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
@@ -431,6 +493,78 @@ def build_app(engine: PanelEngine, token: str = "") -> FastAPI:
     # Everything else is the static web UI; html=True serves index.html at /.
     app.mount("/", StaticFiles(directory=str(WEB), html=True), name="web")
     return app
+
+
+def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
+    """The games Game Review can open, the latest played first -- imported and watched --
+    each with its review's accuracies when it has one, and the player's usernames."""
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+
+    store = Store(store_path)
+    try:
+        rows = [*store.library(), *library.from_watched(store)]
+        rows.sort(key=lambda r: r.played_at or r.added_at, reverse=True)
+        out = []
+        for row in rows:
+            review = store.latest_review(row.key)
+            summary = json.loads(review.summary) if review and review.summary else None
+            out.append(
+                {
+                    **row.__dict__,
+                    "pgn": None,  # the page lists games; a review reads its own PGN
+                    "reviewed": review is not None,
+                    "accuracy": (
+                        {s: summary[s].get("accuracy") for s in ("white", "black")}
+                        if summary
+                        else None
+                    ),
+                    "performance": (
+                        {s: summary[s].get("performance") for s in ("white", "black")}
+                        if summary
+                        else None
+                    ),
+                }
+            )
+    finally:
+        store.close()
+    profile = engine.settings.profile
+    return {
+        "games": out,
+        "users": {"chesscom": profile.chesscom_user, "lichess": profile.lichess_user},
+    }
+
+
+def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
+    """Games into the library: a pasted PGN, or the player's recent games on chess.com or
+    Lichess (their usernames from the settings). Network failures are said, not raised."""
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+
+    profile = engine.settings.profile
+    names = [n for n in (profile.chesscom_user, profile.lichess_user) if n]
+    try:
+        if body.source == "pgn":
+            rows = library.from_pgn(body.text, user_names=names)
+        elif body.source == "chesscom":
+            if not profile.chesscom_user:
+                return {"ok": False, "error": "Add your chess.com username in Settings first."}
+            rows = library.from_chesscom(profile.chesscom_user, months=max(1, body.months))
+        elif body.source == "lichess":
+            if not profile.lichess_user:
+                return {"ok": False, "error": "Add your Lichess username in Settings first."}
+            rows = library.from_lichess(profile.lichess_user)
+        else:
+            return {"ok": False, "error": f"no source {body.source}"}
+    except Exception as exc:  # noqa: BLE001 - a site down or a name mistyped is said
+        return {"ok": False, "error": f"could not bring the games in: {exc}"}
+    store = Store(store_path)
+    try:
+        for row in rows:
+            store.add_library_game(row)
+    finally:
+        store.close()
+    return {"ok": True, "added": len(rows), "keys": [r.key for r in rows]}
 
 
 def _rooms_for(engine: PanelEngine) -> Any:

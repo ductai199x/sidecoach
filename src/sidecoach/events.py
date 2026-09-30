@@ -250,6 +250,78 @@ class MoveAssessment(Event):
     accuracy: float | None = None
 
 
+class ReviewedMove(BaseModel):
+    """One move of a game reviewed whole (`analysis/game_review.py`): who played it from
+    where, what it cost, and what the position it led to holds -- the facts the review's card
+    on the move is written from, as the live coach's are."""
+
+    ply: int
+    san: str
+    side: Side
+    fen_before: str
+    assessment: MoveAssessment
+    after: Analysis
+    # The mover's clock after the move, and how long the move took, in milliseconds, from
+    # the PGN's clock comments; None without them (or in a correspondence game).
+    clock_ms: int | None = None
+    spent_ms: int | None = None
+
+
+class ReviewedGame(BaseModel):
+    """A game reviewed whole: its headers, what its first position holds, and every move."""
+
+    headers: dict[str, str] = Field(default_factory=dict)
+    start: Analysis
+    moves: list[ReviewedMove] = Field(default_factory=list)
+    strength: str
+    depth: int
+    seconds: float = 0.0
+
+
+class PhaseGrade(BaseModel):
+    """How one side played one phase: its accuracy there and the grade drawn from it, in the
+    vocabulary of the moves themselves (`profile/game_summary.phase_grade`)."""
+
+    phase: str
+    moves: int
+    accuracy: float
+    grade: Label
+
+
+class SideSummary(BaseModel):
+    """One side of a reviewed game in numbers: the summary screen's column."""
+
+    side: Side
+    name: str | None = None
+    rating: int | None = None
+    accuracy: float | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+    phases: list[PhaseGrade] = Field(default_factory=list)
+    performance: int | None = None
+
+
+class KeyMoment(BaseModel):
+    """A move the review stops at: the last book move, or a move with a label worth a word
+    of its own (brilliant, great, inaccuracy, mistake, miss, blunder)."""
+
+    ply: int
+    side: Side
+    kind: str
+
+
+class GameSummary(BaseModel):
+    """A reviewed game summed up: each side's numbers, the moves the review stops at, and
+    White's expected score after every ply (the graph; the start position first)."""
+
+    white: SideSummary
+    black: SideSummary
+    opening: str | None = None
+    last_book_ply: int | None = None
+    key_moments: list[KeyMoment] = Field(default_factory=list)
+    graph: list[float] = Field(default_factory=list)
+    shape: str | None = None
+
+
 # Coach and UI
 
 
