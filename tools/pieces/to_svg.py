@@ -42,13 +42,23 @@ def rgb(h: str) -> np.ndarray:
 def trace(mask: np.ndarray) -> str:
     """A mask (at UP x) as SVG path data in native pixels, potrace's smooth curves."""
     bm = potrace.Bitmap(~mask.astype(bool))  # potracer traces the pixels that are NOT set
-    path = bm.trace(turdsize=int(4 * UP * UP), turnpolicy=potrace.POTRACE_TURNPOLICY_MINORITY, alphamax=1.0, opticurve=True, opttolerance=0.4)
+    path = bm.trace(
+        turdsize=int(4 * UP * UP),
+        turnpolicy=potrace.POTRACE_TURNPOLICY_MINORITY,
+        alphamax=1.0,
+        opticurve=True,
+        opttolerance=0.4,
+    )
     f = lambda p: f"{p.x / UP:.2f},{p.y / UP:.2f}"  # noqa: E731
     out = []
     for curve in path:
         out.append(f"M{f(curve.start_point)}")
         for seg in curve.segments:
-            out.append(f"L{f(seg.c)}L{f(seg.end_point)}" if seg.is_corner else f"C{f(seg.c1)} {f(seg.c2)} {f(seg.end_point)}")
+            out.append(
+                f"L{f(seg.c)}L{f(seg.end_point)}"
+                if seg.is_corner
+                else f"C{f(seg.c1)} {f(seg.c2)} {f(seg.end_point)}"
+            )
         out.append("Z")
     return "".join(out)
 
@@ -85,14 +95,25 @@ for colour, row in (("w", top), ("b", bottom)):
         layers = [("outline", silhouette), ("main", light), ("shadow", shadow)]
         sw, sh = round(crop.shape[1] * scale), round(crop.shape[0] * scale)
         ox, oy = (VIEW - sw) // 2, round(VIEW * (1 - BOTTOM)) - sh
-        paths = "".join(f'<path fill="{pal[k]}" fill-rule="evenodd" d="{trace(m)}"/>' for k, m in layers if m.any())
-        svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {VIEW} {VIEW}"><g transform="translate({ox} {oy}) scale({scale:.5f})">{paths}</g></svg>'
+        paths = "".join(
+            f'<path fill="{pal[k]}" fill-rule="evenodd" d="{trace(m)}"/>'
+            for k, m in layers
+            if m.any()
+        )
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {VIEW} {VIEW}">'
+            f'<g transform="translate({ox} {oy}) scale({scale:.5f})">{paths}</g></svg>'
+        )
         (OUT / f"{colour}{p}.svg").write_text(svg, encoding="utf-8")
         # The check: the source crop placed as the SVG places it, against the SVG rendered.
         ref = np.zeros((VIEW, VIEW, 4), np.float32)
         placed = np.array(Image.fromarray(crop).resize((sw, sh), Image.LANCZOS)).astype(np.float32)
         ref[oy : oy + sh, ox : ox + sw] = placed
-        got = np.array(Image.open(io.BytesIO(bytes(resvg_py.svg_to_bytes(svg_string=svg, width=VIEW, height=VIEW)))).convert("RGBA")).astype(np.float32)
+        got = np.array(
+            Image.open(
+                io.BytesIO(bytes(resvg_py.svg_to_bytes(svg_string=svg, width=VIEW, height=VIEW)))
+            ).convert("RGBA")
+        ).astype(np.float32)
         a, b = ref[..., 3] > 127, got[..., 3] > 127
         iou = (a & b).sum() / max(1, (a | b).sum())
         err = np.abs(ref[..., :3] - got[..., :3])[a & b].mean()
@@ -100,4 +121,7 @@ for colour, row in (("w", top), ("b", bottom)):
 
 for c, iou, err, size in results:
     print(f"{c}  silhouette overlap {iou:.4f}  colour error {err:5.2f}/255  {size} bytes")
-print(f"mean overlap {np.mean([r[1] for r in results]):.4f}, mean colour error {np.mean([r[2] for r in results]):.2f} -> {OUT}")
+print(
+    f"mean overlap {np.mean([r[1] for r in results]):.4f}, "
+    f"mean colour error {np.mean([r[2] for r in results]):.2f} -> {OUT}"
+)

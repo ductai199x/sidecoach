@@ -19,13 +19,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 
 def _extra(**kw: Any) -> dict[str, Any]:
     """The schema extras the settings page reads: applies (now | next | restart), choices
-    and choice_labels, kind (path, input_device, output_device, voice, persona, color), label (as
-    a person reads it), section (the heading a field sits under on its tab), only_for
+    and choice_labels, kind (path, input_device, output_device, voice, persona, color, pieces,
+    board_theme), label (as a person reads it), section (the heading a field sits under on its
+    tab), only_for
     (the AI Coach page: the providers a field is shown for), advanced (shown when asked),
     dev (never shown in the app)."""
     return dict(kw)
@@ -719,6 +720,42 @@ class VoiceSettings(BaseModel):
     )
 
 
+class BoardSettings(BaseModel):
+    """How the boards look (looks.py): the pieces and the squares' colours."""
+
+    pieces: str = Field(
+        default="sidecoach",
+        description="The pieces on every board: Sidecoach's own, a freely licensed set, or your "
+        "own images.",
+        json_schema_extra=_extra(applies="now", kind="pieces", label="Pieces", section="The board"),
+    )
+    theme: str = Field(
+        default="green",
+        description="The colours of the board's squares.",
+        json_schema_extra=_extra(
+            applies="now", kind="board_theme", label="Board colours", section="The board"
+        ),
+    )
+
+    @field_validator("pieces")
+    @classmethod
+    def _known_pieces(cls, v: str) -> str:
+        from sidecoach.looks import CUSTOM, PIECE_SETS
+
+        if v not in PIECE_SETS and v != CUSTOM:
+            raise ValueError(f"no piece set named {v!r}")
+        return v
+
+    @field_validator("theme")
+    @classmethod
+    def _known_theme(cls, v: str) -> str:
+        from sidecoach.looks import BOARD_THEMES
+
+        if v not in BOARD_THEMES:
+            raise ValueError(f"no board theme named {v!r}")
+        return v
+
+
 class GpuSettings(BaseModel):
     mode: str = Field(
         default="auto",
@@ -769,6 +806,7 @@ class Settings(BaseModel):
         default_factory=VoiceSettings, description="Voice and speech recognition"
     )
     gpu: GpuSettings = Field(default_factory=GpuSettings, description="GPU acceleration")
+    board: BoardSettings = Field(default_factory=BoardSettings, description="The board")
 
     def voice_model_dir(self) -> Path:
         """Where the Kokoro model files live: the configured path, else under data_dir."""

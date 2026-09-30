@@ -27,6 +27,15 @@ own drawing of the Staunton pattern (public domain since 1849).
    bases on one line, in a 512 viewBox. Checked by rendering each SVG and subtracting it from
    its source: 99.6-99.8% silhouette overlap, colour error about 4 in 255.
 
+## The other sets, the board colours, a player's own pieces
+
+Settings > Board (2026-09-30) offers, besides ours, every Lichess set whose licence allows any
+use (`fetch_sets.py` puts them in `desktop/static/pieces/<set>/`; authors and licences in
+`desktop/static/pieces/LICENSE.txt`), 16 plain-colour board themes, and "Your own pieces":
+image files the player chooses, kept only in their data folder (`src/sidecoach/looks.py`).
+Nothing names, links to or fetches any other product's set. Every theme keeps the panel's
+row-parity signature for the vision (tests/test_looks.py draws each and checks it).
+
 ## Lessons (Tai's)
 
 - Board pieces are icons: each fills its own SQUARE box; never real-world relative heights.

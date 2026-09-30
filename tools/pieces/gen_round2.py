@@ -101,7 +101,14 @@ DO NOT
 - Do not draw any piece at real-world scale, and never draw a small pawn."""
 
 PRICES = (8.0, 2.0, 30.0)  # $ per million: input (at the image rate, the higher), cached, image out
-ledger = Ledger("pieces-r2", "piece-set sheet from examples", "gpt-image-2.5-sunburst", budget_usd=0.10, prices=PRICES, resume=True)
+ledger = Ledger(
+    "pieces-r2",
+    "piece-set sheet from examples",
+    "gpt-image-2.5-sunburst",
+    budget_usd=0.10,
+    prices=PRICES,
+    resume=True,
+)
 
 if __name__ == "__main__":
     ref = reference()
@@ -115,7 +122,15 @@ if __name__ == "__main__":
         r = httpx.post(
             "https://api.openai.com/v1/images/edits",
             headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-            data={"model": "gpt-image-2.5-sunburst", "prompt": PROMPT, "size": "1536x1024", "quality": "high", "background": "transparent", "output_format": "png", "n": "1"},
+            data={
+                "model": "gpt-image-2.5-sunburst",
+                "prompt": PROMPT,
+                "size": "1536x1024",
+                "quality": "high",
+                "background": "transparent",
+                "output_format": "png",
+                "n": "1",
+            },
             files={"image[]": ("reference.png", f, "image/png")},
             timeout=600,
         )
@@ -125,7 +140,14 @@ if __name__ == "__main__":
         print(json.dumps({"error": body.get("error", body), "status": r.status_code}))
         sys.exit(1)
     usage = body.get("usage", {})
-    usd = ledger.record(name, {"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": usage.get("output_tokens", 0)}, elapsed)
+    usd = ledger.record(
+        name,
+        {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+        },
+        elapsed,
+    )
     (OUT / f"{name}.png").write_bytes(base64.b64decode(body["data"][0]["b64_json"]))
     print(json.dumps({"name": name, "usd": round(usd, 4), "usage": usage, "s": round(elapsed)}))
     print(f"spent this run: ${ledger.cost():.4f}")

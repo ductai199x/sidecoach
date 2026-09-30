@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Request
 from pydantic import BaseModel
 
+from sidecoach import looks
 from sidecoach.config import Settings
 from sidecoach.ui import settings_api
 from sidecoach.ui.panel import VOICE_SAMPLE, PanelApi, PanelEngine
@@ -91,6 +92,17 @@ class _Perf(BaseModel):
 
 class _Voice(BaseModel):
     voice: str
+
+
+class _PieceFile(BaseModel):
+    name: str
+    data: str  # base64
+
+
+class _Pieces(BaseModel):
+    """The images a player chose for their own pieces (looks.save_custom)."""
+
+    files: list[_PieceFile]
 
 
 class _Muted(BaseModel):
@@ -533,6 +545,21 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         finally:
             store.close()
         return {"ok": True, "positions": found}
+
+    # ---- how the boards look (looks.py): every window reads it; the pieces a player chose ----
+    @app.get("/api/look")
+    def get_look() -> dict[str, Any]:
+        board = engine.settings.board
+        return looks.look(board.pieces, board.theme, engine.settings.data_dir)
+
+    @app.post("/api/pieces/custom")
+    def post_custom_pieces(body: _Pieces) -> dict[str, Any]:
+        return looks.save_custom(engine.settings.data_dir, [f.model_dump() for f in body.files])
+
+    @app.delete("/api/pieces/custom")
+    def delete_custom_pieces() -> dict[str, Any]:
+        looks.clear_custom(engine.settings.data_dir)
+        return {"ok": True}
 
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
     @app.get("/api/settings")

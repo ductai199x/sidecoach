@@ -47,7 +47,14 @@ DO NOT
 No board, no squares, no box outlines, no text, no background, no ground shadow, no glow or halo, no perspective. Do not redesign any piece."""
 
 PRICES = (8.0, 2.0, 30.0)
-ledger = Ledger("pieces-r4", "round-2 shapes, flatter, 4-peak queen", "gpt-image-2.5-sunburst", budget_usd=0.08, prices=PRICES, resume=True)
+ledger = Ledger(
+    "pieces-r4",
+    "round-2 shapes, flatter, 4-peak queen",
+    "gpt-image-2.5-sunburst",
+    budget_usd=0.08,
+    prices=PRICES,
+    resume=True,
+)
 
 if __name__ == "__main__":
     name = sys.argv[1] if len(sys.argv) > 1 else "flat-r2"
@@ -57,7 +64,15 @@ if __name__ == "__main__":
         r = httpx.post(
             "https://api.openai.com/v1/images/edits",
             headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-            data={"model": "gpt-image-2.5-sunburst", "prompt": PROMPT, "size": "1536x1024", "quality": "high", "background": "transparent", "output_format": "png", "n": "1"},
+            data={
+                "model": "gpt-image-2.5-sunburst",
+                "prompt": PROMPT,
+                "size": "1536x1024",
+                "quality": "high",
+                "background": "transparent",
+                "output_format": "png",
+                "n": "1",
+            },
             files={"image[]": ("round2.png", f, "image/png")},
             timeout=600,
         )
@@ -67,7 +82,14 @@ if __name__ == "__main__":
         print(json.dumps({"error": body.get("error", body), "status": r.status_code}))
         sys.exit(1)
     usage = body.get("usage", {})
-    usd = ledger.record(name, {"prompt_tokens": usage.get("input_tokens", 0), "completion_tokens": usage.get("output_tokens", 0)}, elapsed)
+    usd = ledger.record(
+        name,
+        {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+        },
+        elapsed,
+    )
     (OUT / f"{name}.png").write_bytes(base64.b64decode(body["data"][0]["b64_json"]))
     print(json.dumps({"name": name, "usd": round(usd, 4), "usage": usage, "s": round(elapsed)}))
     print(f"spent this run: ${ledger.cost():.4f}")

@@ -14,10 +14,29 @@
   --warn: #f7c631;        /* inaccuracy yellow */
   --error: #fa412d;       /* blunder red */
   --info-blue: #5b8bb0;
+  /* The board's look (looks.py; lib/look.ts sets these from /api/look): the squares, their
+     odd rows a shade bluer (the panel's signature, vision/ownboard.py), and every piece's
+     image. These are the defaults: the green board and Sidecoach's own pieces. */
   --sq-light: #eeeed2;
+  --sq-light-odd: #eeeed5;
   --sq-dark: #769656;
+  --sq-dark-odd: #769659;
   --sq-light-hl: #f6f669;
+  --sq-light-hl-odd: #f6f66c;
   --sq-dark-hl: #baca2b;
+  --sq-dark-hl-odd: #baca2e;
+  --pc-wK: url(/pieces/wK.svg?v=own1);
+  --pc-wQ: url(/pieces/wQ.svg?v=own1);
+  --pc-wR: url(/pieces/wR.svg?v=own1);
+  --pc-wB: url(/pieces/wB.svg?v=own1);
+  --pc-wN: url(/pieces/wN.svg?v=own1);
+  --pc-wP: url(/pieces/wP.svg?v=own1);
+  --pc-bK: url(/pieces/bK.svg?v=own1);
+  --pc-bQ: url(/pieces/bQ.svg?v=own1);
+  --pc-bR: url(/pieces/bR.svg?v=own1);
+  --pc-bB: url(/pieces/bB.svg?v=own1);
+  --pc-bN: url(/pieces/bN.svg?v=own1);
+  --pc-bP: url(/pieces/bP.svg?v=own1);
   /* The board's side. app.js sets it from the room the main area actually has (its
      height less the info line, its width less the panel), so the board never runs
      under the footer or squeezes the panel; this is the fallback before the first
@@ -212,12 +231,12 @@ body.dragging-y { cursor: row-resize; user-select: none; }
    uses to recognise this board as the panel's own and ignore it (vision/ownboard.py). */
 .sq.light { background: var(--sq-light); }
 .sq.dark { background: var(--sq-dark); }
-.sq.light.odd { background: #eeeed5; }
-.sq.dark.odd { background: #769659; }
+.sq.light.odd { background: var(--sq-light-odd); }
+.sq.dark.odd { background: var(--sq-dark-odd); }
 .sq.light.hl { background: var(--sq-light-hl); }
 .sq.dark.hl { background: var(--sq-dark-hl); }
-.sq.light.hl.odd { background: #f6f66c; }
-.sq.dark.hl.odd { background: #baca2e; }
+.sq.light.hl.odd { background: var(--sq-light-hl-odd); }
+.sq.dark.hl.odd { background: var(--sq-dark-hl-odd); }
 .pc {
   position: absolute; inset: 0;
   background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
@@ -231,14 +250,14 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .sq.light .coord { color: var(--sq-dark); }
 .sq.dark .coord { color: var(--sq-light); }
 
-/* Sidecoach's own piece set (tools/pieces/README.md) -- see pieces/LICENSE.txt. The ?v= tag changes
-   with the set: browsers and web views held on to the old images under the same URL. */
-.pc.wK { background-image: url(/pieces/wK.svg?v=own1); } .pc.wQ { background-image: url(/pieces/wQ.svg?v=own1); }
-.pc.wR { background-image: url(/pieces/wR.svg?v=own1); } .pc.wB { background-image: url(/pieces/wB.svg?v=own1); }
-.pc.wN { background-image: url(/pieces/wN.svg?v=own1); } .pc.wP { background-image: url(/pieces/wP.svg?v=own1); }
-.pc.bK { background-image: url(/pieces/bK.svg?v=own1); } .pc.bQ { background-image: url(/pieces/bQ.svg?v=own1); }
-.pc.bR { background-image: url(/pieces/bR.svg?v=own1); } .pc.bB { background-image: url(/pieces/bB.svg?v=own1); }
-.pc.bN { background-image: url(/pieces/bN.svg?v=own1); } .pc.bP { background-image: url(/pieces/bP.svg?v=own1); }
+/* The pieces: the variables above (Sidecoach's own set by default, tools/pieces/README.md; the
+   ?v= tag changes with a set: browsers and web views held on to old images under the same URL). */
+.pc.wK { background-image: var(--pc-wK); } .pc.wQ { background-image: var(--pc-wQ); }
+.pc.wR { background-image: var(--pc-wR); } .pc.wB { background-image: var(--pc-wB); }
+.pc.wN { background-image: var(--pc-wN); } .pc.wP { background-image: var(--pc-wP); }
+.pc.bK { background-image: var(--pc-bK); } .pc.bQ { background-image: var(--pc-bQ); }
+.pc.bR { background-image: var(--pc-bR); } .pc.bB { background-image: var(--pc-bB); }
+.pc.bN { background-image: var(--pc-bN); } .pc.bP { background-image: var(--pc-bP); }
 
 /* A window of its own (a puzzle, a review): a link drawn as a button, and the switch for the
    coach's voice there -- the speaker, struck through and yellow when off. */
@@ -288,10 +307,10 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 }
 .promo button:hover { background-color: #e8e8e8; }
 .promo button.x { aspect-ratio: auto; height: 28px; background: #ddd; color: #333; font-size: 14px; }
-.promo .wQ { background-image: url(/pieces/wQ.svg?v=own1); } .promo .wR { background-image: url(/pieces/wR.svg?v=own1); }
-.promo .wB { background-image: url(/pieces/wB.svg?v=own1); } .promo .wN { background-image: url(/pieces/wN.svg?v=own1); }
-.promo .bQ { background-image: url(/pieces/bQ.svg?v=own1); } .promo .bR { background-image: url(/pieces/bR.svg?v=own1); }
-.promo .bB { background-image: url(/pieces/bB.svg?v=own1); } .promo .bN { background-image: url(/pieces/bN.svg?v=own1); }
+.promo .wQ { background-image: var(--pc-wQ); } .promo .wR { background-image: var(--pc-wR); }
+.promo .wB { background-image: var(--pc-wB); } .promo .wN { background-image: var(--pc-wN); }
+.promo .bQ { background-image: var(--pc-bQ); } .promo .bR { background-image: var(--pc-bR); }
+.promo .bB { background-image: var(--pc-bB); } .promo .bN { background-image: var(--pc-bN); }
 
 /* The player's own marks on a board that takes them (the puzzle's, the review's): a
    right-clicked square red, a right-dragged arrow green, as chess.com's. */
@@ -316,12 +335,12 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
    back on the board fades in. */
 .piece.fading { opacity: 0; z-index: 0; transition: opacity 110ms ease-out 110ms; }
 .piece.appearing { opacity: 0; transition: none; }
-.piece.wK { background-image: url(/pieces/wK.svg?v=own1); } .piece.wQ { background-image: url(/pieces/wQ.svg?v=own1); }
-.piece.wR { background-image: url(/pieces/wR.svg?v=own1); } .piece.wB { background-image: url(/pieces/wB.svg?v=own1); }
-.piece.wN { background-image: url(/pieces/wN.svg?v=own1); } .piece.wP { background-image: url(/pieces/wP.svg?v=own1); }
-.piece.bK { background-image: url(/pieces/bK.svg?v=own1); } .piece.bQ { background-image: url(/pieces/bQ.svg?v=own1); }
-.piece.bR { background-image: url(/pieces/bR.svg?v=own1); } .piece.bB { background-image: url(/pieces/bB.svg?v=own1); }
-.piece.bN { background-image: url(/pieces/bN.svg?v=own1); } .piece.bP { background-image: url(/pieces/bP.svg?v=own1); }
+.piece.wK { background-image: var(--pc-wK); } .piece.wQ { background-image: var(--pc-wQ); }
+.piece.wR { background-image: var(--pc-wR); } .piece.wB { background-image: var(--pc-wB); }
+.piece.wN { background-image: var(--pc-wN); } .piece.wP { background-image: var(--pc-wP); }
+.piece.bK { background-image: var(--pc-bK); } .piece.bQ { background-image: var(--pc-bQ); }
+.piece.bR { background-image: var(--pc-bR); } .piece.bB { background-image: var(--pc-bB); }
+.piece.bN { background-image: var(--pc-bN); } .piece.bP { background-image: var(--pc-bP); }
 
 .gameinfo {
   display: flex; gap: 14px; align-items: center; flex-wrap: wrap;

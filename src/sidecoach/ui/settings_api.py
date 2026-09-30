@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from sidecoach import looks
 from sidecoach.coach.prompt import PERSONAS
 from sidecoach.config import (
     KEY_ENVS,
@@ -90,6 +91,7 @@ def describe(settings: Settings) -> dict[str, Any]:
         "devices": _audio_devices(),
         "voices": english_voices(settings.voice_model_dir() / "voices-v1.0.bin"),
         "personas": {name: label for name, (label, _) in PERSONAS.items()},
+        "looks": looks.catalogue(settings.data_dir),
     }
 
 

@@ -7,7 +7,7 @@
   // and the field lights up; a save sends what changed and tells the other windows, and what
   // another window saved comes in here too.
   import { onDestroy, onMount, tick } from "svelte";
-  import { connect, get, post, put } from "$lib/api";
+  import { connect, del, get, post, put } from "$lib/api";
   import { announce, inShell, onAnnounce, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
 
@@ -22,6 +22,15 @@
     devices: { inputs: { index: number; name: string }[]; outputs: { index: number; name: string }[] };
     voices: string[];
     personas: Record<string, string>;
+    looks?: Looks;
+  };
+  // The boards' look (looks.py): the shipped sets with their authors and licences, the colour
+  // themes, and the player's own pieces as they are.
+  type Theme = { name: string; label: string; light: string; dark: string };
+  type Looks = {
+    sets: { name: string; label: string; author: string; licence: string; images: Record<string, string> }[];
+    themes: Theme[];
+    custom: { images: Record<string, string>; missing: string[] };
   };
 
   let data = $state<Described | null>(null);
@@ -39,7 +48,7 @@
 
   const SECTIONS: [string, string][] = [
     ["llm", "AI Coach"], ["coach", "Coach"], ["voice", "Voice"], ["engine", "Analysis"],
-    ["capture", "Screen"], ["profile", "You"], ["gpu", "GPU"], ["app", "App"],
+    ["capture", "Screen"], ["profile", "You"], ["board", "Board"], ["gpu", "GPU"], ["app", "App"],
   ];
   // Only the tabs this machine has: the phone's schema leaves out what it does not honour
   // (its GPU, its folders), and a tab with nothing in it is not shown.
@@ -284,6 +293,7 @@
     else if (t === "number") v = raw === "" ? (isNullable(p) ? null : values[sec][key]) : parseFloat(String(raw));
     else v = raw === "" && isNullable(p) ? null : raw;
     values[sec][key] = v;
+    result = null; // "Saved." is about the last save, not this change
   }
 
   async function save() {
@@ -317,6 +327,59 @@
       saving = false;
     }
   }
+  // ---- the Board tab: the pieces and the colours, shown as they would look ----
+  // A preview row: the white king, queen and knight, the black bishop, rook and pawn, on the
+  // squares of the colours chosen now.
+  const PREVIEW = ["wK", "wQ", "wN", "bB", "bR", "bP"];
+  const CODES = ["wK", "wQ", "wR", "wB", "wN", "wP", "bK", "bQ", "bR", "bB", "bN", "bP"];
+  const PIECE_NAMES: Record<string, string> = { K: "king", Q: "queen", R: "rook", B: "bishop", N: "knight", P: "pawn" };
+  const pieceName = (code: string) => `${code[0] === "w" ? "white" : "black"} ${PIECE_NAMES[code[1]]}`;
+  const themeNow = $derived<Theme | null>(data?.looks?.themes.find((t) => t.name === values.board?.theme) ?? data?.looks?.themes[0] ?? null);
+  const ownImages = $derived(data?.looks?.custom.images ?? {});
+  const ownCount = $derived(Object.keys(ownImages).length);
+  /** A piece of the player's own set, else Sidecoach's in its place (as the boards do). */
+  const ownOr = (code: string) => ownImages[code] ?? data?.looks?.sets[0]?.images[code] ?? "";
+
+  let loading = $state(false);
+  let loaded = $state<{ taken: string[]; skipped: { name: string; why: string }[]; missing: string[]; error?: string } | null>(null);
+  let fileInput = $state<HTMLInputElement | null>(null);
+
+  function base64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+
+  /** The images the player chose, sent to be kept in their data folder; the set picked. */
+  async function loadOwn(files: FileList | null): Promise<void> {
+    if (!files?.length) return;
+    loading = true;
+    loaded = null;
+    try {
+      const sent = await Promise.all([...files].map(async (f) => ({ name: f.name, data: base64(await f.arrayBuffer()) })));
+      const res = await post<{ ok: boolean; taken: string[]; skipped: { name: string; why: string }[]; missing: string[] }>("/api/pieces/custom", { files: sent });
+      loaded = res;
+      await refresh();
+      if (res.taken.length && values.board) {
+        values.board.pieces = "custom";
+        result = null;
+      }
+    } catch (e) {
+      loaded = { taken: [], skipped: [], missing: [], error: "Could not load them: " + String(e) };
+    } finally {
+      loading = false;
+      if (fileInput) fileInput.value = "";
+    }
+  }
+
+  async function removeOwn(): Promise<void> {
+    await del("/api/pieces/custom").catch(() => null);
+    loaded = null;
+    await refresh();
+    if (values.board?.pieces === "custom") values.board.pieces = "sidecoach";
+  }
+
   function errorFor(sec: string, key: string): string | null {
     const e = result?.errors?.find((x) => x.loc[0] === sec && x.loc[1] === key);
     return e ? e.msg : null;
@@ -324,6 +387,14 @@
 </script>
 
 <svelte:head><title>Sidecoach · Settings</title></svelte:head>
+
+{#snippet previewRow(src: (code: string) => string)}
+  <span class="preview" aria-hidden="true">
+    {#each PREVIEW as c, i (c)}
+      <span class="pv" style:background={i % 2 ? themeNow?.dark : themeNow?.light}><img src={src(c)} alt="" draggable="false" /></span>
+    {/each}
+  </span>
+{/snippet}
 
 {#snippet field(section: string, key: string, p: Prop)}
   {@const t = typeOf(p)}
@@ -356,6 +427,30 @@
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
           {#each p.choices ?? [] as c (c)}<option value={c} selected={String(v) === c}>{data!.personas[c] ?? c}</option>{/each}
         </select>
+      {:else if p.kind === "pieces" && data?.looks}
+        <div id="{section}-{key}" class="sets" role="radiogroup" aria-label={labelOf(key, p)} tabindex="-1">
+          {#each data.looks.sets as s (s.name)}
+            <button type="button" class="set" role="radio" aria-checked={v === s.name} title="{s.label}: {s.author}, {s.licence}" onclick={() => setValue(section, key, p, s.name)}>
+              {@render previewRow((c) => s.images[c])}
+              <span class="set-name">{s.label}</span>
+              <span class="set-by">{s.author === "Sidecoach" ? "Sidecoach's own" : `${s.author} · ${s.licence}`}</span>
+            </button>
+          {/each}
+          <button type="button" class="set" role="radio" aria-checked={v === "custom"} disabled={!ownCount} title={ownCount ? "Your own pieces" : "Load your own pieces below first"} onclick={() => setValue(section, key, p, "custom")}>
+            {#if ownCount}{@render previewRow(ownOr)}{:else}<span class="set-empty">Your images</span>{/if}
+            <span class="set-name">Your own</span>
+            <span class="set-by">{ownCount ? (ownCount === 12 ? "all 12 pieces" : `${ownCount} of 12 pieces`) : "load them below"}</span>
+          </button>
+        </div>
+      {:else if p.kind === "board_theme" && data?.looks}
+        <div id="{section}-{key}" class="themes" role="radiogroup" aria-label={labelOf(key, p)} tabindex="-1">
+          {#each data.looks.themes as t (t.name)}
+            <button type="button" class="theme" role="radio" aria-checked={v === t.name} title={t.label} onclick={() => setValue(section, key, p, t.name)}>
+              <span class="swatch" aria-hidden="true"><i style:background={t.light}></i><i style:background={t.dark}></i><i style:background={t.dark}></i><i style:background={t.light}></i></span>
+              <span class="theme-name">{t.label}</span>
+            </button>
+          {/each}
+        </div>
       {:else if p.kind === "color"}
         <div class="row">
           <input id="{section}-{key}" class="color" type="color" value={String(v ?? p.default ?? "#ffffff")} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
@@ -453,6 +548,32 @@
               <p class="desc"><b>Memory:</b> {gb(gpuStatus.gpu.vram)} in all, {gb(gpuStatus.gpu.vram_free)} free{#if gpuStatus.gpu.used_by_app != null}; Sidecoach is using {gb(gpuStatus.gpu.used_by_app)}{:else}; what Sidecoach uses is not reported by this driver{/if}</p>
             </div>
           {/if}
+          {#if section === "board" && data.looks}
+            <h3>Your own pieces</h3>
+            <div class="field own">
+              <p class="desc lead">Use any piece images you have: choose one image file a piece, PNG, SVG, WebP or JPEG. Name each file by its colour and piece: <code>wK</code> <code>wQ</code> <code>wR</code> <code>wB</code> <code>wN</code> <code>wP</code> for white, <code>bK</code> … <code>bP</code> for black (<code>white-king.png</code> works too). You can choose all twelve at once. They stay on this computer, in Sidecoach's data folder.</p>
+              <div class="row">
+                <button type="button" class="listen" disabled={loading} onclick={() => fileInput?.click()}>{loading ? "Loading…" : ownCount ? "Replace or add images…" : "Choose images…"}</button>
+                {#if ownCount}<button type="button" class="link" onclick={removeOwn}>Remove them</button>{/if}
+                <input bind:this={fileInput} class="hidden" type="file" multiple accept="image/png,image/svg+xml,image/webp,image/jpeg,.png,.svg,.webp,.jpg,.jpeg" onchange={(e) => loadOwn(e.currentTarget.files)} />
+              </div>
+              {#if loaded}
+                {#if loaded.error}
+                  <p class="err">{loaded.error}</p>
+                {:else}
+                  <p class="desc">{loaded.taken.length ? `Loaded ${loaded.taken.length} piece${loaded.taken.length === 1 ? "" : "s"}.` : "Nothing was loaded."}{#if loaded.missing.length && loaded.taken.length}{" "}Still missing: {loaded.missing.map(pieceName).join(", ")} (Sidecoach's are used for those).{/if}{#if loaded.taken.length}{" "}"Your own" is picked above: Save to use them.{/if}</p>
+                  {#each loaded.skipped as s (s.name)}<p class="err">Not used: {s.name} -- {s.why}.</p>{/each}
+                {/if}
+              {/if}
+              {#if ownCount}
+                <div class="own-grid" aria-label="Your pieces">
+                  {#each CODES as c, i (c)}
+                    <span class="pv" class:gone={!ownImages[c]} title={ownImages[c] ? pieceName(c) : `${pieceName(c)}: not loaded`} style:background={(i + Math.floor(i / 6)) % 2 ? themeNow?.dark : themeNow?.light}><img src={ownOr(c)} alt={pieceName(c)} draggable="false" /></span>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
           {#if section === "voice" && title === "Hearing you"}
             <div class="field test">
               <span class="lbl">Test the microphone and speech recognition</span>
@@ -547,4 +668,31 @@
   .back { text-decoration: none; font-weight: 600; }
   .spacer { flex: 1; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+  /* The Board tab: a card a piece set (a row of its pieces on the colours chosen), a swatch a
+     colour theme; the one chosen ringed in the accent. */
+  .sets { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 8px; max-width: 900px; outline: none; }
+  .set, .theme {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left;
+    padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink);
+    font: inherit; cursor: pointer;
+  }
+  .set:hover:not(:disabled), .theme:hover { border-color: var(--muted); }
+  .set[aria-checked="true"], .theme[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .set:disabled { cursor: default; opacity: 0.6; }
+  .preview { display: flex; border-radius: 4px; overflow: hidden; }
+  .pv { width: 30px; height: 30px; display: grid; place-items: center; flex: none; }
+  .pv img { width: 100%; height: 100%; display: block; }
+  .set-name { font-weight: 700; font-size: 13px; }
+  .set-by { color: var(--muted); font-size: 11px; line-height: 1.3; }
+  .set-empty { width: 180px; height: 30px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); font-size: 12px; }
+  .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; max-width: 900px; outline: none; }
+  .theme { align-items: center; }
+  .swatch { display: grid; grid-template-columns: 1fr 1fr; width: 48px; height: 48px; border-radius: 4px; overflow: hidden; }
+  .theme-name { font-size: 12px; font-weight: 600; }
+  .field.own { max-width: 900px; }
+  .own-grid { display: grid; grid-template-columns: repeat(6, 44px); margin-top: 10px; border-radius: 4px; overflow: hidden; width: max-content; }
+  .own-grid .pv { width: 44px; height: 44px; }
+  .own-grid .pv.gone img { opacity: 0.35; }
+  .hidden { display: none; }
 </style>
