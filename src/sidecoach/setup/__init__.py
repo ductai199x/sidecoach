@@ -424,6 +424,7 @@ class Setup:
         with self._lock:
             self._state["total"] = total
             self._state["queue"] = [i.id for i in todo]
+            self._state["titles"] = {i.id: i.title for i in todo}
 
         def run() -> None:
             base = 0
@@ -459,6 +460,12 @@ class Setup:
 
     def cancel(self) -> None:
         self._cancel.set()
+
+    def run_state(self) -> dict[str, Any]:
+        """The fetch under way or last run, alone (the panel's Jobs button asks often; `status`
+        also looks at every item on disk): empty when none has run this session."""
+        with self._lock:
+            return {**self._state, "titles": dict(self._state.get("titles", {}))}
 
 
 def free_space(path: Path) -> int | None:

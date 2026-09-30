@@ -22,9 +22,11 @@ the student's own mistake is shown only once the answer is (Retry asks them to f
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -637,15 +639,21 @@ def write(
     opening: str | None,
     prices: Prices,
     thinking: bool = False,
+    answered: dict[int, str] | None = None,
+    on_answer: Callable[[int, str, dict[str, Any]], None] | None = None,
 ) -> ReviewWords:
     """The model's review of the game's key moves, checked: a call a move, all at once. Without
     thinking unless asked: a small model reasons worse about chess, not better (Tai,
-    2026-09-30). A call that fails drops its move; when every one fails, the first failure is
-    raised."""
+    2026-09-30). A call that fails drops its move; when every one fails (and none was answered
+    before), the first failure is raised. `answered`: the answers already paid for (words the
+    app was closed in the middle of), not asked again; `on_answer(ply, text, stats)` is handed
+    each new answer the moment it arrives, to keep it. The cost is of the new calls."""
+    answered = dict(answered or {})
     plies = key_plies(game)
     words = ReviewWords(texts={}, model=getattr(provider, "model", ""))
     if not plies:
         return words
+    todo = [p for p in plies if p not in answered]
     at_effort = getattr(provider, "with_effort", None)
     if not thinking and at_effort is not None:
         # A model that reasons by its effort (OpenAI's) reasons unless told not to.
@@ -663,20 +671,33 @@ def write(
         except Exception as failed:  # noqa: BLE001 -- one move's call; the rest stand
             return failed
 
-    with ThreadPoolExecutor(max_workers=len(plies)) as pool:
-        replies = list(pool.map(ask, plies))
-    failures = [r for r in replies if isinstance(r, Exception)]
-    if len(failures) == len(replies):
+    replies: dict[int, Completion | Exception] = {}
+    if todo:
+        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+            asked = {pool.submit(ask, ply): ply for ply in todo}
+            for done in as_completed(asked):
+                ply, reply = asked[done], done.result()
+                replies[ply] = reply
+                if on_answer is not None and not isinstance(reply, Exception):
+                    with contextlib.suppress(Exception):  # not kept only costs a resume
+                        on_answer(ply, reply.text, reply.stats)
+    failures = [r for r in replies.values() if isinstance(r, Exception)]
+    if todo and len(failures) == len(todo) and not answered:
         raise failures[0]
     spent = Usage()
-    for ply, reply in zip(plies, replies, strict=True):
+    for ply in plies:
+        reply = replies.get(ply)
         if isinstance(reply, Exception):
             words.dropped[ply] = f"the call failed: {reply}"
             continue
-        spent.record(reply.stats)
-        words.calls.append(reply.stats)
-        words.answers[ply] = reply.text
-        kept, dropped, reveals = checked(parse(reply.text), game, ply, user)
+        if reply is not None:
+            spent.record(reply.stats)
+            words.calls.append(reply.stats)
+            text = reply.text
+        else:
+            text = answered[ply]
+        words.answers[ply] = text
+        kept, dropped, reveals = checked(parse(text), game, ply, user)
         if kept:
             words.texts[ply] = kept
         if dropped:
@@ -688,16 +709,20 @@ def write(
 
 
 def estimate(
-    game: ReviewedGame, user: str | None, opening: str | None, prices: Prices
+    game: ReviewedGame,
+    user: str | None,
+    opening: str | None,
+    prices: Prices,
+    answered: set[int] | frozenset[int] = frozenset(),
 ) -> float | None:
     """What the calls come to at `prices` (dollars), as the button says it: the prompts as sent,
-    and a typical answer a move (TYPICAL_ANSWER)."""
+    and a typical answer a move (TYPICAL_ANSWER); the moves `answered` already not asked."""
     from sidecoach.llm.usage import CHARS_PER_TOKEN
 
     if not prices.known:
         return None
     assert prices.prompt is not None and prices.completion is not None
-    plies = key_plies(game)
+    plies = [p for p in key_plies(game) if p not in answered]
     sent = sum(len(SYSTEM) + len(prompt(game, ply, user, opening)) for ply in plies)
     answers = len(plies) * TYPICAL_ANSWER
     return sent / CHARS_PER_TOKEN / 1e6 * prices.prompt + answers / 1e6 * prices.completion

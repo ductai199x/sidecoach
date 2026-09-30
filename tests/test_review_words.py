@@ -361,6 +361,48 @@ def test_the_review_is_a_call_a_move_checked_and_costed() -> None:
     assert words.cost is not None and abs(words.cost - 3 * (1000 * 0.20 + 300 * 1.20) / 1e6) < 1e-9
 
 
+def test_answers_already_paid_for_are_not_asked_again() -> None:
+    """The app was closed in the middle of the words: the answers paid for were kept, the words
+    go on with the moves left, each new answer handed back as it arrives (to keep), and the
+    cost and the estimate are of the new calls only."""
+    game = _game()
+    model = _Model(
+        {
+            3: {"why": "White played Nf3 early."},
+            4: {"why": "Black's knight on c6 guards Black's pawn on e5."},
+            6: {"why": "Black's knight left e5 alone."},
+        }
+    )
+    got: dict[int, str] = {}
+    prices = Prices(0.20, 0.02, 1.20)
+    words = review_words.write(
+        game,
+        model,
+        user="black",
+        opening=None,
+        prices=prices,
+        answered={3: "### why\nWhite played Nf3 early."},
+        on_answer=lambda ply, text, _stats: got.__setitem__(ply, text),
+    )
+    assert sorted(model.asked) == [4, 6] and set(got) == {4, 6}
+    assert set(words.texts) == {3, 4, 6}
+    assert words.cost is not None and abs(words.cost - 2 * (1000 * 0.20 + 300 * 1.20) / 1e6) < 1e-9
+    whole = review_words.estimate(game, "black", None, prices)
+    rest = review_words.estimate(game, "black", None, prices, frozenset({3}))
+    assert whole is not None and rest is not None and 0 < rest < whole
+    # Every move answered before: nothing asked.
+    none = _Model({})
+    done = review_words.write(
+        game,
+        none,
+        user="black",
+        opening=None,
+        prices=prices,
+        answered={p: "### why\nWhite played Nf3 early." for p in (3, 4, 6)},
+    )
+    assert none.asked == [] and set(done.texts) == {3, 4, 6}
+
+
 def test_a_failed_call_drops_its_move_alone() -> None:
     game = _game()
     answers: dict[int, dict[str, str] | Exception] = {

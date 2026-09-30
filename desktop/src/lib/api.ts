@@ -170,7 +170,25 @@ export type LibraryGame = {
 
 /** The background reviewer (ui/backlog.py): the games it has still to review, the one under
  * way, whether it waits for the player's own work; null beside another panel. */
-export type Backlog = { waiting: number; reviewing: string | null; paused: boolean } | null;
+/** The background review of the library (ui/backlog.py): a job the player sees and runs. */
+export type Backlog = {
+  status: "reviewing" | "paused" | "waiting" | "done" | "empty";
+  total: number;
+  done: number;
+  /** Games not reviewed yet. */
+  waiting: number;
+  reviewing: string | null;
+  current: { key: string; white: string | null; black: string | null; done: number; total: number } | null;
+  eta_s: number | null;
+  paused_by_you: boolean;
+  /** Stepped aside for the player's own game or review. */
+  paused: boolean;
+} | null;
+
+export const jobs = {
+  /** Pause or resume the background review; kept across restarts. */
+  pauseReviews: (paused: boolean) => post<{ ok: boolean; reviews?: NonNullable<Backlog> }>("/api/jobs/reviews", { paused }),
+};
 
 export const games = {
   list: () => get<{ games: LibraryGame[]; users: { chesscom: string; lichess: string }; backlog: Backlog }>("/api/games"),
@@ -273,6 +291,8 @@ export type ReviewAi = {
   words: ReviewWords | null;
   unavailable: string | null;
   moves: number;
+  /** The key moves answered already when the words were cut short (the app closed): kept. */
+  answered: number;
   estimate: number | null;
 };
 

@@ -4,6 +4,7 @@ review saved for it."""
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -295,6 +296,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
         "words": None,
         "unavailable": review_room.NO_AI,
         "moves": len(review_room.review_words.key_plies(review_room_game(engine, key))),
+        "answered": 0,
         "estimate": None,
     }
     refused = client.post(f"/api/review/{key}/ai").json()
@@ -339,6 +341,114 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     assert _until_ready(client, key)["state"]["ai"]["words"] == words
     assert len(asked) == 1, "kept, not written again"
+
+
+def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-09-30: a review must not break if the app is closed at any moment. The review
+    stopped part way kept every position measured; opened again it measures only the rest, and
+    what it kept goes once it is saved. Words the app was closed in the middle of keep the
+    answers paid for: the page says how far they got, and only the rest are asked."""
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.llm import factory
+    from sidecoach.llm.usage import Usage
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+    from sidecoach.ui.server import build_app
+
+    made: list[FakeEngine] = []
+
+    def engine_for(**_: Any) -> FakeEngine:
+        made.append(FakeEngine())
+        return made[-1]
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", engine_for)
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    engine = make_panel()
+    engine.settings.profile.chesscom_user = "NoseGazm"
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    fast = STRENGTHS["fast"]
+
+    # Reviewed until five positions were measured, then the app closed.
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    row = library.find(store, key)
+    assert row is not None
+    halt = threading.Event()
+
+    def progress(done: int, _total: int) -> None:
+        if done >= 5:
+            halt.set()
+
+    stopped = review_room.review_row(
+        engine.settings, row, store, fast, workers=1, on_progress=progress, stop=halt
+    )
+    assert stopped is None and store.review(key, "fast") is None
+    kept = {review_room.measured_from_json(t).fen for t in store.progress(key, "fast", 14, 3)}
+    assert 5 <= len(kept) < 13
+    store.close()
+
+    # Opened again: only the rest measured, the review saved, what was kept gone.
+    made.clear()
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    state = _until_ready(client, key)["state"]
+    assert state["status"] == "ready" and len(state["moves"]) == 12
+    searched = {fen for e in made for fen in e.calls}
+    assert searched and not searched & kept, "nothing measured twice"
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    assert store.progress(key, "fast", 14, 3) == [] and store.review(key, "fast") is not None
+
+    # The words: two answers paid for when the app closed (the fake engine finds no mistakes,
+    # so the key moves are given).
+    plies = [2, 4, 6]
+    monkeypatch.setattr(review_room.review_words, "key_plies", lambda _game: plies)
+    first, second = plies[:2]
+    partial = {
+        "partial": True,
+        "model": "gpt-x",
+        "cost": 0.004,
+        "answers": {str(first): "### why\nWhite's pawn.", str(second): "### why\nBlack's pawn."},
+    }
+    store.set_review_words(key, "fast", json.dumps(partial))
+    store.close()
+    client.post(f"/api/review/{key}/close")
+    time.sleep(0.5)
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    ai = _until_ready(client, key)["state"]["ai"]
+    assert (ai["status"], ai["answered"], ai["words"]) == ("none", 2, None)
+
+    class Model:
+        model = "gpt-x"
+        usage = Usage()
+
+    told: list[dict[str, Any]] = []
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        told.append(kw)
+        rest = [p for p in plies if p not in kw["answered"]]
+        for p in rest:
+            kw["on_answer"](p, "### why\nA move.", {"prompt_tokens": 10, "completion_tokens": 10})
+        return ReviewWords(texts={p: {"why": "A move."} for p in plies}, model="gpt-x", cost=0.002)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    engine.settings.llm.provider = "local"
+    assert client.post(f"/api/review/{key}/ai").json()["ok"]
+    deadline = time.monotonic() + 10
+    while ai["status"] != "ready" and time.monotonic() < deadline:
+        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
+        time.sleep(0.05)
+    assert ai["status"] == "ready" and ai["answered"] == 0
+    assert set(told[0]["answered"]) == {first, second}, "the answers paid for, not asked again"
+    assert abs(ai["words"]["cost"] - 0.006) < 1e-9, "what was paid before counted in"
 
 
 def test_bringing_in_from_a_site_needs_the_username_first(

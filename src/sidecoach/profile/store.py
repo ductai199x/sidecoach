@@ -198,6 +198,18 @@ CREATE TABLE IF NOT EXISTS twins (
     imported TEXT NOT NULL,
     found_at REAL NOT NULL
 );
+-- A review under way (ui/review_room.py `review_row`): each position kept as it is measured, so
+-- a review stopped part way -- the app closed, a crash -- goes on from where it was (Tai,
+-- 2026-09-30); gone once the review is saved. Only a search at the same depth and lines counts.
+CREATE TABLE IF NOT EXISTS review_progress (
+    key TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    multipv INTEGER NOT NULL,
+    fen TEXT NOT NULL,
+    measured TEXT NOT NULL,
+    PRIMARY KEY (key, strength, fen)
+);
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
 CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts);
@@ -896,7 +908,7 @@ class Store:
         """A game out of the library, and its reviews and stats with it; a watched game it
         stood for comes back."""
         with self._lock:
-            for table in ("stat_moves", "stat_games", "reviews", "library"):
+            for table in ("stat_moves", "stat_games", "reviews", "review_progress", "library"):
                 self._db.execute(f"DELETE FROM {table} WHERE key = ?", (key,))
             self._db.execute("DELETE FROM twins WHERE imported = ?", (key,))
             self._db.commit()
@@ -1015,6 +1027,36 @@ class Store:
                 "SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", (key,)
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
+
+    def add_progress(
+        self, key: str, strength: str, depth: int, multipv: int, fen: str, measured: str
+    ) -> None:
+        """A position of a review under way, measured (committed at once: a kill keeps it)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO review_progress"
+                " (key, strength, depth, multipv, fen, measured) VALUES (?, ?, ?, ?, ?, ?)",
+                (key, strength, depth, multipv, fen, measured),
+            )
+            self._db.commit()
+
+    def progress(self, key: str, strength: str, depth: int, multipv: int) -> list[str]:
+        """The positions of a review under way measured so far, at this depth and lines."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT measured FROM review_progress"
+                " WHERE key = ? AND strength = ? AND depth = ? AND multipv = ?",
+                (key, strength, depth, multipv),
+            ).fetchall()
+        return [str(r["measured"]) for r in rows]
+
+    def clear_progress(self, key: str) -> None:
+        """A game's review is saved: what any review of it kept part way goes (the background
+        review's at another strength has nothing left to go on with -- it reviews only games
+        with no review)."""
+        with self._lock:
+            self._db.execute("DELETE FROM review_progress WHERE key = ?", (key,))
+            self._db.commit()
 
     def set_review_words(self, key: str, strength: str, words: str) -> None:
         """The coach's words on a review's moves, as far as they are prepared."""

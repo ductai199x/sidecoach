@@ -5,14 +5,21 @@ the game move by move."""
 from __future__ import annotations
 
 import io
+import threading
 
 import chess
 import chess.pgn
 
-from sidecoach.analysis.annotator import GameAnnotator
-from sidecoach.analysis.game_review import positions, review_game, workers_for
+from sidecoach.analysis.annotator import GameAnnotator, Measured
+from sidecoach.analysis.game_review import (
+    measured_from_json,
+    measured_json,
+    positions,
+    review_game,
+    workers_for,
+)
 from sidecoach.analysis.score import Thresholds
-from sidecoach.events import Line, Side
+from sidecoach.events import Line, ReviewedGame, Side
 from tests.fakes import FakeEngine
 
 PGN = """[Event "Live Chess"]
@@ -81,6 +88,55 @@ def test_the_walk_searches_nothing_once_the_positions_are_measured() -> None:
     # Every position measured, by whichever engine took it; then the walk searched nothing.
     assert at_the_end and [len(e.calls) for e in engines] == at_the_end[-1]
     assert {b.fen() for b in positions(game)} <= {fen for e in engines for fen in e.calls}
+
+
+def test_a_review_stopped_part_way_goes_on_from_where_it_was() -> None:
+    """The app closed in the middle of a review: the positions measured so far were kept (in
+    their saved form), and the review opened again measures only the rest, counts from where
+    it was, and comes out as a review never stopped."""
+    game = _game()
+    answers = _answers(game)
+    kept: dict[str, Measured] = {}
+    stop = threading.Event()
+
+    def keep(m: Measured) -> None:
+        kept[m.fen] = measured_from_json(measured_json(m))
+
+    def progress(done: int, _total: int) -> None:
+        if done >= 3:
+            stop.set()
+
+    review_game(
+        game,
+        [FakeEngine(answers)],
+        depth=18,
+        multipv=2,
+        thresholds=Thresholds(),
+        on_progress=progress,
+        stop=stop,
+        on_measured=keep,
+    )
+    total = len(positions(game))
+    assert 3 <= len(kept) < total
+    engine = FakeEngine(answers)
+    counted: list[int] = []
+    resumed = review_game(
+        game,
+        [engine],
+        depth=18,
+        multipv=2,
+        thresholds=Thresholds(),
+        known=kept,
+        on_progress=lambda done, _total: counted.append(done),
+    )
+    assert counted[0] == len(kept) and counted[-1] == total, "counted on from where it was"
+    assert not set(engine.calls) & set(kept), "nothing measured twice"
+    whole = review_game(game, [FakeEngine(answers)], depth=18, multipv=2, thresholds=Thresholds())
+
+    def verdicts(r: ReviewedGame) -> list[tuple[str, str | None, float]]:
+        return [(m.assessment.uci, m.assessment.label, m.assessment.expected_loss) for m in r.moves]
+
+    assert verdicts(resumed) == verdicts(whole)
 
 
 def test_the_clock_and_the_time_each_move_took() -> None:

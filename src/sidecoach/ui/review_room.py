@@ -23,13 +23,22 @@ from typing import Any
 import chess
 import chess.pgn
 
+from sidecoach.analysis.annotator import Measured
 from sidecoach.analysis.engine import Engine
-from sidecoach.analysis.game_review import STRENGTHS, THREADS, Strength, review_game, workers_for
+from sidecoach.analysis.game_review import (
+    STRENGTHS,
+    THREADS,
+    Strength,
+    measured_from_json,
+    measured_json,
+    review_game,
+    workers_for,
+)
 from sidecoach.analysis.score import Thresholds, position_score
 from sidecoach.coach import review_links, review_words
 from sidecoach.config import Settings, find_stockfish
 from sidecoach.events import GameSummary, Line, ReviewedGame, Side
-from sidecoach.llm.usage import prices_for
+from sidecoach.llm.usage import Usage, prices_for
 from sidecoach.profile import library
 from sidecoach.profile.game_summary import missed_motifs, summarize
 from sidecoach.profile.stat_facts import keep_stats
@@ -94,7 +103,12 @@ class ReviewRoom:
         self.words: dict[str, Any] | None = None
         self.words_status = "none"
         self.words_error: str | None = None
-        self._estimated: tuple[str | None, float | None] | None = None  # by model name
+        # The answers paid for by ply, and what they cost, while words are being written or
+        # after the app was closed in the middle of them: kept, and never asked again.
+        self._answered: dict[int, str] = {}
+        self._spent = 0.0
+        # The words' cost as the button says it, by model name and the moves answered already.
+        self._estimated: tuple[tuple[str | None, frozenset[int]], float | None] | None = None
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -137,6 +151,7 @@ class ReviewRoom:
                     "words": self.words,
                     "unavailable": unavailable,
                     "moves": len(review_words.key_plies(self.reviewed)) if self.reviewed else 0,
+                    "answered": len(self._answered) if self.words_status != "ready" else 0,
                     "estimate": estimate,
                 },
                 "closed": self.closed,
@@ -148,11 +163,14 @@ class ReviewRoom:
         name = getattr(model, "model", None)
         if model is None or self.reviewed is None:
             return None
-        if self._estimated is None or self._estimated[0] != name:
+        answered = frozenset(self._answered)
+        if self._estimated is None or self._estimated[0] != (name, answered):
             opening = _opening(self.reviewed)
             prices = prices_for(self.settings, name)
-            cost = review_words.estimate(self.reviewed, self.row.user_side, opening, prices)
-            self._estimated = (name, cost)
+            cost = review_words.estimate(
+                self.reviewed, self.row.user_side, opening, prices, answered
+            )
+            self._estimated = ((name, answered), cost)
         return self._estimated[1]
 
     def write_words(self) -> str | None:
@@ -180,18 +198,40 @@ class ReviewRoom:
         reasons = getattr(model, "thinking_control", None) == "effort"
         if reasons:
             model = model.with_effort(REVIEW_EFFORT)
+        prices = prices_for(self.settings, getattr(model, "model", None))
+        with self._lock:
+            answered, spent_before = dict(self._answered), self._spent
+
+        def keep(ply: int, text: str, stats: dict[str, Any]) -> None:
+            # Each answer kept the moment it is paid for: the app closed now loses none of them.
+            one = Usage()
+            one.record(stats)
+            with self._lock:
+                self._answered[ply] = text
+                self._spent += one.cost(prices) or 0.0
+                partial = {
+                    "partial": True,
+                    "model": getattr(model, "model", ""),
+                    "cost": self._spent,
+                    "answers": {str(p): t for p, t in self._answered.items()},
+                }
+            self.store.set_review_words(self.key, self.strength.name, json.dumps(partial))
+
         try:
             words = review_words.write(
                 reviewed,
                 model,
                 user=self.row.user_side,
                 opening=_opening(reviewed),
-                prices=prices_for(self.settings, getattr(model, "model", None)),
+                prices=prices,
                 thinking=reasons,
+                answered=answered,
+                on_answer=keep,
             )
+            cost = None if words.cost is None else words.cost + spent_before
             saved = {
                 "model": words.model,
-                "cost": words.cost,
+                "cost": cost,
                 "texts": {str(ply): parts for ply, parts in words.texts.items()},
                 "reveals": sorted(words.reveals),
             }
@@ -205,7 +245,8 @@ class ReviewRoom:
             self.store.set_review_words(self.key, self.strength.name, json.dumps(saved))
         with self._lock:
             self.words, self.words_status = shown, "ready"
-        cost = f", ${words.cost:.4f}" if words.cost is not None else ""
+            self._answered, self._spent = {}, 0.0
+        cost = f", ${saved['cost']:.4f}" if saved["cost"] is not None else ""
         self._emit(
             "sys",
             "info",
@@ -257,8 +298,17 @@ class ReviewRoom:
         if saved is None or saved.version != REVIEW_VERSION:
             return False
         reviewed = ReviewedGame.model_validate_json(saved.report)
-        # Its words ready with it: the page stops asking once the review is.
-        words = self._shown(json.loads(saved.words), reviewed) if saved.words else None
+        with contextlib.suppress(Exception):  # a kill between the save and the clearing
+            self.store.clear_progress(self.key)
+        # Its words ready with it: the page stops asking once the review is. Words the app was
+        # closed in the middle of writing are the answers paid for so far, kept to go on from.
+        kept = json.loads(saved.words) if saved.words else None
+        words = None
+        if kept and kept.get("partial"):
+            self._answered = {int(p): str(t) for p, t in kept.get("answers", {}).items()}
+            self._spent = float(kept.get("cost") or 0.0)
+        elif kept:
+            words = self._shown(kept, reviewed)
         self._ready(reviewed, GameSummary.model_validate_json(saved.summary or "{}"), words)
         self._emit("sys", "info", f"review of {self.key} loaded ({self.strength.name})")
         return True
@@ -362,7 +412,10 @@ def review_row(
 ) -> tuple[ReviewedGame, GameSummary] | None:
     """A game of the library reviewed whole on `workers` engines of its own, summed up, and
     saved with its facts for Stats; None when stopped part way. The review room's, and the
-    background reviewer's (ui/backlog.py) with its engines at a low priority."""
+    background reviewer's (ui/backlog.py) with its engines at a low priority. Every position is
+    kept as it is measured (Store.add_progress), so a review stopped part way -- the room
+    closed, the app quit or killed -- goes on from there next time instead of starting over
+    (Tai, 2026-09-30); what was kept goes once the review is saved."""
     games = library.games_in(row.pgn)
     if not games:
         raise ValueError("the game's PGN has no moves")
@@ -370,6 +423,22 @@ def review_row(
     if path is None:
         raise RuntimeError("no Stockfish to review with")
     engine = settings.engine
+    known: dict[str, Measured] = {}
+    for text in store.progress(row.key, strength.name, strength.depth, strength.multipv):
+        with contextlib.suppress(ValueError):  # a record that no longer reads is measured again
+            measured = measured_from_json(text)
+            known[measured.fen] = measured
+
+    def keep(measured: Measured) -> None:
+        store.add_progress(
+            row.key,
+            strength.name,
+            strength.depth,
+            strength.multipv,
+            measured.fen,
+            measured_json(measured),
+        )
+
     with contextlib.ExitStack() as stack:
         engines = [
             stack.enter_context(
@@ -400,6 +469,8 @@ def review_row(
             game_id=row.key,
             on_progress=on_progress,
             stop=stop,
+            known=known,
+            on_measured=keep,
         )
     if stop is not None and stop.is_set():
         return None
@@ -412,6 +483,7 @@ def review_row(
         reviewed.model_dump_json(),
         summary.model_dump_json(),
     )
+    store.clear_progress(row.key)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
 

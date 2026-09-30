@@ -94,6 +94,10 @@ class _Voice(BaseModel):
     voice: str
 
 
+class _Paused(BaseModel):
+    paused: bool
+
+
 class _PieceFile(BaseModel):
     name: str
     data: str  # base64
@@ -595,6 +599,21 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     @app.post("/api/setup/remove_pack")
     def setup_remove_pack() -> dict[str, bool]:
         return {"ok": gpu_pack.remove(engine.settings)}
+
+    # ---- the long jobs the panel's bell shows (lib/Jobs.svelte): the background review of the
+    # library, and a fetch of the setup under way. Asked every couple of seconds: cheap.
+    @app.get("/api/jobs")
+    def jobs() -> dict[str, Any]:
+        return {
+            "reviews": backlog.state() if backlog is not None else None,
+            "setup": setup.run_state(),
+        }
+
+    @app.post("/api/jobs/reviews")
+    def jobs_reviews(body: _Paused) -> dict[str, Any]:
+        if backlog is None:
+            return {"ok": False, "error": "no background review here"}
+        return {"ok": True, "reviews": backlog.pause(body.paused)}
 
     @app.post("/api/reset_profile")
     def reset_profile() -> dict[str, Any]:

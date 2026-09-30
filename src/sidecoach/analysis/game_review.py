@@ -12,6 +12,7 @@ taken), so the walk is sequential, and it is quick.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import re
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 
 import chess
 import chess.pgn
+from pydantic import TypeAdapter
 
 from sidecoach.analysis.annotator import Book, GameAnnotator, Measured, Tagger
 from sidecoach.analysis.engine import Engine
@@ -69,6 +71,18 @@ def positions(game: chess.pgn.Game) -> list[chess.Board]:
     return boards
 
 
+_MEASURED: TypeAdapter[Measured] = TypeAdapter(Measured)
+
+
+def measured_json(measured: Measured) -> str:
+    """A measured position as it is kept while a review is under way (Store.add_progress)."""
+    return _MEASURED.dump_json(measured).decode("utf-8")
+
+
+def measured_from_json(text: str) -> Measured:
+    return _MEASURED.validate_json(text)
+
+
 def measure_all(
     boards: list[chess.Board],
     engines: Sequence[Engine],
@@ -78,14 +92,25 @@ def measure_all(
     thresholds: Thresholds,
     on_progress: Progress | None = None,
     stop: threading.Event | None = None,
+    known: dict[str, Measured] | None = None,
+    on_measured: Callable[[Measured], None] | None = None,
 ) -> list[Measured]:
     """Every position measured whole, each engine taking the next position left, in the
     game's order so a caller's progress reads from the first move. A search that fails ends
-    its engine's share; the others finish the rest, and the walk searches whatever is left."""
+    its engine's share; the others finish the rest, and the walk searches whatever is left.
+    `known`: positions measured before (by FEN; a review that was stopped part way), not
+    searched again and counted as done from the start; `on_measured` is handed each position
+    as it is measured, to keep it."""
+    known = known or {}
     todo: queue.SimpleQueue[chess.Board] = queue.SimpleQueue()
-    for board in boards:
-        todo.put(board)
     found: list[Measured] = []
+    for board in boards:
+        if board.fen() in known:
+            found.append(known[board.fen()])
+        else:
+            todo.put(board)
+    if found and on_progress is not None:
+        on_progress(len(found), len(boards))
     lock = threading.Lock()
 
     def work(engine: Engine) -> None:
@@ -101,6 +126,10 @@ def measure_all(
                 measured = annotator.measure(board)
             except Exception:  # noqa: BLE001 - the walk measures what is missing itself
                 return
+            if on_measured is not None:
+                # Not kept is only a resume the slower.
+                with contextlib.suppress(Exception):
+                    on_measured(measured)
             with lock:
                 found.append(measured)
                 done = len(found)
@@ -131,9 +160,12 @@ def review_game(
     game_id: str = "review",
     on_progress: Progress | None = None,
     stop: threading.Event | None = None,
+    known: dict[str, Measured] | None = None,
+    on_measured: Callable[[Measured], None] | None = None,
 ) -> ReviewedGame:
     """The game reviewed whole with `engines` (open, at least one; the first also walks the
-    moves). `on_progress(done, total)` counts the positions measured."""
+    moves). `on_progress(done, total)` counts the positions measured; `known` and
+    `on_measured` carry a review over a stop (`measure_all`)."""
     started = time.perf_counter()
     boards = positions(game)
     measured = measure_all(
@@ -144,6 +176,8 @@ def review_game(
         thresholds=thresholds,
         on_progress=on_progress,
         stop=stop,
+        known=known,
+        on_measured=on_measured,
     )
     annotator = GameAnnotator(
         engine=engines[0],

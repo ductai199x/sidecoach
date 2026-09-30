@@ -691,13 +691,17 @@
         {:else if ai.status === "failed"}
           <b>The AI coach could not finish</b>
           <small class="err">{ai.error ?? "Something went wrong."}</small>
+        {:else if ai.answered > 0}
+          <!-- Cut short when Sidecoach closed: the answers paid for are kept; only the rest. -->
+          <b>The AI coach got {ai.answered} of {ai.moves} key moves done</b>
+          <small>{ai.unavailable ?? `Sidecoach closed before it finished. Finish the other ${ai.moves - ai.answered}${ai.estimate != null ? `, ${cents(ai.estimate)}` : ""}.`}</small>
         {:else}
           <b>Explain the key moves</b>
           <small>{ai.unavailable ?? `The AI coach on ${ai.moves} key moves${ai.estimate != null ? `, ${cents(ai.estimate)}` : ""}.`}</small>
         {/if}
       </div>
       {#if ai.status === "none" || ai.status === "failed"}
-        <button class="rv-ask" disabled={!!ai.unavailable || asking} title={ai.unavailable ?? "Ask the AI coach why each key move mattered"} onclick={explain}>{ai.status === "failed" ? "Try again" : "Explain"}</button>
+        <button class="rv-ask" disabled={!!ai.unavailable || asking} title={ai.unavailable ?? "Ask the AI coach why each key move mattered"} onclick={explain}>{ai.status === "failed" ? "Try again" : ai.answered > 0 ? "Finish" : "Explain"}</button>
       {/if}
       {#if ai.status === "writing"}<i class="bar"></i>{/if}
     </div>

@@ -56,7 +56,23 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .gm-link:hover { color: var(--ink); }
 .gm-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 /* The background reviewer's progress, at the end of the filters' row. */
-.gm-backlog { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+/* The background review as a job (ui/backlog.py): what it is doing, games done of all and the
+   time left, pause or resume, a bar; the bar grey while it stands still. */
+.gm-job {
+  display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+}
+.gm-job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.gm-job-head b { font-size: 13.5px; }
+.gm-job-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gm-job-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px 4px 8px; font-size: 13px; }
+.gm-job-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.gm-job-bar, .gm-row-bar { display: block; height: 6px; border-radius: 3px; background: var(--panel3); overflow: hidden; }
+.gm-job-bar i, .gm-row-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width 400ms ease; }
+.gm-job.still .gm-job-bar i, .gm-row-bar.still i { background: var(--muted); }
+.gm-job-detail { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The game under review, in its row: how far its positions are. */
+.gm-row-bar { width: 88px; height: 5px; align-self: center; }
 .gm-spin {
   display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex: 0 0 auto;
   border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor;

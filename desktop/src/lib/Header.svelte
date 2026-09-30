@@ -8,6 +8,7 @@
   import { store } from "./panel.svelte";
   import { inShell, openWindow } from "./shell.svelte";
   import Drawer from "./Drawer.svelte";
+  import Jobs from "./Jobs.svelte";
 
   let drawer = $state<ReturnType<typeof Drawer> | null>(null);
 
@@ -47,7 +48,10 @@
     {#if missing.length}
       <a class="setup-banner" href="/setup" target="_blank" rel="noopener" title={missing.join(", ")} onclick={openSetup}>Set up: {missing.length} item{missing.length === 1 ? "" : "s"} missing →</a>
     {/if}
-    <button class="primary" class:running={store.running} onclick={() => store.toggleRunning()}>{store.running ? "Stop" : "Start"}</button>
+    <div class="ends">
+      <Jobs />
+      <button class="primary" class:running={store.running} onclick={() => store.toggleRunning()}>{store.running ? "Stop" : "Start"}</button>
+    </div>
   </div>
 </header>
 
@@ -94,5 +98,7 @@
   #bar .setup-banner { flex: 0 0 auto; white-space: nowrap; }
   /* A narrow window has no room for the banner: the dot on the menu button says it. */
   :global(html.stacked) #bar .setup-banner { display: none; }
-  #bar button.primary { margin-left: auto; flex: 0 0 auto; padding: 8px 18px; }
+  /* At the far end: the bell (only while a job runs; lib/Jobs.svelte), then Start. */
+  #bar .ends { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  #bar button.primary { flex: 0 0 auto; padding: 8px 18px; }
 </style>

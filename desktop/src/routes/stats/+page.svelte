@@ -362,7 +362,7 @@
     <div>
       <div class="rv-name">Your stats</div>
       <div class="rv-sub">
-        {#if numbers}{plural(numbers.overview.games, "game")} reviewed{/if}{#if backlog && (backlog.waiting || backlog.reviewing)}{" · "}{backlog.waiting} more being reviewed{backlog.paused ? " (paused while you play)" : ""}{/if}
+        {#if numbers}{plural(numbers.overview.games, "game")} reviewed{/if}{#if backlog && backlog.waiting && backlog.status !== "empty"}{" · "}{backlog.waiting} more {backlog.status === "paused" ? "waiting: the background review is paused" : backlog.status === "waiting" ? "being reviewed (waiting while you play)" : "being reviewed"}{/if}
       </div>
     </div>
   </div>

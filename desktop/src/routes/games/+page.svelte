@@ -7,7 +7,7 @@
   // reviewer's progress fills the accuracies in as it goes.
   import { onMount } from "svelte";
   import "$lib/styles/review.css";
-  import { connect, games as gamesApi, type Backlog, type LibraryGame } from "$lib/api";
+  import { connect, get, games as gamesApi, jobs as jobsApi, type Backlog, type LibraryGame } from "$lib/api";
   import { announce, inShell, onAnnounce, openSetting, openWindow } from "$lib/shell.svelte";
 
   let list = $state<LibraryGame[]>([]);
@@ -53,10 +53,29 @@
     if (!loaded && !users.chesscom && users.lichess) source = "lichess";
     loaded = true;
     if (following) clearTimeout(following);
-    const working = !!backlog && (backlog.waiting > 0 || !!backlog.reviewing);
+    const working = backlog?.status === "reviewing";
     if (working) expectUntil = 0;
     following = working || Date.now() < expectUntil ? setTimeout(load, working ? FOLLOW_MS : 1000) : null;
   }
+
+  // The job's card follows the reviewer closely (a light ask, not the whole list).
+  const JOB_MS = 1500;
+  async function followJob(): Promise<void> {
+    const got = await get<{ reviews: Backlog }>("/api/jobs").catch(() => null);
+    if (got) backlog = got.reviews;
+  }
+  async function pauseReviews(paused: boolean): Promise<void> {
+    const res = await jobsApi.pauseReviews(paused).catch(() => null);
+    if (res?.reviews) backlog = res.reviews;
+    void announce("games");
+  }
+  function minutesLeft(s: number): string {
+    if (s < 90) return "under 2 min left";
+    const m = Math.round(s / 60);
+    return m < 60 ? `about ${m} min left` : `about ${Math.floor(m / 60)} h ${m % 60} min left`;
+  }
+  const job = $derived(backlog && (backlog.status === "reviewing" || backlog.status === "paused" || backlog.status === "waiting") ? backlog : null);
+  const jobFrac = $derived(job && job.total ? Math.min(1, (job.done + (job.current && job.current.total ? job.current.done / job.current.total : 0)) / job.total) : 0);
 
   async function bringIn(): Promise<void> {
     busy = true;
@@ -75,7 +94,7 @@
     const games = (n: number) => `${n} game${n === 1 ? "" : "s"}`;
     if (!added && !already) said = source === "pgn" ? "No games in that PGN." : `No games in the last ${months} month${months === 1 ? "" : "s"}.`;
     else if (!added) said = `Nothing new: ${already === 1 ? "that game was" : `all ${already} were`} already here.`;
-    else said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. They are reviewed in the background; each shows its accuracy when done.`;
+    else said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. ${backlog?.paused_by_you ? "The background review is paused: resume it below to review them." : "They are reviewed in the background; each shows its accuracy when done."}`;
     if (source === "pgn" && added) pgn = "";
     if (added && backlog) expectUntil = Date.now() + EXPECT_MS;
     await load();
@@ -129,6 +148,7 @@
   onMount(() => {
     document.body.classList.add("games-page");
     (async () => { await connect(); await load(); })();
+    const jobTimer = setInterval(() => void followJob(), JOB_MS);
     // A username saved in Settings, games brought in or reviewed elsewhere: shown at once.
     const stops = [onAnnounce("settings", () => void load()), onAnnounce("games", () => void load())];
     const onFocus = () => void load();
@@ -137,6 +157,7 @@
       document.body.classList.remove("games-page");
       for (const stop of stops) stop();
       window.removeEventListener("focus", onFocus);
+      clearInterval(jobTimer);
       if (following) clearTimeout(following);
     };
   });
@@ -211,16 +232,33 @@
           <button class="segbtn" aria-pressed={outcome === o} onclick={() => (outcome = o as typeof outcome)}>{o === "all" ? "Any result" : o[0].toUpperCase() + o.slice(1)}</button>
         {/each}
       </div>
-      {#if backlog && (backlog.waiting > 0 || backlog.reviewing)}
-        <span class="gm-backlog" role="status" title="Each game is reviewed on its own, below normal priority, so Stats counts every game">
-          {#if backlog.paused}
-            Background review paused while you play or review
-          {:else}
-            <i class="gm-spin" aria-hidden="true"></i>Reviewing in the background · {backlog.waiting} to go
-          {/if}
-        </span>
-      {/if}
     </div>
+    {#if job}
+      <!-- The background review as a job the player sees and runs (ui/backlog.py). -->
+      <div class="gm-job" class:still={job.status !== "reviewing"} role="status" aria-label="The background review">
+        <div class="gm-job-head">
+          <b>{job.status === "paused" ? "Background review paused" : job.status === "waiting" ? "Background review waits for you" : "Reviewing your games in the background"}</b>
+          <span class="gm-job-count">{job.done} of {job.total} games{job.eta_s != null ? ` · ${minutesLeft(job.eta_s)}` : ""}</span>
+          {#if job.status === "paused"}
+            <button class="primary gm-job-btn" onclick={() => pauseReviews(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Resume</button>
+          {:else}
+            <button class="gm-job-btn" title="What is done is kept; it goes on from there when you resume" onclick={() => pauseReviews(true)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>Pause</button>
+          {/if}
+        </div>
+        <span class="gm-job-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(jobFrac * 100)}><i style:width="{Math.round(jobFrac * 100)}%"></i></span>
+        <small class="gm-job-detail">
+          {#if job.status === "paused"}
+            Paused by you: nothing is lost, and Sidecoach stays paused after a restart. Stats counts the games reviewed so far.
+          {:else if job.status === "waiting"}
+            It steps aside while you play a game or a review is analysing, and goes on after.
+          {:else if job.current}
+            Now: {job.current.white ?? "White"} v {job.current.black ?? "Black"}{job.current.total ? ` · ${job.current.done} of ${job.current.total} positions` : ""}. One game at a time, below normal priority.
+          {:else}
+            Getting the next game ready…
+          {/if}
+        </small>
+      </div>
+    {/if}
     {#if loaded && !shown.length}
       <div class="gm-empty">{list.length ? "No game matches." : "No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN."}</div>
     {/if}
@@ -234,9 +272,11 @@
             <span class="gm-player" class:me={g.user_side === "black"}><i class="sw b"></i>{g.black || "Black"}{#if g.black_elo}<small>({g.black_elo})</small>{/if}</span>
           </span>
           <span class="gm-result {o ?? ''}" title={o ?? ""}>{g.result && g.result !== "*" ? g.result.replaceAll("1/2", "½") : "—"}</span>
-          <span class="gm-acc" title="Accuracy, White then Black">
+          <span class="gm-acc" title={job?.current?.key === g.key ? "Being reviewed in the background" : "Accuracy, White then Black"}>
             {#if g.accuracy}
               <b class="acc w">{g.accuracy.white?.toFixed(1) ?? "–"}</b><b class="acc b">{g.accuracy.black?.toFixed(1) ?? "–"}</b>
+            {:else if job?.current?.key === g.key && job.current.total}
+              <span class="gm-row-bar" class:still={job.status !== "reviewing"}><i style:width="{Math.round((100 * job.current.done) / job.current.total)}%"></i></span>
             {/if}
           </span>
           <span class="gm-when">{when(g)}</span>
