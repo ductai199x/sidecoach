@@ -508,12 +508,13 @@
   .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
   .listen:disabled { opacity: 0.6; cursor: default; }
   .field { margin: 0 0 14px; max-width: 720px; border-radius: 8px; }
-  /* A setting another window asked for: lit twice, softly, over a second. */
-  .field:global(.flash) { animation: field-flash 1.1s ease-out; }
+  /* A setting another window asked for: it blinks, on and off three times over a second (Tai,
+     2026-09-30: two soft pulses read as much less than that). Each blink is on for a sixth of
+     a second, off for a sixth, with a short ramp between so it does not stutter. */
+  .field:global(.flash) { animation: field-flash 1s linear; }
   @keyframes field-flash {
-    0%, 45% { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 22%, transparent); }
-    22%, 70% { background: color-mix(in srgb, var(--accent) 6%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 6%, transparent); }
-    100% { background: transparent; box-shadow: 0 0 0 8px transparent; }
+    0%, 14%, 33%, 47%, 66%, 80% { background: color-mix(in srgb, var(--accent) 30%, transparent); box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent); }
+    17%, 30%, 50%, 63%, 83%, 100% { background: transparent; box-shadow: 0 0 0 8px transparent; }
   }
   @media (prefers-reduced-motion: reduce) { .field:global(.flash) { animation-duration: 0.01s; } }
   .field label, .field .lbl { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
