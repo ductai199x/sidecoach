@@ -54,13 +54,13 @@ export function headline(m: ReviewMove): string {
 /** A retried move that solves the position: it stays on the board. */
 export const SOLVED = new Set(["brilliant", "great", "best", "excellent"]);
 
-/** What a retried move earns, in chess.com's manner. */
+/** What a retried move earns, in chess.com's manner: a move that solves it congratulated. */
 export function tryWords(t: { san: string; label: string | null; only: boolean }): string {
   const label = t.label ?? "";
   if (label === "best" || label === "great" || label === "brilliant") {
-    return t.only ? `${t.san} is best — the only move that works!` : `${t.san} ${IS[label]}!`;
+    return t.only ? `Well found! ${t.san} is the only move that works.` : `Well found! ${t.san} ${IS[label]}.`;
   }
-  if (label === "excellent") return `${t.san} is excellent — nearly the best.`;
+  if (label === "excellent") return `Good find! ${t.san} is excellent, nearly the best.`;
   if (label === "good") return `${t.san} is good, but there's better. Try again.`;
   if (BAD.has(label)) return t.only ? `${t.san} ${IS[label]} — only one move worked there. Try again.` : `${t.san} ${IS[label]}. Try again.`;
   return `${t.san}. Try again.`;
@@ -101,12 +101,16 @@ function standing(score: number): string {
 /** A sentence or two on the move, from what the review knows. */
 // `reveal`: whether a move the player could retry names the better one. Off while the best
 // move's arrow is off, as the arrow would: Retry asks the player to find it, Best shows it.
-export function sentence(m: ReviewMove, whiteBefore: number, reveal: boolean): string {
+// `lastBook`: the game's last book move, a key moment of its own.
+export function sentence(m: ReviewMove, whiteBefore: number, reveal: boolean, lastBook = false): string {
   const [before, after] = moverScores(m, whiteBefore);
   const label = m.label ?? "";
   const motifs = m.tags.filter((t) => !UNSAID.has(t)).map(motifWords).filter(Boolean);
   const better = m.best_san && m.best_san !== m.san ? m.best_san : null;
   const parts: string[] = [];
+  if (label === "book" && lastBook) {
+    return `${m.opening ? `The last book move of the ${openingName(m.opening)}.` : "The last book move."} From here on, the game is its own.`;
+  }
   if (label === "book") return m.opening ? `A known move of the ${openingName(m.opening)}.` : "A known opening move.";
   if (label === "brilliant") parts.push("A sacrifice that works: the engine's own choice, and not an easy one to see.");
   else if (label === "great") parts.push("The one move that holds everything together here.");
@@ -120,6 +124,16 @@ export function sentence(m: ReviewMove, whiteBefore: number, reveal: boolean): s
   if (motifs.length) parts.push(`${motifs.length === 1 ? "Theme" : "Themes"}: ${motifs.join(", ")}.`);
   if (BAD.has(label) && better && !reveal) parts.push("Retry to find it, or Best to see it.");
   return parts.join(" ");
+}
+
+/** What the best move kept that the move played did not, from the review's scores: said
+ *  under "Qd4 was best" when the AI coach has not written on the move. */
+export function bestWords(m: ReviewMove, whiteBefore: number): string {
+  const [before, after] = moverScores(m, whiteBefore);
+  const side = m.side === "white" ? "White" : "Black";
+  if (standing(before) !== standing(after)) return `It kept ${side} ${standing(before)}; ${m.san}, played instead, left ${side} ${standing(after)}.`;
+  if (m.loss < 0.02) return `${m.san}, played instead, was nearly as good.`;
+  return `${m.san}, played instead, gave a little of it away.`;
 }
 
 /** The summary's one line on the game, from its shape and result. */
