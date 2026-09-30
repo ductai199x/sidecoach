@@ -143,15 +143,20 @@ context; a side's rating the mean over a grid weighted by its moves' chances and
 1500 +/- 400 (Lichess scale); fewer than 8 moves, no rating. Shown on the scale of the game's
 site (ChessGoals' Lichess-to-chess.com table, July 2026, floored at 100) with the middle 80%.
 
-**Its error**, on 696 held-out sides (players the fit never saw): 305 on average, r 0.67; the
-line through accuracy alone 408, r 0.36. It leans to the middle (+280 at 800-1100, -150 above
-2300), as any estimate from so little must. Reading the opponent's moves too (rated opponents
-are paired close: gap SD 131) took it only from 298 to 290 on 262 whole games, and misleads in a
-game against a bot, so each side is read alone.
+**Its error.** Fitted on 1,997 sides (66,624 moves), tested on 1,418 sides of players the fit
+never saw: 317 from their rating on average, r 0.62 (under 2000, the players Sidecoach serves:
+297); the line through accuracy alone 384, r 0.34. It leans to the middle (+344 at 800-1100,
+-260 above 2300), as any estimate from so little must. A fit on the first 350 sides alone was
+7-10 points nearer on the same test, within the noise, and predicts the moves themselves worse
+(held-out log-loss 1.3377 against 1.3366), so the larger fit ships. Tempering the evidence (the
+moves of one game are not independent) and other priors, chosen on half the held-out players,
+did no better on the other half. Reading the opponent's moves too (rated opponents are paired
+close: gap SD 131) took it only from 298 to 290 on 262 whole games, and misleads in a game
+against a bot, so each side is read alone.
 
-**Against chess.com.** On the six games chess.com gave a Game Rating: ours 318 from theirs on
-average, r 0.64; on the player's own six sides much nearer (1478 v 1850, 1745 v 1850, 1215 v
-1300, 1927 v 1800, 1631 v 1400, 876 v 850), and far from theirs only on the bots' sides, whose
+**Against chess.com.** On the six games chess.com gave a Game Rating: ours 314 from theirs on
+average, r 0.67; on the player's own six sides much nearer (1511 v 1850, 1948 v 1850, 1233 v
+1300, 1780 v 1800, 1689 v 1400, 941 v 850), and far from theirs only on the bots' sides, whose
 mistakes are not a person's. chess.com's own number ranges 850-1850 for the same ~970 player.
 On the player's 42 live chess.com games our estimates run 300-450 above the players' ratings:
 those players blunder like Lichess 1400-1700 players, and 15+10 gives more time than the
