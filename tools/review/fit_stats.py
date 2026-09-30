@@ -29,6 +29,7 @@ import numpy as np
 from fit_performance import fit, held_out
 from human_losses import game_sides
 
+from sidecoach.analysis.phase import phase_of
 from sidecoach.profile import performance, stats
 from sidecoach.profile.stat_facts import themes_of
 
@@ -37,8 +38,8 @@ POOL = 10  # sides pooled into one pseudo-player
 
 
 def load(path: Path) -> list[dict]:
-    """The judged sides, each move with its position's themes (from the sample, by the side's
-    key and the ply)."""
+    """The judged sides, each move with its position's themes and its phase read again (from
+    the sample, by the side's key and the ply)."""
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     wanted = {(r["player"], r["rating"], r["opp_rating"], r["result"]) for r in rows}
     fens: dict[tuple, dict[int, str]] = {}
@@ -50,7 +51,12 @@ def load(path: Path) -> list[dict]:
     for i, row in enumerate(rows):
         by_ply = fens[(row["player"], row["rating"], row["opp_rating"], row["result"])]
         for move in row["moves"]:
-            move["themes"] = ",".join(themes_of(chess.Board(by_ply[move["ply"]])))
+            board = chess.Board(by_ply[move["ply"]])
+            move["themes"] = ",".join(themes_of(board))
+            # The facts were judged with the sample's "0 1" counters, every position read as
+            # the opening's first moves: the phase again, from the true move number.
+            board.fullmove_number = move["ply"] // 2 + 1
+            move["phase"] = phase_of(board, in_book=move["label"] == "book")
         if (i + 1) % 300 == 0:
             print(f"  themes: {i + 1}/{len(rows)} sides", flush=True)
     return rows

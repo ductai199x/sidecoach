@@ -13,6 +13,7 @@ from sidecoach.profile import performance
 from sidecoach.profile.stats import (
     Filter,
     _Data,
+    area,
     family,
     figures,
     grade,
@@ -193,6 +194,33 @@ def test_the_peers_are_players_of_the_players_rating(tmp_path: Path) -> None:
     bare = Store(tmp_path / "bare.sqlite")
     bare.save_stats("standard", _game("z"), moves)
     assert stats(bare, Filter())["peers"]["from"] == "play"
+
+
+def test_work_on_this_names_what_cost_most(tmp_path: Path) -> None:
+    """Each costly move counts in one area (a missed tactic first, then one handed over, then the
+    phase's), the dearest areas first, each with its puzzles' motif and its own positions."""
+    store = Store(tmp_path / "profile.sqlite")
+    store.save_stats(
+        "standard",
+        _game("a"),
+        [
+            _move(3, "white", phase="opening", label="blunder", loss=0.5),
+            _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
+            _move(23, "white", allowed="free piece", label="mistake", loss=0.2),
+            _move(25, "white", phase="endgame", endgame="rook", label="mistake", loss=0.1),
+            _move(27, "white", label="inaccuracy", loss=0.05),  # no area: not a mistake
+            _move(29, "white", chance="pin", found=True, loss=0.0),  # found: costs nothing
+        ],
+    )
+    everything = stats(store, Filter())
+    assert everything["costs"]["opening"]["value"] == 0.5
+    assert everything["costs"]["missed"]["pin"]["value"] == 0.0
+    work = everything["work"]
+    assert [w["area"] for w in work] == ["opening", "missed.fork", "allowed.free piece"]
+    assert [w["motif"] for w in work] == ["opening", "fork", "hangingPiece"]
+    behind = positions(store, Filter(), "area", "missed.fork")
+    assert [p["ply"] for p in behind] == [21]
+    assert area(_move(1, "white", label="best")) is None
 
 
 def test_chesscom_and_lichess_ratings_convert_both_ways() -> None:

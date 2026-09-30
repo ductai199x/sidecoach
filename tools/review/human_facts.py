@@ -46,6 +46,8 @@ def judged(side: list[dict], annotator: GameAnnotator) -> dict:
     moves = []
     for row in side:
         board = chess.Board(row["fen"])
+        # The sample writes every position's counters as "0 1": the phase reads the move number.
+        board.fullmove_number = row["ply"] // 2 + 1
         move = played(board, row["actual"])
         before = annotator.analysis_event(game_id, board, row["ply"])
         after_board = board.copy(stack=False)

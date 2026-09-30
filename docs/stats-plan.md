@@ -87,8 +87,10 @@ training; every game counted (other sites, over the board).
 ## S2: peers and category ratings (done 2026-09-30)
 
 `tools/review/fit_stats.py` on the 1,800 judged Lichess rapid sides (six bands of 300, 800 to
-2300 and up; `tools/review/human_facts.py`), strategy themes read again from the sample's
-positions.
+2300 and up; `tools/review/human_facts.py`), strategy themes and phases read again from the
+sample's positions. (The sample writes every position's move counters as "0 1", so the facts
+were judged with every non-endgame move read as the opening's; the phase is now read from the
+true move number, there and in `human_facts.py`.)
 
 - **Peers:** each band added up by Stats' own functions (`stats.figures`, the code that adds up
   the player's games), and each figure a line through the bands, value against the band's mean
@@ -111,7 +113,7 @@ positions.
 
   | Category | Moves a game | One game | Ten games pooled | Game model, same moves |
   |---|---|---|---|---|
-  | Openings | 28 | 324 | 154 | 325 / 165 |
+  | Openings | 7.9 | 350 | 147 | 345 / 151 |
   | Tactics | 1.8 | (too few) | 279 | 384 / 399 |
   | Strategy | 32 | 336 | 138 | 337 / 163 |
   | Endgames | 6 | 411 | 344 | 426 / 586 |
@@ -129,7 +131,7 @@ positions.
 | S1 | Facts and the backlog | Per-move facts stored at review; the background review of imported games (low priority, paused while watching); the definitions above with tests on known positions. |
 | S2 | Peers and ratings | Done 2026-09-30 (above): the peers from 1,800 judged real sides by band; the category ratings fitted and their held-out error reported. |
 | S3 | The window | Advanced Stats' layout; overview, openings, tactics, strategy, endgames, time, results, galleries; filters and chips; positions as boards opening the review at the move; every window size; run end to end. |
-| S4 | Work on this | Ranked weaknesses, puzzles by motif, the coach's words. |
+| S4 | Work on this | Done 2026-09-30 but the model's words: every costly move counted in one area (a tactic missed or handed over by kind, else the endgame's by kind, the opening's, a quiet position's), each area's cost a game a figure with its peers; the three dearest with their positions and puzzles of their motif at the player's puzzle level. The coach's line is a template for now; the model's, from the positions, comes with Game Review's phase 4. |
 | S5 | Phone | The 1:1 port with parity fixtures. |
 
 Cost: no paid development spend.

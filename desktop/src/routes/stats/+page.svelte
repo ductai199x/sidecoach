@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
   import "$lib/styles/review.css";
   import "$lib/styles/stats.css";
-  import { connect, stats as statsApi, type Backlog, type Figure, type Rate, type StatPosition, type StatRating, type StatsFilter, type StatsNumbers } from "$lib/api";
+  import { connect, stats as statsApi, type Backlog, type Figure, type Rate, type StatPosition, type StatRating, type StatsFilter, type StatsNumbers, type WorkArea } from "$lib/api";
   import Board from "$lib/Board.svelte";
   import { prefs } from "$lib/panel.svelte";
   import { className } from "$lib/review/words";
@@ -73,6 +73,7 @@
     const sides = new Set(numbers.openings.by_opening.map((o) => o.side));
     if (!sides.has(openingSide) && sides.size) openingSide = [...sides][0] as "white" | "black";
     behind = {};
+    for (const w of numbers.work) void positions("area", w.area);
     if (section === "moves") void positions("gallery", gallery);
   }
 
@@ -175,6 +176,65 @@
       { id: "moves" as Section, name: "Brilliant Moves", value: String(n.galleries.brilliant ?? 0), unit: "brilliant", trend: null, sub: `${n.galleries.great ?? 0} great · ${n.galleries.miss ?? 0} misses · ${n.galleries.blunder ?? 0} blunders` },
     ].map((c) => ({ ...c, icon: icon(c.id) }));
   });
+
+  // ---- Work on this: each area's name, and the coach's line on it ----
+  const AREA_NAMES: Record<string, string> = {
+    "missed.checkmate": "Mates you missed",
+    "missed.fork": "Forks you missed",
+    "missed.pin": "Pins you missed",
+    "missed.discovery": "Discovered attacks you missed",
+    "missed.trapped piece": "Trapped pieces you missed",
+    "missed.removing the defender": "Defenders you could have removed",
+    "missed.free piece": "Free pieces you left on the board",
+    "missed.sacrifice": "Sacrifices you missed",
+    "missed.other": "Other tactics you missed",
+    "allowed.checkmate": "Mates you walked into",
+    "allowed.fork": "Forks you allowed",
+    "allowed.pin": "Pins you walked into",
+    "allowed.discovery": "Discovered attacks you allowed",
+    "allowed.trapped piece": "Pieces you let be trapped",
+    "allowed.removing the defender": "Defenders you let be removed",
+    "allowed.free piece": "Pieces you left hanging",
+    "allowed.sacrifice": "Sacrifices you allowed",
+    "allowed.other": "Other tactics you allowed",
+    opening: "Mistakes in the opening",
+    "endgame.pawn": "King and pawn endings",
+    "endgame.rook": "Rook endings",
+    "endgame.queen": "Queen endings",
+    "endgame.other": "Other endings",
+    quiet: "Mistakes in quiet positions",
+  };
+  const WHY: Record<string, string> = {
+    "missed.checkmate": "Mate was there in three moves or fewer. Look at every check first, every move: that is where mates hide.",
+    "missed.fork": "One move of yours would have hit two things at once. Look for checks and attacks that land on two targets.",
+    "missed.pin": "A piece of theirs stood in front of a bigger one on a line. Look along the lines through their king and queen.",
+    "missed.discovery": "Moving one of your pieces would have opened an attack from the piece behind it. Look for your pieces lined up behind your own.",
+    "missed.trapped piece": "A piece of theirs had no safe square. Before you look for a way in, look for pieces with nowhere to go.",
+    "missed.removing the defender": "The piece guarding their weakness could be taken or chased. Ask what each defender holds.",
+    "missed.free piece": "A piece of theirs was loose. After each of their moves, check what it left undefended.",
+    "missed.sacrifice": "Giving material would have won more back. When a sacrifice opens their king, count what follows.",
+    "missed.other": "A winning tactic was on the board. Checks, captures and threats, in that order, every move.",
+    "allowed.checkmate": "Your move let them mate. Before you let go, look at every check they would have.",
+    "allowed.fork": "Your move let them hit two things at once. Before you let go, look at their checks and double attacks.",
+    "allowed.pin": "Your move lined a piece up in front of a bigger one. Keep the lines to your king and queen clear.",
+    "allowed.discovery": "Your move let them open an attack from behind another piece. Watch their pieces lined up on yours.",
+    "allowed.trapped piece": "Your move left a piece with nowhere to go. Give a piece a way back before you send it forward.",
+    "allowed.removing the defender": "Your move let them take away what guarded something. Keep an eye on what each of your defenders holds.",
+    "allowed.free piece": "Your move left a piece undefended. Before you let go, check what the move leaves loose.",
+    "allowed.sacrifice": "Your move let a sacrifice work against you. When your king's cover thins, look at what they can give up.",
+    "allowed.other": "Your move handed them a winning tactic. Before you let go, look at their checks, captures and threats.",
+    opening: "The first moves shape the game: develop, take the centre, castle, and don't move a piece twice without a reason.",
+    "endgame.pawn": "In king and pawn endings one tempo decides: count the squares, and know the opposition.",
+    "endgame.rook": "Rook endings are the most common: keep your rook active, behind passed pawns, and your king in play.",
+    "endgame.queen": "Queen endings run on checks: keep your king covered, and push a pawn only when the checks run out.",
+    "endgame.other": "With few pieces left, the king is a fighter: bring it in, and count before each pawn push.",
+    quiet: "With no tactic on the board, a plan wins: improve your worst piece, and aim at their weak squares.",
+  };
+  const costWords = (w: WorkArea) => {
+    const total = (w.cost * w.games).toFixed(1);
+    const peers = w.peers != null ? `; players of your rating ${w.peers.toFixed(2)}` : "";
+    return `${total} points over your ${plural(w.games, "game")} · ${w.cost.toFixed(2)} a game${peers}`;
+  };
 
   // What each figure means (ours: chess.com publishes none), shown when the row opens.
   const DEF: Record<string, string> = {
@@ -359,6 +419,39 @@
           {/each}
         </div>
       </div>
+      {#if numbers.work.length}
+        <div class="st-card st-work">
+          <div class="st-card-title">Work on this <span class="muted">what cost you most</span></div>
+          {#each numbers.work as w, i (w.area)}
+            {@const found = behind[`area:${w.area}`]}
+            <div class="st-work-item">
+              <div class="st-work-head">
+                <span class="rank">{i + 1}</span>
+                <div class="what"><b>{AREA_NAMES[w.area] ?? w.area}</b><span>{costWords(w)}</span></div>
+                {#if w.grade}<Badge kind={w.grade} size={22} title={GRADE_WORDS[w.grade]} />{/if}
+              </div>
+              <p class="why">{WHY[w.area] ?? ""}</p>
+              {#if found?.length}
+                <div class="st-boards">
+                  {#each found.slice(0, 4) as p (p.key + p.ply)}
+                    {@render mini(p)}
+                  {/each}
+                </div>
+              {/if}
+              {#if w.puzzles.length}
+                <div class="st-drill">
+                  <span class="muted">Puzzles on it</span>
+                  {#each w.puzzles as z (z.id)}
+                    <a class="chip" href="/puzzle/{encodeURIComponent(z.id)}" target="_blank" rel="noopener" title="A puzzle rated {z.rating}" onclick={(e) => { if (inShell()) { e.preventDefault(); openWindow('puzzle/' + encodeURIComponent(z.id)); } }}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 11H19V7a2 2 0 0 0-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4a2 2 0 0 0-2 2v3.8h1.5a2.7 2.7 0 0 1 0 5.4H2V20a2 2 0 0 0 2 2h3.8v-1.5a2.7 2.7 0 0 1 5.4 0V22H17a2 2 0 0 0 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"/></svg>{z.rating}
+                    </a>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
       <div class="st-cats">
         {#each cards as c (c.id)}
           <button class="st-cat" onclick={() => go(c.id)}>

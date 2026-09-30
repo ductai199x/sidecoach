@@ -301,6 +301,22 @@ export type StatsNumbers = {
   /** Who the peers are: players of this rating, the player's own in their games ("rating") or,
    * when none is recorded, of their play ("play"). */
   peers: { rating: number; from: "rating" | "play" } | null;
+  /** What each area of the player's game cost them: expected score lost, a game. */
+  costs: Record<string, Figure | Record<string, Figure>>;
+  /** The areas that cost most, dearest first, with puzzles of their motif. */
+  work: WorkArea[];
+};
+
+/** An area to work on: `area` its name ("missed.fork", "opening", "endgame.rook"...), what it
+ * cost a game over so many games and the peers' cost, the grade, its puzzles. */
+export type WorkArea = {
+  area: string;
+  cost: number;
+  games: number;
+  peers?: number | null;
+  grade?: string | null;
+  motif: string | null;
+  puzzles: { id: string; rating: number }[];
 };
 
 /** A move of the player's behind a figure: its game, and the position it was played from. */

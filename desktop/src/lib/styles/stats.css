@@ -146,6 +146,28 @@
 .st-more p { margin: 0; }
 .st-empty { padding: 30px 10px; text-align: center; color: var(--muted); }
 
+/* Work on this: an area a block -- its rank, name and cost, the coach's line, its positions,
+   puzzles on it. */
+.st-work-item { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-top: 1px solid #ffffff08; }
+.st-work-item:first-of-type { border-top: 0; }
+.st-work-head { display: flex; align-items: center; gap: 12px; }
+.st-work-head .rank {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--panel3); font-weight: 800; font-size: 13px;
+}
+.st-work-head .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; margin-right: auto; }
+.st-work-head .what b { font-size: 15px; }
+.st-work-head .what span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-work-item .why { margin: 0; font-size: 13.5px; line-height: 1.45; }
+.st-drill { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; }
+.st-drill .chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 8px; border-radius: 13px;
+  background: var(--panel2); color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; text-decoration: none;
+}
+.st-drill .chip svg { width: 14px; height: 14px; fill: var(--accent); }
+.st-drill .chip:hover { background: var(--accent); color: var(--accent-ink); }
+.st-drill .chip:hover svg { fill: var(--accent-ink); }
+
 /* the positions behind a figure, and the gallery: boards with the move drawn */
 .st-boards { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
 .st-gallery { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }

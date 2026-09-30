@@ -181,6 +181,7 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
     if peers is not None:
         compare(out, peers[0])
         out["peers"] = {"rating": performance.for_site(peers[0], _site(d)), "from": peers[1]}
+    out["work"] = work(out["costs"])
     return out
 
 
@@ -195,6 +196,7 @@ def figures(d: _Data) -> dict[str, Any]:
         "time": _time(d),
         "results": _results(d),
         "galleries": {k: sum(1 for m in d.moves if m["label"] == k) for k in GALLERIES},
+        "costs": _costs(d),
     }
 
 
@@ -207,6 +209,99 @@ def walk(section: Any, path: str = "") -> Iterator[tuple[str, dict[str, Any]]]:
         return
     for key, inner in section.items():
         yield from walk(inner, f"{path}.{key}" if path else key)
+
+
+# ---- what the player's game costs them, and what to work on ----------------------------------
+
+# An area's puzzles: its motif as the puzzle store names it (Lichess's themes); none where no
+# puzzle drills it (a quiet position, a tactic of no named kind).
+MOTIFS = {
+    "missed.checkmate": "mate",
+    "missed.fork": "fork",
+    "missed.pin": "pin",
+    "missed.discovery": "discoveredAttack",
+    "missed.trapped piece": "trappedPiece",
+    "missed.removing the defender": "capturingDefender",
+    "missed.free piece": "hangingPiece",
+    "missed.sacrifice": "sacrifice",
+    "allowed.checkmate": "mate",
+    "allowed.fork": "fork",
+    "allowed.pin": "pin",
+    "allowed.discovery": "discoveredAttack",
+    "allowed.trapped piece": "trappedPiece",
+    "allowed.removing the defender": "capturingDefender",
+    "allowed.free piece": "hangingPiece",
+    "opening": "opening",
+    "endgame.pawn": "pawnEndgame",
+    "endgame.rook": "rookEndgame",
+    "endgame.queen": "queenEndgame",
+    "endgame.other": "endgame",
+}
+WORK = 3  # the areas Work on this names
+
+
+def area(m: dict[str, Any]) -> str | None:
+    """The one area a move's cost counts in, when it cost anything worth a word: a tactic it
+    missed (by kind), else, for a mistake, miss or blunder, a tactic it handed over (by kind), the
+    endgame's (by kind), the opening's, a quiet position's."""
+    if m["chance"] and not m["found"]:
+        return f"missed.{m['chance']}"
+    if m["label"] not in BAD:
+        return None
+    if m["allowed"]:
+        return f"allowed.{m['allowed']}"
+    if m["phase"] == "endgame":
+        return f"endgame.{m['endgame'] or 'other'}"
+    return "opening" if m["phase"] == "opening" else "quiet"
+
+
+def _costs(d: _Data) -> dict[str, Any]:
+    """Each area's cost: the expected score its moves lost, a game (`n`, the games)."""
+    lost: dict[str, float] = defaultdict(float)
+    for m in d.moves:
+        where = area(m)
+        if where is not None:
+            lost[where] += m["loss"]
+    games = len(d.games)
+    names = [
+        *(f"missed.{k}" for k in KINDS),
+        *(f"allowed.{k}" for k in KINDS),
+        "opening",
+        *(f"endgame.{k}" for k in ENDGAMES),
+        "quiet",
+    ]
+    out: dict[str, Any] = {}
+    for name in names:
+        figure = {"value": round(lost[name] / games, 4) if games else None, "n": games}
+        head, _, kind = name.partition(".")
+        if kind:
+            out.setdefault(head, {})[kind] = figure
+        else:
+            out[head] = figure
+    return out
+
+
+def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
+    """The areas that cost the player most (WORK of them), dearest first: each with its cost a
+    game and its peers' (when known), and its puzzles' motif; its positions are `positions`'
+    "area" selector's."""
+    ranked = sorted(
+        ((path, figure) for path, figure in walk(costs) if figure["value"]),
+        key=lambda pf: -pf[1]["value"],
+    )
+    out = []
+    for path, figure in ranked[:WORK]:
+        out.append(
+            {
+                "area": path,
+                "cost": figure["value"],
+                "games": figure["n"],
+                "peers": figure.get("peers"),
+                "grade": figure.get("grade"),
+                "motif": MOTIFS.get(path),
+            }
+        )
+    return out
 
 
 # ---- the ratings and the peers ---------------------------------------------------------------
@@ -555,6 +650,7 @@ _SELECT: dict[str, Callable[[dict[str, Any], str], bool]] = {
     ),
     "time.pressure": lambda m, _: m["label"] in BAD,  # of the moves under pressure
     "gallery": lambda m, label: m["label"] == label,
+    "area": lambda m, name: area(m) == name,
 }
 POSITIONS_MAX = 60
 

@@ -503,6 +503,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         store = Store(store_path)
         try:
             numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
+            _drills(numbers["work"], engine.settings.data_dir, store)
         finally:
             store.close()
         return {"ok": True, "stats": numbers, "backlog": backlog and backlog.state()}
@@ -681,6 +682,22 @@ def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
     finally:
         store.close()
     return {"ok": True, "added": len(rows), "keys": [r.key for r in rows]}
+
+
+def _drills(work: list[dict[str, Any]], data_dir: Path, store: Any) -> None:
+    """Each area Stats says to work on gets puzzles of its motif at the player's puzzle level, in
+    place (none where the area has no motif, or there are no puzzles)."""
+    from sidecoach.profile.puzzles import open_store, puzzle_level
+
+    puzzles = open_store(data_dir) if any(w["motif"] for w in work) else None
+    level = puzzle_level(store)
+    try:
+        for w in work:
+            picked = puzzles.pick(w["motif"], level) if puzzles and w["motif"] else []
+            w["puzzles"] = [{"id": p.id, "rating": p.rating} for p in picked]
+    finally:
+        if puzzles is not None:
+            puzzles.close()
 
 
 def _rooms_for(engine: PanelEngine) -> Any:
