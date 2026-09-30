@@ -1,7 +1,7 @@
 """A reviewed game summed up (docs/game-review-plan.md, the summary screen): each side's
-accuracy and count of every kind of move, how each side played each phase, the moves the
-review stops at, and the graph of the game -- all read off the review's verdicts, nothing
-guessed.
+accuracy and count of every kind of move, the rating it played at (`profile/performance.py`),
+how each side played each phase, the moves the review stops at, and the graph of the game --
+all read off the review's verdicts.
 
 The phase grade is chess.com's report card in our own vocabulary: the phase's accuracy drawn
 as the kind of move it amounts to -- a phase played as a best move is "best", one played as an
@@ -25,11 +25,13 @@ from sidecoach.events import (
     KeyMoment,
     Label,
     Line,
+    PerformanceRating,
     PhaseGrade,
     ReviewedGame,
     Side,
     SideSummary,
 )
+from sidecoach.profile import performance
 
 PHASES = ("opening", "middlegame", "endgame")
 # A phase needs this many of a side's moves to be graded: a king move or two into an
@@ -112,9 +114,10 @@ def phase_grade(accuracy: float, labels: list[Label]) -> Label:
 
 
 def summarize(game: ReviewedGame) -> GameSummary:
-    """The summary of a reviewed game, all but the performance ratings (`profile/performance.py`
-    adds them)."""
+    """The summary of a reviewed game."""
     per_side: dict[Side, list[tuple[str, float, Label | None]]] = {Side.WHITE: [], Side.BLACK: []}
+    # What each side's moves cost from where they stood, for the rating they played at.
+    played: dict[Side, list[dict[str, float]]] = {Side.WHITE: [], Side.BLACK: []}
     graph = [_white_score(chess.Board(game.start.fen), game.start.lines)]
     in_book = game.start.in_book
     last_book: int | None = None
@@ -125,6 +128,10 @@ def summarize(game: ReviewedGame) -> GameSummary:
         phase = phase_of(before, in_book=in_book)
         label = move.assessment.label
         per_side[move.side].append((phase, move.assessment.accuracy or 0.0, label))
+        standing = graph[-1] if move.side is Side.WHITE else 1.0 - graph[-1]
+        played[move.side].append(
+            {"ply": move.ply - 1, "loss": move.assessment.expected_loss, "score": standing}
+        )
         if label is Label.BOOK:
             last_book = move.ply
         elif label is not None and label in KEY_LABELS:
@@ -141,8 +148,8 @@ def summarize(game: ReviewedGame) -> GameSummary:
     key.sort(key=lambda k: k.ply)
     headers = game.headers
     return GameSummary(
-        white=_side(Side.WHITE, per_side[Side.WHITE], headers),
-        black=_side(Side.BLACK, per_side[Side.BLACK], headers),
+        white=_side(Side.WHITE, per_side[Side.WHITE], played[Side.WHITE], headers),
+        black=_side(Side.BLACK, per_side[Side.BLACK], played[Side.BLACK], headers),
         opening=opening,
         last_book_ply=last_book,
         key_moments=key,
@@ -152,7 +159,10 @@ def summarize(game: ReviewedGame) -> GameSummary:
 
 
 def _side(
-    side: Side, moves: list[tuple[str, float, Label | None]], headers: dict[str, str]
+    side: Side,
+    moves: list[tuple[str, float, Label | None]],
+    played: list[dict[str, float]],
+    headers: dict[str, str],
 ) -> SideSummary:
     colour = "White" if side is Side.WHITE else "Black"
     counts: dict[str, int] = {}
@@ -175,6 +185,15 @@ def _side(
             )
         )
     accuracy = game_accuracy([a for _, a, _ in moves])
+    rating = None
+    if len(played) >= performance.MIN_MOVES:
+        estimate = performance.estimate(played)
+        site = headers.get("Site")
+        rating = PerformanceRating(
+            rating=performance.for_site(estimate.rating, site),
+            low=performance.for_site(estimate.low, site),
+            high=performance.for_site(estimate.high, site),
+        )
     return SideSummary(
         side=side,
         name=headers.get(colour) or None,
@@ -182,6 +201,7 @@ def _side(
         accuracy=round(accuracy, 1) if accuracy is not None else None,
         counts=counts,
         phases=phases,
+        performance=rating,
     )
 
 

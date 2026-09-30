@@ -138,6 +138,30 @@ def test_the_summary_counts_grades_and_finds_where_to_stop() -> None:
     assert len(summary.graph) == 11
 
 
+def test_each_side_is_given_the_rating_it_played_at() -> None:
+    sans = "e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6 O-O O-O a4 a6 Re1 h6 h3 Re8 Nbd2 Be6 Bb3 Ba7 Nf1 d5"
+    game = _game([(san, Label.BEST, 100, 0.5) for san in sans.split()])
+    # White plays the best move every time; Black throws a quarter of the game away four times.
+    moves = [
+        m.model_copy(
+            update={
+                "assessment": m.assessment.model_copy(
+                    update={"expected_loss": 0.3 if m.side is Side.BLACK and m.ply % 3 == 0 else 0}
+                )
+            }
+        )
+        for m in game.moves
+    ]
+    summary = summarize(game.model_copy(update={"moves": moves}))
+    white, black = summary.white.performance, summary.black.performance
+    assert white is not None and black is not None
+    assert white.rating > black.rating + 400
+    assert white.low <= white.rating <= white.high
+    # Too few moves say nothing: the ten-move game above has no rating.
+    short = _game([("e4", Label.BOOK, 100, 0.52), ("e5", Label.BOOK, 100, 0.48)])
+    assert summarize(short).white.performance is None
+
+
 def test_the_shape_of_a_game_from_its_graph() -> None:
     even = [0.5] * 20
     # Close all game and drawn: balanced.

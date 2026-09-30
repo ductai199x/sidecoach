@@ -239,6 +239,31 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 .pc.bR { background-image: url(/pieces/bR.svg); } .pc.bB { background-image: url(/pieces/bB.svg); }
 .pc.bN { background-image: url(/pieces/bN.svg); } .pc.bP { background-image: url(/pieces/bP.svg); }
 
+/* The player's own marks on a board that takes them (the puzzle's, the review's): a
+   right-clicked square red, a right-dragged arrow green, as chess.com's. */
+.board.cb .sq.marked.light { background: #eb7d6a; }
+.board.cb .sq.marked.dark { background: #d36c50; }
+.overlay .mk-user { --mk: #15781b; }
+.overlay line.user { stroke-width: 0.2; opacity: 0.85; }
+
+/* Pieces on a layer of their own (lib/pieces.ts), each placed by a transform, so a move
+   slides: the boards that play moves, the puzzle's and the review's. */
+.pieces { position: absolute; inset: 0; pointer-events: none; }
+.piece {
+  position: absolute; left: 0; top: 0; width: 12.5%; height: 12.5%;
+  background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
+  transition: transform 200ms cubic-bezier(0.2, 0.7, 0.3, 1), opacity 120ms ease-out;
+  pointer-events: none; will-change: transform;
+}
+.piece.dragging { transition: none; z-index: 5; }
+.piece.fading { opacity: 0; }
+.piece.wK { background-image: url(/pieces/wK.svg); } .piece.wQ { background-image: url(/pieces/wQ.svg); }
+.piece.wR { background-image: url(/pieces/wR.svg); } .piece.wB { background-image: url(/pieces/wB.svg); }
+.piece.wN { background-image: url(/pieces/wN.svg); } .piece.wP { background-image: url(/pieces/wP.svg); }
+.piece.bK { background-image: url(/pieces/bK.svg); } .piece.bQ { background-image: url(/pieces/bQ.svg); }
+.piece.bR { background-image: url(/pieces/bR.svg); } .piece.bB { background-image: url(/pieces/bB.svg); }
+.piece.bN { background-image: url(/pieces/bN.svg); } .piece.bP { background-image: url(/pieces/bP.svg); }
+
 .gameinfo {
   display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
   font-size: 13px; color: var(--muted); padding: 0 2px; min-height: 22px;

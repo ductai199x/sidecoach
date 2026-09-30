@@ -90,6 +90,11 @@ export async function put<T = unknown>(path: string, body?: unknown): Promise<T>
   return (await r.json()) as T;
 }
 
+export async function del<T = unknown>(path: string): Promise<T> {
+  const r = await fetch(base + path, { method: "DELETE", headers: headers(false) });
+  return (await r.json()) as T;
+}
+
 /** A beacon on unload (the puzzle room's close); falls back to a fetch with keepalive. */
 export function beacon(path: string): void {
   const blob = new Blob(["{}"], { type: "application/json" });
@@ -139,6 +144,107 @@ export const puzzle = (id: string) => {
     giveup: () => post<{ ok: boolean; state?: PuzzleState }>(`${p}/giveup`),
     ask: (text: string) => post(`${p}/ask`, { text }),
     voice: (on: boolean) => post(`${p}/voice`, { on }),
+    close: () => post(`${p}/close`),
+    closePath: `${p}/close`,
+  };
+};
+
+// ---- Game Review: the library and a review (profile/library.py, ui/review_room.py) -----------
+
+export type LibraryGame = {
+  key: string;
+  source: "watched" | "chesscom" | "lichess" | "pgn";
+  added_at: number;
+  played_at: number | null;
+  white: string | null;
+  black: string | null;
+  white_elo: number | null;
+  black_elo: number | null;
+  result: string | null;
+  time_class: string | null;
+  user_side: "white" | "black" | null;
+  reviewed: boolean;
+  accuracy: { white: number | null; black: number | null } | null;
+  performance: { white: number | null; black: number | null } | null;
+};
+
+export const games = {
+  list: () => get<{ games: LibraryGame[]; users: { chesscom: string; lichess: string } }>("/api/games"),
+  bringIn: (source: "pgn" | "chesscom" | "lichess", text = "", months = 3) =>
+    post<{ ok: boolean; added?: number; keys?: string[]; error?: string }>("/api/games/import", { source, text, months }),
+  remove: (key: string) => del<{ ok: boolean }>(`/api/games/${encodeURIComponent(key)}`),
+};
+
+export type Eval = { cp: number | null; mate: number | null; result: string | null };
+
+/** A move of a line the board plays: in SAN and UCI, and the position it leaves. */
+export type LineStep = { san: string; uci: string; fen: string };
+
+export type ReviewMove = {
+  ply: number;
+  san: string;
+  side: "white" | "black";
+  uci: string;
+  from: string;
+  to: string;
+  fen_before: string;
+  fen_after: string;
+  label: string | null;
+  accuracy: number | null;
+  loss: number;
+  best_uci: string | null;
+  best_san: string | null;
+  best_line: LineStep[];
+  follow_line: LineStep[];
+  eval: Eval;
+  white_score: number;
+  tags: string[];
+  opening: string | null;
+  clock_ms: number | null;
+  spent_ms: number | null;
+};
+
+export type PhaseGrade = { phase: "opening" | "middlegame" | "endgame"; moves: number; accuracy: number; grade: string };
+
+export type SideSummary = {
+  side: "white" | "black";
+  name: string | null;
+  rating: number | null;
+  accuracy: number | null;
+  counts: Record<string, number>;
+  phases: PhaseGrade[];
+  performance: { rating: number; low: number; high: number } | null;
+};
+
+export type GameSummary = {
+  white: SideSummary;
+  black: SideSummary;
+  opening: string | null;
+  last_book_ply: number | null;
+  key_moments: { ply: number; side: "white" | "black"; kind: string }[];
+  graph: number[];
+  shape: string | null;
+};
+
+export type ReviewState = {
+  key: string;
+  status: "starting" | "analysing" | "ready" | "failed";
+  progress: { done: number; total: number };
+  error: string | null;
+  strength: string;
+  game: Omit<LibraryGame, "key" | "added_at" | "reviewed" | "accuracy" | "performance">;
+  start_fen: string | null;
+  summary: GameSummary | null;
+  moves: ReviewMove[];
+  closed: boolean;
+};
+
+export const review = (key: string) => {
+  const p = `/api/review/${encodeURIComponent(key)}`;
+  type Polled = { ok: boolean; closed?: boolean; error?: string; state?: ReviewState; lines?: LogLine[]; cursor?: number };
+  return {
+    open: (strength = "standard") => post<Polled>(`${p}/open`, { strength }),
+    poll: (since: number) => get<Polled>(`${p}/poll?since=${since | 0}`),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };

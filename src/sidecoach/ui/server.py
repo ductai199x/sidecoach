@@ -520,7 +520,10 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
                         else None
                     ),
                     "performance": (
-                        {s: summary[s].get("performance") for s in ("white", "black")}
+                        {
+                            s: (summary[s].get("performance") or {}).get("rating")
+                            for s in ("white", "black")
+                        }
                         if summary
                         else None
                     ),

@@ -20,7 +20,8 @@
   import { page } from "$app/state";
   import "$lib/styles/puzzle.css";
   import { beacon, connect, puzzle as puzzleApi, type LogLine, type Mark, type PuzzlePosition, type PuzzleState } from "$lib/api";
-  import { FILES, cellOf, colourOf, motifWords, placement, spriteOf, squareAt } from "$lib/chess";
+  import { FILES, cellOf, colourOf, motifWords, placement, squareAt } from "$lib/chess";
+  import { PieceLayer } from "$lib/pieces";
   import { layoutMode, mobileBoard } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
   import { captureSound, moveSound } from "$lib/sounds";
@@ -102,63 +103,15 @@
   }
 
   // ---- the pieces: a layer of their own, moved by transforms so they slide -----------------
-  let pieces = new Map<string, HTMLDivElement>();
-  function place(node: HTMLDivElement, square: string) {
-    const { x, y } = cellOf(square, bottom);
-    node.style.transform = `translate(${x * 100}%, ${y * 100}%)`;
-  }
-  // Put down without sliding: a dropped piece lands where the pointer let it go.
-  function placeNow(node: HTMLDivElement, square: string) {
-    node.style.transition = "none";
-    place(node, square);
-    node.getBoundingClientRect(); // settle before the transition returns
-    node.style.transition = "";
-  }
+  let layer: PieceLayer | null = null;
+  const pieceAt = (square: string) => layer?.nodes.get(square);
+  const place = (node: HTMLDivElement, square: string) => layer?.place(node, square);
+  const placeNow = (node: HTMLDivElement, square: string) => layer?.placeNow(node, square);
   // The pieces as `fen` has them; `uci`, the move that made it, names the piece that moves.
   function renderPieces(fen: string, uci: string | null = null) {
     if (!piecesEl) return;
-    const want = placement(fen);
-    const stay = new Map<string, HTMLDivElement>();
-    const gone: [string, string, HTMLDivElement][] = [];
-    for (const [sq, node] of pieces) {
-      if (want.get(sq) === node.dataset.letter) {
-        // Placed again even so: a piece shown ahead of the room (a move sent, a wrong one
-        // shown) goes where the position has it.
-        place(node, sq);
-        stay.set(sq, node);
-      } else gone.push([sq, node.dataset.letter!, node]);
-    }
-    const next = new Map(stay);
-    for (const [sq, letter] of want) {
-      if (stay.has(sq)) continue;
-      // The move's piece slides here from its square; any other piece of this kind that left
-      // a square (a castling rook) slides here too; otherwise it appears.
-      let i = uci && sq === uci.slice(2, 4) ? gone.findIndex(([from, l]) => from === uci.slice(0, 2) && l === letter) : -1;
-      if (i < 0) i = gone.findIndex(([, l]) => l === letter);
-      if (i >= 0) {
-        const [[, , node]] = gone.splice(i, 1);
-        place(node, sq);
-        next.set(sq, node);
-      } else {
-        const node = document.createElement("div");
-        node.className = "piece " + spriteOf(letter);
-        node.dataset.letter = letter;
-        node.style.transition = "none";
-        place(node, sq);
-        piecesEl.appendChild(node);
-        node.getBoundingClientRect(); // settle before the transition returns
-        node.style.transition = "";
-        next.set(sq, node);
-      }
-    }
-    for (const [, , node] of gone) { // taken, or a promoted pawn: fades out
-      node.classList.add("fading");
-      setTimeout(() => node.remove(), 140);
-    }
-    pieces = next;
-    const occ: Record<string, string> = {};
-    for (const [sq, node] of pieces) occ[sq] = node.dataset.letter!;
-    occupied = occ;
+    layer ??= new PieceLayer(piecesEl, bottom);
+    occupied = layer.render(fen, uci);
   }
 
   // ---- what the player does ------------------------------------------------------------------
@@ -175,7 +128,7 @@
   }
 
   function select(square: string) {
-    const node = pieces.get(square);
+    const node = pieceAt(square);
     if (!room || !canMove || !node || colourOf(node.dataset.letter!) !== bottom) {
       selected = null; targets = []; return;
     }
@@ -184,7 +137,7 @@
   }
 
   function isPromotion(from: string, to: string): boolean {
-    const node = pieces.get(from);
+    const node = pieceAt(from);
     if (!node || node.dataset.letter!.toUpperCase() !== "P") return false;
     return to[1] === "8" || to[1] === "1";
   }
@@ -210,7 +163,7 @@
   async function tryMove(from: string, to: string, dropped: boolean): Promise<boolean> {
     if (!targets.includes(to)) return false;
     selected = null; targets = [];
-    const node = pieces.get(from);
+    const node = pieceAt(from);
     let uci = from + to;
     if (isPromotion(from, to)) {
       if (node) placeNow(node, to);
@@ -252,7 +205,7 @@
     const square = squareUnder(e.clientX, e.clientY);
     if (!square) return;
     if (selected && targets.includes(square)) { tryMove(selected, square, false); return; }
-    const node = pieces.get(square);
+    const node = pieceAt(square);
     if (node && canMove && colourOf(node.dataset.letter!) === bottom) {
       // Lifted at the press, centred under the pointer.
       drag = { square, node, moved: false, startX: e.clientX, startY: e.clientY };
@@ -353,7 +306,7 @@
     if (s.wrong && !wrongShown) {
       wrongShown = s.wrong;
       optimistic = null;
-      const node = pieces.get(s.wrong.slice(0, 2));
+      const node = pieceAt(s.wrong.slice(0, 2));
       if (node) place(node, s.wrong.slice(2, 4));
       selected = null; targets = [];
       if (!retracting) {

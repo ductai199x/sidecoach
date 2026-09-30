@@ -1,0 +1,251 @@
+/* The games page and the review page (docs/game-review-plan.md): chess.com's review in its
+   manners -- the summary, then the game move by move with the coach's card, the eval bar and
+   graph, the move list with each move's class -- in the panel's own tokens and badges. */
+
+/* The kinds of move, one colour each: the badges' (panel.css), and the three they leave
+   plain in the live move list. */
+:root {
+  --cls-brilliant: #1baca6;
+  --cls-great: #5b8bb0;
+  --cls-best: #81b64c;
+  --cls-excellent: #81b64c;
+  --cls-good: #95b776;
+  --cls-book: #c9a27a;
+  --cls-inaccuracy: #f7c631;
+  --cls-mistake: #ffa459;
+  --cls-miss: #ff7769;
+  --cls-blunder: #fa412d;
+}
+.badge.excellent { background: var(--cls-excellent); }
+.badge.good      { background: var(--cls-good); }
+.badge.book      { background: var(--cls-book); }
+.badge.excellent::after { content: "\1F44D\FE0E"; font: 700 9.5px/1 "Segoe UI Symbol", "Segoe UI", sans-serif; letter-spacing: 0; }
+.badge.good::after      { content: "\2713"; font-size: 11px; letter-spacing: 0; }
+.badge.book::after      { content: ""; width: 10px; height: 8px; border: 1.6px solid #fff; border-top-width: 1.2px; border-radius: 1px 1px 2px 2px; box-sizing: border-box; background: linear-gradient(90deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%); }
+.cls-text.brilliant { color: var(--cls-brilliant); } .cls-text.great { color: var(--cls-great); }
+.cls-text.best, .cls-text.excellent { color: var(--cls-best); } .cls-text.good { color: var(--cls-good); }
+.cls-text.book { color: var(--cls-book); } .cls-text.inaccuracy { color: var(--cls-inaccuracy); }
+.cls-text.mistake { color: var(--cls-mistake); } .cls-text.miss { color: var(--cls-miss); }
+.cls-text.blunder { color: var(--cls-blunder); }
+
+.muted { color: var(--muted); }
+.linkbtn { display: inline-flex; align-items: center; text-decoration: none; }
+a.primary.linkbtn {
+  background: var(--accent); color: var(--accent-ink); border-radius: 5px; padding: 5px 12px;
+  font-weight: 700; box-shadow: 0 3px 0 #5f8a36; white-space: nowrap;
+}
+a.primary.linkbtn:hover { background: var(--accent-hover); }
+
+/* ---- the games page: bringing games in, then the library, one scrolling column ---- */
+.games-page main {
+  display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; gap: 14px; overflow-y: auto;
+  max-width: 980px; width: 100%; margin: 0 auto; padding: 14px 16px 24px;
+}
+.gm-mark, .rv-logo { width: 28px; height: 28px; }
+.gm-name, .rv-name { font-weight: 700; font-size: 15px; }
+.gm-sub, .rv-sub { color: var(--muted); font-size: 12px; }
+.gm-in {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+}
+.gm-in .seg { align-self: flex-start; }
+.gm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.gm-as b { color: var(--ink); }
+.gm-months { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.gm-pgn {
+  min-height: 110px; resize: vertical; background: var(--panel2); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: 12.5px/1.4 Consolas, "Cascadia Mono", monospace;
+}
+.gm-file { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.gm-file:hover { background: var(--panel2); }
+.gm-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.gm-said { font-size: 13px; color: var(--accent); }
+.gm-said.bad { color: var(--error); }
+.gm-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.seg.small .segbtn { padding: 3px 9px; font-size: 12px; }
+.gm-empty { color: var(--muted); padding: 22px 4px; }
+.gm-games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.gm-game {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr) 54px 96px 76px auto; align-items: center; gap: 10px;
+  padding: 7px 10px; background: var(--panel); border-radius: 6px;
+}
+.gm-game:hover { background: #2c2a27; }
+.gm-kind { display: flex; flex-direction: column; font-size: 12.5px; text-transform: capitalize; }
+.gm-kind small { color: var(--muted); font-size: 10.5px; text-transform: none; }
+.gm-players { display: flex; flex-direction: column; min-width: 0; }
+.gm-player { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gm-player small { color: var(--muted); }
+.gm-player.me { font-weight: 700; }
+.sw { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+.sw.w { background: #f0efed; } .sw.b { background: #1f1e1c; box-shadow: inset 0 0 0 1px #5a5754; }
+.gm-result { font-weight: 700; text-align: center; border-radius: 4px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.gm-result.won { background: #81b64c33; color: #a3d160; }
+.gm-result.lost { background: #fa412d2e; color: #ff7a6b; }
+.gm-result.drawn { background: #9d9c9a2a; }
+.gm-acc { display: flex; gap: 4px; }
+.acc { font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 700; border-radius: 4px; padding: 2px 5px; }
+.acc.w { background: #f0efed; color: #262522; }
+.acc.b { background: #1f1e1c; color: #f0efed; box-shadow: inset 0 0 0 1px #4b4847; }
+.gm-when { color: var(--muted); font-size: 12px; text-align: right; }
+.gm-go { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
+.gm-del.iconbtn { width: 28px; height: 28px; }
+@media (max-width: 720px) {
+  .gm-game { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "players result" "meta go"; }
+  .gm-players { grid-area: players; } .gm-result { grid-area: result; padding: 2px 8px; }
+  .gm-kind { grid-area: meta; flex-direction: row; gap: 6px; } .gm-go { grid-area: go; }
+  .gm-acc, .gm-when { display: none; }
+}
+
+/* ---- the review page: the eval bar, the board, the review's pane ---- */
+.review-page main {
+  grid-template-columns: calc(var(--board) + 30px) minmax(var(--panel-min), 460px);
+  column-gap: 14px;
+}
+.rv-back.iconbtn { width: 34px; height: 34px; color: var(--ink); }
+.rv-boardrow { display: flex; gap: 8px; }
+.rv-blank { background: var(--panel2); border-radius: 4px; }
+/* The eval bar: White's share (--share) filled light from White's end -- the bottom, or the
+   top when the board is turned (.flipped) -- and the number at the leader's end: on the fill
+   when White leads (.on-fill), at the far end when Black does. */
+.rv-evalbar {
+  position: relative; flex: 0 0 auto; width: 22px; height: var(--board); border-radius: 3px; overflow: hidden;
+  background: #403d39;
+}
+.rv-evalbar .fill {
+  position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--share) * 100%);
+  background: #f0efed; transition: height 260ms ease, width 260ms ease;
+}
+.rv-evalbar.flipped .fill { bottom: auto; top: 0; }
+.rv-evalbar .num {
+  position: absolute; left: 0; right: 0; top: 5px; text-align: center; color: #f0efed;
+  font: 700 9.5px/1 "Segoe UI", system-ui, sans-serif; letter-spacing: -0.3px; z-index: 1;
+}
+.rv-evalbar .num.on-fill { top: auto; bottom: 5px; color: #403d39; }
+.rv-evalbar.flipped .num { top: auto; bottom: 5px; }
+.rv-evalbar.flipped .num.on-fill { top: 5px; bottom: auto; }
+.rv-left { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rv-player { display: flex; align-items: center; gap: 8px; height: 22px; font-weight: 600; }
+.rv-player small { color: var(--muted); font-weight: 500; }
+.rv-player .clk { margin-left: auto; font-variant-numeric: tabular-nums; background: var(--panel2); border-radius: 4px; padding: 1px 7px; font-size: 12.5px; }
+/* The board is its own measure: the badge on a square scales with it, whatever sets its size. */
+.rv-board { container-type: inline-size; }
+.rv-board .sq.cls { background-image: linear-gradient(var(--tint), var(--tint)); }
+.rv-mark {
+  position: absolute; width: 12.5%; height: 12.5%; pointer-events: none; z-index: 3;
+}
+.rv-mark .badge {
+  position: absolute; right: -9%; top: -9%; width: 38%; height: 38%;
+  font-size: 2.1cqw; box-shadow: 0 2px 3px #0006;
+}
+.overlay .mk-best { --mk: #81b64cdd; }
+.overlay .mk-follow { --mk: #5b8bb0dd; }
+
+.rv-pane {
+  display: flex; flex-direction: column; min-height: 0; height: calc(var(--board) + 56px);
+  background: var(--panel); border-radius: 8px; overflow: hidden;
+}
+.rv-pane-head {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+  font-weight: 700; font-size: 15px;
+}
+.rv-pane-head .strength { margin-left: auto; font-weight: 500; font-size: 12px; color: var(--muted); }
+.rv-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.rv-foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+
+/* the analysis running */
+.rv-progress { display: flex; flex-direction: column; gap: 8px; padding: 30px 6px; text-align: center; color: var(--muted); }
+.rv-progress .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
+.rv-progress .bar i { display: block; height: 100%; background: var(--accent); transition: width 300ms ease; }
+.rv-failed { color: var(--error); padding: 20px 4px; }
+
+/* the coach's bubble, on the summary and over each move */
+.rv-say { display: flex; gap: 10px; align-items: flex-start; }
+.rv-say .who { width: 34px; height: 34px; border-radius: 50%; background: var(--panel2) url(/logo.svg) center / 70% no-repeat; flex: 0 0 auto; }
+.rv-say .bubble {
+  position: relative; background: var(--panel2); border-radius: 12px; padding: 9px 12px; line-height: 1.42; flex: 1 1 auto; min-width: 0;
+}
+.rv-say .bubble::before {
+  content: ""; position: absolute; left: -6px; top: 12px; border: 6px solid transparent; border-left: 0; border-right-color: var(--panel2);
+}
+
+/* the graph: White's expected score across the game */
+.rv-graph { position: relative; width: 100%; border-radius: 6px; overflow: hidden; background: #403d39; cursor: pointer; }
+.rv-graph svg { display: block; width: 100%; height: 100%; }
+.rv-graph .white { fill: #f0efed; }
+.rv-graph .mid { stroke: #8b8987; stroke-width: 0.6; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+.rv-graph .at { stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.rv-graph .hover { stroke: #ffffff70; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.rv-graph .dot { stroke: #262522; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+
+/* the summary */
+.rv-players { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: center; }
+.rv-players .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rv-players .rating { color: var(--muted); font-size: 12px; }
+.rv-players .acc { display: inline-block; margin-top: 6px; font-size: 20px; padding: 4px 12px; border-radius: 6px; }
+.rv-table { display: grid; grid-template-columns: 1fr auto 1fr; row-gap: 3px; align-items: center; }
+.rv-table .n { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rv-table .kind { display: flex; align-items: center; gap: 8px; justify-content: flex-start; min-width: 132px; font-size: 13px; }
+.rv-table .n.zero { color: var(--muted); font-weight: 500; opacity: 0.7; }
+.rv-table .sep { grid-column: 1 / -1; height: 1px; background: var(--line); margin: 6px 0; }
+.rv-table .label { font-weight: 600; font-size: 13px; }
+.rv-table .grade { display: flex; justify-content: center; }
+.rv-table .grade .badge { width: 22px; height: 22px; font-size: 13px; }
+.rv-more { align-self: center; font-size: 12px; }
+.rv-shape { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.rv-shape b { text-transform: capitalize; }
+
+/* the step-through: the coach's card on the move */
+.rv-card { display: flex; flex-direction: column; gap: 8px; }
+.rv-card .head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+.rv-card .head .badge { width: 22px; height: 22px; font-size: 13px; }
+.rv-card .pill {
+  margin-left: auto; font: 700 12px/1 "Segoe UI", system-ui, sans-serif; padding: 4px 7px; border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.rv-card .pill.w { background: #f0efed; color: #262522; }
+.rv-card .pill.b { background: #1f1e1c; color: #f0efed; box-shadow: inset 0 0 0 1px #4b4847; }
+.rv-card .words { line-height: 1.45; }
+.rv-card .words b.mv { color: #d9c8f2; transition: opacity 200ms; }
+.rv-card .words b.mv.dim { opacity: 0.45; }
+.rv-card .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.rv-card .chip { font-size: 11.5px; padding: 1px 8px; border-radius: 9px; background: var(--panel3); }
+.rv-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-actions button { flex: 1 1 auto; }
+
+/* The step-through: the card stays, the move list scrolls under it. */
+.rv-step { overflow: hidden; }
+.rv-step > .rv-card, .rv-step > .rv-say { flex: 0 0 auto; }
+.rv-movebox { flex: 1 1 0; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+
+/* the move list, two columns, each move's class as colour and badge */
+.rv-moves { display: grid; grid-template-columns: 36px 1fr 1fr; row-gap: 1px; font-size: 13.5px; }
+.rv-moves .num { color: var(--muted); padding: 3px 0 3px 4px; }
+.rv-moves .mv {
+  display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-weight: 600;
+}
+.rv-moves .mv:hover { background: var(--panel2); }
+.rv-moves .mv.at { background: var(--panel3); box-shadow: inset 0 -2px 0 var(--accent); }
+.rv-moves .mv .badge { width: 16px; height: 16px; font-size: 10px; }
+.rv-moves .row-odd { background: #2a2825; }
+
+/* the controls under the board */
+.rv-nav { display: flex; gap: 6px; }
+.rv-nav button { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; padding: 6px 0; }
+.rv-nav svg { width: 20px; height: 20px; fill: currentColor; }
+
+/* ---- stacked (a phone, a narrow window): the board across the width with the eval bar lying
+   over it, White's share from the left (the right when the board is turned), then the pane
+   at its own height; the page scrolls. ---- */
+html.stacked .review-page main { height: auto; min-height: 0; }
+html.stacked .rv-left { width: min(100%, var(--mboard, 640px)); flex: 0 0 auto; }
+html.stacked .rv-boardrow { flex-direction: column; gap: 6px; }
+html.stacked .rv-evalbar { width: 100%; height: 14px; }
+html.stacked .rv-evalbar .fill { top: 0; bottom: 0; left: 0; right: auto; height: auto; width: calc(var(--share) * 100%); }
+html.stacked .rv-evalbar.flipped .fill { left: auto; right: 0; }
+html.stacked .rv-evalbar .num { top: 2px; bottom: auto; left: auto; right: 5px; }
+html.stacked .rv-evalbar .num.on-fill { left: 5px; right: auto; }
+html.stacked .rv-evalbar.flipped .num { left: 5px; right: auto; }
+html.stacked .rv-evalbar.flipped .num.on-fill { left: auto; right: 5px; }
+html.stacked .rv-pane { width: 100%; max-width: 640px; height: auto; flex: 0 0 auto; overflow: visible; }
+html.stacked .rv-scroll, html.stacked .rv-movebox { flex: 0 0 auto; overflow: visible; }
+html.stacked .rv-foot { position: sticky; bottom: var(--inset-bottom, 0px); z-index: 5; background: var(--panel); border-radius: 0 0 8px 8px; }

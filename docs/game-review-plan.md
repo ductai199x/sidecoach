@@ -89,8 +89,8 @@ Better, from what their users complain about most:
   presets Fast (depth 14, 2 lines), Standard (18, 3; default), Deep (22); progress shown; the
   result cached in a `reviews` table so a review reopens at once.
 - **Numbers:** the existing labels and accuracy (fitted to chess.com, within 4.4 points); phase
-  accuracy; a performance-rating model fitted on Nova games (800-2300, Lichess scale, converted)
-  and master games (2300+); game shape and key moments from the eval curve.
+  accuracy; a performance-rating model fitted on real players' games (see Phase 0 below); game
+  shape and key moments from the eval curve.
 - **Words:** a template per class on the facts already computed (threat, material, the
   refutation line, the motif) -- free, instant, the fallback; the model rewrites every move,
   prepared in the background after the analysis, at the configured effort, through the claims
@@ -117,3 +117,43 @@ Better, from what their users complain about most:
 | 6 | Phone | The 1:1 port, parity fixtures green, installed on both. |
 
 Cost: no paid development spend; model calls run only through the coach's own settings.
+
+## Phase 0: what the calibration found (2026-09-29/30)
+
+**Accuracy.** Ours against chess.com's own on 144 of the player's game sides (the official API's
+`accuracies`): 5.8 points apart on average, no lean (-1.1), r 0.83. Kept as it is.
+
+**Where the performance rating is fitted from.** Nova's games were the plan (decision 5) and
+proved unusable: Nova's accuracy is flat at about 74 from 800 to 1600, where real players' rises.
+Maia-3 was next, but real games beat any model of them, and the Nova authors' evaluation sample
+is real: 600,000 positions of Lichess rapid (March 2026, 100,000 a band from 800 to 2300 and up),
+17,595 game sides whole from the first move, each with the player's rating. `tools/review/
+human_losses.py` judges every move of a side as the review does (depth 18, the loss in expected
+score); `fit_performance.py` fits and tests.
+
+**What one game says.** Little. A band's mean accuracy is only a point or two above the band
+below's (65 at 800-1100, 68 at 1100-1700, 71-72 at 1700-2300, 78 above), and a player's wanders
+ten points from game to game. Blunders say more (2.2 a 40 moves at 800, 1.1 at 2000, 0.6 above
+2300). So the model reads every move's cost, in its context, not the accuracy alone.
+
+**The model** (`profile/performance.py`): each move in one of six buckets by its loss (best,
+under 0.02, under 0.04, inaccuracy, mistake, blunder), in one of six contexts (the opening or
+after, the mover lost / level / won); the bucket's chance a softmax quadratic in the rating per
+context; a side's rating the mean over a grid weighted by its moves' chances and a prior of
+1500 +/- 400 (Lichess scale); fewer than 8 moves, no rating. Shown on the scale of the game's
+site (ChessGoals' Lichess-to-chess.com table, July 2026, floored at 100) with the middle 80%.
+
+**Its error**, on 696 held-out sides (players the fit never saw): 305 on average, r 0.67; the
+line through accuracy alone 408, r 0.36. It leans to the middle (+280 at 800-1100, -150 above
+2300), as any estimate from so little must. Reading the opponent's moves too (rated opponents
+are paired close: gap SD 131) took it only from 298 to 290 on 262 whole games, and misleads in a
+game against a bot, so each side is read alone.
+
+**Against chess.com.** On the six games chess.com gave a Game Rating: ours 318 from theirs on
+average, r 0.64; on the player's own six sides much nearer (1478 v 1850, 1745 v 1850, 1215 v
+1300, 1927 v 1800, 1631 v 1400, 876 v 850), and far from theirs only on the bots' sides, whose
+mistakes are not a person's. chess.com's own number ranges 850-1850 for the same ~970 player.
+On the player's 42 live chess.com games our estimates run 300-450 above the players' ratings:
+those players blunder like Lichess 1400-1700 players, and 15+10 gives more time than the
+sample's 10+0; the ChessGoals table is extrapolated below chess.com 815. The per-game number is
+shown with its range; a player's level is better read across games (Phase 5's insights).

@@ -288,6 +288,16 @@ class PhaseGrade(BaseModel):
     grade: Label
 
 
+class PerformanceRating(BaseModel):
+    """The rating a side played a game at, from its moves alone (`profile/performance.py`),
+    with the middle 80% of where it may be -- one game says little -- on the scale of the site
+    the game was played on."""
+
+    rating: int
+    low: int
+    high: int
+
+
 class SideSummary(BaseModel):
     """One side of a reviewed game in numbers: the summary screen's column."""
 
@@ -297,7 +307,7 @@ class SideSummary(BaseModel):
     accuracy: float | None = None
     counts: dict[str, int] = Field(default_factory=dict)
     phases: list[PhaseGrade] = Field(default_factory=list)
-    performance: int | None = None
+    performance: PerformanceRating | None = None
 
 
 class KeyMoment(BaseModel):

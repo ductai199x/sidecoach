@@ -223,14 +223,16 @@ def time_class_of(control: str) -> str | None:
 
 def _played_at(headers: chess.pgn.Headers) -> float | None:
     """When the game was played, from its UTC date and time (chess.com, Lichess), else its
-    date alone; None when the PGN does not say."""
-    date = headers.get("UTCDate") or headers.get("Date") or ""
-    clock = headers.get("UTCTime") or headers.get("EndTime") or "00:00:00"
+    date alone -- a day on the calendar, taken at noon here so it shows as that day; None when
+    the PGN does not say."""
+    form = "%Y.%m.%d %H:%M:%S"
     try:
-        parsed = time.strptime(f"{date} {clock[:8]}", "%Y.%m.%d %H:%M:%S")
+        if headers.get("UTCDate") and headers.get("UTCTime"):
+            stamp = f"{headers['UTCDate']} {headers['UTCTime'][:8]}"
+            return float(calendar.timegm(time.strptime(stamp, form)))
+        return time.mktime(time.strptime(f"{headers.get('Date', '')} 12:00:00", form))
     except ValueError:
         return None
-    return float(calendar.timegm(parsed))
 
 
 def _int(value: str | None) -> int | None:

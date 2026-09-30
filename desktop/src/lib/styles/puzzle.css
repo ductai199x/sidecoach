@@ -35,9 +35,6 @@
 .board.cb .sq.target.occupied::after {
   width: 100%; height: 100%; background: transparent; box-shadow: inset 0 0 0 min(0.6vw, 7px) #00000026;
 }
-/* A right-clicked square: red. */
-.board.cb .sq.marked.light { background: #eb7d6a; }
-.board.cb .sq.marked.dark { background: #d36c50; }
 /* The king in check: chess.com's red glow. */
 .board.cb .sq.check { background-image: radial-gradient(circle at center, #ff0000cc 0%, #e70000aa 25%, #e7000000 90%); }
 /* A wrong move's landing square, for a moment. */
@@ -46,29 +43,9 @@
 /* The square under a dragged piece: chess.com's white outline. */
 .board.cb .sq.hover { box-shadow: inset 0 0 0 calc(var(--board) * 0.0075) #ffffffa6; }
 
-/* Pieces on a layer of their own, each placed by a transform, so a move slides. */
-.pieces { position: absolute; inset: 0; pointer-events: none; }
-.piece {
-  position: absolute; left: 0; top: 0; width: 12.5%; height: 12.5%;
-  background-repeat: no-repeat; background-position: center; background-size: 100% 100%;
-  transition: transform 200ms cubic-bezier(0.2, 0.7, 0.3, 1), opacity 120ms ease-out;
-  pointer-events: none; will-change: transform;
-}
-.piece.dragging { transition: none; z-index: 5; }
-.piece.fading { opacity: 0; }
-.piece.wK { background-image: url(/pieces/wK.svg); } .piece.wQ { background-image: url(/pieces/wQ.svg); }
-.piece.wR { background-image: url(/pieces/wR.svg); } .piece.wB { background-image: url(/pieces/wB.svg); }
-.piece.wN { background-image: url(/pieces/wN.svg); } .piece.wP { background-image: url(/pieces/wP.svg); }
-.piece.bK { background-image: url(/pieces/bK.svg); } .piece.bQ { background-image: url(/pieces/bQ.svg); }
-.piece.bR { background-image: url(/pieces/bR.svg); } .piece.bB { background-image: url(/pieces/bB.svg); }
-.piece.bN { background-image: url(/pieces/bN.svg); } .piece.bP { background-image: url(/pieces/bP.svg); }
 body.grabbing, body.grabbing * { cursor: grabbing !important; }
 .board.cb .sq.grab { cursor: grab; }
 
-/* The user's arrows and the coach's marks share the overlay; the user's are green, as
-   chess.com's. */
-.overlay .mk-user { --mk: #15781b; }
-.overlay line.user { stroke-width: 0.2; opacity: 0.85; }
 
 /* The promotion picker: a column of the four pieces over the promotion square. */
 .promo {

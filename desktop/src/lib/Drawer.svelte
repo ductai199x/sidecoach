@@ -76,7 +76,7 @@
 
   // Settings and Setup take the drawer's place in the history, so Back from them comes
   // back to the panel, not to an open drawer. In the shell they are windows of their own.
-  function go(route: "settings" | "setup"): void {
+  function go(route: "settings" | "setup" | "games"): void {
     if (inShell()) {
       hide();
       openWindow(route);
@@ -136,6 +136,14 @@
     <button class="ditem" onclick={() => act(() => panel.analyze())}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
       <span>Re-read the screen<span class="hint">A puzzle, an analysis board, a game joined late</span></span>
+    </button>
+  </div>
+
+  <div class="dsec">
+    <div class="dlabel">Games</div>
+    <button class="ditem" onclick={() => go("games")}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/></svg>
+      <span>Your games<span class="hint">Review any game move by move: watched, chess.com, Lichess, a PGN</span></span>
     </button>
   </div>
 

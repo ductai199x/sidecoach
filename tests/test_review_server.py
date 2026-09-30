@@ -94,6 +94,11 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     assert (first["san"], first["side"], first["from"], first["to"]) == ("e4", "white", "e2", "e4")
     assert first["clock_ms"] == 598_000 and first["spent_ms"] == 2_000
     assert set(first["eval"]) == {"cp", "mate", "result"}
+    # The lines its card plays on the board: the best from before it, what follows from after.
+    steps = first["best_line"] + first["follow_line"]
+    assert steps and all(set(s) == {"san", "uci", "fen"} for s in steps)
+    # Six moves a side say too little to name the rating they were played at.
+    assert summary["white"]["performance"] is None
     assert state["progress"]["done"] == state["progress"]["total"] == 13
 
     # Listed with its accuracies now; opened again, the saved review is read, not redone.

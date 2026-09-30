@@ -488,8 +488,8 @@ async fn open_captions(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// A page of the app in a window of its own: `settings`, `setup`, or `puzzle/<id>`. A
-/// second request for the same route brings the window it has to the front.
+/// A page of the app in a window of its own: `settings`, `setup`, `games`, `puzzle/<id>` or
+/// `review/<key>`. A second request for the same route brings the window it has to the front.
 ///
 /// Async on purpose: a synchronous command runs on the main thread, and on Windows the
 /// webview's creation completes through that thread's message loop -- built from a sync
@@ -516,6 +516,10 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
             1180.0,
             820.0,
         )
+    } else if route.starts_with("review/") {
+        ("Sidecoach · Game Review".to_string(), 1320.0, 880.0)
+    } else if route == "games" {
+        ("Sidecoach · Games".to_string(), 1040.0, 800.0)
     } else if route == "settings" {
         ("Sidecoach · Settings".to_string(), 900.0, 760.0)
     } else {

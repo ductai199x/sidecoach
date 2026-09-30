@@ -36,8 +36,8 @@ REVIEW_VERSION = 1
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
-# The best line shown after a move, in plies.
-BEST_PLIES = 6
+# The lines a move's card plays on the board (the best, and what follows the move), in plies.
+LINE_PLIES = 6
 
 
 class ReviewRoom:
@@ -225,8 +225,10 @@ class ReviewRoom:
 
 def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
     """Every move as the review page draws it: the move and its squares, its label and what it
-    cost, the best move and its line, and the position after -- its FEN, the evaluation from
-    White's side (centipawns or mate) and White's expected score."""
+    cost, the best move and its line, what follows the move (the best line of the position it
+    led to), and the position after -- its FEN, the evaluation from White's side (centipawns
+    or mate) and White's expected score. A line comes as steps the board plays: each move in
+    SAN and UCI and the position it leaves."""
     out = []
     for move in reviewed.moves:
         before = chess.Board(move.fen_before)
@@ -234,7 +236,8 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
         after = before.copy(stack=False)
         after.push(played)
         best = move.assessment.best
-        line = _san_line(before, best[:BEST_PLIES])
+        line = _steps(before, best[:LINE_PLIES])
+        follow = move.after.lines[0].moves[:LINE_PLIES] if move.after.lines else []
         out.append(
             {
                 "ply": move.ply,
@@ -249,8 +252,9 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
                 "accuracy": move.assessment.accuracy,
                 "loss": round(move.assessment.expected_loss, 4),
                 "best_uci": best[0] if best else None,
-                "best_san": line[0] if line else None,
+                "best_san": line[0]["san"] if line else None,
                 "best_line": line,
+                "follow_line": _steps(after, follow),
                 "eval": _white_eval(after, move.after.lines),
                 "white_score": round(_white_score(after, move.after.lines), 4),
                 "tags": sorted({t.name for t in move.assessment.tags}),
@@ -262,8 +266,9 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
     return out
 
 
-def _san_line(board: chess.Board, ucis: list[str]) -> list[str]:
-    """A line of moves in SAN from `board`, as far as it stays legal."""
+def _steps(board: chess.Board, ucis: list[str]) -> list[dict[str, str]]:
+    """A line of moves from `board` as far as it stays legal, each in SAN and UCI with the
+    position it leaves."""
     b = board.copy(stack=False)
     out = []
     for uci in ucis:
@@ -273,8 +278,9 @@ def _san_line(board: chess.Board, ucis: list[str]) -> list[str]:
             break
         if move not in b.legal_moves:
             break
-        out.append(b.san(move))
+        san = b.san(move)
         b.push(move)
+        out.append({"san": san, "uci": uci, "fen": b.fen()})
     return out
 
 
