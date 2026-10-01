@@ -474,7 +474,16 @@ class ReviewRoom(
             makeEngine = makeEngine,
             onProgress = { d, t -> synchronized(lock) { this.done = d; total = t } },
             stop = stop,
-        ) ?: return
+        ) ?: run {
+            if (!stop.get()) { // not stopped: the game went from the record meanwhile
+                synchronized(lock) {
+                    status = "failed"
+                    error = "This game is no longer in your record."
+                }
+                emit("sys", "warn", "$key left the record while it was reviewed")
+            }
+            return
+        }
         val (reviewed, summary) = done
         ready(reviewed, summary)
         emit("sys", "info", "reviewed in ${String.format(Locale.ROOT, "%.1f", reviewed.seconds)}s")
@@ -643,7 +652,10 @@ class ReviewRoom(
                 for (engine in engines) runCatching { engine.close() }
             }
             if (stop != null && stop.get()) return null
-            if (store.isRemoved(row.key)) { // taken out of the player's record while it was reviewed
+            if (!store.inRecord(row.key)) {
+                // Taken out of the player's record while it was reviewed: removed, or the profile
+                // reset (the review of 2026-10-01: a review saved after a reset left Stats a game
+                // that nothing listed and nothing could remove).
                 store.clearProgress(row.key)
                 return null
             }

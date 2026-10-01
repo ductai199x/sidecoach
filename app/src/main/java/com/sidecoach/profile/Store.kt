@@ -517,6 +517,19 @@ class Store(val path: File?) {
         rows("SELECT 1 FROM removed WHERE key = ?", key) { true }.isNotEmpty()
     }
 
+    /**
+     * Whether a game (by its library key) is in the player's record: its import in the library,
+     * or Sidecoach's record of the watched game -- gone once removed, or once the profile is
+     * reset. `in_record`.
+     */
+    fun inRecord(key: String): Boolean = lock.withLock {
+        if (key.startsWith(WATCHED)) {
+            rows("SELECT 1 FROM games WHERE game_id = ?", key.removePrefix(WATCHED)) { true }.isNotEmpty()
+        } else {
+            rows("SELECT 1 FROM library WHERE key = ?", key) { true }.isNotEmpty()
+        }
+    }
+
     /** Games the player brought in by hand (a pasted PGN): no longer left out. `unremove`. */
     fun unremove(keys: List<String>) {
         lock.withLock { for (k in keys) exec("DELETE FROM removed WHERE key = ?", k) }
