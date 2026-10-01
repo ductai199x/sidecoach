@@ -228,8 +228,8 @@ class ThemeModel(
             for (i in 0 until 64) {
                 val last = cells[i]
                 sils.add(
-                    if (last != null && last.crop.contentEquals(bytes[i])) last.sil
-                    else SilhouetteReader.of(crops[i], Squares.CELL, pieceColours, palette),
+                    if (last != null && samePixels(last.crop, bytes[i])) last.sil
+                    else SilhouetteReader.of(crops[i], Squares.CELL, pieceColours, palette, bytes[i]),
                 )
             }
             val covered = coveredCells(sils)
@@ -238,7 +238,7 @@ class ThemeModel(
             for (i in 0 until 64) {
                 val last = cells[i]
                 val same = last != null && last.sil === sils[i] && last.covered == covered[i] &&
-                    last.cellPx == cellPx && last.crop.contentEquals(bytes[i])
+                    last.cellPx == cellPx && samePixels(last.crop, bytes[i])
                 if (!same) fresh.add(i)
             }
             lastFresh = fresh.size
@@ -1048,6 +1048,18 @@ class ThemeModel(
             return sum
         }
     }
+}
+
+/**
+ * Two cells' pixels byte for byte, in a plain loop. `ByteArray.contentEquals` is
+ * `Arrays.equals`, which in a debuggable process (the debug build the phone and the tests run)
+ * reads every eight bytes through a JNI call to `Unsafe`: 128 crops of 27 kB a frame made that
+ * 0.4 million calls, most of a frame's time on the emulator.
+ */
+private fun samePixels(a: ByteArray, b: ByteArray): Boolean {
+    if (a.size != b.size) return false
+    for (k in a.indices) if (a[k] != b[k]) return false
+    return true
 }
 
 private fun norm(v: DoubleArray): Double {

@@ -299,24 +299,73 @@ private val SPACES = Regex("\\s+")
 /** A numbered move in one spelling: "17. Rh1+" and "17.Rh1" are "17.Rh1". `disclosure.numbered_key`. */
 fun numberedKey(text: String): String = SPACES.replace(text, "").trimEnd('+', '#')
 
-/**
+/*
  * A token is a bare square ("f7") or a SAN move ending in its destination square ("Ng5",
- * "Nxf7+", "exd5", "R1e1", "e8=Q"). Group 1 is the destination square.
+ * "Nxf7+", "exd5", "R1e1", "e8=Q"): the desktop's `_SQUARE_TOKEN`,
+ * `[KQRBN]?[a-h]?[1-8]?x?([a-h][1-8])(?:=[QRBN])?[+#]?[!?]*`, group 1 the destination square,
+ * over the words `_TOKEN_SPLIT` (`[^A-Za-z0-9+#=!?]+`) leaves. Both are read by hand below
+ * ([tokensOf], [destinationOf]).
  */
-private val SQUARE_TOKEN = Regex("[KQRBN]?[a-h]?[1-8]?x?([a-h][1-8])(?:=[QRBN])?[+#]?[!?]*")
-private val TOKEN_SPLIT = Regex("[^A-Za-z0-9+#=!?]+")
 private val TRAILING_MARKS = Regex("[+#!?]+$")
 private val WORD_RE = Regex("[a-z0-9=+#-]+")
 
 /** Destination squares of every bare square or SAN token in `text`. */
 fun squaresIn(text: String): Set<String> {
     val found = LinkedHashSet<String>()
-    for (token in TOKEN_SPLIT.split(text)) {
-        val match = SQUARE_TOKEN.matchEntire(token) ?: continue
-        found.add(match.groupValues[1])
+    for (token in tokensOf(text)) {
+        val square = destinationOf(token) ?: continue
+        found.add(square)
     }
     return found
 }
+
+/**
+ * The words `_TOKEN_SPLIT` leaves of [text] that are not empty: each run of letters, digits and
+ * `+#=!?`. Read by hand, as [destinationOf] and [trailingMarksOff] are: on Android every match of
+ * a [Regex] opens a native matcher and registers it for cleaning, and these three ran once a
+ * token, tens of tokens a reply -- the parity suite's 67,000 leak checks spent most of three
+ * minutes there. An empty token never names a square, so leaving them out changes nothing.
+ */
+private fun tokensOf(text: String): List<String> {
+    val out = ArrayList<String>()
+    var start = -1
+    for (i in 0..text.length) {
+        val inToken = i < text.length && text[i].let {
+            it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '+' || it == '#' || it == '=' || it == '!' || it == '?'
+        }
+        if (inToken) {
+            if (start < 0) start = i
+        } else if (start >= 0) {
+            out.add(text.substring(start, i))
+            start = -1
+        }
+    }
+    return out
+}
+
+/**
+ * `_SQUARE_TOKEN.fullmatch(token).group(1)`: the destination square of a bare square or
+ * SAN token, or null. Read from the end, which is the regex's one way to match: what may follow
+ * the square (`=Q`, `+`, `!?`) never holds a file or a rank, and what may precede it
+ * (`[KQRBN]?[a-h]?[1-8]?x?`) is four distinct classes in order.
+ */
+private fun destinationOf(token: String): String? {
+    var end = token.length
+    while (end > 0 && (token[end - 1] == '!' || token[end - 1] == '?')) end--
+    if (end > 0 && (token[end - 1] == '+' || token[end - 1] == '#')) end--
+    if (end >= 2 && token[end - 2] == '=' && token[end - 1] in "QRBN") end -= 2
+    if (end < 2 || token[end - 2] !in 'a'..'h' || token[end - 1] !in '1'..'8') return null
+    val stop = end - 2
+    var i = 0
+    if (i < stop && token[i] in "KQRBN") i++
+    if (i < stop && token[i] in 'a'..'h') i++
+    if (i < stop && token[i] in '1'..'8') i++
+    if (i < stop && token[i] == 'x') i++
+    return if (i == stop) token.substring(stop, end) else null
+}
+
+/** `TRAILING_MARKS.replace(token, "")` for a token, which holds no line break for `$` to stop at. */
+private fun trailingMarksOff(token: String): String = token.trimEnd('+', '#', '!', '?')
 
 /**
  * Withheld items that `text` mentions. An empty list means the draft is clean.
@@ -386,8 +435,8 @@ fun leakCheck(
         if (value is String && value.isEmpty()) continue
         if (value is List<*> && value.isEmpty()) continue
         val parts = if (value is List<*>) value else listOf(value)
-        for (token in TOKEN_SPLIT.split(parts.joinToString(" ") { it.toString() })) {
-            if (SQUARE_TOKEN.matches(token)) allowedMoves.add(TRAILING_MARKS.replace(token, ""))
+        for (token in tokensOf(parts.joinToString(" ") { it.toString() })) {
+            if (destinationOf(token) != null) allowedMoves.add(trailingMarksOff(token))
         }
     }
 
@@ -408,10 +457,9 @@ fun leakCheck(
             .map { TRAILING_MARKS.replace(it, "") }
             .toSet()
         val answerSquares = squaresIn(answer.joinToString(" ")) - allowedSquares
-        for (token in TOKEN_SPLIT.split(movesText)) {
-            val match = SQUARE_TOKEN.matchEntire(token) ?: continue
-            val square = match.groupValues[1]
-            val core = TRAILING_MARKS.replace(token, "")
+        for (token in tokensOf(movesText)) {
+            val square = destinationOf(token) ?: continue
+            val core = trailingMarksOff(token)
             if (core != square) {
                 val known = core.lowercase() in saidWords || core in allowedMoves
                 if (core in answer && !known) add("move $core")

@@ -81,20 +81,61 @@ object SilhouetteReader {
     }
 
     /**
+     * Silhouettes by the square's pixels and what they were read with (`pieces.silhouette`,
+     * desktop a3479bd): every frame shows the same few square images again (an empty light
+     * square, a pawn on a dark one), each was read again every frame, at every square, and by
+     * each reader (the frame's, the occupancy's, the start position's). A [Sil] is never
+     * changed once made, so one serves every square that shows those pixels. The desktop keeps
+     * 1024; a Kotlin [Sil] holds its inner patch as floats, about 33 kB, four times the
+     * desktop's bytes, so the phone keeps fewer.
+     */
+    const val SILHOUETTES_KEPT = 256
+
+    private val silhouettes = object : LinkedHashMap<Digest, Sil>(SILHOUETTES_KEPT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Digest, Sil>?): Boolean =
+            size > SILHOUETTES_KEPT
+    }
+
+    /**
      * Silhouette mask, foreground fraction, colour statistics, hover, background.
      * [colours] are the set's fills and outlines, for the tones; [palette] every colour the
-     * set draws with, for telling a drawing from a piece's detail.
+     * set draws with, for telling a drawing from a piece's detail. Read once for the same
+     * pixels and the same colours (see [SILHOUETTES_KEPT]). [bytes] are the patch's own when
+     * the caller has them already.
      */
     fun of(
         patch: Mat,
         size: Int = CELL,
         colours: PieceColours = emptyList(),
         palette: List<DoubleArray> = emptyList(),
+        bytes: ByteArray? = null,
+    ): Sil {
+        // The crop is 8-bit BGR, as the capture hands it over.
+        val patchBytes = bytes ?: ByteArray(patch.rows() * patch.cols() * 3).also { patch.get(0, 0, it) }
+        val key = Digest.of(patchBytes) { digest ->
+            digest.longs(patch.rows().toLong(), patch.cols().toLong(), size.toLong())
+            for ((fill, outline) in colours) {
+                digest.doubles(fill)
+                if (outline == null) digest.longs(0L) else digest.longs(1L).doubles(outline)
+            }
+            digest.longs(-1L)
+            for (colour in palette) digest.doubles(colour)
+        }
+        synchronized(silhouettes) { silhouettes[key] }?.let { return it }
+        val sil = read(patch, patchBytes, size, colours, palette)
+        synchronized(silhouettes) { silhouettes[key] = sil }
+        return sil
+    }
+
+    private fun read(
+        patch: Mat,
+        patchBytes: ByteArray,
+        size: Int,
+        colours: PieceColours,
+        palette: List<DoubleArray>,
     ): Sil {
         val n = patch.rows()
-        // The crop is 8-bit BGR, as the capture hands it over; the maths wants floats.
-        val patchBytes = ByteArray(n * patch.cols() * 3)
-        patch.get(0, 0, patchBytes)
+        // The maths wants floats.
         val patchPixels = FloatArray(patchBytes.size) { (patchBytes[it].toInt() and 0xFF).toFloat() }
 
         val (background, spread) = ringMedianAndSpread(patchPixels, n, patch.cols())
@@ -284,7 +325,11 @@ object SilhouetteReader {
         // numpy compares a float32 map with a Python float in float32 (NEP 50): so here.
         val cutoff = tolerance.toFloat()
         val foreground = ByteArray(size * size)
-        for (i in foreground.indices) if (distance[i] > cutoff) foreground[i] = 1
+        var over = false
+        for (i in foreground.indices) if (distance[i] > cutoff) { foreground[i] = 1; over = true }
+        // Nothing off the square's colour: the mask is empty, as the closing, the filling and
+        // the opening below would leave it -- most cells of a board, every frame (a3479bd).
+        if (!over) return Built(BooleanArray(size * size), 0.0, null)
         val mat = Mat(size, size, CvType.CV_8U)
         mat.put(0, 0, foreground)
         val kernel = Mat.ones(3, 3, CvType.CV_8U)
@@ -494,6 +539,49 @@ object SilhouetteReader {
         val band = max(1, pyRound(n * Pieces.HOVER_BAND))
         val edge = max(1, pyRound(n * Pieces.HOVER_EDGE))
         if (2 * band >= n) return false  // a patch too small to have an outer band
+        // The four sides, each read as (row, column) of a rotated view.
+        fun at(sideIndex: Int, k: Int, along: Int): Int = when (sideIndex) {
+            0 -> k * width + along                    // top
+            1 -> (n - 1 - k) * width + along          // bottom
+            2 -> along * width + k                    // left
+            else -> along * width + (width - 1 - k)   // right
+        }
+        // An outline is a step between one row and the next, and it runs through both ends of
+        // the side; a tint that fades toward the edge is a ramp of a few levels a row, and a
+        // piece's base or a label reaches one end at most. So the step is read at each end of
+        // the side, and the smaller counts. Read first: most cells have no step and are done
+        // here (every cell of every frame comes through; desktop a3479bd).
+        val steps = DoubleArray(4)
+        val reach = max(2, pyRound(n * Pieces.HOVER_CORNER))
+        for (sideIndex in 0 until 4) {
+            var worst = Double.MAX_VALUE
+            for ((lo, hi) in listOf(band to band + reach, n - band - reach to n - band)) {
+                val lines = ArrayList<DoubleArray>()
+                val from = max(0, lo)
+                val until = min(n, hi)
+                val bs = FloatArray(max(0, until - from))
+                val gs = FloatArray(bs.size)
+                val rs = FloatArray(bs.size)
+                for (k in 0 until min(n, 2 * band + 1)) {
+                    var count = 0
+                    for (along in from until until) {
+                        val p = at(sideIndex, k, along) * 3
+                        bs[count] = pixels[p]; gs[count] = pixels[p + 1]; rs[count] = pixels[p + 2]
+                        count++
+                    }
+                    if (count == 0) continue
+                    lines.add(doubleArrayOf(medianOf(bs, count), medianOf(gs, count), medianOf(rs, count)))
+                }
+                var biggest = 0.0
+                for (k in 0 until lines.size - 1) {
+                    biggest = max(biggest, distanceOf(lines[k + 1], lines[k]))
+                }
+                worst = min(worst, biggest)
+            }
+            steps[sideIndex] = if (worst == Double.MAX_VALUE) 0.0 else worst
+        }
+        steps.sort()
+        if (steps[1] < Pieces.HOVER_STEP) return false  // no step on three sides: a ramp
         val distance = FloatArray(n * width)
         for (y in 0 until n) {
             for (x in 0 until width) {
@@ -504,18 +592,11 @@ object SilhouetteReader {
                 distance[y * width + x] = sqrt(db * db + dg * dg + dr * dr).toFloat()
             }
         }
-        // The four sides, each read as (row, column) of a rotated view.
         val strong = DoubleArray(4)
         val weak = DoubleArray(4)
         val medians = DoubleArray(4)
-        val steps = DoubleArray(4)
         for (sideIndex in 0 until 4) {
-            fun at(k: Int, along: Int): Int = when (sideIndex) {
-                0 -> k * width + along                    // top
-                1 -> (n - 1 - k) * width + along          // bottom
-                2 -> along * width + k                    // left
-                else -> along * width + (width - 1 - k)   // right
-            }
+            fun at(k: Int, along: Int): Int = at(sideIndex, k, along)
             var bestStrong = 0.0
             var bestWeak = 0.0
             for (k in 0 until band) {
@@ -539,38 +620,8 @@ object SilhouetteReader {
             var edgeCount = 0
             for (k in 0 until edge) for (along in 0 until n) edgeValues[edgeCount++] = distance[at(k, along)]
             medians[sideIndex] = medianOf(edgeValues, edgeCount)
-            // An outline is a step between one row and the next, and it runs through both
-            // ends of the side; a tint that fades toward the edge is a ramp of a few levels
-            // a row, and a piece's base or a label reaches one end at most.
-            val reach = max(2, pyRound(n * Pieces.HOVER_CORNER))
-            var worst = Double.MAX_VALUE
-            for ((lo, hi) in listOf(band to band + reach, n - band - reach to n - band)) {
-                val lines = ArrayList<DoubleArray>()
-                val from = max(0, lo)
-                val until = min(n, hi)
-                val bs = FloatArray(max(0, until - from))
-                val gs = FloatArray(bs.size)
-                val rs = FloatArray(bs.size)
-                for (k in 0 until min(n, 2 * band + 1)) {
-                    var count = 0
-                    for (along in from until until) {
-                        val p = at(k, along) * 3
-                        bs[count] = pixels[p]; gs[count] = pixels[p + 1]; rs[count] = pixels[p + 2]
-                        count++
-                    }
-                    if (count == 0) continue
-                    lines.add(doubleArrayOf(medianOf(bs, count), medianOf(gs, count), medianOf(rs, count)))
-                }
-                var biggest = 0.0
-                for (k in 0 until lines.size - 1) {
-                    biggest = max(biggest, distanceOf(lines[k + 1], lines[k]))
-                }
-                worst = min(worst, biggest)
-            }
-            steps[sideIndex] = if (worst == Double.MAX_VALUE) 0.0 else worst
         }
-        strong.sort(); weak.sort(); medians.sort(); steps.sort()
-        if (steps[1] < Pieces.HOVER_STEP) return false  // no step on three sides: a ramp
+        strong.sort(); weak.sort(); medians.sort()
         if (medians[0] > Pieces.HOVER_TOLERANCE / 2 && medians[2] > Pieces.HOVER_TOLERANCE) return true
         return weak[0] >= Pieces.HOVER_LINE_FILL && strong[1] >= Pieces.HOVER_LINE_FILL
     }

@@ -60,12 +60,54 @@ class CellEmbedder private constructor(
         return (System.nanoTime() - begun) / 1e9
     }
 
-    /** Unit embeddings, one row of [DIM] per crop, in the order given. */
+    /**
+     * Embeddings by the crop's bytes (`CellEmbedder.embed`, desktop a3479bd): a piece that
+     * lands on a square was seen there, or on another square of its colour, a moment ago --
+     * the same pixels, the same vector, and no run of the net for it. The newest [CACHED] are
+     * kept. A vector is never changed once made, so one serves every crop with those pixels.
+     */
+    private val seen = object : LinkedHashMap<Digest, FloatArray>(CACHED, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Digest, FloatArray>?): Boolean =
+            size > CACHED
+    }
+
+    /**
+     * Unit embeddings, one row of [DIM] per crop, in the order given; a crop seen before is
+     * not run through the net again.
+     */
     fun embed(crops: List<Mat>): Array<FloatArray> {
         if (crops.isEmpty()) return emptyArray()
+        // The crops are 8-bit BGR, as the cells are cut; anything else is run, not kept.
+        val keys = crops.map { crop ->
+            if (crop.depth() != CvType.CV_8U) return@map null
+            val bytes = ByteArray((crop.total() * crop.elemSize()).toInt())
+            crop.get(0, 0, bytes)
+            Digest.of(bytes) { it.longs(crop.rows().toLong(), crop.cols().toLong(), crop.type().toLong()) }
+        }
+        val out = arrayOfNulls<FloatArray>(crops.size)
+        val todo = ArrayList<Int>()
+        synchronized(seen) {
+            for ((i, key) in keys.withIndex()) {
+                val hit = key?.let { seen[it] }
+                if (hit == null) todo.add(i) else out[i] = hit
+            }
+        }
+        if (todo.isNotEmpty()) {
+            val fresh = run(todo.map { crops[it] })
+            synchronized(seen) {
+                for ((j, i) in todo.withIndex()) {
+                    out[i] = fresh[j]
+                    keys[i]?.let { seen[it] = fresh[j] }
+                }
+            }
+        }
+        return Array(crops.size) { out[it]!! }
+    }
+
+    /** The crops through the net, in one batch. */
+    private fun run(crops: List<Mat>): Array<FloatArray> {
         val n = crops.size
         val buffer = bufferFor(n)
-        buffer.clear()
         for (crop in crops) {
             val sized = prepare(crop)
             // The graph wants planes, not interleaved pixels: (n, 3, h, w), B then G then R.
@@ -90,10 +132,19 @@ class CellEmbedder private constructor(
         }
     }
 
+    /**
+     * The input buffer for [cells] crops, cleared and limited to them: the largest asked for so
+     * far is kept, since with the cache above each batch is only the cells not seen before and
+     * its size changes from one frame to the next.
+     */
     private fun bufferFor(cells: Int): FloatBuffer {
-        val held = direct
-        if (held != null && directCells == cells) return held
         val floats = cells * 3 * INPUT * INPUT
+        val held = direct
+        if (held != null && directCells >= cells) {
+            held.clear()
+            held.limit(floats)
+            return held
+        }
         val fresh = ByteBuffer.allocateDirect(floats * 4)
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
@@ -139,6 +190,12 @@ class CellEmbedder private constructor(
          */
         const val INPUT = 224
         const val DIM = 1280
+
+        /**
+         * Embeddings kept by the crop's content, 5 kB each: a few boards' worth of pieces. The
+         * desktop keeps 2048; the phone's heap is a fifth of the desktop's memory, so fewer.
+         */
+        const val CACHED = 512
 
         /** An exemplar this similar names the cell; below it, nothing on the start position
          * looks like what is there. */
