@@ -23,6 +23,19 @@ import org.json.JSONObject
  */
 class SettingsApi(val store: SettingsStore) {
 
+    companion object {
+        /**
+         * One write of the settings at a time, each whole -- read, merge, save, apply: a
+         * Settings save, a switch on the panel kept for the next session (muted, how the coach
+         * listens), the captions turned off from their own box. Each read the settings, laid its
+         * change over them and saved, and the later save put back what the earlier one changed
+         * (the settings review, 2026-10-01: the desktop lost 81 usernames in 150 rounds). A JVM
+         * monitor is re-entrant: a panel switch holds it around its own change and the
+         * remembering. `settings_api.saving`.
+         */
+        val SAVING = Any()
+    }
+
     fun describe(): JSONObject = JSONObject().apply {
         put("settings", store.values())
         put("schema", JSONObject(store.schema))
@@ -52,43 +65,46 @@ class SettingsApi(val store: SettingsStore) {
             put("ok", false)
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
-        val before = store.values()
-        // What changed, laid over the settings as they are now (`settings_api.update`'s
-        // `_merged`): the page sends only what changed, and laid over the defaults that reset
-        // every other setting on each save (Tai's phone, 2026-10-01: a save of the captions
-        // wiped all of his settings, and each caption switch saved alone reset the other).
-        val checked = SettingsCheck.validate(JSONObject(store.schema), before, given)
-        if (checked.errors.length() > 0) {
-            return JSONObject().put("ok", false).put("errors", checked.errors)
+        val stored = JSONObject()
+        val (after, changed) = synchronized(SAVING) {
+            val before = store.values()
+            // What changed, laid over the settings as they are now (`settings_api.update`'s
+            // `_merged`): the page sends only what changed, and laid over the defaults that reset
+            // every other setting on each save (Tai's phone, 2026-10-01: a save of the captions
+            // wiped all of his settings, and each caption switch saved alone reset the other).
+            val checked = SettingsCheck.validate(JSONObject(store.schema), before, given)
+            if (checked.errors.length() > 0) {
+                return JSONObject().put("ok", false).put("errors", checked.errors)
+            }
+            val wanted = checked.values
+            // The phone owns these; the page shows them and cannot move them.
+            wanted.put("data_dir", before.optString("data_dir"))
+            wanted.put("tools_dir", before.optString("tools_dir"))
+            store.save(wanted)
+            val after = store.values()
+            val changed = changed(before, after)
+
+            val secrets = body.optJSONObject("secrets")
+            if (secrets != null) {
+                val names = store.secretNames()
+                for (name in secrets.keys()) {
+                    if (name !in names) continue
+                    val value = if (secrets.isNull(name)) null else secrets.optString(name)
+                    store.setSecret(name, value)
+                    stored.put(name, true)
+                }
+            }
+
+            // What the kept coach and engine can change, they do now; a "now" field with nothing
+            // built to change is simply what the next build reads (`settings_api.update`).
+            PanelWarm.applySettings(store, changed)
+            PanelEngine.settingsTouched()
+            after to changed
         }
-        val wanted = checked.values
-        // The phone owns these; the page shows them and cannot move them.
-        wanted.put("data_dir", before.optString("data_dir"))
-        wanted.put("tools_dir", before.optString("tools_dir"))
-        store.save(wanted)
-        val after = store.values()
-        val changed = changed(before, after)
         val applies = applies(JSONObject(store.schema))
         val now = changed.filter { applies[it] == "now" }
         val later = changed.filter { applies[it] == "next" }
         val restart = changed.filter { applies[it] == "restart" }
-
-        val stored = JSONObject()
-        val secrets = body.optJSONObject("secrets")
-        if (secrets != null) {
-            val names = store.secretNames()
-            for (name in secrets.keys()) {
-                if (name !in names) continue
-                val value = if (secrets.isNull(name)) null else secrets.optString(name)
-                store.setSecret(name, value)
-                stored.put(name, true)
-            }
-        }
-
-        // What the kept coach and engine can change, they do now; a "now" field with nothing
-        // built to change is simply what the next build reads (`settings_api.update`).
-        PanelWarm.applySettings(store, changed)
-        PanelEngine.settingsTouched()
 
         PanelEngine.emit(
             "sys",
@@ -117,18 +133,21 @@ class SettingsApi(val store: SettingsStore) {
      * `settings_api.remember`.
      */
     fun remember(change: JSONObject) {
-        val before = store.values()
-        val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
-        if (checked.errors.length() > 0) return
-        val wanted = checked.values
-        wanted.put("data_dir", before.optString("data_dir"))
-        wanted.put("tools_dir", before.optString("tools_dir"))
-        store.save(wanted)
-        PanelEngine.settingsTouched()
+        synchronized(SAVING) {
+            val before = store.values()
+            val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
+            if (checked.errors.length() > 0) return
+            val wanted = checked.values
+            wanted.put("data_dir", before.optString("data_dir"))
+            wanted.put("tools_dir", before.optString("tools_dir"))
+            store.save(wanted)
+            PanelEngine.settingsTouched()
+        }
     }
 
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }
+
 
     /** "section.field" -> now | next | restart, from the schema's own marks. */
     private fun applies(schema: JSONObject): Map<String, String> {

@@ -351,6 +351,74 @@ class SettingsPhoneTest {
         }
     }
 
+    /**
+     * A Settings save and a mute at the same moment: each read the settings, laid its change over
+     * them and saved, and the later save put back what the earlier one changed (the settings
+     * review, 2026-10-01; `test_two_writes_at_once_keep_both_changes`). One write at a time, the
+     * whole read-merge-save: while the settings are held, a mute and a save both wait, and then
+     * both changes stay.
+     */
+    @Test
+    fun twoWritesAtOnceKeepBothChanges() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val wasMuted = PanelVoice.muted
+        try {
+            val start = store.values()
+            start.getJSONObject("voice").put("muted", false)
+            start.getJSONObject("profile").put("chesscom_user", "")
+            store.save(start)
+            val user = JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", "nosegazm")))
+            val mute = Thread { PanelVoice.mute(api, true) }
+            val save = Thread { api.update(user) }
+            synchronized(SettingsApi.SAVING) {
+                mute.start()
+                mute.join(200)
+                assertTrue("the mute waits for the settings", mute.isAlive)
+                save.start()
+                save.join(200)
+                assertTrue("so does a save", save.isAlive)
+            }
+            mute.join(5000)
+            save.join(5000)
+            val now = store.values()
+            assertTrue("the mute is kept", now.getJSONObject("voice").getBoolean("muted"))
+            assertEquals("nosegazm", now.getJSONObject("profile").getString("chesscom_user"))
+        } finally {
+            PanelVoice.setMuted(wasMuted)
+            store.save(saved)
+        }
+    }
+
+    /**
+     * Saved settings the phone cannot read are kept in its files, once, and the log says so --
+     * never run over by the defaults in silence (`test_a_settings_file_that_cannot_be_read_is_kept_not_run_over`).
+     */
+    @Test
+    fun savedSettingsThatCannotBeReadAreKeptNotRunOver() {
+        val store = SettingsStore(app)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val torn = "{\"profile\": {\"chesscom_user\": \"nosegazm-${System.nanoTime()}" // cut short
+        fun copies(): List<File> =
+            app.filesDir.listFiles { f -> f.name.startsWith("settings.unreadable-") }.orEmpty().filter { it.readText() == torn }
+        try {
+            prefs.edit().putString("json", torn).commit()
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            assertEquals("the defaults meanwhile", "", store.values().getJSONObject("profile").optString("chesscom_user"))
+            assertEquals(1, copies().size)
+            store.values()
+            assertEquals("one copy a text", 1, copies().size)
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            val name = copies()[0].name
+            assertTrue("the log names the copy", (0 until lines.length()).any { name in lines.getJSONObject(it).getString("text") })
+        } finally {
+            copies().forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
     @Test
     fun theFrameRateAndExtraFieldsReachTheCode() {
         val store = SettingsStore(app)

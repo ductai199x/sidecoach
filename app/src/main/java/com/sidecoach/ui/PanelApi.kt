@@ -140,8 +140,9 @@ class PanelApi(
             path == "/api/listen" -> {
                 if (!json.has("mode")) return unprocessable()
                 val wanted = json.getString("mode")
-                // Set and kept in one step, as muted is (`PanelVoice.mute`).
-                val mode = synchronized(PanelListen) {
+                // Set and kept in one step, as muted is (`PanelVoice.mute`), under the settings'
+                // own lock (the settings review, 2026-10-01).
+                val mode = synchronized(SettingsApi.SAVING) {
                     PanelListen.setListen(wanted).also { // refuses a mode there is not
                         settings.remember(JSONObject().put("voice", JSONObject().put("listen", wanted))) // the next session too
                     }
