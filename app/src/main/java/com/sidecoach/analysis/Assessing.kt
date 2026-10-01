@@ -6,7 +6,6 @@ import com.sidecoach.ui.SettingsStore
 import java.io.File
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
-import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Label
@@ -93,22 +92,29 @@ class Assessing(
                 }
                 ply = back
                 game = historyTo(event.fen)
+                if (back == 0) {
+                    // Back to where the game began: the position the player faces again, and
+                    // the one no move led to -- measured as at the start (whole at once if it
+                    // was).
+                    worker.submitPosition(event.gameId, Board(event.fen), 0)
+                }
             }
             is GameStarted -> {
                 // The engine's queue is the last game's: dropped, so this game is measured
-                // from its first move.
+                // from its first move. The position it begins from is measured at once, the
+                // start position too: a hint asked before the first move was "One moment --
+                // still looking" for good, and no stuck hint came there (the state review,
+                // 2026-10-01).
                 worker.reset()
                 from.clear()
-                forget(event.gameId)
+                forget(event.gameId, event.startFen)
                 game = Board(event.startFen)
-                if (event.startFen != STARTING_FEN) {
-                    worker.submitPosition(event.gameId, Board(event.startFen), 0)
-                }
+                worker.submitPosition(event.gameId, Board(event.startFen), 0)
             }
             is Resync -> {
                 worker.reset()
                 from.clear()
-                forget(event.gameId)
+                forget(event.gameId, event.fen)
                 // A position adopted, not played to: it has no history to look up.
                 game = Board(event.fen)
                 worker.submitPosition(event.gameId, Board(event.fen), 0)
@@ -117,18 +123,23 @@ class Assessing(
         }
     }
 
-    /** A game begins, or its numbering starts again (a resync): no plies stand yet. */
-    private fun forget(id: String) {
+    /** A game begins on [fen], or its numbering starts again there (a resync): no plies stand yet. */
+    private fun forget(id: String, fen: String) {
         gameId = id
         ply = 0
         line.clear()
         fens.clear()
+        fens[0] = fen
     }
 
     /**
      * The engine's word on a move or a position the game has since taken back: a ply past the
      * game's last, or one whose move or position is no longer the game's. Passed on, a
-     * withdrawn move's verdict was taken for the replacement played at its ply.
+     * withdrawn move's verdict was taken for the replacement played at its ply. And its word
+     * on another game, or at ply 0 on a position the game no longer begins from: a measure
+     * under way when a resync re-read the board (the side to move settled by the clock, the
+     * next puzzle) came after the new position's and was filed as its (the state review,
+     * 2026-10-01).
      */
     private fun stale(event: Event): Boolean {
         val (id, at) = when (event) {
@@ -136,7 +147,7 @@ class Assessing(
             is Analysis -> event.gameId to event.ply
             else -> return false
         }
-        if (id != gameId) return false
+        if (id != gameId) return gameId != null
         if (at > ply) return true
         if (event is MoveAssessment) {
             val played = line[at]
