@@ -2090,3 +2090,42 @@ def test_a_saved_rating_changes_the_templates_register() -> None:
     start_game(coach, Side.BLACK)
     setting = coach.conversation.messages()[0]["content"]
     assert setting.startswith("# Setting\nYou coach Black.") and "rated" not in setting
+
+
+def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() -> None:
+    """A reply still being written when the game moved on -- a takeback, a re-read, the next
+    game -- was recorded wherever the game was when it landed: under "Said here" of the
+    position taken back to or of the new game, where it made the player's next words a
+    follow-up, or the answer to its question (the coach review, 2026-10-01). And a lesson held
+    for its analysis was said in the next game."""
+    from sidecoach.coach.coach import LESSON_WAIT_S
+    from sidecoach.events import Resync, Takeback
+
+    for change in ("takeback", "re-read", "new game"):
+        coach, _ = scripted_coach(["[p=1.0] The queen mates on f7. What did you miss?"])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 7.0)
+        mate_missed(coach)  # the lesson, asked of the model
+        if change == "takeback":
+            coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
+        elif change == "re-read":
+            coach.on_event(Resync(game_id="g", fen=SCHOLAR, reason="re-read"), 12.0)
+        else:
+            start_game(coach)
+        out = drain(coach)  # the reply lands now
+        assert [m.trigger for m in out] == [Trigger.POST_MISTAKE], change
+        assert coach._said_since_move() == [], change
+        assert not coach._answering_our_question("the bishop check"), change
+        assert out[0].text not in coach.conversation.render(), change
+    coach = Coach(
+        ScriptedProvider([]),
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        lesson_wait_s=LESSON_WAIT_S,
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    mate_missed(coach)
+    assert drain(coach) == [], "held for the analysis of the position it left"
+    start_game(coach)
+    coach.tick(12.0 + LESSON_WAIT_S)
+    assert drain(coach) == [], "the last game's lesson"

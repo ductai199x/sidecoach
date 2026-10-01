@@ -1035,6 +1035,9 @@ class Spoken:
     # never a reason the reply was refused.
     leaks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # The moment of the game it was asked for (`Coach._epoch`): one that lands after a new
+    # game, a takeback or a re-read is no turn of the moment now.
+    epoch: int = 0
 
 
 @dataclass
@@ -1161,6 +1164,8 @@ class _Request:
     # The engine at the model's call while it answers (a question of the player's), when the
     # coach has an engine and the model takes tools.
     tools: EngineTools | None = None
+    # The moment of the game the request was built in (`Coach._epoch`).
+    epoch: int = 0
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1521,6 +1526,7 @@ class Speaker:
                 level=request.level,
                 problems=[],
                 attempts=0,
+                epoch=request.epoch,
             )
         while attempts < 2:
             attempts += 1
@@ -1636,6 +1642,7 @@ class Speaker:
             streamed=streamed,
             leaks=leaks,
             notes=notes,
+            epoch=request.epoch,
         )
 
     @staticmethod
@@ -2281,6 +2288,13 @@ class Coach:
         # answered the moment the analysis lands (see `ask`).
         self._pending_ask: tuple[str, float] | None = None
         self._elicit_answered = False
+        # The moment of the game: a new game, a takeback and a re-read each start another. A
+        # reply asked for in an earlier one and landing in this one is not a turn of this one:
+        # recorded where it landed, the lesson on a withdrawn move stood under "Said here" of
+        # the position taken back to, and a reply about the last puzzle under the next one's,
+        # where they made the player's next words a follow-up or the answer to their question
+        # (the coach review, 2026-10-01).
+        self._epoch = 0
 
     # Lifecycle
 
@@ -2609,7 +2623,7 @@ class Coach:
                 # A failed model reply with nothing to fall back on: kept for the log (its
                 # calls say why), said to no one.
                 continue
-            if not spoken.recorded:
+            if not spoken.recorded and spoken.epoch == self._epoch:
                 with self._lock:
                     self.conversation.coach_said(
                         spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
@@ -2632,6 +2646,10 @@ class Coach:
         self.strong_player = rating is not None and rating[0] >= STRONG_FROM
 
     def _new_game(self, event: GameStarted, ts: float) -> None:
+        self._epoch += 1
+        # A lesson held for its analysis is the last game's: kept, the next tick said it in
+        # this one, over this one's first position (the coach review, 2026-10-01).
+        self._held_lesson = None
         self.game_id = event.game_id
         self.user_side = event.user_side
         self.kind = event.kind
@@ -2846,6 +2864,7 @@ class Coach:
     def _on_takeback(self, event: Takeback, ts: float) -> None:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
         the board is back at; the replacement moves arrive as ordinary moves."""
+        self._epoch += 1
         self.conversation.takeback(event)
         self.board = board_back(self.board, event.fen)
         active = self.conversation.active_records()
@@ -2864,6 +2883,7 @@ class Coach:
 
     def _on_resync(self, event: Resync, ts: float) -> None:
         """The board was re-read: the position jumped; the move numbering restarts."""
+        self._epoch += 1
         self.board = chess.Board(event.fen)
         self.conversation.resync(event, self.board)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
@@ -3645,6 +3665,7 @@ class Coach:
             record=self._numbered_moves(),
             unlisted=unlisted,
             tools=tools,
+            epoch=self._epoch,
         )
         self.speaker.submit(request)
 
@@ -3880,7 +3901,14 @@ class Coach:
             with self._lock:
                 self.conversation.coach_said(text)
         self.speaker.submit_ready(
-            Spoken(message=message, level=level, problems=[], attempts=0, recorded=record_now),
+            Spoken(
+                message=message,
+                level=level,
+                problems=[],
+                attempts=0,
+                recorded=record_now,
+                epoch=self._epoch,
+            ),
             now=now,
         )
 
