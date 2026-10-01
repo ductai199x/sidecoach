@@ -30,6 +30,7 @@ import androidx.core.view.WindowInsetsCompat
 import com.sidecoach.capture.CaptureService
 import com.sidecoach.capture.RecordingNotice
 import com.sidecoach.ui.Captions
+import com.sidecoach.ui.GamesApi
 import com.sidecoach.ui.LocalServer
 import com.sidecoach.ui.PanelApi
 import com.sidecoach.ui.PanelEngine
@@ -117,6 +118,7 @@ class MainActivity : ComponentActivity() {
                 rooms = { PuzzleRooms.shared(applicationContext) },
                 // The app's own folder on shared storage, where `adb pull` reaches a dump.
                 dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
+                games = GamesApi(filesDir, store),
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches

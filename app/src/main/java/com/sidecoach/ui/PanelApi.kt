@@ -26,6 +26,8 @@ class PanelApi(
      * shared storage, where `adb pull` reaches it.
      */
     private val dumps: File = File(files, "dumps"),
+    /** Your games: the library, imports, taking a game out. */
+    private val games: GamesApi? = null,
 ) : LocalServer.Api {
 
     override fun handle(
@@ -193,6 +195,12 @@ class PanelApi(
             path == "/api/settings" && method == "GET" -> ok(settings.describe())
             path == "/api/settings" -> ok(settings.update(json))
 
+            path == "/api/games" && games != null -> ok(games.list())
+            path == "/api/games/import" && games != null ->
+                if (json.has("source")) ok(games.import(json)) else unprocessable()
+            method == "DELETE" && path.startsWith("/api/games/") && games != null ->
+                ok(games.delete(path.removePrefix("/api/games/")))
+
             else -> {
                 Log.i(TAG, "no route for $method $path")
                 null
@@ -326,6 +334,7 @@ class PanelApi(
         val ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf(
                 "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
+                "/api/games",
             ),
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
@@ -333,9 +342,14 @@ class PanelApi(
                 "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record",
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
-                "/api/listen", "/api/ptt", "/api/hear",
+                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import",
             ),
             "PUT" to setOf("/api/settings"),
+        )
+
+        /** The routes with one path parameter, `{key}` (one segment, as Starlette matches it), by method. */
+        val KEYED_ROUTES: Map<String, Set<String>> = mapOf(
+            "DELETE" to setOf("/api/games/"),
         )
 
         /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
@@ -347,6 +361,10 @@ class PanelApi(
         /** Whether the server serves [method] [path]. */
         fun serves(method: String, path: String): Boolean {
             if (path in ROUTES[method].orEmpty()) return true
+            for (prefix in KEYED_ROUTES[method].orEmpty()) {
+                val key = path.removePrefix(prefix)
+                if (path.startsWith(prefix) && key.isNotEmpty() && '/' !in key) return true
+            }
             if (!path.startsWith("/api/puzzle/")) return false
             // `{puzzle_id}` is one segment of the path, as Starlette matches it.
             val parts = path.removePrefix("/api/puzzle/").split('/')

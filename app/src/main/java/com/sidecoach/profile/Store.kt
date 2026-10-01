@@ -393,6 +393,114 @@ class Store(val path: File?) {
         }
     }
 
+    // ---- the review's library and its reviews (store.py) ------------------------------------------
+
+    /** A game imported for review; the same game imported again replaces its row. */
+    fun addLibraryGame(row: LibraryRow) {
+        lock.withLock {
+            exec(
+                "INSERT OR REPLACE INTO library (key, source, added_at, played_at, white, black," +
+                    " white_elo, black_elo, result, time_class, user_side, pgn)" +
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row.key, row.source, row.addedAt, row.playedAt, row.white, row.black,
+                row.whiteElo, row.blackElo, row.result, row.timeClass, row.userSide, row.pgn,
+            )
+        }
+    }
+
+    /** The imported games, the latest played first. */
+    fun library(limit: Int = 500): List<LibraryRow> = lock.withLock {
+        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT $limit") { libraryRow(it) }
+    }
+
+    fun libraryGame(key: String): LibraryRow? = lock.withLock {
+        rows("SELECT * FROM library WHERE key = ?", key) { libraryRow(it) }.firstOrNull()
+    }
+
+    /** A game out of the library, and its reviews and stats with it; a watched game it stood for comes back. */
+    fun deleteLibraryGame(key: String) {
+        lock.withLock {
+            db.beginTransaction()
+            try {
+                for (table in listOf("stat_moves", "stat_games", "reviews", "review_progress", "library")) {
+                    exec("DELETE FROM $table WHERE key = ?", key)
+                }
+                exec("DELETE FROM twins WHERE imported = ?", key)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+    }
+
+    /** A watched game's import (library keys): the import stands for it from now on. */
+    fun addTwin(watched: String, imported: String) {
+        lock.withLock {
+            exec(
+                "INSERT OR REPLACE INTO twins (watched, imported, found_at) VALUES (?, ?, ?)",
+                watched, imported, System.currentTimeMillis() / 1000.0,
+            )
+        }
+    }
+
+    /** The watched games that were imported too: watched key -> imported key. */
+    fun twins(): Map<String, String> = lock.withLock {
+        rows("SELECT watched, imported FROM twins") { it.getString(0) to it.getString(1) }.toMap(LinkedHashMap())
+    }
+
+    /** The library's imported games no review covers yet, the latest played first. */
+    fun unreviewed(): List<LibraryRow> = lock.withLock {
+        rows("SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews) ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
+    }
+
+    /** A game reviewed whole; its words, if any were prepared for an older review, go. */
+    fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?) {
+        lock.withLock {
+            exec(
+                "INSERT OR REPLACE INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
+                    " VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                key, strength, version, reviewedAt, report, summary,
+            )
+        }
+    }
+
+    fun review(key: String, strength: String): ReviewRow? = lock.withLock {
+        rows("SELECT * FROM reviews WHERE key = ? AND strength = ?", key, strength) { reviewRow(it) }.firstOrNull()
+    }
+
+    /** The game's latest review, at whatever strength. */
+    fun latestReview(key: String): ReviewRow? = lock.withLock {
+        rows("SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
+    }
+
+    /** The coach's words on a review's moves, as far as they are prepared. */
+    fun setReviewWords(key: String, strength: String, words: String) {
+        lock.withLock { exec("UPDATE reviews SET words = ? WHERE key = ? AND strength = ?", words, key, strength) }
+    }
+
+    /** A position of a review under way, measured (committed at once: a kill keeps it). */
+    fun addProgress(key: String, strength: String, depth: Int, multipv: Int, fen: String, measured: String) {
+        lock.withLock {
+            exec(
+                "INSERT OR REPLACE INTO review_progress (key, strength, depth, multipv, fen, measured) VALUES (?, ?, ?, ?, ?, ?)",
+                key, strength, depth, multipv, fen, measured,
+            )
+        }
+    }
+
+    /** The positions of a review under way measured so far, at this depth and lines. */
+    fun progress(key: String, strength: String, depth: Int, multipv: Int): List<String> = lock.withLock {
+        rows(
+            "SELECT measured FROM review_progress WHERE key = ? AND strength = ? AND depth = $depth AND multipv = $multipv",
+            key, strength,
+        ) { it.getString(0) }
+    }
+
+    /** A game's review is saved: what any review of it kept part way goes. */
+    fun clearProgress(key: String) {
+        lock.withLock { exec("DELETE FROM review_progress WHERE key = ?", key) }
+    }
+
     fun addRecommendation(gameId: String, ts: Double, motif: String, reason: String, level: Int, puzzleIds: List<String>) {
         lock.withLock {
             exec(
@@ -647,6 +755,78 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS library (
+    key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    played_at REAL,
+    white TEXT,
+    black TEXT,
+    white_elo INTEGER,
+    black_elo INTEGER,
+    result TEXT,
+    time_class TEXT,
+    user_side TEXT,
+    pgn TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+    key TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    reviewed_at REAL NOT NULL,
+    report TEXT NOT NULL,
+    summary TEXT,
+    words TEXT,
+    PRIMARY KEY (key, strength)
+);
+CREATE TABLE IF NOT EXISTS stat_games (
+    key TEXT PRIMARY KEY,
+    strength TEXT NOT NULL,
+    source TEXT,
+    time_class TEXT,
+    played_at REAL,
+    user_side TEXT,
+    bot INTEGER NOT NULL,
+    result TEXT,
+    opening TEXT,
+    termination TEXT
+);
+CREATE TABLE IF NOT EXISTS stat_moves (
+    key TEXT NOT NULL,
+    ply INTEGER NOT NULL,
+    side TEXT NOT NULL,
+    fen TEXT NOT NULL,
+    uci TEXT NOT NULL,
+    san TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    loss REAL NOT NULL,
+    label TEXT,
+    accuracy REAL,
+    score REAL NOT NULL,
+    chance TEXT,
+    found INTEGER NOT NULL,
+    allowed TEXT,
+    structure TEXT NOT NULL,
+    themes TEXT NOT NULL,
+    endgame TEXT,
+    spent_ms INTEGER,
+    clock_ms INTEGER,
+    PRIMARY KEY (key, ply)
+);
+CREATE TABLE IF NOT EXISTS twins (
+    watched TEXT PRIMARY KEY,
+    imported TEXT NOT NULL,
+    found_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_progress (
+    key TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    depth INTEGER NOT NULL,
+    multipv INTEGER NOT NULL,
+    fen TEXT NOT NULL,
+    measured TEXT NOT NULL,
+    PRIMARY KEY (key, strength, fen)
+);
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
 CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
@@ -698,6 +878,31 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
             val i = getColumnIndexOrThrow(name)
             return if (isNull(i)) null else getDouble(i)
         }
+
+        private fun libraryRow(c: Cursor) = LibraryRow(
+            key = c.getString(c.getColumnIndexOrThrow("key")),
+            source = c.getString(c.getColumnIndexOrThrow("source")),
+            addedAt = c.getDouble(c.getColumnIndexOrThrow("added_at")),
+            pgn = c.getString(c.getColumnIndexOrThrow("pgn")),
+            playedAt = c.doubleOrNull("played_at"),
+            white = c.stringOrNull("white"),
+            black = c.stringOrNull("black"),
+            whiteElo = c.intOrNull("white_elo"),
+            blackElo = c.intOrNull("black_elo"),
+            result = c.stringOrNull("result"),
+            timeClass = c.stringOrNull("time_class"),
+            userSide = c.stringOrNull("user_side"),
+        )
+
+        private fun reviewRow(c: Cursor) = ReviewRow(
+            key = c.getString(c.getColumnIndexOrThrow("key")),
+            strength = c.getString(c.getColumnIndexOrThrow("strength")),
+            version = c.getInt(c.getColumnIndexOrThrow("version")),
+            reviewedAt = c.getDouble(c.getColumnIndexOrThrow("reviewed_at")),
+            report = c.getString(c.getColumnIndexOrThrow("report")),
+            summary = c.stringOrNull("summary"),
+            words = c.stringOrNull("words"),
+        )
 
         private fun gameRow(c: Cursor) = GameRow(
             gameId = c.getString(c.getColumnIndexOrThrow("game_id")),
@@ -775,6 +980,37 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
 
 /** A query that is not a single read-only statement, or that ran too long. */
 class QueryRefused(message: String) : IllegalArgumentException(message)
+
+/**
+ * A game Game Review can open: where it came from (`source`: chesscom, lichess, pgn, watched),
+ * who played it, and its PGN. `key` is the source and its own id ("chesscom:174300959956");
+ * `userSide` the side the player had, when their name for that site is known. `LibraryRow`.
+ */
+data class LibraryRow(
+    val key: String,
+    val source: String,
+    val addedAt: Double,
+    val pgn: String,
+    val playedAt: Double? = null,
+    val white: String? = null,
+    val black: String? = null,
+    val whiteElo: Int? = null,
+    val blackElo: Int? = null,
+    val result: String? = null,
+    val timeClass: String? = null,
+    val userSide: String? = null,
+)
+
+/** A game reviewed whole at one strength: the review (JSON), its summary and the coach's words. `ReviewRow`. */
+data class ReviewRow(
+    val key: String,
+    val strength: String,
+    val version: Int,
+    val reviewedAt: Double,
+    val report: String,
+    val summary: String?,
+    val words: String?,
+)
 
 data class GameRow(
     val gameId: String,
