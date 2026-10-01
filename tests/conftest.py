@@ -34,7 +34,6 @@ VISION_CHUNK = 6
 # -- a panel session started, which builds the stages -- is marked `embedder` instead, so
 # the rest of its module runs on every core.
 EMBEDDER_MODULES = {
-    "test_embedding",
     "test_theme_cache",
 }
 
@@ -150,7 +149,7 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ.setdefault("SIDECOACH_VOICE_MODELS", "0")
     # The embedding net on the CPU: a dozen workers each starting a CUDA session took 4 s for
     # a worker's first vision test, against 1.4 s on the CPU, and a test alone is no slower
-    # there (2026-10-01). The GPU path keeps one test of its own (-m slow, test_embedding).
+    # there (2026-10-01). The GPU path keeps one test of its own (-m slow, test_pieces).
     os.environ.setdefault("SIDECOACH_EMBED_DEVICE", "cpu")
     # A Settings made by a test has no file of its own; a save from it (set_record, the
     # settings API) would land on `sidecoach.toml` in the working directory -- the
