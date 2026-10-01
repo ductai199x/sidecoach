@@ -9,6 +9,7 @@ import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.profile.Library
 import com.sidecoach.profile.Store
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -80,7 +81,7 @@ class ReviewRoomTest {
         Store(storePath).apply { addLibraryGame(row) }.close()
         val settings = SettingsStore(context)
         val model = Scripted()
-        fun room() = ReviewRoom(files, settings, row, storePath, "fast", maker!!, model = { model to null })
+        fun room(copier: ((String) -> Unit)? = null) = ReviewRoom(files, settings, row, storePath, "fast", maker!!, model = { model to null }, copier = copier)
 
         // While it is analysed, the game's positions for the board to play out as the progress goes.
         val playing = ReviewRoom.playback(row.pgn)
@@ -113,10 +114,17 @@ class ReviewRoomTest {
         first.join()
 
         // Opened again: the saved review and its words at once, nothing searched.
-        val second = room()
+        val copied = mutableListOf<String>()
+        val second = room(copier = { copied.add(it) })
         state = until(second, 10, "loaded") { it.getString("status") == "ready" }
         assertEquals("ready", state.getJSONObject("ai").getString("status"))
         assertTrue(state.getJSONObject("ai").getJSONObject("words").has("links"))
+        // Copy PGN: the app puts the annotated game on the clipboard (the web view's refuses) and says so.
+        val pgnOut = second.pgn(JSONArray(), annotated = true, save = false, copy = true)
+        assertTrue(pgnOut.getBoolean("copied"))
+        assertEquals(listOf(pgnOut.getString("pgn")), copied)
+        assertTrue(copied.single(), "[Annotator \"Sidecoach\"]" in copied.single() && "4. Qxf7#" in copied.single())
+        assertFalse("only a copy asked for, nothing kept", pgnOut.has("saved"))
         second.close()
         second.join()
 

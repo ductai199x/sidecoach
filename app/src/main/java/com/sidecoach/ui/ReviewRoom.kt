@@ -62,6 +62,8 @@ class ReviewRoom(
     private val model: (() -> Pair<LLMProvider?, String?>)? = null,
     /** Keeps a PGN in the phone's Downloads (its name, the text) and says where it went. */
     private val saver: ((String, String) -> String)? = null,
+    /** Puts a PGN on the phone's clipboard: the web view's own clipboard refuses every write. */
+    private val copier: ((String) -> Unit)? = null,
 ) {
     val key = row.key
     val strength: Strength = GameReview.STRENGTHS[strength] ?: GameReview.STRENGTHS.getValue("standard")
@@ -311,9 +313,10 @@ class ReviewRoom(
 
     /**
      * The game as a PGN with the analysis board's lines ([tree]), annotated from the review when
-     * asked; kept in the phone's Downloads when [save]. `pgn`.
+     * asked; kept in the phone's Downloads when [save], put on its clipboard when [copy] (the
+     * phone's own: the desktop's page copies it itself). `pgn`.
      */
-    fun pgn(tree: JSONArray, annotated: Boolean, save: Boolean): JSONObject {
+    fun pgn(tree: JSONArray, annotated: Boolean, save: Boolean, copy: Boolean = false): JSONObject {
         touched = SystemClock.elapsedRealtime()
         val (moves, words) = synchronized(lock) { (if (status == "ready") this.moves else null) to this.words }
         val text = ReviewAnalysis.pgn(row, moves, tree, annotated = annotated, words = words)
@@ -322,6 +325,11 @@ class ReviewRoom(
         if (save) {
             val keep = saver ?: throw IllegalStateException("nowhere to keep the PGN")
             out.put("saved", keep(name, text))
+        }
+        if (copy) {
+            val put = copier ?: throw IllegalStateException("no clipboard to copy the PGN to")
+            put(text)
+            out.put("copied", true)
         }
         return out
     }
@@ -625,6 +633,7 @@ class ReviewRooms(
     private val makeEngine: EngineMaker,
     private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
     private val saver: ((String, String) -> String)? = null,
+    private val copier: ((String) -> Unit)? = null,
 ) {
     private val rooms = LinkedHashMap<String, ReviewRoom>()
     private val lock = Any()
@@ -679,6 +688,7 @@ class ReviewRooms(
             mirror = mirror,
             model = ::model,
             saver = saver,
+            copier = copier,
         ).also { rooms[key] = it }
     }
 
@@ -716,6 +726,17 @@ class ReviewRooms(
         }
 
         /**
+         * A PGN on the phone's clipboard. The web view's `navigator.clipboard` refuses every
+         * write ("Write permission denied", a tap or not), so the app puts it there; Android
+         * shows its own note that it was copied.
+         */
+        fun copyToClipboard(context: Context, text: String) {
+            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                ?: throw java.io.IOException("the phone has no clipboard to copy to")
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("PGN", text))
+        }
+
+        /**
          * The app's rooms: the profile store in the app's files, engines of their own, every
          * line mirrored into the panel's log. One per process, so a review under way outlives
          * the window being rebuilt (a turn of the phone).
@@ -731,6 +752,7 @@ class ReviewRooms(
                     makeEngine = ReviewRoom.engineMaker(app, settings),
                     mirror = { chan, level, text, data -> PanelEngine.emit(chan, level, text, data) },
                     saver = { name, text -> saveToDownloads(app, name, text) },
+                    copier = { text -> copyToClipboard(app, text) },
                 ).also { shared = it }
             }
         }

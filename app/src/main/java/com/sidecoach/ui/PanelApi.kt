@@ -446,7 +446,7 @@ class PanelApi(
             "pgn" -> {
                 val room = rooms.get(key) ?: return notOpen()
                 try {
-                    val got = room.pgn(json.optJSONArray("tree") ?: JSONArray(), json.optBoolean("annotated", true), json.optBoolean("save", false))
+                    val got = room.pgn(json.optJSONArray("tree") ?: JSONArray(), json.optBoolean("annotated", true), json.optBoolean("save", false), json.optBoolean("copy", false))
                     ok(JSONObject().put("ok", true).apply { for (k in got.keys()) put(k, got.get(k)) })
                 } catch (exc: Exception) { // `(ValueError, OSError)`: no game in the PGN, the file not kept
                     ok(JSONObject().put("ok", false).put("error", exc.message ?: exc.toString()))
