@@ -623,7 +623,7 @@
     <button class="chip" onclick={() => quick("move")}>Best move</button>
     <button class="chip" onclick={() => quick("line")}>Line</button>
   </div>
-  <div class="words" bind:this={wordsEl} style="height: {shownHeight}px">{#each runs(said) as r, i (i)}{#if r.kind}<span class={r.kind}>{r.text}</span>{:else}{r.text}{/if}{/each}</div>
+  <div class="words" bind:this={wordsEl} style="height: {shownHeight}px">{#each runs(said) as r, i (i)}{#if r.kind}<span class="w-{r.kind}">{r.text}</span>{:else}{r.text}{/if}{/each}</div>
   {#if movesShown && moves.length}
     <div class="strip" bind:this={stripEl} onpointerdown={(e) => e.stopPropagation()} onpointerup={(e) => { e.stopPropagation(); keepMoves(); }} role="presentation">
       {#each moves as m, i (i)}
@@ -661,9 +661,11 @@
   .box.browser { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); max-width: calc(100vw - 32px); }
 
   .words { overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
-  /* A move or a square the coach names, and a piece: what a player's eye looks for. */
-  .words .move { color: var(--accent); font-weight: 700; }
-  .words .piece { font-weight: 700; }
+  /* A move or a square the coach names, and a piece: what a player's eye looks for. Classes
+     of their own: "piece" is the board's (panel.css, absolute at the top-left), and took every
+     piece word out of the sentence into the box's corner (2026-10-01). */
+  .words .w-move { color: var(--accent); font-weight: 700; }
+  .words .w-piece { font-weight: 700; }
 
   .buttons { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .round {
