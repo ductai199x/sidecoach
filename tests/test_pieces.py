@@ -1,5 +1,6 @@
 import copy
 import itertools
+import random
 import warnings
 from functools import cache
 from typing import Any
@@ -11,6 +12,7 @@ import pytest
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import detect_boards
+from sidecoach.vision.embedding import CellEmbedder
 from sidecoach.vision.pieces import (
     CELL,
     HIGHLIGHT_TOLERANCE,
@@ -141,6 +143,24 @@ def test_bootstrap_refuses_a_start_frame_with_a_piece_hidden() -> None:
     assert ThemeModel.from_start_position(hovered, GEOM, Side.WHITE) is None
 
 
+def _labelled(board: chess.Board, style: str, theme: str, cell: int, **kw: Any) -> np.ndarray:
+    """`board` with its coordinate labels, drawn at (300, 120) on a frame 400 px wider and
+    200 px taller than the board."""
+    return synthetic_board(
+        width=8 * cell + 400, height=8 * cell + 200, board=board, theme=theme, cell=cell,
+        style=style, coordinates=True, **kw,
+    )  # fmt: skip
+
+
+def test_without_the_net_nothing_is_learned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The net ships in the package; a broken install without it learns no set, rather
+    than read pieces some other way."""
+    monkeypatch.setattr(CellEmbedder, "load", staticmethod(lambda path=None: None))
+    cell = 64
+    frame = _labelled(chess.Board(), "cburnett", "green", cell)
+    assert ThemeModel.from_start_position(frame, _geometry(cell), Side.WHITE) is None
+
+
 def test_degenerate_inputs_read_as_nothing() -> None:
     """A 2x2 patch reads without a NaN or a warning, an empty square has no mask for an
     overlay to reach (a pawn has one, out of a far colour's reach), and a board of zeros
@@ -205,8 +225,9 @@ def test_a_line_of_marked_squares_is_not_an_overlay() -> None:
 def test_recognition_survives_a_lock_a_pixel_off() -> None:
     """Exemplars built at one lock, readings taken at another a pixel or a tenth of a pixel
     of pitch away, which is what the tracker guarantees: every piece still reads exact and
-    settled, because overlap is measured with the mask moved onto the exemplar and the
-    settle tolerance has a floor of a few source pixels."""
+    settled. The embedding names the crop a pixel off as it names it in place, and the
+    landing -- the shift the phase correlation measures against the piece's start crop --
+    is held to a tolerance with a floor of a few source pixels (`settle_tolerance`)."""
     cell = 43
     model = _start_model(cell)
     later = _played(*MIDDLEGAME)
@@ -412,6 +433,73 @@ def test_every_theme_and_piece_style_reads_every_square(
     where = f"{theme}/{style} at {cell} px, {bottom.value} at the bottom"
     assert not off, f"{where}: {off}"
     assert lit == {"f6", "d5"}, f"{where}: highlighted {lit}"
+
+
+@pytest.mark.parametrize(
+    ("style", "theme", "cell"),
+    [
+        pytest.param(style, theme, cell, id=f"{theme}-{cell}-{style}")
+        for style, theme, cell in (
+            ("pixel", "green", 48),
+            ("pixel", "dark", 112),
+            ("riohacha", "dark", 112),
+            ("chess7", "green", 48),
+            ("chess7", "dark", 112),
+        )
+    ],
+)
+def test_reads_a_set_from_its_own_start_position(style: str, theme: str, cell: int) -> None:
+    """A random middlegame (thirty plies, seed 7) on a set learned from its own start
+    position, its labels drawn and its last move highlighted: every piece named, every empty
+    square empty. Pieces stand here on square colours they did not start on, where the
+    embedding's nearest white and nearest black piece can lie too close for it to vote on
+    the side (COLOUR_TIE) and the brightness and the fill decide it (pieces._vote_side): on
+    the dark board a pixel queen and a riohacha pawn, which stand on their start squares'
+    colours in STYLE_ROWS' middlegame."""
+    rng = random.Random(7)
+    board = chess.Board()
+    for _ in range(30):
+        moves = list(board.legal_moves)
+        if not moves:
+            break
+        board.push(rng.choice(moves))
+    geometry = _geometry(cell)
+    model = ThemeModel.from_start_position(
+        _labelled(chess.Board(), style, theme, cell), geometry, Side.WHITE
+    )
+    assert model is not None
+    readings = model.classify_frame(
+        _labelled(board, style, theme, cell, highlight=board.move_stack[-1]), geometry
+    )
+    wrong = []
+    for r in range(8):
+        for c in range(8):
+            piece = board.piece_at(square_at(r, c, Side.WHITE))
+            got = readings[r][c]
+            want = piece.symbol() if piece else None
+            if want is None and got.kind != "empty":
+                wrong.append((r, c, "empty", got.kind, got.symbol))
+            elif want is not None and (got.kind != "piece" or got.symbol != want):
+                wrong.append((r, c, want, got.kind, got.symbol, got.guess))
+    assert not wrong, wrong
+
+
+@pytest.mark.slow  # -m slow: the default run reads the net on the CPU (tests/conftest.py)
+def test_the_net_runs_on_the_gpu_and_reads_as_on_the_cpu() -> None:
+    """The app takes the GPU when it has one, and the tests read the net on the CPU: this
+    keeps the GPU path tested -- it loads there, and embeds the same cells the same way."""
+    from sidecoach.voice.runtime import cuda_available
+
+    if not cuda_available():
+        pytest.skip("no CUDA on this machine")
+    gpu, cpu = CellEmbedder(device="cuda"), CellEmbedder(device="cpu")
+    assert gpu.device.name == "cuda", gpu.device.detail
+    cell = 64
+    frame = _labelled(chess.Board(), "cburnett", "green", cell)
+    crops = [frame[120 + r * cell : 120 + (r + 1) * cell, 300 : 300 + cell] for r in range(8)]
+    on_gpu, on_cpu = gpu.embed(crops), cpu.embed(crops)
+    assert on_gpu.shape == on_cpu.shape == (8, 1280)
+    assert float((on_gpu * on_cpu).sum(axis=1).min()) > 0.999, "the same vectors, to rounding"
 
 
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
