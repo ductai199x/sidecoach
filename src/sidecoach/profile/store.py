@@ -1015,6 +1015,18 @@ class Store:
             row = self._db.execute("SELECT 1 FROM removed WHERE key = ?", (key,)).fetchone()
         return row is not None
 
+    def in_record(self, key: str) -> bool:
+        """Whether a game (by its library key) is in the player's record: its import in the
+        library, or Sidecoach's record of the watched game -- gone once removed, or once the
+        profile is reset."""
+        if key.startswith(WATCHED):
+            table, column, value = "games", "game_id", key[len(WATCHED) :]
+        else:
+            table, column, value = "library", "key", key
+        with self._lock:
+            row = self._db.execute(f"SELECT 1 FROM {table} WHERE {column} = ?", (value,)).fetchone()
+        return row is not None
+
     def unremove(self, keys: Sequence[str]) -> None:
         """Games the player brought in by hand (a pasted PGN): no longer left out."""
         with self._lock, self._db:

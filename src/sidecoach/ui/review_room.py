@@ -437,6 +437,11 @@ class ReviewRoom:
             stop=self._stop,
         )
         if done is None:
+            if not self._stop.is_set():  # not stopped: the game went from the record meanwhile
+                with self._lock:
+                    self.status = "failed"
+                    self.error = "This game is no longer in your record."
+                self._emit("sys", "warn", f"{self.key} left the record while it was reviewed")
             return
         reviewed, summary = done
         self._ready(reviewed, summary)
@@ -590,7 +595,10 @@ def review_row(
         )
     if stop is not None and stop.is_set():
         return None
-    if store.is_removed(row.key):  # taken out of the player's record while it was reviewed
+    if not store.in_record(row.key):
+        # Taken out of the player's record while it was reviewed: removed, or the profile reset
+        # (the review of 2026-10-01: a review saved after a reset left Stats a game that nothing
+        # listed and nothing could remove).
         store.clear_progress(row.key)
         return None
     summary = summarize(reviewed)

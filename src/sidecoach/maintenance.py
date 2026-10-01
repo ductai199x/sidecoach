@@ -18,10 +18,16 @@ from typing import Any
 
 from sidecoach.config import Settings
 
+# The settings a reset keeps: the player's Pause of the background review (ui/backlog.py
+# PAUSED_KEY), a choice about the app's work, not something the profile learned (the review of
+# 2026-10-01: a reset cleared it, and the next start reviewed again).
+KEPT_SETTINGS = ("backlog.paused",)
+
 
 def reset_profile(settings: Settings) -> Path:
-    """Empty the profile database in place (every table), so a store open on it -- the
-    running panel's -- stays valid and simply finds nothing. Returns the path."""
+    """Empty the profile database in place (every table but the settings it keeps), so a store
+    open on it -- the running panel's -- stays valid and simply finds nothing. Returns the
+    path."""
     path = settings.data_dir / "profile.sqlite"
     if not path.exists():
         return path
@@ -34,6 +40,10 @@ def reset_profile(settings: Settings) -> Path:
             )
         ]
         for table in tables:
+            if table == "settings":
+                marks = ", ".join("?" * len(KEPT_SETTINGS))
+                db.execute(f"DELETE FROM settings WHERE key NOT IN ({marks})", KEPT_SETTINGS)  # noqa: S608
+                continue
             db.execute(f'DELETE FROM "{table}"')  # noqa: S608 - names from the schema
         db.commit()
         with contextlib.suppress(sqlite3.OperationalError):  # another connection busy
