@@ -95,6 +95,8 @@ class ReviewRoom(
     // The words' cost as the button says it, by model name and the moves answered already.
     private var estimated: Pair<Pair<String?, Set<Int>>, Double?>? = null
 
+    private val playback = playback(row.pgn)
+
     @Volatile var touched = SystemClock.elapsedRealtime()
         private set
 
@@ -138,6 +140,9 @@ class ReviewRoom(
                         .put("user_side", row.userSide ?: JSONObject.NULL),
                 )
                 .put("start_fen", reviewed?.start?.fen ?: JSONObject.NULL)
+                // While the game is analysed, its positions: the page's board plays the game out
+                // as the progress goes, as chess.com's review does (Tai, 2026-09-30).
+                .put("playback", if (status == "starting" || status == "analysing") playback else JSONObject.NULL)
                 .put("summary", summary?.let { ReviewJson.summary(it) } ?: JSONObject.NULL)
                 .put("moves", moves)
                 .put("practice", practice)
@@ -429,6 +434,22 @@ class ReviewRoom(
         // not very accurate"), though the live coach may be set to none for speed.
         const val REVIEW_EFFORT = "medium"
         const val NO_AI = "No AI coach is set up: choose one in Settings."
+
+        /**
+         * The game's main line as the board plays it while the game is analysed: the position
+         * before any move, then each move (UCI) and the position it leaves; none for a PGN with
+         * no game in it. `playback`.
+         */
+        fun playback(pgn: String): JSONArray {
+            val game = Library.gamesIn(pgn).firstOrNull() ?: return JSONArray()
+            val board = game.board()
+            val out = JSONArray().put(JSONObject().put("fen", board.fen()).put("uci", JSONObject.NULL))
+            for (move in game.mainlineMoves()) {
+                board.push(move)
+                out.put(JSONObject().put("fen", board.fen()).put("uci", move.uci()))
+            }
+            return out
+        }
 
         /**
          * A game of the library reviewed whole on [workers] engines of its own, summed up, and

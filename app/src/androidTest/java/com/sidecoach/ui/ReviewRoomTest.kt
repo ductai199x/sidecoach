@@ -82,9 +82,17 @@ class ReviewRoomTest {
         val model = Scripted()
         fun room() = ReviewRoom(files, settings, row, storePath, "fast", maker!!, model = { model to null })
 
+        // While it is analysed, the game's positions for the board to play out as the progress goes.
+        val playing = ReviewRoom.playback(row.pgn)
+        assertEquals(8, playing.length())
+        assertTrue(playing.getJSONObject(0).isNull("uci") && playing.getJSONObject(1).getString("uci") == "e2e4")
+
         // Reviewed: its progress to the whole game, then the summary and every move.
         val first = room()
+        val opening = first.state()
+        if (opening.getString("status") != "ready") assertEquals(playing.toString(), opening.getJSONArray("playback").toString())
         var state = until(first, 180, "reviewed") { it.getString("status") == "ready" }
+        assertTrue("the review shown, the playback gone", state.isNull("playback"))
         assertEquals(8, state.getJSONObject("progress").getInt("done"))
         assertEquals(8, state.getJSONObject("progress").getInt("total"))
         assertEquals(7, state.getJSONArray("moves").length())

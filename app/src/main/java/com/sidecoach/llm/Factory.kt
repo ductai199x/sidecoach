@@ -124,7 +124,7 @@ fun makeProvider(
     val keyEnv = if (settings.apiKeyEnv.isNullOrEmpty()) defaults.apiKeyEnv else settings.apiKeyEnv
     val apiKey = if (!keyEnv.isNullOrEmpty()) keys.get(keyEnv) else null
     if (!keyEnv.isNullOrEmpty() && apiKey.isNullOrEmpty()) {
-        throw IllegalStateException("$keyEnv is not set: paste the key in Settings, or .env")
+        throw IllegalStateException("$keyEnv is not set: paste the key in Settings.")
     }
 
     val wanted = if (settings.thinkingControl.isNullOrEmpty()) {
