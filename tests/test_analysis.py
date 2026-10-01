@@ -1008,6 +1008,31 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
         assessing.close()
 
 
+def test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it() -> None:
+    """After a takeback the move before the replacement is the one the game kept; the last
+    move judged was the withdrawn one, a ply too far, and the replacement was judged as if
+    nothing came before it: the opponent's mistake unseen, a loss after it a blunder, not
+    the miss it is (the state review, 2026-10-01)."""
+    start = chess.Board()
+    fake = FakeEngine(
+        {
+            start.fen(): [Line(moves=["d2d4"], depth=6, expected_score=0.55)],
+            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.70)],
+            _after("e4", "a6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
+            _after("e4", "h6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
+        }
+    )
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    board = chess.Board()
+    first = annotator.assess_move("g", board, board.parse_san("e4"), 1)
+    assert first.severity is Severity.MISTAKE, "the opponent erred"
+    board.push_san("e4")
+    withdrawn = annotator.assess_move("g", board, board.parse_san("a6"), 2)
+    replacement = annotator.assess_move("g", board, board.parse_san("h6"), 2)
+    assert withdrawn.label is Label.MISS
+    assert replacement.label is Label.MISS, replacement.label
+
+
 # Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.
 OVERLOADED = "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2"
 OVERLOADED_LINE = ["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"]

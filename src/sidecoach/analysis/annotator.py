@@ -125,11 +125,14 @@ class GameAnnotator:
     # candidates, no threats. Kept apart from `_cache`, so a later whole measurement of
     # the same position is not answered with the thin one.
     _verdict_cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
-    # The last move assessed: game, ply, loss, where it landed and whether it captured, so
-    # the next move knows whether the opponent just erred and whether it is merely taking
-    # back.
-    _previous: tuple[str, int, float, chess.Square, bool] | None = field(
-        default=None, init=False, repr=False
+    # Each move assessed, by its ply: the game, the position it led to, its loss, where it
+    # landed and whether it captured, so the move after it knows whether the opponent just
+    # erred and whether it is merely taking back. By ply, not the last one assessed: after a
+    # takeback the move before the replacement is the one the game kept, and the last one
+    # assessed was the withdrawn move, a ply too far -- "the opponent erred" and "a
+    # recapture" were lost on every replacement (the state review, 2026-10-01).
+    _assessed: dict[int, tuple[str, str, float, chess.Square, bool]] = field(
+        default_factory=dict, init=False, repr=False
     )
     # Positions measured ahead of the game (`look_ahead`) and not yet reached, and how many
     # the game has reached: what looking ahead saved.
@@ -145,7 +148,7 @@ class GameAnnotator:
         self._verdict_cache.clear()
         self._ahead.clear()
         self.computed.clear()
-        self._previous = None
+        self._assessed.clear()
 
     def look_ahead(self, board: chess.Board) -> Measured:
         """A position the game may reach, measured whole before it does, as the game's own
@@ -372,9 +375,10 @@ class GameAnnotator:
         loss = eval_loss(measured_before.lines, move.uci(), measured_after.score)
         tags = self._move_tags(before, move, measured_after)
         best = measured_before.lines[0].moves if measured_before.lines else []
-        previous = self._previous
-        if previous is not None and (previous[0] != game_id or previous[1] != ply - 1):
-            previous = None  # another game, or a gap: the move before this one is unknown
+        previous = self._assessed.get(ply - 1)
+        if previous is not None and (previous[0] != game_id or previous[1] != before.epd()):
+            # Another game, or a move that did not lead here: the move before is unknown.
+            previous = None
         opponent_erred = previous is not None and previous[2] >= self.thresholds.mistake
         # Taking back on the square the opponent just captured on. Taking a piece that
         # merely moved there is not obvious: that is how a blunder gets punished.
@@ -400,7 +404,13 @@ class GameAnnotator:
             opponent_erred=opponent_erred,
             obvious=obvious,
         )
-        self._previous = (game_id, ply, loss, move.to_square, before.is_capture(move))
+        self._assessed[ply] = (
+            game_id,
+            after.epd(),
+            loss,
+            move.to_square,
+            before.is_capture(move),
+        )
         assessment = MoveAssessment(
             game_id=game_id,
             ply=ply,
