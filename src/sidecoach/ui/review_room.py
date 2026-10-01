@@ -70,6 +70,10 @@ NO_AI = "No AI coach is set up: choose one in Settings."
 Model = Callable[[], tuple[Any | None, str | None]]
 
 
+class NoStockfish(RuntimeError):
+    """No Stockfish to review with yet -- a first run, Setup still fetching it: no game's fault."""
+
+
 class ReviewRoom:
     def __init__(
         self,
@@ -530,7 +534,7 @@ def review_row(
         raise ValueError("the game's PGN has no moves")
     path = find_stockfish(settings)
     if path is None:
-        raise RuntimeError("no Stockfish to review with")
+        raise NoStockfish("no Stockfish to review with")
     engine = settings.engine
     known: dict[str, Measured] = {}
     for text in store.progress(row.key, strength.name, strength.depth, strength.multipv):
