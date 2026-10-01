@@ -98,20 +98,46 @@ def test_regions_and_anchors() -> None:
     assert region_of(["g4", "d7", "c8"]) == "the queenside, around d7"
 
 
+def test_games_are_divided_into_phases_as_lichess_divides_them() -> None:
+    """Tai, 2026-10-01: "do openings the same way chess.com or lichess does it". 59 real games
+    with Lichess's own division (its API's `division=true`, fetched once into the fixture):
+    the middlegame and the endgame begin at the very ply Lichess says, in every one."""
+    import json
+    from pathlib import Path
+
+    from sidecoach.analysis.phase import game_phases
+
+    games = json.loads((Path(__file__).parent / "fixtures" / "lichess_division.json").read_text())
+    assert len(games) == 59
+    for game in games:
+        board = chess.Board()
+        boards = [board.copy()]
+        for san in game["moves"].split():
+            board.push_san(san)
+            boards.append(board.copy())
+        phases = game_phases(boards)
+        ours = {
+            name: phases.index(phase)
+            for name, phase in (("middle", "middlegame"), ("end", "endgame"))
+            if phase in phases
+        }
+        theirs = {k: v for k, v in game["division"].items() if k in ("middle", "end")}
+        assert ours == theirs, game["id"]
+
+
 def test_phase_and_material_in_the_users_words() -> None:
     assert phase_of(chess.Board()) == "opening"
     endgame = chess.Board("8/5k2/8/8/8/8/P4K2/8 w - - 0 50")
     assert phase_of(endgame) == "endgame"
-    middlegame = chess.Board(
-        "r1bq1rk1/pp2ppbp/2np1np1/2p5/2P1P3/2N2NP1/PP1PBP1P/R1BQ1RK1 w - - 0 12"
-    )
-    assert phase_of(middlegame) == "middlegame"
-    assert phase_of(middlegame, in_book=True) == "opening", "a book position is the opening"
-    # What is left decides before the move number and the book: a puzzle's position starts
-    # at move 1, and a rook and a minor piece each were read as the opening (Tai's puzzle,
-    # 2026-09-28, af25f62; pinned here by the parity audit, 2026-09-29).
+    # The board decides, never the move number: a puzzle's position starts at move 1, and a
+    # rook and a minor piece (2026-09-28), then two queens, three rooks and a knight
+    # (2026-10-01) were read as the opening.
     puzzle = chess.Board("5rk1/5p2/P7/8/8/8/5R2/5RK1 w - - 0 1")
-    assert phase_of(puzzle) == "endgame" and phase_of(puzzle, in_book=True) == "endgame"
+    assert phase_of(puzzle) == "endgame"
+    joined = chess.Board("4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1")
+    assert phase_of(joined) == "endgame", "six pieces besides kings and pawns: Lichess's endgame"
+    early = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+    assert phase_of(early) == "opening", "a real opening, all its pieces on"
     assert material_text(chess.Board()) == "level"
     assert material_text(
         chess.Board("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1")

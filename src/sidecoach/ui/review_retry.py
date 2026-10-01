@@ -102,7 +102,7 @@ class Retries:
         board = self._board(ply)
         analysis = self._analysis_before(ply)
         previous = self.reviewed.moves[ply - 2].assessment.uci if ply > 1 else None
-        facts = facts_from_analysis(board, analysis, last_move=previous, in_book=analysis.in_book)
+        facts = facts_from_analysis(board, analysis, last_move=previous)
         level = DisclosureLevel(max(DisclosureLevel.IDEA, min(DisclosureLevel.MOVE, level)))
         best = analysis.lines[0].moves[0] if analysis.lines and analysis.lines[0].moves else None
         return {

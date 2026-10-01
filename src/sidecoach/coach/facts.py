@@ -514,7 +514,6 @@ def facts_from_analysis(
     analysis: Analysis,
     *,
     last_move: str | None = None,
-    in_book: bool = False,
     user: chess.Color | None = None,
     pick: Callable[[str, Sequence[str]], str] | None = None,
 ) -> PositionFacts:
@@ -529,7 +528,7 @@ def facts_from_analysis(
     best = _to_move(best_uci) if best_uci else None
     if best is not None and best not in board.legal_moves:
         best = None
-    phase = phase_of(board, in_book)
+    phase = phase_of(board)
     us = board.turn
 
     # What the best line is for, read through the player's own moves (`coach/idea.py`): the

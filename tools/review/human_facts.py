@@ -54,7 +54,7 @@ def judged(side: list[dict], annotator: GameAnnotator) -> dict:
         after_board.push(move)
         after = annotator.analysis_event(game_id, after_board, row["ply"] + 1)
         assessment = annotator.assess_move(game_id, board, move, row["ply"])
-        phase = phase_of(board, in_book=before.in_book)
+        phase = phase_of(board)
         chance = chance_in(before)
         moves.append(
             {

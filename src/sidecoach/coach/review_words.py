@@ -179,7 +179,7 @@ def move_facts(game: ReviewedGame, ply: int, user: str | None) -> dict[str, Any]
     before = game.moves[i - 1].after if i else game.start
     board = chess.Board(move.fen_before)
     previous = game.moves[i - 1].assessment.uci if i else None
-    facts = facts_from_analysis(board, before, last_move=previous, in_book=before.in_book)
+    facts = facts_from_analysis(board, before, last_move=previous)
     mover = move.side.value.capitalize()
     other = "Black" if mover == "White" else "White"
     # The facts whose owner goes without saying to the side to move, named: the threats are

@@ -18,7 +18,7 @@ from statistics import fmean
 
 import chess
 
-from sidecoach.analysis.phase import phase_of
+from sidecoach.analysis.phase import game_phases
 from sidecoach.analysis.score import game_accuracy, position_score
 from sidecoach.events import (
     GameSummary,
@@ -122,13 +122,14 @@ def summarize(game: ReviewedGame) -> GameSummary:
     # What each side's moves cost from where they stood, for the rating they played at.
     played: dict[Side, list[dict[str, float]]] = {Side.WHITE: [], Side.BLACK: []}
     graph = [_white_score(chess.Board(game.start.fen), game.start.lines)]
-    in_book = game.start.in_book
     last_book: int | None = None
     key: list[KeyMoment] = []
     opening: str | None = game.start.opening
-    for move in game.moves:
+    # The game divided as Lichess divides it: each move in the phase of the position it was
+    # played from.
+    phases = game_phases(chess.Board(move.fen_before) for move in game.moves)
+    for move, phase in zip(game.moves, phases, strict=True):
         before = chess.Board(move.fen_before)
-        phase = phase_of(before, in_book=in_book)
         label = move.assessment.label
         per_side[move.side].append((phase, move.assessment.accuracy or 0.0, label))
         standing = graph[-1] if move.side is Side.WHITE else 1.0 - graph[-1]
@@ -142,7 +143,6 @@ def summarize(game: ReviewedGame) -> GameSummary:
         after = before.copy(stack=False)
         after.push_uci(move.assessment.uci)
         graph.append(_white_score(after, move.after.lines))
-        in_book = move.after.in_book
         opening = move.after.opening or opening
     if last_book is not None:
         key.append(

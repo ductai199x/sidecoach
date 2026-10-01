@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import chess
 
-from sidecoach.analysis.phase import phase_of
+from sidecoach.analysis.phase import later, phase_of
 from sidecoach.analysis.score import terminal_expected_score
 from sidecoach.events import (
     Analysis,
@@ -130,6 +130,8 @@ class _Game:
     provisional: bool = False  # a position, not yet known to be a game
     ended_at: float = 0.0
     reviewed: bool = False
+    # The game's phase so far: a phase reached is never left (`phase.game_phases`).
+    phase: str = "opening"
 
 
 def _reason_words(event: GameEnded) -> str | None:
@@ -315,7 +317,8 @@ class Profiler:
         move = chess.Move.from_uci(event.uci)
         mover = before.turn
         ply.clock_ms = self._clock[0] if mover == chess.WHITE else self._clock[1]
-        ply.phase = phase_of(before)
+        game.phase = later(game.phase, phase_of(before))
+        ply.phase = game.phase
         game.plies[key] = ply
         game.last_fen = event.fen_after
         user = game.user_side.color
@@ -376,7 +379,6 @@ class Profiler:
             return []
         ply.assessment = event
         before = chess.Board(ply.move.fen_before)
-        ply.phase = phase_of(before, in_book=event.label is Label.BOOK)
         faced = game.analyses.get((game.segment, event.ply - 1))
         available = (
             sorted({t.name for t in faced.tags if t.name in causes.TACTICAL})

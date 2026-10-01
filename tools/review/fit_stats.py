@@ -53,10 +53,9 @@ def load(path: Path) -> list[dict]:
         for move in row["moves"]:
             board = chess.Board(by_ply[move["ply"]])
             move["themes"] = ",".join(themes_of(board))
-            # The facts were judged with the sample's "0 1" counters, every position read as
-            # the opening's first moves: the phase again, from the true move number.
-            board.fullmove_number = move["ply"] // 2 + 1
-            move["phase"] = phase_of(board, in_book=move["label"] == "book")
+            # The phase again, as Lichess divides a game (from the board alone, as
+            # `phase.phase_of` reads it).
+            move["phase"] = phase_of(board)
         if (i + 1) % 300 == 0:
             print(f"  themes: {i + 1}/{len(rows)} sides", flush=True)
     return rows

@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass
 import chess
 
 from sidecoach.analysis import positional
-from sidecoach.analysis.phase import phase_of
+from sidecoach.analysis.phase import game_phases
 from sidecoach.analysis.score import position_score
 from sidecoach.events import Analysis, MotifTag, ReviewedGame
 from sidecoach.profile.causes import TACTICAL
@@ -204,11 +204,11 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
     """A reviewed game's facts: the game's, and every move's."""
     moves: list[MoveFact] = []
     before = game.start
-    in_book = game.start.in_book
-    for move in game.moves:
+    # The game divided as Lichess divides it (`phase.game_phases`).
+    phases = game_phases(chess.Board(move.fen_before) for move in game.moves)
+    for move, phase in zip(game.moves, phases, strict=True):
         board = chess.Board(move.fen_before)
         score = position_score(board, before.lines)
-        phase = phase_of(board, in_book=in_book)
         chance = chance_in(before)
         label = move.assessment.label
         moves.append(
@@ -234,7 +234,6 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
             )
         )
         before = move.after
-        in_book = move.after.in_book
     opening = next((m.after.opening for m in reversed(game.moves) if m.after.opening), None)
     headers = game.headers
     fact = GameFact(
