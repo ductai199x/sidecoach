@@ -30,7 +30,7 @@ object Looks {
     }
 
     val PIECE_SETS: Map<String, PieceSet> = linkedMapOf(
-        "sidecoach" to PieceSet("Sidecoach", "Sidecoach", "Sidecoach's own", "", "own1"),
+        "sidecoach" to PieceSet("Sidecoach", "Sidecoach", "Sidecoach's own", "", "own2"),
         "cburnett" to PieceSet("Classic", "Colin M.L. Burnett", "GPLv2+", "cburnett/", "1"),
         "merida" to PieceSet("Merida", "Armando Hernandez Marroquin", "GPLv2+", "merida/", "1"),
         "chessnut" to PieceSet("Chessnut", "Alexis Luengas", "Apache 2.0", "chessnut/", "1"),
