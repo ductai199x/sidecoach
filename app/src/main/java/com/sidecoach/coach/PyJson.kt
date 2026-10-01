@@ -45,15 +45,18 @@ fun pyJsonOr(text: String, fallback: Any?): Any? = try {
  * `json.dumps(value)`: `", "` and `": "` between the parts, a dict's keys in their order, every
  * character outside ' '..'~' escaped (`ensure_ascii`), a float as its repr, NaN and the
  * infinities as Python writes them. Python's values here, and org.json's: the arguments of a
- * model's call go back to it as the desktop writes them (`openai_compat.chat_turns`).
+ * model's call go back to it as the desktop writes them (`openai_compat.chat_turns`). With
+ * [ensureAscii] false, `ensure_ascii=False`: only the quote, the backslash and the control
+ * characters escaped, everything else as it is (the review's words, `review_words.prompt`).
  */
-fun pyJsonDumps(value: Any?): String = StringBuilder().also { pyDump(value, it) }.toString()
+fun pyJsonDumps(value: Any?, ensureAscii: Boolean = true): String =
+    StringBuilder().also { pyDump(value, it, ensureAscii) }.toString()
 
-private fun pyDump(value: Any?, out: StringBuilder) {
+private fun pyDump(value: Any?, out: StringBuilder, ascii: Boolean = true) {
     when {
         value == null || value == JSONObject.NULL -> out.append("null")
         value is Boolean -> out.append(if (value) "true" else "false")
-        value is String -> pyDumpString(value, out)
+        value is String -> pyDumpString(value, out, ascii)
         value is Double || value is Float -> {
             val number = (value as Number).toDouble()
             out.append(
@@ -70,9 +73,9 @@ private fun pyDump(value: Any?, out: StringBuilder) {
             out.append('{')
             for ((index, entry) in value.entries.withIndex()) {
                 if (index > 0) out.append(", ")
-                pyDumpString(entry.key.toString(), out)
+                pyDumpString(entry.key.toString(), out, ascii)
                 out.append(": ")
-                pyDump(entry.value, out)
+                pyDump(entry.value, out, ascii)
             }
             out.append('}')
         }
@@ -80,7 +83,7 @@ private fun pyDump(value: Any?, out: StringBuilder) {
             out.append('[')
             for ((index, one) in value.withIndex()) {
                 if (index > 0) out.append(", ")
-                pyDump(one, out)
+                pyDump(one, out, ascii)
             }
             out.append(']')
         }
@@ -88,9 +91,9 @@ private fun pyDump(value: Any?, out: StringBuilder) {
             out.append('{')
             for ((index, key) in value.keys().asSequence().withIndex()) {
                 if (index > 0) out.append(", ")
-                pyDumpString(key, out)
+                pyDumpString(key, out, ascii)
                 out.append(": ")
-                pyDump(value.opt(key), out)
+                pyDump(value.opt(key), out, ascii)
             }
             out.append('}')
         }
@@ -98,26 +101,32 @@ private fun pyDump(value: Any?, out: StringBuilder) {
             out.append('[')
             for (index in 0 until value.length()) {
                 if (index > 0) out.append(", ")
-                pyDump(value.opt(index), out)
+                pyDump(value.opt(index), out, ascii)
             }
             out.append(']')
         }
-        else -> pyDumpString(value.toString(), out)
+        else -> pyDumpString(value.toString(), out, ascii)
     }
 }
 
-private fun pyDumpString(text: String, out: StringBuilder) {
+/**
+ * A string as `json.dumps` writes it: with [ascii], every character outside ' '..'~' as \uXXXX
+ * (`ESCAPE_ASCII`); without, only the quote, the backslash and the characters below the space
+ * (`ESCAPE`), DEL and everything past ASCII as they are.
+ */
+private fun pyDumpString(text: String, out: StringBuilder, ascii: Boolean = true) {
     out.append('"')
     for (char in text) {
-        when (char) {
-            '"' -> out.append("\\\"")
-            '\\' -> out.append("\\\\")
-            '\n' -> out.append("\\n")
-            '\r' -> out.append("\\r")
-            '\t' -> out.append("\\t")
-            '\b' -> out.append("\\b")
-            '\u000C' -> out.append("\\f")
-            in ' '..'~' -> out.append(char)
+        when {
+            char == '"' -> out.append("\\\"")
+            char == '\\' -> out.append("\\\\")
+            char == '\n' -> out.append("\\n")
+            char == '\r' -> out.append("\\r")
+            char == '\t' -> out.append("\\t")
+            char == '\b' -> out.append("\\b")
+            char == '\u000C' -> out.append("\\f")
+            char in ' '..'~' -> out.append(char)
+            !ascii && char >= ' ' -> out.append(char)
             else -> out.append("\\u").append(hex(char.code, 4))
         }
     }
