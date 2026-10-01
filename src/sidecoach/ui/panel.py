@@ -423,6 +423,8 @@ class PanelEngine:
         self._logged: dict[str, tuple[list[Any], int]] = {}
         self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
+        if self.settings.unreadable:
+            self._emit("sys", "warn", self.settings.unreadable)  # where its copy is kept
 
     # ---- control surface (called from the API / GUI thread) -------------------------------
 
@@ -1095,19 +1097,25 @@ class PanelEngine:
 
     def set_record(self, on: bool) -> dict[str, Any]:
         """The Debug menu's switch: the same setting as Settings > Screen > Record sessions,
-        saved to the settings file, applied within a tick of a running session."""
-        from sidecoach.config import save_settings
+        saved to the settings file, applied within a tick of a running session. Saved as every
+        other settings write is (`settings_api.remember`): written on its own, a Settings save
+        at the same moment put it back, and the change counter the other windows follow stayed
+        still (the settings review, 2026-10-01)."""
+        from sidecoach.ui import settings_api
 
+        with settings_api.saving:
+            try:
+                settings_api.remember(self, {"capture": {"record": on}})
+            except OSError as exc:
+                self._emit("sys", "warn", f"the setting could not be saved: {exc}")
+                new = self.settings.model_copy(deep=True)
+                new.capture.record = on
+                self.adopt_settings(new)
         with self._lock:
-            self.settings.capture.record = on
             self._record_failed = False
             self._state["record_wanted"] = self._recording_wanted()
             running = self._state.get("running", False)
             folder = self._state.get("recording_dir")
-        try:
-            save_settings(self.settings)
-        except OSError as exc:
-            self._emit("sys", "warn", f"the setting could not be saved: {exc}")
         self._emit(
             "sys",
             "info",

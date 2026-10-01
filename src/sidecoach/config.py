@@ -13,13 +13,19 @@ OS credential store (`secrets_get`, `secrets_set`, through `keyring` when it is 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import re
 import shutil
+import tempfile
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator
+
+log = logging.getLogger(__name__)
 
 
 def _extra(**kw: Any) -> dict[str, Any]:
@@ -793,11 +799,19 @@ class Settings(BaseModel):
     # Where these settings were read from, so a save goes back there: the panel started
     # with `--config x.toml` once saved to `sidecoach.toml` in the working directory.
     _source: Path | None = PrivateAttr(default=None)
+    # What could not be read of that file at the start, and where its copy is kept, for the
+    # panel's log (`load_settings`); None when it read whole.
+    _unreadable: str | None = PrivateAttr(default=None)
 
     @property
     def source(self) -> Path:
         """The file these settings came from, or would be written to."""
         return self._source or settings_path()
+
+    @property
+    def unreadable(self) -> str | None:
+        """What of the settings file the start could not read, and where its copy is."""
+        return self._unreadable
 
     data_dir: Path = Field(
         default_factory=lambda: Path("data"),  # a factory: a Path is no JSON default
@@ -906,11 +920,7 @@ def settings_path(path: str | os.PathLike[str] | None = None) -> Path:
 def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     load_dotenv()
     candidate = settings_path(path)
-    if candidate.exists():
-        with candidate.open("rb") as fh:
-            settings = Settings.model_validate(tomllib.load(fh))
-    else:
-        settings = Settings()
+    settings = _read_settings(candidate) if candidate.exists() else Settings()
     settings._source = candidate
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")
     if data_dir:
@@ -923,7 +933,126 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     return settings
 
 
+def _read_settings(path: Path) -> Settings:
+    """The settings in `path`. A file the start cannot read whole is never run over in silence:
+    a copy of it is kept beside it, the log says so, and what can be read of it is kept -- a
+    field the settings refuse takes its default and the others stay; a file that is no TOML
+    leaves every default. It stopped the app at every start, and a file run over by defaults
+    is lost at the next save (Tai lost his settings; the settings review, 2026-10-01). A file
+    that cannot be opened at all still raises: there is nothing to read or copy."""
+    raw = path.read_bytes()
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        settings = Settings()
+        settings._unreadable = _keep_unreadable(path, raw, f"is not readable ({exc})")
+        return settings
+    refused: list[str] = []
+    for _ in range(len(data) + 1):  # each round takes at least one field out
+        try:
+            settings = Settings.model_validate(data)
+        except ValidationError as exc:
+            dropped = _drop_refused(data, exc)
+            if not dropped:
+                break
+            refused.extend(dropped)
+            continue
+        if refused:
+            why = f"has values the settings refuse, left at their defaults: {', '.join(refused)}"
+            settings._unreadable = _keep_unreadable(path, raw, why)
+        return settings
+    settings = Settings()
+    settings._unreadable = _keep_unreadable(path, raw, "is not settings Sidecoach can read")
+    return settings
+
+
+def _drop_refused(data: dict[str, Any], exc: ValidationError) -> list[str]:
+    """Take out of `data` each field (`section.field`, or a top-level one) an error names;
+    returns the dotted names taken."""
+    dropped: list[str] = []
+    for error in exc.errors(include_url=False):
+        loc = [str(part) for part in error["loc"][:2]]
+        if not loc:
+            continue
+        holder: Any = data
+        for part in loc[:-1]:
+            holder = holder.get(part) if isinstance(holder, dict) else None
+        if isinstance(holder, dict) and loc[-1] in holder:
+            del holder[loc[-1]]
+            dropped.append(".".join(loc))
+    return dropped
+
+
+def _keep_unreadable(path: Path, raw: bytes, why: str) -> str:
+    """Keep `raw`, the file at `path` the start could not read whole, beside it as
+    `<name>.unreadable-<when>.toml` -- once: a start that finds the same file again keeps no
+    second copy. Logged; returns the line said, for the panel's log."""
+    copy: Path | None = None
+    for old in sorted(path.parent.glob(f"{path.stem}.unreadable-*{path.suffix}")):
+        with contextlib.suppress(OSError):
+            if old.read_bytes() == raw:
+                copy = old
+                break
+    if copy is None:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        copy = path.with_name(f"{path.stem}.unreadable-{stamp}{path.suffix}")
+        n = 1
+        while copy.exists():
+            n += 1
+            copy = path.with_name(f"{path.stem}.unreadable-{stamp}-{n}{path.suffix}")
+        try:
+            copy.write_bytes(raw)
+        except OSError as exc:
+            line = f"the settings file {path} {why}; no copy could be kept ({exc})"
+            log.warning(line)
+            return line
+    line = f"the settings file {path} {why}; it is kept as {copy.name}"
+    log.warning(line)
+    return line
+
+
+# The escapes of a TOML basic string; any other control character is written \uXXXX.
+_TOML_ESCAPES = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _toml_string(text: str) -> str:
+    """`text` as a TOML basic string that reads back as it was. Only the backslash and the
+    quote were escaped: a newline or a control character went in raw, and the next start could
+    not read the file (the settings review, 2026-10-01). A lone surrogate is no character a
+    file can hold: refused."""
+    out = ['"']
+    for ch in text:
+        code = ord(ch)
+        if ch in _TOML_ESCAPES:
+            out.append(_TOML_ESCAPES[ch])
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\u{code:04X}")
+        elif 0xD800 <= code <= 0xDFFF:
+            raise ValueError("a character that cannot be saved (a lone surrogate)")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _toml_key(key: str) -> str:
+    """A key as TOML reads it: bare when it can be, quoted otherwise -- written bare, a space
+    made the file unreadable and a dot nested the key in a table of its own."""
+    return key if _BARE_KEY.fullmatch(key) else _toml_string(key)
+
+
 def _toml_value(value: Any) -> str:
+    if value is None:
+        raise ValueError("a null cannot be saved in the settings file; leave the key out")
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int | float):
@@ -931,13 +1060,33 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, Path):
         value = str(value)
     if isinstance(value, str):
-        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return _toml_string(value)
     if isinstance(value, dict):
-        inner = ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items())
+        inner = ", ".join(f"{_toml_key(str(k))} = {_toml_value(v)}" for k, v in value.items())
         return "{ " + inner + " }"
     if isinstance(value, list | tuple):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     raise TypeError(f"cannot write {type(value).__name__} to TOML")
+
+
+def unwritable(settings: Settings) -> list[dict[str, Any]]:
+    """The fields the settings file cannot hold, as pydantic's errors are shaped (less the
+    input, which may not even encode), so the page shows each by its field and stops sending
+    it: a null inside llm.extra_body, a lone surrogate. One raised in the writer was a 500, and
+    the page sent it again with every later change, so nothing else saved (the settings
+    review, 2026-10-01)."""
+    errors: list[dict[str, Any]] = []
+    for name, value in settings.model_dump(mode="json").items():
+        fields = value.items() if isinstance(value, dict) else [(None, value)]
+        for field, one in fields:
+            if one is None:
+                continue  # a field's own null: `to_toml` leaves it out or writes ""
+            try:
+                _toml_value(one)
+            except (TypeError, ValueError) as exc:
+                loc = [name] if field is None else [name, field]
+                errors.append({"type": "value_error", "loc": loc, "msg": f"Value error, {exc}"})
+    return errors
 
 
 def to_toml(settings: Settings) -> str:
@@ -952,12 +1101,12 @@ def to_toml(settings: Settings) -> str:
         # The folders are the shell's in the app and are never written there; a checkout's
         # file keeps them.
         for key in ("data_dir", "tools_dir"):
-            lines.append(f"{key} = {_toml_value(data[key])}")
+            lines.append(f"{_toml_key(key)} = {_toml_value(data[key])}")
     for section, values in data.items():
         if not isinstance(values, dict):
             continue
         lines.append("")
-        lines.append(f"[{section}]")
+        lines.append(f"[{_toml_key(section)}]")
         model = type(getattr(settings, section))
         for key, value in values.items():
             if value is None:
@@ -967,16 +1116,40 @@ def to_toml(settings: Settings) -> str:
                 value = ""
             if isinstance(value, dict) and not value:
                 continue
-            lines.append(f"{key} = {_toml_value(value)}")
+            lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"
 
 
 def save_settings(settings: Settings, path: str | os.PathLike[str] | None = None) -> Path:
     """Write the settings file: `path`, else where the settings came from (see `source`);
-    returns where."""
+    returns where. Whole or not at all: the text is checked to read back, written to a file of
+    its own beside the old one, flushed to the disk, and put in the old one's place in one
+    step. Written over in place, a save that failed or was cut short (the app quitting, two
+    saves at once) left the file empty or torn, and the next start read every default, or
+    could not start (Tai lost his settings; the settings review, 2026-10-01)."""
     target = Path(path) if path else settings.source
+    text = to_toml(settings)
+    tomllib.loads(text)  # never a file the next start cannot read
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(to_toml(settings), encoding="utf-8")
+    fd, scratch = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(scratch, target)
+                break
+            except PermissionError:
+                # Windows: a reader holding the old file open (a scan, an editor) for a moment.
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(scratch)
+        raise
     return target
 
 

@@ -11,6 +11,7 @@ what took effect now, what waits for the next Start, and what needs a restart.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -23,10 +24,19 @@ from sidecoach.config import (
     save_settings,
     secrets_get,
     secrets_set,
+    unwritable,
 )
 from sidecoach.voice.voices import english_voices
 
 SECRET_NAMES: tuple[str, ...] = ("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+
+# One write of the settings at a time, each whole -- read, merge, write, apply: a Settings
+# save, a switch on the panel kept for the next session (muted, how the coach listens), Debug >
+# Record, the captions turned off from their own box. Each read the settings, laid its change
+# over them and wrote, and the later write put back what the earlier one changed, or tore the
+# file (the settings review, 2026-10-01: 81 usernames lost in 150 rounds). Re-entrant: a
+# panel switch takes it around its own change and the remembering.
+saving = threading.RLock()
 
 
 class SettingsUpdate(BaseModel):
@@ -146,16 +156,17 @@ def _validated(engine: Any, change: dict[str, Any]) -> Settings:
 
 
 def remember(engine: Any, change: dict[str, Any]) -> None:
-    """A choice made on the panel itself -- muted, how the coach listens -- kept in the
-    settings file, so the next session starts as this one was left (Tai, 2026-10-01: "mute
-    setting isn't remembered between sessions"). The panel applied it already; nothing is
-    applied again."""
-    new = _validated(engine, change)
-    new._source = save_settings(new, engine.settings.source)
-    if hasattr(engine, "adopt_settings"):
-        engine.adopt_settings(new)
-    else:
-        engine.settings = new
+    """A choice made on the panel itself -- muted, how the coach listens, Debug > Record --
+    kept in the settings file, so the next session starts as this one was left (Tai,
+    2026-10-01: "mute setting isn't remembered between sessions"). The panel applied it
+    already; nothing is applied again."""
+    with saving:
+        new = _validated(engine, change)
+        new._source = save_settings(new, engine.settings.source)
+        if hasattr(engine, "adopt_settings"):
+            engine.adopt_settings(new)
+        else:
+            engine.settings = new
 
 
 def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
@@ -163,37 +174,41 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
     settings sent are what changed, laid over the settings as they are now: a page opened
     before another saved cannot put back what that one changed (a Settings window left open
     wrote the chess.com username back to empty, Tai 2026-09-30)."""
-    try:
-        new = _validated(engine, body.settings)
-    except ValidationError as exc:
-        return {"ok": False, "errors": exc.errors(include_url=False)}
-    old = engine.settings
-    path = save_settings(new, old.source)
-    new._source = path
-    changed = _changed(old.model_dump(mode="json"), new.model_dump(mode="json"))
+    with saving:
+        try:
+            new = _validated(engine, body.settings)
+        except ValidationError as exc:
+            return {"ok": False, "errors": exc.errors(include_url=False)}
+        refused = unwritable(new)
+        if refused:
+            return {"ok": False, "errors": refused}
+        old = engine.settings
+        path = save_settings(new, old.source)
+        new._source = path
+        changed = _changed(old.model_dump(mode="json"), new.model_dump(mode="json"))
+
+        stored: dict[str, bool] = {}
+        for name, value in body.secrets.items():
+            if name not in _secret_names(new):
+                continue
+            stored[name] = secrets_set(name, value)
+            if value:
+                os.environ[name] = value
+            else:
+                os.environ.pop(name, None)
+
+        # What the engine can change on the running session, it does now. A "now" field with
+        # nothing running to change is applied all the same: the settings are what the next
+        # Start builds from ("At the next Start: Model" was said of a model saved before a
+        # game, and read as a restart -- Tai, 2026-09-21). Only a marked "next" field waits.
+        if hasattr(engine, "apply_settings"):
+            engine.apply_settings(new, changed)
+        else:
+            engine.settings = new
     applies = _applies(Settings.model_json_schema())
     now = [c for c in changed if applies.get(c) == "now"]
     later = [c for c in changed if applies.get(c) == "next"]
     restart = [c for c in changed if applies.get(c) == "restart"]
-
-    stored: dict[str, bool] = {}
-    for name, value in body.secrets.items():
-        if name not in _secret_names(new):
-            continue
-        stored[name] = secrets_set(name, value)
-        if value:
-            os.environ[name] = value
-        else:
-            os.environ.pop(name, None)
-
-    # What the engine can change on the running session, it does now. A "now" field with
-    # nothing running to change is applied all the same: the settings are what the next
-    # Start builds from ("At the next Start: Model" was said of a model saved before a
-    # game, and read as a restart -- Tai, 2026-09-21). Only a marked "next" field waits.
-    if hasattr(engine, "apply_settings"):
-        engine.apply_settings(new, changed)
-    else:
-        engine.settings = new
 
     def words(names: list[str]) -> str:
         return ", ".join(n.split(".")[-1].replace("_", " ") for n in names)
