@@ -52,6 +52,7 @@
   const analysis = new AnalysisDesk(
     { position: (f) => api.position(f), move: (f, u) => api.move(f, u), lines: (f) => api.lines(f), explore: (f, m) => api.explore(f, m) },
     (fen, uci) => soundOf(fen, uci),
+    () => reopen(),
   );
   const analysisLines = $derived(analysis.lines && analysis.node && analysis.lines.fen === analysis.node.fen ? analysis.lines : null);
   // The board takes the player's moves while analysing, once it has the position's legal moves.
@@ -68,6 +69,14 @@
     analysis.go(analysis.gameNode(view === "moves" ? ply : 0));
     view = "analysis";
   }
+  /** The game as a PGN with the analysis board's lines; the room opened again when it had gone. */
+  async function savePgn(annotated: boolean, save: boolean) {
+    const ask = () => api.pgn(analysis.tree(), annotated, save);
+    const got = await ask();
+    if (!got.ok && /not open/.test(got.error ?? "") && (await reopen())) return ask();
+    return got;
+  }
+
   function toReview(): void {
     const n = analysis.node;
     if (n?.game && n.ply > 0) moveTo(n.ply);
@@ -956,7 +965,7 @@
         </div>
       </div>
     {:else if view === "analysis"}
-      <AnalysisPane desk={analysis} {room} {graph} marks={keyMoments} savePgn={(annotated, save) => api.pgn(analysis.tree(), annotated, save)} />
+      <AnalysisPane desk={analysis} {room} {graph} marks={keyMoments} savePgn={savePgn} />
       <div class="rv-foot">
         <div class="rv-nav">
           <button aria-label="The start" title="The start (Home)" onclick={() => analysis.toEnd(false)}><svg viewBox="0 0 24 24"><path d="M18.41 16.59 13.82 12l4.59-4.59L17 6l-6 6 6 6zM6 6h2v12H6z"/></svg></button>

@@ -47,7 +47,16 @@ export class AnalysisDesk {
   constructor(
     private api: AnalysisApi,
     private sound: (fen: string, uci: string) => void,
+    /** The room opened again when the sidecar has let it go (idle, or started again): whether it is. */
+    private reopen: () => Promise<boolean> = async () => false,
   ) {}
+
+  /** An answer from the room, asked once more after opening it again when it had gone. */
+  private async room<T extends { ok: boolean; error?: string }>(ask: () => Promise<T>): Promise<T> {
+    const got = await ask();
+    if (!got.ok && /not open/.test(got.error ?? "") && (await this.reopen())) return ask();
+    return got;
+  }
 
   /** The tree begun again from the game: its first position and every move of it. */
   load(startFen: string, moves: ReviewMove[]): void {
@@ -199,7 +208,7 @@ export class AnalysisDesk {
         else this.error = p.error || NO_ANSWER;
       }).catch(() => still() && (this.error = NO_ANSWER));
     }
-    void this.api.explore(fen, this.path(n.id)).then((e) => {
+    void this.room(() => this.api.explore(fen, this.path(n.id))).then((e) => {
       if (still() && e.ok) this.explored = e;
     }).catch(() => {});
     if (!this.engineOn) return;
@@ -207,7 +216,7 @@ export class AnalysisDesk {
     this.thinking = true;
     await new Promise((r) => setTimeout(r, LINES_WAIT_MS));
     if (!still()) return;
-    const got = await this.api.lines(fen).catch(() => null);
+    const got = await this.room(() => this.api.lines(fen)).catch(() => null);
     if (!still()) return;
     this.thinking = false;
     if (got?.ok) this.lines = got;
