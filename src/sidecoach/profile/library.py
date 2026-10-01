@@ -301,15 +301,27 @@ def _order(move: MoveRow) -> tuple[int, int]:
 
 def left_out(store: Store, rows: list[LibraryRow]) -> set[str]:
     """The games among `rows` the player removed (Store.remove_game), which bringing games in
-    again leaves out: by key, or -- a watched game removed before its import came in -- by being
-    that game, as `reconcile` knows an import."""
+    again leaves out: by key; by being a game the player pasted and removed (the review of
+    2026-10-01: the same game brought in from the site came back under the site's key); or --
+    a watched game removed before its import came in -- by being that game, as `reconcile`
+    knows an import."""
     return left_out_of(rows, store.removed_keys(), store.removed_traces())
+
+
+def pasted_key(row: LibraryRow) -> str | None:
+    """The key the game has when pasted as a PGN (`row_for` with no key of its own: a hash of
+    its players, its date and its moves); None for a PGN with no game in it."""
+    if row.source == "pgn":
+        return row.key
+    games = games_in(row.pgn)
+    return row_for(games[0], source="pgn").key if games else None
 
 
 def left_out_of(rows: list[LibraryRow], keys: set[str], traces: list[Trace]) -> set[str]:
     out: set[str] = set()
+    pasted = {k for k in keys if k.startswith("pgn:")}
     for row in rows:
-        if row.key in keys:
+        if row.key in keys or (pasted and pasted_key(row) in pasted):
             out.add(row.key)
             continue
         played: list[str] | None = None

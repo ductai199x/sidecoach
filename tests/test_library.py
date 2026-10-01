@@ -312,6 +312,32 @@ def test_every_game_is_listed_however_many() -> None:
     store.close()
 
 
+def test_a_pasted_game_removed_stays_out_when_the_site_brings_it_in() -> None:
+    """The review of 2026-10-01: a game pasted as a PGN, then removed, came back when the
+    player's games were brought in from chess.com -- the same game under the site's key. It
+    stays out; pasted again by hand, it comes back (that is the player asking for it)."""
+    from sidecoach.profile.library import games_in, left_out, pasted_key, row_for
+
+    store = Store(None)
+    (pasted,) = from_pgn(GAME, user_names=["nosegazm"])
+    fetched = row_for(
+        games_in(GAME)[0],
+        source="chesscom",
+        key="chesscom:174300959956",
+        user_names=["nosegazm"],
+        time_class="rapid",
+    )
+    assert pasted_key(fetched) == pasted.key and pasted_key(pasted) == pasted.key
+    store.add_library_game(pasted)
+    store.remove_game(pasted.key)
+    assert left_out(store, [fetched]) == {fetched.key}, "the site's copy stays out"
+    (other,) = from_pgn(OTHER, user_names=["nosegazm"])
+    assert left_out(store, [other]) == set(), "another game is not"
+    store.unremove([pasted.key])  # pasted again by hand
+    assert left_out(store, [fetched]) == set()
+    store.close()
+
+
 def test_a_watched_record_that_is_no_game_stays_out(tmp_path) -> None:  # noqa: ANN001
     """What Sidecoach recorded is a game when it finished and its moves play out from where it
     began: a puzzle's mating line recorded from the start position, a game never finished,
