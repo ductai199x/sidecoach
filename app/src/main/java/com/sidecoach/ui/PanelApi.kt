@@ -202,10 +202,8 @@ class PanelApi(
             path == "/api/games" && games != null -> ok(games.list())
             path == "/api/games/import" && games != null ->
                 if (json.has("source")) ok(games.import(json)) else unprocessable()
-            method == "DELETE" && path.startsWith("/api/games/") && games != null ->
-                ok(games.delete(path.removePrefix("/api/games/")))
-            method == "POST" && path.startsWith("/api/games/") && path.endsWith("/restore") && games != null ->
-                ok(games.restore(path.removePrefix("/api/games/").removeSuffix("/restore")))
+            path == "/api/games/remove" && games != null -> ok(games.remove(json))
+            path == "/api/games/restore" && games != null -> ok(games.restore(json))
 
             path.startsWith("/api/review/") && reviews != null -> review(path.removePrefix("/api/review/"), query, json)
 
@@ -505,20 +503,10 @@ class PanelApi(
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
                 "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/custom",
-                "/api/jobs/reviews",
+                "/api/jobs/reviews", "/api/games/remove", "/api/games/restore",
             ),
             "PUT" to setOf("/api/settings"),
             "DELETE" to setOf("/api/pieces/custom"),
-        )
-
-        /** The routes with one path parameter, `{key}` (one segment, as Starlette matches it), by method. */
-        val KEYED_ROUTES: Map<String, Set<String>> = mapOf(
-            "DELETE" to setOf("/api/games/"),
-        )
-
-        /** A library game's routes, `/api/games/{key}/<action>`, by method. */
-        val GAME_ROUTES: Map<String, Set<String>> = mapOf(
-            "POST" to setOf("restore"),
         )
 
         /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
@@ -539,14 +527,6 @@ class PanelApi(
             if (path.startsWith("/api/review/")) {
                 val parts = path.removePrefix("/api/review/").split('/')
                 return parts.size == 2 && parts[0].isNotEmpty() && parts[1] in REVIEW_ROUTES[method].orEmpty()
-            }
-            for (prefix in KEYED_ROUTES[method].orEmpty()) {
-                val key = path.removePrefix(prefix)
-                if (path.startsWith(prefix) && key.isNotEmpty() && '/' !in key) return true
-            }
-            if (path.startsWith("/api/games/")) {
-                val parts = path.removePrefix("/api/games/").split('/')
-                if (parts.size == 2 && parts[0].isNotEmpty() && parts[1] in GAME_ROUTES[method].orEmpty()) return true
             }
             if (!path.startsWith("/api/puzzle/")) return false
             // `{puzzle_id}` is one segment of the path, as Starlette matches it.

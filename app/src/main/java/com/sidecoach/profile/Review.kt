@@ -173,6 +173,8 @@ object Review {
             "The habit that fixes it: $habit."
     }
 
+    private val PLURAL = mapOf("inaccuracy" to "inaccuracies", "mistake" to "mistakes", "miss" to "misses", "blunder" to "blunders")
+
     private val ORDER = listOf(
         "brilliant", "great", "best", "excellent", "good", "book", "inaccuracy", "mistake", "miss", "blunder",
     )
@@ -205,7 +207,11 @@ object Review {
         }
         if (!review.opening.isNullOrEmpty()) out.add("The opening was the ${review.opening}.")
         if (review.moves != 0) {
-            val parts = ORDER.filter { (review.tallies[it] ?: 0) != 0 }.map { "${review.tallies[it]} $it" }
+            // The kinds that are nouns take a plural; best, excellent, good and book do not.
+            val parts = ORDER.filter { (review.tallies[it] ?: 0) != 0 }.map {
+                val n = review.tallies.getValue(it)
+                "$n ${if (n > 1) PLURAL[it] ?: it else it}"
+            }
             val acc = review.accuracy?.let { "Accuracy ${Insights.fixed(it, 1)}. " } ?: ""
             out.add("${acc}Your ${review.moves} moves: " + parts.joinToString(", ") + ".")
         }

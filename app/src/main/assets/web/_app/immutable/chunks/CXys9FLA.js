@@ -1,1 +1,0 @@
-var e={a:`American`,b:`British`},t={f:`Female`,m:`Male`};function n(n){let r=e[n[0]],i=t[n[1]];if(!r||!i||n[2]!==`_`||n.length<4)return n;let a=n.slice(3);return`${r} ${i}, ${a[0].toUpperCase()}${a.slice(1)}`}export{n as t};

@@ -128,20 +128,28 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
             .put("keys", JSONArray(kept.map { it.key }))
     }
 
-    /** A game out of the player's record, with the game it is paired with; Undo puts it back. */
-    fun delete(key: String): JSONObject {
-        val removed = withStore { it.removeGame(key) }
+    /**
+     * Games out of the player's record, the ones selected in Your games, each with the game it
+     * is paired with; Undo puts them back for a while. `games_remove`.
+     */
+    fun remove(body: JSONObject): JSONObject {
+        val keys = keysOf(body)
+        val removed = withStore { store -> keys.flatMap { store.removeGame(it) } }
         return JSONObject().put("ok", true).put("removed", JSONArray(removed))
     }
 
-    /** A game removed moments ago, put back. `games_restore`. */
-    fun restore(key: String): JSONObject {
-        val restored = withStore { it.restoreGame(key) }
+    /** Games removed moments ago, put back. `games_restore`. */
+    fun restore(body: JSONObject): JSONObject {
+        val keys = keysOf(body)
+        val restored = withStore { store -> keys.flatMap { store.restoreGame(it) } }
         if (restored.isEmpty()) {
-            return JSONObject().put("ok", false).put("error", "That game was removed too long ago to put back.")
+            return JSONObject().put("ok", false).put("error", "Those games were removed too long ago to put back.")
         }
         return JSONObject().put("ok", true).put("restored", JSONArray(restored))
     }
+
+    private fun keysOf(body: JSONObject): List<String> =
+        body.optJSONArray("keys")?.let { k -> (0 until k.length()).map { k.getString(it) } } ?: emptyList()
 
     companion object {
         /** A row as the page reads it: `row.__dict__`, its fields in their order. */

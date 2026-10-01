@@ -161,7 +161,7 @@ fun items(context: Context): List<Item> {
     out.add(
         Item(
             "kokoro",
-            "The voice (Kokoro)",
+            "The coach's voice",
             KOKORO_FILES.values.sumOf { it.second },
             present = { KOKORO_FILES.keys.all { File(kokoroDir, it).exists() } },
             fetch = { progress ->
@@ -183,7 +183,7 @@ fun items(context: Context): List<Item> {
     out.add(
         Item(
             "net",
-            "The engine's network",
+            "The chess engine's network",
             EngineAssets.NET_BYTES,
             present = { EngineAssets.found(context) != null },
             fetch = { progress ->
@@ -220,7 +220,7 @@ fun items(context: Context): List<Item> {
     out.add(
         Item(
             "stt",
-            "Speech recognition (Parakeet) and the voice gate (Silero)",
+            "Speech recognition, to talk to the coach",
             STT_FILES.values.sumOf { folder -> folder.values.sumOf { it.second } },
             present = {
                 STT_FILES.all { (folder, names) -> names.keys.all { File(files, "$folder/$it").exists() } }
