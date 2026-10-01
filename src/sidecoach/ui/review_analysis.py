@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import re
 import threading
-import time
 from collections.abc import Callable, Iterable
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -316,9 +316,10 @@ def pgn(
     return str(game)
 
 
-def pgn_name(row: LibraryRow) -> str:
-    """A file name for the game's PGN: its players and date, as a file can be named."""
-    date = time.strftime("%Y-%m-%d", time.localtime(row.played_at or row.added_at))
+def pgn_name(row: LibraryRow, zone: tzinfo | None = None) -> str:
+    """A file name for the game's PGN: its players and date (in `zone`, else here), as a file can
+    be named."""
+    date = datetime.fromtimestamp(row.played_at or row.added_at, zone).strftime("%Y-%m-%d")
     name = f"{row.white or 'White'} vs {row.black or 'Black'} {date}"
     return re.sub(r"[^\w .-]+", "_", name).strip() + ".pgn"
 

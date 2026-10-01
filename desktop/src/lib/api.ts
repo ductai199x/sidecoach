@@ -246,6 +246,8 @@ export type GameSummary = {
   white: SideSummary;
   black: SideSummary;
   opening: string | null;
+  /** Whether the opening book is there to name the opening (Setup fetches it). */
+  book: boolean;
   last_book_ply: number | null;
   key_moments: { ply: number; side: "white" | "black"; kind: string }[];
   graph: number[];
@@ -359,6 +361,8 @@ export type EngineLines = {
 export type Explored = {
   games: number;
   opening: string | null;
+  /** Whether the opening book is there to name the opening (Setup fetches it). */
+  book: boolean;
   moves: { uci: string; san: string; games: number; won: number; drawn: number; lost: number; last: { key: string; played_at: number } | null }[];
 };
 /** The analysis board's moves for the PGN: each with what follows it, the game's own first. */
@@ -429,6 +433,8 @@ export type StatPosition = {
   side: "white" | "black";
   played_at: number | null;
   opening: string | null;
+  /** Whether the opening book is there to name the opening (Setup fetches it). */
+  book: boolean;
 };
 
 const statsQuery = (f: StatsFilter) => `time_class=${encodeURIComponent(f.time_class)}&days=${f.days | 0}&opponents=${f.opponents}`;

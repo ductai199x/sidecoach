@@ -290,7 +290,8 @@ class ReviewRoom:
                 watched = [r for r in library.from_watched(self.store) if r.key not in twins]
                 self._explorer = review_analysis.Explorer([*self.store.library(), *watched])
             explorer = self._explorer
-        return {**explorer.explore(fen), "opening": self._opening_of(moves)}
+        opening = self._opening_of(moves)
+        return {**explorer.explore(fen), "opening": opening, "book": bool(self._book)}
 
     def pgn(self, tree: list[dict[str, Any]], *, annotated: bool, save: bool) -> dict[str, Any]:
         """The game as a PGN with the analysis board's lines (`tree`), annotated from the review

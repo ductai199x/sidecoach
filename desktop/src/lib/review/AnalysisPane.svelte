@@ -186,7 +186,7 @@
     <p class="an-tip muted">Play any move on the board: it becomes a line of yours here, kept with the PGN.</p>
   {:else if tab === "explorer"}
     {#if explored}
-      <div class="an-opening">{explored.opening ? openingName(explored.opening) : node?.ply === 0 ? "The start position" : "Out of the opening book"}</div>
+      {#if explored.opening || node?.ply === 0}<div class="an-opening">{explored.opening ? openingName(explored.opening) : "The start position"}</div>{:else if explored.book}<div class="an-opening">Out of the opening book</div>{/if}
       {#if explored.moves.length}
         <div class="an-explore">
           <span class="head">Move</span><span class="head">Games</span><span class="head">Your results</span>
@@ -201,7 +201,7 @@
             </span>
           {/each}
         </div>
-        <p class="an-tip muted">From {explored.games} of your games that reached this position, this one included.</p>
+        <p class="an-tip muted">From {explored.games} of your games that reached this position{node?.game ? ", this one included" : ""}.</p>
       {:else}
         <p class="muted">None of your games went on from this position.</p>
       {/if}

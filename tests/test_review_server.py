@@ -207,6 +207,7 @@ def test_the_analysis_board_plays_any_move_reads_the_engine_and_the_players_game
     # The player's games from a position: the moves they went on with, and how those went.
     explored = client.post(f"{base}/explore", json={"fen": chess.STARTING_FEN, "moves": []}).json()
     assert explored["ok"] and explored["games"] == 1
+    assert explored["book"] is False and explored["opening"] is None, "no opening tables here"
     (e4,) = explored["moves"]
     assert (e4["san"], e4["games"], e4["won"], e4["lost"]) == ("e4", 1, 1, 0), "won as Black"
     assert e4["last"]["key"] == key
