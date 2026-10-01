@@ -441,7 +441,7 @@ class ReviewRoom(
         val saved = store.review(key, strength.name) ?: return false
         if (saved.version != REVIEW_VERSION) return false
         val reviewed = ReviewJson.reviewed(saved.report)
-        runCatching { store.clearProgress(key) } // a kill between the save and the clearing
+        runCatching { store.clearProgress(key, strength.name) } // a kill between the save and the clearing
         // Its words ready with it: the page stops asking once the review is. Words the app was
         // closed in the middle of writing are the answers paid for so far, kept to go on from.
         val kept = saved.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
@@ -673,11 +673,15 @@ class ReviewRoom(
                 // words the player paid for on it (the review of 2026-10-01): this one is handed
                 // that one. Null if the game was removed.
                 val kept = store.review(row.key, strength.name)
-                store.clearProgress(row.key)
-                if (kept == null) return null
+                if (kept == null) {
+                    store.clearProgress(row.key)
+                    return null
+                }
+                store.clearProgress(row.key, strength.name)
                 return ReviewJson.reviewed(kept.report) to ReviewJson.summary(kept.summary ?: "{}")
             }
-            store.clearProgress(row.key)
+            // What this strength's review kept part way goes; another strength's stays, to go on from.
+            store.clearProgress(row.key, strength.name)
             StatFacts.keepStats(store, strength.name, reviewed, row)
             return reviewed to summary
         }
@@ -729,7 +733,7 @@ class ReviewRoom(
                 )
                 if (!saved) continue // reviewed meanwhile (that review stays, with its words), or removed
                 old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
-                store.clearProgress(imported)
+                store.clearProgress(imported, old.strength)
                 StatFacts.keepStats(store, old.strength, reviewed, row)
                 carried.add(imported)
             }

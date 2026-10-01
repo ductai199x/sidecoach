@@ -344,6 +344,49 @@ class ReviewRoomTest {
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
     }
 
+    /**
+     * The review of 2026-10-01: a Deep review stopped part way lost every position it had
+     * measured the moment the game's review at another strength was saved or opened -- what a
+     * review keeps part way went for every strength. Only its own strength's goes. No engine:
+     * the review opened is the desktop's, saved. The desktop's
+     * test_a_deep_review_stopped_part_way_keeps_its_positions_through_standard.
+     */
+    @Test
+    fun aDeepReviewStoppedPartWayKeepsItsPositionsThroughAnotherStrength() {
+        val fixture = JSONObject(InstrumentationRegistry.getInstrumentation().context.assets.open("profile/reviews.json").bufferedReader().use { it.readText() })
+        val games = fixture.getJSONArray("games")
+        val game = (0 until games.length()).map { games.getJSONObject(it) }.first { it.getString("strength") == "fast" }
+        val files = File(context.cacheDir, "review-progress").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val storePath = File(files, "profile.sqlite")
+        val row = Library.fromPgn(game.getString("pgn"), listOf("nosegazm")).single()
+        val deep = GameReview.STRENGTHS.getValue("deep")
+        val fast = GameReview.STRENGTHS.getValue("fast")
+        Store(storePath).apply {
+            addLibraryGame(row)
+            assertTrue(saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, game.getJSONObject("reviewed").toString(), game.getJSONObject("summary").toString()))
+            // Deep stopped part way; a kill between Fast's save and its clearing.
+            addProgress(row.key, "deep", deep.depth, deep.multipv, "a", "{}")
+            addProgress(row.key, "deep", deep.depth, deep.multipv, "b", "{}")
+            addProgress(row.key, "fast", fast.depth, fast.multipv, "c", "{}")
+        }.close()
+        val room = ReviewRoom(files, SettingsStore(context), row, storePath, "fast", EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") })
+        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        room.close()
+        room.join()
+        val store = Store(storePath)
+        assertEquals("Fast opened: Deep's kept", 2, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        assertEquals("Fast's own gone", 0, store.progress(row.key, "fast", fast.depth, fast.multipv).size)
+        store.clearProgress(row.key, "deep")
+        assertEquals(0, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        store.addProgress(row.key, "deep", deep.depth, deep.multipv, "a", "{}")
+        store.clearProgress(row.key)
+        assertEquals("the game gone: every strength's", 0, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        store.close()
+    }
+
     companion object {
         private val PLY = Regex("\"key move\": \\{\"ply\": (\\d+)")
 

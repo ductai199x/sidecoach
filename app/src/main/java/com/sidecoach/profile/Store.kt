@@ -722,9 +722,20 @@ class Store(val path: File?) {
         ) { it.getString(0) }
     }
 
-    /** A game's review is saved: what any review of it kept part way goes. */
-    fun clearProgress(key: String) {
-        lock.withLock { exec("DELETE FROM review_progress WHERE key = ?", key) }
+    /**
+     * A game's review at [strength] is saved: what a review of it at that strength kept part way
+     * goes -- every strength's when none is named (the game is gone). A Deep review stopped part
+     * way kept its positions only until the game's Standard review was saved or opened, and
+     * started over (the review of 2026-10-01). `clear_progress`.
+     */
+    fun clearProgress(key: String, strength: String? = null) {
+        lock.withLock {
+            if (strength == null) {
+                exec("DELETE FROM review_progress WHERE key = ?", key)
+            } else {
+                exec("DELETE FROM review_progress WHERE key = ? AND strength = ?", key, strength)
+            }
+        }
     }
 
     fun addRecommendation(gameId: String, ts: Double, motif: String, reason: String, level: Int, puzzleIds: List<String>) {
