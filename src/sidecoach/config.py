@@ -789,13 +789,13 @@ class Settings(BaseModel):
         return self._source or settings_path()
 
     data_dir: Path = Field(
-        default=Path("data"),
+        default_factory=lambda: Path("data"),  # a factory: a Path is no JSON default
         description="Where the app keeps its data: the profile, the caches, the models. In the "
         "app this is the app's own folder and not a setting.",
         json_schema_extra=_extra(applies="restart", kind="path", label="Data folder", dev=True),
     )
     tools_dir: Path = Field(
-        default=Path("tools"),
+        default_factory=lambda: Path("tools"),
         description="Where Stockfish is looked for when no path is set.",
         json_schema_extra=_extra(applies="next", kind="path", label="Tools folder", dev=True),
     )

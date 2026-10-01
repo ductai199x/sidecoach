@@ -1,6 +1,6 @@
 [project]
 name = "sidecoach"
-version = "0.1.46"
+version = "0.1.47"
 description = "Vision-first chess coaching companion: watches the screen, finds the board, coaches Socratically."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -108,6 +108,12 @@ markers = [
     "slow: needs the optional voice models; run deliberately",
     "vision: the synthetic vision-pipeline behaviour suite (in the default run)",
     "xdist_group: pytest-xdist's; tests of one group share a worker (see tests/conftest.py)",
+]
+# Starlette's own test client warning about itself (httpx, an anyio alias): nothing of ours to
+# change; every warning that is ours stays loud.
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated",
 ]
 
 [tool.pyright]

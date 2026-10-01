@@ -14,7 +14,7 @@ class MssCapture:
     name = "mss"
 
     def __init__(self) -> None:
-        self._sct = mss.mss()
+        self._sct = mss.MSS()
 
     def monitors(self) -> list[Region]:
         # Index 0 is the virtual screen spanning all monitors; physical monitors follow.
@@ -32,7 +32,7 @@ class MssCapture:
     def reopen(self) -> None:
         with contextlib.suppress(Exception):
             self._sct.close()
-        self._sct = mss.mss()
+        self._sct = mss.MSS()
 
     def close(self) -> None:
         self._sct.close()
