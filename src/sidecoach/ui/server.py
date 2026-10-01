@@ -657,6 +657,12 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         board = engine.settings.board
         return looks.look(board.pieces, board.theme, engine.settings.data_dir)
 
+    # The look's stamp alone, for every window to ask every few seconds (lib/look.ts).
+    @app.get("/api/look/stamp")
+    def get_look_stamp() -> dict[str, str]:
+        board = engine.settings.board
+        return {"stamp": looks.look(board.pieces, board.theme, engine.settings.data_dir)["stamp"]}
+
     # A player's own sets: a new one from the images chosen, more images for one, a new name,
     # deleted (put aside for its Undo) and back.
     @app.post("/api/pieces/own")

@@ -20,6 +20,7 @@ blue may pass 255 - SHADE_STEP.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -427,7 +428,30 @@ def look(pieces: str, theme: str, data_dir: Path) -> dict[str, Any]:
     elif pieces in PIECE_SETS:
         images = {c: PIECE_SETS[pieces].url(c) for c in CODES}
     board = BOARD_THEMES.get(theme, BOARD_THEMES[DEFAULT_THEME])
-    return {"pieces": pieces, "theme": theme, "images": images, "board": board.colours()}
+    colours = board.colours()
+    return {
+        "pieces": pieces,
+        "theme": theme,
+        "images": images,
+        "board": colours,
+        "stamp": stamp(pieces, theme, images, colours),
+    }
+
+
+def stamp(pieces: str, theme: str, images: dict[str, str], colours: dict[str, str]) -> str:
+    """A short hash of the look: it changes with the set, the colours or any image of an own
+    set. Every window reads it every few seconds and reads the look again when it changes, so a
+    window follows the settings whatever changed them -- not only a Settings page that tells
+    the others (2026-10-01: the Neo set loaded by another way left every window as it was)."""
+    text = "\n".join(
+        [
+            pieces,
+            theme,
+            *(f"{c}={images.get(c, '')}" for c in CODES),
+            *(f"{k}={colours[k]}" for k in sorted(colours)),
+        ]
+    )
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def catalogue(data_dir: Path) -> dict[str, Any]:
