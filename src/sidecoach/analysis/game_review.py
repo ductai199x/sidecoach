@@ -189,14 +189,14 @@ def review_game(
     )
     annotator.adopt(measured)
     start = annotator.analysis_event(game_id, boards[0], 0)
-    clocks = _clocks(game)
+    times = clocks(game)
     moves: list[ReviewedMove] = []
     for ply, move in enumerate(game.mainline_moves(), start=1):
         if stop is not None and stop.is_set():
             break
         before = boards[ply - 1]
         assessment, after = annotator.assess(game_id, before, move, ply)
-        clock_ms, spent_ms = clocks[ply - 1]
+        clock_ms, spent_ms = times[ply - 1]
         moves.append(
             ReviewedMove(
                 ply=ply,
@@ -222,7 +222,7 @@ def review_game(
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")
 
 
-def _clocks(game: chess.pgn.Game) -> list[tuple[int | None, int | None]]:
+def clocks(game: chess.pgn.Game) -> list[tuple[int | None, int | None]]:
     """Each move's clock after it and the time it took, in ms, from the PGN's `[%clk]`
     comments and its `TimeControl` ("600+5": 600 s a side, 5 s added a move). A
     correspondence game's clock ("1/86400") is days, not a move's thinking: none there."""

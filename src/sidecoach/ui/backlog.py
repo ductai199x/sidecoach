@@ -28,7 +28,7 @@ from sidecoach.events import ReviewedGame
 from sidecoach.profile import library
 from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
-from sidecoach.ui.review_room import review_row
+from sidecoach.ui.review_room import carry_twins, review_row
 
 WORKERS = 2
 STRENGTH = "standard"
@@ -192,6 +192,7 @@ class Backlog:
         """The games no review covers, the latest played first; a watched game its import
         stands for is the import's to review. Counts the job's games as it goes."""
         twins = library.reconcile(store)
+        carry_twins(store, twins)
         imported = store.library(limit=100_000)
         watched = [r for r in library.from_watched(store) if r.key not in twins]
         every = [*imported, *watched]

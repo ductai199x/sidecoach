@@ -548,6 +548,145 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     assert abs(ai["words"]["cost"] - 0.006) < 1e-9, "what was paid before counted in"
 
 
+# GAME two moves longer: one move misread still leaves the twelve that make a pair.
+LONGER = GAME.replace("6. h3 Na5 0-1", "6. h3 Na5 7. Bb3 Nxb3 8. axb3 c6 0-1")
+SANS = [
+    "e4",
+    "e5",
+    "Nf3",
+    "Nc6",
+    "Bc4",
+    "Nf6",
+    "d3",
+    "Bc5",
+    "Nc3",
+    "d6",
+    "h3",
+    "Na5",
+    "Bb3",
+    "Nxb3",
+    "axb3",
+    "c6",
+]
+
+
+def _watch(store: Any, game_id: str, sans: list[str], started_at: float) -> str:
+    """A game as Sidecoach records one it watched (the player Black): its moves as read."""
+    import chess
+
+    store.start_game(game_id, started_at, "black", chess.STARTING_FEN)
+    for ply, san in enumerate(sans, start=1):
+        store.add_move(
+            game_id, 0, ply, move_number=(ply + 1) // 2, san=san, uci="0000", by_user=ply % 2 == 0,
+            fen_before="-", fen_after="-", phase=None, think_ms=None, clock_ms=None,
+            capture=False, gives_check=False, material=None, ts=started_at + ply,
+        )  # fmt: skip
+    store.end_game(game_id, started_at + 900, "0-1", "resignation")
+    return f"watched:{game_id}"
+
+
+def _watched_and_imported(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch, sans: list[str]
+) -> tuple[Any, PanelEngine, Any, str, str, list[FakeEngine]]:
+    """LONGER brought in, and Sidecoach's record of it (`sans` as read) reviewed at Standard
+    before the two were paired. Returns the client, the panel, the store, the import's and the
+    watched game's keys, and the fake engines made."""
+    from fastapi.testclient import TestClient
+
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+    from sidecoach.ui.server import build_app
+
+    made: list[FakeEngine] = []
+
+    def engine_for(**_: Any) -> FakeEngine:
+        made.append(FakeEngine())
+        return made[-1]
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", engine_for)
+    engine = make_panel()
+    engine.settings.profile.chesscom_user = "NoseGazm"
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": LONGER}).json()["keys"][0]
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    row = library.find(store, key)
+    assert row is not None and row.played_at is not None
+    watched = _watch(store, "g1", sans, row.played_at + 3600)
+    (wrow,) = [r for r in library.from_watched(store) if r.key == watched]
+    assert review_room.review_row(engine.settings, wrow, store, STRENGTHS["standard"], workers=1)
+    return client, engine, store, key, watched, made
+
+
+def test_a_watched_games_review_goes_with_the_import_that_stands_for_it(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-09-30: a watched game reviewed, then brought in from chess.com, lost its
+    accuracy -- the import stood for it unreviewed. Sidecoach read every move, so the import
+    takes the watched review whole the moment the two are paired, no engine: its own headers
+    and clocks, its summary, its words and its Stats facts."""
+    client, _engine, store, key, watched, made = _watched_and_imported(
+        make_panel, monkeypatch, SANS
+    )
+    old = store.review(watched, "standard")
+    store.set_review_words(watched, "standard", json.dumps({"texts": {"4": {"why": "A move."}}}))
+    engines = len(made)
+
+    listed = {g["key"]: g for g in client.get("/api/games").json()["games"]}
+    assert watched not in listed, "the import stands for the watched game"
+    game = listed[key]
+    assert game["reviewed"] and game["accuracy"]["black"] is not None
+    assert len(made) == engines, "carried, not searched"
+
+    carried = store.review(key, "standard")
+    assert old is not None and carried is not None
+    report, was = json.loads(carried.report), json.loads(old.report)
+    assert report["headers"]["BlackElo"] == "1018", "the import's headers"
+    assert [m["clock_ms"] for m in report["moves"][:2]] == [598_000, 595_000], "and clocks"
+    assert [m["clock_ms"] for m in was["moves"][:2]] == [None, None]
+    assert [m["assessment"] for m in report["moves"]] == [
+        {**m["assessment"], "game_id": key} for m in was["moves"]
+    ], "the watched review's measurements"
+    assert json.loads(carried.words or "{}") == {"texts": {"4": {"why": "A move."}}}
+    assert {g["key"] for g in store.stat_games()} == {key}, "Stats has it once, as the import"
+    store.close()
+
+
+def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sidecoach misread a move (4. d3 as d4): still one game, but not the same positions from
+    there on, so the import is reviewed as itself -- and the positions the watched review
+    measured, up to the misread move, are not searched again."""
+    from sidecoach.analysis.game_review import STRENGTHS, positions
+    from sidecoach.profile import library
+    from sidecoach.ui import review_room
+
+    misread = [*SANS[:6], "d4", *SANS[7:]]
+    client, engine, store, key, watched, made = _watched_and_imported(
+        make_panel, monkeypatch, misread
+    )
+    listed = {g["key"]: g for g in client.get("/api/games").json()["games"]}
+    assert watched not in listed and not listed[key]["reviewed"], "nothing to carry whole"
+
+    old = store.review(watched, "standard")
+    assert old is not None
+    was = json.loads(old.report)
+    measured = {was["start"]["fen"], *(m["after"]["fen"] for m in was["moves"])}
+    row = library.find(store, key)
+    assert row is not None
+    made.clear()
+    assert review_room.review_row(engine.settings, row, store, STRENGTHS["standard"], workers=1)
+    searched = {fen for e in made for fen in e.calls}
+    own = [b.fen() for b in positions(library.games_in(row.pgn)[0])]
+    assert all(f in measured for f in own[:7]), "the positions before the misread move agree"
+    assert not searched & measured, "nothing the watched review measured is searched again"
+    assert set(own[7:]) <= searched, "the import's own positions from the misread move on are"
+    store.close()
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

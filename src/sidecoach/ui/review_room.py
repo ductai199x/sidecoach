@@ -29,8 +29,10 @@ from sidecoach.analysis.game_review import (
     STRENGTHS,
     THREADS,
     Strength,
+    clocks,
     measured_from_json,
     measured_json,
+    positions,
     review_game,
     workers_for,
 )
@@ -45,7 +47,7 @@ from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
 from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
-from sidecoach.ui.review_retry import Retries
+from sidecoach.ui.review_retry import Retries, measured
 
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
@@ -497,17 +499,29 @@ def review_row(
     known: dict[str, Measured] = {}
     for text in store.progress(row.key, strength.name, strength.depth, strength.multipv):
         with contextlib.suppress(ValueError):  # a record that no longer reads is measured again
-            measured = measured_from_json(text)
-            known[measured.fen] = measured
+            kept = measured_from_json(text)
+            known[kept.fen] = kept
+    # The watched game this import stands for, reviewed at this strength: what its review
+    # measured is not searched again (its record differs from the import's, or carry_twins
+    # would have taken the review whole).
+    for watched, imported in store.twins().items():
+        twin = store.review(watched, strength.name) if imported == row.key else None
+        if twin is None or twin.version != REVIEW_VERSION:
+            continue
+        with contextlib.suppress(ValueError):  # a review that no longer reads gives nothing
+            was = ReviewedGame.model_validate_json(twin.report)
+            if was.depth == strength.depth:
+                for analysis in [was.start, *(m.after for m in was.moves)]:
+                    known.setdefault(analysis.fen, measured(analysis))
 
-    def keep(measured: Measured) -> None:
+    def keep(position: Measured) -> None:
         store.add_progress(
             row.key,
             strength.name,
             strength.depth,
             strength.multipv,
-            measured.fen,
-            measured_json(measured),
+            position.fen,
+            measured_json(position),
         )
 
     with contextlib.ExitStack() as stack:
@@ -557,6 +571,66 @@ def review_row(
     store.clear_progress(row.key)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
+
+
+def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
+    """Each watched game's review carried to its import when the import has none and the two
+    are the same game position for position (Sidecoach read every move): the watched review's
+    measurements with the import's own headers and clocks, summed up and saved with its facts
+    for Stats at once, no engine -- pairing left the game with no accuracy until it was reviewed
+    again (Tai, 2026-09-30). A record that differs is reviewed as the import, from the positions
+    the watched review measured (`review_row`). Returns the imports given a review."""
+    carried = []
+    for watched, imported in twins.items():
+        if store.latest_review(imported) is not None:
+            continue
+        old = store.latest_review(watched)
+        row = library.find(store, imported)
+        if old is None or old.version != REVIEW_VERSION or row is None:
+            continue
+        games = library.games_in(row.pgn)
+        try:
+            was = ReviewedGame.model_validate_json(old.report)
+        except ValueError:
+            continue
+        if not games or not was.moves:
+            continue
+        game = games[0]
+        seen = [m.fen_before for m in was.moves] + [was.moves[-1].after.fen]
+        if seen != [b.fen() for b in positions(game)]:
+            continue
+        moves = [
+            m.model_copy(
+                update={
+                    "assessment": m.assessment.model_copy(update={"game_id": imported}),
+                    "after": m.after.model_copy(update={"game_id": imported}),
+                    "clock_ms": clock_ms,
+                    "spent_ms": spent_ms,
+                }
+            )
+            for m, (clock_ms, spent_ms) in zip(was.moves, clocks(game), strict=True)
+        ]
+        reviewed = was.model_copy(
+            update={
+                "headers": {k: str(v) for k, v in game.headers.items()},
+                "start": was.start.model_copy(update={"game_id": imported}),
+                "moves": moves,
+            }
+        )
+        store.save_review(
+            imported,
+            old.strength,
+            REVIEW_VERSION,
+            time.time(),
+            reviewed.model_dump_json(),
+            summarize(reviewed).model_dump_json(),
+        )
+        if old.words:
+            store.set_review_words(imported, old.strength, old.words)
+        store.clear_progress(imported)
+        keep_stats(store, old.strength, reviewed, row)
+        carried.append(imported)
+    return carried
 
 
 def playback(pgn: str) -> list[dict[str, str | None]]:

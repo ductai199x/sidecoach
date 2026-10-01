@@ -744,10 +744,12 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
     accuracies when it has one, and the player's usernames."""
     from sidecoach.profile import library
     from sidecoach.profile.store import Store
+    from sidecoach.ui.review_room import carry_twins
 
     store = Store(store_path)
     try:
         twins = library.reconcile(store)
+        carry_twins(store, twins)  # a pair's review goes with the import that stands for it
         watched = [r for r in library.from_watched(store) if r.key not in twins]
         rows = [*store.library(), *watched]
         rows.sort(key=lambda r: r.played_at or r.added_at, reverse=True)

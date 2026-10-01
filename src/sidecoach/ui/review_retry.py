@@ -159,12 +159,12 @@ class Retries:
             with_threats=False,
         )
         analyses = [self.reviewed.start, *(m.after for m in self.reviewed.moves)]
-        annotator.adopt(_measured(a) for a in analyses)
+        annotator.adopt(measured(a) for a in analyses)
         self._annotator = annotator
         return annotator
 
 
-def _measured(analysis: Analysis) -> Measured:
+def measured(analysis: Analysis) -> Measured:
     """A position of the game as the review measured it."""
     board = chess.Board(analysis.fen)
     return Measured(
