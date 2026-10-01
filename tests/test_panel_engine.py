@@ -621,3 +621,59 @@ def test_the_move_list_badges_follow_takebacks_and_resyncs(
         Resync(game_id="g", fen=board.fen(), reason="position adopted"), glue, chess
     )
     assert engine._state["labels"] == {}, "a resync numbers the plies again"
+
+
+def test_a_game_ended_by_the_next_one_is_not_offered_to_end_game(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """A game whose end was not read, ended because the start position came back: the page
+    said "End game… can set it", and End game ends the game the reconciler holds -- the new
+    one. The player did; the new game's moves were refused from then on and the record kept
+    a one-move win (the state review, 2026-10-01). Only a game still followed is offered."""
+    import chess
+
+    from sidecoach.events import GameEnded, Side
+    from sidecoach.state.reconcile import Reconciler
+    from tests.games import recogniser
+    from tests.synth import GEOM, synthetic_board
+
+    model = recogniser(Side.WHITE)
+    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE, settle_frames=2)
+    ts = 0.0
+
+    def feed(board: chess.Board, highlight: chess.Move | None = None) -> list[object]:
+        nonlocal ts
+        ts += 0.1
+        frame = synthetic_board(board=board, bottom=Side.WHITE, highlight=highlight)
+        return list(rec.update(model.classify_frame(frame, GEOM), ts))
+
+    board = chess.Board()
+    feed(board)
+    for san in ("e4", "e5", "Nf3"):
+        move = board.push_san(san)
+        feed(board, move)
+        feed(board, move)
+    first = rec.game_id
+    # The start position back, and a first move played from it: the next game.
+    board = chess.Board()
+    events = feed(board) + feed(board)
+    move = board.push_san("d4")
+    events += feed(board, move) + feed(board, move)
+    assert rec.game_id != first
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert [(e.game_id, e.result) for e in ended] == [(first, "*")]
+
+    engine = make_panel()
+
+    class Glue:
+        def submit(self, event: object) -> None:
+            pass
+
+    for event in events:
+        engine._dispatch_game(event, Glue(), chess, followed=rec.game_id)
+    over = [ln["text"] for ln in engine.poll(0)["lines"] if ln["text"].startswith("game over")]
+    assert over == ["game over (new game started); the result was not read"], over
+    # A game ended with its result unknown that is still the one followed can be set.
+    kept = GameEnded(game_id="k", result="*", reason="abandoned", pgn=None, final_fen=None)
+    engine._dispatch_game(kept, Glue(), chess, followed="k")
+    assert engine.poll(0)["lines"][-1]["text"].endswith("End game… can set it")

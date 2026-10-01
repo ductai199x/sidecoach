@@ -266,7 +266,6 @@ class Reconciler:
     # hundred; counting every legal move looked at, as before, spent the budget on the
     # thirty rejected for each one expanded and left four-ply gaps unbridged.
     search_budget: int = 4000
-    history_depth: int = 40
     stale_after: int = 5
     resync_cells: int = 3
     resync_after: int = 150
@@ -674,22 +673,21 @@ class Reconciler:
     def _history_index(self, obs: Observation, diff: set[chess.Square]) -> int | None:
         """Index of the earlier position of this game the frame shows, if any.
 
-        The last `history_depth` positions are checked one by one. The base position is
-        checked as well however long the game is: a click on the first move of the list
-        shows it, and it must never pass for a new game while this one is running.
+        Every position back to the base is checked, one by one, however long the game: a
+        click anywhere in the move list shows one. Only the last forty were, and the base;
+        a click further back read as a position no move explains and was adopted by a
+        resync -- the game numbered again from it, or, after the end, a new game begun --
+        and stepping forward through the list then recorded the game's own moves a second
+        time (the state review, 2026-10-01).
         """
         earlier = self.board.copy()
         undone: set[chess.Square] = set()
         plies = len(self.board.move_stack)
-        for back in range(1, min(plies, self.history_depth) + 1):
+        for back in range(1, plies + 1):
             move = earlier.pop()
             undone |= touched_squares(earlier, move)
             if diff <= undone and matches(earlier, obs, set(obs)):
                 return plies - back
-        if plies > self.history_depth:
-            base = chess.Board(self._base_fen)
-            if matches(base, obs, set(obs)):
-                return 0
         return None
 
     def _board_at(self, index: int) -> chess.Board:
@@ -1306,28 +1304,34 @@ class Reconciler:
             self._resync_candidate = None
             return []
         board, self._turn_unknown = adopted
-        events: list[Event] = []
-        if self._finished:
-            # The finished game is over for good; a position that appears after it is
-            # another game, seen from the middle -- or a puzzle, or an analysis board.
-            events.append(self._begin(board, "position"))
-        else:
-            self._set_position(board)
         self._clear_story()
         self.viewing = None
         self._resync_candidate = None
+        if self._finished:
+            # The finished game is over for good; a position that appears after it is
+            # another game, seen from the middle -- or a puzzle, or an analysis board. Its
+            # start is all there is to say: a Resync after it as well had the engine measure
+            # the position twice and the coach note a re-read board that was never read
+            # before (the state review, 2026-10-01).
+            return [self._begin(board, "position"), *self._positioned()]
+        self._set_position(board)
         reason = f"position adopted after {len(diff)} unexplained cells"
         if self._turn_unknown:
             reason += "; side to move pending"
-        return events + self._resynced(reason)
+        return self._resynced(reason)
 
     def _resynced(self, reason: str) -> list[Event]:
         """A new position for the game: Resync and PositionChanged, and the end when the
         position is over and the side to move known."""
-        events: list[Event] = [
+        return [
             Resync(game_id=self.game_id, fen=self.board.fen(), reason=reason),
-            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
+            *self._positioned(),
         ]
+
+    def _positioned(self) -> list[Event]:
+        """The position the game now stands on, numbered from it: PositionChanged, and the
+        end when the position is over and the side to move known."""
+        events: list[Event] = [PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0)]
         if not self._turn_unknown and self.board.is_game_over():
             self._finished = True
             events.append(self.ended_event(self.board.result(), "game over on board"))

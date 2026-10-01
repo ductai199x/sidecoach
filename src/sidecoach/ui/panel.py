@@ -1894,8 +1894,9 @@ class PanelEngine:
                 if events_log is not None:
                     for event in events:
                         events_log.write(event.model_dump_json() + "\n")
+                followed = pipe.reconciler.game_id if pipe.reconciler is not None else None
                 for event in events:
-                    self._dispatch_game(event, assessing, chess)
+                    self._dispatch_game(event, assessing, chess, followed=followed)
 
                 # Idle read before the drain: then everything the engine will say about
                 # this game is in what the drain returns, and a finished game can be
@@ -2096,7 +2097,11 @@ class PanelEngine:
             return False
         return degraded
 
-    def _dispatch_game(self, event: Any, assessing: Any, chess: Any) -> None:
+    def _dispatch_game(
+        self, event: Any, assessing: Any, chess: Any, *, followed: str | None = None
+    ) -> None:
+        """One of the game's events to the page and the engine. `followed`: the id of the
+        game the reconciler holds once the tick's events are out -- the one End game ends."""
         from sidecoach.events import (
             BoardUnread,
             ClockObservation,
@@ -2192,9 +2197,13 @@ class PanelEngine:
         elif isinstance(event, GameEnded):
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":
-                text = (
-                    f"game over ({event.reason}); the result was not read -- End game… can set it"
-                )
+                text = f"game over ({event.reason}); the result was not read"
+                if event.game_id == followed:
+                    # End game ends the game the reconciler holds. A game ended because the
+                    # next one began is not that game: told it could set the result, the
+                    # player ended the new game, its moves were refused from then on, and
+                    # the record kept a one-move win (the state review, 2026-10-01).
+                    text += " -- End game… can set it"
             self._emit("game", "info", text, result=event.result, pgn=event.pgn)
         elif isinstance(event, ClockObservation):
             self._set(

@@ -749,16 +749,35 @@ def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
     assert early.fen == full.fen
 
 
-def test_behind_a_fast_game_a_position_is_measured_at_the_early_depth() -> None:
-    """Behind a fast game the position is measured at EARLY_DEPTH, the threats searched with
-    it -- where the full depth capped at a second went without them."""
+def test_behind_a_fast_game_the_position_faced_is_told_early_and_still_measured_whole() -> None:
+    """Behind a fast game -- the player's move and the reply submitted together, as the
+    panel's puzzle room does -- the position the player then faces is told at EARLY_DEPTH
+    first, and then measured at the full depth and looked
+    ahead from, as every position the player faces is. It was measured at EARLY_DEPTH alone
+    and kept as the whole: never deepened, nothing looked ahead at, and the next move's
+    verdict set depth 12 against depth 18 (the state review, 2026-10-01; Tai, 2026-09-28:
+    "first usable answer is depth 12 ... the computation continues until max depth of 18")."""
     from sidecoach.analysis.annotator import EARLY_DEPTH
 
     fake = _DepthEngine({})
     annotator = GameAnnotator(engine=fake, depth=18)
-    measured = annotator.measure(chess.Board(SCHOLAR), hurry=True)
-    assert measured.lines and measured.lines[0].depth == EARLY_DEPTH
-    assert len(fake.calls) > 1, "no threat search"
+    board = chess.Board()
+    analyser = Analyser(annotator, look_ahead=2)
+    analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
+    board.push_san("e4")
+    analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
+    board.push_san("e5")
+    analyser.start()
+    try:
+        got = _drain(analyser)
+        assert _until(lambda: analyser.looked >= 1), "nothing looked ahead at"
+    finally:
+        analyser.close()
+    faced = [e for e in got if isinstance(e, Analysis) and e.ply == 2]
+    assert faced and faced[0].provisional and faced[0].lines[0].depth == EARLY_DEPTH
+    assert not faced[-1].provisional and faced[-1].lines[0].depth == 18
+    assert faced[-1].fen == board.fen()
+    assert annotator._cache[board.fen()].depth == 18, "kept at the early depth"
 
 
 class _YieldOnceEngine(FakeEngine):
@@ -950,6 +969,87 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
     assert [(e.ply, e.uci) for e in verdicts] == [(1, "e2e4"), (2, "e7e5"), (3, "f1c4")], verdicts
     analyses = [e for e in got if isinstance(e, Analysis)]
     assert all(e.ply <= 3 for e in analyses)
+
+
+class _SlowEngine(FakeEngine):
+    """A fake engine that takes a moment per search and stops when interrupted, as a real
+    one does (`Engine.interrupt`)."""
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        from sidecoach.analysis.engine import Interrupted
+
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            if self._interruptible and self._stopped.is_set():
+                raise Interrupted
+            time.sleep(0.005)
+        return super().analyse(board, **kwargs)
+
+
+def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path: Path) -> None:
+    """The side to move settled by the clock while the joined position is measured whole:
+    the measure, given way to the re-read position's, was put off after the reset had
+    cleared what was put off, measured again after the new reading and delivered last, and
+    on the same game at ply 0 it passed as the new position's -- the profile filed White's
+    analysis for a position with Black to move (the state review, 2026-10-01). The engine
+    lets go of what it is on at a reset, and the glue passes on nothing of a position the
+    game no longer stands on, nor of another game."""
+    from sidecoach.cli import _Assessing
+    from sidecoach.config import Settings
+    from sidecoach.events import GameStarted, Resync, Side
+
+    white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
+    black = white.replace(" w ", " b ")
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    analyser = Analyser(GameAnnotator(engine=_SlowEngine({}), depth=18, with_threats=False))
+    assessing.analyser = analyser
+    analyser.start()
+    try:
+        assessing.submit(
+            GameStarted(game_id="g", user_side=Side.WHITE, start_fen=white, kind="position")
+        )
+        assert _until(lambda: analyser._looking, 5), "the full measure never began"
+        before = assessing.drain()
+        assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
+        after = assessing.wait(timeout=10)
+        assert [e.fen for e in before if isinstance(e, Analysis)] == [white]
+        told = [e.fen for e in after if isinstance(e, Analysis)]
+        assert told and set(told) == {black}, told
+        # The glue's own check, whatever the engine sends: a word at ply 0 on the old
+        # reading, and one on another game, are not passed on.
+        word = {"ply": 0, "lines": [], "decisive": False, "only_move": False}
+        stale = Analysis(game_id="g", fen=white, **word)
+        other = Analysis(game_id="h", fen=black, **word)
+        analyser._results.put(stale)
+        analyser._results.put(other)
+        assert assessing.drain() == []
+    finally:
+        assessing.close()
+
+
+def test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it() -> None:
+    """After a takeback the move before the replacement is the one the game kept; the last
+    move judged was the withdrawn one, a ply too far, and the replacement was judged as if
+    nothing came before it: the opponent's mistake unseen, a loss after it a blunder, not
+    the miss it is (the state review, 2026-10-01)."""
+    start = chess.Board()
+    fake = FakeEngine(
+        {
+            start.fen(): [Line(moves=["d2d4"], depth=6, expected_score=0.55)],
+            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.70)],
+            _after("e4", "a6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
+            _after("e4", "h6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
+        }
+    )
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    board = chess.Board()
+    first = annotator.assess_move("g", board, board.parse_san("e4"), 1)
+    assert first.severity is Severity.MISTAKE, "the opponent erred"
+    board.push_san("e4")
+    withdrawn = annotator.assess_move("g", board, board.parse_san("a6"), 2)
+    replacement = annotator.assess_move("g", board, board.parse_san("h6"), 2)
+    assert withdrawn.label is Label.MISS
+    assert replacement.label is Label.MISS, replacement.label
 
 
 # Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.
