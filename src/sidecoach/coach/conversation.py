@@ -317,24 +317,29 @@ class Conversation:
         )
         if control:
             text += f" Time control: {control}."
+        # The board the record starts from, without its legal moves: the position the player
+        # faces is "# Position now", the one board with them. Shown here as "the position as
+        # it stands", after a re-read -- the next puzzle -- the model had two current boards
+        # (the coach review, 2026-10-01).
+        start = position_text(chess.Board(event.start_fen), legal=False)
         if event.kind == "puzzle":
             text += (
                 f"\nThis is a puzzle the player is solving on the panel's board, {side} to "
                 "move and to find the best line. Say nothing unasked; when they ask for a "
                 "hint, give one at the level allowed -- the move itself only at the third hint "
-                "or when asked for it:\n" + position_text(chess.Board(event.start_fen))
+                "or when asked for it. The record starts from this position:\n" + start
             )
         elif event.kind != "game":
             text += (
                 "\nThis is a position, not a game from the start: a puzzle, an analysis "
                 "board, or a game joined from the middle. There is no earlier history to "
                 "speak of. The player is the side at the bottom and, on a puzzle, to move; "
-                "coach the position as it stands:\n" + position_text(chess.Board(event.start_fen))
+                "coach the position they face, the position now. The record starts from this "
+                "position:\n" + start
             )
         elif event.start_fen != chess.STARTING_FEN:
-            text += "\nThe game is joined in progress; the position is:\n" + position_text(
-                chess.Board(event.start_fen)
-            )
+            text += "\nThe game is joined in progress; the record starts from this position:\n"
+            text += start
         if profile:
             text += (
                 "\nWhat earlier games say about this player (computed, not opinion): "
@@ -391,9 +396,11 @@ class Conversation:
             record.withdrawn = True
         board = chess.Board(event.fen)
         names = ", ".join(self._numbered(r.move) for r in withdrawn) or "the last move"
+        # The board without its legal moves, as the record's: the position now has them.
         text = (
             f"Takeback: {names} withdrawn. The game is back at the position after "
-            f"{self._last_active_name()}, {self._turn_text(board)}:\n{position_text(board)}\n"
+            f"{self._last_active_name()}, {self._turn_text(board)}:\n"
+            f"{position_text(board, legal=False)}\n"
             "Play continues from here; the next message is the replacement move."
         )
         self.entries.append(Entry("user", "takeback", text))
@@ -404,7 +411,7 @@ class Conversation:
             record.superseded = True  # the move list restarts here
         text = (
             f"The board was re-read ({event.reason}). Moves may have gone unseen. The position "
-            f"is now, {self._turn_text(board)}:\n{position_text(board)}\n"
+            f"is now, {self._turn_text(board)}:\n{position_text(board, legal=False)}\n"
             "The move numbering restarts from this position."
         )
         self.entries.append(Entry("user", "resync", text))

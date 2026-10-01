@@ -422,6 +422,7 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
         assert f"FEN: {gone}" not in now, "a position no longer the game's"
         assert "Look at the knight." not in now, "said of a position no longer the game's"
     assert ("White" if board.turn else "Black") + " to move" in now
+    assert harness.count("Legal moves: ") == 1 and "Legal moves: " in now, "one board to play on"
     best = board.san(chess.Move.from_uci(_analysis(board, 0).lines[0].moves[0]))
     lines = now.split("## Engine lines", 1)[1].split("\n## ", 1)[0]
     assert f" {best}  0.70" in lines.split("\n")[1], "the engine's best line for this position"
