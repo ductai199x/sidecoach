@@ -45,6 +45,11 @@ def test_the_words_given_to_the_voice_are_captioned_whole_said_or_not(
     engine = make_panel()
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
+    # The poll says whether the voice is speaking: the box fades a few seconds after it stops.
+    assert engine.poll()["state"]["speaking"] is False
+    fake.busy = True
+    assert engine.poll()["state"]["speaking"] is True
+    fake.busy = False
     engine._state["ply"] = 12
     assert engine._speak("post_mistake", LONG, ply=12) == "speak"
     # Muted: not said, and captioned all the same.
@@ -83,18 +88,6 @@ def test_only_the_last_captions_are_kept_for_the_window_to_catch_up_on(
     assert len(kept) == CAPTIONS_KEPT
     assert kept[0] == [6, "line 5", False]
     assert kept[-1] == [CAPTIONS_KEPT + 5, f"line {CAPTIONS_KEPT + 4}", False]
-
-
-def test_the_poll_says_whether_the_voice_is_speaking(
-    make_panel: Callable[..., PanelEngine],
-) -> None:
-    """The box fades a few seconds after the voice stops: the window reads it at each poll."""
-    engine = make_panel()
-    fake = FakeTTS()
-    engine._tts = fake  # type: ignore[assignment]
-    assert engine.poll()["state"]["speaking"] is False
-    fake.busy = True
-    assert engine.poll()["state"]["speaking"] is True
 
 
 def test_a_new_look_is_stamped_for_a_sample_line_and_keeping_them_up_is_not(

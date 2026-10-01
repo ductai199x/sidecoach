@@ -204,11 +204,6 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
             assert stats["tools_refused"] == "400: tools not supported"
 
 
-def test_a_model_without_tools_is_asked_as_before() -> None:
-    """A provider that takes no tools (no `tools_ok`) is never sent them, the engine there or
-    not: its `chat` takes no `tools`, and the question is answered as before the tools."""
-    from tests.fakes import ScriptedProvider
-
-    coach = _at_scholar(ScriptedProvider(["It is a fine square for the knight."]))
-    coach.ask("is f7 weak?", 8.0)
-    assert drain(coach)[-1].text == "It is a fine square for the knight."
+# A provider that takes no tools (no `tools_ok`) is never sent them: tests/test_coach.py's
+# test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach asks a question with
+# the engine there of a ScriptedProvider, whose `chat` takes no `tools`.

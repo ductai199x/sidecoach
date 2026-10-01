@@ -10,7 +10,7 @@ from sidecoach.voice.notation import speak_notation
 @pytest.mark.parametrize(
     ("text", "spoken"),
     [
-        ("Bxc6", "bishop takes c six"),
+        # A piece's capture: "Bxc6 doubles them" in the capitals' test below.
         ("O-O", "castles kingside"),
         ("O-O-O", "castles queenside"),
         ("Qh7#", "queen h seven checkmate"),

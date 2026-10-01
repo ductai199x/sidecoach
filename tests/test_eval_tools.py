@@ -211,7 +211,14 @@ def test_a_paid_model_is_only_built_on_a_ledger_and_reads_claims_at_the_routine_
         providers.coach_provider("openai:gpt-5.6-luna@medium")  # no ledger: refused
 
 
-def test_the_eval_sends_the_verdict_before_the_analysis(tmp_path, monkeypatch):
+# ---- the item carries what the coach's checks read -----------------------------------
+
+
+def test_the_eval_sends_the_verdict_first_and_an_item_keeps_the_request_the_coach_built(
+    tmp_path, monkeypatch
+):
+    # The game goes to the coach as the app sends it: after each move its verdict, then the
+    # analysis.
     seen: list[str] = []
     real = corpus.build_coach
 
@@ -227,19 +234,14 @@ def test_the_eval_sends_the_verdict_before_the_analysis(tmp_path, monkeypatch):
         return coach
 
     monkeypatch.setattr(corpus, "build_coach", spying)
-    _build(tmp_path)
+    items = _build(tmp_path)
     after_moves = [seen[i + 1 : i + 3] for i, name in enumerate(seen) if name == "MovePlayed"]
     assert after_moves and all(
         pair == [MoveAssessment.__name__, Analysis.__name__] for pair in after_moves
     )
     assert MovePlayed.__name__ in seen
-
-
-# ---- the item carries what the coach's checks read -----------------------------------
-
-
-def test_an_item_keeps_the_request_the_coach_built(tmp_path):
-    item = _lesson(_build(tmp_path))
+    # The lesson's item: what the coach built for it.
+    item = _lesson(items)
     assert item["played_san"] == "f3"
     assert item["must_name"] == ["Nf3"]  # the better move the lesson's template names
     assert item["frames"], "the boards after the move, for the draft checker"
