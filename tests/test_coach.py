@@ -195,6 +195,31 @@ def test_naming_the_move_yourself_earns_the_move_level() -> None:
     assert unlock_for("HINT please", board, []) is Unlock.HINT
     assert unlock_for("what should I play here", board, []) is Unlock.ASK_MOVE
     assert unlock_for("how are you", board, []) is None
+    # Words, not a word: "open lines" opened the line, and "which move" or "the answer" about
+    # a move already played opened the move, and the answer was given (the coach review,
+    # 2026-10-01).
+    for said in (
+        "are there any open lines for my rooks?",
+        "which move did they just play?",
+        "which move did I miss there?",
+        "what was the answer to their last threat?",
+        "was that the best move?",
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is None, said
+    for said, unlock in (
+        ("what's the line?", Unlock.ASK_LINE),
+        ("what are the lines here?", Unlock.ASK_LINE),
+        ("give me a line", Unlock.ASK_LINE),
+        ("show me some lines", Unlock.ASK_LINE),
+        ("what's the main variation?", Unlock.ASK_LINE),
+        ("ok and after that?", Unlock.ASK_LINE),
+        ("how would this position continues?", Unlock.ASK_LINE),
+        ("which move should I play?", Unlock.ASK_MOVE),
+        ("which move is best?", Unlock.ASK_MOVE),
+        ("just tell me the answer", Unlock.ASK_MOVE),
+        ("what's the answer to their threat?", Unlock.ASK_MOVE),
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is unlock, said
 
 
 def test_feedback_after_the_users_move_may_say_everything_about_that_position() -> None:

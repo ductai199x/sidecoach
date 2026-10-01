@@ -2123,16 +2123,26 @@ def may_carry_claims(text: str) -> bool:
     return _CLAIM_WORDS.search(text) is not None
 
 
+# The move asked for, in words that ask for it: "which move" and "the answer" said of a move
+# already played -- "which move did they just play?", "what was the answer to their last
+# threat?" -- opened the move level, and the answer was given (the coach review, 2026-10-01).
 _ASK_MOVE = re.compile(
-    r"\b(best move|what (should|do|would) i (play|do)|what would you play|which move|"
-    r"just tell me|what'?s the move|tell me the move|the answer)\b",
+    r"\b((?<!\bwas the )(?<!\bwas that the )(?<!\bwas it the )best move|"
+    r"what (should|do|would) i (play|do)|what would you play|"
+    r"which move(?! (?:did|was|were|had|has|have|do|does) (?:they|he|she|i|it|that|the opponent|"
+    r"my opponent)\b)|"
+    r"just tell me|what'?s the move|tell me the move|(?<!\bwas )(?<!\bwere )the answer)\b",
     re.I,
 )
 # How the position goes on is the line: "how would this position continues?" and "ok and after
 # that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
 # only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
+# A line asked for as one -- "the line", "some lines", "the main variation" -- not the word: "are
+# there any open lines for my rooks?" opened the line (the coach review, 2026-10-01).
 _ASK_LINE = re.compile(
-    r"\b(?:the line|a line|lines|variation|continuation|what happens (?:after|next)|"
+    r"\b(?:the|a|some|main|best|engine'?s?)\s+(?:(?:main|best|whole|full|engine'?s?|critical|"
+    r"forcing|winning)\s+)?(?:lines?|variations?|continuations?)\b"
+    r"|\b(?:what happens (?:after|next)|"
     r"and then what|what follows|what(?:'s| is| comes) next|then what)\b"
     r"|\bafter that\s*\?"
     r"|\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|"
