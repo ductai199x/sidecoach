@@ -216,7 +216,7 @@ class SituationTest {
         )
         val board = Board(fen)
         assertEquals("e5e6", analysis.lines[0].moves[0])
-        val facts = factsFromAnalysis(board, analysis, lastMove = "e4", inBook = false, user = board.turn)
+        val facts = factsFromAnalysis(board, analysis, lastMove = "e4", user = board.turn)
         assertEquals("Their pawn on e7 is one move from winning material", facts.key)
         assertEquals(case.getJSONObject("facts").getString("key"), facts.key)
         assertFalse(facts.key!!.contains("e6"))  // the key names their piece, never the answer

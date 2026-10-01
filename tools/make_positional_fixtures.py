@@ -225,7 +225,7 @@ def main() -> None:
                 break
             board.push(rng.choice(moves))
             if ply % 5 == 0:
-                cases.append(case_for(board, phase_of(board, False)))
+                cases.append(case_for(board, phase_of(board)))
 
     # The puzzle sample: real middlegames and endgames.
     if PUZZLES.exists():
@@ -237,7 +237,7 @@ def main() -> None:
                     if move not in board.legal_moves:
                         break
                     if index % 2 == 1:
-                        cases.append(case_for(board, phase_of(board, False)))
+                        cases.append(case_for(board, phase_of(board)))
                     board.push(move)
 
     seen_all = len(cases)

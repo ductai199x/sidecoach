@@ -219,7 +219,7 @@ object ReviewWords {
         val before = if (i != 0) game.moves[i - 1].after else game.start
         val board = Board(move.fenBefore)
         val previous = if (i != 0) game.moves[i - 1].assessment.uci else null
-        val facts = factsFromAnalysis(board, before, lastMove = previous, inBook = before.inBook)
+        val facts = factsFromAnalysis(board, before, lastMove = previous)
         val mover = capitalized(move.side.value)
         val other = if (mover == "White") "Black" else "White"
         // The facts whose owner goes without saying to the side to move, named: the threats are

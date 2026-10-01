@@ -221,21 +221,14 @@ def main() -> None:
                         "pays_off": payoffs(board, move, pv, [*for_move, *for_position]),
                     }
                 )
-                phases.append(
-                    {
-                        "fen": board.fen(),
-                        "in_book": False,
-                        "phase": phase_of(board, False),
-                    }
-                )
+                phases.append({"fen": board.fen(), "phase": phase_of(board)})
             board.push(move)
 
-    # A few opening positions too, for the phase table's book branch.
+    # A few opening positions too.
     opening = chess.Board()
     for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"):
         opening.push_san(san)
-        phases.append({"fen": opening.fen(), "in_book": True, "phase": phase_of(opening, True)})
-        phases.append({"fen": opening.fen(), "in_book": False, "phase": phase_of(opening, False)})
+        phases.append({"fen": opening.fen(), "phase": phase_of(opening)})
 
     seen_all = len(cases)
     cases = choose(cases)

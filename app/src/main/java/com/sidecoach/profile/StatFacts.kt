@@ -5,7 +5,7 @@ import com.sidecoach.analysis.isolatedDPawn
 import com.sidecoach.analysis.openFiles
 import com.sidecoach.analysis.outposts
 import com.sidecoach.analysis.pawnWeaknesses
-import com.sidecoach.analysis.phaseOf
+import com.sidecoach.analysis.gamePhases
 import com.sidecoach.analysis.positionScore
 import com.sidecoach.analysis.spacePlan
 import com.sidecoach.chess.BLACK
@@ -46,7 +46,7 @@ import java.util.Locale
  *   when the mover has more of it, *activity* when a rook or queen of theirs stands on an open
  *   file or a minor piece on an outpost, *structure* when either side has a weak pawn (isolated,
  *   backward, doubled, hanging, the isolated queen's pawn).
- * - **Endgames** where the review's phases put them ([phaseOf]), by what is left besides kings
+ * - **Endgames** where the review's phases put them ([gamePhases]), by what is left besides kings
  *   and pawns: pawn, rook, queen, other; entered better, equal or worse by the mover's expected
  *   score then (0.6 and 0.4).
  */
@@ -179,11 +179,12 @@ object StatFacts {
     fun factsOf(game: ReviewedGame, row: LibraryRow): Pair<GameFact, List<MoveFact>> {
         val moves = ArrayList<MoveFact>()
         var before = game.start
-        var inBook = game.start.inBook
-        for (move in game.moves) {
+        // The game divided as Lichess divides it ([gamePhases]).
+        val phases = gamePhases(game.moves.map { Board(it.fenBefore) })
+        for ((index, move) in game.moves.withIndex()) {
             val board = Board(move.fenBefore)
             val score = positionScore(board, before.lines)
-            val phase = phaseOf(board, inBook = inBook)
+            val phase = phases[index]
             val chance = chanceIn(before)
             val label = move.assessment.label
             moves.add(
@@ -209,7 +210,6 @@ object StatFacts {
                 ),
             )
             before = move.after
-            inBook = move.after.inBook
         }
         val opening = game.moves.reversed().firstOrNull { !it.after.opening.isNullOrEmpty() }?.after?.opening
         val headers = game.headers

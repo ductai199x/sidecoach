@@ -124,7 +124,7 @@ class MotifsTest {
         val failures = ArrayList<String>()
         for (i in 0 until data.length()) {
             val o = data.getJSONObject(i)
-            val mine = phaseOf(Board(o.getString("fen")), o.getBoolean("in_book"))
+            val mine = phaseOf(Board(o.getString("fen")))
             if (mine != o.getString("phase")) {
                 failures.add("${o.getString("fen")}: $mine, python says ${o.getString("phase")}")
             }

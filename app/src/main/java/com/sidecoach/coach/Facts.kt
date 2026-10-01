@@ -533,7 +533,6 @@ fun factsFromAnalysis(
     board: Board,
     analysis: Analysis,
     lastMove: String? = null,
-    inBook: Boolean = false,
     user: Boolean? = null,
     /** The live coach's bags, drawing the first hint's lead ([IdeaWords.opener]). */
     pick: ((String, List<String>) -> String)? = null,
@@ -542,7 +541,7 @@ fun factsFromAnalysis(
     val bestUci = if (lines.isNotEmpty() && lines[0].moves.isNotEmpty()) lines[0].moves[0] else null
     var best = if (bestUci != null) toMove(bestUci) else null
     if (best != null && !board.isLegal(best)) best = null
-    val phase = phaseOf(board, inBook)
+    val phase = phaseOf(board)
     val us = board.turn
 
     // What the best line is for, read through the player's own moves ([IdeaReader]): the goal,

@@ -107,7 +107,7 @@ class CoachPrimitivesTest {
             val board = boardOf(case)
             val us = board.turn
             val analysis = analysisFrom(case.getString("fen"), case.getJSONObject("analysis"))
-            val facts = factsFromAnalysis(board, analysis, lastMove = "e4", inBook = false, user = us)
+            val facts = factsFromAnalysis(board, analysis, lastMove = "e4", user = us)
             checkFacts(case.getString("fen"), facts, case.getJSONObject("facts"))
 
             val idea = IdeaReader.read(board, analysis)
@@ -116,7 +116,7 @@ class CoachPrimitivesTest {
             checkWords(case.getString("fen"), idea, board, case.getJSONObject("words"))
             checkTemplates(case.getString("fen"), facts, board, case.getJSONObject("templates"))
 
-            check("${case.getString("fen")} phase", phaseOf(board, false), case.getString("phase"))
+            check("${case.getString("fen")} phase", phaseOf(board), case.getString("phase"))
             check(
                 "${case.getString("fen")} allowed",
                 IdeaWords.allowed(board, analysis, "e4"),
@@ -316,7 +316,7 @@ class CoachPrimitivesTest {
                     val facts = factsFromAnalysis(
                         board, analysisFrom(o.getString("fen"), o),
                         lastMove = if (a.isNull("last_move")) null else a.getString("last_move"),
-                        inBook = a.getBoolean("in_book"), user = colour("user"),
+                        user = colour("user"),
                     )
                     facts.asMap() to factsMap(out as JSONObject)
                 }
@@ -334,7 +334,7 @@ class CoachPrimitivesTest {
                 "line_notes" -> lineNotes(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit"), player = colour("player")) to out
                 "line_spoken" -> lineSpoken(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit")) to out
                 "region_of" -> regionOf(strings(a.getJSONArray("squares"))) to (if (out == JSONObject.NULL) null else out)
-                "phase_of" -> phaseOf(board, a.getBoolean("in_book")) to out
+                "phase_of" -> phaseOf(board) to out
                 "material_text" -> materialText(board, colour("perspective")) to out
                 "annotations_for" -> annotationsFor(
                     factsFrom(a.getJSONObject("facts")), DisclosureLevel.of(a.getInt("level")), board,

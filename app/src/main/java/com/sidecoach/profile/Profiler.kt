@@ -1,5 +1,6 @@
 package com.sidecoach.profile
 
+import com.sidecoach.analysis.later
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.analysis.terminalExpectedScore
 import com.sidecoach.chess.BISHOP
@@ -94,6 +95,8 @@ class Profiler(
         var provisional = false  // a position, not yet known to be a game
         var endedAt = 0.0
         var reviewed = false
+        /** The game's phase so far: a phase reached is never left ([gamePhases]). */
+        var phase = "opening"
     }
 
     private var game: Game? = null
@@ -245,7 +248,8 @@ class Profiler(
         val move = Move.fromUci(event.uci)
         val mover = before.turn
         ply.clockMs = if (mover == WHITE) clock.first else clock.second
-        ply.phase = phaseOf(before)
+        game.phase = later(game.phase, phaseOf(before))
+        ply.phase = game.phase
         game.plies[key] = ply
         game.lastFen = event.fenAfter
         val user = game.userSide.color
@@ -305,7 +309,6 @@ class Profiler(
         val ply = game.plies[key] ?: return emptyList()
         ply.assessment = event
         val before = Board(ply.move.fenBefore)
-        ply.phase = phaseOf(before, inBook = event.label == Label.BOOK)
         val faced = game.analyses[Key(game.segment, event.ply - 1)]
         val available = faced?.tags?.map { it.name }?.filter { it in Causes.TACTICAL }?.toSortedSet()?.toList() ?: emptyList()
         val bestUci = event.best.firstOrNull()

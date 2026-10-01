@@ -900,8 +900,8 @@ def case_for(
     marks_deep: bool | None = None,
 ) -> dict:
     us = board.turn
-    phase = phase_of(board, False)
-    facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=us)
+    phase = phase_of(board)
+    facts = F.facts_from_analysis(board, analysis, last_move="e4", user=us)
     idea = IDEA.read(board, analysis)
 
     moves = list(board.legal_moves)
@@ -1406,11 +1406,10 @@ def desktop_tests() -> dict:
         return None if c is None else c == chess.WHITE
 
     shows = {
-        "facts_from_analysis": lambda board, analysis, *, last_move=None, in_book=False, user=None, pick=None: {
+        "facts_from_analysis": lambda board, analysis, *, last_move=None, user=None, pick=None: {
             "fen": board.fen(),
             "analysis": {**analysis_json(analysis), "fen": analysis.fen},
             "last_move": last_move,
-            "in_book": in_book,
             "user": colour(user),
         },
         "visible_facts": lambda facts, level: {"facts": facts_json(facts), "level": int(level)},
@@ -1427,7 +1426,7 @@ def desktop_tests() -> dict:
         },
         "line_spoken": lambda board, moves, *, limit=6: {"fen": board.fen(), "moves": list(moves), "limit": limit},
         "region_of": lambda squares: {"squares": list(squares)},
-        "phase_of": lambda board, in_book=False: {"fen": board.fen(), "in_book": in_book},
+        "phase_of": lambda board: {"fen": board.fen()},
         "material_text": lambda board, perspective=None: {"fen": board.fen(), "perspective": colour(perspective)},
         "annotations_for": lambda facts, level, board, *, trigger, played_san=None, severity=None: {
             "facts": facts_json(facts), "level": int(level), "fen": board.fen(),
@@ -1755,7 +1754,7 @@ def main() -> None:
             continue
         if tempted and by_plan.get("trap", 0) < MASTERS_TRAPS:
             analysis = with_traps(engine, board, analysis)
-        facts = F.facts_from_analysis(board, analysis, last_move="e4", in_book=False, user=board.turn)
+        facts = F.facts_from_analysis(board, analysis, last_move="e4", user=board.turn)
         kind = story_category(facts, IDEA.read(board, analysis), by_plan) or (
             "trap"
             if facts.trap

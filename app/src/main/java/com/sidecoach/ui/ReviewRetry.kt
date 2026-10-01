@@ -109,7 +109,7 @@ class Retries(
         val board = board(ply)
         val analysis = analysisBefore(ply)
         val previous = if (ply > 1) reviewed.moves[ply - 2].assessment.uci else null
-        val facts = factsFromAnalysis(board, analysis, lastMove = previous, inBook = analysis.inBook)
+        val facts = factsFromAnalysis(board, analysis, lastMove = previous)
         val clamped = DisclosureLevel.of(maxOf(DisclosureLevel.IDEA.value, minOf(DisclosureLevel.MOVE.value, level)))
         val best = if (analysis.lines.isNotEmpty() && analysis.lines[0].moves.isNotEmpty()) analysis.lines[0].moves[0] else null
         return JSONObject()

@@ -1,7 +1,7 @@
 package com.sidecoach.profile
 
 import com.sidecoach.analysis.gameAccuracy
-import com.sidecoach.analysis.phaseOf
+import com.sidecoach.analysis.gamePhases
 import com.sidecoach.analysis.positionScore
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
@@ -110,13 +110,15 @@ object GameSummaries {
         // What each side's moves cost from where they stood, for the rating they played at.
         val played = mapOf(Side.WHITE to ArrayList<Performance.Played>(), Side.BLACK to ArrayList())
         val graph = arrayListOf(whiteScore(Board(game.start.fen), game.start.lines))
-        var inBook = game.start.inBook
         var lastBook: Int? = null
         val key = ArrayList<KeyMoment>()
         var opening = game.start.opening
-        for (move in game.moves) {
+        // The game divided as Lichess divides it: each move in the phase of the position it was
+        // played from.
+        val phases = gamePhases(game.moves.map { Board(it.fenBefore) })
+        for ((index, move) in game.moves.withIndex()) {
             val before = Board(move.fenBefore)
-            val phase = phaseOf(before, inBook = inBook)
+            val phase = phases[index]
             val label = move.assessment.label
             perSide.getValue(move.side).add(Moved(phase, move.assessment.accuracy ?: 0.0, label))
             val standing = if (move.side == Side.WHITE) graph.last() else 1.0 - graph.last()
@@ -129,7 +131,6 @@ object GameSummaries {
             val after = before.copy(withStack = false)
             after.push(Move.fromUci(move.assessment.uci))
             graph.add(whiteScore(after, move.after.lines))
-            inBook = move.after.inBook
             opening = move.after.opening?.takeIf { it.isNotEmpty() } ?: opening
         }
         if (lastBook != null) key.add(KeyMoment(lastBook, game.moves[lastBook - 1].side, ReviewJson.labelName(Label.BOOK)))
