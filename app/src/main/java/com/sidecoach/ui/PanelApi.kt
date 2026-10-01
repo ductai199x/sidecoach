@@ -223,6 +223,11 @@ class PanelApi(
                 val (pieces, theme) = store.board()
                 ok(Looks.look(pieces, theme, store.files))
             }
+            // The look's stamp alone, for every page to ask every few seconds (lib/look.ts).
+            path == "/api/look/stamp" -> settings.store.let { store ->
+                val (pieces, theme) = store.board()
+                ok(JSONObject().put("stamp", Looks.look(pieces, theme, store.files).getString("stamp")))
+            }
             // A player's own sets: a new one from the images chosen, more images for one, a new
             // name, deleted (put aside for its Undo) and back (`server.py`'s /api/pieces/own).
             path == "/api/pieces/own" ->
@@ -517,7 +522,7 @@ class PanelApi(
         val ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf(
                 "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
-                "/api/games", "/api/look", "/api/jobs", "/api/stats", "/api/stats/positions",
+                "/api/games", "/api/look", "/api/look/stamp", "/api/jobs", "/api/stats", "/api/stats/positions",
             ),
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",

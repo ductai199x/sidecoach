@@ -200,6 +200,13 @@ class SettingsPhoneTest {
             assertTrue(call("POST", "/api/pieces/own/$id/restore").getBoolean("ok"))
             assertTrue(labels().contains("Phone wood"))
             assertFalse("no such set", call("PUT", "/api/pieces/own/nope", JSONObject().put("name", "x")).getBoolean("ok"))
+            // The look's stamp, which every page asks for: it changes with the pieces.
+            val stampBefore = call("GET", "/api/look/stamp").getString("stamp")
+            val pick = JSONObject().put("board", JSONObject().put("pieces", Looks.OWN + id))
+            assertTrue(call("PUT", "/api/settings", JSONObject().put("settings", pick).put("secrets", JSONObject())).getBoolean("ok"))
+            val stampAfter = call("GET", "/api/look/stamp").getString("stamp")
+            assertTrue("the stamp follows the pieces", stampBefore != stampAfter)
+            assertEquals(stampAfter, call("GET", "/api/look").getString("stamp"))
         } finally {
             store.save(saved)
             made?.let {
