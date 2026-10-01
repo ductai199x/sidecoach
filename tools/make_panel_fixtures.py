@@ -449,7 +449,7 @@ def coach_meta_fixture() -> list[dict[str, Any]]:
                 coach.speaker.failures += 1
                 coach.speaker.last_error = case["failed"]
             before = engine._log.cursor
-            seen, failures = engine._coach_meta(coaching, seen, failures)
+            engine._coach_meta(coaching)
             records = [r for r in engine._log.since(before) if r["chan"] == "coach"]
             out.append(
                 {

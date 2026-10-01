@@ -84,7 +84,9 @@ def _position_resync_after_a_finished_game_is_live_again() -> None:
     events = []
     for i in range(6):
         events += rt._feed(model, rec, later, Side.WHITE, 2.0 + 0.1 * i)
-    assert any(isinstance(e, Resync) for e in events)
+    # A new game, and no Resync of the same position after it (desktop 92d2b15).
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert not any(isinstance(e, Resync) for e in events)
     assert rec.board.board_fen() == later.board_fen()
     assert not rec.finished
 
