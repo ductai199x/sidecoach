@@ -156,7 +156,7 @@ class Retries(
     }
 
     companion object {
-        /** A position of the game as the review measured it. `_measured`. */
+        /** A position of the game as the review measured it. `measured`. */
         fun measured(analysis: Analysis): Measured = Measured(
             fen = analysis.fen,
             lines = analysis.lines,

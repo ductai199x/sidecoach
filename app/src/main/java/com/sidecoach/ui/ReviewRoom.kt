@@ -560,6 +560,19 @@ class ReviewRoom(
                 // A record that no longer reads is measured again.
                 runCatching { ReviewJson.measured(JSONObject(text)) }.getOrNull()?.let { known[it.fen] = it }
             }
+            // The watched game this import stands for, reviewed at this strength: what its
+            // review measured is not searched again (its record differs from the import's, or
+            // carryTwins would have taken the review whole).
+            for ((watched, imported) in store.twins()) {
+                val twin = if (imported == row.key) store.review(watched, strength.name) else null
+                if (twin == null || twin.version != REVIEW_VERSION) continue
+                // A review that no longer reads gives nothing.
+                val was = runCatching { ReviewJson.reviewed(twin.report) }.getOrNull() ?: continue
+                if (was.depth != strength.depth) continue
+                for (analysis in listOf(was.start) + was.moves.map { it.after }) {
+                    known.getOrPut(analysis.fen) { Retries.measured(analysis) }
+                }
+            }
 
             fun keep(measured: Measured) {
                 store.addProgress(row.key, strength.name, strength.depth, strength.multipv, measured.fen, ReviewJson.measured(measured).toString())
@@ -599,6 +612,59 @@ class ReviewRoom(
             store.clearProgress(row.key)
             StatFacts.keepStats(store, strength.name, reviewed, row)
             return reviewed to summary
+        }
+
+        /**
+         * Each watched game's review carried to its import when the import has none and the two
+         * are the same game position for position (Sidecoach read every move): the watched
+         * review's measurements with the import's own headers and clocks, summed up and saved
+         * with its facts for Stats at once, no engine -- pairing left the game with no accuracy
+         * until it was reviewed again (Tai, 2026-09-30). A record that differs is reviewed as
+         * the import, from the positions the watched review measured ([reviewRow]). Returns the
+         * imports given a review. `carry_twins`.
+         */
+        fun carryTwins(store: Store, twins: Map<String, String>): List<String> {
+            val carried = ArrayList<String>()
+            for ((watched, imported) in twins) {
+                if (store.latestReview(imported) != null) continue
+                val old = store.latestReview(watched)
+                val row = Library.find(store, imported)
+                if (old == null || old.version != REVIEW_VERSION || row == null) continue
+                val games = Library.gamesIn(row.pgn)
+                // The report as saved (the desktop's JSON): the import's key, headers and clocks
+                // put in, then read back.
+                val was = runCatching { JSONObject(old.report) }.getOrNull() ?: continue
+                val moves = was.optJSONArray("moves")
+                if (games.isEmpty() || moves == null || moves.length() == 0) continue
+                val game = games[0]
+                val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
+                    moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
+                if (seen != GameReview.positions(game).map { it.fen() }) continue
+                val times = GameReview.clocks(game)
+                for (i in 0 until moves.length()) {
+                    val move = moves.getJSONObject(i)
+                    move.getJSONObject("assessment").put("game_id", imported)
+                    move.getJSONObject("after").put("game_id", imported)
+                    move.put("clock_ms", times[i].first ?: JSONObject.NULL)
+                    move.put("spent_ms", times[i].second ?: JSONObject.NULL)
+                }
+                was.getJSONObject("start").put("game_id", imported)
+                was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
+                val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: continue
+                store.saveReview(
+                    imported,
+                    old.strength,
+                    REVIEW_VERSION,
+                    System.currentTimeMillis() / 1000.0,
+                    ReviewJson.reviewed(reviewed).toString(),
+                    ReviewJson.summary(GameSummaries.summarize(reviewed)).toString(),
+                )
+                old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
+                store.clearProgress(imported)
+                StatFacts.keepStats(store, old.strength, reviewed, row)
+                carried.add(imported)
+            }
+            return carried
         }
 
         /**

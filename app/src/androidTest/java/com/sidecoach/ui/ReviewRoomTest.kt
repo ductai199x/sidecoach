@@ -4,10 +4,13 @@ import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.GameReview
+import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.profile.Library
+import com.sidecoach.profile.LibraryRow
 import com.sidecoach.profile.Store
 import org.json.JSONArray
 import org.json.JSONObject
@@ -152,7 +155,71 @@ class ReviewRoomTest {
         third.join()
     }
 
+    /**
+     * Tai, 2026-09-30: a watched game reviewed, then brought in, lost its accuracy -- the import
+     * stood for it unreviewed. Sidecoach read every move: the import takes the review whole on
+     * pairing, no engine, with its own headers and clocks, and Stats counts it once. A move
+     * misread: the import is reviewed as itself, the positions before the misread move not
+     * searched again. The desktop's twin tests in tests/test_review_server.py.
+     */
+    @Test
+    fun aWatchedGamesReviewGoesWithTheImportThatStandsForIt() {
+        val maker = maker()
+        assumeTrue("the engine or its network is missing", maker != null)
+        val files = File(context.cacheDir, "review-twins").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val settings = SettingsStore(context)
+        val fast = GameReview.STRENGTHS.getValue("fast")
+
+        fun watchedAndImported(name: String, sans: List<String>): Pair<Store, LibraryRow> {
+            val store = Store(File(files, "$name.sqlite"))
+            val row = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+            store.addLibraryGame(row)
+            val started = row.playedAt!! + 3600
+            store.startGame("g1", started, "black", STARTING_FEN)
+            sans.forEachIndexed { i, san ->
+                val ply = i + 1
+                store.addMove("g1", 0, ply, (ply + 1) / 2, san, "0000", ply % 2 == 0, "-", "-", null, null, null, false, false, null, started + ply)
+            }
+            store.endGame("g1", started + 900, "0-1", "resignation")
+            val watched = Library.fromWatched(store).single { it.key == "watched:g1" }
+            assertTrue(ReviewRoom.reviewRow(settings, files, watched, store, fast, 1, maker!!) != null)
+            return store to row
+        }
+
+        val (store, row) = watchedAndImported("same", SANS)
+        val twins = Library.reconcile(store)
+        assertEquals(mapOf("watched:g1" to row.key), twins)
+        assertEquals(listOf(row.key), ReviewRoom.carryTwins(store, twins))
+        val report = JSONObject(store.review(row.key, "fast")!!.report)
+        val first = report.getJSONArray("moves").getJSONObject(0)
+        assertEquals("the import's headers", "1018", report.getJSONObject("headers").getString("BlackElo"))
+        assertEquals("and clocks", 598_000, first.getInt("clock_ms"))
+        assertEquals(row.key, first.getJSONObject("assessment").getString("game_id"))
+        assertEquals("Stats has it once, as the import", listOf(row.key), store.statGames().map { it.key })
+        assertEquals("carried once", emptyList<String>(), ReviewRoom.carryTwins(store, twins))
+        store.close()
+
+        val (other, otherRow) = watchedAndImported("misread", SANS.take(6) + "d4" + SANS.drop(7))
+        assertEquals("nothing to carry whole", emptyList<String>(), ReviewRoom.carryTwins(other, Library.reconcile(other)))
+        var known = -1
+        val reviewed = ReviewRoom.reviewRow(settings, files, otherRow, other, fast, 1, maker!!, onProgress = { done, _ -> if (known < 0) known = done })
+        assertTrue(reviewed != null)
+        assertEquals("the seven positions before the misread move, not searched again", 7, known)
+        other.close()
+    }
+
     companion object {
         private val PLY = Regex("\"key move\": \\{\"ply\": (\\d+)")
+
+        // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
+        private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +
+            "[White \"Anakin_737\"]\n[Black \"nosegazm\"]\n[Result \"0-1\"]\n[WhiteElo \"880\"]\n" +
+            "[BlackElo \"1018\"]\n[TimeControl \"600\"]\n\n" +
+            "1. e4 {[%clk 0:09:58]} e5 {[%clk 0:09:55]} 2. Nf3 {[%clk 0:09:50]} Nc6 {[%clk 0:09:40]}\n" +
+            "3. Bc4 {[%clk 0:09:45]} Nf6 {[%clk 0:09:30]} 4. d3 Bc5 5. Nc3 d6 6. h3 Na5 7. Bb3 Nxb3 8. axb3 c6 0-1\n"
+        private val SANS = "e4 e5 Nf3 Nc6 Bc4 Nf6 d3 Bc5 Nc3 d6 h3 Na5 Bb3 Nxb3 axb3 c6".split(" ")
     }
 }

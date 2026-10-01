@@ -180,7 +180,7 @@ object GameReview {
     /**
      * Each move's clock after it and the time it took, in ms, from the PGN's `[%clk]` comments
      * and its `TimeControl` ("600+5": 600 s a side, 5 s added a move). A correspondence game's
-     * clock ("1/86400") is days, not a move's thinking: none there. `_clocks`.
+     * clock ("1/86400") is days, not a move's thinking: none there. `clocks`.
      */
     fun clocks(game: PgnGame): List<Pair<Int?, Int?>> {
         val control = CONTROL.matchEntire(game.headers["TimeControl"] ?: "")
