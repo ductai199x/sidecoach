@@ -102,6 +102,13 @@ class InterjectionPolicy:
         self._spoken.clear()
         self._said_ts = None
 
+    def withdraw(self, ply: int) -> None:
+        """The moves after `ply` were taken back: what was said unasked at the plies past it
+        was said of positions that are gone. Kept by ply, both hints said after 1.e4 left
+        1.d4, played in its place, with no stuck hint (the coach review, 2026-10-01)."""
+        for gone in [p for p in self._spoken if p > ply]:
+            del self._spoken[gone]
+
     def set_remaining(self, remaining_ms: int | None) -> None:
         """The user's clock, when the screen shows one."""
         self._remaining_ms = remaining_ms

@@ -2154,3 +2154,47 @@ def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() ->
     start_game(coach)
     coach.tick(12.0 + LESSON_WAIT_S)
     assert drain(coach) == [], "the last game's lesson"
+
+
+def _looked(coach: Coach, board: chess.Board, ply: int, ucis: list[str], ts: float) -> None:
+    """The engine's look at `board`: `ucis` its lines, best first."""
+    lines = [Line(moves=[u], depth=18, expected_score=0.5 - i / 10) for i, u in enumerate(ucis)]
+    coach.on_event(
+        Analysis(
+            game_id="g", fen=board.fen(), ply=ply, lines=lines, decisive=False, only_move=False
+        ),
+        ts,
+    )
+
+
+def test_the_hints_said_at_a_withdrawn_ply_do_not_count_against_the_next_position_there() -> None:
+    """What was said unasked at the plies taken back is not counted against the positions
+    played to there after: counted by ply, both hints said after 1.e4 left 1.d4, played in its
+    place, with no stuck hint at all (the coach review, 2026-10-01)."""
+    from sidecoach.events import Takeback
+
+    coach = offline_coach()
+    start_game(coach, Side.BLACK)
+    board = play(coach, ["e4"], user_side=Side.BLACK)
+    _looked(coach, board, 1, ["e7e5", "c7c5"], 1.5)
+    assert [m.level for m in [*stuck(coach), *stuck(coach)]] == [
+        DisclosureLevel.IDEA,
+        DisclosureLevel.FOCUS,
+    ]
+    coach.on_event(Takeback(game_id="g", plies=1, fen=chess.STARTING_FEN), 40.0)
+    board = chess.Board()
+    board.push_san("d4")
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=1,
+            san="d4",
+            uci="d2d4",
+            fen_before=chess.STARTING_FEN,
+            fen_after=board.fen(),
+            by_user=False,
+        ),
+        41.0,
+    )
+    _looked(coach, board, 1, ["d7d5", "g8f6"], 41.5)
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.IDEA]

@@ -2889,6 +2889,7 @@ class Coach:
             position = _Position(ply=ply, board=self.board.copy())
             self.positions[ply] = position
         self._current = position
+        self.policy.withdraw(ply)
         self.policy.new_position(ply, ts, user_to_move=self.user_to_move)
 
     def _on_resync(self, event: Resync, ts: float) -> None:
