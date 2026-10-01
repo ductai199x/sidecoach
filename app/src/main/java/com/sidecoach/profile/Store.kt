@@ -9,6 +9,7 @@ import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import com.sidecoach.voice.Py
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.util.Timer
@@ -150,9 +151,7 @@ class Store(val path: File?) {
         lock.withLock {
             db.beginTransaction()
             try {
-                for (table in listOf("evidence", "dialogue", "recommendations", "moves", "games")) {
-                    exec("DELETE FROM $table WHERE game_id = ?", gameId)
-                }
+                for (table in WATCHED_TABLES) exec("DELETE FROM $table WHERE game_id = ?", gameId)
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
@@ -417,20 +416,159 @@ class Store(val path: File?) {
         rows("SELECT * FROM library WHERE key = ?", key) { libraryRow(it) }.firstOrNull()
     }
 
-    /** A game out of the library, and its reviews and stats with it; a watched game it stood for comes back. */
-    fun deleteLibraryGame(key: String) {
-        lock.withLock {
-            db.beginTransaction()
-            try {
-                for (table in listOf("stat_moves", "stat_games", "reviews", "review_progress", "library")) {
-                    exec("DELETE FROM $table WHERE key = ?", key)
+    // ---- a game removed from the player's record (store.py) ---------------------------------
+
+    /**
+     * A game out of the player's record: every row of it -- the library's, or the watched record
+     * with its moves and what the coach drew from it -- its review and its Stats, and the game
+     * it is paired with (an import and the watched game it stands for are one game). What it
+     * took is kept [UNDO_KEEP_S] for [restoreGame]; its key for good, so bringing games in
+     * leaves it out. Returns the keys removed. `remove_game`.
+     */
+    fun removeGame(key: String): List<String> = lock.withLock {
+        val now = System.currentTimeMillis() / 1000.0
+        db.beginTransaction()
+        try {
+            val paired = rows("SELECT watched, imported FROM twins WHERE watched = ? OR imported = ?", key, key) {
+                listOf(it.getString(0), it.getString(1))
+            }
+            val gone = rows("SELECT key FROM removed") { it.getString(0) }.toSet()
+            // A game removed already (a second click) keeps what it took, for its Undo.
+            val group = (listOf(key) + (paired.flatten().toSortedSet() - key)).filter { it !in gone }
+            for (k in group) {
+                val taken = JSONObject()
+                for (table in LIBRARY_TABLES) taken.put(table, take(table, "key", k))
+                taken.put("twins", takeTwins(k))
+                var trace: JSONObject? = null
+                if (k.startsWith(WATCHED)) {
+                    val gameId = k.removePrefix(WATCHED)
+                    trace = trace(gameId)
+                    for (table in WATCHED_TABLES) taken.put(table, take(table, "game_id", gameId))
                 }
-                exec("DELETE FROM twins WHERE imported = ?", key)
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
+                exec(
+                    "INSERT OR REPLACE INTO removed (key, removed_at, grp, rows, trace) VALUES (?, ?, ?, ?, ?)",
+                    k, now, key, taken.toString(), trace?.toString(),
+                )
+            }
+            // What older removals took can no longer be put back: only their keys stay.
+            exec("UPDATE removed SET rows = NULL WHERE removed_at < ?", now - UNDO_KEEP_S)
+            db.setTransactionSuccessful()
+            group
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * A game the player removed moments ago put back as it was, with the game it was paired
+     * with; nothing once its rows are no longer kept. Returns the keys put back. `restore_game`.
+     */
+    fun restoreGame(key: String): List<String> = lock.withLock {
+        val now = System.currentTimeMillis() / 1000.0
+        db.beginTransaction()
+        try {
+            val found = rows("SELECT key, rows, removed_at FROM removed WHERE grp = ? AND rows IS NOT NULL", key) {
+                Triple(it.getString(0), it.getString(1), it.getDouble(2))
+            }.filter { it.third >= now - UNDO_KEEP_S }
+            for ((k, taken, _) in found) {
+                val tables = JSONObject(taken)
+                for (table in tables.keys()) {
+                    if (table !in RESTORABLE) continue
+                    val items = tables.getJSONArray(table)
+                    for (i in 0 until items.length()) {
+                        val item = items.getJSONObject(i)
+                        val cols = item.keys().asSequence().toList()
+                        val values = cols.map { c -> item.get(c).takeIf { it != JSONObject.NULL } }
+                        exec(
+                            "INSERT OR REPLACE INTO $table (${cols.joinToString(", ")}) VALUES (${cols.joinToString(", ") { "?" }})",
+                            *values.toTypedArray(),
+                        )
+                    }
+                }
+                exec("DELETE FROM removed WHERE key = ?", k)
+            }
+            db.setTransactionSuccessful()
+            found.map { it.first }
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Every game the player removed, by its library key. `removed_keys`. */
+    fun removedKeys(): Set<String> = lock.withLock {
+        rows("SELECT key FROM removed") { it.getString(0) }.toSet()
+    }
+
+    /** The watched games the player removed, as much of them as tells their import. `removed_traces`. */
+    fun removedTraces(): List<Trace> = lock.withLock {
+        rows("SELECT trace FROM removed WHERE trace IS NOT NULL ORDER BY key") { c ->
+            val t = JSONObject(c.getString(0))
+            val sans = t.getJSONArray("sans")
+            Trace(
+                startedAt = t.getDouble("started_at"),
+                userSide = t.getString("user_side"),
+                result = if (t.isNull("result")) null else t.getString("result"),
+                sans = (0 until sans.length()).map { sans.getString(it) },
+            )
+        }
+    }
+
+    fun isRemoved(key: String): Boolean = lock.withLock {
+        rows("SELECT 1 FROM removed WHERE key = ?", key) { true }.isNotEmpty()
+    }
+
+    /** Games the player brought in by hand (a pasted PGN): no longer left out. `unremove`. */
+    fun unremove(keys: List<String>) {
+        lock.withLock { for (k in keys) exec("DELETE FROM removed WHERE key = ?", k) }
+    }
+
+    /** A table's rows of one game, as they were (each column's type kept), and gone from it. */
+    private fun take(table: String, column: String, value: String): JSONArray {
+        val out = cursorRows("SELECT * FROM $table WHERE $column = ?", value)
+        exec("DELETE FROM $table WHERE $column = ?", value)
+        return out
+    }
+
+    private fun takeTwins(key: String): JSONArray {
+        val out = cursorRows("SELECT * FROM twins WHERE watched = ? OR imported = ?", key, key)
+        exec("DELETE FROM twins WHERE watched = ? OR imported = ?", key, key)
+        return out
+    }
+
+    private fun cursorRows(sql: String, vararg args: String): JSONArray {
+        val out = JSONArray()
+        db.rawQuery(sql, arrayOf(*args)).use { c ->
+            while (c.moveToNext()) {
+                val row = JSONObject()
+                for (i in 0 until c.columnCount) {
+                    row.put(
+                        c.getColumnName(i),
+                        when (c.getType(i)) {
+                            Cursor.FIELD_TYPE_NULL -> JSONObject.NULL
+                            Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                            Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i)
+                            else -> c.getString(i)
+                        },
+                    )
+                }
+                out.put(row)
             }
         }
+        return out
+    }
+
+    private fun trace(gameId: String): JSONObject? {
+        val game = rows("SELECT started_at, user_side, result FROM games WHERE game_id = ?", gameId) { c ->
+            Triple(c.getDouble(0), c.getString(1), if (c.isNull(2)) null else c.getString(2))
+        }.firstOrNull() ?: return null
+        val sans = rows("SELECT san FROM moves WHERE game_id = ? AND withdrawn = 0 ORDER BY segment, ply", gameId) {
+            it.getString(0).trimEnd('+', '#')
+        }
+        return JSONObject()
+            .put("started_at", game.first)
+            .put("user_side", game.second)
+            .put("result", game.third ?: JSONObject.NULL)
+            .put("sans", JSONArray(sans))
     }
 
     /** A watched game's import (library keys): the import stands for it from now on. */
@@ -683,6 +821,16 @@ class Store(val path: File?) {
         const val QUERY_ROWS = 200
         const val QUERY_SECONDS = 2.0
 
+        // A game's rows: the library's tables by its library key; a watched game's own by its
+        // game id (its library key is WATCHED + the id).
+        const val WATCHED = "watched:"
+        val LIBRARY_TABLES = listOf("library", "reviews", "review_progress", "stat_games", "stat_moves")
+        val WATCHED_TABLES = listOf("evidence", "dialogue", "recommendations", "moves", "games")
+        val RESTORABLE = (LIBRARY_TABLES + WATCHED_TABLES + "twins").toSet()
+
+        /** A removed game's rows are kept this long, for Undo (the page offers it for seconds). */
+        var UNDO_KEEP_S = 600.0
+
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"
 
@@ -874,6 +1022,13 @@ CREATE TABLE IF NOT EXISTS twins (
     watched TEXT PRIMARY KEY,
     imported TEXT NOT NULL,
     found_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS removed (
+    key TEXT PRIMARY KEY,
+    removed_at REAL NOT NULL,
+    grp TEXT NOT NULL,
+    rows TEXT,
+    trace TEXT
 );
 CREATE TABLE IF NOT EXISTS review_progress (
     key TEXT NOT NULL,
@@ -1072,6 +1227,12 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
 
 /** A query that is not a single read-only statement, or that ran too long. */
 class QueryRefused(message: String) : IllegalArgumentException(message)
+
+/**
+ * What is kept for good of a watched game the player removed: when it began, their side, the
+ * result and the moves as read -- enough to know its import ([Library.leftOutOf]). `Trace`.
+ */
+data class Trace(val startedAt: Double, val userSide: String, val result: String?, val sans: List<String>)
 
 /**
  * A game Game Review can open: where it came from (`source`: chesscom, lichess, pgn, watched),

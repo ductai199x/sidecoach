@@ -204,6 +204,8 @@ class PanelApi(
                 if (json.has("source")) ok(games.import(json)) else unprocessable()
             method == "DELETE" && path.startsWith("/api/games/") && games != null ->
                 ok(games.delete(path.removePrefix("/api/games/")))
+            method == "POST" && path.startsWith("/api/games/") && path.endsWith("/restore") && games != null ->
+                ok(games.restore(path.removePrefix("/api/games/").removeSuffix("/restore")))
 
             path.startsWith("/api/review/") && reviews != null -> review(path.removePrefix("/api/review/"), query, json)
 
@@ -514,6 +516,11 @@ class PanelApi(
             "DELETE" to setOf("/api/games/"),
         )
 
+        /** A library game's routes, `/api/games/{key}/<action>`, by method. */
+        val GAME_ROUTES: Map<String, Set<String>> = mapOf(
+            "POST" to setOf("restore"),
+        )
+
         /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
         val PUZZLE_ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf("poll"),
@@ -536,6 +543,10 @@ class PanelApi(
             for (prefix in KEYED_ROUTES[method].orEmpty()) {
                 val key = path.removePrefix(prefix)
                 if (path.startsWith(prefix) && key.isNotEmpty() && '/' !in key) return true
+            }
+            if (path.startsWith("/api/games/")) {
+                val parts = path.removePrefix("/api/games/").split('/')
+                if (parts.size == 2 && parts[0].isNotEmpty() && parts[1] in GAME_ROUTES[method].orEmpty()) return true
             }
             if (!path.startsWith("/api/puzzle/")) return false
             // `{puzzle_id}` is one segment of the path, as Starlette matches it.

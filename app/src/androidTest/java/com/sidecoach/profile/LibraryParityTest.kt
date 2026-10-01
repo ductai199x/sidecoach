@@ -142,6 +142,75 @@ class LibraryParityTest {
         assertTrue("$twins twins; ${failures.size} failures:\n" + failures.take(20).joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * Games removed as the player removes them (Tai, 2026-10-01), replayed on the phone's own
+     * store: what each removal took (a second click nothing, an import its watched game), the
+     * keys and traces kept for good, which games bringing them in again leaves out, what is
+     * left, and what one Undo puts back -- as the desktop's Store.remove_game and left_out_of.
+     */
+    @Test
+    fun removalsAreTheDesktops() {
+        val stores = fixture.getJSONArray("stores")
+        val failures = ArrayList<String>()
+        var asked = 0
+        for (s in 0 until stores.length()) {
+            val case = stores.getJSONObject(s)
+            val removal = case.getJSONObject("removal")
+            val before = removal.getJSONObject("before")
+            val library = case.getJSONArray("library").let { ls -> (0 until ls.length()).map { libraryRow(ls.getJSONObject(it)) } }
+            fun check(what: String, mine: Any, theirs: Any) {
+                if (mine != theirs) failures.add("store $s $what\n  mine:   $mine\n  python: $theirs")
+            }
+            val store = Store(null)
+            try {
+                val games = before.getJSONArray("games")
+                for (i in 0 until games.length()) {
+                    val g = gameRow(games.getJSONObject(i))
+                    store.startGame(g.gameId, g.startedAt, g.userSide, g.startFen, g.sessionId)
+                    store.setGame(g.gameId, mapOf("time_control" to g.timeControl, "opponent" to g.opponent))
+                    if (g.result != null) store.endGame(g.gameId, g.endedAt ?: 0.0, g.result, g.reason)
+                    val moves = before.getJSONObject("moves").getJSONArray(g.gameId)
+                    for (m in 0 until moves.length()) {
+                        val mv = moveRow(moves.getJSONObject(m))
+                        store.addMove(
+                            mv.gameId, mv.segment, mv.ply, mv.moveNumber, mv.san, mv.uci, mv.byUser, mv.fenBefore,
+                            mv.fenAfter, null, null, null, false, false, null, mv.ts,
+                        )
+                    }
+                }
+                for (row in library) store.addLibraryGame(row)
+                val twins = before.getJSONObject("twins")
+                for (w in twins.keys()) store.addTwin(w, twins.getString(w))
+
+                val keys = strings(removal.getJSONArray("asked"))
+                asked += keys.size
+                val want = removal.getJSONArray("removed").let { r -> (0 until r.length()).map { strings(r.getJSONArray(it)) } }
+                check("removed", keys.map { store.removeGame(it) }, want)
+                check("keys kept", store.removedKeys().sorted(), strings(removal.getJSONArray("keys")))
+                val traces = store.removedTraces()
+                val wantTraces = removal.getJSONArray("traces").let { t ->
+                    (0 until t.length()).map { t.getJSONObject(it) }.map { o ->
+                        Trace(o.getDouble("started_at"), o.getString("user_side"), optString(o, "result"), strings(o.getJSONArray("sans")))
+                    }
+                }
+                check("traces", traces, wantTraces)
+                check("left out", Library.leftOutOf(library, store.removedKeys(), traces).sorted(), strings(removal.getJSONArray("left_out")))
+                check("games after", store.games(200, finished = false).map { it.gameId }.sorted(), strings(removal.getJSONArray("games_after")))
+                check("library after", store.library().map { it.key }.sorted(), strings(removal.getJSONArray("library_after")))
+                if (keys.isNotEmpty()) {
+                    check("restored", store.restoreGame(keys[0]), strings(removal.getJSONArray("restored")))
+                    check("games restored", store.games(200, finished = false).map { it.gameId }.sorted(), strings(removal.getJSONArray("games_restored")))
+                    check("library restored", store.library().map { it.key }.sorted(), strings(removal.getJSONArray("library_restored")))
+                    val wantTwins = removal.getJSONObject("twins_restored").let { t -> t.keys().asSequence().associateWith { t.getString(it) } }
+                    check("twins restored", store.twins(), wantTwins)
+                }
+            } finally {
+                store.close()
+            }
+        }
+        assertTrue("$asked removals; ${failures.size} failures:\n" + failures.take(20).joinToString("\n"), failures.isEmpty())
+    }
+
     /** A site's answers by URL (the query aside), every URL asked kept, as the fixture's `Site`. */
     private class Site(private val answers: JSONObject) : Transport {
         val asked = ArrayList<String>()

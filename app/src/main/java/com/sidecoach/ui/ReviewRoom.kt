@@ -600,6 +600,10 @@ class ReviewRoom(
                 for (engine in engines) runCatching { engine.close() }
             }
             if (stop != null && stop.get()) return null
+            if (store.isRemoved(row.key)) { // taken out of the player's record while it was reviewed
+                store.clearProgress(row.key)
+                return null
+            }
             val summary = GameSummaries.summarize(reviewed)
             store.saveReview(
                 row.key,

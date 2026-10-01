@@ -278,17 +278,48 @@ object Library {
     }
 
     /**
+     * The games among [rows] the player removed ([Store.removeGame]), which bringing games in
+     * again leaves out: by key, or -- a watched game removed before its import came in -- by
+     * being that game, as [reconcile] knows an import. `left_out`.
+     */
+    fun leftOut(store: Store, rows: List<LibraryRow>): Set<String> =
+        leftOutOf(rows, store.removedKeys(), store.removedTraces())
+
+    /** `left_out_of`. */
+    fun leftOutOf(rows: List<LibraryRow>, keys: Set<String>, traces: List<Trace>): Set<String> {
+        val out = LinkedHashSet<String>()
+        for (row in rows) {
+            if (row.key in keys) {
+                out.add(row.key)
+                continue
+            }
+            var played: List<String>? = null
+            for (trace in traces) {
+                if (!mayBe(trace.startedAt, trace.userSide, trace.result, row)) continue
+                if (played == null) played = sans(row.pgn) ?: emptyList()
+                if (agreeing(trace.sans, played) != null) {
+                    out.add(row.key)
+                    break
+                }
+            }
+        }
+        return out
+    }
+
+    private fun mayBe(game: GameRow, row: LibraryRow): Boolean = mayBe(game.startedAt, game.userSide, game.result, row)
+
+    /**
      * Whether an import can be the watched game at all: the same side, the same result when both
      * are known, started in the window (a date alone, the same day or the next). `_may_be`.
      */
-    private fun mayBe(game: GameRow, row: LibraryRow): Boolean {
-        if (row.userSide != null && row.userSide != game.userSide) return false
-        if (!row.result.isNullOrEmpty() && !game.result.isNullOrEmpty() && row.result != "*" && row.result != game.result) {
+    private fun mayBe(startedAt: Double, userSide: String, result: String?, row: LibraryRow): Boolean {
+        if (row.userSide != null && row.userSide != userSide) return false
+        if (!row.result.isNullOrEmpty() && !result.isNullOrEmpty() && row.result != "*" && row.result != result) {
             return false
         }
         val playedAt = row.playedAt ?: return true
-        if (!TIMED.containsMatchIn(row.pgn)) return kotlin.math.abs(playedAt - game.startedAt) <= 36 * 3600
-        return game.startedAt - TWIN_BEFORE_S <= playedAt && playedAt <= game.startedAt + TWIN_AFTER_S
+        if (!TIMED.containsMatchIn(row.pgn)) return kotlin.math.abs(playedAt - startedAt) <= 36 * 3600
+        return startedAt - TWIN_BEFORE_S <= playedAt && playedAt <= startedAt + TWIN_AFTER_S
     }
 
     private fun sans(pgn: String): List<String>? {

@@ -106,23 +106,41 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
         } catch (exc: Exception) { // anything else is said, never raised
             return failed("Could not bring the games in: ${exc.message ?: exc}")
         }
-        val added = withStore { store ->
-            val new = rows.filter { store.libraryGame(it.key) == null }
-            for (row in rows) store.addLibraryGame(row)
+        // A site's games leave out the ones the player removed; a game pasted by hand comes back.
+        val (kept, out, added) = withStore { store ->
+            val out = if (source == "pgn") {
+                store.unremove(rows.map { it.key })
+                emptySet()
+            } else {
+                Library.leftOut(store, rows)
+            }
+            val kept = rows.filter { it.key !in out }
+            val new = kept.filter { store.libraryGame(it.key) == null }
+            for (row in kept) store.addLibraryGame(row)
             Library.reconcile(store) // a game Sidecoach watched, now imported: one game
-            new.size
+            Triple(kept, out, new.size)
         }
         return JSONObject()
             .put("ok", true)
             .put("added", added)
-            .put("already", rows.size - added)
-            .put("keys", JSONArray(rows.map { it.key }))
+            .put("already", kept.size - added)
+            .put("left_out", out.size)
+            .put("keys", JSONArray(kept.map { it.key }))
     }
 
-    /** A game out of the library, its reviews and pairing with it. */
+    /** A game out of the player's record, with the game it is paired with; Undo puts it back. */
     fun delete(key: String): JSONObject {
-        withStore { it.deleteLibraryGame(key) }
-        return JSONObject().put("ok", true)
+        val removed = withStore { it.removeGame(key) }
+        return JSONObject().put("ok", true).put("removed", JSONArray(removed))
+    }
+
+    /** A game removed moments ago, put back. `games_restore`. */
+    fun restore(key: String): JSONObject {
+        val restored = withStore { it.restoreGame(key) }
+        if (restored.isEmpty()) {
+            return JSONObject().put("ok", false).put("error", "That game was removed too long ago to put back.")
+        }
+        return JSONObject().put("ok", true).put("restored", JSONArray(restored))
     }
 
     companion object {

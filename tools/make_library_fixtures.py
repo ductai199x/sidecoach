@@ -347,8 +347,45 @@ def store_case(rng: random.Random, folder: Path, index: int) -> dict:
         "watched": [row_json(r) for r in library.from_watched(store)],
         "twins": library.reconcile(store),
     }
+    case["removal"] = removal(random.Random(1000 + index), store)  # its own draws: the stores stay as they were
     store.close()
     return case
+
+
+def removal(rng: random.Random, store: Store) -> dict:
+    """Games removed as the player removes them (Store.remove_game), some twice, some taking the
+    game they are paired with: what each removal took, what is kept for good (keys, traces),
+    which of the library's games bringing them in again leaves out (left_out_of), what is left,
+    and what one Undo puts back."""
+    rows = store.library()
+    every = store.games(200, finished=False)  # the store as the phone builds it again
+    before = {
+        "games": [dataclasses.asdict(g) for g in every],
+        "moves": {g.game_id: [dataclasses.asdict(m) for m in store.moves(g.game_id)] for g in every},
+        "twins": store.twins(),
+    }
+    pool = [f"watched:{g.game_id}" for g in store.games(200)] + [r.key for r in rows]
+    asked = rng.sample(pool, k=min(len(pool), rng.randrange(1, 4))) if pool else []
+    if asked and rng.random() < 0.3:
+        asked.append(asked[0])  # a second click
+    removed = [store.remove_game(k) for k in asked]
+    keys, traces = store.removed_keys(), store.removed_traces()
+    out = {
+        "before": before,
+        "asked": asked,
+        "removed": removed,
+        "keys": sorted(keys),
+        "traces": [dataclasses.asdict(t) for t in traces],
+        "left_out": sorted(library.left_out_of(rows, keys, traces)),
+        "games_after": sorted(g.game_id for g in store.games(200, finished=False)),
+        "library_after": sorted(r.key for r in store.library()),
+    }
+    if asked:
+        out["restored"] = store.restore_game(asked[0])
+        out["games_restored"] = sorted(g.game_id for g in store.games(200, finished=False))
+        out["library_restored"] = sorted(r.key for r in store.library())
+        out["twins_restored"] = store.twins()
+    return out
 
 
 def by_hand_store(folder: Path) -> dict:
@@ -386,6 +423,7 @@ def by_hand_store(folder: Path) -> dict:
         "watched": [row_json(r) for r in library.from_watched(store)],
         "twins": library.reconcile(store),
     }
+    case["removal"] = removal(random.Random(1), store)
     store.close()
     return case
 
