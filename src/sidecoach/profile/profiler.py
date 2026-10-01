@@ -53,7 +53,7 @@ from sidecoach.profile.puzzles import (
     record_attempt,
 )
 from sidecoach.profile.review import ERRORS, UserMove, build_review
-from sidecoach.profile.store import Store
+from sidecoach.profile.store import WATCHED, Store
 
 # A finished game waits this long for the engine's last verdicts before its review is
 # built from what is there.
@@ -202,6 +202,8 @@ class Profiler:
                 return self._another_position(event, ts)
             return []
         if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
+            return []
+        if self._removed(game):
             return []
         if isinstance(event, Analysis | MoveAssessment) and event.game_id != game.game_id:
             return []  # the engine's late word on the game before this one
@@ -513,10 +515,20 @@ class Profiler:
         )
         return self._maybe_review(game, ts)
 
+    def _removed(self, game: _Game) -> bool:
+        """Whether the player removed the game from their record once it ended (the Games list
+        offers only finished games): nothing more is kept of it -- the engine's late verdicts,
+        the coach's words and the review were rows of a game that was gone, and the profile's
+        cells still counted them (the review of 2026-10-01). It is not reviewed either."""
+        if not game.ended or not self.store.is_removed(f"{WATCHED}{game.game_id}"):
+            return False
+        game.reviewed = True
+        return True
+
     def _maybe_review(self, game: _Game, ts: float, *, force: bool = False) -> list[Event]:
         """The review of a finished game, once every move of the player's has its verdict
         or the grace period is up; `force` builds it from what is there."""
-        if game.end is None or game.reviewed:
+        if game.end is None or game.reviewed or self._removed(game):
             return []
         waiting = any(p.assessment is None for p in game.plies.values() if p.move.by_user)
         if waiting and not force and ts - game.ended_at < REVIEW_GRACE_S:

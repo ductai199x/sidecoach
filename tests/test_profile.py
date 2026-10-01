@@ -577,6 +577,41 @@ def test_a_clock_box_not_read_keeps_its_last_reading() -> None:
     assert evidence[0].cause == causes.TIME_PRESSURE
 
 
+def test_a_game_removed_right_after_it_ends_keeps_nothing_more() -> None:
+    """The review of 2026-10-01: a game removed from the player's record right after it ended
+    still took rows -- the engine's late verdict as evidence, the coach's words, the review --
+    and the profile's cells counted the late mistake. Once removed, nothing more is kept."""
+    from sidecoach.events import Analysis, CoachMessage, DisclosureLevel, Line, Trigger
+
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    f.unjudged("Qh5")  # the engine trails: its verdict comes after the end
+    move, after = f.board.peek().uci(), f.board.fen()
+    f.end("1-0")
+    assert f.store.remove_game("watched:g") == ["watched:g"]
+    late = [
+        MoveAssessment(
+            game_id="g", ply=3, uci=move, expected_loss=0.12, severity=Severity.MISTAKE,
+            best=["g1f3"], tags=[], depth=14, label=Label.MISTAKE, accuracy=76.0,
+        ),
+        Analysis(
+            game_id="g", fen=after, ply=3, lines=[Line(moves=[], depth=14, expected_score=0.5)],
+            decisive=False, only_move=False, tags=[FORK],
+        ),
+        CoachMessage(
+            text="You missed a chance there.", level=DisclosureLevel.IDEA,
+            trigger=Trigger.POST_MISTAKE, ply=2,
+        ),
+    ]  # fmt: skip
+    got = [e for event in late for e in f.send(event)] + f.profiler.tick(f.ts + 1000.0)
+    assert got == [], "no review, no evidence for a game that is gone"
+    for table in ("games", "moves", "evidence", "dialogue", "recommendations"):
+        assert f.store.query(f"SELECT * FROM {table} WHERE game_id = 'g'")[1] == [], table
+    assert sum(c.errors for c in f.store.cells()) == 0
+    assert f.profiler.end_session(f.ts + 2000.0) is None, "nor in the session's summary"
+
+
 def test_the_game_ends_with_a_review_and_a_snapshot() -> None:
     f = Feed()
     f.play("e4", label=Label.BOOK)
