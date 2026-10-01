@@ -181,7 +181,13 @@ class Profiler:
         if isinstance(event, GameStarted):
             return [*self.flush(ts), *self._start(event, ts)]
         if isinstance(event, ClockObservation):
-            self._clock = (event.white_ms, event.black_ms)
+            # A box not read is no news of that side (state/pipeline.py `clock_observation`):
+            # its clock stays as last read, not set to nothing (the review of 2026-10-01).
+            white, black = self._clock
+            self._clock = (
+                event.white_ms if event.white_ms is not None else white,
+                event.black_ms if event.black_ms is not None else black,
+            )
             game = self._game
             if game is not None and game.time_control is None and not game.ended:
                 game.time_control = time_control_words(event.white_ms, event.black_ms)
@@ -241,6 +247,10 @@ class Profiler:
     def _start(self, event: GameStarted, ts: float) -> list[Event]:
         self._drop_if_provisional()
         self._side = event.user_side
+        # The clocks read in the game before are not this one's: an untimed game after a blitz
+        # game finished on 4 seconds had every mistake blamed on the clock (the review of
+        # 2026-10-01).
+        self._clock = (None, None)
         if event.kind != "game":
             # A puzzle, an analysis board, or a game joined from the middle. A puzzle of
             # the store is followed for its outcome, not as a game -- a solved puzzle was

@@ -543,6 +543,40 @@ def test_the_clock_makes_it_time_pressure() -> None:
     assert evidence[0].cause == causes.TIME_PRESSURE and evidence[0].time_pressure
 
 
+def test_a_clock_read_in_one_game_never_reaches_the_next() -> None:
+    """The review of 2026-10-01: the last clock reading of a game carried into the next, so a
+    mistake in an untimed game after a blitz game finished on 4 seconds was blamed on the clock.
+    A reading belongs to the game it was taken in."""
+    f = Feed()
+    f.send(ClockObservation(white_ms=180_000, black_ms=180_000, running=Side.WHITE))
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        f.play(san)
+    f.send(ClockObservation(white_ms=4_000, black_ms=30_000, running=Side.WHITE))
+    f.end("0-1")
+    # An untimed bot game next: no clock on the screen, so no reading.
+    f.next_game("bot")
+    f.play("e4")
+    f.play("e5")
+    got = f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    evidence = [e for e in got if isinstance(e, ProfileEvidence)]
+    assert evidence and evidence[0].cause != causes.TIME_PRESSURE
+    assert {m.clock_ms for m in f.store.moves("bot")} == {None}
+
+
+def test_a_clock_box_not_read_keeps_its_last_reading() -> None:
+    """A reading with one side's box unreadable is no reading of that side: its clock stays as
+    last read (it was set to nothing, and a move on 6 seconds was no longer time pressure)."""
+    f = Feed()
+    f.send(ClockObservation(white_ms=6_000, black_ms=200_000, running=Side.WHITE))
+    f.play("e4")
+    f.send(ClockObservation(white_ms=None, black_ms=190_000, running=Side.BLACK))
+    f.play("e5")
+    got = f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    assert [m.clock_ms for m in f.store.moves("g")] == [6_000, 190_000, 6_000]
+    evidence = [e for e in got if isinstance(e, ProfileEvidence)]
+    assert evidence[0].cause == causes.TIME_PRESSURE
+
+
 def test_the_game_ends_with_a_review_and_a_snapshot() -> None:
     f = Feed()
     f.play("e4", label=Label.BOOK)
