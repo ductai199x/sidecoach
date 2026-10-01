@@ -224,9 +224,56 @@ def test_a_watched_game_imported_too_is_one_game(tmp_path) -> None:  # noqa: ANN
     for key in (row.key, twin, other):
         _stats(store, key)
     assert {g["key"] for g in store.stat_games()} == {row.key, other}
-    # The import taken out of the library: the watched game is its own again.
-    store.delete_library_game(row.key)
-    assert twin not in store.twins()
+    # The game removed: the import and the watched records it stood for, all of it (a watched
+    # record coming back as the import goes would be the same game again); Undo puts all back.
+    assert set(store.remove_game(row.key)) == {row.key, twin, late}
+    assert store.library_game(row.key) is None and store.twins() == {}
+    assert not {twin, late} & {r.key for r in from_watched(store)}
+    assert {g["key"] for g in store.stat_games()} == {other}
+    assert set(store.restore_game(row.key)) == {row.key, twin, late}
+    assert store.twins() == twins and store.library_game(row.key) == row
+    assert {g["key"] for g in store.stat_games()} == {row.key, other}
+    store.close()
+
+
+def test_a_removed_game_stays_out_and_undo_puts_it_back(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """Tai, 2026-10-01: any game can be removed -- its rows go, every one, and bringing games in
+    again leaves it out; a watched game removed before its import came in leaves that import
+    out too (it is that game). Undo puts it back as it was, for a while; after that only its key
+    is kept."""
+    from sidecoach.profile import store as store_module
+    from sidecoach.profile.library import left_out
+
+    store = Store(tmp_path / "profile.sqlite")
+    (row,) = from_pgn(
+        GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), user_names=["nosegazm"]
+    )
+    store.add_library_game(row)
+    store.save_review(row.key, "standard", 1, 1.0, "{}", None)
+    _stats(store, row.key)
+
+    assert store.remove_game(row.key) == [row.key]
+    assert store.remove_game(row.key) == [], "a second click keeps what the first took"
+    assert store.library_game(row.key) is None and store.review(row.key, "standard") is None
+    assert store.stat_games() == [] and store.is_removed(row.key)
+    assert left_out(store, [row]) == {row.key}, "bringing it in again leaves it out"
+    assert store.restore_game(row.key) == [row.key]
+    assert store.library_game(row.key) == row and store.review(row.key, "standard") is not None
+    assert [g["key"] for g in store.stat_games()] == [row.key] and left_out(store, [row]) == set()
+
+    # Watched, removed, then imported: the import is that game, so it stays out.
+    store.remove_game(row.key)
+    store.unremove([row.key])  # pasted again by hand: no longer left out by its key
+    watched = _watch(store, "g1", SANS, (row.played_at or 0.0) + 60)
+    assert store.remove_game(watched) == [watched]
+    assert store.moves("g1") == [] and from_watched(store) == []
+    assert left_out(store, [row]) == {row.key}
+    assert store.restore_game(watched) == [watched] and len(store.moves("g1")) == len(SANS)
+
+    # Removed too long ago: nothing to put back, the key kept for good.
+    monkeypatch.setattr(store_module, "UNDO_KEEP_S", -1.0)
+    store.remove_game(watched)
+    assert store.restore_game(watched) == [] and store.is_removed(watched)
     store.close()
 
 
@@ -270,7 +317,7 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
     assert again is not None and again.version == 2 and again.words is None
     assert store.review(older.key, "deep") is None
 
-    store.delete_library_game(older.key)
+    store.remove_game(older.key)
     assert store.library_game(older.key) is None and store.review(older.key, "standard") is None
     store.close()
 

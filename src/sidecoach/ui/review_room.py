@@ -559,6 +559,9 @@ def review_row(
         )
     if stop is not None and stop.is_set():
         return None
+    if store.is_removed(row.key):  # taken out of the player's record while it was reviewed
+        store.clear_progress(row.key)
+        return None
     summary = summarize(reviewed)
     store.save_review(
         row.key,

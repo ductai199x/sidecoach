@@ -109,11 +109,24 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .gm-when { color: var(--muted); font-size: 12px; text-align: right; }
 .gm-go { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
 .gm-del.iconbtn { width: 28px; height: 28px; }
+/* A game just removed: a few seconds' Undo, at the foot of the window. */
+.gm-undo {
+  position: fixed; left: 50%; bottom: calc(18px + var(--inset-bottom, 0px)); transform: translateX(-50%); z-index: 30;
+  display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 32px);
+  padding: 8px 8px 8px 16px; border-radius: 8px; background: var(--panel3); color: var(--ink);
+  box-shadow: 0 6px 20px #0009; font-size: 13.5px;
+}
+.gm-undo span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-undo-btn { flex: 0 0 auto; color: var(--accent); background: transparent; border: 0; font-weight: 700; padding: 5px 12px; }
+.gm-undo-btn:hover { background: var(--panel2); }
+/* Narrow (a phone, a small window): two lines -- the players and the result, then the kind of
+   game, the accuracies and the buttons. */
 @media (max-width: 720px) {
-  .gm-game { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "players result" "meta go"; }
-  .gm-players { grid-area: players; } .gm-result { grid-area: result; padding: 2px 8px; }
-  .gm-kind { grid-area: meta; flex-direction: row; gap: 6px; } .gm-go { grid-area: go; }
-  .gm-acc, .gm-when { display: none; }
+  .gm-game { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "players players players result" "meta acc . go"; }
+  .gm-players { grid-area: players; }
+  .gm-result { grid-area: result; justify-self: end; min-width: 54px; padding: 2px 8px; }
+  .gm-acc { grid-area: acc; } .gm-kind { grid-area: meta; } .gm-go { grid-area: go; }
+  .gm-when { display: none; }
 }
 
 /* ---- the review page: the eval bar, the board, the review's pane ---- */

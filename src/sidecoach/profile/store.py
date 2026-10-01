@@ -198,6 +198,17 @@ CREATE TABLE IF NOT EXISTS twins (
     imported TEXT NOT NULL,
     found_at REAL NOT NULL
 );
+-- A game the player removed (Store.remove_game), by its library key, for good: bringing games
+-- in again leaves it out. `grp` is the key the player removed (an import takes the watched game
+-- it stands for with it); `rows`, every row the game took with it, while it can still be put
+-- back (UNDO_KEEP_S); `trace`, a watched game's own record, so its import is left out too.
+CREATE TABLE IF NOT EXISTS removed (
+    key TEXT PRIMARY KEY,
+    removed_at REAL NOT NULL,
+    grp TEXT NOT NULL,
+    rows TEXT,
+    trace TEXT
+);
 -- A review under way (ui/review_room.py `review_row`): each position kept as it is measured, so
 -- a review stopped part way -- the app closed, a crash -- goes on from where it was (Tai,
 -- 2026-09-30); gone once the review is saved. Only a search at the same depth and lines counts.
@@ -226,6 +237,15 @@ _READ_OPS = {
 }
 QUERY_ROWS = 200
 QUERY_SECONDS = 2.0
+
+# A game's rows: the library's tables by its library key; a watched game's own by its game id
+# (its library key is WATCHED + the id).
+WATCHED = "watched:"
+LIBRARY_TABLES = ("library", "reviews", "review_progress", "stat_games", "stat_moves")
+WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
+RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
+# A removed game's rows are kept this long, for Undo (the page offers it for seconds).
+UNDO_KEEP_S = 600.0
 
 
 class QueryRefused(ValueError):
@@ -312,6 +332,17 @@ class CellRow:
     errors: int
     chances: int
     expected_loss: float
+
+
+@dataclass(frozen=True)
+class Trace:
+    """What is kept for good of a watched game the player removed: when it began, their side,
+    the result and the moves as read -- enough to know its import (`library.left_out_of`)."""
+
+    started_at: float
+    user_side: str
+    result: str | None
+    sans: list[str]
 
 
 @dataclass(frozen=True)
@@ -470,7 +501,7 @@ class Store:
     def delete_game(self, game_id: str) -> None:
         """Every row of a game: one followed provisionally that turned out not to be one."""
         with self._lock, self._db:
-            for table in ("evidence", "dialogue", "recommendations", "moves", "games"):
+            for table in WATCHED_TABLES:
                 self._db.execute(f"DELETE FROM {table} WHERE game_id = ?", (game_id,))
 
     def purge_unfinished(self, min_plies: int) -> int:
@@ -904,14 +935,118 @@ class Store:
             row = self._db.execute("SELECT * FROM library WHERE key = ?", (key,)).fetchone()
         return None if row is None else LibraryRow(**dict(row))
 
-    def delete_library_game(self, key: str) -> None:
-        """A game out of the library, and its reviews and stats with it; a watched game it
-        stood for comes back."""
+    def remove_game(self, key: str) -> list[str]:
+        """A game out of the player's record: every row of it -- the library's, or the watched
+        record with its moves and what the coach drew from it -- its review and its Stats, and
+        the game it is paired with (an import and the watched game it stands for are one game).
+        What it took is kept UNDO_KEEP_S for `restore_game`; its key for good, so bringing
+        games in leaves it out. Returns the keys removed."""
+        now = time.time()
+        with self._lock, self._db:
+            paired = self._db.execute(
+                "SELECT watched, imported FROM twins WHERE watched = ? OR imported = ?", (key, key)
+            ).fetchall()
+            gone = {str(r["key"]) for r in self._db.execute("SELECT key FROM removed").fetchall()}
+            # A game removed already (a second click) keeps what it took, for its Undo.
+            with_pair = [key, *sorted({k for p in paired for k in p} - {key})]
+            group = [k for k in with_pair if k not in gone]
+            for k in group:
+                rows = {table: self._take(table, "key", k) for table in LIBRARY_TABLES}
+                rows["twins"] = self._take_twins(k)
+                trace = None
+                if k.startswith(WATCHED):
+                    game_id = k[len(WATCHED) :]
+                    trace = self._trace(game_id)
+                    for table in WATCHED_TABLES:
+                        rows[table] = self._take(table, "game_id", game_id)
+                self._db.execute(
+                    "INSERT OR REPLACE INTO removed (key, removed_at, grp, rows, trace)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (k, now, key, json.dumps(rows), json.dumps(trace) if trace else None),
+                )
+            # What older removals took can no longer be put back: only their keys stay.
+            self._db.execute(
+                "UPDATE removed SET rows = NULL WHERE removed_at < ?", (now - UNDO_KEEP_S,)
+            )
+        return group
+
+    def restore_game(self, key: str) -> list[str]:
+        """A game the player removed moments ago put back as it was, with the game it was
+        paired with; nothing once its rows are no longer kept. Returns the keys put back."""
+        now = time.time()
+        with self._lock, self._db:
+            found = self._db.execute(
+                "SELECT key, rows FROM removed"
+                " WHERE grp = ? AND rows IS NOT NULL AND removed_at >= ?",
+                (key, now - UNDO_KEEP_S),
+            ).fetchall()
+            for row in found:
+                for table, items in json.loads(row["rows"]).items():
+                    if table not in RESTORABLE:
+                        continue
+                    for item in items:
+                        cols = list(item)
+                        self._db.execute(
+                            f"INSERT OR REPLACE INTO {table} ({', '.join(cols)})"
+                            f" VALUES ({', '.join('?' * len(cols))})",
+                            [item[c] for c in cols],
+                        )
+                self._db.execute("DELETE FROM removed WHERE key = ?", (row["key"],))
+        return [str(r["key"]) for r in found]
+
+    def removed_keys(self) -> set[str]:
+        """Every game the player removed, by its library key."""
         with self._lock:
-            for table in ("stat_moves", "stat_games", "reviews", "review_progress", "library"):
-                self._db.execute(f"DELETE FROM {table} WHERE key = ?", (key,))
-            self._db.execute("DELETE FROM twins WHERE imported = ?", (key,))
-            self._db.commit()
+            rows = self._db.execute("SELECT key FROM removed").fetchall()
+        return {str(r["key"]) for r in rows}
+
+    def removed_traces(self) -> list[Trace]:
+        """The watched games the player removed, as much of them as tells their import."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT trace FROM removed WHERE trace IS NOT NULL ORDER BY key"
+            ).fetchall()
+        return [Trace(**json.loads(r["trace"])) for r in rows]
+
+    def is_removed(self, key: str) -> bool:
+        with self._lock:
+            row = self._db.execute("SELECT 1 FROM removed WHERE key = ?", (key,)).fetchone()
+        return row is not None
+
+    def unremove(self, keys: Sequence[str]) -> None:
+        """Games the player brought in by hand (a pasted PGN): no longer left out."""
+        with self._lock, self._db:
+            self._db.executemany("DELETE FROM removed WHERE key = ?", [(k,) for k in keys])
+
+    def _take(self, table: str, column: str, value: str) -> list[dict[str, Any]]:
+        """A table's rows of one game, as they were, and gone from it."""
+        rows = self._db.execute(f"SELECT * FROM {table} WHERE {column} = ?", (value,)).fetchall()
+        self._db.execute(f"DELETE FROM {table} WHERE {column} = ?", (value,))
+        return [dict(r) for r in rows]
+
+    def _take_twins(self, key: str) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT * FROM twins WHERE watched = ? OR imported = ?", (key, key)
+        ).fetchall()
+        self._db.execute("DELETE FROM twins WHERE watched = ? OR imported = ?", (key, key))
+        return [dict(r) for r in rows]
+
+    def _trace(self, game_id: str) -> dict[str, Any] | None:
+        game = self._db.execute(
+            "SELECT started_at, user_side, result FROM games WHERE game_id = ?", (game_id,)
+        ).fetchone()
+        if game is None:
+            return None
+        moves = self._db.execute(
+            "SELECT san FROM moves WHERE game_id = ? AND withdrawn = 0 ORDER BY segment, ply",
+            (game_id,),
+        ).fetchall()
+        return {
+            "started_at": game["started_at"],
+            "user_side": game["user_side"],
+            "result": game["result"],
+            "sans": [str(m["san"]).rstrip("+#") for m in moves],
+        }
 
     def add_twin(self, watched: str, imported: str) -> None:
         """A watched game's import (library keys): the import stands for it from now on."""

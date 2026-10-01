@@ -92,10 +92,13 @@
       saidField = res.field ?? null;
       return;
     }
-    const added = res.added ?? 0, already = res.already ?? 0;
+    const added = res.added ?? 0, already = res.already ?? 0, out = res.left_out ?? 0;
     const games = (n: number) => `${n} game${n === 1 ? "" : "s"}`;
-    if (!added && !already) said = source === "pgn" ? "No games in that PGN." : `No games in the last ${months} month${months === 1 ? "" : "s"}.`;
-    else if (!added) said = `Nothing new: ${already === 1 ? "that game was" : `all ${already} were`} already here.`;
+    // The games the player removed before stay out (a site's; a pasted game comes back).
+    const outWords = out ? `${games(out)} you removed left out` : "";
+    if (!added && !already && !out) said = source === "pgn" ? "No games in that PGN." : `No games in the last ${months} month${months === 1 ? "" : "s"}.`;
+    else if (!added && !already) said = `Nothing new: ${out === 1 ? "the game you removed stays" : `the ${out} games you removed stay`} out.`;
+    else if (!added) said = `Nothing new: ${already === 1 ? "that game was" : `${out ? "" : "all "}${already} were`} already here${out ? ` · ${outWords}` : ""}.`;
     else {
       // No background review (the phone's, Tai 2026-09-30): the player reviews the games they pick.
       const next = !backlog
@@ -103,7 +106,7 @@
         : backlog.paused_by_you
           ? "The background review is paused: resume it below to review them."
           : "They are reviewed in the background; each shows its accuracy when done.";
-      said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. ${next}`;
+      said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}${out ? ` · ${outWords}` : ""}. ${next}`;
     }
     if (source === "pgn" && added) pgn = "";
     if (added && backlog) expectUntil = Date.now() + EXPECT_MS;
@@ -119,9 +122,36 @@
     reader.readAsText(file);
   }
 
+  // The game just removed, for a few seconds' Undo (the sidecar keeps its rows a while longer).
+  const UNDO_MS = 8000;
+  let undo = $state<{ key: string; label: string } | null>(null);
+  let undoTimer: ReturnType<typeof setTimeout> | null = null;
   async function remove(game: LibraryGame): Promise<void> {
-    await gamesApi.remove(game.key);
-    list = list.filter((g) => g.key !== game.key);
+    const res = await gamesApi.remove(game.key).catch(() => null);
+    if (!res?.ok) {
+      said = "Sidecoach did not answer: the game is still here. Try again in a moment.";
+      saidBad = true;
+      return;
+    }
+    const gone = new Set(res.removed ?? [game.key]);
+    list = list.filter((g) => !gone.has(g.key));
+    undo = { key: game.key, label: `${game.white || "White"} v ${game.black || "Black"}` };
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => (undo = null), UNDO_MS);
+    void announce("games");
+  }
+  async function undoRemove(): Promise<void> {
+    if (!undo) return;
+    const key = undo.key;
+    undo = null;
+    if (undoTimer) clearTimeout(undoTimer);
+    const res = await gamesApi.restore(key).catch(() => null);
+    if (!res?.ok) {
+      said = res?.error || "Sidecoach did not answer: the game stays removed.";
+      saidBad = true;
+    }
+    await load();
+    void announce("games");
   }
 
   function openReview(e: MouseEvent, key: string): void {
@@ -317,14 +347,18 @@
           <span class="gm-when">{when(g)}</span>
           <span class="gm-go">
             <a class="primary linkbtn" href="/review/{encodeURIComponent(g.key)}" target="_blank" rel="noopener" onclick={(e) => openReview(e, g.key)}>{g.reviewed ? "Open review" : "Review"}</a>
-            {#if g.source !== "watched"}
-              <button class="iconbtn small gm-del" title="Take it out of the library" aria-label="Take it out of the library" onclick={() => remove(g)}>
-                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-              </button>
-            {/if}
+            <button class="iconbtn small gm-del" title="Remove this game: its review and its Stats go with it" aria-label="Remove this game" onclick={() => remove(g)}>
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
           </span>
         </li>
       {/each}
     </ol>
   </section>
+  {#if undo}
+    <div class="gm-undo" role="status">
+      <span>Removed <b>{undo.label}</b></span>
+      <button class="gm-undo-btn" onclick={undoRemove}>Undo</button>
+    </div>
+  {/if}
 </main>

@@ -442,16 +442,31 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             backlog.nudge()  # reviewed from now, the progress shown at once
         return done
 
+    # A game out of the player's record, with the game it is paired with; Undo puts it back
+    # for a while (Store.remove_game, restore_game).
     @app.delete("/api/games/{key}")
-    def games_delete(key: str) -> dict[str, bool]:
+    def games_delete(key: str) -> dict[str, Any]:
         from sidecoach.profile.store import Store
 
         store = Store(store_path)
         try:
-            store.delete_library_game(key)
+            removed = store.remove_game(key)
         finally:
             store.close()
-        return {"ok": True}
+        return {"ok": True, "removed": removed}
+
+    @app.post("/api/games/{key}/restore")
+    def games_restore(key: str) -> dict[str, Any]:
+        from sidecoach.profile.store import Store
+
+        store = Store(store_path)
+        try:
+            restored = store.restore_game(key)
+        finally:
+            store.close()
+        if not restored:
+            return {"ok": False, "error": "That game was removed too long ago to put back."}
+        return {"ok": True, "restored": restored}
 
     # The card on the move shown, said in the panel's voice and captioned: a new card cuts off
     # the one before, as the player steps on; closing the review silences it.
@@ -788,9 +803,10 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
 def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
     """Games into the library: a pasted PGN, or the player's recent games on chess.com or
-    Lichess (their usernames from the settings). What came in says how many are new and how
-    many were there already; a failure says what to do, and names the setting when the
-    username is at fault (`field`: the page links to it)."""
+    Lichess (their usernames from the settings). What came in says how many are new, how many
+    were there already and how many the player removed before (a site's games leave those out;
+    a game pasted by hand comes back); a failure says what to do, and names the setting when
+    the username is at fault (`field`: the page links to it)."""
     import httpx
 
     from sidecoach.profile import library
@@ -824,6 +840,12 @@ def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
         return {"ok": False, "error": f"Could not bring the games in: {exc}"}
     store = Store(store_path)
     try:
+        if body.source == "pgn":
+            store.unremove([row.key for row in rows])
+            out: set[str] = set()
+        else:
+            out = library.left_out(store, rows)
+        rows = [row for row in rows if row.key not in out]
         new = [row for row in rows if store.library_game(row.key) is None]
         for row in rows:
             store.add_library_game(row)
@@ -834,6 +856,7 @@ def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
         "ok": True,
         "added": len(new),
         "already": len(rows) - len(new),
+        "left_out": len(out),
         "keys": [r.key for r in rows],
     }
 

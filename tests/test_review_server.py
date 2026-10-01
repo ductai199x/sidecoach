@@ -687,6 +687,83 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
     store.close()
 
 
+def test_a_removed_game_stays_out_until_undone_or_pasted_again(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-10-01: any game can be removed from the player's record. Gone from the list,
+    left out when the site's games are brought in again, back with Undo; a game pasted by hand
+    comes back (that is the player asking for it); Undo too late says so."""
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile import library
+    from sidecoach.profile import store as store_module
+    from sidecoach.ui.server import build_app
+
+    engine = make_panel()
+    engine.settings.profile.chesscom_user = "NoseGazm"
+    monkeypatch.setattr(
+        library, "from_chesscom", lambda user, months=3: library.from_pgn(GAME, user_names=[user])
+    )
+    client = TestClient(build_app(engine))
+    keys = lambda: {g["key"] for g in client.get("/api/games").json()["games"]}  # noqa: E731
+    first = client.post("/api/games/import", json={"source": "chesscom"}).json()
+    (key,) = first["keys"]
+    assert first["added"] == 1 and key in keys()
+
+    assert client.delete(f"/api/games/{key}").json() == {"ok": True, "removed": [key]}
+    assert key not in keys()
+    again = client.post("/api/games/import", json={"source": "chesscom"}).json()
+    assert (again["added"], again["already"], again["left_out"]) == (0, 0, 1)
+    assert key not in keys(), "brought in again, it stays out"
+
+    assert client.post(f"/api/games/{key}/restore").json() == {"ok": True, "restored": [key]}
+    assert key in keys()
+
+    client.delete(f"/api/games/{key}")
+    pasted = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()
+    assert (pasted["added"], pasted["left_out"]) == (1, 0) and key in keys(), "pasted, it is back"
+
+    client.delete(f"/api/games/{key}")
+    monkeypatch.setattr(store_module, "UNDO_KEEP_S", -1.0)
+    late = client.post(f"/api/games/{key}/restore").json()
+    assert not late["ok"] and "too long ago" in late["error"]
+
+
+def test_a_review_under_way_saves_nothing_for_a_game_removed_meanwhile(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The background reviewer (or a review window) part way through a game the player removes:
+    it saves no review, no Stats, nothing kept part way -- the game stays gone."""
+    from fastapi.testclient import TestClient
+
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+    from sidecoach.ui.server import build_app
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", lambda **_: FakeEngine())
+    engine = make_panel()
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    row = library.find(store, key)
+    assert row is not None
+
+    def progress(done: int, _total: int) -> None:
+        if done == 3:
+            store.remove_game(key)
+
+    done = review_room.review_row(
+        engine.settings, row, store, STRENGTHS["fast"], workers=1, on_progress=progress
+    )
+    assert done is None
+    assert store.review(key, "fast") is None and store.stat_games() == []
+    assert store.progress(key, "fast", 14, 3) == [] and store.is_removed(key)
+    store.close()
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

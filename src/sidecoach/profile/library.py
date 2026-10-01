@@ -21,7 +21,7 @@ from collections.abc import Iterable
 import chess.pgn
 import httpx
 
-from sidecoach.profile.store import GameRow, LibraryRow, MoveRow, Store
+from sidecoach.profile.store import GameRow, LibraryRow, MoveRow, Store, Trace
 
 USER_AGENT = "Sidecoach (a personal chess coach)"
 CHESSCOM_ARCHIVES = "https://api.chess.com/pub/player/{user}/games/archives"
@@ -277,7 +277,32 @@ def _order(move: MoveRow) -> tuple[int, int]:
     return move.segment, move.ply
 
 
-def _may_be(game: GameRow, row: LibraryRow) -> bool:
+def left_out(store: Store, rows: list[LibraryRow]) -> set[str]:
+    """The games among `rows` the player removed (Store.remove_game), which bringing games in
+    again leaves out: by key, or -- a watched game removed before its import came in -- by being
+    that game, as `reconcile` knows an import."""
+    return left_out_of(rows, store.removed_keys(), store.removed_traces())
+
+
+def left_out_of(rows: list[LibraryRow], keys: set[str], traces: list[Trace]) -> set[str]:
+    out: set[str] = set()
+    for row in rows:
+        if row.key in keys:
+            out.add(row.key)
+            continue
+        played: list[str] | None = None
+        for trace in traces:
+            if not _may_be(trace, row):
+                continue
+            if played is None:
+                played = _sans(row.pgn) or []
+            if _agreeing(trace.sans, played) is not None:
+                out.add(row.key)
+                break
+    return out
+
+
+def _may_be(game: GameRow | Trace, row: LibraryRow) -> bool:
     """Whether an import can be the watched game at all: the same side, the same result when
     both are known, started in the window (a date alone, the same day or the next)."""
     if row.user_side is not None and row.user_side != game.user_side:
