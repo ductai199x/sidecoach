@@ -448,6 +448,63 @@ class Store(val path: File?) {
         rows("SELECT watched, imported FROM twins") { it.getString(0) to it.getString(1) }.toMap(LinkedHashMap())
     }
 
+    // ---- Stats: a reviewed game's facts (StatFacts.kt; store.py) ----------------------------------
+
+    /** A game's facts from its review at [strength], in place of any before. `save_stats`. */
+    fun saveStats(strength: String, game: GameFact, moves: List<MoveFact>) {
+        lock.withLock {
+            db.beginTransaction()
+            try {
+                exec("DELETE FROM stat_moves WHERE key = ?", game.key)
+                exec(
+                    "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at," +
+                        " user_side, bot, result, opening, termination) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    game.key, strength, game.source, game.timeClass, game.playedAt, game.userSide,
+                    game.bot, game.result, game.opening, game.termination,
+                )
+                for (m in moves) {
+                    exec(
+                        "INSERT INTO stat_moves (key, ply, side, fen, uci, san, phase, loss, label," +
+                            " accuracy, score, chance, found, allowed, structure, themes, endgame, spent_ms," +
+                            " clock_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        game.key, m.ply, m.side, m.fen, m.uci, m.san, m.phase, m.loss, m.label,
+                        m.accuracy, m.score, m.chance, m.found, m.allowed, m.structure, m.themes, m.endgame,
+                        m.spentMs, m.clockMs,
+                    )
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+    }
+
+    /** The reviewed games' facts, each game once: a watched game its import stands for is left out. `stat_games`. */
+    fun statGames(): List<StatGameRow> = lock.withLock {
+        rows("SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins) ORDER BY played_at") { statGameRow(it) }
+    }
+
+    /** The facts of the games' moves, in order. `stat_moves`. */
+    fun statMoves(keys: List<String>): List<StatMoveRow> {
+        if (keys.isEmpty()) return emptyList()
+        val marks = keys.joinToString(",") { "?" }
+        return lock.withLock {
+            rows("SELECT * FROM stat_moves WHERE key IN ($marks) ORDER BY key, ply", *keys.toTypedArray()) { statMoveRow(it) }
+        }
+    }
+
+    /**
+     * Each game's latest review whose facts are not kept yet (a watched game its import stands
+     * for needs none). `reviews_without_stats`.
+     */
+    fun reviewsWithoutStats(): List<ReviewRow> = lock.withLock {
+        rows(
+            "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)" +
+                " AND r.key NOT IN (SELECT watched FROM twins)" +
+                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)",
+        ) { reviewRow(it) }
+    }
+
     /** The library's imported games no review covers yet, the latest played first. */
     fun unreviewed(): List<LibraryRow> = lock.withLock {
         rows("SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews) ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
@@ -904,6 +961,41 @@ CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
             words = c.stringOrNull("words"),
         )
 
+        private fun statGameRow(c: Cursor) = StatGameRow(
+            key = c.getString(c.getColumnIndexOrThrow("key")),
+            strength = c.getString(c.getColumnIndexOrThrow("strength")),
+            source = c.stringOrNull("source"),
+            timeClass = c.stringOrNull("time_class"),
+            playedAt = c.doubleOrNull("played_at"),
+            userSide = c.stringOrNull("user_side"),
+            bot = c.getInt(c.getColumnIndexOrThrow("bot")) != 0,
+            result = c.stringOrNull("result"),
+            opening = c.stringOrNull("opening"),
+            termination = c.stringOrNull("termination"),
+        )
+
+        private fun statMoveRow(c: Cursor) = StatMoveRow(
+            key = c.getString(c.getColumnIndexOrThrow("key")),
+            ply = c.getInt(c.getColumnIndexOrThrow("ply")),
+            side = c.getString(c.getColumnIndexOrThrow("side")),
+            fen = c.getString(c.getColumnIndexOrThrow("fen")),
+            uci = c.getString(c.getColumnIndexOrThrow("uci")),
+            san = c.getString(c.getColumnIndexOrThrow("san")),
+            phase = c.getString(c.getColumnIndexOrThrow("phase")),
+            loss = c.getDouble(c.getColumnIndexOrThrow("loss")),
+            label = c.stringOrNull("label"),
+            accuracy = c.doubleOrNull("accuracy"),
+            score = c.getDouble(c.getColumnIndexOrThrow("score")),
+            chance = c.stringOrNull("chance"),
+            found = c.getInt(c.getColumnIndexOrThrow("found")) != 0,
+            allowed = c.stringOrNull("allowed"),
+            structure = c.getString(c.getColumnIndexOrThrow("structure")),
+            themes = c.getString(c.getColumnIndexOrThrow("themes")),
+            endgame = c.stringOrNull("endgame"),
+            spentMs = c.intOrNull("spent_ms"),
+            clockMs = c.intOrNull("clock_ms"),
+        )
+
         private fun gameRow(c: Cursor) = GameRow(
             gameId = c.getString(c.getColumnIndexOrThrow("game_id")),
             sessionId = c.stringOrNull("session_id"),
@@ -1010,6 +1102,43 @@ data class ReviewRow(
     val report: String,
     val summary: String?,
     val words: String?,
+)
+
+/** A reviewed game's facts as Stats keeps them (`stat_games`): [GameFact] and the review's strength. */
+data class StatGameRow(
+    val key: String,
+    val strength: String,
+    val source: String?,
+    val timeClass: String?,
+    val playedAt: Double?,
+    val userSide: String?,
+    val bot: Boolean,
+    val result: String?,
+    val opening: String?,
+    val termination: String?,
+)
+
+/** A move's facts as Stats keeps them (`stat_moves`): [MoveFact] and its game's key. */
+data class StatMoveRow(
+    val key: String,
+    val ply: Int,
+    val side: String,
+    val fen: String,
+    val uci: String,
+    val san: String,
+    val phase: String,
+    val loss: Double,
+    val label: String?,
+    val accuracy: Double?,
+    val score: Double,
+    val chance: String?,
+    val found: Boolean,
+    val allowed: String?,
+    val structure: String,
+    val themes: String,
+    val endgame: String?,
+    val spentMs: Int?,
+    val clockMs: Int?,
 )
 
 data class GameRow(
