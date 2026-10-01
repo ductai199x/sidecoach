@@ -38,10 +38,11 @@ interface Tagger {
 }
 
 /**
- * A whole measurement while the analyser is behind a fast game, or was within BEHIND_S: at
- * EARLY_DEPTH, its side searches no deeper -- a tenth of the full depth's time, and the side
- * searches with it, where the full depth capped at a second went without them (the live panel,
- * 2026-09-28: a hint asked in a fast stretch waited a third of a second for that second).
+ * Within BEHIND_S of the analyser being behind a fast game, the position the player faces is
+ * measured at EARLY_DEPTH after the verdict rather than before it, the side searches with it --
+ * a tenth of the full depth's time, where the full depth capped at a second went without them
+ * (the live panel, 2026-09-28: a hint asked in a fast stretch waited a third of a second for
+ * that second) -- and every depth follows ([Analyser]'s `serve`).
  */
 const val BEHIND_S = 10.0
 
@@ -108,19 +109,22 @@ class GameAnnotator(
     private val verdictCache = java.util.concurrent.ConcurrentHashMap<String, Measured>()
 
     /**
-     * The last move assessed: game, ply, loss, where it landed and whether it captured, so
-     * the next move knows whether the opponent just erred and whether it is merely taking
-     * back.
+     * Each move assessed, by its ply: the game, the position it led to, its loss, where it
+     * landed and whether it captured, so the move after it knows whether the opponent just
+     * erred and whether it is merely taking back. By ply, not the last one assessed: after a
+     * takeback the move before the replacement is the one the game kept, and the last one
+     * assessed was the withdrawn move, a ply too far -- "the opponent erred" and "a recapture"
+     * were lost on every replacement (the state review, 2026-10-01).
      */
-    private class Previous(
+    private class Assessed(
         val gameId: String,
-        val ply: Int,
+        val epdAfter: String,
         val loss: Double,
         val to: Int,
         val captured: Boolean,
     )
 
-    private var previous: Previous? = null
+    private val assessed = java.util.concurrent.ConcurrentHashMap<Int, Assessed>()
 
     /**
      * Positions measured ahead of the game ([lookAhead]) and not yet reached, and how many the
@@ -142,7 +146,7 @@ class GameAnnotator(
         verdictCache.clear()
         ahead.clear()
         computed.clear()
-        previous = null
+        assessed.clear()
     }
 
     /**
@@ -191,16 +195,15 @@ class GameAnnotator(
     }
 
     /**
-     * The position whole: the candidates, the threats, the decisive-moment and only-move
-     * calls. `hurry` measures at [EARLY_DEPTH]: the analyser is (or was just) behind a fast
-     * game, and the player is not waiting seconds for the candidates of a position they will
-     * have left. `onDepth`: handed the candidates of each depth the search finishes on its way.
+     * The position whole, at the full depth: the candidates, the threats, the decisive-moment
+     * and only-move calls. `onDepth`: handed the candidates of each depth the search finishes
+     * on its way. A position the player is not to wait for is measured early first
+     * ([measureEarly]), never in place of this.
      */
-    fun measure(board: Board, hurry: Boolean = false, onDepth: ((List<Line>) -> Unit)? = null): Measured {
+    fun measure(board: Board, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         val key = board.fen()
         cached(key)?.let { return it }
-        val depth = if (hurry) minOf(EARLY_DEPTH, this.depth) else this.depth
-        val measured = measuredAt(board, depth, early = hurry, onDepth = onDepth)
+        val measured = measuredAt(board, depth, onDepth = onDepth)
         cache[key] = measured
         return measured
     }
@@ -267,7 +270,6 @@ class GameAnnotator(
         gameId: String,
         board: Board,
         ply: Int,
-        hurry: Boolean = false,
         thin: Boolean = false,
         early: Boolean = false,
         onDepth: ((List<Line>) -> Unit)? = null,
@@ -275,7 +277,7 @@ class GameAnnotator(
         val measured = when {
             early -> measureEarly(board)
             thin -> measureForVerdict(board)
-            else -> measure(board, hurry, onDepth)
+            else -> measure(board, onDepth)
         }
         return Analysis(
             gameId = gameId,
@@ -368,9 +370,10 @@ class GameAnnotator(
         val loss = evalLoss(measuredBefore.lines, move.uci(), measuredAfter.score)
         val tags = moveTags(before, move, measuredAfter)
         val best = if (measuredBefore.lines.isEmpty()) emptyList() else measuredBefore.lines[0].moves
-        var last = previous
-        if (last != null && (last.gameId != gameId || last.ply != ply - 1)) {
-            last = null  // another game, or a gap: the move before this one is unknown
+        var last = assessed[ply - 1]
+        if (last != null && (last.gameId != gameId || last.epdAfter != before.epd())) {
+            // Another game, or a move that did not lead here: the move before is unknown.
+            last = null
         }
         val opponentErred = last != null && last.loss >= thresholds.mistake
         // Taking back on the square the opponent just captured on. Taking a piece that merely
@@ -393,7 +396,7 @@ class GameAnnotator(
             opponentErred = opponentErred,
             obvious = obvious,
         )
-        previous = Previous(gameId, ply, loss, move.to, captures)
+        assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, captures)
         return MoveAssessment(
             gameId = gameId,
             ply = ply,
@@ -520,7 +523,8 @@ class Analyser(
 
     private var behindUntil = 0L
     private val requests = LinkedBlockingQueue<Request>()
-    private val results = ConcurrentLinkedQueue<Event>()
+    /** What the worker has finished; a test puts a late word here, as the desktop's put one in `_results`. */
+    internal val results = ConcurrentLinkedQueue<Event>()
     private var thread: Thread? = null
 
     /**
@@ -611,9 +615,14 @@ class Analyser(
     }
 
     /**
-     * A new game: drop what is queued and forget the measured positions, since none of it is
-     * about this game. What the worker is busy with finishes and is delivered; the pipeline
-     * ignores an event for a game that is over.
+     * A new game, or the board re-read: drop what is queued and forget the measured positions,
+     * since none of it is about the game as it now stands. What the worker is busy with is let
+     * go as a takeback lets go of it ([withdraw]): nothing about it is delivered, and it is not
+     * put off to be measured later. It used to finish and be delivered -- or, its full measure
+     * interrupted by the next request, be put off after the reset and measured again after the
+     * new position, its analysis then the last word; on a resync of the same game (the side to
+     * move settled by the clock) the profile filed it as the new position's (the state review,
+     * 2026-10-01).
      */
     fun reset() {
         // Everything queued goes, the stop that [close] puts there included, as the desktop's
@@ -623,10 +632,12 @@ class Analyser(
             settle()
         }
         ahead = ArrayList()
-        synchronized(countLock) {
+        val now = synchronized(countLock) {
             outstanding = maxOf(0, outstanding - deferred.size)
             deferred.clear()
+            current?.also { it.withdrawn = true }
         }
+        if (now != null) annotator.engine.interrupt()
         annotator.reset()
     }
 
@@ -743,28 +754,39 @@ class Analyser(
             val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
             if (request.withdrawn) return
             results.add(verdict)
-            val behind = requests.isNotEmpty()
-            if (behind) {
+            if (requests.isNotEmpty()) {
                 skipped += 1
                 behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
+                val event = annotator.analysisEvent(request.gameId, after, request.ply, thin = true)
+                if (!request.withdrawn) results.add(event)
+                return
             }
-            val hurry = System.nanoTime() < behindUntil
-            val event = if (behind || hurry) {
-                annotator.analysisEvent(request.gameId, after, request.ply, thin = behind, hurry = hurry)
-            } else {
-                yielding(request, after, deepening(request, after, early)) ?: return
+            if (early == null && !request.byUser && System.nanoTime() < behindUntil) {
+                // Behind a moment ago: the verdict came first, and now the first usable depth of
+                // the position the player faces. It is never the last word: every depth follows,
+                // then the look ahead. Measured at EARLY_DEPTH and kept as the whole, it was never
+                // deepened and nothing was looked ahead at, and the next move's verdict set depth
+                // 12 against depth 18 -- every position of the panel's puzzle room after the
+                // first, its move and reply submitted together (the state review, 2026-10-01;
+                // Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues
+                // until max depth of 18").
+                early = this.early(request, after, hurried = true)
+                if (request.withdrawn) return
             }
+            val event = yielding(request, after, deepening(request, after, early)) ?: return
+            if (request.withdrawn) return
             results.add(event)
-            if (!(behind || hurry)) planAhead(after, event.lines)
+            planAhead(after, event.lines)
         }
     }
 
     /**
      * The position measured at [EARLY_DEPTH] and delivered, provisional, unless it is measured
-     * whole already (ahead of the game) or the game was behind a moment ago.
+     * whole already (ahead of the game). Before the verdict only when the game was not behind a
+     * moment ago; [hurried], after it ([serve]).
      */
-    private fun early(request: Request, board: Board): Analysis? {
-        if (annotator.measured(board) || System.nanoTime() < behindUntil) return null
+    private fun early(request: Request, board: Board, hurried: Boolean = false): Analysis? {
+        if (annotator.measured(board) || (!hurried && System.nanoTime() < behindUntil)) return null
         val event = annotator.analysisEvent(request.gameId, board, request.ply, early = true)
         if (!request.withdrawn) results.add(event)
         return event

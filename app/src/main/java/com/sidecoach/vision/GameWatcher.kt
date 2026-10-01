@@ -331,9 +331,10 @@ class GameWatcher(
      * the page, the engine, the profile and the coach, in the order `panel`'s loop runs them.
      */
     private fun dispatch(events: List<Event>, ts: Double) {
+        val followed = pipeline?.reconciler?.gameId
         for (event in events) {
             note(event)
-            PanelEngine.onGameEvent(event)
+            PanelEngine.onGameEvent(event, followed)
             assessing.submit(event)
         }
         // Idle read before the drain: then everything the engine will say about this game is

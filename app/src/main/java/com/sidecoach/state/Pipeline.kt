@@ -557,7 +557,9 @@ class GamePipeline(
      * the game had; a puzzle page shows each puzzle from the solver's side, so the next puzzle
      * can come up the other way round and read as a position turned on its head. When the
      * labels say the other side is at the bottom, the board is read again that way and a new
-     * game begun from it, in place of the resync's events.
+     * game begun from it, in place of the resync's events. A position adopted after a finished
+     * game is a game begun, with no Resync ([Reconciler]'s position resync), and is checked the
+     * same way.
      */
     private fun resyncReoriented(
         events: MutableList<Event>,
@@ -566,7 +568,7 @@ class GamePipeline(
         ts: Double,
     ): MutableList<Event> {
         val current = model ?: return events
-        if (events.none { it is Resync }) return events
+        if (events.none { it is Resync || (it is GameStarted && it.kind == "position") }) return events
         val labelled = Coordinates.readBottomSide(frame, geometry, current.rankLabels)
         if (labelled == null || labelled == bottom) return events
         // A resync after a finished game began a new one on its head: that start goes unsaid,

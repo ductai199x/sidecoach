@@ -145,6 +145,146 @@ class TakebackTest {
         assertEquals(0, analyser.pending)
     }
 
+    /** A model that answers [reply] and remembers that it was asked (`ScriptedProvider`). */
+    private class OneReply(private val reply: String) : com.sidecoach.llm.LLMProvider {
+        override val name = "scripted"
+        @Volatile var asked = 0
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+
+        override fun chat(
+            system: String,
+            messages: List<com.sidecoach.llm.ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): com.sidecoach.llm.Completion {
+            asked += 1
+            return com.sidecoach.llm.Completion(text = reply)
+        }
+    }
+
+    /**
+     * `test_a_hint_asked_before_the_first_move_is_answered` (the state review, 2026-10-01): the
+     * start position was never sent to the engine -- only a position begun from the middle was
+     * -- so a hint asked before the first move was "One moment -- still looking" and nothing
+     * after it, and no stuck hint came there. The engine glue and the coach on a model: the
+     * model is asked, and answers.
+     */
+    @Test
+    fun aHintAskedBeforeTheFirstMoveIsAnswered() {
+        val hint = "Think about which piece you want in the centre first."
+        val analyser = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val assessing = Assessing(analyser)
+        analyser.start()
+        val model = OneReply(hint)
+        val coach = Coach(
+            model,
+            policy = com.sidecoach.coach.InterjectionPolicy(com.sidecoach.coach.PolicySettings(stuckSeconds = 10.0)),
+        )
+        val drained = ArrayList<Event>()
+        val said = ArrayList<String>()
+        try {
+            val started = GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = STARTING_FEN)
+            assessing.submit(started)
+            coach.onEvent(started, 0.0)
+            coach.ask("hint", 0.5)
+            val deadline = System.currentTimeMillis() + 5000
+            while (System.currentTimeMillis() < deadline) {
+                val got = assessing.drain()
+                drained += got
+                for (event in got) coach.onEvent(event, 1.0)
+                if (analyser.pending == 0 && got.isEmpty()) break
+                Thread.sleep(10)
+            }
+            coach.speaker.runPending()
+            said += coach.poll().map { it.text }
+        } finally {
+            assessing.close()
+        }
+        assertTrue("never measured", drained.any { it is Analysis && it.ply == 0 })
+        assertTrue("the model was never asked: $said", model.asked > 0)
+        assertTrue("$said", hint in said)
+    }
+
+    /**
+     * `test_a_takeback_to_where_the_game_began_measures_it_again`: every move of a position
+     * taken back, the position the game began from is the one the player faces again, and the
+     * engine is asked for it again (at once, it is measured), so the look ahead goes on from
+     * there and not from the moves withdrawn.
+     */
+    @Test
+    fun aTakebackToWhereTheGameBeganMeasuresItAgain() {
+        val analyser = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val assessing = Assessing(analyser)
+        analyser.start()
+        try {
+            val start = Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+            assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = start.fen(), kind = "position"))
+            val board = start.copy()
+            for ((i, san) in listOf("Bc4", "Bc5").withIndex()) {
+                val before = board.fen()
+                val move = board.parseSan(san)!!
+                board.push(move)
+                assessing.submit(
+                    MovePlayed(
+                        gameId = "g", ply = i + 1, san = san, uci = move.uci(), fenBefore = before,
+                        fenAfter = board.fen(), byUser = i == 0,
+                    ),
+                )
+            }
+            assessing.wait(5.0)
+            assessing.submit(Takeback(gameId = "g", plies = 2, fen = start.fen()))
+            val again = assessing.wait(5.0)
+            assertEquals(listOf(start.fen()), again.filterIsInstance<Analysis>().filter { it.ply == 0 }.map { it.fen })
+        } finally {
+            assessing.close()
+        }
+    }
+
+    /**
+     * `test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading` (the state review,
+     * 2026-10-01): the side to move settled by the clock while the joined position is measured
+     * whole. The measure, given way to the re-read position's, was put off after the reset had
+     * cleared what was put off, measured again after the new reading and delivered last, and on
+     * the same game at ply 0 it passed as the new position's -- the profile filed White's
+     * analysis for a position with Black to move. The engine lets go of what it is on at a
+     * reset, and the glue passes on nothing of a position the game no longer stands on, nor of
+     * another game.
+     */
+    @Test
+    fun aPositionReReadMidMeasureGetsNoWordOnTheOldReading() {
+        val white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
+        val black = white.replace(" w ", " b ")
+        val analyser = Analyser(GameAnnotator(SlowEngine(300), depth = 18, withThreats = false))
+        val assessing = Assessing(analyser)
+        analyser.start()
+        try {
+            assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = white, kind = "position"))
+            val deadline = System.currentTimeMillis() + 5000
+            while (!analyser.looking && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            assertTrue("the full measure never began", analyser.looking)
+            val before = assessing.drain()
+            assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
+            val after = assessing.wait(10.0)
+            assertEquals(listOf(white), before.filterIsInstance<Analysis>().map { it.fen })
+            val told = after.filterIsInstance<Analysis>().map { it.fen }
+            assertTrue("$told", told.isNotEmpty() && told.toSet() == setOf(black))
+        } finally {
+            assessing.close()
+        }
+        // The glue's own check, whatever the engine sends: a word at ply 0 on the old reading,
+        // and one on another game, are not passed on.
+        val quiet = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val glue = Assessing(quiet)
+        glue.submit(Resync(gameId = "g", fen = black, reason = "re-read"))
+        quiet.reset()  // what that submitted, gone: only the words put below are left to drain
+        quiet.results.add(Analysis(gameId = "g", fen = white, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
+        quiet.results.add(Analysis(gameId = "h", fen = black, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
+        assertEquals(emptyList<Event>(), glue.drain())
+        glue.close()
+    }
+
     @Test
     fun whatTheEngineSaysOfAWithdrawnMoveIsNotPassedOn() {
         // The engine has measured four plies and nothing has been drained; then 3.Nf3 Nc6 are

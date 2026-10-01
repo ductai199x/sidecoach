@@ -457,8 +457,11 @@ object PanelEngine {
         return degraded
     }
 
-    /** The game's own events, as `panel._dispatch_game` writes them down. */
-    fun onGameEvent(event: Event) {
+    /**
+     * The game's own events, as `panel._dispatch_game` writes them down. [followed]: the id of
+     * the game the reconciler holds once the tick's events are out -- the one End game ends.
+     */
+    fun onGameEvent(event: Event, followed: String? = null) {
         when (event) {
             is GameStarted -> {
                 synchronized(lock) {
@@ -570,7 +573,12 @@ object PanelEngine {
 
             is GameEnded -> {
                 val text = if (event.result == "*") {
-                    "game over (${event.reason}); the result was not read -- End game… can set it"
+                    // End game ends the game the reconciler holds. A game ended because the
+                    // next one began is not that game: told it could set the result, the player
+                    // ended the new game, its moves were refused from then on, and the record
+                    // kept a one-move win (the state review, 2026-10-01).
+                    "game over (${event.reason}); the result was not read" +
+                        if (event.gameId == followed) " -- End game… can set it" else ""
                 } else {
                     "game over ${event.result} (${event.reason})"
                 }

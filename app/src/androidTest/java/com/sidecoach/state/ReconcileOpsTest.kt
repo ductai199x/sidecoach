@@ -167,7 +167,6 @@ class ReconcileOpsTest {
         settleFrames = args.getInt("settle_frames"),
         maxPlies = args.getInt("max_plies"),
         searchBudget = args.getInt("search_budget"),
-        historyDepth = args.getInt("history_depth"),
         staleAfter = args.getInt("stale_after"),
         resyncCells = args.getInt("resync_cells"),
         resyncAfter = args.getInt("resync_after"),
@@ -202,7 +201,6 @@ class ReconcileOpsTest {
             "settle_frames" -> rec.settleFrames = value as Int
             "max_plies" -> rec.maxPlies = value as Int
             "search_budget" -> rec.searchBudget = value as Int
-            "history_depth" -> rec.historyDepth = value as Int
             "stale_after" -> rec.staleAfter = value as Int
             "resync_cells" -> rec.resyncCells = value as Int
             "resync_after" -> rec.resyncAfter = value as Int

@@ -462,17 +462,39 @@ class AnnotatorParityTest {
     }
 
     /**
-     * `test_behind_a_fast_game_a_position_is_measured_at_the_early_depth` (desktop dfee797):
-     * behind a fast game the position is measured at EARLY_DEPTH, the threats searched with it
-     * -- where the full depth capped at a second went without them.
+     * `test_behind_a_fast_game_the_position_faced_is_told_early_and_still_measured_whole` (the
+     * state review, 2026-10-01; Tai, 2026-09-28: "first usable answer is depth 12 ... the
+     * computation continues until max depth of 18"). Behind a fast game -- the player's move
+     * and the reply submitted together, as the puzzle room does -- the position the player then
+     * faces is told at EARLY_DEPTH first, and then measured at the full depth and looked ahead
+     * from. It was measured at EARLY_DEPTH alone and kept as the whole: never deepened, nothing
+     * looked ahead at, and the next move's verdict set depth 12 against depth 18.
      */
     @Test
-    fun behindAFastGameAPositionIsMeasuredAtTheEarlyDepth() {
+    fun behindAFastGameThePositionFacedIsToldEarlyAndStillMeasuredWhole() {
         val fake = DepthEngine()
         val annotator = GameAnnotator(fake, depth = 18)
-        val measured = annotator.measure(Board(SCHOLAR), hurry = true)
-        assertTrue("${measured.lines.map { it.depth }}", measured.lines.isNotEmpty() && measured.lines[0].depth == EARLY_DEPTH)
-        assertTrue("no threat search", calls(fake).size > 1)
+        val board = Board()
+        val analyser = Analyser(annotator, lookAhead = 2)
+        analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
+        board.push(board.parseSan("e4")!!)
+        analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
+        board.push(board.parseSan("e5")!!)
+        analyser.start()
+        val got: List<Event>
+        try {
+            got = drain(analyser)
+            assertTrue("nothing looked ahead at", until { analyser.looked >= 1 })
+        } finally {
+            analyser.close()
+        }
+        val faced = got.filterIsInstance<Analysis>().filter { it.ply == 2 }
+        assertTrue("${kinds(got)}", faced.isNotEmpty() && faced[0].provisional && faced[0].lines[0].depth == EARLY_DEPTH)
+        assertTrue("${faced.last().lines[0].depth}", !faced.last().provisional && faced.last().lines[0].depth == 18)
+        assertEquals(board.fen(), faced.last().fen)
+        val asked = calls(fake).size
+        assertEquals("kept at the early depth", 18, annotator.measure(board).depth)
+        assertEquals("measured again", asked, calls(fake).size)
     }
 
     /**
@@ -642,6 +664,34 @@ class AnnotatorParityTest {
 
         assertEquals(Label.BEST, label("4k3/8/5n2/8/1b2B3/2N5/8/4K3 b - - 0 1"))
         assertEquals(Label.GREAT, label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1"))
+    }
+
+    /**
+     * `test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it` (the state review,
+     * 2026-10-01): after a takeback the move before the replacement is the one the game kept;
+     * the last move judged was the withdrawn one, a ply too far, and the replacement was judged
+     * as if nothing came before it -- the opponent's mistake unseen, a loss after it a blunder,
+     * not the miss it is.
+     */
+    @Test
+    fun theMoveThatReplacesAWithdrawnOneKnowsTheMoveBeforeIt() {
+        val fake = FakeEngine(
+            mapOf(
+                Board().fen() to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.55)),
+                after("e4") to listOf(Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.70)),
+                after("e4", "a6") to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.80)),
+                after("e4", "h6") to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.80)),
+            ),
+        )
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        val board = Board()
+        val first = annotator.assessMove("g", board, board.parseSan("e4")!!, 1)
+        assertEquals("the opponent erred", Severity.MISTAKE, first.severity)
+        board.push(board.parseSan("e4")!!)
+        val withdrawn = annotator.assessMove("g", board, board.parseSan("a6")!!, 2)
+        val replacement = annotator.assessMove("g", board, board.parseSan("h6")!!, 2)
+        assertEquals(Label.MISS, withdrawn.label)
+        assertEquals(Label.MISS, replacement.label)
     }
 
     /** The desktop test's `RecordingTagger`: the same tags for every move, the calls kept. */
