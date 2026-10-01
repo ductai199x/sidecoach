@@ -351,7 +351,8 @@ STYLE_ROWS = [
     ("ice", "cburnett", 96),
     ("wood", "cburnett-wood", 64),
     ("grey", "cburnett-small", 44),
-    # Every set lichess draws (tests/fixtures/pieces), on the brown board at 64-pixel cells.
+    # Every set lichess draws (tests/fixtures/pieces), on the brown board at 64-pixel cells:
+    # three of them by default, the rest with --sweep.
     *(("brown", name, 64) for name in sheet_sets()),
     # A board on a small screen, every cell upscaled to the working patch size: forty pixels
     # a cell (a 320-pixel board) is the floor with anti-aliased pieces; below it the light
@@ -368,11 +369,22 @@ def _alternating(rows: list) -> list[tuple]:
     return [(*row, (Side.WHITE, Side.BLACK)[i % 2]) for i, row in enumerate(rows)]
 
 
-@pytest.mark.parametrize(
-    ("theme", "style", "cell", "bottom"),
-    _alternating(STYLE_ROWS),
-    ids=[f"{theme}-{style}-{cell}" for theme, style, cell in STYLE_ROWS],
-)
+def _style_params() -> list:
+    """Every row; past the first three lichess sheets, a sweep case (--sweep)."""
+    sheets = set(sheet_sets())
+    out, seen = [], 0
+    for row in _alternating(STYLE_ROWS):
+        theme, style, cell = row[:3]
+        swept = style in sheets and (seen := seen + 1) > 3
+        out.append(
+            pytest.param(
+                *row, id=f"{theme}-{style}-{cell}", marks=[pytest.mark.sweep] if swept else []
+            )
+        )
+    return out
+
+
+@pytest.mark.parametrize(("theme", "style", "cell", "bottom"), _style_params())
 def test_every_theme_and_piece_style_reads_every_square(
     theme: str, style: str, cell: int, bottom: Side
 ) -> None:

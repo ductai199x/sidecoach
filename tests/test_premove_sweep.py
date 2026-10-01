@@ -36,7 +36,7 @@ import pytest
 from sidecoach.events import Side
 from tests.games import Game, Queue, sans_of
 
-SEEDS = range(1, 9)
+SEEDS = range(1, 3)  # --seeds N for the sweep
 # Frames of each picture. A bot takes a second or more, and a premove executes the instant
 # it answers, in the same picture: at the capture's rate every picture is seen, mostly on
 # several frames. One frame is a picture the reconciler cannot settle on alone. (A picture

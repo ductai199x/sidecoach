@@ -50,6 +50,9 @@ This is theme-specific by construction and needs no training.
 
 from __future__ import annotations
 
+import hashlib
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -488,37 +491,38 @@ def _hover_outline(patch: np.ndarray, background: np.ndarray) -> bool:
     edge = max(1, int(round(n * HOVER_EDGE)))
     if 2 * band >= n:
         return False  # a patch too small to have an outer band
+    colours = (patch, patch[::-1], patch.transpose(1, 0, 2), patch.transpose(1, 0, 2)[::-1])
+    # An outline is a step between one row and the next, and it runs through both ends of
+    # the side; a tint that fades toward the edge (a check's glow) is a ramp of a few levels
+    # a row, and a piece's base or a label reaches one end at most. So the step is read at
+    # each end of the side, and the smaller counts. Read first: most cells have no step and
+    # are done here (every cell of every frame comes through).
+    reach = max(2, int(round(n * HOVER_CORNER)))
+    steps: list[float] = []
+    for colour in colours:
+        ends = []
+        for lo, hi in ((band, band + reach), (n - band - reach, n - band)):
+            # Each row's median colour over the stretch, all rows in one call; the step
+            # between each row and the next, all at once.
+            lines = np.median(colour[: min(n, 2 * band + 1), lo:hi].astype(np.float32), axis=1)
+            ends.append(float(np.sqrt((np.diff(lines, axis=0) ** 2).sum(axis=1)).max()))
+        steps.append(min(ends))
+    steps.sort()
+    if steps[1] < HOVER_STEP:
+        return False  # no step on three sides: a ramp, not a line
     distance = np.linalg.norm(patch.astype(np.float32) - background.astype(np.float32), axis=2)
     sides = (distance, distance[::-1], distance.T, distance.T[::-1])
-    colours = (patch, patch[::-1], patch.transpose(1, 0, 2), patch.transpose(1, 0, 2)[::-1])
     strong: list[float] = []
     weak: list[float] = []
     medians: list[float] = []
-    steps: list[float] = []
-    for side, colour in zip(sides, colours, strict=True):
+    for side in sides:
         rows = side[:band, band : n - band]
         strong.append(float((rows > HOVER_TOLERANCE).mean(axis=1).max()))
         weak.append(float((rows > HOVER_TOLERANCE / 2).mean(axis=1).max()))
         medians.append(float(np.median(side[:edge])))
-        # An outline is a step between one row and the next, and it runs through both
-        # ends of the side; a tint that fades toward the edge (a check's glow) is a ramp
-        # of a few levels a row, and a piece's base or a label reaches one end at most.
-        # So the step is read at each end of the side, and the smaller counts.
-        reach = max(2, int(round(n * HOVER_CORNER)))
-        ends = []
-        for lo, hi in ((band, band + reach), (n - band - reach, n - band)):
-            # Each row's median colour over the stretch, all rows in one call.
-            lines = np.median(colour[: min(n, 2 * band + 1), lo:hi].astype(np.float32), axis=1)
-            ends.append(
-                max(float(np.linalg.norm(lines[k + 1] - lines[k])) for k in range(len(lines) - 1))
-            )
-        steps.append(min(ends))
     strong.sort()
     weak.sort()
     medians.sort()
-    steps.sort()
-    if steps[1] < HOVER_STEP:
-        return False  # no step on three sides: a ramp, not a line
     # Either the outermost edge differs from the background on every side, taken as a
     # whole (an outline thick enough to fill most of it), or one row of the band does so
     # end to end on every side (a thin outline a pixel inside the edge).
@@ -656,7 +660,12 @@ def _mask_and_fill(
     since a thin stroke breaks at its anti-aliased joins, and a broken outline enclosed
     nothing: a wooden knight read as its bare outline on light squares.
     """
-    foreground = cv2.morphologyEx((distance > tolerance).astype(np.uint8), cv2.MORPH_CLOSE, _KERNEL)
+    over = distance > tolerance
+    if not over.any():
+        # Nothing off the square's colour: the mask is empty, as the closing, the filling and
+        # the opening below would leave it -- most cells of a board, every frame.
+        return np.zeros(distance.shape, dtype=np.uint8), 0.0, None
+    foreground = cv2.morphologyEx(over.astype(np.uint8), cv2.MORPH_CLOSE, _KERNEL)
     mask = _fill_enclosed(foreground.astype(bool))
     mask = _centred(cv2.morphologyEx(mask, cv2.MORPH_OPEN, _KERNEL))
     fraction = float(mask.mean())
@@ -677,6 +686,16 @@ def _mask_and_fill(
     return mask, fraction, _fill_colour(inner, gray, ink, keep.astype(np.float32), fills)
 
 
+# Silhouettes by the square's pixels and what they were read with: every frame shows the
+# same few square images again (an empty light square, a pawn on a dark one), each was read
+# again every frame, at every square, and by each reader (the frame's, the occupancy's, the
+# start position's) -- most of the time the vision took, in the app and in the tests. A
+# Silhouette is frozen and never changed, so one serves every square that shows those pixels.
+SILHOUETTES_KEPT = 1024
+_silhouettes: OrderedDict[bytes, Silhouette] = OrderedDict()
+_silhouettes_lock = threading.Lock()
+
+
 def silhouette(
     patch: np.ndarray,
     size: int = CELL,
@@ -685,7 +704,37 @@ def silhouette(
 ) -> Silhouette:
     """Silhouette mask, foreground fraction, colour statistics, centroid, hover, background.
     `colours` are the set's fills and outlines, for the tones; `palette` every colour the
-    set draws with, for telling a drawing from a piece's detail."""
+    set draws with, for telling a drawing from a piece's detail. Read once for the same
+    pixels and the same colours (see SILHOUETTES_KEPT)."""
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(np.ascontiguousarray(patch).tobytes())
+    digest.update(f"{patch.shape}|{size}|".encode())
+    for pair in colours:
+        for colour in pair:
+            digest.update(np.asarray(colour).tobytes())
+    digest.update(b"|")
+    for colour in palette:
+        digest.update(np.asarray(colour).tobytes())
+    key = digest.digest()
+    with _silhouettes_lock:
+        hit = _silhouettes.get(key)
+        if hit is not None:
+            _silhouettes.move_to_end(key)
+            return hit
+    sil = _silhouette(patch, size, colours, palette)
+    with _silhouettes_lock:
+        _silhouettes[key] = sil
+        while len(_silhouettes) > SILHOUETTES_KEPT:
+            _silhouettes.popitem(last=False)
+    return sil
+
+
+def _silhouette(
+    patch: np.ndarray,
+    size: int,
+    colours: PieceColours,
+    palette: tuple[np.ndarray, ...],
+) -> Silhouette:
     background, spread = _ring_median_and_spread(patch)
     border = int(round(patch.shape[0] * INNER))
     inner = patch[border : patch.shape[0] - border, border : patch.shape[1] - border]

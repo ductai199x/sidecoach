@@ -26,8 +26,11 @@ CPU, the changed cells of a frame in one batch. The model file ships in the pack
 
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 
@@ -49,6 +52,8 @@ MIN_SIMILARITY = 0.55
 # The lead the nearest exemplar's kind needs over the nearest of another kind.
 MIN_MARGIN = 0.03
 EMBED_DIM = 1280
+# Embeddings kept by the crop's content (5 kB each): a few boards' worth of pieces.
+CACHED = 2048
 
 
 class CellEmbedder:
@@ -61,6 +66,11 @@ class CellEmbedder:
         # the CPU otherwise, with two threads, the engine wanting the rest.
         self.session, self.device = session(path, device, intra_op_num_threads=2)
         self.path = path
+        # Embeddings by the crop's bytes: a piece that lands on a square was seen there, or
+        # on another square of its colour, a moment ago -- the same pixels, the same vector,
+        # and no run of the net for it. The newest CACHED are kept.
+        self._seen: OrderedDict[bytes, np.ndarray] = OrderedDict()
+        self._seen_lock = threading.Lock()
 
     @staticmethod
     @lru_cache(maxsize=1)
@@ -90,9 +100,34 @@ class CellEmbedder:
         return time.perf_counter() - begun
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
-        """Unit embeddings (n, EMBED_DIM), float32, one per crop."""
+        """Unit embeddings (n, EMBED_DIM), float32, one per crop; a crop seen before is not
+        run through the net again."""
         if not crops:
             return np.zeros((0, EMBED_DIM), dtype=np.float32)
-        batch = np.stack([self.prepare(c) for c in crops]).transpose(0, 3, 1, 2)
-        out = self.session.run(None, {"cells": np.ascontiguousarray(batch, dtype=np.float32)})
-        return np.asarray(out[0], dtype=np.float32)
+        keys = [
+            hashlib.blake2b(
+                np.ascontiguousarray(c).tobytes() + str(c.shape).encode(), digest_size=16
+            ).digest()
+            for c in crops
+        ]
+        out = np.empty((len(crops), EMBED_DIM), dtype=np.float32)
+        todo: list[int] = []
+        with self._seen_lock:
+            for i, key in enumerate(keys):
+                hit = self._seen.get(key)
+                if hit is None:
+                    todo.append(i)
+                else:
+                    self._seen.move_to_end(key)
+                    out[i] = hit
+        if todo:
+            batch = np.stack([self.prepare(crops[i]) for i in todo]).transpose(0, 3, 1, 2)
+            run = self.session.run(None, {"cells": np.ascontiguousarray(batch, dtype=np.float32)})
+            fresh = np.asarray(run[0], dtype=np.float32)
+            with self._seen_lock:
+                for j, i in enumerate(todo):
+                    out[i] = fresh[j]
+                    self._seen[keys[i]] = fresh[j]
+                while len(self._seen) > CACHED:
+                    self._seen.popitem(last=False)
+        return out

@@ -192,7 +192,7 @@ def play(sc: Scenario, cache_dir: Path | None = None) -> Played:
 
 
 # The seeds a default run plays (tests/conftest.py; `--seeds` sweeps more).
-SEEDS = range(1, 9)
+SEEDS = range(1, 3)  # --seeds 1000 for the sweep
 
 
 def test_a_random_game_is_followed_to_its_position(seed: int, tmp_path: Path) -> None:

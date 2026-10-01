@@ -328,6 +328,19 @@ def sprite(symbol: str, colouring: Colouring | None = None) -> tuple[np.ndarray,
     return _sprites(tuple(sorted((colouring or {}).items())))[symbol]
 
 
+@cache
+def _scaled(
+    sheet: str | None, symbol: str, colouring_key: tuple[tuple[str, str], ...], size: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """A piece scaled to `size`, once: every frame of a game draws the same few (it was a
+    resize for every piece of every frame, a second of a sweep's game)."""
+    rgb, alpha = _sheet(sheet)[symbol] if sheet else sprite(symbol, dict(colouring_key))
+    return (
+        cv2.resize(rgb, (size, size), interpolation=cv2.INTER_AREA),
+        cv2.resize(alpha, (size, size), interpolation=cv2.INTER_AREA),
+    )
+
+
 def sheet_sets() -> list[str]:
     """The names of the sets that come as sprite sheets."""
     return sorted(p.stem for p in SHEETS.glob("*.png"))
@@ -358,9 +371,7 @@ def draw_sprite(
     """Composite a piece, scaled to `size` pixels square, with its top-left corner at
     (x, y), clipped to the frame: from the cburnett vectors in `colouring`, or from the
     sprite sheet `sheet`."""
-    rgb, alpha = _sheet(sheet)[symbol] if sheet else sprite(symbol, colouring)
-    rgb = cv2.resize(rgb, (size, size), interpolation=cv2.INTER_AREA)
-    alpha = cv2.resize(alpha, (size, size), interpolation=cv2.INTER_AREA)
+    rgb, alpha = _scaled(sheet, symbol, tuple(sorted((colouring or {}).items())), size)
     h, w = frame.shape[:2]
     x0, y0, x1, y1 = max(0, x), max(0, y), min(w, x + size), min(h, y + size)
     if x1 <= x0 or y1 <= y0:

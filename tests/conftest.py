@@ -1,5 +1,7 @@
 """Suite-wide options: `--seeds N` (or `--seeds A-B`) widens the random-game sweeps
-(tests/test_stress.py, tests/test_board_geometry.py); the guard that keeps the suite off a
+(tests/test_stress.py, tests/test_board_geometry.py) and `--sweep` adds the cases marked
+`sweep` (every lichess set, every board size): the default run keeps a representative few of
+each and is fast (Tai, 2026-10-01); the guard that keeps the suite off a
 live session; the tests that load the embedding net kept to a few workers while the rest use
 every core; and `make_panel`, the panel most panel tests start from."""
 
@@ -109,6 +111,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "embedder: loads the embedding net outside the vision suite (tests/conftest.py)"
     )
+    config.addinivalue_line(
+        "markers", "sweep: one more case of a sweep, run with --sweep (tests/conftest.py)"
+    )
     _below_normal_priority()  # the controller and, since this runs in each, every worker
     if os.environ.get("PYTEST_XDIST_WORKER"):
         # One OpenCV thread a worker: every worker's own pool, one thread a core each, had
@@ -137,6 +142,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(tryfirst=True)  # before xdist's own, which reads the marks on the worker
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if not config.getoption("--sweep"):
+        # A sweep's other cases only when asked: the default run keeps its representative few.
+        swept = [item for item in items if item.get_closest_marker("sweep")]
+        if swept:
+            config.hook.pytest_deselected(items=swept)
+            items[:] = [item for item in items if not item.get_closest_marker("sweep")]
     for item in items:
         module = item.path.stem
         marked = item.get_closest_marker("vision") or item.get_closest_marker("embedder")
@@ -148,7 +159,30 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         item.add_marker(pytest.mark.xdist_group(f"embedder-{group}"))
 
 
+# A run of this many test files or fewer goes on one process: the 24 workers' start (each
+# importing the app) cost six seconds before the first test, and a few files run in one or two.
+FEW_FILES = 3
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
+    """`-n auto` (pyproject): every core for the suite, none for a targeted run."""
+    named = [a for a in config.args if a.split("::")[0].endswith(".py")]
+    if (
+        named
+        and len(named) == len(config.args)
+        and len({a.split("::")[0] for a in named}) <= FEW_FILES
+    ):
+        return 0
+    return None  # xdist's own count, every core
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--sweep",
+        action="store_true",
+        default=False,
+        help="run every case of the sweeps (the cases marked sweep), not the representative few",
+    )
     parser.addoption(
         "--seeds",
         action="store",
