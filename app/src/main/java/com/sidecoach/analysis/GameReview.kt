@@ -1,0 +1,208 @@
+package com.sidecoach.analysis
+
+import com.sidecoach.chess.Board
+import com.sidecoach.chess.PgnGame
+import com.sidecoach.chess.WHITE
+import com.sidecoach.events.ReviewedGame
+import com.sidecoach.events.ReviewedMove
+import com.sidecoach.events.Side
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * A finished game reviewed whole (`analysis/game_review.py`): every position of it measured by
+ * several engines at once, then every move judged in order from what they found -- the numbers
+ * behind the review's summary, its step-through, and the coach's words on every move.
+ *
+ * The live analyser judges a move as the game goes, one engine, one position at a time. A
+ * review has the whole game at once, and a game's positions are independent searches, so a few
+ * engines measure them side by side -- whole, with the threats and traps the live coach's facts
+ * are made of. One annotator then walks the moves in order from those measurements, which costs
+ * no search.
+ */
+
+/** How hard the engines look at every position: chess.com's Fast, Standard and Deep. */
+data class Strength(val name: String, val depth: Int, val multipv: Int)
+
+object GameReview {
+    val STRENGTHS: Map<String, Strength> = linkedMapOf(
+        "fast" to Strength("fast", 14, 3),
+        "standard" to Strength("standard", 18, 6),
+        "deep" to Strength("deep", 22, 6),
+    )
+
+    // Each engine's threads; engines side by side take up to two thirds of the cores between
+    // them, the rest left to everything else the device does.
+    const val THREADS = 2
+    const val MAX_WORKERS = 8
+
+    /** How many engines measure side by side on a device with [cores] cores. `workers_for`. */
+    fun workersFor(cores: Int = Runtime.getRuntime().availableProcessors()): Int =
+        maxOf(1, minOf(MAX_WORKERS, cores * 2 / 3 / THREADS))
+
+    /**
+     * Every position of the game's main line, the first before any move and the last after the
+     * final one, each carrying the moves that led to it (the opening book reads them).
+     */
+    fun positions(game: PgnGame): List<Board> {
+        val board = game.board()
+        val boards = arrayListOf(board.copy())
+        for (move in game.mainlineMoves()) {
+            board.push(move)
+            boards.add(board.copy())
+        }
+        return boards
+    }
+
+    /**
+     * Every position measured whole, each engine taking the next position left, in the game's
+     * order so a caller's progress reads from the first move. A search that fails ends its
+     * engine's share; the others finish the rest, and the walk searches whatever is left.
+     * [known]: positions measured before (by FEN; a review that was stopped part way), not
+     * searched again and counted as done from the start; [onMeasured] is handed each position as
+     * it is measured, to keep it. `measure_all`.
+     */
+    fun measureAll(
+        boards: List<Board>,
+        engines: List<Engine>,
+        depth: Int,
+        multipv: Int,
+        thresholds: Thresholds,
+        onProgress: ((Int, Int) -> Unit)? = null,
+        stop: AtomicBoolean? = null,
+        known: Map<String, Measured> = emptyMap(),
+        onMeasured: ((Measured) -> Unit)? = null,
+    ): List<Measured> {
+        val todo = ConcurrentLinkedQueue<Board>()
+        val found = ArrayList<Measured>()
+        for (board in boards) {
+            val fen = board.fen()
+            val was = known[fen]
+            if (was != null) found.add(was) else todo.add(board)
+        }
+        if (found.isNotEmpty()) onProgress?.invoke(found.size, boards.size)
+        val lock = Any()
+
+        fun work(engine: Engine) {
+            val annotator = GameAnnotator(engine, depth = depth, multipv = multipv, thresholds = thresholds)
+            while (stop == null || !stop.get()) {
+                val board = todo.poll() ?: return
+                val measured = try {
+                    annotator.measure(board)
+                } catch (_: Exception) { // the walk measures what is missing itself
+                    return
+                }
+                // Not kept is only a resume the slower.
+                if (onMeasured != null) runCatching { onMeasured(measured) }
+                val done = synchronized(lock) {
+                    found.add(measured)
+                    found.size
+                }
+                onProgress?.invoke(done, boards.size)
+            }
+        }
+
+        val threads = engines.mapIndexed { i, engine ->
+            Thread({ work(engine) }, "sidecoach-review-$i").apply { isDaemon = true }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        return synchronized(lock) { ArrayList(found) }
+    }
+
+    /**
+     * The game reviewed whole with [engines] (open, at least one; the first also walks the
+     * moves). [onProgress] (done, total) counts the positions measured; [known] and [onMeasured]
+     * carry a review over a stop ([measureAll]). `review_game`.
+     */
+    fun reviewGame(
+        game: PgnGame,
+        engines: List<Engine>,
+        depth: Int,
+        multipv: Int,
+        thresholds: Thresholds,
+        tagger: Tagger? = null,
+        book: Book? = null,
+        strength: String = "standard",
+        gameId: String = "review",
+        onProgress: ((Int, Int) -> Unit)? = null,
+        stop: AtomicBoolean? = null,
+        known: Map<String, Measured> = emptyMap(),
+        onMeasured: ((Measured) -> Unit)? = null,
+    ): ReviewedGame {
+        val started = System.nanoTime()
+        val boards = positions(game)
+        val measured = measureAll(boards, engines, depth, multipv, thresholds, onProgress, stop, known, onMeasured)
+        val annotator = GameAnnotator(
+            engines[0],
+            depth = depth,
+            multipv = multipv,
+            thresholds = thresholds,
+            tagger = tagger,
+            book = book,
+        )
+        annotator.adopt(measured)
+        val start = annotator.analysisEvent(gameId, boards[0], 0)
+        val clocks = clocks(game)
+        val moves = ArrayList<ReviewedMove>()
+        for ((index, move) in game.mainlineMoves().withIndex()) {
+            if (stop != null && stop.get()) break
+            val ply = index + 1
+            val before = boards[ply - 1]
+            val (assessment, after) = annotator.assess(gameId, before, move, ply)
+            val (clockMs, spentMs) = clocks[ply - 1]
+            moves.add(
+                ReviewedMove(
+                    ply = ply,
+                    san = before.san(move),
+                    side = if (before.turn == WHITE) Side.WHITE else Side.BLACK,
+                    fenBefore = before.fen(),
+                    assessment = assessment,
+                    after = after,
+                    clockMs = clockMs,
+                    spentMs = spentMs,
+                ),
+            )
+        }
+        val seconds = (System.nanoTime() - started) / 1e9
+        return ReviewedGame(
+            headers = game.headers.items().toMap(LinkedHashMap()),
+            start = start,
+            moves = moves,
+            strength = strength,
+            depth = depth,
+            seconds = Math.round(seconds * 100) / 100.0,
+        )
+    }
+
+    private val CONTROL = Regex("^(\\d+)(?:\\+(\\d+))?$")
+
+    /**
+     * Each move's clock after it and the time it took, in ms, from the PGN's `[%clk]` comments
+     * and its `TimeControl` ("600+5": 600 s a side, 5 s added a move). A correspondence game's
+     * clock ("1/86400") is days, not a move's thinking: none there. `_clocks`.
+     */
+    fun clocks(game: PgnGame): List<Pair<Int?, Int?>> {
+        val control = CONTROL.matchEntire(game.headers["TimeControl"] ?: "")
+        val initial = control?.let { it.groupValues[1].toInt() * 1000 }
+        val increment = control?.let { it.groupValues[2].ifEmpty { "0" }.toInt() * 1000 } ?: 0
+        val last = hashMapOf<Boolean, Int?>(true to initial, false to initial)
+        val out = ArrayList<Pair<Int?, Int?>>()
+        val board = game.board()
+        for (node in game.mainline()) {
+            val mover = board.turn
+            board.push(node.move)
+            val seconds = node.clock()
+            if (seconds == null) {
+                out.add(null to null)
+                continue
+            }
+            val clock = Math.rint(seconds * 1000).toInt() // Python's round: halves to even
+            val before = last[mover]
+            val spent = if (before != null && control != null) before - clock + increment else null
+            out.add(clock to spent?.let { maxOf(0, it) })
+            last[mover] = clock
+        }
+        return out
+    }
+}

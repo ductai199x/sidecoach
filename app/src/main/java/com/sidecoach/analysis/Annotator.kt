@@ -333,6 +333,15 @@ class GameAnnotator(
     /** Whether the position is measured whole already (the game's own, or ahead of it). */
     fun measured(board: Board): Boolean = cache.containsKey(board.fen())
 
+    /**
+     * Positions measured whole by another annotator -- another engine, on another thread, for a
+     * review measuring a game's positions side by side (`GameReview`) -- kept as if measured
+     * here: the walk through the game's moves then searches nothing.
+     */
+    fun adopt(measured: Iterable<Measured>) {
+        for (m in measured) cache[m.fen] = m
+    }
+
     /** What the move cost its mover, and what the position it led to holds. */
     fun assess(gameId: String, before: Board, move: Move, ply: Int): Pair<MoveAssessment, Analysis> {
         val assessment = assessMove(gameId, before, move, ply)
