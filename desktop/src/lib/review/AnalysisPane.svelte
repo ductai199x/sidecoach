@@ -270,7 +270,7 @@
       {#if themes.length}
         <div class="an-themes">
           <span class="head"></span><span class="head">White</span><span class="head">Black</span>
-          {#each themes as x (x.t)}<span>{motifWords(x.t)}</span><b>{x.w || "–"}</b><b>{x.b || "–"}</b>{/each}
+          {#each themes as x (x.t)}<span class="an-theme">{motifWords(x.t)}</span><b>{x.w || "–"}</b><b>{x.b || "–"}</b>{/each}
         </div>
       {:else}
         <p class="muted">No themes in this game's moves.</p>
