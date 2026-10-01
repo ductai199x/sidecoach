@@ -31,7 +31,7 @@ def facts() -> PositionFacts:
     [
         # Unprompted: the idea, then the focus, and never the move.
         pytest.param(
-            L.SILENT, [Unlock.DECISIVE, Unlock.STUCK, Unlock.STUCK], [L.IDEA, L.FOCUS, None],
+            L.SILENT, [Unlock.STUCK, Unlock.STUCK, Unlock.STUCK], [L.IDEA, L.FOCUS, None],
             id="unprompted-stops-at-the-focus",
         ),
         # Two hints, then the answer: the third hint is the move, explained.

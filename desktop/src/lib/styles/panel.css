@@ -543,6 +543,8 @@ html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: c
 .lmenu button > svg { width: 20px; height: 20px; flex: 0 0 20px; fill: var(--muted); }
 .lmenu button span { flex: 1; }
 .lmenu small { display: block; margin-top: 1px; font-size: 12px; font-weight: 400; color: var(--muted); }
+/* A phone or a narrow window has room for the words of a menu, not their explanations. */
+html.stacked .lmenu small { display: none; }
 .lmenu .tick { visibility: hidden; fill: var(--accent) !important; }
 .lmenu [aria-checked="true"] .tick { visibility: visible; }
 .lmenu [aria-checked="true"] > svg:first-child { fill: var(--accent); }

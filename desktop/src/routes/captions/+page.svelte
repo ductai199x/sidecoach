@@ -19,7 +19,7 @@
   import Badge from "$lib/Badge.svelte";
   import { onDestroy, onMount, tick } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
-  import { connect, get, panel, put, type Captions, type PanelState } from "$lib/api";
+  import { connect, panel, put, type Captions, type PanelState } from "$lib/api";
   import {
     CONTROLS_MS, CROSS_LIFT, CROSS_REACH, DOUBLE_CLICK_MS, EDGE, EXPANDED_LINES, HIDE_AFTER_MS,
     LINES, MAX_LINES, MIN_WIDTH, PREVIEW, SLOP, accent, clear, fill, joined, runs, type Rect,
@@ -483,10 +483,7 @@
     turnedOff = true;
     drop();
     try {
-      const described = await get<{ settings: Record<string, Record<string, unknown>> }>("/api/settings");
-      const values = described.settings;
-      values.voice = { ...values.voice, captions: false };
-      await put("/api/settings", { settings: values, secrets: {} });
+      await put("/api/settings", { settings: { voice: { captions: false } }, secrets: {} });
     } catch (e) {
       console.warn("captions off:", e);
     }

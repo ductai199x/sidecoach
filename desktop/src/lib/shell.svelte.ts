@@ -11,6 +11,9 @@ import { prefs } from "./panel.svelte";
 export type ShellSettings = { close: "quit" | "tray"; autostart: boolean };
 
 export const inShell = (): boolean => isTauri();
+/** The phone's own page (its web view marks the document). */
+export const onPhone = (): boolean =>
+  typeof document !== "undefined" && document.documentElement.dataset.app === "phone";
 
 export async function shellSettings(): Promise<ShellSettings> {
   if (!isTauri()) return { close: "quit", autostart: false };

@@ -168,3 +168,34 @@ def test_a_save_reaches_the_running_coach_and_engine(
     assert coach.policy.settings.stuck_seconds == 30
     assert annotator.thresholds.blunder == 0.4
     assert annotator.depth == 12 and annotator.multipv == 3 and annotator.engine.multipv == 3
+
+
+def test_same_as_above_survives_a_restart(tmp_path: Path) -> None:
+    """llm.routine_effort's "Same as above" is None, and TOML has no null: dropped from the
+    file, it read back as the default "none" after a restart (the parity audit, 2026-10-01).
+    Written "", it reads back as unset."""
+    from sidecoach.config import Settings, load_settings, save_settings
+
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.routine_effort = None
+    path = save_settings(settings, tmp_path / "sidecoach.toml")
+    again = load_settings(path).llm.routine_effort
+    assert not again and again != "none"
+    plain = Settings(data_dir=tmp_path)
+    plain.llm.base_url = None  # a None that is the default stays out of the file
+    written = save_settings(plain, tmp_path / "plain.toml").read_text(encoding="utf-8")
+    assert "base_url" not in written
+
+
+def test_a_key_taken_out_of_an_object_field_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """llm.extra_body is one field: saved, it is what was sent, whole. Merged key by key, a
+    key taken out stayed for good (the parity audit, 2026-10-01)."""
+    client, engine = _client(tmp_path, monkeypatch)
+    two = {"settings": {"llm": {"extra_body": {"top_k": 20, "seed": 7}}}, "secrets": {}}
+    assert client.put("/api/settings", json=two).json()["ok"]
+    one = {"settings": {"llm": {"extra_body": {"seed": 7}}}, "secrets": {}}
+    assert client.put("/api/settings", json=one).json()["ok"]
+    assert engine.settings.llm.extra_body == {"seed": 7}
+    assert engine.settings.llm.provider == "openai", "the rest of the section is kept"

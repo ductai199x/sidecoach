@@ -41,7 +41,6 @@ HINT_CEILING = DisclosureLevel.MOVE
 
 class Unlock(StrEnum):
     STUCK = "stuck"
-    DECISIVE = "decisive"
     HINT = "hint"
     ASK_MOVE = "ask_move"
     ASK_LINE = "ask_line"
@@ -185,10 +184,6 @@ class Disclosure:
                 # A player stuck for a while gets the idea at once, the focus next.
                 if self.level < AUTONOMOUS_CEILING:
                     self.level = DisclosureLevel(self.level + 1)
-            case Unlock.DECISIVE:
-                # The critical moment's first word is the idea.
-                if self.level < DisclosureLevel.IDEA:
-                    self.level = DisclosureLevel.IDEA
             case Unlock.HINT:
                 # Two hints, then the move.
                 if self.level < HINT_CEILING:

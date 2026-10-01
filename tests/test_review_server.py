@@ -399,7 +399,10 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     refused = client.post(f"/api/review/{key}/ai").json()
     assert refused == {"ok": False, "error": review_room.NO_AI} and not asked
 
-    engine.settings.llm.provider = "local"
+    # Saved in Settings, the room sees it at once: the settings it holds follow every save
+    # (they kept the launch-time copy until a restart, the parity audit 2026-10-01).
+    put = client.put("/api/settings", json={"settings": {"llm": {"provider": "local"}}})
+    assert put.json()["ok"]
     assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
     deadline = time.monotonic() + 10
     while ai["status"] != "ready" and time.monotonic() < deadline:

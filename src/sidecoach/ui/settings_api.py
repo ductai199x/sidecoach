@@ -122,12 +122,40 @@ def _changed(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list
 
 def _merged(base: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     """`base` with `change` laid over it, section by section: a field not in the change keeps
-    its value."""
+    its value, and one in it is the change's, whole -- an object too, so a key taken out of
+    llm.extra_body goes (the parity audit, 2026-10-01; the phone's SettingsCheck does the
+    same)."""
     out = dict(base)
     for key, value in change.items():
         both = isinstance(value, dict) and isinstance(out.get(key), dict)
-        out[key] = _merged(out[key], value) if both else value
+        out[key] = {**out[key], **value} if both else value
     return out
+
+
+def _validated(engine: Any, change: dict[str, Any]) -> Settings:
+    """The settings as they are now with `change` laid over them, validated; raises
+    ValidationError."""
+    new = Settings.model_validate(_merged(engine.settings.model_dump(mode="json"), change))
+    data_dir = os.environ.get("SIDECOACH_DATA_DIR")
+    if data_dir:
+        # The shell owns the data directory; the file never overrides it.
+        from pathlib import Path
+
+        new.data_dir = Path(data_dir)
+    return new
+
+
+def remember(engine: Any, change: dict[str, Any]) -> None:
+    """A choice made on the panel itself -- muted, how the coach listens -- kept in the
+    settings file, so the next session starts as this one was left (Tai, 2026-10-01: "mute
+    setting isn't remembered between sessions"). The panel applied it already; nothing is
+    applied again."""
+    new = _validated(engine, change)
+    new._source = save_settings(new, engine.settings.source)
+    if hasattr(engine, "adopt_settings"):
+        engine.adopt_settings(new)
+    else:
+        engine.settings = new
 
 
 def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
@@ -136,17 +164,9 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
     before another saved cannot put back what that one changed (a Settings window left open
     wrote the chess.com username back to empty, Tai 2026-09-30)."""
     try:
-        new = Settings.model_validate(
-            _merged(engine.settings.model_dump(mode="json"), body.settings)
-        )
+        new = _validated(engine, body.settings)
     except ValidationError as exc:
         return {"ok": False, "errors": exc.errors(include_url=False)}
-    data_dir = os.environ.get("SIDECOACH_DATA_DIR")
-    if data_dir:
-        # The shell owns the data directory; the file never overrides it.
-        from pathlib import Path
-
-        new.data_dir = Path(data_dir)
     old = engine.settings
     path = save_settings(new, old.source)
     new._source = path

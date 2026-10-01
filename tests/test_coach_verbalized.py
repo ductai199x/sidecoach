@@ -108,6 +108,9 @@ def test_the_clean_candidate_is_kept_at_once_and_a_stump_never_reaches_the_user(
         )
         play_to_scholar(coach)
         coach.on_event(mate_analysis(6), 7.0)
+        since = coach.policy.stuck_from
+        assert since is not None
+        coach.tick(since + coach.policy.stuck_threshold())  # stuck: the first word unasked
         return coach
 
     coach = coach_on(

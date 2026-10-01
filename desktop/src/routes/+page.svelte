@@ -18,7 +18,7 @@
   import { boardHandle, fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
-  import { buildTray, checkForUpdates, inShell, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
+  import { buildTray, checkForUpdates, inShell, onPhone, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
 
   let mainEl = $state<HTMLElement | null>(null);
   let footer = $state<HTMLElement | null>(null);
@@ -126,9 +126,13 @@
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && store.pinnedPly !== null) store.showLive();
       if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); store.setPtt(true); }
-      // The header's and the board's one-key controls: M mutes the coach, F flips the board.
+      // The header's and the board's one-key controls: M mutes the coach, C turns the captions
+      // on or off where there are any, F flips the board.
       if (typing() || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
       if (e.key.toLowerCase() === "m" && store.state.voices?.length) store.setMuted(!store.state.muted);
+      if (e.key.toLowerCase() === "c" && store.state.captions && (inShell() || onPhone())) {
+        store.setCaptions(!store.state.captions.on);
+      }
       if (e.key.toLowerCase() === "f") void panel.flip();
     };
     const onKeyUp = (e: KeyboardEvent) => { if (e.code === "Space" && !typing()) { e.preventDefault(); store.setPtt(false); } };

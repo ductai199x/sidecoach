@@ -1,12 +1,13 @@
 """When the coach speaks without being asked.
 
 DESIGN.md section 5.5, in priority order: an explicit ask is always answered; a lesson after
-a mistake; brief feedback after every move the user plays; an orienting question at a
-decisive moment; a hint once the user has been stuck for a while. Higher numbers yield to
-lower ones when they collide. While the user is thinking, at most two unprompted messages per
-position -- the idea, then, if they are still stuck, the focus -- each after its own wait, so
-the coach never nags and never gives the move unasked. A quiet toggle silences everything but
-explicit asks.
+a mistake; brief feedback after every move the user plays; a hint once the user has been
+stuck for a while. Higher numbers yield to lower ones when they collide. While the user is
+thinking the coach says nothing until they are stuck -- no question at a decisive moment
+(Tai, 2026-10-01: nothing "until the user is stuck or actively request a hint or after they
+have made a move") -- and then at most two messages per position: the idea, then, if they
+are still stuck, the focus, each after its own wait, so the coach never nags and never gives
+the move unasked. A quiet toggle silences everything but explicit asks.
 
 Time control scales all of it: rapid and slower get every trigger, with the stuck threshold
 shrinking as the clock runs down; blitz gets the brief post-move feedback only; bullet gets
@@ -43,9 +44,6 @@ def time_control_of(initial_ms: int | None, increment_ms: int = 0) -> TimeContro
     return TimeControl.BULLET
 
 
-# In a run of decisive positions (a won endgame: every move is "the" move), the decisive
-# question is asked at most once in this many plies.
-DECISIVE_EVERY = 8
 # Unprompted messages in one position while the user thinks: the idea, then the focus (Tai,
 # 2026-09-23). The move itself only when asked.
 UNPROMPTED_PER_POSITION = 2
@@ -85,8 +83,6 @@ class InterjectionPolicy:
     # Why the last unprompted trigger did not fire, in a few words, for the debug log --
     # the answer to "why is the coach quiet?". None once a trigger fires.
     last_reason: str | None = field(default=None, init=False)
-    # The last ply the decisive question was asked at, while the positions stay decisive.
-    _last_decisive_ply: int | None = field(default=None, init=False)
 
     # What the board is doing
 
@@ -99,14 +95,10 @@ class InterjectionPolicy:
         self._user_to_move = user_to_move
 
     def restart(self) -> None:
-        """A new game, or a position adopted: move numbers start again, so the decisive stretch
-        pointed at in the last one says nothing about this one. A puzzle's first position was
-        skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
-        desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later). Nor
-        do its counts: kept by ply, the last puzzles' words at their first positions left a
-        new puzzle "gave the idea and the focus here" before a hint (Tai's phone,
-        2026-09-29)."""
-        self._last_decisive_ply = None
+        """A new game, or a position adopted: move numbers start again, so what was said in
+        the last one says nothing about this one. Kept by ply, the last puzzles' words at
+        their first positions left a new puzzle "gave the idea and the focus here" before a
+        hint (Tai's phone, 2026-09-29)."""
         self._spoken.clear()
         self._said_ts = None
 
@@ -127,6 +119,14 @@ class InterjectionPolicy:
         """When the position the user is thinking in appeared (the loop's clock)."""
         return self._since
 
+    @property
+    def stuck_from(self) -> float | None:
+        """When the stuck spell being counted began: the position, or the last thing said
+        in it."""
+        if self._since is None or self._said_ts is None:
+            return self._since
+        return max(self._since, self._said_ts)
+
     # The triggers
 
     def on_user_move_assessed(self, assessment: MoveAssessment) -> Trigger | None:
@@ -143,26 +143,6 @@ class InterjectionPolicy:
             return Trigger.POST_MISTAKE
         return Trigger.POST_MOVE
 
-    def on_position_analysed(self, ply: int, *, decisive: bool) -> Trigger | None:
-        """The engine has looked at the position the user is thinking in. The decisive
-        question is asked when a position turns decisive, not on every move of a won
-        endgame, where the lines diverge at each turn: once a stretch of decisive
-        positions has been pointed at, the next question waits for a quiet position in
-        between, or `DECISIVE_EVERY` plies."""
-        if not self._may_speak_now(ply):
-            return None
-        if self._spoken.get(ply, 0):
-            return self._silent("already spoke in this position")
-        if not decisive:
-            self._last_decisive_ply = None
-            return self._silent("position not decisive")
-        last = self._last_decisive_ply
-        if last is not None and ply - last < DECISIVE_EVERY:
-            return self._silent(f"decisive stretch already pointed at (ply {last})")
-        self._last_decisive_ply = ply
-        self.last_reason = None
-        return Trigger.DECISIVE_QUESTION
-
     def tick(self, ts: float) -> Trigger | None:
         """Time passing while the user thinks; a hint once they have been stuck long enough,
         counted from the position or from the last thing said in it."""
@@ -173,8 +153,8 @@ class InterjectionPolicy:
         if self.in_scramble:
             return self._silent("time scramble: no stuck hints")
         threshold = self.stuck_threshold()
-        since = max(self._since, self._said_ts) if self._said_ts is not None else self._since
-        if ts - since < threshold:
+        since = self.stuck_from
+        if since is None or ts - since < threshold:
             return self._silent(f"waiting for a stuck hint at {threshold:.0f}s")
         self.last_reason = None
         return Trigger.STUCK

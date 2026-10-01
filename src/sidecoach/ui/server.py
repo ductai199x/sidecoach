@@ -104,9 +104,14 @@ class _PieceFile(BaseModel):
 
 
 class _Pieces(BaseModel):
-    """The images a player chose for their own pieces (looks.save_custom)."""
+    """Images a player chose for one of their own sets (looks.create_own, looks.add_images)."""
 
     files: list[_PieceFile]
+    name: str = ""
+
+
+class _SetName(BaseModel):
+    name: str
 
 
 class _Muted(BaseModel):
@@ -325,9 +330,16 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     def voice(body: _Voice) -> dict[str, bool]:
         return {"ok": api.set_voice(body.voice)}
 
+    # One of the panel's own switches at a time, set and kept in one step: two quick presses
+    # saved out of order left the switch one way and the setting the other.
+    keeping = threading.Lock()
+
     @app.post("/api/muted")
     def muted(body: _Muted) -> dict[str, bool]:
-        return {"ok": api.set_muted(body.muted)}
+        with keeping:
+            ok = api.set_muted(body.muted)
+            settings_api.remember(engine, {"voice": {"muted": body.muted}})  # the next session too
+        return {"ok": ok}
 
     @app.post("/api/dictation/cancel")
     def dictation_cancel() -> dict[str, Any]:
@@ -416,6 +428,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     store_path = engine.settings.data_dir / "profile.sqlite"
     reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+    engine.settings_followers.append(lambda s: setattr(reviews, "settings", s))
     # The AI coach's words on reviews count in the panel's strip with the game's.
     engine.extra_usage.append(reviews.usages)
     backlog = None
@@ -426,6 +439,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             engine.settings, store_path, busy=lambda: engine.running or reviews.busy()
         )
         backlog.start()
+        engine.settings_followers.append(lambda s: setattr(backlog, "settings", s))
     app.state.backlog = backlog  # closed with the panel (`serve`)
 
     @app.get("/games")
@@ -643,14 +657,29 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         board = engine.settings.board
         return looks.look(board.pieces, board.theme, engine.settings.data_dir)
 
-    @app.post("/api/pieces/custom")
-    def post_custom_pieces(body: _Pieces) -> dict[str, Any]:
-        return looks.save_custom(engine.settings.data_dir, [f.model_dump() for f in body.files])
+    # A player's own sets: a new one from the images chosen, more images for one, a new name,
+    # deleted (put aside for its Undo) and back.
+    @app.post("/api/pieces/own")
+    def post_own_set(body: _Pieces) -> dict[str, Any]:
+        files = [f.model_dump() for f in body.files]
+        return looks.create_own(engine.settings.data_dir, body.name, files)
 
-    @app.delete("/api/pieces/custom")
-    def delete_custom_pieces() -> dict[str, Any]:
-        looks.clear_custom(engine.settings.data_dir)
-        return {"ok": True}
+    @app.post("/api/pieces/own/{set_id}/images")
+    def post_own_images(set_id: str, body: _Pieces) -> dict[str, Any]:
+        files = [f.model_dump() for f in body.files]
+        return looks.add_images(engine.settings.data_dir, set_id, files)
+
+    @app.put("/api/pieces/own/{set_id}")
+    def put_own_set(set_id: str, body: _SetName) -> dict[str, Any]:
+        return looks.rename_own(engine.settings.data_dir, set_id, body.name)
+
+    @app.delete("/api/pieces/own/{set_id}")
+    def delete_own_set(set_id: str) -> dict[str, Any]:
+        return looks.delete_own(engine.settings.data_dir, set_id)
+
+    @app.post("/api/pieces/own/{set_id}/restore")
+    def restore_own_set(set_id: str) -> dict[str, Any]:
+        return looks.restore_own(engine.settings.data_dir, set_id)
 
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
     @app.get("/api/settings")
@@ -666,6 +695,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     from sidecoach.setup import gpu as gpu_pack
 
     setup = Setup(engine.settings)
+    engine.settings_followers.append(lambda s: setattr(setup, "settings", s))
 
     @app.get("/api/setup/status")
     def setup_status() -> dict[str, Any]:
@@ -727,7 +757,10 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     @app.post("/api/listen")
     def listen(body: _Listen) -> dict[str, Any]:
-        return {"ok": True, "mode": engine.set_listen(body.mode)}
+        with keeping:
+            mode = engine.set_listen(body.mode)  # refuses a mode there is not
+            settings_api.remember(engine, {"voice": {"listen": body.mode}})  # the next session too
+        return {"ok": True, "mode": mode}
 
     @app.post("/api/ptt")
     def ptt(body: _Ptt) -> dict[str, bool]:
@@ -904,6 +937,7 @@ def _rooms_for(engine: PanelEngine) -> Any:
         mirror=engine._emit,
     )
     rooms.motifs = engine.puzzle_motifs
+    engine.settings_followers.append(lambda s: setattr(rooms, "settings", s))
     # The rooms' model calls count in the panel's strip with the game's.
     engine.extra_usage.append(rooms.usages)
     return rooms

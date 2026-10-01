@@ -330,11 +330,17 @@ class PanelEngine:
     # Other model-call ledgers to count in the strip (the puzzle rooms'): callables
     # returning llm.usage.Usage objects.
     extra_usage: list[Callable[[], list[Any]]] = field(default_factory=list, init=False)
+    # Who keeps the settings besides the engine -- the review and puzzle rooms, the setup, the
+    # background reviewer (ui/server.py) -- each handed every new copy, so a save is seen there
+    # at once, as on the phone, which reads its store live (the parity audit, 2026-10-01).
+    settings_followers: list[Callable[[Settings], None]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         # The voice the settings name, unless the caller named one (Tai, 2026-09-21: the
         # saved voice was ignored at start, the field's old default always won).
         self.voice = self.voice or self.settings.voice.voice
+        # Muted as the last session was left (Tai, 2026-10-01).
+        self.muted = self.muted or self.settings.voice.muted
         # Each voice model is built exactly once here and kept for the engine's life; the
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
@@ -667,6 +673,13 @@ class PanelEngine:
             self._state["voice_detail"] = self._tts.healthcheck()[1]
         self._emit("voice", "info", f"voice set to {voice}", detail=self._state["voice_detail"])
 
+    def adopt_settings(self, new: Settings) -> None:
+        """The settings saved are the engine's now, and every follower's."""
+        with self._lock:
+            self.settings = new
+        for follow in list(self.settings_followers):
+            follow(new)
+
     def apply_settings(self, new: Settings, changed: Sequence[str]) -> list[str]:
         """The settings saved: what can change on the running session does, and is
         returned as the list of dotted names applied. Everything the models load at
@@ -674,8 +687,7 @@ class PanelEngine:
         restart; the screen's backend and the Stockfish binary for the next Start. Each
         change is applied on its own: one that fails is named in the log and left out of
         the list, and the others still go (one raise used to skip the rest silently)."""
-        with self._lock:
-            self.settings = new
+        self.adopt_settings(new)
         applied: list[str] = []
         changed = list(changed)
 
@@ -699,6 +711,7 @@ class PanelEngine:
         attempt(["capture.record"], set_record)
         attempt(["voice.voice"], lambda: self.set_voice(new.voice.voice))
         attempt(["voice.listen"], lambda: self.set_listen(new.voice.listen))
+        attempt(["voice.muted"], lambda: self.set_muted(new.voice.muted))
         if hasattr(self._tts, "speed"):
             attempt(["voice.speed"], lambda: setattr(self._tts, "speed", new.voice.speed))
         if hasattr(self._tts, "set_output_device"):

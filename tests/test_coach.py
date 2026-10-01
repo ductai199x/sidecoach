@@ -39,6 +39,7 @@ from tests.coaching import (
     scripted_coach,
     sent,
     start_game,
+    stuck,
 )
 from tests.fakes import ScriptedProvider
 
@@ -60,14 +61,18 @@ def _record(messages: list[ChatMessage]) -> str:
     )
 
 
-def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
+def test_stuck_at_a_decisive_moment_the_player_gets_the_idea_and_no_move() -> None:
+    """A decisive moment says nothing of its own (Tai, 2026-10-01: nothing "until the user is
+    stuck or actively request a hint or after they have made a move"); stuck, the player
+    gets the idea."""
     coach, provider = scripted_coach(
         ["You can mate right now: their king on e8 is short of squares. Which check does it?"]
     )
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
-    assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
+    assert drain(coach) == [] and provider.prompts == [], "nothing before the stuck limit"
+    out = stuck(coach)
+    assert len(out) == 1 and out[0].trigger is Trigger.STUCK
     assert out[0].level is DisclosureLevel.IDEA
     # The model was handed the game as one message: the setting, the record one line per
     # move, the position the player faces in full -- everything, the answer included (Tai,
@@ -107,7 +112,7 @@ def test_a_decisive_moment_earns_the_idea_and_names_no_move() -> None:
     assert "the idea: what is at stake and the key fact" in directive_of(messages)
     assert "no square" not in directive_of(messages)
     assert out[0].text.startswith("You can mate right now"), "named the key square: it stands"
-    # And a second question for the same position is not asked.
+    # The engine's word on it again says nothing either.
     coach.on_event(mate_analysis(6), 8.0)
     assert drain(coach) == []
 
@@ -120,7 +125,7 @@ def test_a_leaked_draft_is_spoken_and_the_leak_logged() -> None:
     )
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
+    out = stuck(coach)
     assert len(out) == 1 and out[0].text.startswith("Their king on e8 is boxed in")
     spoken = coach.spoken[-1]
     assert spoken.attempts == 1 and not spoken.problems and coach.speaker.fallbacks == 0
@@ -201,7 +206,7 @@ def test_feedback_after_the_users_move_may_say_everything_about_that_position() 
     )
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    drain(coach)
+    stuck(coach)
     mate_missed(coach)  # Bxf7+ instead of the mate
     out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
@@ -390,7 +395,7 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     )
     from sidecoach.coach.coach import RULE_SPACING
 
-    coach._messages += RULE_SPACING  # past the decisive question's rule of thumb
+    coach._messages += RULE_SPACING  # clear of any rule of thumb said before
     said_rules: list[str] = []
     record = coach._rule_said
 
@@ -441,6 +446,7 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
     coach, _ = scripted_coach([])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 6.5)
+    stuck(coach)
     position = coach.positions[6]
     board = chess.Board(SCHOLAR)
     move = board.parse_san("a3")
@@ -481,7 +487,7 @@ def test_a_rule_of_thumb_cools_down_across_games_and_puzzles() -> None:
     def has_rule(text: str) -> bool:
         return any(rule.lower().rstrip(".") in text.lower() for rule in said_rules)
 
-    # The decisive question's first hint said its principle: no rule for a few messages.
+    # The stuck hint's idea said its principle: no rule for a few messages.
     instruction, soon = lesson()
     assert not has_rule(soon) and RULE_HELD in instruction
     coach._messages += RULE_SPACING
@@ -596,7 +602,7 @@ def test_the_claim_reader_lists_the_drafts_claims_and_the_board_refuses_a_false_
     )
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
+    out = stuck(coach)
     assert out[0].text == fine
     spoken = coach.spoken[-1]
     assert spoken.attempts == 2
@@ -612,7 +618,7 @@ def test_a_reply_thinner_than_the_template_is_said_and_noted() -> None:
     coach, provider = scripted_coach([thin])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
+    out = stuck(coach)
     assert out[0].text == thin
     spoken = coach.spoken[-1]
     assert spoken.attempts == 1 and coach.speaker.fallbacks == 0 and not spoken.problems
@@ -738,10 +744,11 @@ def test_asking_before_the_engine_has_looked_is_answered_when_it_has_even_early(
         assert answered[0].text != out[0].text
 
 
-def test_the_coachs_own_words_wait_for_the_full_depth() -> None:
-    """The decisive question is the coach's own: an early analysis asks nothing, the full
-    depth does -- and an early one that comes after it replaces nothing."""
-    coach, _ = scripted_coach(
+def test_an_analysis_early_or_full_says_nothing_of_its_own() -> None:
+    """What the engine finds is no reason to speak while the player thinks: neither its
+    early look nor the full depth says a word, a decisive moment included (Tai,
+    2026-10-01); the stuck limit does."""
+    coach, provider = scripted_coach(
         ["You can mate right now: their king on e8 is short of squares. Which check does it?"]
     )
     play_to_scholar(coach)
@@ -749,11 +756,8 @@ def test_the_coachs_own_words_wait_for_the_full_depth() -> None:
     coach.on_event(early, 7.0)
     assert drain(coach) == []
     coach.on_event(mate_analysis(6), 8.0)
-    out = drain(coach)
-    assert [m.trigger for m in out] == [Trigger.DECISIVE_QUESTION]
-    coach.on_event(early, 9.0)
-    analysis = coach.positions[6].analysis
-    assert analysis is not None and not analysis.provisional
+    assert drain(coach) == [] and provider.prompts == []
+    assert [m.trigger for m in stuck(coach)] == [Trigger.STUCK]
 
 
 # The puzzle of Tai's desktop, 2026-09-24: Black to move, 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 Rxe1#.
@@ -818,9 +822,10 @@ def _hint_then(coach: Coach, board: chess.Board) -> None:
 def test_no_new_question_while_the_line_is_played_out_nor_a_hint_said_twice() -> None:
     """After 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 the coach asked "You can mate in one move ...
     Which check leaves their king no square at all?" -- a fresh question in the middle of
-    the combination the player was carrying out (Tai's desktop, 2026-09-24). And a reply
-    off the engine's line brought the idea back: the stuck hint's "a tactic that wins a
-    knight ... a pin" at a puzzle's start came again as the question after the move was found
+    the combination the player was carrying out (Tai's desktop, 2026-09-24): nothing unasked
+    comes while the line is played. And a reply off the engine's line brought the idea back:
+    the stuck hint's "a tactic that wins a knight ... a pin" at a puzzle's start came again
+    after the move was found
     (Tai's phone, 2026-09-29: "Each level can only be said once and if the level higher was
     said then the lower one can't be said"). The next hint unasked is the focus."""
     coach, _ = scripted_coach([])
@@ -830,61 +835,46 @@ def test_no_new_question_while_the_line_is_played_out_nor_a_hint_said_twice() ->
         _played(coach, board, ply, uci, ply % 2 == 1, 2.0 + ply)
         if ply % 2 == 0:
             _analysed(coach, board, ply, QD1_LINE[ply:], 2.5 + ply, (5 - ply) // 2)
-    asked = [m.text for m in drain(coach) if m.trigger is Trigger.DECISIVE_QUESTION]
-    assert asked == [], asked
-    # The question at the start, the move found, a reply off the line: no question again.
+    unasked = [m.text for m in drain(coach) if m.trigger is not Trigger.POST_MOVE]
+    assert unasked == [], unasked
+    # The idea at the start, the move found, a reply off the line: the idea not again.
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
     _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
-    first = drain(coach)
-    assert [(m.trigger, m.level) for m in first] == [
-        (Trigger.DECISIVE_QUESTION, DisclosureLevel.IDEA)
-    ]
+    assert drain(coach) == [], "a puzzle's first position says nothing of its own"
+    first = stuck(coach)
+    assert [(m.trigger, m.level) for m in first] == [(Trigger.STUCK, DisclosureLevel.IDEA)]
     _played(coach, board, 1, "c2d1", True, 3.0)
     _played(coach, board, 2, "a5e1", False, 4.0)  # blocks instead of taking: off the line
     _analysed(coach, board, 2, ["d1e1"], 4.5, 1)
     assert [m for m in drain(coach) if m.trigger is not Trigger.POST_MOVE] == []
     coach.tick(4.0 + coach.policy.stuck_threshold() + 1)
-    stuck = [m for m in drain(coach) if m.trigger is Trigger.STUCK]
-    assert [m.level for m in stuck] == [DisclosureLevel.FOCUS], stuck
-
-
-def test_the_next_puzzle_gets_its_question_after_a_long_one() -> None:
-    """The decisive stretch pointed at in one puzzle said nothing about the next: move
-    numbers start again, and a new puzzle's first position fell inside the last one's
-    stretch, so its question was never asked (Tai's desktop, 2026-09-24)."""
-    from sidecoach.events import Resync
-
-    coach, _ = scripted_coach([])
-    board = _puzzle(coach, "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
-    for ply, uci in enumerate(["g8f8", "a1a2", "f8e7", "a2a3"], start=1):
-        _played(coach, board, ply, uci, ply % 2 == 1, float(ply))
-    _analysed(coach, board, 4, ["e7d6", "a3a6"], 5.0, None)
-    assert [m.trigger for m in drain(coach)] == [Trigger.DECISIVE_QUESTION]
-    coach.on_event(
-        Resync(game_id="g", fen=QD1, reason="position adopted after 30 unexplained cells"), 20.0
-    )
-    _analysed(coach, chess.Board(QD1), 0, QD1_LINE, 21.0, 3)
-    assert [m.trigger for m in drain(coach)] == [Trigger.DECISIVE_QUESTION]
+    focus = [m for m in drain(coach) if m.trigger is Trigger.STUCK]
+    assert [m.level for m in focus] == [DisclosureLevel.FOCUS], focus
 
 
 def test_a_new_puzzle_gets_its_hints_whatever_the_last_one_had() -> None:
     """The counts of what was said unasked were kept by ply, and every puzzle starts at ply
-    0: after one puzzle's question and focus there, the next puzzle's log said "gave the idea
-    and the focus here" before a word of it (Tai's phone, 2026-09-29)."""
+    0: after one puzzle's idea and focus there, the next puzzle's log said "gave the idea
+    and the focus here" before a word of it (Tai's phone, 2026-09-29). Each comes after its
+    own stuck spell, and nothing before the first (Tai, 2026-10-01)."""
     from sidecoach.events import Resync
+
+    def both_hints() -> list[DisclosureLevel]:
+        assert drain(coach) == [], "nothing before the stuck limit"
+        levels = [m.level for m in stuck(coach)]
+        levels += [m.level for m in stuck(coach)]  # a full stuck spell from the idea
+        return levels
 
     coach, _ = scripted_coach([])
     board = _puzzle(coach)
     _analysed(coach, board, 0, QD1_LINE, 1.0, 3)
-    coach.tick(1.0 + coach.policy.stuck_threshold() + 1)
-    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
+    assert both_hints() == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
     coach.on_event(
         Resync(game_id="g", fen="6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", reason="adopted"), 100.0
     )
     _analysed(coach, chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1"), 0, ["g8f8"], 101.0, None)
-    coach.tick(101.0 + coach.policy.stuck_threshold() + 1)
-    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
+    assert both_hints() == [DisclosureLevel.IDEA, DisclosureLevel.FOCUS]
 
 
 def test_clock_scales_the_policy_and_a_new_game_resets_it() -> None:
@@ -1460,8 +1450,8 @@ def test_the_review_is_spoken_from_the_profiles_facts_and_the_next_game_knows_th
         "You won by checkmate. Your one lapse was 3. Qh5, where Nf3 kept the edge; "
         "the rest was clean. Work on spotting what your opponent threatens."
     )
-    # The same reply to every call: the earlier triggers (the decisive question, the
-    # verdict on the mate) take their share of them; the review is the last.
+    # The same reply to every call: the earlier triggers (the verdict on the mate) take
+    # their share of them; the review is the last.
     coach, provider = scripted_coach([summary] * 8)
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 6.5)  # facts for the position the review is checked on
@@ -1657,7 +1647,7 @@ def test_a_puzzle_solved_by_mate_gets_no_word_and_no_summary() -> None:
             10.0 * n,
         )
         coach.on_event(mate_analysis(0, game_id=f"p{n}"), 10.0 * n + 0.5)
-        drain(coach)  # the decisive-moment nudge on the position itself
+        assert drain(coach) == []  # the position itself: nothing said unasked
         provider.calls.clear()
         board = chess.Board(puzzle)
         move = board.push_san("Qxf7#")

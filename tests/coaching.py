@@ -149,6 +149,15 @@ def drain(coach: Coach) -> list[CoachMessage]:
     return coach.poll()
 
 
+def stuck(coach: Coach) -> list[CoachMessage]:
+    """The player stuck on the position the stuck limit long: the coach's first word unasked
+    (the only one while they think -- Tai, 2026-10-01), and what it then has for them."""
+    since = coach.policy.stuck_from
+    assert since is not None
+    coach.tick(since + coach.policy.stuck_threshold())
+    return drain(coach)
+
+
 def sent(provider: ScriptedProvider, index: int = -1) -> list[ChatMessage]:
     """The messages the model was sent on the `index`-th call."""
     return provider.prompts[index][1]

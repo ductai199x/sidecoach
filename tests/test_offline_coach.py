@@ -5,28 +5,28 @@ from __future__ import annotations
 
 from sidecoach.coach.coach import Trigger
 from sidecoach.coach.verdicts import MATE
-from sidecoach.events import Analysis, DisclosureLevel, Line
+from sidecoach.events import DisclosureLevel
 from sidecoach.llm.offline import OfflineProvider
 from tests.coaching import (
     drain,
     mate_analysis,
     mate_played,
     offline_coach,
-    play,
     play_to_scholar,
-    start_game,
+    stuck,
 )
 
 
-def test_a_decisive_moment_and_a_move_get_the_templates_with_no_call() -> None:
+def test_a_stuck_hint_and_a_move_get_the_templates_with_no_call() -> None:
     coach = offline_coach()
     provider = coach.speaker.provider
     assert isinstance(provider, OfflineProvider)
     play_to_scholar(coach)
-    # The decisive moment: the question template, no model.
+    # A decisive moment says nothing; stuck, the idea's template, no model.
     coach.on_event(mate_analysis(6), 7.0)
-    out = drain(coach)
-    assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION
+    assert drain(coach) == []
+    out = stuck(coach)
+    assert len(out) == 1 and out[0].trigger is Trigger.STUCK
     assert out[0].text and "?" in out[0].text
     assert coach.speaker.fallbacks == 1
     # The player's best move: the verdict written from the board -- here the mate, and
@@ -64,32 +64,3 @@ def test_the_first_hints_lead_is_drawn_when_the_hint_is_said() -> None:
     coach.ask("another hint", 9.0)
     out = drain(coach)
     assert len(out) == 1 and out[0].text and out[0].level is DisclosureLevel.FOCUS
-
-
-def test_no_decisive_question_on_an_obvious_recapture() -> None:
-    """9...Nxd4 in a Dragon drew "This is a moment to slow down" (a master-game pass,
-    offline, 2026-09-21): when the opponent has just captured and the engine's move takes
-    back on that square, the lines diverge only because everything else hangs a piece."""
-    coach = offline_coach()
-    start_game(coach)
-    board = play(coach, ("e4", "c5", "Nf3", "d6", "d4", "cxd4"))
-    lines = [
-        Line(moves=["f3d4"], depth=12, expected_score=0.52),
-        Line(moves=["c2c3"], depth=12, expected_score=0.35),
-    ]
-    coach.on_event(
-        Analysis(game_id="g", fen=board.fen(), ply=6, lines=lines, decisive=True, only_move=False),
-        7.0,
-    )
-    assert drain(coach) == [], "the recapture is the move; no question"
-    # The same gap with a zwischenzug as the best move keeps the question.
-    lines = [
-        Line(moves=["f1b5"], depth=12, expected_score=0.52),
-        Line(moves=["f3d4"], depth=12, expected_score=0.35),
-    ]
-    coach.on_event(
-        Analysis(game_id="g", fen=board.fen(), ply=6, lines=lines, decisive=True, only_move=False),
-        8.0,
-    )
-    out = drain(coach)
-    assert len(out) == 1 and out[0].trigger is Trigger.DECISIVE_QUESTION

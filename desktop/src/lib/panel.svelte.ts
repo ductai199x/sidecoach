@@ -2,7 +2,7 @@
 // component through runes. What the old app.js kept in module variables lives here;
 // what it rendered by hand the components derive.
 
-import { connect, panel, type LogLine, type Mark, type PanelState } from "./api";
+import { connect, panel, put, type LogLine, type Mark, type PanelState } from "./api";
 
 export type TermRow = { key: string; count: number; line: LogLine; open: boolean };
 
@@ -58,6 +58,11 @@ export const prefs = {
 };
 
 let nextId = 1;
+
+/** A setting changed from the panel: an open Settings window shows it. */
+function told(): void {
+  void import("./shell.svelte").then((s) => s.announce("settings")).catch(() => {});
+}
 
 export class PanelStore {
   state = $state<PanelState>({});
@@ -316,16 +321,27 @@ export class PanelStore {
     panel.ptt(down);
   }
 
-  /** How the coach hears you: off, hold to talk (ptt), or always listening (vad). */
+  /** How the coach hears you: off, hold to talk (ptt), or always listening (vad). Kept for
+   * the next session, as muted is. */
   setListen(mode: string): void {
     this.listenMode = mode; // optimistic; the next poll confirms
     if (mode !== "ptt") this.pttDown = false;
-    panel.setListen(mode);
+    void panel.setListen(mode).then(told);
   }
 
   setMuted(muted: boolean): void {
     this.state.muted = muted; // optimistic
-    panel.setMuted(muted);
+    void panel.setMuted(muted).then(told);
+  }
+
+  /** Captions over other windows on or off, and kept on screen or not: the settings saved,
+   * as the Settings page would (the box opens with a sample line, or goes). */
+  setCaptions(on: boolean, keep?: boolean): void {
+    const was = this.state.captions;
+    if (was) this.state.captions = { ...was, on, keep: keep ?? was.keep }; // optimistic
+    const voice: Record<string, boolean> = { captions: on };
+    if (keep !== undefined) voice.captions_keep = keep;
+    void put("/api/settings", { settings: { voice }, secrets: {} }).then(told).catch(() => {});
   }
 
   toggleRunning(): void {

@@ -27,12 +27,12 @@
     looks?: Looks;
   };
   // The boards' look (looks.py): the shipped sets with their authors and licences, the colour
-  // themes, and the player's own pieces as they are.
+  // themes, and the player's own sets, each with its pieces and what it lacks.
   type Theme = { name: string; label: string; light: string; dark: string };
   type Looks = {
     sets: { name: string; label: string; author: string; licence: string; images: Record<string, string> }[];
     themes: Theme[];
-    custom: { images: Record<string, string>; missing: string[] };
+    own: { name: string; label: string; images: Record<string, string>; missing: string[] }[];
   };
 
   let data = $state<Described | null>(null);
@@ -274,13 +274,14 @@
       shell.autostart !== shellSaved.autostart,
   );
 
-  /** Each field of `now` that differs from `before`, section by section. */
-  function changes(now: Record<string, any>, before: Record<string, any>): Record<string, any> {
+  /** Each field of `now` that differs from `before`, section by section; a field whole, an
+   * object too, so a key taken out of one (llm.extra_body) goes with the save. */
+  function changes(now: Record<string, any>, before: Record<string, any>, sections = true): Record<string, any> {
     const out: Record<string, any> = {};
     for (const [key, value] of Object.entries(now)) {
       const was = before[key];
-      if (value && typeof value === "object" && !Array.isArray(value) && was && typeof was === "object") {
-        const inner = changes(value, was);
+      if (sections && value && typeof value === "object" && !Array.isArray(value) && was && typeof was === "object") {
+        const inner = changes(value, was, false);
         if (Object.keys(inner).length) out[key] = inner;
       } else if (JSON.stringify(value) !== JSON.stringify(was)) {
         out[key] = value;
@@ -393,18 +394,31 @@
   // A preview row: the white king, queen and knight, the black bishop, rook and pawn, on the
   // squares of the colours chosen now.
   const PREVIEW = ["wK", "wQ", "wN", "bB", "bR", "bP"];
-  const CODES = ["wK", "wQ", "wR", "wB", "wN", "wP", "bK", "bQ", "bR", "bB", "bN", "bP"];
   const PIECE_NAMES: Record<string, string> = { K: "king", Q: "queen", R: "rook", B: "bishop", N: "knight", P: "pawn" };
   const pieceName = (code: string) => `${code[0] === "w" ? "white" : "black"} ${PIECE_NAMES[code[1]]}`;
   const themeNow = $derived<Theme | null>(data?.looks?.themes.find((t) => t.name === values.board?.theme) ?? data?.looks?.themes[0] ?? null);
-  const ownImages = $derived(data?.looks?.custom.images ?? {});
-  const ownCount = $derived(Object.keys(ownImages).length);
-  /** A piece of the player's own set, else Sidecoach's in its place (as the boards do). */
-  const ownOr = (code: string) => ownImages[code] ?? data?.looks?.sets[0]?.images[code] ?? "";
+  // The player's own sets (looks.py): each a tile among the shipped ones, with a menu to add or
+  // replace its images, rename it and delete it (an Undo for a while); "Add a set..." makes one
+  // from the images chosen, picked, named "My set" with the name ready to type over, as a new
+  // folder is (Tai, 2026-10-01: more than one set, and each one deletable).
+  type OwnSet = Looks["own"][number];
+  type OwnResult = { ok: boolean; id?: string; name?: string; taken: string[]; skipped: { name: string; why: string }[]; missing: string[]; error?: string };
+  const ownSets = $derived(data?.looks?.own ?? []);
+  /** A piece of an own set, else Sidecoach's in its place (as the boards do). */
+  const ownOr = (o: OwnSet, code: string) => o.images[code] ?? data?.looks?.sets[0]?.images[code] ?? "";
+  const ownId = (name: string) => name.slice("own:".length);
+  /** The setting names this set: "own:<id>", or "custom", the one own set there was before. */
+  const isPicked = (v: unknown, name: string) => v === name || (v === "custom" && name === "own:custom");
 
-  let loading = $state(false);
-  let loaded = $state<{ taken: string[]; skipped: { name: string; why: string }[]; missing: string[]; error?: string } | null>(null);
+  let busy = $state(false);
+  let ownNote = $state<{ text: string; errors: string[]; bad?: boolean } | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let fileFor = $state<string | null>(null); // the set the images go to; null: a new one
+  let menuFor = $state<string | null>(null);
+  let renaming = $state<string | null>(null);
+  let renameText = $state("");
+  let undoSet = $state<{ id: string; label: string; wasSaved: boolean } | null>(null);
+  let undoTimer: ReturnType<typeof setTimeout> | null = null;
 
   function base64(buf: ArrayBuffer): string {
     const bytes = new Uint8Array(buf);
@@ -413,34 +427,127 @@
     return btoa(s);
   }
 
-  /** The images the player chose, sent to be kept in their data folder; the set picked. */
-  async function loadOwn(files: FileList | null): Promise<void> {
+  function choose(forSet: string | null): void {
+    fileFor = forSet;
+    menuFor = null;
+    fileInput?.click();
+  }
+
+  function noteOf(res: OwnResult, added: boolean): { text: string; errors: string[]; bad?: boolean } {
+    const errors = res.skipped.map((x) => `Not used: ${x.name} — ${x.why}.`);
+    if (!res.ok) return { text: res.error ?? "Nothing was loaded: no image's name says which piece it is.", errors, bad: true };
+    const n = res.taken.length;
+    const what = `${n} piece${n === 1 ? "" : "s"}`;
+    let text = added ? `A new set: ${what}.` : `${what} into "${res.name}".`;
+    if (res.missing.length) text += ` Still missing: ${res.missing.map(pieceName).join(", ")} (Sidecoach's stand in).`;
+    if (added) text += " It is picked: Save to use it.";
+    return { text, errors };
+  }
+
+  async function chosen(files: FileList | null): Promise<void> {
     if (!files?.length) return;
-    loading = true;
-    loaded = null;
+    busy = true;
+    ownNote = null;
+    const into = fileFor;
     try {
       const sent = await Promise.all([...files].map(async (f) => ({ name: f.name, data: base64(await f.arrayBuffer()) })));
-      const res = await post<{ ok: boolean; taken: string[]; skipped: { name: string; why: string }[]; missing: string[] }>("/api/pieces/custom", { files: sent });
-      loaded = res;
+      const res = into
+        ? await post<OwnResult>(`/api/pieces/own/${into}/images`, { files: sent })
+        : await post<OwnResult>("/api/pieces/own", { name: "", files: sent });
+      ownNote = noteOf(res, into === null);
       await refresh();
-      if (res.taken.length && values.board) {
-        values.board.pieces = "custom";
+      if (res.ok && into === null && res.id && values.board) {
+        values.board.pieces = res.id;
         result = null;
+        startRename(res.id, res.name ?? "");
       }
     } catch (e) {
-      loaded = { taken: [], skipped: [], missing: [], error: "Could not load them: " + String(e) };
+      ownNote = { text: "Could not load them: " + String(e), errors: [], bad: true };
     } finally {
-      loading = false;
+      busy = false;
+      fileFor = null;
       if (fileInput) fileInput.value = "";
     }
   }
 
-  async function removeOwn(): Promise<void> {
-    await del("/api/pieces/custom").catch(() => null);
-    loaded = null;
-    await refresh();
-    if (values.board?.pieces === "custom") values.board.pieces = "sidecoach";
+  function startRename(name: string, label: string): void {
+    menuFor = null;
+    renaming = name;
+    renameText = label;
+    void tick().then(() => {
+      const box = document.getElementById("rename-" + ownId(name)) as HTMLInputElement | null;
+      box?.focus();
+      box?.select();
+    });
   }
+
+  async function finishRename(keep: boolean): Promise<void> {
+    const name = renaming;
+    renaming = null;
+    if (!name || !keep) return;
+    const text = renameText.trim();
+    if (!text || text === ownSets.find((o) => o.name === name)?.label) return;
+    const res = await put<{ ok: boolean; error?: string }>(`/api/pieces/own/${ownId(name)}`, { name: text }).catch(() => null);
+    if (!res?.ok) ownNote = { text: res?.error ?? "Could not rename it.", errors: [], bad: true };
+    await refresh();
+  }
+
+  /** The board setting as saved, set at once: a set deleted (or back) is no set to keep pointing at. */
+  async function savePieces(pieces: string): Promise<void> {
+    await put("/api/settings", { settings: { board: { pieces } }, secrets: {} }).catch(() => null);
+    await refresh();
+    if (values.board) values.board.pieces = pieces;
+    void announce("settings");
+  }
+
+  async function removeSet(o: OwnSet): Promise<void> {
+    menuFor = null;
+    ownNote = null;
+    const res = await del<{ ok: boolean; error?: string }>(`/api/pieces/own/${ownId(o.name)}`).catch(() => null);
+    if (!res?.ok) {
+      ownNote = { text: res?.error ?? "Could not delete it.", errors: [], bad: true };
+      return;
+    }
+    const wasSaved = isPicked(saved.board?.pieces, o.name);
+    undoSet = { id: ownId(o.name), label: o.label, wasSaved };
+    if (wasSaved) await savePieces("sidecoach");
+    else {
+      await refresh();
+      if (values.board && isPicked(values.board.pieces, o.name)) values.board.pieces = saved.board?.pieces ?? "sidecoach";
+    }
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => (undoSet = null), 8000);
+  }
+
+  async function undoRemove(): Promise<void> {
+    const u = undoSet;
+    undoSet = null;
+    if (undoTimer) clearTimeout(undoTimer);
+    if (!u) return;
+    const res = await post<{ ok: boolean; error?: string }>(`/api/pieces/own/${u.id}/restore`).catch(() => null);
+    if (!res?.ok) {
+      ownNote = { text: res?.error ?? "Could not put it back.", errors: [], bad: true };
+      return;
+    }
+    if (u.wasSaved) await savePieces("own:" + u.id);
+    else await refresh();
+  }
+
+  // A press anywhere but the menu closes it; Escape too.
+  $effect(() => {
+    if (!menuFor) return;
+    const away = (e: PointerEvent) => {
+      const at = e.target as HTMLElement;
+      if (!at.closest(".set-menu") && !at.closest(".set-more")) menuFor = null;
+    };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") menuFor = null; };
+    window.addEventListener("pointerdown", away, true);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", away, true);
+      window.removeEventListener("keydown", esc);
+    };
+  });
 
   function errorFor(sec: string, key: string): string | null {
     const e = result?.errors?.find((x) => x.loc[0] === sec && x.loc[1] === key);
@@ -513,12 +620,49 @@
               <span class="set-by">{s.author === "Sidecoach" ? "Sidecoach's own" : `${s.author} · ${s.licence}`}</span>
             </button>
           {/each}
-          <button type="button" class="set" role="radio" aria-checked={v === "custom"} disabled={!ownCount} title={ownCount ? "Your own pieces" : "Load your own pieces below first"} onclick={() => setValue(section, key, p, "custom")}>
-            {#if ownCount}{@render previewRow(ownOr)}{:else}<span class="set-empty">Your images</span>{/if}
-            <span class="set-name">Your own</span>
-            <span class="set-by">{ownCount ? (ownCount === 12 ? "all 12 pieces" : `${ownCount} of 12 pieces`) : "load them below"}</span>
+          {#each ownSets as o (o.name)}
+            {@const count = 12 - o.missing.length}
+            <div class="own-set">
+              <button type="button" class="set" role="radio" aria-checked={isPicked(v, o.name)} title="{o.label}: your own, {count} of 12 pieces" onclick={() => setValue(section, key, p, o.name)}>
+                {@render previewRow((c) => ownOr(o, c))}
+                <span class="set-name" class:hiding={renaming === o.name}>{o.label}</span>
+                <span class="set-by">Yours · {count === 12 ? "all 12 pieces" : `${count} of 12 pieces`}</span>
+              </button>
+              {#if renaming === o.name}
+                <input
+                  id="rename-{ownId(o.name)}"
+                  class="rename"
+                  bind:value={renameText}
+                  maxlength="40"
+                  aria-label="The set's name"
+                  onkeydown={(e) => { if (e.key === "Enter") void finishRename(true); if (e.key === "Escape") void finishRename(false); }}
+                  onblur={() => void finishRename(true)}
+                />
+              {/if}
+              <button type="button" class="set-more" aria-label="{o.label}: more" aria-haspopup="menu" aria-expanded={menuFor === o.name} title="Add images, rename or delete" onclick={() => (menuFor = menuFor === o.name ? null : o.name)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm6 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z" /></svg>
+              </button>
+              {#if menuFor === o.name}
+                <div class="set-menu" role="menu" aria-label={o.label}>
+                  <button role="menuitem" onclick={() => choose(ownId(o.name))}>Add or replace images…</button>
+                  <button role="menuitem" onclick={() => startRename(o.name, o.label)}>Rename</button>
+                  <button role="menuitem" class="warn" onclick={() => void removeSet(o)}>Delete</button>
+                </div>
+              {/if}
+            </div>
+          {/each}
+          <button type="button" class="set add-set" disabled={busy} title="Choose a set's images, one a piece" onclick={() => choose(null)}>
+            <span class="add-plus" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" /></svg></span>
+            <span class="set-name">{busy ? "Loading…" : "Add a set…"}</span>
+            <span class="set-by">Your own images</span>
           </button>
         </div>
+        <input bind:this={fileInput} class="hidden" type="file" multiple accept="image/png,image/svg+xml,image/webp,image/jpeg,.png,.svg,.webp,.jpg,.jpeg" onchange={(e) => void chosen(e.currentTarget.files)} />
+        <p class="desc own-help">Your own set: one image a piece, PNG, SVG, WebP or JPEG, each named by its colour and piece — <code>wK</code> <code>wQ</code> <code>wR</code> <code>wB</code> <code>wN</code> <code>wP</code>, <code>bK</code> … <code>bP</code> (<code>white-king.png</code> works too). They are copied into Sidecoach's data folder.</p>
+        {#if ownNote}
+          <p class="desc" class:err={ownNote.bad}>{ownNote.text}</p>
+          {#each ownNote.errors as e (e)}<p class="err">{e}</p>{/each}
+        {/if}
       {:else if p.kind === "board_theme" && data?.looks}
         <div id="{section}-{key}" class="themes" role="radiogroup" aria-label={labelOf(key, p)} tabindex="-1">
           {#each data.looks.themes as t (t.name)}
@@ -639,32 +783,6 @@
               <p class="desc"><b>Memory:</b> {gb(gpuStatus.gpu.vram)} in all, {gb(gpuStatus.gpu.vram_free)} free{#if gpuStatus.gpu.used_by_app != null}; Sidecoach is using {gb(gpuStatus.gpu.used_by_app)}{:else}; what Sidecoach uses is not reported by this driver{/if}</p>
             </div>
           {/if}
-          {#if section === "board" && data.looks}
-            <h3>Your own pieces</h3>
-            <div class="field own">
-              <p class="desc lead">Use any piece images you have: choose one image file a piece, PNG, SVG, WebP or JPEG. Name each file by its colour and piece: <code>wK</code> <code>wQ</code> <code>wR</code> <code>wB</code> <code>wN</code> <code>wP</code> for white, <code>bK</code> … <code>bP</code> for black (<code>white-king.png</code> works too). You can choose all twelve at once. They stay on this computer, in Sidecoach's data folder.</p>
-              <div class="row">
-                <button type="button" class="listen" disabled={loading} onclick={() => fileInput?.click()}>{loading ? "Loading…" : ownCount ? "Replace or add images…" : "Choose images…"}</button>
-                {#if ownCount}<button type="button" class="link" onclick={removeOwn}>Remove them</button>{/if}
-                <input bind:this={fileInput} class="hidden" type="file" multiple accept="image/png,image/svg+xml,image/webp,image/jpeg,.png,.svg,.webp,.jpg,.jpeg" onchange={(e) => loadOwn(e.currentTarget.files)} />
-              </div>
-              {#if loaded}
-                {#if loaded.error}
-                  <p class="err">{loaded.error}</p>
-                {:else}
-                  <p class="desc">{loaded.taken.length ? `Loaded ${loaded.taken.length} piece${loaded.taken.length === 1 ? "" : "s"}.` : "Nothing was loaded."}{#if loaded.missing.length && loaded.taken.length}{" "}Still missing: {loaded.missing.map(pieceName).join(", ")} (Sidecoach's are used for those).{/if}{#if loaded.taken.length}{" "}"Your own" is picked above: Save to use them.{/if}</p>
-                  {#each loaded.skipped as s (s.name)}<p class="err">Not used: {s.name} -- {s.why}.</p>{/each}
-                {/if}
-              {/if}
-              {#if ownCount}
-                <div class="own-grid" aria-label="Your pieces">
-                  {#each CODES as c, i (c)}
-                    <span class="pv" class:gone={!ownImages[c]} title={ownImages[c] ? pieceName(c) : `${pieceName(c)}: not loaded`} style:background={(i + Math.floor(i / 6)) % 2 ? themeNow?.dark : themeNow?.light}><img src={ownOr(c)} alt={pieceName(c)} draggable="false" /></span>
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          {/if}
           {#if section === "voice" && title === "Hearing you"}
             <div class="field test">
               <span class="lbl">Test the microphone and speech recognition</span>
@@ -686,6 +804,12 @@
     {/if}
   </div>
 
+  {#if undoSet}
+    <div class="gm-undo" role="status">
+      <span>Deleted "{undoSet.label}"</span>
+      <button type="button" class="gm-undo-btn" onclick={() => void undoRemove()}>Undo</button>
+    </div>
+  {/if}
   <footer class="secfoot">
     {#if result?.ok}
       <span class="saved">{savedLine(result)}{#if result.restart?.length}{" "}<button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
@@ -783,14 +907,37 @@
   .pv img { width: 100%; height: 100%; display: block; }
   .set-name { font-weight: 700; font-size: 13px; }
   .set-by { color: var(--muted); font-size: 11px; line-height: 1.3; }
-  .set-empty { width: 180px; height: 30px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 4px; color: var(--muted); font-size: 12px; }
   .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; max-width: 900px; outline: none; }
   .theme { align-items: center; }
   .swatch { display: grid; grid-template-columns: 1fr 1fr; width: 48px; height: 48px; border-radius: 4px; overflow: hidden; }
   .theme-name { font-size: 12px; font-weight: 600; }
-  .field.own { max-width: 900px; }
-  .own-grid { display: grid; grid-template-columns: repeat(6, 44px); margin-top: 10px; border-radius: 4px; overflow: hidden; width: max-content; }
-  .own-grid .pv { width: 44px; height: 44px; }
-  .own-grid .pv.gone img { opacity: 0.35; }
+  /* An own set: its tile, a round menu button in its corner, the menu below it; renamed in place. */
+  .own-set { position: relative; display: grid; }
+  .own-set .set { width: 100%; padding-right: 34px; }
+  .set-name.hiding { visibility: hidden; }
+  .set-more {
+    position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+    display: grid; place-items: center; background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .set-more svg { width: 20px; height: 20px; fill: currentColor; }
+  .set-more:hover, .set-more[aria-expanded="true"] { background: var(--panel2); color: var(--ink); }
+  .set-menu {
+    position: absolute; top: 36px; right: 6px; z-index: 20; display: flex; flex-direction: column; min-width: 190px; padding: 6px;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px #000b;
+  }
+  .set-menu button {
+    padding: 9px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink);
+    font: inherit; font-size: 14px; text-align: left; cursor: pointer; white-space: nowrap;
+  }
+  .set-menu button:hover, .set-menu button:focus-visible { background: var(--panel3); outline: none; }
+  .set-menu .warn { color: var(--warn); }
+  .rename {
+    position: absolute; left: 6px; right: 38px; top: 40px; height: 24px; padding: 0 6px; font: inherit; font-size: 13px; font-weight: 700;
+    color: var(--ink); background: var(--panel2); border: 1px solid var(--accent); border-radius: 5px; outline: none;
+  }
+  .add-set { border-style: dashed; justify-content: center; min-height: 82px; }
+  .add-plus { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--panel2); }
+  .add-plus svg { width: 20px; height: 20px; fill: var(--accent); }
+  .own-help { max-width: 900px; }
   .hidden { display: none; }
 </style>

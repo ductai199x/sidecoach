@@ -2892,8 +2892,8 @@ class Coach:
         position.leads = leads
         if event.provisional:
             # Measured early, the full depth to follow: what the player asks is answered
-            # from it now; the coach's own words -- a lesson, the decisive question -- and
-            # the conversation's record wait for the full depth.
+            # from it now; the coach's own words -- a lesson -- and the conversation's record
+            # wait for the full depth.
             if position is self._current and self._pending_ask is not None:
                 text, _asked = self._pending_ask
                 self._pending_ask = None
@@ -2906,23 +2906,9 @@ class Coach:
             text, _asked = self._pending_ask
             self._pending_ask = None
             self.ask(text, ts)
-            return
-        if position is self._current and self.user_to_move:
-            decisive = (
-                event.decisive
-                and not self._obvious_recapture(position, event)
-                and not self._carrying_out(position)
-            )
-            trigger = self.policy.on_position_analysed(event.ply, decisive=decisive)
-            if trigger is not None:
-                # The question is the combination's first word: once its idea was given, at
-                # this move or at an earlier one of it, it is not asked again.
-                position.disclosure.carry(self._ladder(position))
-                level = position.disclosure.apply(Unlock.DECISIVE)
-                if level is None:
-                    return
-                self.policy.said(position.ply, ts)
-                self._speak(trigger, position, level, ts)
+        # Nothing is said of its own at a decisive moment: while the player thinks, the
+        # first word unasked is the stuck hint (Tai, 2026-10-01: nothing "until the user is
+        # stuck or actively request a hint or after they have made a move").
 
     def _ladder(self, position: _Position) -> DisclosureLevel:
         """The highest hint the combination this position continues has had: back through
@@ -2948,44 +2934,6 @@ class Coach:
             return analysis.lines[0].moves[0] == move.uci
         facts = position.facts
         return facts is not None and bool(facts.candidates) and facts.candidates[0] == move.san
-
-    def _carrying_out(self, position: _Position) -> bool:
-        """The player's last move and the reply to it are the first two moves of the engine's
-        line from a decisive position: they found the idea and are playing it out, so a
-        question about the next step asks what they already know (Tai's desktop, 2026-09-24:
-        after Qd1+ Rxd1 Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king
-        no square at all?", heard as the puzzle's hint). An opponent who leaves the line gets
-        the question, unless the combination's idea was given already (`_ladder`)."""
-        own = self.moves.get(position.ply - 1)
-        reply = self.moves.get(position.ply)
-        before = self.positions.get(position.ply - 2)
-        if own is None or reply is None or not own.by_user or before is None:
-            return False
-        analysis = before.analysis
-        if analysis is None or not analysis.decisive or not analysis.lines:
-            return False
-        return list(analysis.lines[0].moves[:2]) == [own.uci, reply.uci]
-
-    def _obvious_recapture(self, position: _Position, event: Analysis) -> bool:
-        """The opponent just took something and the engine's move takes back on the same
-        square: the lines diverge because everything else drops a piece, not because there
-        is anything to find, so the decisive question stays unasked (a book recapture drew
-        "This is a moment to slow down", offline, 2026-09-21). A recapture that is not the
-        best move -- a zwischenzug on -- keeps the question."""
-        last = self.moves.get(position.ply)
-        before = self.positions.get(position.ply - 1)
-        if last is None or before is None or not event.lines or not event.lines[0].moves:
-            return False
-        try:
-            taken = chess.Move.from_uci(last.uci)
-            best = chess.Move.from_uci(event.lines[0].moves[0])
-        except ValueError:
-            return False
-        return (
-            before.board.is_capture(taken)
-            and best.to_square == taken.to_square
-            and position.board.is_capture(best)
-        )
 
     def _on_assessment(self, event: MoveAssessment, ts: float) -> None:
         if event.game_id != self.game_id:
@@ -3948,6 +3896,8 @@ class Coach:
                 " ".join(self._review_lines[:4]),
             )
         if trigger is Trigger.DECISIVE_QUESTION:
+            # Never fired live since 2026-10-01 (nothing unasked before the stuck limit);
+            # the eval's recorded requests of it still replay (tools/eval/judge.py).
             template, note = self._cool_hint(facts, idea_template(facts))
             return (f"{IDEA_DIRECTIVE} {NO_FIGURES}{note}", template)
         if trigger is Trigger.STUCK:

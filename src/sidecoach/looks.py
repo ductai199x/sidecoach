@@ -3,10 +3,13 @@ player's own piece images.
 
 The shipped sets are Sidecoach's own (the default, tools/pieces/README.md) and every Lichess
 set whose licence allows any use (tools/pieces/fetch_sets.py): static files beside the page,
-under /pieces/ and /pieces/<set>/. The themes are plain colours. A player's own pieces are
-images they choose, kept only in their data folder (data/pieces/custom) and handed to the
-page inline, so they need no route of their own (the API's token guards every /api route,
-and a stylesheet's image cannot send it). Nothing names or fetches any other product's set.
+under /pieces/ and /pieces/<set>/. The themes are plain colours. A player's own sets are
+images they choose, each set named and kept apart in their data folder (data/pieces/own/<id>/,
+its name in set.json) and handed to the page inline, so they need no route of their own (the
+API's token guards every /api route, and a stylesheet's image cannot send it). A set deleted
+waits UNDO_S in pieces/own/.removed/ for its Undo. The one own set there was before
+(data/pieces/custom) becomes the set "My pieces" (own:custom). Nothing names or fetches any
+other product's set.
 
 The board's squares carry the panel's signature for the vision (vision/ownboard.py): its odd
 rows three units bluer than its even rows, square colour and highlight alike. Every theme
@@ -17,7 +20,11 @@ blue may pass 255 - SHADE_STEP.
 from __future__ import annotations
 
 import base64
+import json
+import os
 import re
+import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,7 +32,8 @@ from typing import Any
 SHADE_STEP = 3  # vision/ownboard.py's SHADE_STEP
 CODES = tuple(c + p for c in "wb" for p in "KQRBNP")
 DEFAULT_SET = "sidecoach"
-CUSTOM = "custom"
+CUSTOM = "custom"  # the one own set before there were several; now the own set of that id
+OWN = "own:"  # an own set as the board setting names it: "own:<id>"
 DEFAULT_THEME = "green"
 
 
@@ -137,10 +145,6 @@ _WORDS = {"king": "K", "queen": "Q", "rook": "R", "bishop": "B", "knight": "N", 
 _EXT = {"image/png": ".png", "image/svg+xml": ".svg", "image/webp": ".webp", "image/jpeg": ".jpg"}
 
 
-def custom_dir(data_dir: Path) -> Path:
-    return Path(data_dir) / "pieces" / CUSTOM
-
-
 def piece_code(filename: str) -> str | None:
     """Which piece a file is, from its name: "wK.png", "bq.svg", "w_n.png", "white-knight.png",
     "knight_black.svg", "Chess_nlt45.svg" (the Wikimedia naming: l is white, d is black)."""
@@ -172,9 +176,50 @@ def sniff(data: bytes) -> str | None:
     return None
 
 
-def custom_images(data_dir: Path) -> dict[str, str]:
-    """The player's own pieces as data URLs, by code: the ones there are."""
-    folder = custom_dir(data_dir)
+LEGACY_NAME = "My pieces"
+DEFAULT_NAME = "My set"
+REMOVED = ".removed"
+UNDO_S = 600  # a deleted set can come back this long
+MAX_NAME = 40
+_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+
+
+def own_root(data_dir: Path) -> Path:
+    return Path(data_dir) / "pieces" / "own"
+
+
+def own_id(pieces: str) -> str | None:
+    """The own set a board setting names ("own:<id>", or "custom", the one own set before there
+    were several), or None for a shipped set."""
+    if pieces == CUSTOM:
+        return CUSTOM
+    if pieces.startswith(OWN) and _ID.fullmatch(pieces[len(OWN) :]):
+        return pieces[len(OWN) :]
+    return None
+
+
+def _meta(folder: Path) -> dict[str, Any]:
+    try:
+        meta = json.loads((folder / "set.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _write_meta(folder: Path, name: str, order: int) -> None:
+    (folder / "set.json").write_text(json.dumps({"name": name, "order": order}), encoding="utf-8")
+
+
+def _clean_name(name: object) -> str:
+    return " ".join(str(name or "").split())[:MAX_NAME].strip()
+
+
+def _slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:32].strip("-")
+    return slug or "set"
+
+
+def _images(folder: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     if not folder.is_dir():
         return out
@@ -189,10 +234,68 @@ def custom_images(data_dir: Path) -> dict[str, str]:
     return out
 
 
-def save_custom(data_dir: Path, files: list[dict[str, str]]) -> dict[str, Any]:
-    """Images the player chose, each {"name", "data" (base64)}: each one a piece names is kept
-    (in place of that piece's last one); what was not taken is said, and why."""
-    folder = custom_dir(data_dir)
+def _migrate(data_dir: Path) -> None:
+    """The one own set there was before (pieces/custom) as the set "My pieces": copied, the copy
+    read back, then the old files removed; nothing is lost if a copy is not the same."""
+    old = Path(data_dir) / "pieces" / CUSTOM
+    if not old.is_dir():
+        return
+    files = [f for f in old.iterdir() if f.is_file() and f.stem in CODES]
+    new = own_root(data_dir) / CUSTOM
+    if not files or new.exists():
+        return
+    new.mkdir(parents=True)
+    for f in files:
+        shutil.copy2(f, new / f.name)
+    if all((new / f.name).read_bytes() == f.read_bytes() for f in files):
+        _write_meta(new, LEGACY_NAME, 0)
+        for f in files:
+            f.unlink()
+        if not any(old.iterdir()):
+            old.rmdir()  # nothing else was in it
+    else:
+        shutil.rmtree(new)
+
+
+def _purge(data_dir: Path) -> None:
+    """Sets deleted longer ago than their Undo, gone for good."""
+    bin_ = own_root(data_dir) / REMOVED
+    if not bin_.is_dir():
+        return
+    now = time.time()
+    for d in bin_.iterdir():
+        if d.is_dir() and now - d.stat().st_mtime > UNDO_S:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def own_sets(data_dir: Path) -> list[dict[str, Any]]:
+    """The player's own sets, in the order they were added: {"id", "name", "order"}."""
+    _migrate(data_dir)
+    _purge(data_dir)
+    root = own_root(data_dir)
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for d in root.iterdir():
+        if d.is_dir() and _ID.fullmatch(d.name):
+            meta = _meta(d)
+            name = _clean_name(meta.get("name")) or d.name
+            out.append({"id": d.name, "name": name, "order": int(meta.get("order") or 0)})
+    out.sort(key=lambda o: (o["order"], o["name"].lower(), o["id"]))
+    return out
+
+
+def own_images(data_dir: Path, set_id: str) -> dict[str, str]:
+    """An own set's pieces as data URLs, by code: the ones it has."""
+    _migrate(data_dir)
+    if not _ID.fullmatch(set_id):
+        return {}
+    return _images(own_root(data_dir) / set_id)
+
+
+def _save(folder: Path, files: list[dict[str, str]]) -> tuple[list[str], list[dict[str, str]]]:
+    """Each image a piece names kept in the set's folder (in place of that piece's last one);
+    what was not taken, and why."""
     taken: list[str] = []
     skipped: list[dict[str, str]] = []
     for f in files:
@@ -218,22 +321,96 @@ def save_custom(data_dir: Path, files: list[dict[str, str]]) -> dict[str, Any]:
             old.unlink()
         (folder / f"{code}{_EXT[kind]}").write_bytes(data)
         taken.append(code)
-    have = set(custom_images(data_dir))
+    return taken, skipped
+
+
+def _result(
+    data_dir: Path, set_id: str, taken: list[str], skipped: list[dict[str, str]]
+) -> dict[str, Any]:
+    have = own_images(data_dir, set_id)
     return {
         "ok": bool(taken),
+        "id": OWN + set_id,
+        "name": _clean_name(_meta(own_root(data_dir) / set_id).get("name")) or set_id,
         "taken": taken,
         "skipped": skipped,
         "missing": [c for c in CODES if c not in have],
     }
 
 
-def clear_custom(data_dir: Path) -> None:
-    """The player's own pieces gone (the files one by one; the folder stays)."""
-    folder = custom_dir(data_dir)
-    if folder.is_dir():
-        for path in folder.iterdir():
-            if path.is_file():
-                path.unlink()
+def _missing(set_id: str) -> dict[str, Any]:
+    return {"ok": False, "id": OWN + set_id, "error": "There is no such set."}
+
+
+def create_own(data_dir: Path, name: str, files: list[dict[str, str]]) -> dict[str, Any]:
+    """A new own set from the images chosen, named (made unique: "My set 2"); nothing is made
+    when no image was taken."""
+    sets = own_sets(data_dir)
+    names = {o["name"].lower() for o in sets}
+    base = _clean_name(name) or DEFAULT_NAME
+    shown, n = base, 2
+    while shown.lower() in names:
+        shown, n = f"{base[: MAX_NAME - 4]} {n}", n + 1
+    root = own_root(data_dir)
+    set_id, k = _slug(shown), 2
+    while (root / set_id).exists() or (root / REMOVED / set_id).exists():
+        set_id, k = f"{_slug(shown)}-{k}", k + 1
+    folder = root / set_id
+    taken, skipped = _save(folder, files)
+    if not taken:
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"ok": False, "taken": [], "skipped": skipped, "missing": list(CODES)}
+    _write_meta(folder, shown, max((o["order"] for o in sets), default=0) + 1)
+    return _result(data_dir, set_id, taken, skipped)
+
+
+def add_images(data_dir: Path, set_id: str, files: list[dict[str, str]]) -> dict[str, Any]:
+    """Images added to an own set, each in place of its piece's last one."""
+    folder = own_root(data_dir) / set_id
+    if not _ID.fullmatch(set_id) or not folder.is_dir():
+        return _missing(set_id)
+    taken, skipped = _save(folder, files)
+    return _result(data_dir, set_id, taken, skipped)
+
+
+def rename_own(data_dir: Path, set_id: str, name: str) -> dict[str, Any]:
+    folder = own_root(data_dir) / set_id
+    if not _ID.fullmatch(set_id) or not folder.is_dir():
+        return _missing(set_id)
+    shown = _clean_name(name)
+    if not shown:
+        return {"ok": False, "id": OWN + set_id, "error": "A set needs a name."}
+    _write_meta(folder, shown, int(_meta(folder).get("order") or 0))
+    return {"ok": True, "id": OWN + set_id, "name": shown}
+
+
+def delete_own(data_dir: Path, set_id: str) -> dict[str, Any]:
+    """An own set put aside for its Undo (UNDO_S), then gone."""
+    root = own_root(data_dir)
+    folder = root / set_id
+    if not _ID.fullmatch(set_id) or not folder.is_dir():
+        return _missing(set_id)
+    aside = root / REMOVED / set_id
+    aside.parent.mkdir(parents=True, exist_ok=True)
+    if aside.exists():
+        shutil.rmtree(aside)
+    folder.rename(aside)
+    os.utime(aside)
+    return {"ok": True, "id": OWN + set_id}
+
+
+def restore_own(data_dir: Path, set_id: str) -> dict[str, Any]:
+    """A set deleted within its Undo, back as it was."""
+    root = own_root(data_dir)
+    aside = root / REMOVED / set_id
+    if not _ID.fullmatch(set_id) or not aside.is_dir() or (root / set_id).exists():
+        return {
+            "ok": False,
+            "id": OWN + set_id,
+            "error": "That set was deleted too long ago to put back.",
+        }
+    aside.rename(root / set_id)
+    return {"ok": True, "id": OWN + set_id}
 
 
 # ---- what the pages read ----
@@ -244,8 +421,9 @@ def look(pieces: str, theme: str, data_dir: Path) -> dict[str, Any]:
     else Sidecoach's), and the theme's colours."""
     base = PIECE_SETS[DEFAULT_SET]
     images = {c: base.url(c) for c in CODES}
-    if pieces == CUSTOM:
-        images.update(custom_images(data_dir))
+    own = own_id(pieces)
+    if own is not None:
+        images.update(own_images(data_dir, own))
     elif pieces in PIECE_SETS:
         images = {c: PIECE_SETS[pieces].url(c) for c in CODES}
     board = BOARD_THEMES.get(theme, BOARD_THEMES[DEFAULT_THEME])
@@ -254,8 +432,19 @@ def look(pieces: str, theme: str, data_dir: Path) -> dict[str, Any]:
 
 def catalogue(data_dir: Path) -> dict[str, Any]:
     """What the settings page offers: every set with its preview images, author and licence,
-    every theme with its colours, and the player's own pieces as they are."""
-    own = custom_images(data_dir)
+    every theme with its colours, and the player's own sets, each with its pieces and what it
+    lacks (Sidecoach's stand in)."""
+    own = []
+    for o in own_sets(data_dir):
+        images = own_images(data_dir, o["id"])
+        own.append(
+            {
+                "name": OWN + o["id"],
+                "label": o["name"],
+                "images": images,
+                "missing": [c for c in CODES if c not in images],
+            }
+        )
     return {
         "sets": [
             {
@@ -268,5 +457,5 @@ def catalogue(data_dir: Path) -> dict[str, Any]:
             for n, s in PIECE_SETS.items()
         ],
         "themes": [{"name": n, "label": t.label, **t.colours()} for n, t in BOARD_THEMES.items()],
-        "custom": {"images": own, "missing": [c for c in CODES if c not in own]},
+        "own": own,
     }

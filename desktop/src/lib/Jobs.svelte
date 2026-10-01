@@ -6,8 +6,9 @@
   // here has not been cleared; its ring the jobs' progress. Hovered, a line on each; opened, the
   // list: in progress with a bar, the game or item under way, the time left, pause or resume,
   // cancel, and the window it belongs to; then what finished, cleared at will.
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { connect, get, post } from "./api";
+  import { under } from "./popover";
   import { inShell, openWindow } from "./shell.svelte";
 
   type Reviews = {
@@ -34,6 +35,24 @@
   let seen = $state<Record<string, boolean>>({}); // the jobs seen running here
   let cleared = $state<Record<string, string>>({}); // job -> the sign it was cleared at
   let root = $state<HTMLDivElement | null>(null);
+  let bell = $state<HTMLButtonElement | null>(null);
+  let panelEl = $state<HTMLDivElement | null>(null);
+  let peekEl = $state<HTMLDivElement | null>(null);
+  // The panel and the peek: under the header, on the screen whatever the width (lib/popover).
+  let at = $state({ top: 0, right: 8 });
+  async function place(el: () => HTMLDivElement | null): Promise<void> {
+    await tick();
+    if (bell) at = under(bell, el()?.offsetWidth ?? 0);
+  }
+  function toggle(): void {
+    open = !open;
+    hover = false;
+    if (open) void place(() => panelEl);
+  }
+  function peek(on: boolean): void {
+    hover = on;
+    if (on && !open) void place(() => peekEl);
+  }
 
   function minutes(s: number): string {
     if (s < 90) return "under 2 min left";
@@ -159,13 +178,14 @@
 {#if shown}
   <div class="jobs" bind:this={root}>
     <button
+      bind:this={bell}
       class="jb-bell"
       class:on={runningNow}
       aria-label="Background jobs"
       aria-expanded={open}
-      onclick={() => { open = !open; hover = false; }}
-      onmouseenter={() => (hover = true)}
-      onmouseleave={() => (hover = false)}
+      onclick={toggle}
+      onmouseenter={() => peek(true)}
+      onmouseleave={() => peek(false)}
     >
       <svg class="jb-ring" viewBox="0 0 36 36" aria-hidden="true">
         <circle cx="18" cy="18" r="16" class="track" />
@@ -176,7 +196,7 @@
     </button>
 
     {#if hover && !open}
-      <div class="jb-peek" role="tooltip">
+      <div class="jb-peek" role="tooltip" bind:this={peekEl} style="top: {at.top}px; right: {at.right}px">
         {#each [...active, ...finished] as j (j.id)}
           <div class="jb-peek-row">
             <b>{j.title}</b>
@@ -188,7 +208,7 @@
     {/if}
 
     {#if open}
-      <div class="jb-panel" role="dialog" aria-label="Background jobs">
+      <div class="jb-panel" role="dialog" aria-label="Background jobs" bind:this={panelEl} style="top: {at.top}px; right: {at.right}px">
         <div class="jb-head">
           <span>Background jobs</span>
           <button class="jb-x" aria-label="Close" title="Close (Esc)" onclick={() => (open = false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
@@ -262,7 +282,7 @@
 
   /* Hovered: a line on each job. */
   .jb-peek {
-    position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: 260px;
+    position: fixed; z-index: 40; width: min(260px, calc(100vw - 16px)); box-sizing: border-box;
     display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 8px;
     background: var(--panel2); border: 1px solid var(--line); box-shadow: 0 8px 24px #0008; pointer-events: none;
   }
@@ -272,7 +292,7 @@
 
   /* Opened: the list, as a browser's downloads panel is laid out. */
   .jb-panel {
-    position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: min(380px, calc(100vw - 24px));
+    position: fixed; z-index: 40; width: min(380px, calc(100vw - 16px)); box-sizing: border-box;
     max-height: min(70vh, 520px); overflow: auto; border-radius: 12px;
     background: var(--panel2); border: 1px solid var(--line); box-shadow: 0 12px 32px #000a;
   }

@@ -576,6 +576,14 @@ class VoiceSettings(BaseModel):
             applies="now", kind="voice", label="Voice", section="The coach's voice"
         ),
     )
+    muted: bool = Field(
+        default=False,
+        description="The coach stays silent; its words still show, on the panel and in the "
+        "captions. The speaker button at the top of the panel does the same, and so does M.",
+        json_schema_extra=_extra(
+            applies="now", label="Mute the coach's voice", section="The coach's voice"
+        ),
+    )
     speed: float = Field(
         default=1.0,
         ge=0.5,
@@ -676,7 +684,8 @@ class VoiceSettings(BaseModel):
         description="Shows what the coach says in a small box over your other windows, like "
         "Live Caption, so you can read it while you play. Drag the box to move it; "
         "double-click it to see more; click it for its buttons; drag it onto the cross at the "
-        "bottom of the screen to turn captions off.",
+        "bottom of the screen to turn captions off. CC at the top of the panel turns them on "
+        "and off too.",
         json_schema_extra=_extra(
             applies="now", label="Captions over other windows", section="Captions"
         ),
@@ -686,7 +695,8 @@ class VoiceSettings(BaseModel):
         description="Keeps the caption box on screen all the time, over every window, "
         "Sidecoach's too: its buttons, and the coach's last words once it has spoken. Off, the "
         "box comes up when the coach speaks, fades a few seconds after, and steps aside while "
-        "Sidecoach's own window is in front.",
+        "Sidecoach's own window is in front. The pin beside CC at the top of the panel does "
+        "the same.",
         json_schema_extra=_extra(
             applies="now", label="Keep captions on screen", section="Captions"
         ),
@@ -742,9 +752,10 @@ class BoardSettings(BaseModel):
     @field_validator("pieces")
     @classmethod
     def _known_pieces(cls, v: str) -> str:
-        from sidecoach.looks import CUSTOM, PIECE_SETS
+        from sidecoach.looks import PIECE_SETS, own_id
 
-        if v not in PIECE_SETS and v != CUSTOM:
+        # A shipped set, or one of the player's own ("own:<id>"; "custom", the one there was).
+        if v not in PIECE_SETS and own_id(v) is None:
             raise ValueError(f"no piece set named {v!r}")
         return v
 
@@ -931,8 +942,10 @@ def _toml_value(value: Any) -> str:
 
 def to_toml(settings: Settings) -> str:
     """The settings as TOML: the top-level scalars, then one table per section. Fields at
-    their defaults are written too, so the file is a complete, readable record; None is
-    left out (TOML has no null), which reads back as the default."""
+    their defaults are written too, so the file is a complete, readable record. TOML has no
+    null: a None that is the field's default is left out, and reads back as it; one that is
+    not is written "", which every reader takes as unset (llm.routine_effort's "Same as
+    above" read back as "none" after a restart, the parity audit 2026-10-01)."""
     lines: list[str] = ["# Sidecoach settings. Written by the app; edit by hand if you like.", ""]
     data = settings.model_dump(mode="json")
     if not os.environ.get("SIDECOACH_DATA_DIR"):
@@ -945,9 +958,13 @@ def to_toml(settings: Settings) -> str:
             continue
         lines.append("")
         lines.append(f"[{section}]")
+        model = type(getattr(settings, section))
         for key, value in values.items():
             if value is None:
-                continue
+                field = model.model_fields.get(key)
+                if field is None or field.default is None:
+                    continue
+                value = ""
             if isinstance(value, dict) and not value:
                 continue
             lines.append(f"{key} = {_toml_value(value)}")

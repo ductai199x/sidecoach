@@ -34,6 +34,7 @@ from tests.coaching import (
     scripted_coach,
     sent,
     start_game,
+    stuck,
 )
 
 
@@ -96,7 +97,7 @@ def test_a_lesson_ties_only_to_the_moments_the_coach_lists() -> None:
     )
     _scholar_with_an_earlier_moment(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    drain(coach)
+    stuck(coach)
     mate_missed(coach)
     out = drain(coach)
     assert len(out) == 1 and out[0].trigger is Trigger.POST_MISTAKE
@@ -128,7 +129,7 @@ def test_with_no_earlier_moment_of_the_same_idea_the_lesson_speaks_of_none() -> 
     )
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
-    drain(coach)
+    stuck(coach)
     mate_missed(coach)
     drain(coach)
     content = harness_of(sent(provider, 1))
