@@ -109,6 +109,35 @@ class GamesApiTest {
         store.close()
     }
 
+    /**
+     * The review of 2026-10-01: a game pasted as a PGN, then removed, came back when the player's
+     * games were brought in from chess.com -- the same game under the site's key. It stays out;
+     * pasted again by hand, it comes back. The desktop's
+     * test_a_pasted_game_removed_stays_out_when_the_site_brings_it_in.
+     */
+    @Test
+    fun aPastedGameRemovedStaysOutWhenTheSiteBringsItIn() {
+        val store = Store(null)
+        val pasted = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val fetched = Library.rowFor(
+            Library.gamesIn(LONGER).first(),
+            source = "chesscom",
+            key = "chesscom:174300959956",
+            userNames = listOf("nosegazm"),
+            timeClass = "rapid",
+        )
+        assertEquals(pasted.key, Library.pastedKey(fetched))
+        assertEquals(pasted.key, Library.pastedKey(pasted))
+        store.addLibraryGame(pasted)
+        store.removeGame(pasted.key)
+        assertEquals("the site's copy stays out", setOf(fetched.key), Library.leftOut(store, listOf(fetched)))
+        val other = Library.fromPgn(LONGER.replace("Anakin_737", "Someone"), listOf("nosegazm")).single()
+        assertEquals("another game is not", emptySet<String>(), Library.leftOut(store, listOf(other)))
+        store.unremove(listOf(pasted.key)) // pasted again by hand
+        assertEquals(emptySet<String>(), Library.leftOut(store, listOf(fetched)))
+        store.close()
+    }
+
     companion object {
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
         private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +

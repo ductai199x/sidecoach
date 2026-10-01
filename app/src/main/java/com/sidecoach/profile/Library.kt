@@ -329,17 +329,30 @@ object Library {
 
     /**
      * The games among [rows] the player removed ([Store.removeGame]), which bringing games in
-     * again leaves out: by key, or -- a watched game removed before its import came in -- by
-     * being that game, as [reconcile] knows an import. `left_out`.
+     * again leaves out: by key; by being a game the player pasted and removed (the review of
+     * 2026-10-01: the same game brought in from the site came back under the site's key); or --
+     * a watched game removed before its import came in -- by being that game, as [reconcile]
+     * knows an import. `left_out`.
      */
     fun leftOut(store: Store, rows: List<LibraryRow>): Set<String> =
         leftOutOf(rows, store.removedKeys(), store.removedTraces())
 
+    /**
+     * The key the game has when pasted as a PGN ([rowFor] with no key of its own: a hash of its
+     * players, its date and its moves); null for a PGN with no game in it. `pasted_key`.
+     */
+    fun pastedKey(row: LibraryRow): String? {
+        if (row.source == "pgn") return row.key
+        val game = gamesIn(row.pgn).firstOrNull() ?: return null
+        return rowFor(game, source = "pgn").key
+    }
+
     /** `left_out_of`. */
     fun leftOutOf(rows: List<LibraryRow>, keys: Set<String>, traces: List<Trace>): Set<String> {
         val out = LinkedHashSet<String>()
+        val pasted = keys.filter { it.startsWith("pgn:") }.toSet()
         for (row in rows) {
-            if (row.key in keys) {
+            if (row.key in keys || (pasted.isNotEmpty() && pastedKey(row) in pasted)) {
                 out.add(row.key)
                 continue
             }
