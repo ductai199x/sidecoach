@@ -166,7 +166,11 @@ object Library {
 
     /** A game of the library by its key: imported, or one Sidecoach watched. `find`. */
     fun find(store: Store, key: String): LibraryRow? {
-        if (key.startsWith("watched:")) return fromWatched(store).firstOrNull { it.key == key }
+        if (key.startsWith("watched:")) {
+            val game = store.game(key.removePrefix("watched:")) ?: return null
+            if (game.result == null) return null
+            return watchedRow(game, store.moves(game.gameId))
+        }
         return store.libraryGame(key)
     }
 
@@ -179,10 +183,11 @@ object Library {
     /**
      * The games Sidecoach watched to their end, as the library shows them: their moves as
      * recorded (withdrawn ones left out), the player named "You", the opponent as recorded. A
-     * record with no result, or whose moves do not play out as a game, is left out.
-     * `from_watched`.
+     * record with no result, or whose moves do not play out as a game, is left out. Every one
+     * unless [limit]: the Games window listed the latest 200 while Stats counted all (the review
+     * of 2026-10-01). `from_watched`.
      */
-    fun fromWatched(store: Store, limit: Int = 200): List<LibraryRow> =
+    fun fromWatched(store: Store, limit: Int? = null): List<LibraryRow> =
         store.games(limit).mapNotNull { watchedRow(it, store.moves(it.gameId)) }
 
     /** One watched record as the library shows it, or null when it is no game ([fromWatched]). */
@@ -234,18 +239,22 @@ object Library {
     const val TWIN_SHARE = 0.9
     const val TWIN_PLIES = 12
 
-    // An import that says when in the day it started (chess.com, Lichess); else a date alone.
+    // An import that says when in the day it started (chess.com, Lichess); else a date alone, the
+    // same day or the next: within DATE_WINDOW_S of the watched game's start. The timed window
+    // lies inside that one, so [pairs] looks only at the imports played that near.
     private val TIMED = Regex("^\\[UTCTime \"", RegexOption.MULTILINE)
+    const val DATE_WINDOW_S = 36 * 3600.0
 
     /**
      * Each game Sidecoach watched that was imported too, from chess.com, Lichess or a PGN: the
      * import is the game's record -- every move, the clocks, the names, the ratings -- and
      * stands for the watched one in the library, the reviews and Stats. Pairs found are kept in
-     * the store; returns them all, watched key -> imported key. `reconcile`.
+     * the store; returns them all, watched key -> imported key. Every watched game, not the
+     * latest 200 (the review of 2026-10-01), each against the imports played near it. `reconcile`.
      */
     fun reconcile(store: Store): Map<String, String> {
         val twins = store.twins().toMutableMap()
-        val found = pairs(store.games(200).map { it to store.moves(it.gameId) }, store.library(), twins)
+        val found = pairs(store.games(null), store.library(), twins) { store.moves(it.gameId) }
         for ((watched, imported) in found) {
             store.addTwin(watched, imported)
             twins[watched] = imported
@@ -259,22 +268,63 @@ object Library {
         imported: List<LibraryRow>,
         known: Map<String, String>,
     ): LinkedHashMap<String, String> {
+        val moves = watched.associate { (game, ms) -> game.gameId to ms }
+        return pairs(watched.map { it.first }, imported, known) { moves.getValue(it.gameId) }
+    }
+
+    /** [pairs], each watched game's moves read only when an import was played near it. */
+    fun pairs(
+        games: List<GameRow>,
+        imported: List<LibraryRow>,
+        known: Map<String, String>,
+        movesOf: (GameRow) -> List<MoveRow>,
+    ): LinkedHashMap<String, String> {
         val out = LinkedHashMap<String, String>()
-        val movesOf = HashMap<String, List<String>?>() // an import's moves, read once
-        for ((game, moves) in watched) {
+        val dated = imported.indices.filter { imported[it].playedAt != null }
+            .sortedWith(compareBy({ imported[it].playedAt!! }, { it }))
+        val stamps = DoubleArray(dated.size) { imported[dated[it]].playedAt!! }
+        val undated = imported.indices.filter { imported[it].playedAt == null }
+        val sansOf = HashMap<String, List<String>?>() // an import's moves, read once
+        for (game in games) {
             val key = "watched:${game.gameId}"
             if (key in known) continue
-            val seen = moves.sortedWith(compareBy({ it.segment }, { it.ply })).map { it.san.trimEnd('+', '#') }
+            val lo = bisectLeft(stamps, game.startedAt - DATE_WINDOW_S)
+            val hi = bisectRight(stamps, game.startedAt + DATE_WINDOW_S)
+            // In the library's order, as every import was looked at before: the first best wins.
+            val near = (dated.subList(lo, hi) + undated).sorted().map { imported[it] }.filter { mayBe(game, it) }
+            if (near.isEmpty()) continue
+            val seen = movesOf(game).sortedWith(compareBy({ it.segment }, { it.ply })).map { it.san.trimEnd('+', '#') }
             var best: Pair<Double, String>? = null
-            for (row in imported) {
-                if (!mayBe(game, row)) continue
-                val played = movesOf.getOrPut(row.key) { sans(row.pgn) }
+            for (row in near) {
+                val played = sansOf.getOrPut(row.key) { sans(row.pgn) }
                 val share = agreeing(seen, played ?: emptyList())
                 if (share != null && (best == null || share > best.first)) best = share to row.key
             }
             if (best != null) out[key] = best.second
         }
         return out
+    }
+
+    /** Python's `bisect.bisect_left`: where [x] goes in sorted [a], before any equal to it. */
+    private fun bisectLeft(a: DoubleArray, x: Double): Int {
+        var lo = 0
+        var hi = a.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (a[mid] < x) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
+    /** Python's `bisect.bisect_right`: where [x] goes in sorted [a], after any equal to it. */
+    private fun bisectRight(a: DoubleArray, x: Double): Int {
+        var lo = 0
+        var hi = a.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (x < a[mid]) hi = mid else lo = mid + 1
+        }
+        return lo
     }
 
     /**
@@ -318,7 +368,7 @@ object Library {
             return false
         }
         val playedAt = row.playedAt ?: return true
-        if (!TIMED.containsMatchIn(row.pgn)) return kotlin.math.abs(playedAt - startedAt) <= 36 * 3600
+        if (!TIMED.containsMatchIn(row.pgn)) return kotlin.math.abs(playedAt - startedAt) <= DATE_WINDOW_S
         return startedAt - TWIN_BEFORE_S <= playedAt && playedAt <= startedAt + TWIN_AFTER_S
     }
 

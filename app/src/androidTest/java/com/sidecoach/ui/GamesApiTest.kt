@@ -82,6 +82,33 @@ class GamesApiTest {
         again.close()
     }
 
+    /**
+     * The review of 2026-10-01: Your games listed at most 500 imports and 200 watched games while
+     * Stats counted every one: a game past the caps could not be seen, opened or removed, nor a
+     * watched one paired with its import. The desktop's test_every_game_is_listed_however_many.
+     */
+    @Test
+    fun everyGameIsListedHoweverMany() {
+        assertTrue(maxOf(Library.TWIN_BEFORE_S, Library.TWIN_AFTER_S) <= Library.DATE_WINDOW_S)
+        val store = Store(null)
+        val row = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val start = row.playedAt!!
+        // The first game played: imported and watched, older than every other.
+        store.addLibraryGame(row)
+        val oldest = watch(store, "g0", SANS, start + 3600)
+        // Then 500 imports and 200 watched games, days later and far apart: none pair.
+        val later = start + 10 * 86400
+        for (i in 0 until 500) store.addLibraryGame(row.copy(key = "chesscom:$i", playedAt = later + i * 86400.0))
+        for (i in 0 until 200) watch(store, "w$i", SANS.take(10), later + 600 * 86400.0 + i * 86400)
+        assertEquals(501, store.library().size)
+        val watched = Library.fromWatched(store)
+        assertEquals(201, watched.size)
+        assertTrue(watched.any { it.key == oldest })
+        assertTrue("opened", Library.find(store, oldest) != null)
+        assertEquals("paired with its import", mapOf(oldest to row.key), Library.reconcile(store))
+        store.close()
+    }
+
     companion object {
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
         private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +

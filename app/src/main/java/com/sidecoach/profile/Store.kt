@@ -138,11 +138,11 @@ class Store(val path: File?) {
         rows("SELECT * FROM games WHERE game_id = ?", gameId, map = ::gameRow).firstOrNull()
     }
 
-    /** The most recent games, newest first. */
-    fun games(limit: Int = 50, finished: Boolean = true): List<GameRow> {
+    /** The most recent games, newest first; every one when [limit] is null. */
+    fun games(limit: Int? = 50, finished: Boolean = true): List<GameRow> {
         val clause = if (finished) "WHERE result IS NOT NULL" else ""
         return lock.withLock {
-            rows("SELECT * FROM games $clause ORDER BY started_at DESC LIMIT $limit", map = ::gameRow)
+            rows("SELECT * FROM games $clause ORDER BY started_at DESC LIMIT ${limit ?: -1}", map = ::gameRow)
         }
     }
 
@@ -407,9 +407,13 @@ class Store(val path: File?) {
         }
     }
 
-    /** The imported games, the latest played first. */
-    fun library(limit: Int = 500): List<LibraryRow> = lock.withLock {
-        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT $limit") { libraryRow(it) }
+    /**
+     * Every imported game, the latest played first. Every one: the Games window listed 500 while
+     * Stats counted all (the review of 2026-10-01), and the games past it could not be seen,
+     * opened or removed. `library`.
+     */
+    fun library(): List<LibraryRow> = lock.withLock {
+        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
     }
 
     fun libraryGame(key: String): LibraryRow? = lock.withLock {
