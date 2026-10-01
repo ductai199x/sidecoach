@@ -430,6 +430,9 @@ REQUEST_REBUILT = frozenset(
         # The engine at the model's call: its boards travel in `frames`; the engine is not
         # asked again.
         "tools",
+        # The moment of the game the request was built in: the coach's record reads it, no
+        # check does.
+        "epoch",
     }
 )
 
