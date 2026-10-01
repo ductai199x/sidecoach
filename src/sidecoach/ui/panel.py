@@ -861,8 +861,8 @@ class PanelEngine:
 
     def _reload_recogniser(self) -> None:
         """A new recogniser or microphone: listening pauses, both are rebuilt, listening resumes
-        in the mode it was in."""
-        mode = self._listener.mode
+        in the mode it was in -- the one the microphone test gives back, while it runs."""
+        mode = self._hear_test_mode if self._hear_test_on else self._listener.mode
         with contextlib.suppress(Exception):
             self._listener.set_mode("off")
         self._stt = make_recogniser(self.settings, off=not self.voice_models)
@@ -874,7 +874,7 @@ class PanelEngine:
             self._state["stt_ready"] = ready
         self._emit("voice", "info", f"speech recognition reloading: {self._state['stt_detail']}")
         threading.Thread(target=self._warm_voice, name="stt-reload", daemon=True).start()
-        if mode != "off":
+        if mode != "off" or self._hear_test_on:  # the test listens again either way
             with contextlib.suppress(Exception):
                 self.set_listen(mode)
 
@@ -958,6 +958,17 @@ class PanelEngine:
         """How the coach listens: off, push-to-talk, or voice activity."""
         if mode not in MODES:
             raise ValueError(f"listen mode must be one of {MODES}")
+        if self._hear_test_on:
+            # The microphone test listens until it ends, and then gives back this mode. It gave
+            # back the one it found, undoing a Listening saved while it ran, and the save
+            # switched its own listening, so it went deaf (the settings review, 2026-10-01).
+            self._hear_test_mode = mode
+            if self._listener.mode != "vad":  # a reloaded recogniser left it off
+                with contextlib.suppress(Exception):
+                    self._listener.set_mode("vad")
+            self._set(listen=mode, ptt=False)
+            self._emit("voice", "info", f"listening: {mode} once the microphone test ends")
+            return mode
         detail = self._listener.set_mode(mode)
         self._set(listen=self._listener.mode, ptt=False)
         self._emit("voice", "info", f"listening: {detail}")

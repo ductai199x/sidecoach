@@ -382,6 +382,38 @@ def test_a_key_pasted_alone_reaches_the_coach_and_the_review(
     assert rooms.model()[0] is None, "no key, no model"
 
 
+def test_listening_saved_during_the_microphone_test_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The test gave back the mode it found when it ended, undoing a Listening saved while it
+    ran; and the save switched the test's own listening, so it went deaf (the settings
+    review, 2026-10-01). The test keeps listening, and gives back the mode saved."""
+    from types import SimpleNamespace
+
+    client, engine = _client(tmp_path, monkeypatch)
+    modes: list[str] = []
+
+    def set_mode(mode: str) -> str:
+        modes.append(mode)
+        listener.mode = mode
+        return mode
+
+    listener = SimpleNamespace(mode="off", level=0.0, set_mode=set_mode)
+    engine._listener = listener  # type: ignore[assignment]
+    engine._hotkey = SimpleNamespace(start=lambda: True, stop=lambda: None, detail="")  # type: ignore[assignment]
+    engine._mic = SimpleNamespace(healthcheck=lambda: (True, "mic"))  # type: ignore[assignment]
+    engine._stt = SimpleNamespace(healthcheck=lambda: (True, "stt"))  # type: ignore[assignment]
+    engine.set_listen("ptt")
+    assert engine.set_hear_test(True)["on"] and listener.mode == "vad"
+    modes.clear()
+    off = {"settings": {"voice": {"listen": "off"}}, "secrets": {}}
+    assert client.put("/api/settings", json=off).json()["ok"]
+    assert listener.mode == "vad" and modes == [], "the test still hears"
+    assert engine.poll(0)["state"]["listen"] == "off", "the panel shows the mode saved"
+    engine.set_hear_test(False)
+    assert listener.mode == "off" and engine.settings.voice.listen == "off"
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
