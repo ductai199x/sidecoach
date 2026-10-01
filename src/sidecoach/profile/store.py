@@ -1137,16 +1137,26 @@ class Store:
         reviewed_at: float,
         report: str,
         summary: str | None,
-    ) -> None:
-        """A game reviewed whole; its words, if any were prepared for an older review, go."""
+    ) -> bool:
+        """A game reviewed whole; whether it was saved. A review of an older format is replaced,
+        and its words go with it. One of this format saved already stays: another reviewer
+        finished first (the review of 2026-10-01: the background review and a review window on
+        one game at once -- the window saved first, the player paid for the AI coach's words,
+        and the background's save wiped them). Nor is a game the player removed meanwhile
+        saved. One statement, so no other connection's save or removal comes in between."""
         with self._lock:
-            self._db.execute(
-                "INSERT OR REPLACE INTO reviews"
-                " (key, strength, version, reviewed_at, report, summary, words)"
-                " VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                (key, strength, version, reviewed_at, report, summary),
+            cursor = self._db.execute(
+                "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)"
+                " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS"
+                " (SELECT 1 FROM removed WHERE key = ?)"
+                " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version,"
+                " reviewed_at = excluded.reviewed_at, report = excluded.report,"
+                " summary = excluded.summary, words = NULL"
+                " WHERE reviews.version != excluded.version",
+                (key, strength, version, reviewed_at, report, summary, key),
             )
             self._db.commit()
+        return cursor.rowcount > 0
 
     def review(self, key: str, strength: str) -> ReviewRow | None:
         with self._lock:

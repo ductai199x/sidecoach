@@ -774,6 +774,41 @@ def test_a_review_under_way_saves_nothing_for_a_game_removed_meanwhile(
     store.close()
 
 
+def test_the_review_saved_first_stays_with_the_words_paid_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of 2026-10-01: the background review and a review window on one game at once.
+    The window saved first and the player paid for the AI coach's words; the background then
+    saved its own review over it, and the words with it. The review saved first stays, words and
+    all, and the one that finished second is handed it."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    settings = Settings(data_dir=tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    standard = STRENGTHS["standard"]
+
+    def engines(**_: Any) -> FakeEngine:
+        return FakeEngine()
+
+    assert review_room.review_row(settings, row, store, standard, workers=1, make_engine=engines)
+    words = {"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}, "reveals": []}
+    store.set_review_words(row.key, "standard", json.dumps(words))
+    saved = store.review(row.key, "standard")
+    # The background review, begun before the window saved, finishes now.
+    second = review_room.review_row(settings, row, store, standard, workers=1, make_engine=engines)
+    assert store.review(row.key, "standard") == saved, "the review saved first, and its words"
+    assert saved is not None and json.loads(saved.words or "{}") == words
+    assert second is not None and second[0].model_dump_json() == saved.report, "handed the saved"
+    store.close()
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

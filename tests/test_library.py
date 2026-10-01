@@ -301,7 +301,7 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
     assert [r.key for r in store.library()] == [newer.key, older.key]  # the latest played first
     assert store.library_game(older.key) == older
 
-    store.save_review(
+    assert store.save_review(
         older.key, "standard", 1, 100.0, json.dumps({"moves": []}), json.dumps({"accuracy": 80})
     )
     store.set_review_words(older.key, "standard", json.dumps({"1": "Book."}))
@@ -311,14 +311,20 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
         and review.version == 1
         and json.loads(review.words or "{}") == {"1": "Book."}
     )
-    # Reviewed again: the words of the older review go with it.
-    store.save_review(older.key, "standard", 2, 200.0, "{}", None)
+    # Another reviewer of the same format finishing second: the review saved first stays, with
+    # its words (the review of 2026-10-01: the background review wiped the words paid for).
+    assert not store.save_review(older.key, "standard", 1, 150.0, "{}", None)
+    assert store.review(older.key, "standard") == review
+    # Reviewed again in a newer format: the words of the older review go with it.
+    assert store.save_review(older.key, "standard", 2, 200.0, "{}", None)
     again = store.review(older.key, "standard")
     assert again is not None and again.version == 2 and again.words is None
     assert store.review(older.key, "deep") is None
 
     store.remove_game(older.key)
     assert store.library_game(older.key) is None and store.review(older.key, "standard") is None
+    assert not store.save_review(older.key, "deep", 2, 300.0, "{}", None), "removed: not saved"
+    assert store.review(older.key, "deep") is None
     store.close()
 
 

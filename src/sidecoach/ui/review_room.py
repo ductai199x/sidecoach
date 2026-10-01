@@ -563,7 +563,7 @@ def review_row(
         store.clear_progress(row.key)
         return None
     summary = summarize(reviewed)
-    store.save_review(
+    saved = store.save_review(
         row.key,
         strength.name,
         REVIEW_VERSION,
@@ -571,6 +571,18 @@ def review_row(
         reviewed.model_dump_json(),
         summary.model_dump_json(),
     )
+    if not saved:
+        # Another review of the game at this strength finished first -- the background review
+        # and a review window at once -- and stays, with any words the player paid for on it
+        # (the review of 2026-10-01): this one is handed that one. None if the game was removed.
+        kept = store.review(row.key, strength.name)
+        store.clear_progress(row.key)
+        if kept is None:
+            return None
+        return (
+            ReviewedGame.model_validate_json(kept.report),
+            GameSummary.model_validate_json(kept.summary or "{}"),
+        )
     store.clear_progress(row.key)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
@@ -620,14 +632,15 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
                 "moves": moves,
             }
         )
-        store.save_review(
+        if not store.save_review(
             imported,
             old.strength,
             REVIEW_VERSION,
             time.time(),
             reviewed.model_dump_json(),
             summarize(reviewed).model_dump_json(),
-        )
+        ):
+            continue  # reviewed meanwhile (that review stays, with its words), or removed
         if old.words:
             store.set_review_words(imported, old.strength, old.words)
         store.clear_progress(imported)
