@@ -92,22 +92,45 @@ def _targeted(args: list[str]) -> bool:
     return any(not a.startswith("-") and (".py" in a or "::" in a) for a in args)
 
 
+def _base(word: str) -> str:
+    name = word.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
 def full_suite(words: list[str]) -> str | None:
-    """'desktop' or 'phone' when the command runs every test of that suite, else None."""
+    """'desktop' or 'phone' when the command RUNS every test of that suite, else None. Only
+    a word in the program's place counts -- pytest itself, `uv run pytest`, `python -m pytest`,
+    the phone's test script run by PowerShell -- so reading or grepping those files is no run
+    (a `sed -n` on test.ps1 was refused, 2026-10-01)."""
     low = [w.lower() for w in words]
+    prog = _base(words[0])
+    # Where the program's own arguments begin: after `uv run [options]`, after `python -m`.
+    at = 0
+    if prog == "uv" and len(low) > 1 and low[1] == "run":
+        at = 2
+        while at < len(low) and low[at].startswith("-"):
+            at += 1
+    if (
+        at < len(low)
+        and _base(words[at]).startswith("python")
+        and low[at + 1 : at + 3]
+        == [
+            "-m",
+            "pytest",
+        ]
+    ):
+        return None if _targeted(words[at + 3 :]) else "desktop"
+    if at < len(low) and _base(words[at]) in ("pytest", "py.test"):
+        return None if _targeted(words[at + 1 :]) else "desktop"
+    shell = prog in ("powershell", "pwsh", "&", ".") or prog.endswith("test.ps1")
     for i, w in enumerate(low):
-        name = w.replace("\\", "/").rsplit("/", 1)[-1]
-        if name in ("pytest", "pytest.exe", "py.test") or (
-            w == "-m" and i + 1 < len(low) and low[i + 1] == "pytest" and i > 0
-        ):
-            start = i + 2 if w == "-m" else i + 1
-            return None if _targeted(words[start:]) else "desktop"
-        if name.endswith("test.ps1"):  # tools\test.ps1 reaches here as toolstest.ps1
+        name = _base(w)
+        if shell and name.endswith("test.ps1"):  # tools\test.ps1 reaches here as toolstest.ps1
             return None if "-class" in low[i + 1 :] else "phone"
-        if re.fullmatch(r"connected\w*androidtest", name):
+        if prog.startswith("gradlew") and re.fullmatch(r":?(app:)?connected\w*androidtest", name):
             named = any("instrumentationrunnerarguments.class" in a for a in low)
             return None if named else "phone"
-        if w == "instrument" and i > 0 and low[i - 1] == "am":
+        if prog == "adb" and w == "instrument" and i > 0 and low[i - 1] == "am":
             return None if "class" in low[i + 1 :] else "phone"
     return None
 
