@@ -36,6 +36,22 @@ class RecordingNoticeTest {
 
     @After fun after() = clear()
 
+    // What is asserted, waited for: a fixed sleep was outrun by a busy emulator in the full run.
+    private fun waitFor(ms: Long = 5000, what: () -> Boolean): Boolean {
+        val until = android.os.SystemClock.uptimeMillis() + ms
+        while (android.os.SystemClock.uptimeMillis() < until) {
+            if (what()) return true
+            Thread.sleep(50)
+        }
+        return what()
+    }
+
+    private fun showing(dialog: AlertDialog): Boolean {
+        var up = false
+        instrumentation.runOnMainSync { up = dialog.isShowing && dialog.findViewById<TextView>(android.R.id.message) != null }
+        return up
+    }
+
     private fun lookup(vararg apps: Triple<String, List<String>, Long>) = RecordingNotice.Lookup { pkg ->
         apps.firstOrNull { it.first == pkg }?.let { it.second to it.third }
     }
@@ -109,8 +125,8 @@ class RecordingNoticeTest {
             scenario.onActivity {
                 dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
             }
-            Thread.sleep(800)
             val shown = dialog!!
+            assertTrue("the question did not come up", waitFor { showing(shown) })
             var message = ""
             instrumentation.runOnMainSync { message = shown.findViewById<TextView>(android.R.id.message).text.toString() }
             assertEquals(RecordingNotice.words(watchers).second, message)
@@ -120,7 +136,7 @@ class RecordingNoticeTest {
             }
             // Cancel: nothing shared, nothing remembered.
             instrumentation.runOnMainSync { shown.getButton(AlertDialog.BUTTON_NEGATIVE).performClick() }
-            Thread.sleep(300)
+            waitFor { cancelled == 1 }
             assertEquals(0, proceeded)
             assertEquals(1, cancelled)
             val lookup = RecordingNotice.Lookup { pkg -> if (pkg == "com.chess") listOf(RecordingNotice.PERMISSION) to 7L else null }
@@ -129,9 +145,9 @@ class RecordingNoticeTest {
             scenario.onActivity {
                 dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
             }
-            Thread.sleep(500)
+            assertTrue("the question did not come up again", waitFor { showing(dialog!!) })
             instrumentation.runOnMainSync { dialog!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick() }
-            Thread.sleep(300)
+            waitFor { proceeded == 1 }
             assertEquals(1, proceeded)
             assertEquals(1, cancelled)
             assertTrue(RecordingNotice.unanswered(app, lookup).isEmpty())

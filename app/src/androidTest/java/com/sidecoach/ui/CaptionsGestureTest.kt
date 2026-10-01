@@ -206,7 +206,11 @@ class CaptionsGestureTest {
         automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
         Thread.sleep(1500)
         app.getSharedPreferences("captions", 0).edit().clear().commit()
-        Captions.board = null
+        // A fresh start: a test before this one may have closed the panel (Captions.quit). Its
+        // long fade, set by the caller, stays.
+        Captions.reset()
+        Captions.hideAfterMs = LONG_MS
+        Captions.controlsMs = LONG_MS
         Captions.configure(app, true)
         Captions.show(
             "Spot on -- rooks belong on open files. Your rook now looks straight down the file at " +

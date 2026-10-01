@@ -43,8 +43,8 @@ class CaptionsKeepTest {
         automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
         Thread.sleep(1500)
         app.getSharedPreferences("captions", 0).edit().clear().commit()
-        Captions.board = null
-        Captions.panelInFront(false)
+        // A fresh start: a test before this one may have closed the panel (Captions.quit).
+        Captions.reset()
         Captions.configure(app, true)
         try {
             // Off: the words, then the fade.

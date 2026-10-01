@@ -188,6 +188,27 @@ object Captions {
     }
 
     /**
+     * A fresh start, as when the app starts: not quit, the panel not in front, nothing kept, no
+     * words and no box, the fade's timings as shipped. For tests, which share one process: one
+     * that closed the panel (a scenario's MainActivity, a session's service stopping, [quit]) left
+     * the box unable to come up for the caption tests after it -- they failed only in the full run.
+     */
+    internal fun reset() {
+        quitted = false
+        front = false
+        keep = false
+        board = null
+        hideAfterMs = HIDE_AFTER_MS
+        controlsMs = CONTROLS_MS
+        main.post {
+            drop()
+            said.setLength(0)
+            saying = ""
+            expanded = false
+        }
+    }
+
+    /**
      * Always on screen: the box up, with the words said so far or none yet, whatever is in
      * front (Tai, 2026-09-29: "is it always on screen or not????").
      */
