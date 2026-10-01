@@ -648,16 +648,25 @@ class Store(val path: File?) {
         rows("SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews) ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
     }
 
-    /** A game reviewed whole; its words, if any were prepared for an older review, go. */
-    fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?) {
+    /**
+     * A game reviewed whole; whether it was saved. A review of an older format is replaced, and
+     * its words go with it. One of this format saved already stays: another reviewer finished
+     * first (the review of 2026-10-01: the desktop's background review and a review window on
+     * one game at once -- the window saved first, the player paid for the AI coach's words, and
+     * the background's save wiped them). Nor is a game the player removed meanwhile saved. One
+     * statement, so no other connection's save or removal comes in between. `save_review`.
+     */
+    fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?): Boolean =
         lock.withLock {
             exec(
-                "INSERT OR REPLACE INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
-                    " VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                key, strength, version, reviewedAt, report, summary,
-            )
+                "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
+                    " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS (SELECT 1 FROM removed WHERE key = ?)" +
+                    " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version," +
+                    " reviewed_at = excluded.reviewed_at, report = excluded.report," +
+                    " summary = excluded.summary, words = NULL WHERE reviews.version != excluded.version",
+                key, strength, version, reviewedAt, report, summary, key,
+            ) > 0
         }
-    }
 
     fun review(key: String, strength: String): ReviewRow? = lock.withLock {
         rows("SELECT * FROM reviews WHERE key = ? AND strength = ?", key, strength) { reviewRow(it) }.firstOrNull()
