@@ -105,3 +105,36 @@ def test_the_captions_switch_from_the_panel_follows_the_box(
     back = {"settings": {"voice": {"captions": True}}, "secrets": {}}
     assert client.put("/api/settings", json=back).json()["ok"]
     assert captions()["on"] is True and captions()["keep"] is True
+
+
+def test_every_change_to_the_settings_raises_the_counter_the_main_window_reads(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path
+) -> None:
+    """The main window reads `settings_version` with each poll and, when it moves, draws the
+    settings again and tells the other windows: a change made by any way reaches them, with no
+    window asking on its own (2026-10-01: the Neo set loaded through the API left every window
+    drawing the old pieces)."""
+    from sidecoach.config import Settings
+
+    settings = Settings(data_dir=tmp_path)
+    settings._source = tmp_path / "sidecoach.toml"
+    client = TestClient(build_app(make_panel(settings)))
+
+    def version() -> int:
+        return client.get("/api/poll").json()["state"]["settings_version"]
+
+    start = version()
+    pick = {"settings": {"board": {"pieces": "cburnett"}}, "secrets": {}}
+    assert client.put("/api/settings", json=pick).json()["ok"]
+    after_save = version()
+    assert after_save > start, "a save"
+    client.post("/api/muted", json={"muted": True})
+    after_mute = version()
+    assert after_mute > after_save, "a switch kept for the next session"
+    png = "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+    one = {"name": "Neo", "files": [{"name": "wK.png", "data": png}]}
+    made = client.post("/api/pieces/own", json=one)
+    assert made.json()["ok"] and version() > after_mute, "a piece set made"
+    before = version()
+    assert not client.put("/api/pieces/own/nope", json={"name": "x"}).json()["ok"]
+    assert version() == before, "nothing changed, nothing raised"

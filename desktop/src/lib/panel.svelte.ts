@@ -153,6 +153,14 @@ export class PanelStore {
   }
 
   private apply(s: PanelState): void {
+    // The server changed the settings or a piece set, however it came to (a Settings page, a
+    // switch here, the captions' box, another device): this window draws them again and tells
+    // the others -- no window waits for a peer's word, and none asks on its own (2026-10-01).
+    const was = this.state.settings_version;
+    if (was !== undefined && s.settings_version !== undefined && s.settings_version !== was) {
+      void import("./look").then((l) => l.refreshLook()).catch(() => {});
+      told();
+    }
     this.state = s;
     if (s.listen !== undefined && s.listen !== this.listenMode) {
       this.listenMode = s.listen;

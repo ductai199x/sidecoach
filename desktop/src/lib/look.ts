@@ -1,11 +1,10 @@
 // How the boards look, in every window: the pieces and the squares' colours the settings chose
 // (looks.py, /api/look), set as the stylesheet's variables (panel.css --pc-*, --sq-*). Read
-// when a window opens, again when Settings saves (the shell's "settings" event) and when a
-// window comes back to the front; and whenever the server's stamp of it changes, asked every
-// few seconds while the window is shown -- so a window follows the settings however they
-// changed, not only when a Settings page tells it (2026-10-01). A player's own pieces arrive
-// inline (data URLs). Until the sidecar answers, and wherever it cannot, the stylesheet's
-// defaults stand.
+// when a window opens, again when the settings change (the shell's "settings" event: a
+// Settings page that saved, or the main window, which sees every change the server makes in
+// its poll -- lib/panel.svelte.ts) and when a window comes back to the front. A player's own
+// pieces arrive inline (data URLs). Until the sidecar answers, and wherever it cannot, the
+// stylesheet's defaults stand.
 import { connect, get } from "$lib/api";
 import { onAnnounce } from "$lib/shell.svelte";
 
@@ -13,11 +12,7 @@ export type BoardColours = {
   light: string; light_odd: string; dark: string; dark_odd: string;
   light_hl: string; light_hl_odd: string; dark_hl: string; dark_hl_odd: string;
 };
-export type Look = { pieces: string; theme: string; images: Record<string, string>; board: BoardColours; stamp?: string };
-
-/** How often a shown window asks for the look's stamp. */
-const STAMP_MS = 2000;
-let applied = ""; // the stamp of the look on the page
+export type Look = { pieces: string; theme: string; images: Record<string, string>; board: BoardColours };
 
 const VARS: [keyof BoardColours, string][] = [
   ["light", "--sq-light"], ["light_odd", "--sq-light-odd"], ["dark", "--sq-dark"], ["dark_odd", "--sq-dark-odd"],
@@ -36,10 +31,7 @@ async function read(): Promise<void> {
   try {
     await connect();
     const look = await get<Look>("/api/look");
-    if (look?.images) {
-      applyLook(look);
-      applied = look.stamp ?? "";
-    }
+    if (look?.images) applyLook(look);
   } catch {
     /* the sidecar not up yet, or an older one: the defaults stand */
   }
@@ -55,14 +47,8 @@ export function followLook(): () => void {
   const stop = onAnnounce("settings", () => void refreshLook());
   const onFocus = () => void refreshLook();
   window.addEventListener("focus", onFocus);
-  const timer = setInterval(async () => {
-    if (document.visibilityState !== "visible" || reading) return;
-    const now = await get<{ stamp?: string }>("/api/look/stamp").catch(() => null);
-    if (now?.stamp && now.stamp !== applied) void refreshLook();
-  }, STAMP_MS);
   return () => {
     stop();
     window.removeEventListener("focus", onFocus);
-    clearInterval(timer);
   };
 }

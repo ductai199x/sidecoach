@@ -233,17 +233,3 @@ def test_the_pages_read_the_look_and_a_player_loads_their_own(
     assert client.get("/api/look").json()["images"]["bQ"].startswith("data:image/png")
     assert client.delete("/api/pieces/own/neo").json()["ok"]
     assert client.get("/api/look").json()["images"]["bQ"] == "/pieces/bQ.svg?v=own2"
-
-
-def test_the_looks_stamp_changes_with_the_look_and_only_with_it(tmp_path: Path) -> None:
-    """Windows read the stamp every few seconds and the look again when it changes: a change
-    made by any way reaches them (2026-10-01: the Neo set loaded through the API left every
-    window drawing the old pieces)."""
-    same = looks.look("sidecoach", "green", tmp_path)["stamp"]
-    assert same == looks.look("sidecoach", "green", tmp_path)["stamp"]
-    assert same != looks.look("cburnett", "green", tmp_path)["stamp"]
-    assert same != looks.look("sidecoach", "brown", tmp_path)["stamp"]
-    looks.create_own(tmp_path, "Neo", [{"name": "wK.png", "data": b64(PNG)}])
-    own = looks.look("own:neo", "green", tmp_path)["stamp"]
-    looks.add_images(tmp_path, "neo", [{"name": "wK.svg", "data": b64(SVG)}])
-    assert looks.look("own:neo", "green", tmp_path)["stamp"] != own, "an image replaced"

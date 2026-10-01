@@ -410,6 +410,9 @@ class PanelEngine:
             # the vision follows is on the screen, in pixels (none while it follows none).
             "captions": caption_settings(self.settings, preview=0),
             "caption_lines": [],
+            # Raised by every change the server makes to the settings or a piece set: the main
+            # window reads it with each poll and tells the other windows (lib/panel.svelte.ts).
+            "settings_version": 0,
             "board_screen": None,
         }
         self._captioned = 0  # the words captioned so far, the last one's number
@@ -679,6 +682,12 @@ class PanelEngine:
             self.settings = new
         for follow in list(self.settings_followers):
             follow(new)
+        self.settings_touched()
+
+    def settings_touched(self) -> None:
+        """The settings or a piece set changed: every window draws from them again."""
+        with self._lock:
+            self._state["settings_version"] = int(self._state.get("settings_version", 0)) + 1
 
     def apply_settings(self, new: Settings, changed: Sequence[str]) -> list[str]:
         """The settings saved: what can change on the running session does, and is

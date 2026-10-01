@@ -657,35 +657,35 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         board = engine.settings.board
         return looks.look(board.pieces, board.theme, engine.settings.data_dir)
 
-    # The look's stamp alone, for every window to ask every few seconds (lib/look.ts).
-    @app.get("/api/look/stamp")
-    def get_look_stamp() -> dict[str, str]:
-        board = engine.settings.board
-        return {"stamp": looks.look(board.pieces, board.theme, engine.settings.data_dir)["stamp"]}
-
     # A player's own sets: a new one from the images chosen, more images for one, a new name,
-    # deleted (put aside for its Undo) and back.
+    # deleted (put aside for its Undo) and back. Each that took raises the settings' counter,
+    # so every window draws the sets again.
+    def touched(result: dict[str, Any]) -> dict[str, Any]:
+        if result.get("ok"):
+            engine.settings_touched()
+        return result
+
     @app.post("/api/pieces/own")
     def post_own_set(body: _Pieces) -> dict[str, Any]:
         files = [f.model_dump() for f in body.files]
-        return looks.create_own(engine.settings.data_dir, body.name, files)
+        return touched(looks.create_own(engine.settings.data_dir, body.name, files))
 
     @app.post("/api/pieces/own/{set_id}/images")
     def post_own_images(set_id: str, body: _Pieces) -> dict[str, Any]:
         files = [f.model_dump() for f in body.files]
-        return looks.add_images(engine.settings.data_dir, set_id, files)
+        return touched(looks.add_images(engine.settings.data_dir, set_id, files))
 
     @app.put("/api/pieces/own/{set_id}")
     def put_own_set(set_id: str, body: _SetName) -> dict[str, Any]:
-        return looks.rename_own(engine.settings.data_dir, set_id, body.name)
+        return touched(looks.rename_own(engine.settings.data_dir, set_id, body.name))
 
     @app.delete("/api/pieces/own/{set_id}")
     def delete_own_set(set_id: str) -> dict[str, Any]:
-        return looks.delete_own(engine.settings.data_dir, set_id)
+        return touched(looks.delete_own(engine.settings.data_dir, set_id))
 
     @app.post("/api/pieces/own/{set_id}/restore")
     def restore_own_set(set_id: str) -> dict[str, Any]:
-        return looks.restore_own(engine.settings.data_dir, set_id)
+        return touched(looks.restore_own(engine.settings.data_dir, set_id))
 
     # ---- the settings, for the app's settings window (ui/settings_api.py) ---------------
     @app.get("/api/settings")
