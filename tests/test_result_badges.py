@@ -69,12 +69,23 @@ def read_result(frame, geometry, board: chess.Board, bottom: Side) -> str | None
 
 # ---- rendered: every theme, size and orientation ----------------------------------------
 
+# Each theme once, the size and the orientation turning over under them: all 48 combinations
+# ran the same lines as these eight (the suite map, 2026-10-01). Green at 72 px with Black
+# below is the one case that reaches `find_disc`'s refusal of a disc in the colour of the
+# square under it (DISTINCT).
+SLOTS = [
+    (Side.WHITE, 44), (Side.WHITE, 72), (Side.WHITE, 128), (Side.BLACK, 72),
+    (Side.BLACK, 44), (Side.BLACK, 128), (Side.WHITE, 44), (Side.BLACK, 72),
+]  # fmt: skip
+BADGE_CASES = [
+    pytest.param(bottom, cell, theme, id=f"{bottom.value}-{cell}-{theme}")
+    for (bottom, cell), theme in zip(SLOTS, sorted(THEMES), strict=True)
+]
 
-@pytest.mark.parametrize("theme", sorted(THEMES))
-@pytest.mark.parametrize("cell", [44, 72, 128])
-@pytest.mark.parametrize("bottom", [Side.WHITE, Side.BLACK])
+
+@pytest.mark.parametrize(("bottom", "cell", "theme"), BADGE_CASES)
 def test_every_theme_size_and_orientation_reads_the_result(
-    theme: str, cell: int, bottom: Side
+    bottom: Side, cell: int, theme: str
 ) -> None:
     board = chess.Board(LOST)
     for result in ("1-0", "0-1", None):
