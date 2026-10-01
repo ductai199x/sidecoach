@@ -1017,8 +1017,10 @@ private const val PIECE_ADJECTIVES =
         "lone|last|remaining|undefended|defended|attacked|active|passive|bad|good|" +
         "light-squared|dark-squared|central|strong|weak|exposed|stranded|" +
         "overloaded)\\s+){0,2}"
+
+// A pawn may carry its file: "your isolated f-pawn on f2" (the AI review, 2026-09-30).
 private val PIECE_ON = Regex(
-    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?$PIECE_ADJECTIVES(?<piece>$PIECE_WORD)s?" +
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?$PIECE_ADJECTIVES(?:[a-h]-)?(?<piece>$PIECE_WORD)s?" +
         "\\s+(?:on|at)\\s+" +
         "(?<square>[a-h][1-8])\\b",
     RegexOption.IGNORE_CASE,
