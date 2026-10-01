@@ -88,6 +88,7 @@ class SettingsApi(val store: SettingsStore) {
         // What the kept coach and engine can change, they do now; a "now" field with nothing
         // built to change is simply what the next build reads (`settings_api.update`).
         PanelWarm.applySettings(store, changed)
+        PanelEngine.settingsTouched()
 
         PanelEngine.emit(
             "sys",
@@ -123,6 +124,7 @@ class SettingsApi(val store: SettingsStore) {
         wanted.put("data_dir", before.optString("data_dir"))
         wanted.put("tools_dir", before.optString("tools_dir"))
         store.save(wanted)
+        PanelEngine.settingsTouched()
     }
 
     private fun words(names: List<String>): String =

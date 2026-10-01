@@ -193,6 +193,9 @@ object PanelEngine {
             state["voice"] = ""
             state["voices"] = emptyList<String>()
             state["muted"] = false
+            // Raised by every change the server makes to the settings or a piece set: the page
+            // reads it with each poll and draws them again (`settings_version`).
+            state["settings_version"] = 0
             state["recording_dir"] = null
             state["record_wanted"] = false
             // What the engine is asked for (`self.coach`, `self.analysis`): both, on the phone.
@@ -331,6 +334,11 @@ object PanelEngine {
 
     fun set(vararg fields: Pair<String, Any?>) {
         synchronized(lock) { for ((key, value) in fields) state[key] = value }
+    }
+
+    /** The settings or a piece set changed: the page draws from them again. `settings_touched`. */
+    fun settingsTouched() {
+        synchronized(lock) { state["settings_version"] = ((state["settings_version"] as? Int) ?: 0) + 1 }
     }
 
     /**

@@ -403,28 +403,11 @@ object Looks {
         if (own != null) images.putAll(ownImages(files, own))
         else if (set != null) for (c in CODES) images[c] = set.url(c)
         val board = BOARD_THEMES[theme] ?: BOARD_THEMES.getValue(DEFAULT_THEME)
-        val colours = board.colours()
         return JSONObject()
             .put("pieces", pieces)
             .put("theme", theme)
             .put("images", JSONObject(images as Map<*, *>))
-            .put("board", colours)
-            .put("stamp", stamp(pieces, theme, images, colours))
-    }
-
-    /**
-     * A short hash of the look: it changes with the set, the colours or any image of an own set.
-     * Every page reads it every few seconds and reads the look again when it changes, so it
-     * follows the settings whatever changed them. `stamp`.
-     */
-    fun stamp(pieces: String, theme: String, images: Map<String, String>, colours: JSONObject): String {
-        val parts = ArrayList<String>()
-        parts.add(pieces)
-        parts.add(theme)
-        for (c in CODES) parts.add("$c=${images[c] ?: ""}")
-        for (k in colours.keys().asSequence().sorted()) parts.add("$k=${colours.getString(k)}")
-        val digest = java.security.MessageDigest.getInstance("SHA-1").digest(parts.joinToString("\n").toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }.take(16)
+            .put("board", board.colours())
     }
 
     /**

@@ -200,13 +200,19 @@ class SettingsPhoneTest {
             assertTrue(call("POST", "/api/pieces/own/$id/restore").getBoolean("ok"))
             assertTrue(labels().contains("Phone wood"))
             assertFalse("no such set", call("PUT", "/api/pieces/own/nope", JSONObject().put("name", "x")).getBoolean("ok"))
-            // The look's stamp, which every page asks for: it changes with the pieces.
-            val stampBefore = call("GET", "/api/look/stamp").getString("stamp")
+            // The settings' counter the page reads with each poll: raised by a save and by a
+            // change to a set, not by a refusal.
+            fun version(): Int = PanelEngine.poll(0).getJSONObject("state").getInt("settings_version")
+            val before = version()
             val pick = JSONObject().put("board", JSONObject().put("pieces", Looks.OWN + id))
             assertTrue(call("PUT", "/api/settings", JSONObject().put("settings", pick).put("secrets", JSONObject())).getBoolean("ok"))
-            val stampAfter = call("GET", "/api/look/stamp").getString("stamp")
-            assertTrue("the stamp follows the pieces", stampBefore != stampAfter)
-            assertEquals(stampAfter, call("GET", "/api/look").getString("stamp"))
+            assertTrue("a save raises it", version() > before)
+            val afterSave = version()
+            call("PUT", "/api/pieces/own/$id", JSONObject().put("name", "Phone oak"))
+            assertTrue("a set renamed raises it", version() > afterSave)
+            val afterRename = version()
+            call("PUT", "/api/pieces/own/nope", JSONObject().put("name", "x"))
+            assertEquals("nothing changed, nothing raised", afterRename, version())
         } finally {
             store.save(saved)
             made?.let {

@@ -223,15 +223,10 @@ class PanelApi(
                 val (pieces, theme) = store.board()
                 ok(Looks.look(pieces, theme, store.files))
             }
-            // The look's stamp alone, for every page to ask every few seconds (lib/look.ts).
-            path == "/api/look/stamp" -> settings.store.let { store ->
-                val (pieces, theme) = store.board()
-                ok(JSONObject().put("stamp", Looks.look(pieces, theme, store.files).getString("stamp")))
-            }
             // A player's own sets: a new one from the images chosen, more images for one, a new
             // name, deleted (put aside for its Undo) and back (`server.py`'s /api/pieces/own).
             path == "/api/pieces/own" ->
-                json.optJSONArray("files")?.let { ok(Looks.createOwn(settings.store.files, json.optString("name", ""), it)) }
+                json.optJSONArray("files")?.let { ok(touched(Looks.createOwn(settings.store.files, json.optString("name", ""), it))) }
                     ?: unprocessable()
             path.startsWith("/api/pieces/own/") -> ownSet(method, path.removePrefix("/api/pieces/own/"), json)
 
@@ -298,6 +293,12 @@ class PanelApi(
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
 
+    /** A change to the player's sets that took raises the settings' counter (`touched`). */
+    private fun touched(result: JSONObject): JSONObject {
+        if (result.optBoolean("ok")) PanelEngine.settingsTouched()
+        return result
+    }
+
     /** `/api/pieces/own/{set_id}` (PUT, DELETE) and its `/images` and `/restore` (POST). */
     private fun ownSet(method: String, rest: String, json: JSONObject): LocalServer.Reply? {
         val files = settings.store.files
@@ -305,11 +306,11 @@ class PanelApi(
         val id = parts[0]
         return when {
             parts.size == 1 && method == "PUT" ->
-                if (json.has("name")) ok(Looks.renameOwn(files, id, json.optString("name"))) else unprocessable()
-            parts.size == 1 && method == "DELETE" -> ok(Looks.deleteOwn(files, id))
+                if (json.has("name")) ok(touched(Looks.renameOwn(files, id, json.optString("name")))) else unprocessable()
+            parts.size == 1 && method == "DELETE" -> ok(touched(Looks.deleteOwn(files, id)))
             parts.size == 2 && parts[1] == "images" ->
-                json.optJSONArray("files")?.let { ok(Looks.addImages(files, id, it)) } ?: unprocessable()
-            parts.size == 2 && parts[1] == "restore" -> ok(Looks.restoreOwn(files, id))
+                json.optJSONArray("files")?.let { ok(touched(Looks.addImages(files, id, it))) } ?: unprocessable()
+            parts.size == 2 && parts[1] == "restore" -> ok(touched(Looks.restoreOwn(files, id)))
             else -> null
         }
     }
@@ -522,7 +523,7 @@ class PanelApi(
         val ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf(
                 "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
-                "/api/games", "/api/look", "/api/look/stamp", "/api/jobs", "/api/stats", "/api/stats/positions",
+                "/api/games", "/api/look", "/api/jobs", "/api/stats", "/api/stats/positions",
             ),
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
