@@ -231,6 +231,42 @@ def test_the_engine_coach_and_listening_outlive_a_session(
     assert engine._listener.mode == "off" and not mic.opened
 
 
+def test_a_coach_message_is_handled_once_across_sessions(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """The coach outlives a Stop, so what of its messages the panel has handled lives as long
+    as the coach: a count started again at each Start sent every earlier session's messages
+    through again -- logged, recorded into the game's dialogue, spoken when their ply matched
+    (2026-10-01). A new coach's are all new; so are a prompt check's failures."""
+    from types import SimpleNamespace
+
+    from sidecoach.coach.coach import Coach, Spoken
+    from sidecoach.events import CoachMessage, DisclosureLevel, Trigger
+    from sidecoach.llm.offline import OfflineProvider
+
+    engine = make_panel(record=False)
+    said: list[str] = []
+    engine._speak = lambda trigger, text, ply: said.append(text) or "text"  # type: ignore[method-assign]
+    coach = Coach(OfflineProvider())
+    coaching = SimpleNamespace(coach=coach)
+    message = CoachMessage(
+        text="Look at the knight.", level=DisclosureLevel.IDEA, trigger=Trigger.STUCK, ply=0
+    )
+    once = Spoken(message=message, level=DisclosureLevel.IDEA, problems=[], attempts=1)
+    coach.spoken.append(once)
+    coach.harness_problems.append("stuck at ply 0: no position now")
+    for _session in range(2):  # the end of one session, then the next
+        engine._coach_meta(coaching)
+    assert said == ["Look at the knight."], "spoken once"
+    lines = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert sum("prompt check failed" in t for t in lines) == 1, lines
+
+    fresh = Coach(OfflineProvider())  # a new coach (settings changed): its list from the start
+    fresh.spoken.append(once)
+    engine._coach_meta(SimpleNamespace(coach=fresh))
+    assert said == ["Look at the knight."] * 2
+
+
 @pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_a_start_without_a_warm_up_builds_the_stages_once(
     make_panel: Callable[..., PanelEngine],

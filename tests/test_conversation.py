@@ -404,3 +404,27 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
     lines = now.split("## Engine lines", 1)[1].split("\n## ", 1)[0]
     assert f" {best}  0.70" in lines.split("\n")[1], "the engine's best line for this position"
     assert "\n## Facts (" in now, "the facts sheet for this position"
+    assert coach.harness_problems == [], "the prompt check passes every prompt built right"
+
+
+def test_the_prompt_check_names_what_is_wrong() -> None:
+    """The check run before every request: the puzzle start's prompt (no position now), a
+    withdrawn position, and the wrong colour are each named; a prompt built right passes."""
+    from sidecoach.coach.conversation import harness_problem
+
+    board = chess.Board(JOINED)
+    good = (
+        "# Setting\nYou coach Black. They see the board from Black's side.\n\n"
+        f"# Position now\n## Board\nFEN: {board.fen()}\nPieces -- ..."
+    )
+    assert harness_problem(good, board, Side.BLACK) is None
+    setting_only = good.split("\n\n# Position now")[0]
+    assert harness_problem(setting_only, board, Side.BLACK) == (
+        "no position now (# Position now with its board)"
+    )
+    withdrawn = good.replace(board.fen(), chess.STARTING_FEN)
+    assert "the position now is rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w" in str(
+        harness_problem(withdrawn, board, Side.BLACK)
+    )
+    wrong_side = harness_problem(good, board, Side.WHITE)
+    assert wrong_side == "the setting does not say the player is White"

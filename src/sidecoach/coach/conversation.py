@@ -196,6 +196,28 @@ def ways(board: chess.Board, sans: Sequence[str], side: Side) -> str:
     return "; ".join(out)
 
 
+_NOW_FEN = re.compile(r"# Position now\n## Board\nFEN: (\S+ [wb])")
+
+
+def harness_problem(harness: str, board: chess.Board, user_side: Side) -> str | None:
+    """What is wrong with a harness about to go to the model, or None: it must have the position
+    now, that position must be the game's as it stands (`board`) with its side to move, and the
+    setting must name the player's colour. Checked before every request and logged when it
+    fails, so a gap like the puzzle start's -- no position now at all, and the model named the
+    player's own Qxf2+ as the opponent's threat (2026-10-01) -- shows the first time it
+    happens."""
+    side = "White" if user_side == Side.WHITE else "Black"
+    if f"You coach {side}." not in harness:
+        return f"the setting does not say the player is {side}"
+    found = _NOW_FEN.search(harness)
+    if found is None:
+        return "no position now (# Position now with its board)"
+    now = " ".join(board.fen().split(" ")[:2])
+    if found.group(1) != now:
+        return f"the position now is {found.group(1)}, the game's is {now}"
+    return None
+
+
 def _gone(text: str, board: chess.Board) -> bool:
     """Whether `text` names a piece on a square that no longer holds that piece on `board`."""
     for word, square in _PLACED_PIECE.findall(text.lower()):

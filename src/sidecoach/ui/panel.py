@@ -417,7 +417,11 @@ class PanelEngine:
         }
         self._captioned = 0  # the words captioned so far, the last one's number
         self._profiler: Any = None
-        self._profile_seen = 0
+        # How much of each of the coach's growing lists has been logged, by the list itself: a
+        # Start makes a new coach with new lists, and a count kept from the last one skipped
+        # the new one's first entries.
+        self._logged: dict[str, tuple[list[Any], int]] = {}
+        self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
 
     # ---- control surface (called from the API / GUI thread) -------------------------------
@@ -1762,8 +1766,6 @@ class PanelEngine:
         bootstraps = 0
         degraded = False
         opening: str | None = None
-        spoken_seen = 0
-        failures_seen = 0
         silence: str | None = None
         ticks = 0
         pipeline_ms: list[float] = []
@@ -1887,7 +1889,7 @@ class PanelEngine:
                 coaching.events(profile_events, ts)
                 coaching.tick(ts)
                 coaching.drain()
-                spoken_seen, failures_seen = self._coach_meta(coaching, spoken_seen, failures_seen)
+                self._coach_meta(coaching)
                 self._say_held_word(coaching, ts)
                 silence = self._coach_silence(coaching, silence)
                 self._refresh_state(pipe)
@@ -1922,7 +1924,7 @@ class PanelEngine:
             coaching.events(late, time.monotonic())
             coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
             coaching.wait()
-            self._coach_meta(coaching, spoken_seen, failures_seen)
+            self._coach_meta(coaching)
             # The strip once more, with the replies that came after the last tick.
             with contextlib.suppress(Exception):
                 self._health(pipe, coaching, recorder, ticks, pipeline_ms, 1.0, ts, live)
@@ -2289,12 +2291,24 @@ class PanelEngine:
                 break
         return out
 
-    def _coach_meta(self, coaching: Any, seen: int, failures: int) -> tuple[int, int]:
+    def _new_items(self, name: str, items: list[Any]) -> list[Any]:
+        """The entries of the coach's growing list `name` not logged yet: all of them when the
+        list is a new coach's."""
+        held, done = self._logged.get(name, (None, 0))
+        if held is not items:
+            done = 0
+        self._logged[name] = (items, len(items))
+        return items[done:]
+
+    def _coach_meta(self, coaching: Any) -> None:
         """Log each new coach message with why it spoke and what it was checked against, speak
-        it, and log any new LLM failure."""
+        it, and log any new LLM failure. What is new is kept with the coach, not the session:
+        the coach outlives a Stop, and a count started again at each Start sent every earlier
+        session's messages through again -- logged, recorded into the game's dialogue, and
+        spoken when their ply matched (2026-10-01)."""
         coach = coaching.coach
         if coach is None:
-            return seen, failures
+            return
         # Every message of the game's conversation, as the model will see it, at debug: the
         # panel's Conversation tab is built from these.
         for entry in coach.conversation.drain_new():
@@ -2311,7 +2325,10 @@ class PanelEngine:
                 kind=entry.kind,
                 body=text[:6000],
             )
-        for kind, answer in coach.profile_answers[self._profile_seen :]:
+        # A prompt that failed its check before going to the model (`harness_problem`).
+        for problem in self._new_items("harness", coach.harness_problems):
+            self._emit("coach", "error", f"prompt check failed: {problem}")
+        for kind, answer in self._new_items("profile", coach.profile_answers):
             # What the coach looked up in the record for a question about the player.
             if kind == "error":
                 self._emit("coach", "error", f"record lookup failed: {answer}")
@@ -2329,8 +2346,7 @@ class PanelEngine:
                 )
             if answer.failed:
                 self._emit("coach", "warn", "record: the model wrote no answer; the rows stand in")
-        self._profile_seen = len(coach.profile_answers)
-        for spoken in coach.spoken[seen:]:
+        for spoken in self._new_items("spoken", coach.spoken):
             message = spoken.message
             if message.text:
                 self._record_dialogue(message)
@@ -2425,12 +2441,13 @@ class PanelEngine:
                     candidates=call.candidates,
                     passed=call.passed,
                 )
-        seen = len(coach.spoken)
         speaker = coach.speaker
+        held, failures = self._failures_seen
+        if held is not speaker:
+            failures = 0
         if speaker.failures > failures:
             self._emit("coach", "error", f"LLM call failed: {speaker.last_error}")
-            failures = speaker.failures
-        return seen, failures
+        self._failures_seen = (speaker, speaker.failures)
 
     def _coach_silence(self, coaching: Any, last: str | None) -> str | None:
         """At debug, why the coach is quiet -- only when the reason changes."""

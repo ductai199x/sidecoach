@@ -36,7 +36,7 @@ from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
-from sidecoach.coach.conversation import Conversation, PlyRecord, hands, ways
+from sidecoach.coach.conversation import Conversation, PlyRecord, hands, harness_problem, ways
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -2271,6 +2271,9 @@ class Coach:
         # the answers it gave, with their queries, for the panel's log.
         self.profile_ask: Callable[[str], Any] | None = None
         self.profile_answers: list[tuple[str, Any]] = []
+        # The prompts that failed their check before going to the model (`harness_problem`),
+        # for the panel's log: each one is a bug in how the prompt is built.
+        self.harness_problems: list[str] = []
         self._mistakes = 0  # the player's mistakes this game, for ELICIT_EVERY
         # When the coach last asked what the player saw, and whether they answered.
         self._elicit_asked: float | None = None
@@ -3577,6 +3580,9 @@ class Coach:
             messages: list[ChatMessage] = [
                 {"role": "user", "content": f"{harness}{faced}{earlier}\n\n# Task\n{directive}"},
             ]
+            problem = harness_problem(harness, self.board, self.user_side)
+        if problem:
+            self.harness_problems.append(f"{trigger.value} at ply {position.ply}: {problem}")
         unlisted: frozenset[str] | None = None
         if before is not None:
             shown = _GAME_SO_FAR.sub("", str(messages[0]["content"]))
