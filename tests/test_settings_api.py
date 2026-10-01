@@ -193,10 +193,13 @@ def test_a_key_taken_out_of_an_object_field_goes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """llm.extra_body is one field: saved, it is what was sent, whole. Merged key by key, a
-    key taken out stayed for good (the parity audit, 2026-10-01)."""
+    key taken out stayed for good (the parity audit, 2026-10-01). Its change is told as the
+    field's, which applies now: told key by key, it was "nothing changed" (the settings
+    review, 2026-10-01)."""
     client, engine = _client(tmp_path, monkeypatch)
     two = {"settings": {"llm": {"extra_body": {"top_k": 20, "seed": 7}}}, "secrets": {}}
-    assert client.put("/api/settings", json=two).json()["ok"]
+    res = client.put("/api/settings", json=two).json()
+    assert res["ok"] and res["changed"] == ["llm.extra_body"] and res["now"] == ["llm.extra_body"]
     one = {"settings": {"llm": {"extra_body": {"seed": 7}}}, "secrets": {}}
     assert client.put("/api/settings", json=one).json()["ok"]
     assert engine.settings.llm.extra_body == {"seed": 7}
@@ -424,3 +427,31 @@ def test_record_from_the_debug_menu_is_a_settings_change(
     assert client.post("/api/record", json={"on": True}).json()["ok"]
     assert client.get("/api/poll").json()["state"]["settings_version"] > before
     assert engine.settings.capture.record is True
+
+
+def test_the_tools_folder_is_the_apps_in_the_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the app the shell owns the data folder and Stockfish's under it: a Tools folder
+    saved there was taken, said to wait for the next Start, and gone at the restart (the
+    settings review, 2026-10-01). As with the data folder, the save does not move it."""
+    client, engine = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("SIDECOACH_DATA_DIR", str(tmp_path))
+    engine.settings.data_dir = tmp_path
+    engine.settings.tools_dir = tmp_path / "tools"
+    body = {"settings": {"tools_dir": str(tmp_path / "mine")}, "secrets": {}}
+    res = client.put("/api/settings", json=body).json()
+    assert res["ok"] and res["changed"] == []
+    assert engine.settings.tools_dir == tmp_path / "tools"
+
+
+def test_usernames_are_kept_without_spaces_around(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A space after a pasted username went into the address the games are fetched from, and
+    chess.com knew no such player (the settings review, 2026-10-01)."""
+    client, engine = _client(tmp_path, monkeypatch)
+    body = {"settings": {"profile": {"chesscom_user": " nosegazm\n", "lichess_user": "tai "}}}
+    assert client.put("/api/settings", json=body).json()["ok"]
+    assert engine.settings.profile.chesscom_user == "nosegazm"
+    assert engine.settings.profile.lichess_user == "tai"

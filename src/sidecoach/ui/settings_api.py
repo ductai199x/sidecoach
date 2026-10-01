@@ -120,11 +120,15 @@ def _applies(schema: dict[str, Any]) -> dict[str, str]:
 
 
 def _changed(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list[str]:
+    """The fields that changed, `section.field`: a section is gone into, a field is not -- an
+    object field (llm.extra_body) is one field, as its mark is. Gone into, its keys came out
+    as names with no mark, and the change was told "nothing changed" (the settings review,
+    2026-10-01)."""
     changed: list[str] = []
     for key in set(old) | set(new):
         a, b = old.get(key), new.get(key)
-        if isinstance(a, dict) and isinstance(b, dict):
-            changed.extend(_changed(a, b, f"{prefix}{key}."))
+        if not prefix and isinstance(a, dict) and isinstance(b, dict):
+            changed.extend(_changed(a, b, f"{key}."))
         elif a != b:
             changed.append(f"{prefix}{key}")
     return sorted(changed)
@@ -158,10 +162,13 @@ def _validated(engine: Any, change: dict[str, Any]) -> Settings:
     new = Settings.model_validate(_merged(engine.settings.model_dump(mode="json"), change))
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")
     if data_dir:
-        # The shell owns the data directory; the file never overrides it.
+        # The shell owns the data directory, and Stockfish's under it (`load_settings`); the
+        # page never moves them. A Tools folder saved in the app was said to wait for the next
+        # Start and was gone at the restart (the settings review, 2026-10-01).
         from pathlib import Path
 
         new.data_dir = Path(data_dir)
+        new.tools_dir = new.data_dir / "tools"
     return new
 
 

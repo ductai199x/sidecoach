@@ -845,7 +845,9 @@
           <p class="desc">{data.schema.properties.data_dir?.description}{inShell() ? " The app decides where." : ""}</p>
         </div>
       {/if}
-      {#if advanced && data.schema.properties.tools_dir}
+      <!-- A development field, never shown in the app, whose shell keeps Stockfish in its own
+        folder: there a change was taken and gone at the restart (the settings review, 2026-10-01). -->
+      {#if advanced && !inShell() && data.schema.properties.tools_dir}
         <div class="field">
           <label for="tools_dir">Tools folder</label>
           <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => { values.tools_dir = e.currentTarget.value; edited("tools_dir", true); }} onchange={() => void flush()} />

@@ -572,6 +572,13 @@ class ProfileSettings(BaseModel):
         ),
     )
 
+    @field_validator("chesscom_user", "lichess_user")
+    @classmethod
+    def _trimmed(cls, v: str) -> str:
+        # A space after a pasted name went into the address the games are fetched from, and
+        # the site knew no such player (the settings review, 2026-10-01).
+        return v.strip()
+
 
 class VoiceSettings(BaseModel):
     voice: str = Field(
