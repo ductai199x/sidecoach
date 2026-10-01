@@ -271,6 +271,9 @@ class Entry:
     # A routine word after a sound move (the POST_MOVE nod): the verdict is on the move's
     # line, so the nod is written out only while recent, and never summarised.
     nod: bool = False
+    # About a position already left (a late engine note): written in the record, never under
+    # what was said at the position now.
+    past: bool = False
 
 
 @dataclass
@@ -482,7 +485,7 @@ class Conversation:
         for i, entry in enumerate(self.entries):
             if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
-            sink = said if i > reached else game
+            sink = said if i > reached and not entry.past else game
             if entry.kind == "ply":
                 assert entry.record is not None
                 if i == reached:
@@ -1301,7 +1304,15 @@ class Conversation:
         return None
 
     def _note_if_frozen(self, record: PlyRecord, what: str) -> None:
-        """A fact that lands after its ply message went out goes in a note of its own."""
+        """A fact that lands after its ply message went out goes in a note of its own, in the
+        record: it is about a position already left. Appended as any note, the late analysis of
+        the position a move left went under "Said here" of the position the player faces now,
+        its standing beside the one now's, and its lines were dropped: their title had grown
+        a tail ("Engine lines (the opponent's move; ...)", the coach review, 2026-10-01). The
+        position now needs none: it is shown in full."""
+        active = self.active_records()
+        if active and active[-1] is record:
+            return
         for entry in self.entries:
             if entry.record is record and entry.frozen is not None:
                 board_before = chess.Board(record.move.fen_before)
@@ -1317,10 +1328,10 @@ class Conversation:
                         for title, body in self._position_sections(
                             record, after, user_colour, DisclosureLevel.LINE
                         )
-                        if title in ("Standing", "Engine lines")
+                        if title == "Standing" or title.startswith("Engine lines")
                     )
                     text = f"Engine note on the position after {name}:\n{shown}"
-                self.entries.append(Entry("user", "note", text))
+                self.entries.append(Entry("user", "note", text, past=True))
                 return
 
     @staticmethod

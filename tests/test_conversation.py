@@ -430,6 +430,34 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
     assert coach.harness_problems == [], "the prompt check passes every prompt built right"
 
 
+def test_a_late_engine_note_is_the_records_and_has_its_lines() -> None:
+    """The analysis of the position the player's move left can land after the opponent's
+    reply (the engine measures the newest position first): its note went under "Said here" of
+    the position the player now faces, the past position's standing beside the one now's, and
+    without its engine lines, filtered by a title they no longer have (the coach review,
+    2026-10-01). It is the record's, under the move it is about, lines and all."""
+    from tests.coaching import SCHOLAR, SCHOLAR_MOVES, play, start_game
+
+    coach, provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES)
+    coach.on_event(_analysis(chess.Board(SCHOLAR), 6), 7.0)
+    coach.ask("what is my plan?", 8.0)  # the model has seen the record: its lines are frozen
+    drain(coach)
+    after_qh5 = chess.Board()
+    for san in SCHOLAR_MOVES[:5]:
+        after_qh5.push_san(san)
+    coach.on_event(_analysis(after_qh5, 5), 9.0)  # 3. Qh5's position, read late
+    coach.ask("and what should I watch out for?", 10.0)
+    drain(coach)
+    harness = harness_of(sent(provider))
+    record, now = harness.split("# Position now\n", 1)
+    assert "Engine note on the position after 3. Qh5" in record
+    note = record.split("Engine note on the position after 3. Qh5", 1)[1]
+    assert "Engine lines (the opponent's move" in note and "Standing:" in note
+    assert "Engine note" not in now
+
+
 def test_the_prompt_check_names_what_is_wrong() -> None:
     """The check run before every request: the puzzle start's prompt (no position now), a
     withdrawn position, and the wrong colour are each named; a prompt built right passes."""
