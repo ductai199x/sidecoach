@@ -1994,6 +1994,19 @@ def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None
     out = drain(coach)
     assert "it is the opponent's move" in directive_of(sent(provider, 0))
     assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
+    # A hint asked on their turn is the same, never the player's hint on the opponent's
+    # position: the model was asked for "the first hint" and to keep back "the player's move"
+    # (the coach review, 2026-10-01).
+    coach, provider = scripted_coach(["", ""])
+    start_game(coach, Side.BLACK)
+    play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 9.0)
+    out = drain(coach)
+    directive = directive_of(sent(provider, 0))
+    assert "it is the opponent's move" in directive
+    assert "Give the first hint" not in directive and "Keep back only the answer" not in directive
+    assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
 
 
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:

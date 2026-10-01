@@ -3491,7 +3491,16 @@ class Coach:
         # The player faces a position again only once it is their turn: on the opponent's,
         # what the move allowed is the lesson, and "nothing about the position" forbade it.
         facing = past and now is not None and now.board.turn == self.user_colour
-        line = self._level_line(level, position, render_level if facing else None, past=past)
+        # Asked on the opponent's move, there is no move of the player's to keep back.
+        theirs = (
+            trigger is Trigger.USER_ASK
+            and not past
+            and not self.finished
+            and position.board.turn != self.user_colour
+        )
+        line = self._level_line(
+            level, position, render_level if facing else None, past=past, theirs=theirs
+        )
         # A question is answered as asked: its words head the Task. Found only under "Said
         # here", far above, "whose bishop? ... he will just move away to the right, no?" got the
         # line again (Tai's puzzle, 2026-09-28).
@@ -3857,14 +3866,23 @@ class Coach:
         now_level: DisclosureLevel | None = None,
         *,
         past: bool = False,
+        theirs: bool = False,
     ) -> str:
         """What may be said about the position the player faces, stated on the directive, the
         one place it is stated; with `now_level`, the reply is about a position already moved
         from, and the one on the board has its own level. Below the move, why the model sees
         the answer all the same: said as "never" in five places, it gave the vague hint Tai
-        ranks below one that says a little too much (the prompt audit, 2026-09-28)."""
+        ranks below one that says a little too much (the prompt audit, 2026-09-28). `theirs`:
+        the position is the opponent's to move, and told to keep back "the player's move" there
+        the model gave the player's hint on the opponent's position (the coach review,
+        2026-10-01)."""
         if position.board.is_game_over():
             return ""
+        if theirs:
+            return (
+                "It is the opponent's move: what they threaten -- their best move and what it "
+                "does -- may be said.\n\n"
+            )
         words = {
             DisclosureLevel.SILENT: "nothing about the position",
             DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
@@ -4278,7 +4296,20 @@ class Coach:
             # own claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
             aim = "" if _ASK_HINT.match(said) else "They asked what to aim for: answer with "
             aim += "the hint at this rung. " if aim else ""
-            if level >= DisclosureLevel.MOVE:
+            if position.board.turn != self.user_colour and not position.board.is_game_over():
+                # On the opponent's move there is no move of the player's to find: asked for
+                # "the first hint" there, the model gave the player's hint on the opponent's
+                # position (the coach review, 2026-10-01). Their threat is the hint, as
+                # `their_move_now` says it without a model.
+                directive = (
+                    f"They asked {'for a hint' if _ASK_HINT.match(said) else 'what to aim for'}"
+                    ", and it is the opponent's move, not theirs: there is no move of theirs to "
+                    "find yet. Say what the opponent threatens now -- their best move and what "
+                    "it does, from the engine lines (the opponent's move) -- and what the "
+                    "player should be ready for once it is played. One or two sentences, no "
+                    "question."
+                )
+            elif level >= DisclosureLevel.MOVE:
                 directive = aim + MOVE_DIRECTIVE
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
