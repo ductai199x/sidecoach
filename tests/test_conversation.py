@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import chess
+import pytest
 
 from sidecoach.coach.conversation import Conversation, PlyRecord
-from sidecoach.events import GameStarted, Label, MoveAssessment, MovePlayed, Severity, Side
-from tests.coaching import sent
+from sidecoach.events import (
+    Analysis,
+    GameStarted,
+    Label,
+    Line,
+    MoveAssessment,
+    MovePlayed,
+    Resync,
+    Severity,
+    Side,
+    Takeback,
+)
+from tests.coaching import drain, harness_of, scripted_coach, sent, stuck
 from tests.fakes import ScriptedProvider
 
 
@@ -292,3 +304,103 @@ def test_a_capture_the_engine_takes_back_is_said_as_such_before_the_position_is_
     )
     found = Conversation._expected_recapture(record, before, after)
     assert found is not None and found[0] == "Rxe5"
+
+
+# Tai's puzzle (2026-10-01), Black to move: the stuck hint was asked of the model with no
+# position now, and it called Black's own Qxf2+ "your opponent's threat".
+JOINED = "4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1"
+# The board read anew, the player to move: White's and Black's.
+REREAD = {
+    Side.WHITE: "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+    Side.BLACK: "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/2N5/PPPP1PPP/R1B1K1NR b KQkq - 5 4",
+}
+STARTS = {
+    "game": (chess.STARTING_FEN, Side.WHITE, "game"),
+    "joined": (JOINED, Side.BLACK, "game"),
+    "position": (JOINED, Side.BLACK, "position"),
+    "puzzle": (JOINED, Side.BLACK, "puzzle"),
+}
+
+
+def _analysis(board: chess.Board, ply: int) -> Analysis:
+    """The engine's look at `board`: two of its legal moves, the first the best."""
+    first, second = sorted(board.legal_moves, key=lambda m: (not board.is_capture(m), m.uci()))[:2]
+    return Analysis(
+        game_id="g",
+        fen=board.fen(),
+        ply=ply,
+        lines=[
+            Line(moves=[first.uci()], depth=18, expected_score=0.7),
+            Line(moves=[second.uci()], depth=18, expected_score=0.5),
+        ],
+        decisive=False,
+        only_move=False,
+    )
+
+
+@pytest.mark.parametrize("trigger", ["stuck", "asked"])
+@pytest.mark.parametrize("state", ["start", "moved", "taken back", "re-read"])
+@pytest.mark.parametrize("start", list(STARTS))
+def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, trigger: str):
+    """Every way a game begins, every way its position changes, every way the coach is
+    asked to speak: the model is given the position the player faces -- its board, the side
+    to move, the engine's lines, the facts -- and no other as the position now. At a puzzle's
+    start, a joined game's, a re-read board's or after a takeback to the start, it was given
+    none, or the withdrawn move's (Tai, 2026-10-01)."""
+    fen, side, kind = STARTS[start]
+    coach, provider = scripted_coach([])
+    coach.on_event(GameStarted(game_id="g", user_side=side, start_fen=fen, kind=kind), 0.0)
+    board = chess.Board(fen)
+    coach.on_event(_analysis(board, 0), 0.5)
+    gone: str | None = None
+    if state in ("moved", "taken back"):
+        for ply in (1, 2):
+            move = sorted(board.legal_moves, key=lambda m: m.uci())[0]
+            san, before = board.san(move), board.fen()
+            board.push(move)
+            coach.on_event(
+                MovePlayed(
+                    game_id="g",
+                    ply=ply,
+                    san=san,
+                    uci=move.uci(),
+                    fen_before=before,
+                    fen_after=board.fen(),
+                    by_user=ply == 1,
+                ),
+                float(ply),
+            )
+            coach.on_event(_analysis(board, ply), ply + 0.5)
+        if state == "taken back":
+            gone = board.fen()
+            board = chess.Board(fen)
+            coach.conversation.coach_said("Look at the knight.")  # of the withdrawn position
+            coach.on_event(Takeback(game_id="g", plies=2, fen=fen), 3.0)
+            coach.conversation.clock(60_000, 50_000)
+            assert all(r.white_ms is None for r in coach.conversation.records), "withdrawn moves"
+    elif state == "re-read":
+        gone = fen
+        board = chess.Board(REREAD[side])
+        coach.conversation.coach_said("Look at the knight.")  # of the board before the re-read
+        coach.on_event(Resync(game_id="g", fen=board.fen(), reason="re-read"), 3.0)
+        coach.on_event(_analysis(board, 0), 3.5)
+    assert coach.user_to_move and coach.board.fen() == board.fen()
+    assert not coach._said_since_move(), "nothing said yet at the position now"
+    if trigger == "stuck":
+        stuck(coach)
+    else:
+        coach.ask("what should I be thinking about here?", 10.0)
+        drain(coach)
+    assert provider.calls, "the model was asked"
+    harness = harness_of(sent(provider))
+    assert harness.count("# Position now\n") == 1
+    now = harness.split("# Position now\n", 1)[1].split("\n# Task\n", 1)[0]
+    assert f"FEN: {board.fen()}" in now
+    if gone is not None:
+        assert f"FEN: {gone}" not in now, "a position no longer the game's"
+        assert "Look at the knight." not in now, "said of a position no longer the game's"
+    assert ("White" if board.turn else "Black") + " to move" in now
+    best = board.san(chess.Move.from_uci(_analysis(board, 0).lines[0].moves[0]))
+    lines = now.split("## Engine lines", 1)[1].split("\n## ", 1)[0]
+    assert f" {best}  0.70" in lines.split("\n")[1], "the engine's best line for this position"
+    assert "\n## Facts (" in now, "the facts sheet for this position"

@@ -141,6 +141,19 @@ class PlyRecord:
     superseded: bool = False  # before a re-read of the board: the move list restarted
 
 
+@dataclass
+class StartRecord:
+    """The position the move list starts from -- the game's first, a puzzle's, a game joined
+    from the middle, a re-read board -- with the engine's word on it as it arrives: the
+    position now until a move is played from it. Without it a stuck hint on a puzzle was asked
+    of the model with no board, no lines and no sheet, and it named the player's own Qxf2+ as
+    the opponent's threat (Tai's puzzle, 2026-10-01)."""
+
+    fen: str = chess.STARTING_FEN
+    analysis: Analysis | None = None
+    facts: PositionFacts | None = None
+
+
 _PLACED_PIECE = re.compile(r"\b(king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])\b")
 _PIECE_TYPES = {
     "king": chess.KING,
@@ -227,7 +240,7 @@ class Conversation:
     user_side: Side = Side.WHITE
     entries: list[Entry] = field(default_factory=list)
     records: list[PlyRecord] = field(default_factory=list)
-    start_fen: str = chess.STARTING_FEN
+    start: StartRecord = field(default_factory=StartRecord)
     # The disclosure level to render the position the user faces with, set by the coach
     # before each request from the current position's disclosure state.
     level: DisclosureLevel = DisclosureLevel.IDEA
@@ -252,7 +265,7 @@ class Conversation:
         player from earlier games -- the biggest cost, the last session -- in sentences the
         profile stage computed, so the coach has continuity without inventing any."""
         self.user_side = event.user_side
-        self.start_fen = event.start_fen
+        self.start = StartRecord(event.start_fen)
         self.entries = []
         self.records = []
         self._drained = 0
@@ -306,8 +319,15 @@ class Conversation:
         return record
 
     def analysed(self, event: Analysis, facts: PositionFacts) -> PlyRecord | None:
+        """The engine's word on a position: the move's that led to it, or the start's (ply
+        0) -- kept by the start record, as no move led there."""
+        same = event.fen.split(" ")[:3]
+        if event.ply == 0 and self.start.fen.split(" ")[:3] == same:
+            self.start.analysis = event
+            self.start.facts = facts
+            return None
         record = self._record_at(event.ply)
-        if record is None or record.move.fen_after.split(" ")[:3] != event.fen.split(" ")[:3]:
+        if record is None or record.move.fen_after.split(" ")[:3] != same:
             return None
         record.analysis = event
         record.facts = facts
@@ -315,8 +335,10 @@ class Conversation:
         return record
 
     def clock(self, white_ms: int | None, black_ms: int | None) -> None:
-        if self.records:
-            last = self.records[-1]
+        """The clocks as the last move standing left them (a withdrawn one's are not)."""
+        active = self.active_records()
+        if active:
+            last = active[-1]
             if last.white_ms is None and last.black_ms is None:
                 last.white_ms, last.black_ms = white_ms, black_ms
 
@@ -345,7 +367,7 @@ class Conversation:
             "The move numbering restarts from this position."
         )
         self.entries.append(Entry("user", "resync", text))
-        self.start_fen = board.fen()
+        self.start = StartRecord(board.fen())
 
     def covered(self) -> None:
         self.entries.append(
@@ -389,26 +411,34 @@ class Conversation:
         """The sections: the setting; the game so far -- one line per move with its verdict,
         and under each move, indented, what was said after it (the player's words, your
         reply) and any event, the way a game record carries its annotations; the position
-        now in full (the last ply, at the disclosure level in force), with what was said
-        after it under it. Nothing is written twice: the move list is the record."""
+        now in full (the game as it stands, at the disclosure level in force), with what was
+        said there under it. Nothing is written twice: the move list is the record.
+
+        The position now is the last move's; after a takeback the last move still standing's,
+        and before any move -- a puzzle, a game joined from the middle, a re-read board, a
+        takeback to the start -- the start's (`render_start`). It was always the last move
+        ever played: a withdrawn move's position after a takeback, and none at all at a
+        puzzle's start (Tai's puzzle, 2026-10-01)."""
         header = next((e.text for e in self.entries if e.kind == "game"), "")
-        ply_entries = [e for e in self.entries if e.kind == "ply"]
-        last = ply_entries[-1] if ply_entries else None
+        # Where the position now was reached: the last move, takeback or re-read. What
+        # comes after it was said there.
+        reached = max(
+            (i for i, e in enumerate(self.entries) if e.kind in ("ply", "takeback", "resync")),
+            default=-1,
+        )
         game: list[str] = []
-        now: list[str] = []
-        sink = game
+        said: list[str] = []
         if self.summary:
             game.append(f"Earlier dialogue, summarised: {self.summary}")
         stale_nods = self._stale_nods() if self.compact_record else set()
-        for entry in self.entries:
+        for i, entry in enumerate(self.entries):
             if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
+            sink = said if i > reached else game
             if entry.kind == "ply":
                 assert entry.record is not None
-                if entry is last:
-                    sink = now
-                    sink.append(self.render_ply(entry.record, self.level))
-                    continue
+                if i == reached:
+                    continue  # the position now, in full below
                 if entry.frozen is None:
                     entry.frozen = self.render_ply(entry.record, full=False)
                 sink.append(entry.frozen)
@@ -418,18 +448,16 @@ class Conversation:
                 sink.append(f'    YOU (the coach) said: "{entry.text}"')
             else:  # takeback, resync, covered, ended, note
                 sink.append(f"    EVENT: {entry.text}")
+        active = self.active_records()
+        now = self.render_ply(active[-1], self.level) if active else self.render_start(self.level)
         sections = [f"# Setting\n{header}"]
         if game:
             if self.compact_record:
                 game = self._compact(game)
             sections.append("# Game so far\n" + "\n".join(game))
-        if now:
-            said = [x for x in now[1:]]
-            sections.append(
-                "# Position now\n"
-                + now[0]
-                + ("\n\n## Said here\n" + "\n".join(said) if said else "")
-            )
+        sections.append(
+            "# Position now\n" + now + ("\n\n## Said here\n" + "\n".join(said) if said else "")
+        )
         return "\n\n".join(x for x in sections if x)
 
     def _stale_nods(self) -> set[int]:
@@ -565,9 +593,27 @@ class Conversation:
         sections += self._position_sections(record, board_after, user_colour, level)
         return "\n\n".join(f"## {title}\n{body}" for title, body in sections)
 
+    def render_start(self, level: DisclosureLevel | None = None) -> str:
+        """The position now before any move from the start: the board, and the standing,
+        the lines, the facts, what stands on the board and the player's record at `level`,
+        as a move's position has them."""
+        level = self.level if level is None else level
+        board = chess.Board(self.start.fen)
+        sections = [
+            (
+                "Board",
+                position_text(board, legal=True)
+                + "\n"
+                + self._turn_text(board).capitalize()
+                + ". No move played yet from this position.",
+            )
+        ]
+        sections += self._position_sections(self.start, board, self.user_side.color, level)
+        return "\n\n".join(f"## {title}\n{body}" for title, body in sections)
+
     def _position_sections(
         self,
-        record: PlyRecord,
+        record: PlyRecord | StartRecord,
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
@@ -601,7 +647,7 @@ class Conversation:
         out.append(
             ("On the board (complete lists)", "\n".join(inventory_lines(board, user_colour)))
         )
-        tally = self._tally_text(record)
+        tally = self._tally_text(record if isinstance(record, PlyRecord) else None)
         if tally:
             out.append(("The player's record", tally))
         return out
@@ -765,7 +811,7 @@ class Conversation:
 
     def _lines_block(
         self,
-        record: PlyRecord,
+        record: PlyRecord | StartRecord,
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
@@ -919,7 +965,7 @@ class Conversation:
 
     def _facts_lines(
         self,
-        record: PlyRecord,
+        record: PlyRecord | StartRecord,
         board: chess.Board,
         user_colour: chess.Color,
         level: DisclosureLevel,
@@ -948,7 +994,7 @@ class Conversation:
         return out
 
     def _beyond_lines(
-        self, record: PlyRecord, board: chess.Board, level: DisclosureLevel
+        self, record: PlyRecord | StartRecord, board: chess.Board, level: DisclosureLevel
     ) -> list[str]:
         """The facts past `level` on the player's turn, one per line: the piece, the target,
         the move and why it works -- the model's to teach from, not to say."""
@@ -1045,14 +1091,15 @@ class Conversation:
         equal field for field (the parity audit, 2026-09-26)."""
         return next(i for i, r in enumerate(self.records) if r is record)
 
-    def _tally_text(self, through: PlyRecord) -> str:
-        """The player's moves judged so far, as of `through`: the tally reads as the game
-        went, and the last move's message holds the whole of it."""
+    def _tally_text(self, through: PlyRecord | None) -> str:
+        """The player's moves judged so far, as of `through` (None: every one, for the start
+        of a re-read board): the tally reads as the game went, and the last move's message
+        holds the whole of it."""
         counts: dict[str, int] = {}
         lost: list[tuple[float, str]] = []
         n = 0
         for record in self.judged_records():
-            if self._index(record) > self._index(through):
+            if through is not None and self._index(record) > self._index(through):
                 break
             if not record.move.by_user or record.assessment is None:
                 continue
@@ -1086,14 +1133,23 @@ class Conversation:
             text += f" Opening: {opening}."
         return text
 
-    def _opening_through(self, through: PlyRecord) -> str | None:
-        """The last opening name the book gave, up to `through`."""
-        for record in reversed(self.records[: self._index(through) + 1]):
+    def _opening_through(self, through: PlyRecord | None) -> str | None:
+        """The last opening name the book gave, up to `through` (None: as the game stands),
+        the start's among them: a game joined in the Sicilian was named only there."""
+        start = self.start.analysis.opening if self.start.analysis is not None else None
+        end = len(self.records) if through is None else self._index(through) + 1
+        for record in reversed(self.records[:end]):
+            if record.superseded and start:
+                break  # the moves before a re-read come before its start
             if record.withdrawn or record.analysis is None:
                 continue
             if record.analysis.opening:
                 return record.analysis.opening
-        return None
+        return start
+
+    def opening(self) -> str | None:
+        """The opening the game is in, as the book last named it."""
+        return self._opening_through(None)
 
     # ---- helpers -----------------------------------------------------------------------
 
@@ -1116,12 +1172,17 @@ class Conversation:
         lines: list[str] = []
         for i, record in enumerate(active):
             move = record.move
-            if i == 0 or move.ply >= before_ply or not move.by_user:
+            if move.ply >= before_ply or not move.by_user:
                 continue
-            faced = active[i - 1]
-            if faced.move.ply != move.ply - 1 or faced.facts is None:
-                continue
-            if (faced.facts.theme or faced.facts.plan) != key:
+            # The position the move was played in: the move before's, or the start's for the
+            # first move -- a joined game's first move was never a moment of its idea.
+            if i:
+                if active[i - 1].move.ply != move.ply - 1:
+                    continue
+                faced = active[i - 1].facts
+            else:
+                faced = self.start.facts
+            if faced is None or (faced.theme or faced.plan) != key:
                 continue
             a = record.assessment
             if a is None or (a.label is not None and a.label.value == "book"):
@@ -1176,10 +1237,14 @@ class Conversation:
                     out.add(chess.Board(record.move.fen_before).san(chess.Move.from_uci(a.best[0])))
         return frozenset(m for m in out if not re.fullmatch(r"[a-h][1-8](?:=[QRBN])?[+#]?", m))
 
-    def _record_before(self, record: PlyRecord) -> PlyRecord | None:
+    def _record_before(self, record: PlyRecord | StartRecord) -> PlyRecord | StartRecord | None:
+        """The record of the position `record`'s move was played in: the move before's, and
+        the start's for the first move; none for the start, or a move no longer standing."""
         active = self.active_records()
         i = next((k for k, r in enumerate(active) if r is record), None)
-        return active[i - 1] if i else None
+        if i is None:
+            return None
+        return active[i - 1] if i else self.start
 
     def _record_at(self, ply: int) -> PlyRecord | None:
         for record in reversed(self.records):

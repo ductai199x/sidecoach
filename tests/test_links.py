@@ -205,6 +205,54 @@ def test_the_earlier_moments_are_the_latest_of_the_same_idea_and_never_book() ->
     assert conversation.moves_before(6) == frozenset({"Nf3", "Nc6", "Bb5", "Nc3"})
 
 
+def test_a_joined_games_first_move_is_a_moment_of_the_starts_idea() -> None:
+    """The first move from a joined position was played in the start's position: its idea is
+    the start's (2026-10-01: with no record for the start, it was never an earlier moment)."""
+    start = "4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1"
+    conversation = Conversation()
+    conversation.new_game(GameStarted(game_id="g", user_side=Side.BLACK, start_fen=start))
+    board = chess.Board(start)
+    conversation.analysed(
+        Analysis(
+            game_id="g",
+            fen=start,
+            ply=0,
+            lines=[Line(moves=["e8e2"], depth=18, expected_score=1.0, mate=3)],
+            decisive=True,
+            only_move=True,
+        ),
+        PositionFacts(fen=start, side_to_move="black", phase="endgame", theme="a mating attack"),
+    )
+    move = board.parse_san("Re2+")
+    before = board.fen()
+    board.push(move)
+    conversation.move(
+        MovePlayed(
+            game_id="g",
+            ply=1,
+            san="Re2+",
+            uci=move.uci(),
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=True,
+        )
+    )
+    conversation.assess(
+        MoveAssessment(
+            game_id="g",
+            ply=1,
+            uci=move.uci(),
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[move.uci()],
+            label=Label.BEST,
+        )
+    )
+    assert conversation.same_idea("a mating attack", before_ply=3) == [
+        "- At Re2+ (the player's move): best -- the player found it."
+    ]
+
+
 def test_an_unlisted_earlier_move_and_a_move_number_are_faults() -> None:
     unlisted = frozenset({"Bc4", "Qh5"})
     assert unlisted_links("Keep your bishop on c4 in mind.", unlisted) == []

@@ -3188,10 +3188,7 @@ class Coach:
     def _opening_so_far(self) -> str | None:
         """The opening the game was in: the last name the book gave."""
         with self._lock:
-            for record in reversed(self.conversation.records):
-                if record.analysis is not None and record.analysis.opening:
-                    return record.analysis.opening
-        return None
+            return self.conversation.opening()
 
     def _sheet_lines(self, board: chess.Board | None) -> list[Line]:
         """The engine's lines the record shows for `board`, when it is one of the game's
@@ -3228,12 +3225,13 @@ class Coach:
             return []
 
     def _said_since_move(self) -> list[str]:
-        """What the coach has said since the last move was played."""
+        """What the coach has said since the position now was reached: the last move, or a
+        takeback or a re-read of the board (what was said of a withdrawn move is not)."""
         with self._lock:
             entries = list(self.conversation.entries)
         out: list[str] = []
         for entry in reversed(entries):
-            if entry.kind == "ply":
+            if entry.kind in ("ply", "takeback", "resync"):
                 break
             if entry.kind == "coach":
                 out.append(entry.text)
