@@ -323,7 +323,6 @@ class Reconciler(
      * for each one expanded and left four-ply gaps unbridged.
      */
     var searchBudget: Int = 4000,
-    var historyDepth: Int = 40,
     var staleAfter: Int = 5,
     var resyncCells: Int = 3,
     var resyncAfter: Int = 150,
@@ -738,22 +737,21 @@ class Reconciler(
         }
 
     /**
-     * Index of the earlier position of this game the frame shows, if any. The base position
-     * is checked as well however long the game is: a click on the first move of the list
-     * shows it, and it must never pass for a new game while this one is running.
+     * Index of the earlier position of this game the frame shows, if any. Every position back
+     * to the base is checked, one by one, however long the game: a click anywhere in the move
+     * list shows one. Only the last forty were, and the base; a click further back read as a
+     * position no move explains and was adopted by a resync -- the game numbered again from
+     * it, or, after the end, a new game begun -- and stepping forward through the list then
+     * recorded the game's own moves a second time (the state review, 2026-10-01).
      */
     private fun historyIndex(obs: Observation, diff: Set<Int>): Int? {
         val earlier = board.copy()
         val undone = HashSet<Int>()
         val plies = board.moveStack.size
-        for (back in 1..minOf(plies, historyDepth)) {
+        for (back in 1..plies) {
             val move = earlier.pop()
             undone.addAll(touchedSquares(earlier, move))
             if (undone.containsAll(diff) && matches(earlier, obs, obs.keys)) return plies - back
-        }
-        if (plies > historyDepth) {
-            val base = Board(baseFenValue)
-            if (matches(base, obs, obs.keys)) return 0
         }
         return null
     }
@@ -1354,21 +1352,23 @@ class Reconciler(
         }
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
-        val events = mutableListOf<Event>()
-        if (finishedFlag) {
-            // The finished game is over for good; a position that appears after it is another
-            // game, seen from the middle -- or a puzzle, or an analysis board.
-            events.add(begin(adoptedBoard, "position"))
-        } else {
-            setPosition(adoptedBoard)
-        }
         clearStory()
         viewing = null
         resyncCandidate = null
+        if (finishedFlag) {
+            // The finished game is over for good; a position that appears after it is another
+            // game, seen from the middle -- or a puzzle, or an analysis board. Its start is all
+            // there is to say: a Resync after it as well had the engine measure the position
+            // twice and the coach note a re-read board that was never read before (the state
+            // review, 2026-10-01).
+            val events = mutableListOf<Event>(begin(adoptedBoard, "position"))
+            events.addAll(positioned())
+            return events
+        }
+        setPosition(adoptedBoard)
         var reason = "position adopted after ${diff.size} unexplained cells"
         if (turnUnknownFlag) reason += "; side to move pending"
-        events.addAll(resynced(reason))
-        return events
+        return resynced(reason)
     }
 
     /**
@@ -1376,10 +1376,17 @@ class Reconciler(
      * is over and the side to move known (`_resynced`).
      */
     private fun resynced(reason: String): MutableList<Event> {
-        val events = mutableListOf<Event>(
-            Resync(gameId = gameId, fen = board.fen(), reason = reason),
-            PositionChanged(gameId = gameId, fen = board.fen(), ply = 0),
-        )
+        val events = mutableListOf<Event>(Resync(gameId = gameId, fen = board.fen(), reason = reason))
+        events.addAll(positioned())
+        return events
+    }
+
+    /**
+     * The position the game now stands on, numbered from it: PositionChanged, and the end
+     * when the position is over and the side to move known (`_positioned`).
+     */
+    private fun positioned(): MutableList<Event> {
+        val events = mutableListOf<Event>(PositionChanged(gameId = gameId, fen = board.fen(), ply = 0))
         if (!turnUnknownFlag && board.isGameOver()) {
             finishedFlag = true
             events.add(endedEvent(board.result(), "game over on board"))

@@ -445,7 +445,6 @@ TUNABLES = (
     "settle_frames",
     "max_plies",
     "search_budget",
-    "history_depth",
     "stale_after",
     "resync_cells",
     "resync_after",
