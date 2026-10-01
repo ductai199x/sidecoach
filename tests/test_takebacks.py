@@ -32,11 +32,12 @@ from sidecoach.events import (
     MoveAssessment,
     MovePlayed,
     Resync,
+    Side,
     Takeback,
     Unexplained,
 )
 from sidecoach.state.pipeline import GamePipeline
-from tests.coaching import scripted_coach
+from tests.coaching import drain, scripted_coach
 from tests.fakes import FakeEngine
 from tests.synth import synthetic_board
 
@@ -81,7 +82,9 @@ class Chain:
     """Frames in; the pipeline's events to the engine glue and the coach; the engine's
     words drained to the coach on every frame, as the panel's loop does."""
 
-    def __init__(self, tmp: Path, engine_seconds: float = 0.03) -> None:
+    def __init__(
+        self, tmp: Path, engine_seconds: float = 0.03, replies: tuple[str, ...] = ()
+    ) -> None:
         self.pipe = GamePipeline()
         self.board = chess.Board()
         self.ts = 0.0
@@ -99,7 +102,7 @@ class Chain:
 
         self.assessing.analyser.withdraw = told  # type: ignore[method-assign]
         self.assessing.analyser.start()
-        self.coach, _ = scripted_coach(["never used"] * 50)
+        self.coach, self.provider = scripted_coach(list(replies) or ["never used"] * 50)
         self.events: list[object] = []
         self.drained: list[object] = []
         self.told_at = 0  # where `drained` stood when the last takeback was told (`feed`)
@@ -297,3 +300,61 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
         _agree(c, since)
     finally:
         c.close()
+
+
+HINT = "Think about which piece you want in the centre first."
+
+
+def test_a_hint_asked_before_the_first_move_is_answered(tmp_path: Path) -> None:
+    """The start position was never sent to the engine -- only a position begun from the
+    middle was -- so a hint asked before the first move was "One moment -- still looking"
+    and nothing after it, and no stuck hint came there (the state review, 2026-10-01). The
+    board read, the engine glue and the coach on a model: the model is asked, and answers."""
+    c = Chain(tmp_path, replies=(HINT,) * 3)
+    try:
+        c.feed(c.frame(), 3)
+        assert any(isinstance(e, GameStarted) for e in c.events)
+        c.coach.ask("hint", c.ts)
+        c.wait_for_engine()
+        assert any(isinstance(e, Analysis) and e.ply == 0 for e in c.drained), "never measured"
+        said = [m.text for m in drain(c.coach)]
+        assert c.provider.calls, f"the model was never asked: {said}"
+        assert HINT in said, said
+    finally:
+        c.close()
+
+
+def test_a_takeback_to_where_the_game_began_measures_it_again(tmp_path: Path) -> None:
+    """Every move of a position taken back: the position the game began from is the one the
+    player faces again, and the engine is asked for it again (at once, it is measured), so
+    the look ahead goes on from there and not from the moves withdrawn."""
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    engine = FakeEngine({})
+    assessing.analyser = Analyser(GameAnnotator(engine=engine, depth=6, with_threats=False))
+    assessing.analyser.start()
+    try:
+        start = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+        assessing.submit(
+            GameStarted(game_id="g", user_side=Side.WHITE, start_fen=start.fen(), kind="position")
+        )
+        board = start.copy()
+        for ply, san in enumerate(["Bc4", "Bc5"], start=1):
+            before = board.fen()
+            move = board.push_san(san)
+            assessing.submit(
+                MovePlayed(
+                    game_id="g",
+                    ply=ply,
+                    san=san,
+                    uci=move.uci(),
+                    fen_before=before,
+                    fen_after=board.fen(),
+                    by_user=ply == 1,
+                )
+            )
+        assessing.wait(timeout=5.0)
+        assessing.submit(Takeback(game_id="g", plies=2, fen=start.fen()))
+        again = assessing.wait(timeout=5.0)
+        assert [e.fen for e in again if isinstance(e, Analysis) and e.ply == 0] == [start.fen()]
+    finally:
+        assessing.close()

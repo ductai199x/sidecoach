@@ -894,15 +894,21 @@ class _Assessing:
                 self._from.pop(gone, None)
             self._ply = ply
             self._game = self._history_to(event.fen)
+            if ply == 0:
+                # Back to where the game began: the position the player faces again, and the
+                # one no move led to -- measured as at the start (whole at once if it was).
+                self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
         elif isinstance(event, GameStarted):
             # The engine's queue is the last game's: dropped, so this game is measured
-            # from its first move (the last game was reviewed from what had come).
+            # from its first move (the last game was reviewed from what had come). The
+            # position it begins from is measured at once, the start position too: a hint
+            # asked before the first move was "One moment -- still looking" for good, and
+            # no stuck hint came there (the state review, 2026-10-01).
             self.analyser.reset()
             self._from.clear()
             self._forget(event.game_id)
             self._game = chess.Board(event.start_fen)
-            if event.start_fen != chess.STARTING_FEN:
-                self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
+            self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
