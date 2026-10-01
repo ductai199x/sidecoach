@@ -115,7 +115,9 @@ class Profiler(
     fun onEvent(event: Event, ts: Double): List<Event> {
         if (event is GameStarted) return flush(ts) + start(event, ts)
         if (event is ClockObservation) {
-            clock = event.whiteMs to event.blackMs
+            // A box not read is no news of that side (`clock_observation`): its clock stays as
+            // last read, not set to nothing (the review of 2026-10-01).
+            clock = (event.whiteMs ?: clock.first) to (event.blackMs ?: clock.second)
             val game = game
             if (game != null && game.timeControl == null && !game.ended) {
                 game.timeControl = timeControlWords(event.whiteMs, event.blackMs)
@@ -171,6 +173,10 @@ class Profiler(
     private fun start(event: GameStarted, ts: Double): List<Event> {
         dropIfProvisional()
         side = event.userSide
+        // The clocks read in the game before are not this one's: an untimed game after a blitz
+        // game finished on 4 seconds had every mistake blamed on the clock (the review of
+        // 2026-10-01).
+        clock = null to null
         if (event.kind != "game") {
             // A puzzle, an analysis board, or a game joined from the middle. A puzzle of the
             // store is followed for its outcome, not as a game; anything else is followed as
