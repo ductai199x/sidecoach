@@ -19,6 +19,7 @@ def test_backends_are_chosen_by_name_and_unknown_names_are_refused() -> None:
     assert auto.name in ("wgc", "mss")
 
 
+@pytest.mark.slow  # -m slow: grabs the real monitor through Windows Graphics Capture
 @pytest.mark.skipif(sys.platform != "win32" or not available(), reason="WGC is Windows-only")
 def test_wgc_grabs_the_primary_monitor_at_its_own_size() -> None:
     from sidecoach.cli import _monitor_region

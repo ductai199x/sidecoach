@@ -29,8 +29,9 @@ SANS = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
 
 
 def frame_at(size: int, **kw: object) -> np.ndarray:
-    """A 2560x1440 frame with the board `size` px wide, cells `size / 8` px, at an odd origin."""
-    big = synthetic_board(width=2560, height=1440, x0=300, y0=120, cell=BASE_CELL, **kw)  # type: ignore[arg-type]
+    """A 1500x1300 frame with the board `size` px wide, cells `size / 8` px, at an odd origin:
+    room for the largest size here, 1053 px from (411, 137)."""
+    big = synthetic_board(width=1500, height=1300, x0=300, y0=120, cell=BASE_CELL, **kw)  # type: ignore[arg-type]
     board = big[120 : 120 + 8 * BASE_CELL, 300 : 300 + 8 * BASE_CELL]
     small = cv2.resize(board, (size, size), interpolation=cv2.INTER_AREA)
     out = big.copy()
