@@ -134,6 +134,7 @@ class Profiler(
         if (game.ended && (event is MovePlayed || event is Takeback || event is Resync || event is GameEnded)) {
             return emptyList()
         }
+        if (removed(game)) return emptyList()
         if (event is Analysis && event.gameId != game.gameId) return emptyList()  // the engine's late word
         if (event is MoveAssessment && event.gameId != game.gameId) return emptyList()
         return when (event) {
@@ -424,12 +425,24 @@ class Profiler(
     }
 
     /**
+     * Whether the player removed the game from their record once it ended (the Games list offers
+     * only finished games): nothing more is kept of it -- the engine's late verdicts, the
+     * coach's words and the review were rows of a game that was gone, and the profile's cells
+     * still counted them (the review of 2026-10-01). It is not reviewed either. `_removed`.
+     */
+    private fun removed(game: Game): Boolean {
+        if (!game.ended || !store.isRemoved("${Store.WATCHED}${game.gameId}")) return false
+        game.reviewed = true
+        return true
+    }
+
+    /**
      * The review of a finished game, once every move of the player's has its verdict or the
      * grace period is up; [force] builds it from what is there.
      */
     private fun maybeReview(game: Game, ts: Double, force: Boolean = false): List<Event> {
         val end = game.end ?: return emptyList()
-        if (game.reviewed) return emptyList()
+        if (game.reviewed || removed(game)) return emptyList()
         val waiting = game.plies.values.any { it.move.byUser && it.assessment == null }
         if (waiting && !force && ts - game.endedAt < REVIEW_GRACE_S) return emptyList()
         game.reviewed = true

@@ -6,6 +6,8 @@ import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.ClockObservation
+import com.sidecoach.events.CoachMessage
+import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -16,9 +18,11 @@ import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.Severity
+import com.sidecoach.events.Trigger
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -134,6 +138,33 @@ class ProfilerRecordTest {
         val got = f.play("Qh5", 0.12, Label.MISTAKE, listOf(FORK))
         assertEquals(listOf<Int?>(6_000, 190_000, 6_000), f.store.moves("g").map { it.clockMs })
         assertEquals(Causes.TIME_PRESSURE, got.filterIsInstance<ProfileEvidence>()[0].cause)
+    }
+
+    /**
+     * A game removed from the player's record right after it ended still took rows -- the
+     * engine's late verdict as evidence, the coach's words, the review -- and the profile's cells
+     * counted the late mistake. Once removed, nothing more is kept.
+     * `test_a_game_removed_right_after_it_ends_keeps_nothing_more`.
+     */
+    @Test
+    fun aGameRemovedRightAfterItEndsKeepsNothingMore() {
+        val f = Feed()
+        f.play("e4")
+        f.play("e5")
+        f.unjudged("Qh5") // the engine trails: its verdict comes after the end
+        val move = f.board.moveStack.last().uci()
+        val after = f.board.fen()
+        f.end("1-0")
+        assertEquals(listOf("watched:g"), f.store.removeGame("watched:g"))
+        val got = f.judge(3, move, after, 0.12, Label.MISTAKE, listOf(FORK)) +
+            f.send(CoachMessage("You missed a chance there.", DisclosureLevel.IDEA, Trigger.POST_MISTAKE, ply = 2)) +
+            f.profiler.tick(f.ts + 1000.0)
+        assertEquals("no review, no evidence for a game that is gone", emptyList<Event>(), got)
+        for (table in listOf("games", "moves", "evidence", "dialogue", "recommendations")) {
+            assertEquals(table, 0, f.store.query("SELECT * FROM $table WHERE game_id = 'g'").second.size)
+        }
+        assertEquals(0, f.store.cells().sumOf { it.errors })
+        assertNull("nor in the session's summary", f.profiler.endSession(f.ts + 2000.0))
     }
 
     private companion object {
