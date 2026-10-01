@@ -2946,6 +2946,10 @@ class Coach:
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self._current = self.positions[0]
+        # The pace is the position's play, as a game's own: the next puzzle in the same
+        # orientation comes as a re-read, and the last one's quick finish made its first find
+        # "fast", only shown (the game-state review, 2026-10-01; FAST_PACE_S).
+        self._think_s.clear()
         # A question held for the engine's look stays, answered once this position is read.
         self.policy.restart()
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)

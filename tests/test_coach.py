@@ -1817,6 +1817,16 @@ def test_the_pace_is_the_last_think_times_and_the_games_own() -> None:
         GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.Board().fen()), 10.0
     )
     assert coach.pace_s is None and not coach.fast_pace
+    # The next puzzle in the same orientation comes as a re-read of the board: the pace was
+    # kept, and its first find was only shown (the game-state review, 2026-10-01).
+    from sidecoach.events import Resync
+
+    coach, _provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES, think_ms=1000)
+    assert coach.fast_pace
+    coach.on_event(Resync(game_id="g", fen=SCHOLAR, reason="position adopted"), 10.0)
+    assert coach.pace_s is None and not coach.fast_pace
 
 
 def _after_move_request(fen: str, san: str, best_uci: str):  # noqa: ANN202
