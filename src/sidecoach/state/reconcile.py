@@ -1304,28 +1304,34 @@ class Reconciler:
             self._resync_candidate = None
             return []
         board, self._turn_unknown = adopted
-        events: list[Event] = []
-        if self._finished:
-            # The finished game is over for good; a position that appears after it is
-            # another game, seen from the middle -- or a puzzle, or an analysis board.
-            events.append(self._begin(board, "position"))
-        else:
-            self._set_position(board)
         self._clear_story()
         self.viewing = None
         self._resync_candidate = None
+        if self._finished:
+            # The finished game is over for good; a position that appears after it is
+            # another game, seen from the middle -- or a puzzle, or an analysis board. Its
+            # start is all there is to say: a Resync after it as well had the engine measure
+            # the position twice and the coach note a re-read board that was never read
+            # before (the state review, 2026-10-01).
+            return [self._begin(board, "position"), *self._positioned()]
+        self._set_position(board)
         reason = f"position adopted after {len(diff)} unexplained cells"
         if self._turn_unknown:
             reason += "; side to move pending"
-        return events + self._resynced(reason)
+        return self._resynced(reason)
 
     def _resynced(self, reason: str) -> list[Event]:
         """A new position for the game: Resync and PositionChanged, and the end when the
         position is over and the side to move known."""
-        events: list[Event] = [
+        return [
             Resync(game_id=self.game_id, fen=self.board.fen(), reason=reason),
-            PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0),
+            *self._positioned(),
         ]
+
+    def _positioned(self) -> list[Event]:
+        """The position the game now stands on, numbered from it: PositionChanged, and the
+        end when the position is over and the side to move known."""
+        events: list[Event] = [PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0)]
         if not self._turn_unknown and self.board.is_game_over():
             self._finished = True
             events.append(self.ended_event(self.board.result(), "game over on board"))

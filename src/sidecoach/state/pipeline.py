@@ -516,8 +516,13 @@ class GamePipeline:
         the solver's side, so the next puzzle can come up the other way round and read as
         a position turned on its head (a white king on a7, 2026-09-20). When the labels
         say the other side is at the bottom, the board is read again that way and a new
-        game begun from it, in place of the resync's events."""
-        if self.model is None or not any(isinstance(e, Resync) for e in events):
+        game begun from it, in place of the resync's events. A position adopted after a
+        finished game is a game begun, with no Resync (`Reconciler._maybe_position_resync`),
+        and is checked the same way."""
+        if self.model is None or not any(
+            isinstance(e, Resync) or (isinstance(e, GameStarted) and e.kind == "position")
+            for e in events
+        ):
             return events
         labelled = read_bottom_side(frame, geometry, self.model.rank_labels)
         if labelled is None or labelled == self.bottom:

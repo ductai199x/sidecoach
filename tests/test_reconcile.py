@@ -841,6 +841,9 @@ def test_nothing_is_played_on_a_finished_game() -> None:
 
 
 def test_position_after_a_finished_game_starts_another_game() -> None:
+    """A position adopted after the game ended begins another, and that start is all: a
+    Resync of the same position after it had the engine measure it twice and the coach note
+    a board re-read that was never read before (the state review, 2026-10-01)."""
     model, rec = _setup()
     rec.resync_hold_frames = 3
     board = chess.Board()
@@ -852,7 +855,10 @@ def test_position_after_a_finished_game_starts_another_game() -> None:
     for i in range(6):
         events += _feed(model, rec, later, Side.WHITE, 2.0 + 0.1 * i)
     kinds = [type(e).__name__ for e in events if isinstance(e, GameStarted | Resync)]
-    assert kinds == ["GameStarted", "Resync"]
+    assert kinds == ["GameStarted"]
+    started = next(e for e in events if isinstance(e, GameStarted))
+    assert started.kind == "position" and started.start_fen.split()[0] == later.board_fen()
+    assert [e.ply for e in events if isinstance(e, PositionChanged)] == [0]
     assert rec.game_id != first_id and not rec.finished
     # The position adopted is the one on the board
     # (test_position_resync_after_a_finished_game_is_live_again).
