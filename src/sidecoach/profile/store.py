@@ -246,6 +246,8 @@ WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
 RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 # A removed game's rows are kept this long, for Undo (the page offers it for seconds).
 UNDO_KEEP_S = 600.0
+# The watched games Stats leaves out: those whose import's facts are kept (the import counts).
+_STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
 
 class QueryRefused(ValueError):
@@ -1090,11 +1092,12 @@ class Store:
 
     def stat_games(self) -> list[dict[str, Any]]:
         """The reviewed games' facts, each game once: a watched game its import stands for is
-        left out."""
+        left out once the import's own facts are kept. Until then the watched game counts (the
+        review of 2026-10-01: a game whose record differed from its import left Stats the moment
+        the import came in, until the import was reviewed -- on the phone, until it was opened)."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins)"
-                " ORDER BY played_at"
+                f"SELECT * FROM stat_games WHERE key NOT IN ({_STOOD_FOR}) ORDER BY played_at"
             ).fetchall()
         return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
 
@@ -1120,11 +1123,11 @@ class Store:
 
     def reviews_without_stats(self) -> list[ReviewRow]:
         """Each game's latest review whose facts are not kept yet (a watched game its import
-        stands for needs none)."""
+        stands for needs none once the import's are kept: `stat_games`)."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
-                " AND r.key NOT IN (SELECT watched FROM twins)"
+                f" AND r.key NOT IN ({_STOOD_FOR})"
                 " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
             ).fetchall()
         return [ReviewRow(**dict(r)) for r in rows]

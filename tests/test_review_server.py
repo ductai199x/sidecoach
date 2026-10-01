@@ -662,7 +662,9 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
 ) -> None:
     """Sidecoach misread a move (4. d3 as d4): still one game, but not the same positions from
     there on, so the import is reviewed as itself -- and the positions the watched review
-    measured, up to the misread move, are not searched again."""
+    measured, up to the misread move, are not searched again. Until it is, the game keeps the
+    accuracy its watched review gave it in the list, and its place in Stats (the review of
+    2026-10-01: both went the moment the import came in, for good on the phone)."""
     from sidecoach.analysis.game_review import STRENGTHS, positions
     from sidecoach.profile import library
     from sidecoach.ui import review_room
@@ -673,9 +675,12 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
     )
     listed = {g["key"]: g for g in client.get("/api/games").json()["games"]}
     assert watched not in listed and not listed[key]["reviewed"], "nothing to carry whole"
-
     old = store.review(watched, "standard")
     assert old is not None
+    summary = json.loads(old.summary or "{}")
+    assert listed[key]["accuracy"] == {s: summary[s]["accuracy"] for s in ("white", "black")}
+    assert {g["key"] for g in store.stat_games()} == {watched}, "counted, as the watched game"
+
     was = json.loads(old.report)
     measured = {was["start"]["fen"], *(m["after"]["fen"] for m in was["moves"])}
     row = library.find(store, key)
@@ -687,6 +692,8 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
     assert all(f in measured for f in own[:7]), "the positions before the misread move agree"
     assert not searched & measured, "nothing the watched review measured is searched again"
     assert set(own[7:]) <= searched, "the import's own positions from the misread move on are"
+    assert {g["key"] for g in store.stat_games()} == {key}, "Stats has it once, as the import"
+    assert [r.key for r in store.reviews_without_stats()] == []
     store.close()
 
 
