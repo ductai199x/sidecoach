@@ -253,8 +253,11 @@ class ReviewRoom:
                 self.words_status, self.words_error = "failed", str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
             return
-        with contextlib.suppress(Exception):  # a room closed meanwhile keeps them unsaved
+        # The room stays open while they are written (`_run`), so its store is open to keep them.
+        try:
             self.store.set_review_words(self.key, self.strength.name, json.dumps(saved))
+        except Exception as exc:  # noqa: BLE001 - shown even so; said, never left "writing"
+            self._emit("sys", "error", f"the AI coach's words could not be saved: {exc!r}")
         with self._lock:
             self.words, self.words_status = shown, "ready"
             self._answered, self._spent = {}, 0.0
@@ -335,7 +338,23 @@ class ReviewRoom:
         return f"{found.eco} {found.name}" if found.eco else str(found.name)
 
     def close(self) -> None:
+        """The page left. The room closes at its next tick -- once the AI coach's words being
+        written are saved, if they are (`_run`)."""
         self._stop.set()
+
+    def reopen(self) -> bool:
+        """Opened again: whether this room goes on. One closed but still open -- its words being
+        written, or its next tick not come -- stays open; one closed, or whose analysis is
+        stopping, does not (a new room goes on from what it kept)."""
+        with self._lock:
+            if self.closed:
+                return False
+            if not self._stop.is_set():
+                return True
+            if self.status != "ready":
+                return False
+            self._stop.clear()
+            return True
 
     def join(self, timeout: float = 5.0) -> None:
         self._thread.join(timeout)
@@ -353,11 +372,23 @@ class ReviewRoom:
                     self.status = "failed"
                     self.error = str(exc)
                 self._emit("sys", "error", f"review failed: {exc!r}")
-            while not self._stop.is_set():
-                if time.monotonic() - self.touched > IDLE_CLOSE_S:
-                    self._emit("sys", "info", "room idle; closing")
-                    break
-                self._stop.wait(TICK_S)
+            while True:
+                with self._lock:
+                    # Closed, or idle, while the AI coach's words are written: open until they
+                    # are saved. Its store closed under them lost every answer that came after,
+                    # each one paid for (the review of 2026-10-01).
+                    writing = self.words_status == "writing"
+                    stopped = self._stop.is_set()
+                    idle = time.monotonic() - self.touched > IDLE_CLOSE_S
+                    if not writing and (stopped or idle):
+                        self.closed = True
+                        break
+                if stopped:
+                    time.sleep(TICK_S)
+                else:
+                    self._stop.wait(TICK_S)
+            if not stopped:
+                self._emit("sys", "info", "room idle; closing")
         finally:
             self.closed = True
             self.store.close()
@@ -807,7 +838,7 @@ class ReviewRooms:
     def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
         with self._lock:
             room = self._rooms.get(key)
-            if room is not None and not room.closed and room.strength.name == strength:
+            if room is not None and room.strength.name == strength and room.reopen():
                 return room
             row = self.row(key)
             if row is None:

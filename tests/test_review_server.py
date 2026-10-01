@@ -809,6 +809,91 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
     store.close()
 
 
+def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of 2026-10-01: the window closed (the page sends /close as it unloads) while the
+    AI coach's words were written closed the room's store, and every answer that came after --
+    each one paid for -- was thrown away. The room stays open until the words are saved; opened
+    again meanwhile, it is the same room, still writing (nothing asked twice), and it stays."""
+    import threading
+
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    go = threading.Event()
+    asked: list[int] = []
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        asked.append(1)
+        go.wait(10)  # each answer arrives, and is paid for, after the window closed
+        paid = {"prompt_tokens": 1, "completion_tokens": 1}
+        for ply in (2, 4):
+            kw["on_answer"](ply, f"### why\nMove {ply}.", paid)
+        return ReviewWords(texts={2: {"why": "a"}, 4: {"why": "b"}}, model="gpt-x", cost=0.02)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+
+    def until(check: Callable[[], bool]) -> bool:
+        deadline = time.monotonic() + 10
+        while not check() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return check()
+
+    room = rooms.open(row.key, "fast")
+    assert room is not None and until(lambda: room.status == "ready")
+    assert room.write_words() is None
+    room.close()
+    time.sleep(review_room.TICK_S * 3)
+    assert rooms.get(row.key) is room and not room.closed, "open while its words are written"
+    assert rooms.open(row.key, "fast") is room, "opened again: the same room, still writing"
+    assert room.state()["ai"]["status"] == "writing"
+    go.set()
+    assert until(lambda: room.words_status == "ready")
+    saved = store.review(row.key, "fast")
+    assert saved is not None and json.loads(saved.words or "{}")["texts"] == {
+        "2": {"why": "a"},
+        "4": {"why": "b"},
+    }, "saved whole"
+    assert asked == [1], "asked once"
+    time.sleep(review_room.TICK_S * 3)
+    assert rooms.get(row.key) is room, "opened again, it stays open"
+
+    room.close()
+    assert until(lambda: room.closed), "closed with nothing being written: closed at once"
+
+    # Closed while writing, not opened again: open until the words are saved, then closed.
+    go.clear()
+    store.set_review_words(row.key, "fast", "")
+    again = rooms.open(row.key, "fast")
+    assert again is not None and again is not room and until(lambda: again.status == "ready")
+    assert again.write_words() is None
+    again.close()
+    time.sleep(review_room.TICK_S * 3)
+    go.set()
+    assert until(lambda: again.closed), "closed once its words are saved"
+    saved = store.review(row.key, "fast")
+    assert saved is not None and "partial" not in json.loads(saved.words or "{}")
+    store.close()
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
