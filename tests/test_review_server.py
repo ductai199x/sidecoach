@@ -901,6 +901,72 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     store.close()
 
 
+def test_a_deep_review_stopped_part_way_keeps_its_positions_through_standard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of 2026-10-01: a Deep review stopped part way lost every position it had
+    measured the moment the game's Standard review was saved (the background review) or opened
+    -- what a review keeps part way went for every strength. Only its own strength's goes."""
+    import threading
+
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    settings = Settings(data_dir=tmp_path)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    deep, standard = STRENGTHS["deep"], STRENGTHS["standard"]
+    halt = threading.Event()
+
+    def progress(done: int, _total: int) -> None:
+        if done >= 4:
+            halt.set()
+
+    def engines(**_: Any) -> FakeEngine:
+        return FakeEngine()
+
+    assert (
+        review_room.review_row(
+            settings,
+            row,
+            store,
+            deep,
+            workers=1,
+            make_engine=engines,
+            on_progress=progress,
+            stop=halt,
+        )
+        is None
+    )
+
+    def deep_kept() -> list[str]:
+        return sorted(store.progress(row.key, "deep", deep.depth, deep.multipv))
+
+    kept = deep_kept()
+    assert len(kept) >= 4
+    assert review_room.review_row(settings, row, store, standard, workers=1, make_engine=engines)
+    assert deep_kept() == kept, "Standard saved"
+    room = review_room.ReviewRoom(
+        settings, row, store_path=path, strength="standard", make_engine=engines
+    )
+    deadline = time.monotonic() + 10
+    while room.status != "ready" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    room.close()
+    room.join()
+    assert room.status == "ready"
+    assert deep_kept() == kept, "Standard opened"
+    assert store.progress(row.key, "standard", standard.depth, standard.multipv) == []
+    store.close()
+
+
 def test_bringing_in_from_a_site_needs_the_username_first(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

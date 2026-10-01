@@ -407,7 +407,7 @@ class ReviewRoom:
             return False
         reviewed = ReviewedGame.model_validate_json(saved.report)
         with contextlib.suppress(Exception):  # a kill between the save and the clearing
-            self.store.clear_progress(self.key)
+            self.store.clear_progress(self.key, self.strength.name)
         # Its words ready with it: the page stops asking once the review is. Words the app was
         # closed in the middle of writing are the answers paid for so far, kept to go on from.
         kept = json.loads(saved.words) if saved.words else None
@@ -619,14 +619,16 @@ def review_row(
         # and a review window at once -- and stays, with any words the player paid for on it
         # (the review of 2026-10-01): this one is handed that one. None if the game was removed.
         kept = store.review(row.key, strength.name)
-        store.clear_progress(row.key)
         if kept is None:
+            store.clear_progress(row.key)
             return None
+        store.clear_progress(row.key, strength.name)
         return (
             ReviewedGame.model_validate_json(kept.report),
             GameSummary.model_validate_json(kept.summary or "{}"),
         )
-    store.clear_progress(row.key)
+    # What this strength's review kept part way goes; another strength's stays, to go on from.
+    store.clear_progress(row.key, strength.name)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
 
@@ -686,7 +688,7 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
             continue  # reviewed meanwhile (that review stays, with its words), or removed
         if old.words:
             store.set_review_words(imported, old.strength, old.words)
-        store.clear_progress(imported)
+        store.clear_progress(imported, old.strength)
         keep_stats(store, old.strength, reviewed, row)
         carried.append(imported)
     return carried

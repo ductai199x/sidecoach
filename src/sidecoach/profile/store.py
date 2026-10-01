@@ -1212,12 +1212,18 @@ class Store:
             ).fetchall()
         return [str(r["measured"]) for r in rows]
 
-    def clear_progress(self, key: str) -> None:
-        """A game's review is saved: what any review of it kept part way goes (the background
-        review's at another strength has nothing left to go on with -- it reviews only games
-        with no review)."""
+    def clear_progress(self, key: str, strength: str | None = None) -> None:
+        """A game's review at `strength` is saved: what a review of it at that strength kept
+        part way goes -- every strength's when none is named (the game is gone). A Deep review
+        stopped part way kept its positions only until the game's Standard review was saved or
+        opened, and started over (the review of 2026-10-01)."""
         with self._lock:
-            self._db.execute("DELETE FROM review_progress WHERE key = ?", (key,))
+            if strength is None:
+                self._db.execute("DELETE FROM review_progress WHERE key = ?", (key,))
+            else:
+                self._db.execute(
+                    "DELETE FROM review_progress WHERE key = ? AND strength = ?", (key, strength)
+                )
             self._db.commit()
 
     def set_review_words(self, key: str, strength: str, words: str) -> None:
