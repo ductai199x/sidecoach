@@ -262,28 +262,26 @@ def test_tracker_does_not_slide_under_a_dialog_beside_a_page_edge() -> None:
 
 
 @pytest.mark.parametrize("rows", [4, 5], ids=["32 cells", "40 cells"])
-@pytest.mark.parametrize("near", [LIGHT, DARK], ids=["near light", "near dark"])
-def test_fresh_palette_does_not_relock_from_a_half_covered_board(
-    rows: int, near: tuple[int, int, int]
-) -> None:
-    """A dialog in a colour close to one square colour over half the board or more: the
-    locked palette fails the frame, and the fresh palette read from the frame must not
-    replace it, since it would be the dialog's."""
-    tracker = BoardTracker(max_misses=4)
+def test_fresh_palette_does_not_relock_from_a_half_covered_board(rows: int) -> None:
+    """A dialog in a colour close to one square colour, near the light and then near the
+    dark, over half the board or more: the locked palette fails the frame, and the fresh
+    palette read from the frame must not replace it, since it would be the dialog's."""
     clean = synthetic_board(x0=300, y0=120, cell=64)
-    assert tracker.update(clean) is not None
-    colours = tracker.colours
-    assert colours is not None
-    covered = clean.copy()
-    dialog = tuple(min(255, channel + 4) for channel in near)
-    covered[120 : 120 + rows * 64, 300 : 300 + 512] = dialog
-    for _ in range(tracker.max_misses - 1):
-        held = tracker.update(covered)
-        assert held is not None and not tracker.verified
-        assert tracker.colours == colours
-    board = tracker.update(clean)
-    assert board is not None and tracker.verified and tracker.colours == colours
-    assert tracker.detections == 1
+    for near, name in ((LIGHT, "near light"), (DARK, "near dark")):
+        tracker = BoardTracker(max_misses=4)
+        assert tracker.update(clean) is not None, name
+        colours = tracker.colours
+        assert colours is not None, name
+        covered = clean.copy()
+        dialog = tuple(min(255, channel + 4) for channel in near)
+        covered[120 : 120 + rows * 64, 300 : 300 + 512] = dialog
+        for _ in range(tracker.max_misses - 1):
+            held = tracker.update(covered)
+            assert held is not None and not tracker.verified, name
+            assert tracker.colours == colours, name
+        board = tracker.update(clean)
+        assert board is not None and tracker.verified and tracker.colours == colours, name
+        assert tracker.detections == 1, name
 
 
 def test_refit_cannot_turn_a_passing_frame_into_a_miss(monkeypatch) -> None:

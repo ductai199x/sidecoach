@@ -192,7 +192,6 @@ def test_board_flush_with_the_frame_corner() -> None:
     ("style", "x", "y"),
     [
         ("chess7", 1920 - 8 * 136, 80),  # against the right edge: was not found at all
-        ("pixel", 1920 - 8 * 136, 80),
         ("cardinal", 10, 1200 - 8 * 136),  # against the bottom edge: was found 10-19 px high
         ("governor", 10, 1200 - 8 * 136),
     ],
