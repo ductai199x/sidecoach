@@ -81,11 +81,13 @@ export async function post<T = unknown>(path: string, body?: unknown): Promise<T
   return (await r.json()) as T;
 }
 
-export async function put<T = unknown>(path: string, body?: unknown): Promise<T> {
+/** `keepalive`: the request is sent even if the page is closing (a save on the way out). */
+export async function put<T = unknown>(path: string, body?: unknown, opts: { keepalive?: boolean } = {}): Promise<T> {
   const r = await fetch(base + path, {
     method: "PUT",
     headers: headers(true),
     body: JSON.stringify(body ?? {}),
+    keepalive: !!opts.keepalive,
   });
   return (await r.json()) as T;
 }

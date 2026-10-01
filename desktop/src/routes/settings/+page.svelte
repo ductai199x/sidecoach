@@ -4,8 +4,8 @@
   // the API keys into the OS credential store, the audio devices by name, and the
   // shell's own two switches (what closing the window does, start with the system).
   // Opened at a setting (`#profile.chesscom_user`, from another window's link), its tab shows
-  // and the field lights up; a save sends what changed and tells the other windows, and what
-  // another window saved comes in here too.
+  // and the field lights up. Every change is saved as it is made -- no Save button -- and the
+  // save tells the other windows; what another window saved comes in here too.
   import { onDestroy, onMount, tick } from "svelte";
   import { connect, del, get, post, put } from "$lib/api";
   import { announce, inShell, onAnnounce, openWindow, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
@@ -40,12 +40,19 @@
   let secrets = $state<Record<string, string>>({});
   let clearSecrets = $state<Record<string, boolean>>({});
   let shell = $state<ShellSettings>({ close: "quit", autostart: false });
-  // What the shell held before this save, so the line under Save can count the shell's own
-  // settings (closing the window, start with the system) among what changed.
+  // What the shell held at the last save: its own settings (closing the window, start with
+  // the system) are saved when they differ.
   let shellSaved = $state<ShellSettings>({ close: "quit", autostart: false });
   let advanced = $state(false);
   let saving = $state(false);
-  let result = $state<{ ok: boolean; changed?: string[]; shellChanged?: boolean; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
+  // The last save that went through, for the status line (what waits for a Start or a restart).
+  let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
+  // A field the sidecar refused ("llm.temperature" -> why): shown under it, and left out of the
+  // saves until it is changed, so one bad value holds up nothing else.
+  let fieldErrors = $state<Record<string, string>>({});
+  // A save that did not get through at all (the sidecar not answering): said, and tried again.
+  let failure = $state("");
+  const refused = $derived(Object.keys(fieldErrors).length);
   let section = $state("llm");
 
   const SECTIONS: [string, string][] = [
@@ -113,10 +120,10 @@
   onDestroy(() => stopCapture());
 
   // The bar's back arrow, as every window's: the app's window closes, a browser tab goes back
-  // (the panel, or Your games' "Fix it in Settings" on the phone). Changes not saved are
-  // asked about first, as any settings window does.
-  function leave(): void {
-    if (dirty && !window.confirm("Leave without saving your changes?")) return;
+  // (the panel, or Your games' "Fix it in Settings" on the phone). A change still being typed
+  // is saved first.
+  async function leave(): Promise<void> {
+    await flush();
     window.close();
     if (history.length > 1) history.back();
     else window.location.href = "/";
@@ -232,12 +239,11 @@
   function isNullable(p: Prop): boolean {
     return !!(p.anyOf || []).some((a) => a.type === "null");
   }
-  const secretNames = $derived.by(() => (keyName ? [keyName] : []) as string[]);
-  /** Save, then restart the app (the shell) -- for the few settings that need it. */
-  async function saveAndRestart() {
-    if (!window.confirm("Save the settings and restart Sidecoach now?")) return;
-    await save();
-    if (!result?.ok) return;
+  /** Restart the app (the shell), every change saved first -- for the few settings that need it. */
+  async function restartNow() {
+    if (!window.confirm("Restart Sidecoach now?")) return;
+    await flush();
+    if (failure || Object.keys(fieldErrors).length) return;
     if (!inShell()) { window.alert("Saved. Restart the panel (sidecoach panel) for it to take effect."); return; }
     try {
       const { relaunch } = await import("@tauri-apps/plugin-process");
@@ -253,26 +259,17 @@
     const text = words.join(" ");
     return text[0].toUpperCase() + text.slice(1);
   }
-  /** The line under Save: applied is the default and goes unsaid; what waits for a Start
-   * or a restart is named. */
+  /** The status line after a save: applied is the default and goes unsaid; what waits for a
+   * Start or a restart is named. */
   function savedLine(r: NonNullable<typeof result>): string {
     const parts: string[] = [];
     if (r.next?.length) parts.push(`${r.next.map(fieldName).join(", ")}: at the next Start.`);
     if (r.restart?.length) parts.push(`${r.restart.map(fieldName).join(", ")}: after a restart.`);
-    if (!r.changed?.length && !r.shellChanged) return "Saved. Nothing changed.";
     return parts.length ? "Saved. " + parts.join(" ") : "Saved.";
   }
 
   // The settings as saved, field by field: what the page has that differs is what it sends.
   let saved = $state.raw<Record<string, any>>({});
-  // Anything to save: Save is lit only then, with a word beside it, as any settings window.
-  const dirty = $derived(
-    Object.keys(changes(values, saved)).length > 0 ||
-      Object.values(secrets).some(Boolean) ||
-      Object.values(clearSecrets).some(Boolean) ||
-      shell.close !== shellSaved.close ||
-      shell.autostart !== shellSaved.autostart,
-  );
 
   /** Each field of `now` that differs from `before`, section by section; a field whole, an
    * object too, so a key taken out of one (llm.extra_body) goes with the save. */
@@ -330,8 +327,17 @@
     const stop = onAnnounce("settings", () => void refresh());
     const onFocus = () => void refresh();
     const onHash = () => void reveal();
+    // A change still being typed is saved when the window loses the focus, is hidden (the
+    // phone's app switcher) or closes (its ✕, the app quitting): sent so as to outlive the page.
+    const onBlur = () => void flush();
+    const onHidden = () => { if (document.visibilityState === "hidden") void flush(true); };
+    const onLeave = () => void flush(true);
     window.addEventListener("focus", onFocus);
     window.addEventListener("hashchange", onHash);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("pagehide", onLeave);
+    window.addEventListener("beforeunload", onLeave);
     (async () => {
       await connect();
       data = await get<Described>("/api/settings");
@@ -345,24 +351,89 @@
       stop();
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", onLeave);
+      window.removeEventListener("beforeunload", onLeave);
+      void flush(true);
     };
   });
 
-  function setValue(sec: string, key: string, p: Prop, raw: string | boolean) {
+  /** A field changed by the player: kept, and saved -- at once, or, for what is typed (`typed`),
+   * once the typing pauses. */
+  function setValue(sec: string, key: string, p: Prop, raw: string | boolean, typed = false) {
     const t = typeOf(p);
     let v: unknown = raw;
     if (t === "boolean") v = !!raw;
     else if (t === "integer") v = raw === "" ? (isNullable(p) ? null : values[sec][key]) : parseInt(String(raw), 10);
     else if (t === "number") v = raw === "" ? (isNullable(p) ? null : values[sec][key]) : parseFloat(String(raw));
     else v = raw === "" && isNullable(p) ? null : raw;
+    if (typeof v === "number" && Number.isNaN(v)) return; // "-" on the way to "-1": not a number yet
     values[sec][key] = v;
-    result = null; // "Saved." is about the last save, not this change
+    edited(`${sec}.${key}`, typed);
   }
 
-  async function save() {
+  /** A change made: its old refusal goes, and it is saved (`typed`: once the typing pauses). */
+  function edited(field: string, typed = false): void {
+    if (field in fieldErrors) delete fieldErrors[field];
+    if (typed) soon();
+    else void flush();
+  }
+
+  // Every change is saved as it is made (Tai, 2026-10-01: a username typed into Settings was
+  // lost when the window closed before Save; "save each change as you make it, with no Save
+  // button"). One save at a time, in order: what changes while one is on its way goes with
+  // the next, so two quick changes can never land in the wrong order.
+  const TYPING_MS = 600;
+  let typing: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<void> | null = null;
+  let again = false;
+
+  /** Save once the typing pauses. */
+  function soon(): void {
+    if (typing) clearTimeout(typing);
+    typing = setTimeout(() => {
+      typing = null;
+      void flush();
+    }, TYPING_MS);
+  }
+
+  /** Save whatever differs from the saved settings now, after the save on its way if any;
+   * `keepalive`: the page is closing, and the request must outlive it. */
+  function flush(keepalive = false): Promise<void> {
+    if (typing) {
+      clearTimeout(typing);
+      typing = null;
+    }
+    if (inFlight) {
+      again = true;
+      return inFlight;
+    }
+    inFlight = (async () => {
+      do {
+        again = false;
+        await saveOnce(keepalive);
+      } while (again);
+    })().finally(() => (inFlight = null));
+    return inFlight;
+  }
+
+  /** The changes, less the fields the sidecar refused and nobody has changed since. */
+  function sendable(all: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [sec, value] of Object.entries(all)) {
+      if (value && typeof value === "object" && !Array.isArray(value) && saved[sec] && typeof saved[sec] === "object") {
+        const inner = Object.fromEntries(Object.entries(value).filter(([k]) => !(`${sec}.${k}` in fieldErrors)));
+        if (Object.keys(inner).length) out[sec] = inner;
+      } else if (!(sec in fieldErrors)) {
+        out[sec] = value;
+      }
+    }
+    return out;
+  }
+
+  async function saveOnce(keepalive: boolean): Promise<void> {
     if (!data) return;
-    saving = true;
-    result = null;
     const sec: Record<string, string | null> = {};
     for (const name of Object.keys({ ...secrets, ...clearSecrets })) {
       if (clearSecrets[name]) sec[name] = null;
@@ -370,22 +441,55 @@
     }
     // A custom service's key lives under one name; the settings say which.
     if (values.llm && values.llm.provider === "custom" && !values.llm.api_key_env) values.llm.api_key_env = CUSTOM_KEY;
+    const sent = $state.snapshot(values);
+    // What changed here, and only that: a field another window saved since stays as it saved it.
+    const body = sendable(changes(sent, saved));
+    const shellChanged = inShell() && (shell.close !== shellSaved.close || shell.autostart !== shellSaved.autostart);
+    if (!Object.keys(body).length && !Object.keys(sec).length && !shellChanged) return;
+    saving = true;
     try {
-      // What changed here, and only that: a field another window saved since stays as it
-      // saved it.
-      result = await put("/api/settings", { settings: changes($state.snapshot(values), saved), secrets: sec });
-      if (result?.ok) {
-        const shellChanged = shell.close !== shellSaved.close || shell.autostart !== shellSaved.autostart;
-        await setShellSettings(shell);
-        shellSaved = structuredClone($state.snapshot(shell));
-        result = { ...result, shellChanged };
-        data = await get<Described>("/api/settings");
-        values = structuredClone($state.snapshot(data).settings);
-        saved = structuredClone($state.snapshot(data).settings);
-        secrets = {};
-        clearSecrets = {};
+      if (shellChanged) {
+        const now = structuredClone($state.snapshot(shell));
+        await setShellSettings(now);
+        shellSaved = now;
+      }
+      if (Object.keys(body).length || Object.keys(sec).length) {
+        const res = await put<NonNullable<typeof result>>("/api/settings", { settings: body, secrets: sec }, { keepalive });
+        if (!res?.ok) {
+          const refused = res?.errors ?? [];
+          for (const e of refused) {
+            const at = e.loc.filter((x) => typeof x === "string").slice(0, 2).join(".");
+            fieldErrors[at || "settings"] = e.msg;
+          }
+          // The rest of the changes go on their own -- when the refused fields are out of them,
+          // so a refusal the page cannot place is said, not sent again and again.
+          const rest = sendable(changes(sent, saved));
+          if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) again = true;
+          failure = refused.length ? "" : "Not saved: Sidecoach refused the change.";
+          return;
+        }
+        for (const name of Object.keys(sec)) {
+          // The key as sent is in the store; one typed since is the next save's.
+          if (secrets[name] === sec[name]) delete secrets[name];
+          delete clearSecrets[name];
+        }
+        result = res;
+        const fresh = await get<Described>("/api/settings");
+        // What was changed here while this save was on its way stays as it is, for the next one.
+        const mine = changes($state.snapshot(values), sent);
+        const next = structuredClone(fresh.settings);
+        for (const [s, fields] of Object.entries(mine)) {
+          if (fields && typeof fields === "object" && !Array.isArray(fields) && next[s]) Object.assign(next[s], fields);
+          else next[s] = fields;
+        }
+        data = fresh;
+        values = next;
+        saved = structuredClone(fresh.settings);
         void announce("settings");
       }
+      failure = "";
+    } catch (e) {
+      failure = "Not saved: Sidecoach did not answer. The change is kept here and saved with the next one.";
     } finally {
       saving = false;
     }
@@ -440,7 +544,7 @@
     const what = `${n} piece${n === 1 ? "" : "s"}`;
     let text = added ? `A new set: ${what}.` : `${what} into "${res.name}".`;
     if (res.missing.length) text += ` Still missing: ${res.missing.map(pieceName).join(", ")} (Sidecoach's stand in).`;
-    if (added) text += " It is picked: Save to use it.";
+    if (added) text += " It is picked.";
     return { text, errors };
   }
 
@@ -458,7 +562,7 @@
       await refresh();
       if (res.ok && into === null && res.id && values.board) {
         values.board.pieces = res.id;
-        result = null;
+        edited("board.pieces");
         startRename(res.id, res.name ?? "");
       }
     } catch (e) {
@@ -492,12 +596,11 @@
     await refresh();
   }
 
-  /** The board setting as saved, set at once: a set deleted (or back) is no set to keep pointing at. */
+  /** The board setting set and saved: a set deleted (or back) is no set to keep pointing at. */
   async function savePieces(pieces: string): Promise<void> {
-    await put("/api/settings", { settings: { board: { pieces } }, secrets: {} }).catch(() => null);
     await refresh();
     if (values.board) values.board.pieces = pieces;
-    void announce("settings");
+    await flush();
   }
 
   async function removeSet(o: OwnSet): Promise<void> {
@@ -550,8 +653,16 @@
   });
 
   function errorFor(sec: string, key: string): string | null {
-    const e = result?.errors?.find((x) => x.loc[0] === sec && x.loc[1] === key);
-    return e ? e.msg : null;
+    return fieldErrors[`${sec}.${key}`] ?? null;
+  }
+  /** A JSON field (llm.extra_body) as typed: saved when it reads, else said and kept back. */
+  function setObject(sec: string, key: string, text: string): void {
+    try {
+      values[sec][key] = JSON.parse(text || "{}");
+      edited(`${sec}.${key}`);
+    } catch {
+      fieldErrors[`${sec}.${key}`] = "Not valid JSON, so not saved: check the brackets, quotes and commas.";
+    }
   }
 </script>
 
@@ -674,7 +785,7 @@
         </div>
       {:else if p.kind === "color"}
         <div class="row">
-          <input id="{section}-{key}" class="color" type="color" value={String(v ?? p.default ?? "#ffffff")} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+          <input id="{section}-{key}" class="color" type="color" value={String(v ?? p.default ?? "#ffffff")} oninput={(e) => setValue(section, key, p, e.currentTarget.value, true)} />
           <span class="hex">{String(v ?? p.default ?? "").toUpperCase()}</span>
         </div>
       {:else if p.choices}
@@ -682,14 +793,14 @@
           {#each p.choices as c (c)}<option value={c} selected={(v == null ? "" : String(v)) === c}>{choiceLabel(p, c)}</option>{/each}
         </select>
       {:else if t === "integer" || t === "number"}
-        <input id="{section}-{key}" type="number" value={v ?? ""} min={p.minimum} max={p.maximum} step={t === "integer" ? 1 : "any"} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+        <input id="{section}-{key}" type="number" value={v ?? ""} min={p.minimum} max={p.maximum} step={t === "integer" ? 1 : "any"} oninput={(e) => setValue(section, key, p, e.currentTarget.value, true)} onchange={() => void flush()} />
       {:else if t === "object"}
-        <input id="{section}-{key}" type="text" value={JSON.stringify(v ?? {})} onchange={(e) => { try { values[section][key] = JSON.parse(e.currentTarget.value || "{}"); } catch { /* keep typing */ } }} />
+        <input id="{section}-{key}" type="text" value={JSON.stringify(v ?? {})} onchange={(e) => setObject(section, key, e.currentTarget.value)} />
       {:else}
-        <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
+        <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value, true)} onchange={() => void flush()} />
       {/if}
     {/if}
-    <p class="desc">{p.description}{#if p.applies === "next"}{" "}<span class="applies next">· takes effect at the next Start</span>{:else if p.applies === "restart"}{" "}<span class="applies restart">· needs a <button type="button" class="link" onclick={saveAndRestart} title="Save the settings and restart Sidecoach">restart</button></span>{/if}</p>
+    <p class="desc">{p.description}{#if p.applies === "next"}{" "}<span class="applies next">· takes effect at the next Start</span>{:else if p.applies === "restart"}{" "}<span class="applies restart">· needs a <button type="button" class="link" onclick={restartNow} title="Restart Sidecoach">restart</button></span>{/if}</p>
     {#if err}<p class="err">{err}</p>{/if}
   </div>
 {/snippet}
@@ -719,7 +830,7 @@
       {#if inShell()}
         <div class="field">
           <label for="close">When the window is closed</label>
-          <select id="close" bind:value={shell.close}>
+          <select id="close" bind:value={shell.close} onchange={() => void flush()}>
             <option value="quit">Quit</option>
             <option value="tray">Keep running in the tray (the coach keeps watching; the icon by the clock brings the window back)</option>
           </select>
@@ -730,14 +841,14 @@
       {#if data.schema.properties.data_dir}
         <div class="field">
           <label for="data_dir">Data folder</label>
-          <input id="data_dir" type="text" value={values.data_dir} disabled={inShell()} oninput={(e) => (values.data_dir = e.currentTarget.value)} />
+          <input id="data_dir" type="text" value={values.data_dir} disabled={inShell()} oninput={(e) => { values.data_dir = e.currentTarget.value; edited("data_dir", true); }} onchange={() => void flush()} />
           <p class="desc">{data.schema.properties.data_dir?.description}{inShell() ? " The app decides where." : ""}</p>
         </div>
       {/if}
       {#if advanced && data.schema.properties.tools_dir}
         <div class="field">
           <label for="tools_dir">Tools folder</label>
-          <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => (values.tools_dir = e.currentTarget.value)} />
+          <input id="tools_dir" type="text" value={values.tools_dir} oninput={(e) => { values.tools_dir = e.currentTarget.value; edited("tools_dir", true); }} onchange={() => void flush()} />
           <p class="desc">{data.schema.properties.tools_dir?.description}</p>
         </div>
       {/if}
@@ -754,8 +865,10 @@
               <label for="api-key">API key</label>
               <div class="secret">
                 <span class="state">{data.secrets[keyName] ? "set" : "not set"}</span>
-                <input id="api-key" type="password" placeholder={data.secrets[keyName] ? "replace…" : "paste the key…"} value={secrets[keyName] ?? ""} oninput={(e) => (secrets[keyName!] = e.currentTarget.value)} disabled={!data.keyring} />
-                {#if data.secrets[keyName]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[keyName]} /> forget</label>{/if}
+                <!-- Saved when it is left or Enter is pressed, not as it is typed: a key half
+                     typed is no key. -->
+                <input id="api-key" type="password" placeholder={data.secrets[keyName] ? "replace…" : "paste the key…"} value={secrets[keyName] ?? ""} oninput={(e) => (secrets[keyName!] = e.currentTarget.value)} onchange={() => void flush()} onkeydown={(e) => { if (e.key === "Enter") void flush(); }} disabled={!data.keyring} />
+                {#if data.secrets[keyName]}<label class="ctl"><input type="checkbox" bind:checked={clearSecrets[keyName]} onchange={() => void flush()} /> forget</label>{/if}
               </div>
               <p class="desc">{data.keyring ? "Kept in the operating system's credential store, never in the settings file." : "No credential store is available here; the key comes from the environment or .env."}</p>
             </div>
@@ -810,22 +923,27 @@
       <button type="button" class="gm-undo-btn" onclick={() => void undoRemove()}>Undo</button>
     </div>
   {/if}
-  <footer class="secfoot">
-    {#if result?.ok}
-      <span class="saved">{savedLine(result)}{#if result.restart?.length}{" "}<button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
-    {:else if result && !result.ok}
-      <span class="err">Not saved: {result.errors?.length} field{result.errors?.length === 1 ? "" : "s"} need attention.</span>
-    {:else if dirty}
-      <span class="unsaved">Unsaved changes</span>
-    {/if}
-    <span class="spacer"></span>
-    <button class="primary" onclick={save} disabled={saving || !data || !dirty} title={dirty ? "Save the changes" : "Nothing changed yet"}>{saving ? "Saving…" : "Save"}</button>
-  </footer>
+  <!-- Each change saves itself; this line says how the last one went, and only when there is
+       something to say. -->
+  {#if saving || failure || refused || result?.ok}
+    <footer class="secfoot" role="status">
+      {#if saving}
+        <span class="muted">Saving…</span>
+      {:else if failure}
+        <span class="err">{failure}</span>
+        <button type="button" class="link" onclick={() => void flush()}>Try again</button>
+      {:else if refused}
+        <span class="err">{refused === 1 ? "One setting is" : `${refused} settings are`} not saved: see the note in red.</span>
+      {:else if result?.ok}
+        <span class="saved">{savedLine(result)}{#if result.restart?.length}{" "}<button type="button" class="link" onclick={restartNow}>Restart now</button>{/if}</span>
+      {/if}
+    </footer>
+  {/if}
 </div>
 
 <style>
   /* The screen, less the phone's bars when the page is drawn under them (the variables
-     are nothing on a desktop), so the footer with Save stays on it. */
+     are nothing on a desktop), so the status line stays on it. */
   .settings {
     display: grid; grid-template-rows: auto auto 1fr auto;
     height: 100vh; height: calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px));
@@ -887,8 +1005,6 @@
   .secret input { flex: 1; }
   .secfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
   .saved { color: var(--accent); font-size: 13px; }
-  .unsaved { color: var(--warn); font-size: 13px; }
-  .spacer { flex: 1; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
   /* The Board tab: a card a piece set (a row of its pieces on the colours chosen), a swatch a
