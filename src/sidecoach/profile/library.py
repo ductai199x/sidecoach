@@ -15,6 +15,7 @@ import calendar
 import difflib
 import hashlib
 import io
+import math
 import re
 import time
 from collections.abc import Iterable
@@ -375,8 +376,10 @@ def _agreeing(seen: list[str], played: list[str]) -> float | None:
 
 
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")
-# As Sidecoach words the clock it read at a game's start (profile/profiler.py): "10 min", "30 s".
+# As Sidecoach words the clock it read at a game's start (profile/profiler.py): "10 min", "30 s";
+# a reading this close below a whole minute is that minute (profiler.START_SLACK_MS).
 _WATCHED_CONTROL = re.compile(r"^(\d+(?:\.\d+)?) (min|s)$")
+_START_SLACK_S = 5.0
 
 
 def time_class_of(control: str) -> str | None:
@@ -388,8 +391,16 @@ def time_class_of(control: str) -> str | None:
         return "daily"
     watched = _WATCHED_CONTROL.match(control)
     match = _CONTROL.match(control)
-    if watched:
-        seconds = float(watched.group(1)) * (60 if watched.group(2) == "min" else 1)
+    if watched and watched.group(2) == "min":
+        # A few seconds short of a whole minute is that minute, as profile/profiler.py words it
+        # now: records kept before say the first reading as read ("9.98333 min", a ten-minute
+        # game counted as blitz; the review of 2026-10-01).
+        seconds = float(watched.group(1)) * 60
+        whole = math.ceil(seconds / 60) * 60.0
+        if whole - seconds <= _START_SLACK_S:
+            seconds = whole
+    elif watched:
+        seconds = float(watched.group(1))
     elif match:
         seconds = int(match.group(1)) + 40 * int(match.group(2) or 0)
     else:

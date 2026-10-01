@@ -577,6 +577,29 @@ def test_a_clock_box_not_read_keeps_its_last_reading() -> None:
     assert evidence[0].cause == causes.TIME_PRESSURE
 
 
+def test_the_time_control_is_the_clock_as_the_game_began() -> None:
+    """The review of 2026-10-01: a watched game's time control was its first clock reading as
+    read -- 599000/597500, read a second or two in, was "9.98333 min": a ten-minute game
+    counted as blitz -- and a game joined from the middle took the time left for its control.
+    The control is the reading to the whole minute; a joined game's clocks give none."""
+    from sidecoach.profile.library import time_class_of
+
+    f = Feed()
+    f.send(ClockObservation(white_ms=599_000, black_ms=597_500, running=Side.WHITE))
+    game = f.store.game("g")
+    assert game is not None and game.time_control == "10 min"
+    assert time_class_of("10 min") == "rapid"
+    assert time_class_of("9.98333 min") == "rapid", "as records kept before say it"
+    f.end()
+    # A game joined from the middle: its clocks say how much time was left, not the control.
+    f.next_game(
+        "j", kind="position", fen="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+    )
+    f.send(ClockObservation(white_ms=271_000, black_ms=244_000, running=Side.WHITE))
+    joined = f.store.game("j")
+    assert joined is not None and joined.time_control is None
+
+
 def test_a_game_removed_right_after_it_ends_keeps_nothing_more() -> None:
     """The review of 2026-10-01: a game removed from the player's record right after it ended
     still took rows -- the engine's late verdict as evidence, the coach's words, the review --

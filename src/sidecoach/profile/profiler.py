@@ -16,6 +16,7 @@ period, or when the session closes, whichever comes first.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -74,6 +75,9 @@ RETRY_FAIL_S = 3600.0
 
 
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+# A clock's first reading this close below a whole minute is that minute (`time_control_words`;
+# library.time_class_of reads the records kept before the same way).
+START_SLACK_MS = 5_000
 
 
 def material_balance(board: chess.Board, side: chess.Color) -> int:
@@ -86,13 +90,18 @@ def material_balance(board: chess.Board, side: chess.Color) -> int:
 
 
 def time_control_words(white_ms: int | None, black_ms: int | None) -> str | None:
-    """The time control from the clock's first reading: "10 min", "3 min", "30 s"."""
+    """The time control from the clock's first reading as a game began: "10 min", "3 min",
+    "30 s". A reading up to START_SLACK_MS short of a whole minute is that minute: the first
+    reading comes a second or two after the clock started (599000 was "9.98333 min", a
+    ten-minute game counted as blitz: the review of 2026-10-01)."""
     start = max((ms for ms in (white_ms, black_ms) if ms is not None), default=None)
     if start is None or start <= 0:
         return None
+    whole = math.ceil(start / 60_000)
+    if whole * 60_000 - start <= START_SLACK_MS:
+        return f"{whole} min"
     if start >= 60_000:
-        minutes = start / 60_000
-        return f"{minutes:g} min"
+        return f"{start / 60_000:g} min"
     return f"{start // 1000} s"
 
 
@@ -128,6 +137,8 @@ class _Game:
     # The game is over; its review waits for the last verdicts (see `_maybe_review`).
     end: GameEnded | None = None
     provisional: bool = False  # a position, not yet known to be a game
+    # Joined from the middle: its clocks say how much time was left, not the time control.
+    joined: bool = False
     ended_at: float = 0.0
     reviewed: bool = False
     # The game's phase so far: a phase reached is never left (`phase.game_phases`).
@@ -189,7 +200,14 @@ class Profiler:
                 event.black_ms if event.black_ms is not None else black,
             )
             game = self._game
-            if game is not None and game.time_control is None and not game.ended:
+            # A game joined from the middle took the time left for its control (the review of
+            # 2026-10-01): it has none from its clocks.
+            if (
+                game is not None
+                and game.time_control is None
+                and not game.ended
+                and not game.joined
+            ):
                 game.time_control = time_control_words(event.white_ms, event.black_ms)
                 if game.time_control is not None:
                     self.store.set_game(game.game_id, time_control=game.time_control)
@@ -277,6 +295,7 @@ class Profiler:
             started_at=ts,
             last_fen=event.start_fen,
             provisional=event.kind != "game",
+            joined=event.kind != "game",
         )
         self.store.start_game(
             event.game_id, ts, event.user_side.value, event.start_fen, self.session_id
