@@ -200,8 +200,30 @@ class CoachTest {
                 val lines = now.substringAfter("## Engine lines").substringBefore("\n## ")
                 assertTrue("$where: the engine's best line\n$lines", " $best  0.70" in lines.split("\n")[1])
                 assertTrue("$where: the facts sheet", "\n## Facts (" in now)
+                assertEquals("$where: the prompt check", emptyList<String>(), coach.harnessProblems.toList())
             }
         }
+    }
+
+    /**
+     * The check run before every request: the puzzle start's prompt (no position now), a
+     * withdrawn position, and the wrong colour are each named; a prompt built right passes.
+     * `test_conversation.py`.
+     */
+    @Test
+    fun thePromptCheckNamesWhatIsWrong() {
+        val board = Board("4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1")
+        val good = "# Setting\nYou coach Black. They see the board from Black's side.\n\n" +
+            "# Position now\n## Board\nFEN: ${board.fen()}\nPieces -- ..."
+        assertEquals(null, harnessProblem(good, board, Pieces.Side.BLACK))
+        val settingOnly = good.substringBefore("\n\n# Position now")
+        assertEquals("no position now (# Position now with its board)", harnessProblem(settingOnly, board, Pieces.Side.BLACK))
+        val withdrawn = good.replace(board.fen(), Board().fen())
+        assertTrue(
+            "the position now is rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w" in
+                (harnessProblem(withdrawn, board, Pieces.Side.BLACK) ?: "")
+        )
+        assertEquals("the setting does not say the player is White", harnessProblem(good, board, Pieces.Side.WHITE))
     }
 
     /**

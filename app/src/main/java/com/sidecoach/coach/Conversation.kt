@@ -119,6 +119,25 @@ private val PLACED_PIECE_TYPES = mapOf(
  * right" (Tai's puzzle, 2026-09-28): the model reads a board from White's side.
  * `conversation.hands`.
  */
+private val NOW_FEN = Regex("# Position now\n## Board\nFEN: (\\S+ [wb])")
+
+/**
+ * What is wrong with a harness about to go to the model, or null: it must have the position now,
+ * that position must be the game's as it stands ([board]) with its side to move, and the setting
+ * must name the player's colour. Checked before every request and logged when it fails, so a gap
+ * like the puzzle start's -- no position now at all, and the model named the player's own Qxf2+
+ * as the opponent's threat (2026-10-01) -- shows the first time it happens.
+ * `conversation.harness_problem`.
+ */
+fun harnessProblem(harness: String, board: Board, userSide: Pieces.Side): String? {
+    val side = if (userSide == Pieces.Side.WHITE) "White" else "Black"
+    if ("You coach $side." !in harness) return "the setting does not say the player is $side"
+    val found = NOW_FEN.find(harness) ?: return "no position now (# Position now with its board)"
+    val now = board.fen().split(" ").take(2).joinToString(" ")
+    if (found.groupValues[1] != now) return "the position now is ${found.groupValues[1]}, the game's is $now"
+    return null
+}
+
 fun hands(side: Pieces.Side): String {
     val (left, right) = if (side == Pieces.Side.WHITE) "a" to "h" else "h" to "a"
     return "the $left-file is on their left and the $right-file on their right, so 'to the " +

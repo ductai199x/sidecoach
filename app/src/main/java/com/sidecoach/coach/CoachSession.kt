@@ -502,6 +502,12 @@ class Coach(
     var profileAsk: ((String) -> ProfileAnswer)? = null
     val profileAnswers = ArrayList<Pair<String, Any?>>()
 
+    /**
+     * The prompts that failed their check before going to the model ([harnessProblem]), for the
+     * panel's log: each one is a bug in how the prompt is built. `Coach.harness_problems`.
+     */
+    val harnessProblems: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
+
     /** The player's mistakes this game, for [ELICIT_EVERY]. */
     internal var mistakes = 0
 
@@ -1913,11 +1919,14 @@ class Coach(
             directive += "\n\n$TOOL_WORDS"
         }
         val messages: List<ChatMessage>
+        val problem: String?
         synchronized(lock) {
             conversation.level = renderLevel
             val harness = conversation.render()
             messages = listOf(ChatMessage("user", "$harness$faced$earlier\n\n# Task\n$directive"))
+            problem = harnessProblem(harness, this.board, userSide)
         }
+        if (problem != null) harnessProblems.add("${trigger.slug} at ply ${position.ply}: $problem")
         var unlisted: Set<String>? = null
         val earlierMoves = before
         if (earlierMoves != null) {

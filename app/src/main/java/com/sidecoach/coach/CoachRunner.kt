@@ -164,6 +164,7 @@ class CoachRunner(
 
     private var drained = 0
     private var profileSeen = 0
+    private var harnessSeen = 0
 
     /**
      * The record the coach's model may query for a question about the player over their games
@@ -231,6 +232,11 @@ class CoachRunner(
                 "turn (${entry.kind}): ${PanelEngine.elide(text, 80)}",
                 JSONObject().put("role", role).put("kind", entry.kind).put("body", text.take(6000)),
             )
+        }
+        // A prompt that failed its check before going to the model (`harnessProblem`).
+        val problems = synchronized(coach.harnessProblems) { coach.harnessProblems.toList() }
+        while (harnessSeen < problems.size) {
+            PanelEngine.emit("coach", "error", "prompt check failed: ${problems[harnessSeen++]}")
         }
         // What the coach looked up in the record for a question about the player.
         val answers = coach.profileAnswers
