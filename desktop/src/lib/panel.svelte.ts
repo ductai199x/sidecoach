@@ -30,12 +30,6 @@ const MAX_ROWS = 1500;
 const MAX_COACH = 200;
 const MAX_CONVO = 400;
 export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "user", "puzzle"] as const;
-export const MODE_NEXT: Record<string, string> = { off: "ptt", ptt: "vad", vad: "off" };
-export const MODE_TITLES: Record<string, string> = {
-  off: "Listening: off. Click for hold-to-talk",
-  ptt: "Listening: hold to talk (hold the round button, Space, or the push-to-talk key). Click for always-on voice",
-  vad: "Listening: voice (the coach hears you whenever you speak). Click to turn off",
-};
 
 /** The sizes and switches the player set, remembered across sessions. */
 export const prefs = {
@@ -322,11 +316,11 @@ export class PanelStore {
     panel.ptt(down);
   }
 
-  cycleListen(): void {
-    const next = MODE_NEXT[this.listenMode] || "ptt";
-    this.listenMode = next; // optimistic; the next poll confirms
-    if (next !== "ptt") this.pttDown = false;
-    panel.setListen(next);
+  /** How the coach hears you: off, hold to talk (ptt), or always listening (vad). */
+  setListen(mode: string): void {
+    this.listenMode = mode; // optimistic; the next poll confirms
+    if (mode !== "ptt") this.pttDown = false;
+    panel.setListen(mode);
   }
 
   setMuted(muted: boolean): void {

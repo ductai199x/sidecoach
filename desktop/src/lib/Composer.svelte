@@ -1,14 +1,17 @@
 <script lang="ts">
-  // Talking to the coach: a text box, the listening-mode button, the round button that
-  // is Send while there is text, the hold-to-talk button in push-to-talk mode, the
-  // listening indicator in voice mode and just a mic otherwise; and the quick chips.
+  // Talking to the coach: a text box; the round button that is Send while there is text,
+  // the hold-to-talk button in push-to-talk mode and the listening indicator in voice mode;
+  // beside it a caret for how the coach hears you (off, hold to talk, always listening), as a
+  // call's mic has its ^ -- one mic, not a second one that cycled the mode (2026-10-01);
+  // and the quick chips.
   //
   // Dictation: what is said goes into the box as it is recognised (the sidecar streams
   // partial results while the key is held), and sends on its own a second after the
   // utterance ends -- unless more is said, which appends, or the person types, which makes
   // the words theirs to edit and send (Tai, 2026-09-22).
   import { panel } from "./api";
-  import { MODE_TITLES, store } from "./panel.svelte";
+  import { keyName as hotkeyName } from "./hotkey";
+  import { store } from "./panel.svelte";
 
   let text = $state("");
   let input = $state<HTMLInputElement | null>(null);
@@ -40,22 +43,35 @@
     : "quiet",
   );
   // The phone has no push-to-talk key (its ptt_key is empty): the button, or Space.
-  const keyName = $derived(store.state.ptt_key === "" ? "" : prettyKey(store.state.ptt_key || "ctrl_r"));
+  const keyName = $derived(store.state.ptt_key === "" ? "" : hotkeyName(store.state.ptt_key || "ctrl_r"));
   const sendTitle = $derived(
     sendState === "send" ? (armed ? "Sending in a moment (type to keep it)" : "Send (Enter)")
     : sendState === "ptt" ? (talking ? "Listening…" : keyName ? `Hold to talk (or hold Space or ${keyName})` : "Hold to talk (or hold Space)")
     : sendState === "vad" ? "Listening"
-    : canListen ? "Type a question, or turn listening on"
+    : canListen ? "Type a question (the arrow beside sets how the coach hears you)"
     : "Type a question",
   );
 
-  function prettyKey(k: string): string {
-    const names: Record<string, string> = {
-      ctrl_r: "Right Ctrl", ctrl_l: "Left Ctrl", alt_r: "Right Alt", alt_l: "Left Alt",
-      shift_r: "Right Shift", shift_l: "Left Shift", cmd_r: "Right Cmd", cmd_l: "Left Cmd",
-      ctrl: "Ctrl", alt: "Alt", shift: "Shift", cmd: "Cmd",
-    };
-    return names[k] || (k.length === 1 ? k.toUpperCase() : k.replace(/^f(\d+)$/i, "F$1"));
+  // The listening menu: its three ways, the one in use ticked; any press elsewhere or Escape
+  // closes it, as any menu.
+  let modeOpen = $state(false);
+  let modeEl = $state<HTMLDivElement | null>(null);
+  let caretEl = $state<HTMLButtonElement | null>(null);
+  const MODES = $derived([
+    { id: "ptt", name: "Hold to talk", hint: keyName ? `Hold the round button, Space or ${keyName}` : store.state.ptt_key === "" ? "Hold the round button" : "Hold the round button or Space" },
+    { id: "vad", name: "Always listening", hint: "The coach hears you whenever you speak" },
+    { id: "off", name: "Off", hint: "Type your questions" },
+  ]);
+  const modeName = $derived(MODES.find((m) => m.id === store.listenMode)?.name ?? "Off");
+  function pickMode(id: string): void {
+    modeOpen = false;
+    store.setListen(id);
+  }
+  function outside(e: PointerEvent): void {
+    if (modeOpen && !modeEl?.contains(e.target as Node) && !caretEl?.contains(e.target as Node)) modeOpen = false;
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (modeOpen && e.key === "Escape") { modeOpen = false; caretEl?.focus(); }
   }
 
   // Mirror the sidecar's dictation into the box.
@@ -106,6 +122,8 @@
   }
 </script>
 
+<svelte:window onpointerdown={outside} onkeydown={onKey} />
+
 <div class="composer">
   <div class="box">
     <input
@@ -119,11 +137,33 @@
       onkeydown={(e) => { if (e.key === "Enter") send(); }}
     />
     {#if canListen}
-      <button class="iconbtn" data-mode={store.listenMode} title={MODE_TITLES[store.listenMode] || ""} onclick={() => store.cycleListen()} aria-label="Listening mode">
-        <svg class="ic ic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-8.1 3.9l1.5-1.5A3 3 0 0 0 15 12h2zM5.3 3.9 20.1 18.7l-1.4 1.4-3.2-3.2A6.9 6.9 0 0 1 13 18.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 7.1 4.5l-1.5-1.5A3 3 0 0 1 9 12V9.4L3.9 5.3z"/></svg>
-        <svg class="ic ic-ptt" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3h2a7 7 0 0 1-6 6.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0z"/></svg>
-        <svg class="ic ic-vad" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h2v4H3zm4-3h2v10H7zm4-4h2v18h-2zm4 4h2v10h-2zm4 3h2v4h-2z"/></svg>
-      </button>
+      <div class="lmode">
+        <button
+          bind:this={caretEl}
+          class="lcaret"
+          aria-haspopup="menu"
+          aria-expanded={modeOpen}
+          aria-label="How the coach hears you: {modeName}"
+          title="How the coach hears you: {modeName}"
+          onclick={() => (modeOpen = !modeOpen)}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14l5-5 5 5z" /></svg>
+        </button>
+        {#if modeOpen}
+          <div class="lmenu" role="menu" aria-label="How the coach hears you" bind:this={modeEl}>
+            <div class="lhead">How the coach hears you</div>
+            {#each MODES as m (m.id)}
+              <button role="menuitemradio" aria-checked={store.listenMode === m.id} onclick={() => pickMode(m.id)}>
+                {#if m.id === "ptt"}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3h2a7 7 0 0 1-6 6.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0z"/></svg>
+                {:else if m.id === "vad"}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h2v4H3zm4-3h2v10H7zm4-4h2v18h-2zm4 4h2v10h-2zm4 3h2v4h-2z"/></svg>
+                {:else}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-8.1 3.9l1.5-1.5A3 3 0 0 0 15 12h2zM5.3 3.9 20.1 18.7l-1.4 1.4-3.2-3.2A6.9 6.9 0 0 1 13 18.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 7.1 4.5l-1.5-1.5A3 3 0 0 1 9 12V9.4L3.9 5.3z"/></svg>{/if}
+                <span>{m.name}<small>{m.hint}</small></span>
+                <svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z" /></svg>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/if}
     <button
       class="sendbtn"

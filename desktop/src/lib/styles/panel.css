@@ -520,10 +520,32 @@ html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: c
   display: inline-flex; align-items: center; justify-content: center;
 }
 .iconbtn:hover { background: var(--panel3); color: var(--ink); }
-.iconbtn[data-mode="off"] .ic-off { display: block; }
-.iconbtn[data-mode="ptt"] .ic-ptt { display: block; }
-.iconbtn[data-mode="vad"] .ic-vad { display: block; color: var(--accent); }
-.iconbtn[data-mode="vad"] { color: var(--accent); }
+/* Beside the round button, a caret for how the coach hears you, as a call's mic has its ^;
+   its menu opens upward, its right edge on the round button's. */
+.lmode { position: relative; display: flex; }
+.lcaret {
+  width: 24px; height: 36px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.lcaret svg { width: 22px; height: 22px; fill: currentColor; }
+.lcaret:hover, .lcaret[aria-expanded="true"] { background: var(--panel3); color: var(--ink); }
+.lmenu {
+  position: absolute; right: -42px; bottom: calc(100% + 12px); z-index: 30; width: max-content; max-width: calc(100vw - 24px);
+  display: flex; flex-direction: column; padding: 6px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 28px #000b;
+}
+.lhead { padding: 6px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); }
+.lmenu button {
+  display: flex; align-items: center; gap: 12px; padding: 9px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--ink); font: inherit; font-size: 14px; font-weight: 500; text-align: left; cursor: pointer;
+}
+.lmenu button:hover, .lmenu button:focus-visible { background: var(--panel3); outline: none; }
+.lmenu button > svg { width: 20px; height: 20px; flex: 0 0 20px; fill: var(--muted); }
+.lmenu button span { flex: 1; }
+.lmenu small { display: block; margin-top: 1px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.lmenu .tick { visibility: hidden; fill: var(--accent) !important; }
+.lmenu [aria-checked="true"] .tick { visibility: visible; }
+.lmenu [aria-checked="true"] > svg:first-child { fill: var(--accent); }
 .sendbtn {
   width: 38px; height: 38px; padding: 0; border-radius: 50%; border: 0;
   display: inline-flex; align-items: center; justify-content: center; user-select: none;
@@ -539,7 +561,8 @@ html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: c
 .sendbtn[data-state="vad"] .ic-wave { display: block; }
 .sendbtn[data-state="vad"] { background: #3b4a2f; color: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 .sendbtn[data-state="vad"].live { background: var(--accent); color: var(--accent-ink); animation: none; }
-.sendbtn[data-state="idle"] .ic-mic { display: block; opacity: .55; }
+/* Listening off: the arrow it sends with, waiting for something to send. */
+.sendbtn[data-state="idle"] .ic-send { display: block; opacity: .4; }
 /* Nothing to listen with: the arrow it will send with, waiting for something to send. */
 .sendbtn[data-state="quiet"] .ic-send { display: block; opacity: .4; }
 /* Dictated words about to send on their own: the ring closes over the second of quiet. */
