@@ -49,7 +49,9 @@ def segments(command: str) -> list[list[str]]:
                 words = words[1:]
             elif first in PREFIXES:
                 words = words[1:]
-                while words and (words[0].startswith("-") or re.fullmatch(r"[\d.]+[smh]?", words[0])):
+                while words and (
+                    words[0].startswith("-") or re.fullmatch(r"[\d.]+[smh]?", words[0])
+                ):
                     words = words[1:]
             else:
                 break
@@ -124,7 +126,9 @@ def check(command: str) -> str | None:
                     "recursive deletes are banned outside the scratch folder: delete through a "
                     "Write'd Python script that lists what it removes, one item first."
                 )
-        if name == "find" and ("-delete" in low or ("-exec" in low and re.search(r"-exec\s+rm\b", rest))):
+        if name == "find" and (
+            "-delete" in low or ("-exec" in low and re.search(r"-exec\s+rm\b", rest))
+        ):
             return "find -delete / -exec rm is banned: list the files, then delete by script."
         if name == "robocopy" and any(w in ("/mov", "/move", "/mir", "/purge") for w in low):
             return (
@@ -142,16 +146,20 @@ def check(command: str) -> str | None:
             name == "cipher" and "/w" in low
         ):
             return f"{name} is banned."
-        if name.startswith("python") or (name == "uv" and "python" in low):
-            if "-c" in low and re.search(
+        python = name.startswith("python") or (name == "uv" and "python" in low)
+        if (
+            python
+            and "-c" in low
+            and re.search(
                 r"rmtree|os\.remove|os\.unlink|\.unlink\(|os\.rmdir|\.rmdir\(|os\.rename|"
                 r"shutil\.move|\.replace\(\s*['\"]?[A-Za-z]:|send2trash",
                 command,
-            ):
-                return (
-                    "deleting or moving files from inline python -c is banned: Write a script "
-                    "that copies, verifies, then removes, one item first."
-                )
+            )
+        ):
+            return (
+                "deleting or moving files from inline python -c is banned: Write a script "
+                "that copies, verifies, then removes, one item first."
+            )
     return None
 
 
