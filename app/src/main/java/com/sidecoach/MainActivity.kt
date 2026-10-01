@@ -38,6 +38,7 @@ import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.PuzzleRooms
+import com.sidecoach.ui.ReviewRooms
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
 import com.sidecoach.ui.StatsApi
@@ -121,6 +122,9 @@ class MainActivity : ComponentActivity() {
                 dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
                 games = GamesApi(filesDir, store),
                 stats = StatsApi(filesDir),
+                // One set of review rooms for the app, as the puzzle rooms: a review under way
+                // outlives the window being rebuilt (a turn of the phone).
+                reviews = { ReviewRooms.shared(applicationContext) },
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches

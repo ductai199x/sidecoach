@@ -521,6 +521,8 @@ object PanelWarm {
         val ledgers = ArrayList<Map<String, Any?>>()
         ledgers.add(usage.summary(prices))
         runCatching { for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(room.summary(prices)) }
+        // The reviews' words count in the strip with the game's (`engine.extra_usage`).
+        runCatching { for (words in ReviewRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(words.summary(prices)) }
         return combine(ledgers)
     }
 

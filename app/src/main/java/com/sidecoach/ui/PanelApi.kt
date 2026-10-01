@@ -30,6 +30,8 @@ class PanelApi(
     private val games: GamesApi? = null,
     /** Stats: the player's reviewed games added up. */
     private val stats: StatsApi? = null,
+    /** The review rooms (`server.py`'s `reviews`), made on the first call that needs them. */
+    private val reviews: (() -> ReviewRooms)? = null,
 ) : LocalServer.Api {
 
     override fun handle(
@@ -203,6 +205,8 @@ class PanelApi(
             method == "DELETE" && path.startsWith("/api/games/") && games != null ->
                 ok(games.delete(path.removePrefix("/api/games/")))
 
+            path.startsWith("/api/review/") && reviews != null -> review(path.removePrefix("/api/review/"), query, json)
+
             // Stats: the player's games added up (profile/Stats.kt).
             path == "/api/stats" && stats != null -> ok(stats.stats(query))
             path == "/api/stats/positions" && stats != null -> ok(stats.positions(query))
@@ -325,6 +329,93 @@ class PanelApi(
         }
     }
 
+    /**
+     * A game reviewed on a page of its own (ui/ReviewRoom.kt): `/api/review/<key>/<action>`, as
+     * `server.py` routes them. The card on the move shown is said in the panel's voice and
+     * captioned, a new card cutting off the one before; closing the review silences it.
+     */
+    private fun review(rest: String, query: Map<String, String>, json: JSONObject): LocalServer.Reply? {
+        val slash = rest.lastIndexOf('/')
+        if (slash <= 0) return null
+        val key = rest.substring(0, slash)
+        val rooms = reviews?.invoke() ?: return null
+        val voice = PanelVoice.tts
+        fun notOpen() = ok(JSONObject().put("ok", false).put("error", "the review is not open"))
+        fun polled(room: ReviewRoom, since: Int, extra: JSONObject): LocalServer.Reply {
+            val polled = room.poll(since)
+            for (k in polled.keys()) extra.put(k, polled.get(k))
+            return ok(extra)
+        }
+        return when (rest.substring(slash + 1)) {
+            "open" -> {
+                // No strength named: the phone's own, Fast -- its engine is slower (the plan's
+                // depth 14); the desktop's is Standard.
+                val room = rooms.open(key, json.optString("strength", "fast"))
+                    ?: return ok(JSONObject().put("ok", false).put("error", "no game $key in the library"))
+                polled(room, 0, JSONObject().put("ok", true).put("voice", voice != null))
+            }
+            "poll" -> {
+                val room = rooms.get(key) ?: return ok(JSONObject().put("ok", false).put("closed", true))
+                polled(room, query["since"]?.toIntOrNull() ?: 0, JSONObject().put("ok", true))
+            }
+            // The AI coach's words on the key moves: only when the player asks, a call a move.
+            "ai" -> {
+                val room = rooms.get(key) ?: return notOpen()
+                val refused = room.writeWords()
+                ok(JSONObject().put("ok", refused == null).put("error", refused ?: JSONObject.NULL))
+            }
+            "say" -> {
+                if (!json.has("text")) return unprocessable()
+                if (voice == null) return ok(JSONObject().put("ok", false))
+                voice.stop()
+                val text = json.getString("text")
+                Captions.show(text)
+                voice.say(text)
+                ok(done())
+            }
+            // Retry (ui/ReviewRetry.kt): the position a move was played from, a new move graded
+            // as the review graded the game's, and the coach's hints there.
+            "retry" -> {
+                val ply = query["ply"]?.toIntOrNull() ?: return unprocessable()
+                val retries = rooms.get(key)?.retries ?: return notOpen()
+                try {
+                    ok(JSONObject().put("ok", true).apply { retries.position(ply).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: IllegalArgumentException) {
+                    ok(JSONObject().put("ok", false).put("error", exc.message))
+                }
+            }
+            "try" -> {
+                if (!json.has("ply") || !json.has("uci")) return unprocessable()
+                val retries = rooms.get(key)?.retries ?: return notOpen()
+                try {
+                    ok(JSONObject().put("ok", true).apply { retries.attempt(json.getInt("ply"), json.getString("uci")).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: RuntimeException) { // `(ValueError, RuntimeError)`: a move not legal, no Stockfish
+                    ok(JSONObject().put("ok", false).put("error", exc.message ?: exc.toString()))
+                }
+            }
+            "hint" -> {
+                if (!json.has("ply") || !json.has("level")) return unprocessable()
+                val retries = rooms.get(key)?.retries ?: return notOpen()
+                try {
+                    ok(JSONObject().put("ok", true).apply { retries.hint(json.getInt("ply"), json.getInt("level")).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: IllegalArgumentException) {
+                    ok(JSONObject().put("ok", false).put("error", exc.message))
+                }
+            }
+            "hush" -> {
+                voice?.stop()
+                ok(JSONObject().put("ok", voice != null))
+            }
+            "close" -> {
+                val room = rooms.get(key)
+                room?.close()
+                voice?.stop()
+                ok(JSONObject().put("ok", room != null))
+            }
+            else -> null
+        }
+    }
+
     /** `{"ok": True, "state": ...}` of what [play] leaves the room in, or `{"ok": False}` without one. */
     private fun played(rooms: PuzzleRooms, id: String, play: (PuzzleRoom) -> JSONObject): LocalServer.Reply {
         val room = rooms.get(id) ?: return ok(JSONObject().put("ok", false))
@@ -383,9 +474,19 @@ class PanelApi(
             "POST" to setOf("open", "move", "retract", "giveup", "ask", "voice", "close"),
         )
 
+        /** A review room's routes, `/api/review/{key}/<action>`, by method. */
+        val REVIEW_ROUTES: Map<String, Set<String>> = mapOf(
+            "GET" to setOf("poll", "retry"),
+            "POST" to setOf("open", "ai", "say", "try", "hint", "hush", "close"),
+        )
+
         /** Whether the server serves [method] [path]. */
         fun serves(method: String, path: String): Boolean {
             if (path in ROUTES[method].orEmpty()) return true
+            if (path.startsWith("/api/review/")) {
+                val parts = path.removePrefix("/api/review/").split('/')
+                return parts.size == 2 && parts[0].isNotEmpty() && parts[1] in REVIEW_ROUTES[method].orEmpty()
+            }
             for (prefix in KEYED_ROUTES[method].orEmpty()) {
                 val key = path.removePrefix(prefix)
                 if (path.startsWith(prefix) && key.isNotEmpty() && '/' !in key) return true
