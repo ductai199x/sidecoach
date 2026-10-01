@@ -29,6 +29,9 @@ session's research report; the screenshots are not committed.
    "your opponent" (`coach/review_words.py`): asked to say "you" itself, it spoke to whoever
    played the move about one paragraph in four. Each paragraph checked against the board and
    the game before it is shown; luna at medium effort, 1.5-1.8¢ for 16 key moves (measured).
+   The ledger's runs of this design (2026-09-30, four of Tai's rapid games, 8-16 key moves):
+   0.85-1.8¢ a game, 1.5¢ on average, about 0.1¢ a key move -- a game's cost follows how
+   many key moves it has.
 4. **The review opens in a window of its own** (as puzzles do); a full-screen route on the phone.
 5. **No per-game chess.com link import** (its only instant source is an unofficial endpoint).
    Games come from what Sidecoach watched, chess.com by username through the official public
