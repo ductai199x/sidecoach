@@ -2421,7 +2421,10 @@ class Coach:
             # enough of this game yet to say. Give me a move or two.").
             if self._pending_ask is None:
                 self._queue_plain(
-                    Trigger.USER_ASK, "One moment -- still looking at this position.", ts
+                    Trigger.USER_ASK,
+                    "One moment -- still looking at this position.",
+                    ts,
+                    turn=False,
                 )
             self._pending_ask = (text, ts)
             return
@@ -3895,10 +3898,15 @@ class Coach:
         fen: str | None = None,
         now: bool = False,
         record_now: bool = False,
+        turn: bool = True,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing,
         unless `now`, when it goes out at once. With `record_now` it is a turn of the
-        conversation from this moment, so a request built next already shows it."""
+        conversation from this moment, so a request built next already shows it. Without
+        `turn` it is never one: "One moment -- still looking at this position." recorded as
+        the coach's turn made the question it held, answered when the analysis landed, a
+        follow-up -- "You have already told them the verdict ... do not repeat either" (the
+        coach review, 2026-10-01)."""
         message = CoachMessage(
             text=text,
             level=level,
@@ -3917,7 +3925,7 @@ class Coach:
                 level=level,
                 problems=[],
                 attempts=0,
-                recorded=record_now,
+                recorded=record_now or not turn,
                 epoch=self._epoch,
             ),
             now=now,

@@ -2156,6 +2156,51 @@ def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() ->
     assert drain(coach) == [], "the last game's lesson"
 
 
+def _bishop_check_then_ke7(coach: Coach) -> chess.Board:
+    """At SCHOLAR, the player's Bxf7+ (a miss: Qxf7 mated) judged in quiet mode -- no word
+    after it -- and the opponent's Ke7 played, its position not yet analysed."""
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    coach.quiet = True
+    mate_missed(coach)
+    coach.quiet = False
+    board = chess.Board(SCHOLAR)
+    board.push_san("Bxf7+")
+    before = board.fen()
+    board.push_san("Ke7")
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=8,
+            san="Ke7",
+            uci="e8e7",
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=False,
+        ),
+        12.0,
+    )
+    assert drain(coach) == []
+    return board
+
+
+def test_the_coachs_one_moment_is_no_turn_of_the_conversation() -> None:
+    """The coach's "One moment -- still looking at this position." was recorded as its turn, so
+    the question it held, answered when the analysis landed, read as a follow-up: "what should
+    I have played?" was answered "You have already told them the verdict on it and the better
+    move ... do not repeat either" (the coach review, 2026-10-01)."""
+    coach, provider = scripted_coach(["[p=1.0] Qxf7# was mate on the spot."])
+    board = _bishop_check_then_ke7(coach)
+    coach.ask("what should I have played?", 12.5)
+    assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "one moment"
+    assert coach._said_since_move() == []
+    _looked(coach, board, 8, ["h5e5", "d2d3"], 13.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "They ask about the move they already played, Bxf7+" in directive
+    assert "You have already told them the verdict" not in directive
+
+
 def _looked(coach: Coach, board: chess.Board, ply: int, ucis: list[str], ts: float) -> None:
     """The engine's look at `board`: `ucis` its lines, best first."""
     lines = [Line(moves=[u], depth=18, expected_score=0.5 - i / 10) for i, u in enumerate(ucis)]
