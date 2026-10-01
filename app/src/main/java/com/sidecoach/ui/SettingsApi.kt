@@ -140,14 +140,25 @@ class SettingsApi(val store: SettingsStore) {
      * A choice made on the panel itself -- muted, how the coach listens -- kept in the settings,
      * so the next session starts as this one was left (Tai, 2026-10-01: "mute setting isn't
      * remembered between sessions"). The panel applied it already; nothing is applied again.
-     * `settings_api.remember`.
+     * A field the check refuses keeps the value it had, and the log says so: it returned
+     * without a word, and the change was not kept (the settings review, 2026-10-01); what else
+     * the change carried is kept. `settings_api.remember`.
      */
     fun remember(change: JSONObject) {
         synchronized(SAVING) {
             val before = store.values()
             val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
-            if (checked.errors.length() > 0) return
             val wanted = checked.values
+            for (i in 0 until checked.errors.length()) {
+                val error = checked.errors.getJSONObject(i)
+                val loc = error.getJSONArray("loc").let { a -> (0 until a.length()).map { a.getString(it) } }
+                if (loc.size == 1) {
+                    wanted.put(loc[0], before.opt(loc[0]))
+                } else if (loc.size == 2) {
+                    wanted.optJSONObject(loc[0])?.put(loc[1], before.optJSONObject(loc[0])?.opt(loc[1]))
+                }
+                PanelEngine.emit("sys", "warn", "${loc.joinToString(".")}: not kept for the next session (${error.optString("msg")})")
+            }
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
             store.save(wanted)

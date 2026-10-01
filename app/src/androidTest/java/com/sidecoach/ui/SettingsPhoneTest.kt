@@ -468,6 +468,31 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A change the panel keeps for the next session that the check refuses keeps the value it had
+     * and is said in the log, and the rest of the change is kept: it returned without a word and
+     * kept nothing (the settings review, 2026-10-01; `test_a_change_is_never_dropped_for_a_value_already_held`).
+     */
+    @Test
+    fun aRememberedChangeIsNeverDroppedInSilence() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val start = store.values()
+            start.getJSONObject("voice").put("muted", false).put("listen", "ptt")
+            store.save(start)
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            api.remember(JSONObject().put("voice", JSONObject().put("listen", "off").put("muted", "maybe")))
+            assertEquals("the rest of the change is kept", "off", store.listen())
+            assertFalse("the refused field keeps its value", store.muted())
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            assertTrue("said", (0 until lines.length()).any { "voice.muted: not kept" in lines.getJSONObject(it).getString("text") })
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to
