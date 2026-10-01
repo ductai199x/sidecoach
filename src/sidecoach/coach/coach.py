@@ -4188,8 +4188,16 @@ class Coach:
                     f"lesson, no question. {NOT_THE_MOVE} {NO_FIGURES}"
                 )
             else:
-                # The better move and what it does, when the sheet has it, is the lesson.
-                opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
+                # The better move and what it does, when the sheet has it, is the lesson. An
+                # inaccuracy cost something, and is said so: given a sound move's word, one
+                # was "Fine, but Qxf7# was a little tighter", the model told "an inaccuracy:
+                # sound, a little behind" (the coach review, 2026-10-01).
+                slip = assessment.severity is Severity.INACCURACY or label == "inaccuracy"
+                opener = (
+                    self._bags.draw("cost", COST_YOU)
+                    if slip
+                    else self._bags.draw("fine", FINE_TIGHTER)
+                ).format(best=best)
                 fallback, held = self._fresh_lesson(
                     opener,
                     lambda with_rule: lesson_template(
@@ -4205,11 +4213,16 @@ class Coach:
                 )
                 # How it rated goes in passing: asked for first, it opened half these replies
                 # with "Fine", "Playable" or "That works, though" (the prompt audit, 2026-09-28).
+                rated = (
+                    f"it cost a little, and {best} ({better_words}) was better"
+                    if slip
+                    else f"sound, a little behind {best} ({better_words})"
+                )
                 instruction = (
-                    f"The player just played {played.san}, which was {_rated(label)}: sound, a "
-                    f"little behind {best} ({better_words}). One or two sentences: the better "
-                    "move, what it does, and the idea behind it as a lesson to keep, with how "
-                    "theirs rated in passing. No lecture, no question. "
+                    f"The player just played {played.san}, which was {_rated(label)}: {rated}. "
+                    "One or two sentences: the better move, what it does, and the idea behind it "
+                    "as a lesson to keep, with how theirs rated in passing. No lecture, no "
+                    "question. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}"
                     + _lesson_data(position.board, best, played.uci, None)
                 )

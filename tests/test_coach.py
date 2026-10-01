@@ -2370,3 +2370,25 @@ def test_the_hints_said_at_a_withdrawn_ply_do_not_count_against_the_next_positio
     )
     _looked(coach, board, 1, ["d7d5", "g8f6"], 41.5)
     assert [m.level for m in stuck(coach)] == [DisclosureLevel.IDEA]
+
+
+def test_an_inaccuracy_is_never_called_sound() -> None:
+    """An inaccuracy got the word for a sound move -- "Fine, but Qxf7# was a little tighter",
+    and the model was told "an inaccuracy: sound, a little behind Qxf7#" -- while asked "was
+    that a mistake?" right after, the coach answered it as the costly move it was (the coach
+    review, 2026-10-01)."""
+    from sidecoach.coach.coach import FINE_TIGHTER
+    from tests.coaching import _judged_at_scholar
+
+    fine = tuple(opener.split("{best}")[0] for opener in FINE_TIGHTER)
+    for offline in (True, False):
+        coach, provider = (offline_coach(), None) if offline else scripted_coach(["", ""])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 7.0)
+        _judged_at_scholar(coach, "Bxf7+", 0.07, Severity.INACCURACY, Label.INACCURACY, 10.0)
+        out = drain(coach)
+        assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE, out
+        assert "Qxf7" in out[0].text and not out[0].text.startswith(fine), out[0].text
+        if provider is not None:
+            directive = directive_of(sent(provider, 0))
+            assert "which was an inaccuracy" in directive and "sound" not in directive
