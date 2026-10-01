@@ -151,6 +151,57 @@ class PanelEngineTest {
     }
 
     /**
+     * `test_a_game_ended_by_the_next_one_is_not_offered_to_end_game` (the state review,
+     * 2026-10-01): a game whose end was not read, ended because the start position came back
+     * and a move was played from it. The page said "End game… can set it", and End game ends
+     * the game the reconciler holds -- the new one: its moves were refused from then on and the
+     * record kept a one-move win. Only a game still followed is offered.
+     */
+    @Test
+    fun aGameEndedByTheNextOneIsNotOfferedToEndGame() {
+        fun clean(board: com.sidecoach.chess.Board): com.sidecoach.state.Readings = (0 until 64).map { i ->
+            val piece = board.pieceAt(com.sidecoach.vision.Squares.squareAt(i / 8, i % 8, true))
+            if (piece == null) {
+                Pieces.CellReading(Pieces.Kind.EMPTY)
+            } else {
+                val side = if (piece.colour) Pieces.Side.WHITE else Pieces.Side.BLACK
+                Pieces.CellReading(Pieces.Kind.PIECE, symbol = piece.symbol(), colour = side)
+            }
+        }.toMutableList()
+
+        val rec = com.sidecoach.state.Reconciler(bottom = Pieces.Side.WHITE, userSide = Pieces.Side.WHITE)
+        var ts = 0.0
+        val board = com.sidecoach.chess.Board()
+        rec.update(clean(board), ts)
+        for (san in listOf("e4", "e5", "Nf3")) {
+            board.push(board.parseSan(san)!!)
+            repeat(2) { ts += 0.1; rec.update(clean(board), ts) }
+        }
+        val first = rec.gameId
+        // The start position back, and a first move played from it: the next game.
+        val next = com.sidecoach.chess.Board()
+        val events = ArrayList<com.sidecoach.events.Event>()
+        repeat(2) { ts += 0.1; events += rec.update(clean(next), ts) }
+        next.push(next.parseSan("d4")!!)
+        repeat(2) { ts += 0.1; events += rec.update(clean(next), ts) }
+        assertTrue("no next game", rec.gameId != first)
+        val ended = events.filterIsInstance<com.sidecoach.events.GameEnded>()
+        assertEquals(listOf(first to "*"), ended.map { it.gameId to it.result })
+
+        val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        for (event in events) PanelEngine.onGameEvent(event, rec.gameId)
+        val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+        val over = (0 until lines.length()).map { lines.getJSONObject(it).getString("text") }
+            .filter { it.startsWith("game over") }
+        assertEquals(listOf("game over (new game started); the result was not read"), over)
+        // A game ended with its result unknown that is still the one followed can be set.
+        val kept = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        PanelEngine.onGameEvent(com.sidecoach.events.GameEnded(gameId = "k", result = "*", reason = "abandoned"), "k")
+        val said = PanelEngine.poll(kept).getJSONArray("lines")
+        assertTrue(said.getJSONObject(said.length() - 1).getString("text").endsWith("End game… can set it"))
+    }
+
+    /**
      * With no session running, Flip, Re-read and End game wait for the next Start (the
      * desktop's command queue: `test_with_no_session_flip_re_read_and_end_wait_for_the_next_start`),
      * an ask is answered at once, and the voice's controls take (`test_controls_and_static_page`
