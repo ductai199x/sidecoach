@@ -74,6 +74,24 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 }
 
 
+def _key_env(settings: LLMSettings, defaults: ProviderDefaults | None) -> str | None:
+    """The variable the key is read from: the settings', else the preset's; a custom service
+    keeps its key under CUSTOM_API_KEY unless the settings name another ("": none)."""
+    if defaults is None:
+        return settings.api_key_env if settings.api_key_env is not None else "CUSTOM_API_KEY"
+    return settings.api_key_env or defaults.api_key_env
+
+
+def api_key_of(settings: LLMSettings) -> str | None:
+    """The key a provider made from `settings` now would carry, or None: for a model kept and
+    made again when the key changes (Game Review's kept the old one until a restart, the
+    settings review 2026-10-01)."""
+    if settings.provider == "none":
+        return None
+    name = _key_env(settings, PROVIDER_DEFAULTS.get(settings.provider))
+    return os.environ.get(name) if name else None
+
+
 def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> Any:
     """The coach's model: a preset, a custom endpoint, or none at all (llm/offline.py),
     where the coach speaks from the board and its templates."""
@@ -101,7 +119,7 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> A
             thinking_control="none",
         )
 
-    key_env = settings.api_key_env or defaults.api_key_env
+    key_env = _key_env(settings, defaults)
     api_key = os.environ.get(key_env) if key_env else None
     if key_env and not api_key:
         raise RuntimeError(f"{key_env} is not set: paste the key in Settings.")

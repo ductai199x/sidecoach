@@ -130,6 +130,16 @@ def _changed(old: dict[str, Any], new: dict[str, Any], prefix: str = "") -> list
     return sorted(changed)
 
 
+def _model_fields(changed: list[str]) -> list[str]:
+    """The changed fields the coach's model is built from."""
+    return [
+        c
+        for c in changed
+        if (c.startswith("llm.") and not c.startswith("llm.price_"))
+        or c in ("coach.verify", "coach.verify_model")
+    ]
+
+
 def _merged(base: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     """`base` with `change` laid over it, section by section: a field not in the change keeps
     its value, and one in it is the change's, whole -- an object too, so a key taken out of
@@ -220,8 +230,18 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
         + (f"; applied now: {words(now)}" if now else "")
         + (f"; at the next Start: {words(later)}" if later else "")
         + (f"; after a restart: {words(restart)}" if restart else "")
-        + ("; nothing changed" if not (now or later or restart) else ""),
+        + (f"; keys: {', '.join(stored)}" if stored else "")
+        + ("; nothing changed" if not (now or later or restart or stored) else ""),
     )
+    # The model is rebuilt for a change of its own fields or of a key: a key saved alone
+    # changed no field, and the coach kept the model it was built with -- offline for want of
+    # the key, or the old one -- until a restart (the settings review, 2026-10-01). Outside
+    # the lock: the model is asked whether it answers, a minute for a server that does not,
+    # and a mute pressed meanwhile does not wait for that; it builds from the settings as
+    # they are when it runs, so of two saves the later one's model is the one kept.
+    rebuild = _model_fields(changed) + list(stored)
+    if rebuild and hasattr(engine, "reprovision"):
+        engine.reprovision(rebuild)
     return {
         "ok": True,
         "path": str(path),

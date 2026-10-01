@@ -762,14 +762,16 @@ class ReviewRooms:
 
     def model(self) -> tuple[Any | None, str | None]:
         """The model the reviews' words are asked of, and why there is none."""
+        from sidecoach.llm.factory import api_key_of, make_provider
+
         llm = self.settings.llm
         if llm.provider == "none":
             return None, NO_AI
-        named = (llm.provider, llm.model, llm.base_url, llm.reasoning_effort)
+        # The key too: a key fixed or forgotten in Settings left the model made with the old
+        # one until a restart (the settings review, 2026-10-01).
+        named = (llm.provider, llm.model, llm.base_url, llm.reasoning_effort, api_key_of(llm))
         with self._lock:
             if named != self._model_for:
-                from sidecoach.llm.factory import make_provider
-
                 try:
                     self._model = make_provider(llm, timeout_s=AI_TIMEOUT_S)
                 except (RuntimeError, ValueError) as exc:  # a key not given, a name not known

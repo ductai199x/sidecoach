@@ -348,6 +348,40 @@ def test_a_settings_file_that_cannot_be_read_is_kept_not_run_over(
     assert len(list(tmp_path.glob("sidecoach.unreadable-*.toml"))) == 2
 
 
+def test_a_key_pasted_alone_reaches_the_coach_and_the_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A save of the key alone changed no setting, so the coach kept the model it was built
+    with -- offline for want of a key, or the old key -- until a restart, and Game Review kept
+    its model made with the old key (the settings review, 2026-10-01). A key stored or
+    forgotten rebuilds both."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui import settings_api
+    from sidecoach.ui.review_room import ReviewRooms
+
+    monkeypatch.setattr(settings_api, "secrets_set", lambda name, value: True)  # never the store
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-old-typo")
+    client, engine = _client(tmp_path, monkeypatch)
+    built: list[str | None] = []
+    engine._coaching = SimpleNamespace(
+        coach=object(),
+        detail="offline",
+        reprovision=lambda s: built.append(os.environ.get("OPENAI_API_KEY")),
+    )
+    rooms = ReviewRooms(engine.settings, store_path=None)
+    first, _ = rooms.model()
+    key = {"settings": {}, "secrets": {"OPENAI_API_KEY": "sk-fixed"}}
+    assert client.put("/api/settings", json=key).json()["ok"]
+    assert built == ["sk-fixed"]
+    second, _ = rooms.model()
+    assert second is not None and second is not first and second._api_key == "sk-fixed"
+    forget = {"settings": {}, "secrets": {"OPENAI_API_KEY": None}}
+    assert client.put("/api/settings", json=forget).json()["ok"]
+    assert built == ["sk-fixed", None]
+    assert rooms.model()[0] is None, "no key, no model"
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

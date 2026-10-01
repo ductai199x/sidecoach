@@ -307,6 +307,7 @@ class PanelEngine:
     _partial_busy: threading.Lock = field(default_factory=threading.Lock, init=False)
     _utterance_gen: int = field(default=0, init=False)  # bumped when an utterance ends
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _provisioning: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _warm_begun: float = field(default=0.0, init=False)
@@ -792,19 +793,7 @@ class PanelEngine:
                 ["coach.compact_record"],
                 lambda: setattr(coach.conversation, "compact_record", new.coach.compact_record),
             )
-            model_fields = [
-                c
-                for c in changed
-                if (c.startswith("llm.") and not c.startswith("llm.price_"))
-                or c in ("coach.verify", "coach.verify_model")
-            ]
-
-            def reprovision() -> None:
-                assert self._coaching is not None
-                self._coaching.reprovision(new)
-                self._emit("sys", "info", f"coach: {self._coaching.detail}")
-
-            attempt(model_fields, reprovision)
+        # The model's fields are the settings API's to rebuild, after this (`reprovision`).
         # The engine's settings apply whether a coach runs or not: nested under the coach,
         # they were reported "applied now" and left undone with the coach off (the parity
         # audit, 2026-09-26).
@@ -838,6 +827,23 @@ class PanelEngine:
                 lambda: engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb),
             )
         return sorted(set(applied))
+
+    def reprovision(self, names: Sequence[str]) -> bool:
+        """The model's settings or its key changed (`names`): the running coach's providers are
+        rebuilt from the settings as they are when this runs, one rebuild at a time, so of two
+        saves close together the later one's model is the one kept. False when it failed, which
+        the log says; True with no coach to rebuild, which the next build reads anyway."""
+        with self._provisioning:
+            coaching = self._coaching
+            if coaching is None or coaching.coach is None:
+                return True
+            try:
+                coaching.reprovision(self.settings)
+            except Exception as exc:  # noqa: BLE001 - the page must hear of it
+                self._emit("sys", "warn", f"{', '.join(names)}: not applied ({exc})")
+                return False
+            self._emit("sys", "info", f"coach: {coaching.detail}")
+            return True
 
     def _reload_voice(self) -> None:
         """A new voice model, provider, language, folder or device: the old voice is cut
