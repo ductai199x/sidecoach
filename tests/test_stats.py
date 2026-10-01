@@ -3,6 +3,7 @@ the positions behind them, on two games whose facts are set by hand."""
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,24 @@ def test_the_games_are_added_up_section_by_section(tmp_path: Path) -> None:
     # Game by game: game a found one tactic of two; neither game is long enough for a rating.
     trends = everything["trends"]
     assert [p["v"] for p in trends["tactics"]] == [50.0] and trends["rating"] == []
+
+
+def test_the_games_are_counted_by_their_shape(tmp_path: Path) -> None:
+    """Which kinds of game suit the player (the plan's G): each game by the shape its review's
+    summary gives it, won, drawn or lost; a game whose review has no shape is not counted, and
+    the shapes come in game_summary's order."""
+    store = _store(tmp_path)
+    summary = {"white": {"side": "white"}, "black": {"side": "black"}}
+    store.save_review("a", "standard", 1, 1.0, "{}", json.dumps({**summary, "shape": "sudden"}))
+    store.save_review("b", "standard", 1, 1.0, "{}", json.dumps({**summary, "shape": "smooth"}))
+    store.save_stats("standard", _game("c", result="1/2-1/2"), [_move(1, "white")])
+    store.save_review("c", "standard", 1, 1.0, "{}", json.dumps({**summary, "shape": None}))
+    shapes = stats(store, Filter())["shapes"]
+    assert shapes == [
+        {"shape": "smooth", "games": 1, "won": 0, "drawn": 0, "lost": 1},
+        {"shape": "sudden", "games": 1, "won": 1, "drawn": 0, "lost": 0},
+    ]
+    assert stats(store, Filter(time_class="blitz"))["shapes"] == [shapes[0]]
 
 
 def test_the_filter_takes_a_time_control_and_people_or_bots(tmp_path: Path) -> None:

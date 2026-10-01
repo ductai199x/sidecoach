@@ -114,6 +114,16 @@
 
   // ---- how a figure reads ----
   const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  // What each game shape means (profile/game_summary.shape_of), read off the game's graph.
+  const SHAPE_WORDS: Record<string, string> = {
+    smooth: "One side took the lead and kept it.",
+    balanced: "Close all the way.",
+    sudden: "Close for most of the game, decided late.",
+    giveaway: "A side was clearly winning, then was not.",
+    wild: "Each side was winning by turns, three times or more.",
+    intense: "The lead changed hands twice.",
+    sharp: "Big swings that did not change who led.",
+  };
   // A figure's value (or the peers') as the page writes it.
   type Show = (v: number | null | undefined) => string;
   const tenth: Show = (v) => (v == null ? "–" : v.toFixed(1));
@@ -483,6 +493,21 @@
           {/each}
         </div>
       </div>
+      {#if numbers.shapes?.length}
+        <!-- The plan's G: which kinds of game suit the player, by the shape of their graphs. -->
+        <div class="st-card">
+          <div class="st-card-title">Game shapes <span class="muted">how each kind of game went for you</span></div>
+          <div class="st-table ends">
+            <span class="h first"></span><span class="h">Won</span><span class="h">Drawn</span><span class="h">Lost</span>
+            {#each numbers.shapes as s (s.shape)}
+              <span class="first kind" title={SHAPE_WORDS[s.shape] ?? ""}>{s.shape}</span>
+              <b class="won" class:zero={!s.won}>{s.won}</b>
+              <b class:zero={!s.drawn}>{s.drawn}</b>
+              <b class="lost" class:zero={!s.lost}>{s.lost}</b>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {:else if section === "openings"}
       {@const op = numbers.openings}
       {@render head("Openings", numbers.ratings.openings, num(op.accuracy), "accuracy")}

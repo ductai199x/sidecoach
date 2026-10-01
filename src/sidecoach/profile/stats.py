@@ -25,6 +25,7 @@ from statistics import fmean
 from typing import Any
 
 from sidecoach.profile import performance
+from sidecoach.profile.game_summary import SHAPES
 from sidecoach.profile.stat_facts import ENDGAMES, KINDS, STRUCTURES, THEMES, standing
 from sidecoach.profile.store import Store
 
@@ -173,7 +174,7 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
     """Every section's numbers for the filter's games, the ratings, and the peers beside each
     figure."""
     d = _Data.of(store, f)
-    out = {"filter": f.__dict__, **figures(d), "trends": _trends(d)}
+    out = {"filter": f.__dict__, **figures(d), "trends": _trends(d), "shapes": _shapes(store, d)}
     level = _level(d)
     out["ratings"] = _ratings(d, level)
     peers = _peers_level(d, level)
@@ -618,6 +619,28 @@ def _time(d: _Data) -> dict[str, Any]:
         "lost_on_time": lost_on_time,
         "lost_on_time_winning": lost_on_time_winning,
     }
+
+
+def _shapes(store: Store, d: _Data) -> list[dict[str, Any]]:
+    """How the player's games went by their shape (game_summary.shape_of, as each review's
+    summary has it: smooth, balanced, sudden...): how many, and won, drawn and lost -- the
+    plan's G, which kinds of game suit the player. Only the shapes their games had, in
+    SHAPES' order."""
+    counts: dict[str, dict[str, int]] = {}
+    for g in d.games:
+        review = store.review(g["key"], g["strength"])
+        try:
+            shape = json.loads(review.summary).get("shape") if review and review.summary else None
+        except ValueError:
+            shape = None
+        if not shape:
+            continue
+        c = counts.setdefault(shape, {"games": 0, "won": 0, "drawn": 0, "lost": 0})
+        c["games"] += 1
+        score = _score(g["result"], g["user_side"])
+        if score is not None:
+            c["won" if score == 1.0 else "drawn" if score == 0.5 else "lost"] += 1
+    return [{"shape": s, **counts[s]} for s in SHAPES if s in counts]
 
 
 def _results(d: _Data) -> dict[str, Any]:

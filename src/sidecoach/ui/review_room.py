@@ -43,6 +43,7 @@ from sidecoach.profile import library
 from sidecoach.profile.game_summary import missed_motifs, summarize
 from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
+from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries
 
@@ -110,6 +111,11 @@ class ReviewRoom:
         # The words' cost as the button says it, by model name and the moves answered already.
         self._estimated: tuple[tuple[str | None, frozenset[int]], float | None] | None = None
         self._playback = playback(row.pgn)
+        # Analysis: the engine made on the first position asked of it, the explorer on the first
+        # explore, the opening book on the first opening named (False: none to read).
+        self._lines = review_analysis.Lines(settings, self.strength, make_engine)
+        self._explorer: review_analysis.Explorer | None = None
+        self._book: Any = None
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -266,6 +272,65 @@ class ReviewRoom:
         links = review_links.linked(saved.get("texts", {}), reviewed, self.row.user_side)
         return {**saved, "links": links}
 
+    # ---- analysis (ui/review_analysis.py): the engine's lines for the board, the explorer, the
+    # game as a PGN ---------------------------------------------------------------------------
+
+    def lines(self, fen: str) -> dict[str, Any]:
+        """The engine's best lines for a position of the analysis board."""
+        self.touched = time.monotonic()
+        return self._lines.lines(fen)
+
+    def explore(self, fen: str, moves: list[str]) -> dict[str, Any]:
+        """What the player's games went on with from `fen`, and the opening `moves` (UCI, from
+        the game's start) are in."""
+        self.touched = time.monotonic()
+        with self._lock:
+            if self._explorer is None:
+                twins = self.store.twins()
+                watched = [r for r in library.from_watched(self.store) if r.key not in twins]
+                self._explorer = review_analysis.Explorer([*self.store.library(), *watched])
+            explorer = self._explorer
+        return {**explorer.explore(fen), "opening": self._opening_of(moves)}
+
+    def pgn(self, tree: list[dict[str, Any]], *, annotated: bool, save: bool) -> dict[str, Any]:
+        """The game as a PGN with the analysis board's lines (`tree`), annotated from the review
+        when asked; kept in the Downloads folder when `save`."""
+        self.touched = time.monotonic()
+        with self._lock:
+            moves = self._moves if self.status == "ready" else None
+            words = self.words
+        text = review_analysis.pgn(self.row, moves, tree, annotated=annotated, words=words)
+        out: dict[str, Any] = {"pgn": text, "name": review_analysis.pgn_name(self.row)}
+        if save:
+            out["saved"] = str(review_analysis.save(text, out["name"]))
+        return out
+
+    def _opening_of(self, moves: list[str]) -> str | None:
+        """The opening the moves are in, by the book, from the game's start position."""
+        games = library.games_in(self.row.pgn)
+        if not games or games[0].board().fen() != chess.STARTING_FEN:
+            return None
+        if self._book is None:
+            from sidecoach.cli import _load_book
+
+            self._book = _load_book(self.settings) or False
+        if not self._book:
+            return None
+        board, played = chess.Board(), []
+        for uci in moves:
+            try:
+                m = chess.Move.from_uci(uci)
+            except ValueError:
+                break
+            if m not in board.legal_moves:
+                break
+            board.push(m)
+            played.append(m)
+        found = self._book.identify(played) if played else None
+        if found is None:
+            return None
+        return f"{found.eco} {found.name}" if found.eco else str(found.name)
+
     def close(self) -> None:
         self._stop.set()
 
@@ -295,6 +360,7 @@ class ReviewRoom:
             self.store.close()
             if self.retries is not None:
                 self.retries.close()
+            self._lines.close()
 
     def _load(self) -> bool:
         """The review saved at this strength, when it is of the current format."""

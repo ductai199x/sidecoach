@@ -81,6 +81,8 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 @keyframes gm-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .gm-spin { animation-duration: 2.4s; } }
 .seg.small .segbtn { padding: 3px 9px; font-size: 12px; }
+/* How far back the list goes, beside the filters at their size. */
+.gm-since { padding: 3px 6px; font-size: 12px; }
 .gm-empty { color: var(--muted); padding: 22px 4px; }
 .gm-games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .gm-game {
@@ -557,3 +559,87 @@ html.stacked .rv-step .rv-movebox {
 html.stacked .rv-row { display: flex; flex: 0 0 auto; height: auto; padding: 0; gap: 2px; background: none; }
 html.stacked .rv-row .num { padding: 0 2px 0 8px; }
 html.stacked .rv-row .cell:empty { display: none; }
+
+/* ---- Analysis (lib/review/AnalysisPane): the pane head's two modes, the engine's lines, the
+   tabs -- the moves with the player's lines, the explorer, the details, the charts ---- */
+.rv-modes { display: inline-flex; gap: 2px; margin-left: -6px; }
+.rv-modes button {
+  border: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 700; font-size: 15px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer;
+}
+.rv-modes button.on { color: var(--ink); background: var(--panel2); }
+.rv-modes button:not(.on):hover { color: var(--ink); }
+
+.an-engine { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 14px 4px; }
+.an-switch { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; cursor: pointer; }
+.an-switch input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.an-depth { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.an-lines { flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; padding: 2px 10px 8px; border-bottom: 1px solid var(--line); }
+.an-line {
+  display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 2px 4px; border-radius: 5px;
+  font-size: 13px; overflow: hidden; white-space: nowrap;
+}
+.an-line.ghost { background: var(--panel2); opacity: 0.35; }
+.an-line .pill {
+  flex: 0 0 auto; min-width: 44px; text-align: center; font: 700 12px/1 "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; padding: 5px 6px; border-radius: 4px;
+}
+.an-line .pill.w { background: #f0efed; color: #312e2b; }
+.an-line .pill.b { background: #403d39; color: #f0efed; }
+.an-steps { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.an-step { border: 0; background: transparent; color: var(--ink); font: inherit; padding: 2px 1px; border-radius: 3px; cursor: pointer; }
+.an-step:hover { background: var(--panel3); }
+
+.an-tabs { flex: 0 0 auto; display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--line); }
+.an-tabs button {
+  flex: 1 1 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 600; font-size: 13px;
+  padding: 8px 4px; border-bottom: 2px solid transparent; cursor: pointer;
+}
+.an-tabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.an-body { gap: 10px; }
+
+.an-moves { line-height: 1.9; font-size: 14px; }
+.an-mv { padding: 2px 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+.an-mv:hover { background: var(--panel2); }
+.an-num { color: var(--muted); font-weight: 400; margin-right: 1px; }
+.an-mv.at { background: var(--panel3); color: var(--ink); font-weight: 700; }
+.an-mv.side { font-size: 13px; color: var(--muted); }
+.an-mv.side.at { color: var(--ink); }
+.an-mv.mine { color: #c9e3ad; }
+.an-par { color: var(--muted); font-size: 13px; }
+.an-del {
+  border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; padding: 0 3px; cursor: pointer; border-radius: 3px;
+}
+.an-del:hover { color: var(--error); background: var(--panel2); }
+.an-tip { font-size: 12px; margin: 0; }
+
+.an-opening { font-weight: 700; font-size: 14px; }
+.an-explore { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 6px 12px; font-size: 13px; }
+.an-explore .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.an-xmv { justify-self: start; border: 0; background: var(--panel2); color: var(--ink); font: inherit; font-weight: 700; padding: 4px 9px; border-radius: 5px; cursor: pointer; }
+.an-xmv:hover { background: var(--panel3); }
+.an-n { font-variant-numeric: tabular-nums; text-align: right; }
+.an-wdl { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
+.an-wdl i { display: flex; align-items: center; justify-content: center; font: 700 10.5px/1 "Segoe UI", system-ui, sans-serif; font-style: normal; }
+.an-wdl i.w { background: var(--accent); color: var(--accent-ink); }
+.an-wdl i.d { background: #8b8987; }
+.an-wdl i.l { background: #c4533f; color: #fff; }
+
+.an-details { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13.5px; }
+.an-details .k { color: var(--muted); }
+.an-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.an-check input { accent-color: var(--accent); margin-top: 2px; }
+.an-actions { display: flex; gap: 8px; }
+.an-actions .rv-tool { flex: 1 1 0; height: 40px; font-weight: 700; }
+
+.an-chart { display: flex; flex-direction: column; gap: 6px; }
+.an-chart .head { font-weight: 700; font-size: 13px; }
+.an-time { width: 100%; height: 90px; background: var(--panel2); border-radius: 6px; }
+.an-time .axis { stroke: var(--line); stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+.an-time rect.w { fill: #f0efed; }
+.an-time rect.b { fill: #8b8987; }
+.an-time rect.at { fill: var(--accent); }
+.an-legend { display: flex; justify-content: space-between; font-size: 11.5px; }
+.an-themes { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 16px; font-size: 13px; }
+.an-themes .head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.an-themes b { text-align: right; font-variant-numeric: tabular-nums; }

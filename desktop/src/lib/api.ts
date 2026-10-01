@@ -331,10 +331,38 @@ export const review = (key: string) => {
     attempt: (ply: number, uci: string) => post<{ ok: boolean; error?: string } & Tried>(`${p}/try`, { ply, uci }),
     hint: (ply: number, level: number) =>
       post<{ ok: boolean; error?: string; level: number; text: string; best: string | null }>(`${p}/hint`, { ply, level }),
+    // Analysis (ui/review_analysis.py): any move from any position, the engine's lines for the
+    // board, what the player's games went on with, the game as a PGN.
+    position: (fen: string) => post<{ ok: boolean; error?: string } & AnalysisPosition>(`${p}/position`, { fen }),
+    move: (fen: string, uci: string) =>
+      post<{ ok: boolean; error?: string } & AnalysisPosition & { uci: string; san: string }>(`${p}/move`, { fen, uci }),
+    lines: (fen: string) => post<{ ok: boolean; error?: string } & EngineLines>(`${p}/lines`, { fen }),
+    explore: (fen: string, moves: string[]) => post<{ ok: boolean; error?: string } & Explored>(`${p}/explore`, { fen, moves }),
+    pgn: (tree: PgnTree[], annotated: boolean, save: boolean) =>
+      post<{ ok: boolean; error?: string; pgn: string; name: string; saved?: string }>(`${p}/pgn`, { tree, annotated, save }),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };
 };
+
+/** A position of the analysis board: whose move, every legal move (a square -> where its piece
+ *  may go), and the result when the game is over there. */
+export type AnalysisPosition = { fen: string; side: "white" | "black"; legal: Record<string, string[]>; over: string | null };
+/** The engine's best lines for a position, each from White's side and played out. */
+export type EngineLines = {
+  fen: string;
+  depth: number;
+  white_score: number | null;
+  lines: { eval: { cp: number | null; mate: number | null }; steps: LineStep[] }[];
+};
+/** What the player's games went on with from a position, and how those games went for them. */
+export type Explored = {
+  games: number;
+  opening: string | null;
+  moves: { uci: string; san: string; games: number; won: number; drawn: number; lost: number; last: { key: string; played_at: number } | null }[];
+};
+/** The analysis board's moves for the PGN: each with what follows it, the game's own first. */
+export type PgnTree = { uci: string; children: PgnTree[] };
 
 // ---- Stats: the player's games added up (profile/stats.py) ------------------------------------
 
@@ -361,6 +389,8 @@ export type StatsNumbers = {
   endgames: { win: Record<string, Figure>; accuracy: Record<string, Figure> };
   time: { by_phase: Record<string, Figure>; pressure: Rate; calm: Rate; lost_on_time: number; lost_on_time_winning: number };
   results: Record<string, { won: number; drawn: number; lost: number }>;
+  /** How the games went by their shape (smooth, sudden, giveaway...), the shapes they had. */
+  shapes: { shape: string; games: number; won: number; drawn: number; lost: number }[];
   galleries: Record<string, number>;
   /** Game by game, oldest first: the rating as of each game (the last ten games' moves pooled;
    * `game`, the game's own), and each category's figure. */

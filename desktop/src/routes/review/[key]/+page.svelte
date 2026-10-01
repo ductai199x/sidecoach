@@ -19,6 +19,8 @@
   import AiText from "$lib/review/AiText.svelte";
   import EvalBar from "$lib/review/EvalBar.svelte";
   import { RetryDesk } from "$lib/review/retry.svelte";
+  import { AnalysisDesk } from "$lib/review/analysis.svelte";
+  import AnalysisPane from "$lib/review/AnalysisPane.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
   import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
@@ -29,7 +31,7 @@
 
   let room = $state<ReviewState | null>(null);
   let failure = $state("");
-  let view = $state<"summary" | "moves">("summary");
+  let view = $state<"summary" | "moves" | "analysis">("summary");
   let ply = $state(0);
   let bottom = $state<"white" | "black">("white");
   let unfolded = $state(false);
@@ -45,6 +47,33 @@
   const desk = new RetryDesk({ position: (p) => api.retry(p), attempt: (p, u) => api.attempt(p, u), hint: (p, l) => api.hint(p, l) }, (fen, uci) => soundOf(fen, uci));
   const retry = $derived(desk.now);
   const retried = $derived(desk.best);
+  // Analysis (the plan's F; lib/review/analysis): the player's own moves from any position, the
+  // engine's lines, the explorer, the PGN. Its tree is begun from the game the first time.
+  const analysis = new AnalysisDesk(
+    { position: (f) => api.position(f), move: (f, u) => api.move(f, u), lines: (f) => api.lines(f), explore: (f, m) => api.explore(f, m) },
+    (fen, uci) => soundOf(fen, uci),
+  );
+  const analysisLines = $derived(analysis.lines && analysis.node && analysis.lines.fen === analysis.node.fen ? analysis.lines : null);
+  // The board takes the player's moves while analysing, once it has the position's legal moves.
+  const analysisHere = $derived(view === "analysis" && analysis.here && analysis.node && analysis.here.fen === analysis.node.fen ? analysis.here : null);
+
+  /** Into Analysis at the move shown (the game's first position from the summary); back to the
+   *  review at the game's move the analysis board is on, or where the review was. */
+  function toAnalysis(): void {
+    if (!room || room.status !== "ready") return;
+    stopRun();
+    stopLine();
+    if (desk.now) desk.close();
+    if (!analysis.nodes.length) analysis.load(room.start_fen ?? "", moves);
+    analysis.go(analysis.gameNode(view === "moves" ? ply : 0));
+    view = "analysis";
+  }
+  function toReview(): void {
+    const n = analysis.node;
+    if (n?.game && n.ply > 0) moveTo(n.ply);
+    else if (ply > 0) moveTo(ply);
+    else view = "summary";
+  }
 
   // ---- the review's settings (the plan's H), kept for the next review ----
   // The arrows are off to begin with (Tai, 2026-09-30: the best move's gives away what Retry
@@ -119,6 +148,10 @@
       const at = playback[Math.min(playIndex, playback.length - 1)];
       return { fen: at.fen, uci: at.uci, cls: null };
     }
+    if (view === "analysis" && analysis.node) {
+      const n = analysis.node;
+      return { fen: n.fen, uci: n.uci, cls: n.game && look.marks ? n.label : null };
+    }
     if (!move) return { fen: room.start_fen ?? "", uci: null, cls: null };
     return { fen: move.fen_after, uci: move.uci, cls: look.marks ? move.label : null };
   });
@@ -135,6 +168,11 @@
       if (retry.hintBest) add(retry.hintBest, "best");
       return out;
     }
+    // Analysing: the engine's best move, in gold, while it is this position's.
+    if (view === "analysis") {
+      if (analysisLines) add(analysisLines.lines[0]?.steps[0]?.uci, "best");
+      return out;
+    }
     if (!move || view !== "moves") return out;
     // What the coach's words name, while it is shown: a move's arrow, a file end to end (the
     // better move's words show on its line and on a retry found too).
@@ -148,8 +186,14 @@
     }
     return out;
   });
-  const barScore = $derived(line || retry ? whiteBefore : (graph[ply] ?? 0.5));
-  const barEval = $derived(line || retry ? null : (move?.eval ?? null));
+  // Analysing, the bar is the engine's on the board's position (as it was, while it thinks).
+  let analysisBar = $state<{ score: number; eval: { cp: number | null; mate: number | null; result: null } } | null>(null);
+  $effect(() => {
+    if (analysisLines?.white_score != null && analysisLines.lines[0])
+      analysisBar = { score: analysisLines.white_score, eval: { ...analysisLines.lines[0].eval, result: null } };
+  });
+  const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : line || retry ? whiteBefore : (graph[ply] ?? 0.5));
+  const barEval = $derived(view === "analysis" ? (analysisBar?.eval ?? null) : line || retry ? null : (move?.eval ?? null));
 
   // Each side's accuracy with its retried moves' best tries in their place (chess.com's
   // "accuracy after retries"): the plain mean, as the review's own.
@@ -430,6 +474,14 @@
 
   function onKey(e: KeyboardEvent): void {
     if (!room || room.status !== "ready" || (e.target as HTMLElement)?.tagName === "INPUT") return;
+    if (view === "analysis") {
+      if (e.key === "ArrowRight") { e.preventDefault(); analysis.step(1); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); analysis.step(-1); }
+      else if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); analysis.toEnd(false); }
+      else if (e.key === "End" || e.key === "ArrowDown") { e.preventDefault(); analysis.toEnd(true); }
+      else if (e.key === "f") bottom = bottom === "white" ? "black" : "white";
+      return;
+    }
     if (e.key === "ArrowRight") { e.preventDefault(); if (view === "summary") go(1, true); else step(1); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
     else if (e.key === "Home" || e.key === "ArrowUp") { e.preventDefault(); toEnd(false); }
@@ -449,7 +501,7 @@
   let voiceOn = $state(prefs.getStr("reviewVoice") !== "off");
   let saying: ReturnType<typeof setTimeout> | null = null;
   const spoken = $derived.by(() => {
-    if (!room || room.status !== "ready" || !summary) return null;
+    if (!room || room.status !== "ready" || !summary || view === "analysis") return null;
     if (view === "summary") return verdict(summary, room.game.result);
     if (retry) return retry.tried && !retry.gaveUp ? tryWords(retry.tried) : retry.hintText || null;
     if (!move) return null;
@@ -850,13 +902,13 @@
           cls={shown.cls}
           {bottom}
           {arrows}
-          redraw={desk.redraw}
-          spots={!line && !retry ? (shownLink?.squares ?? []) : []}
-          trail={!line && !retry && shownLink?.arrow ? [shownLink.arrow[0], shownLink.arrow[1]] : null}
-          legal={retry && !retry.solved && !retry.busy ? retry.legal : null}
-          side={retry?.side ?? "white"}
+          redraw={desk.redraw + analysis.redraw}
+          spots={view !== "analysis" && !line && !retry ? (shownLink?.squares ?? []) : []}
+          trail={view !== "analysis" && !line && !retry && shownLink?.arrow ? [shownLink.arrow[0], shownLink.arrow[1]] : null}
+          legal={analysisHere ? analysisHere.legal : retry && !retry.solved && !retry.busy ? retry.legal : null}
+          side={analysisHere?.side ?? retry?.side ?? "white"}
           wrong={retry?.wrong ?? null}
-          onplay={desk.play}
+          onplay={view === "analysis" ? analysis.play : desk.play}
         />
       {:else}
         <div class="board-wrap rv-board rv-blank"></div>
@@ -879,7 +931,15 @@
           <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
         </button>
       {/if}
-      Game Review
+      {#if room?.status === "ready" && summary}
+        <!-- The review, or the board to analyse freely (the plan's F). -->
+        <span class="rv-modes" role="tablist">
+          <button role="tab" aria-selected={view !== "analysis"} class:on={view !== "analysis"} onclick={() => view === "analysis" && toReview()}>Game Review</button>
+          <button role="tab" aria-selected={view === "analysis"} class:on={view === "analysis"} onclick={toAnalysis}>Analysis</button>
+        </span>
+      {:else}
+        Game Review
+      {/if}
       {#if room}<span class="strength" title="How deep the engine looked: the settings change it">{className(room.strength)} depth</span>{/if}
     </div>
 
@@ -893,6 +953,16 @@
           <div class="pct">{room?.progress.total ? `${Math.floor(pct)}%` : "0%"}</div>
           <div class="bar" class:playing={playback.length > 1}><i style="width: {pct}%"></i></div>
           <div class="what">{room?.status === "analysing" ? "Analysing the game" : "Opening the game…"}</div>
+        </div>
+      </div>
+    {:else if view === "analysis"}
+      <AnalysisPane desk={analysis} {room} {graph} marks={keyMoments} savePgn={(annotated, save) => api.pgn(analysis.tree(), annotated, save)} />
+      <div class="rv-foot">
+        <div class="rv-nav">
+          <button aria-label="The start" title="The start (Home)" onclick={() => analysis.toEnd(false)}><svg viewBox="0 0 24 24"><path d="M18.41 16.59 13.82 12l4.59-4.59L17 6l-6 6 6 6zM6 6h2v12H6z"/></svg></button>
+          <button aria-label="Back a move" title="Back (←)" onclick={() => analysis.step(-1)}><svg viewBox="0 0 24 24"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
+          <button aria-label="On a move" title="On (→)" onclick={() => analysis.step(1)}><svg viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
+          <button aria-label="The line's end" title="The line's end (End)" onclick={() => analysis.toEnd(true)}><svg viewBox="0 0 24 24"><path d="M5.59 7.41 10.18 12l-4.59 4.59L7 18l6-6-6-6zM16 6h2v12h-2z"/></svg></button>
         </div>
       </div>
     {:else if view === "summary"}

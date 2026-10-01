@@ -168,6 +168,26 @@ class _Hint(BaseModel):
     level: int
 
 
+class _Fen(BaseModel):
+    fen: str
+
+
+class _Play(BaseModel):
+    fen: str
+    uci: str
+
+
+class _Explore(BaseModel):
+    fen: str
+    moves: list[str] = []  # UCI from the game's start: the opening's name
+
+
+class _Pgn(BaseModel):
+    tree: list[dict[str, Any]] = []  # the analysis board's moves: {"uci", "children"}
+    annotated: bool = True
+    save: bool = False
+
+
 class _Rect(BaseModel):
     x: int
     y: int
@@ -519,6 +539,54 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         if review_hush is not None:
             review_hush()
         return {"ok": room is not None}
+
+    # Analysis (ui/review_analysis.py): the player's own moves from any position, the engine's
+    # lines for the board, the explorer of the player's games, the game as a PGN.
+    from sidecoach.ui import review_analysis
+
+    @app.post("/api/review/{key}/position")
+    def review_position(key: str, body: _Fen) -> dict[str, Any]:
+        try:
+            return {"ok": True, **review_analysis.position(body.fen)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/move")
+    def review_move(key: str, body: _Play) -> dict[str, Any]:
+        try:
+            return {"ok": True, **review_analysis.move(body.fen, body.uci)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/lines")
+    def review_lines(key: str, body: _Fen) -> dict[str, Any]:
+        room = reviews.get(key)
+        if room is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **room.lines(body.fen)}
+        except (ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/explore")
+    def review_explore(key: str, body: _Explore) -> dict[str, Any]:
+        room = reviews.get(key)
+        if room is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **room.explore(body.fen, body.moves)}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @app.post("/api/review/{key}/pgn")
+    def review_pgn(key: str, body: _Pgn) -> dict[str, Any]:
+        room = reviews.get(key)
+        if room is None:
+            return {"ok": False, "error": "the review is not open"}
+        try:
+            return {"ok": True, **room.pgn(body.tree, annotated=body.annotated, save=body.save)}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     # ---- Stats: the player's games added up (profile/stats.py; docs/stats-plan.md) ---------
     from sidecoach.profile import stats as stat_sums

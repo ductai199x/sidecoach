@@ -151,6 +151,92 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     assert all(g["key"] != key for g in client.get("/api/games").json()["games"])
 
 
+def test_the_analysis_board_plays_any_move_reads_the_engine_and_the_players_games(
+    make_panel: Callable[..., PanelEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Analysis (the plan's F): a move from any position checked and named, the engine's best
+    lines for the board from White's side, what the player's games went on with from a
+    position and how they went, and the game as a PGN with the player's side line -- annotated
+    from the review, or as it was -- copied or kept in Downloads."""
+    import chess
+    from fastapi.testclient import TestClient
+
+    from sidecoach.events import Line
+    from sidecoach.ui import review_analysis, review_room
+    from sidecoach.ui.server import build_app
+
+    after_e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+    answers = {
+        after_e4: [
+            Line(moves=["c7c5", "g1f3", "d7d6"], depth=14, expected_score=0.47, score_cp=30),
+            Line(moves=["e7e5", "g1f3"], depth=14, expected_score=0.46, score_cp=35),
+        ]
+    }
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "Engine", lambda **_: FakeEngine())
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    monkeypatch.setattr(review_analysis, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_analysis, "Engine", lambda **_: FakeEngine(answers))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    engine = make_panel()
+    engine.settings.profile.chesscom_user = "nosegazm"
+    client = TestClient(build_app(engine))
+    key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
+    client.post(f"/api/review/{key}/open", json={"strength": "fast"})
+    state = _until_ready(client, key)["state"]
+    base = f"/api/review/{key}"
+
+    # Any move from any position: checked, named, and the position it leaves.
+    start = client.post(f"{base}/position", json={"fen": chess.STARTING_FEN}).json()
+    assert start["ok"] and start["side"] == "white" and start["legal"]["e2"] == ["e3", "e4"]
+    played = client.post(f"{base}/move", json={"fen": chess.STARTING_FEN, "uci": "e2e4"}).json()
+    assert (played["san"], played["fen"], played["side"]) == ("e4", after_e4, "black")
+    assert "c7" in played["legal"] and played["over"] is None
+    wrong = client.post(f"{base}/move", json={"fen": chess.STARTING_FEN, "uci": "e2e5"}).json()
+    assert not wrong["ok"] and "not legal" in wrong["error"]
+
+    # The engine's best lines, from White's side, played out.
+    lines = client.post(f"{base}/lines", json={"fen": after_e4}).json()
+    assert lines["ok"] and lines["depth"] == 14 and len(lines["lines"]) == 2
+    first = lines["lines"][0]
+    assert first["eval"] == {"cp": -30, "mate": None}, "Black's +30 is White's -30"
+    assert [s["san"] for s in first["steps"]] == ["c5", "Nf3", "d6"]
+
+    # The player's games from a position: the moves they went on with, and how those went.
+    explored = client.post(f"{base}/explore", json={"fen": chess.STARTING_FEN, "moves": []}).json()
+    assert explored["ok"] and explored["games"] == 1
+    (e4,) = explored["moves"]
+    assert (e4["san"], e4["games"], e4["won"], e4["lost"]) == ("e4", 1, 1, 0), "won as Black"
+    assert e4["last"]["key"] == key
+    nothing = client.post(f"{base}/explore", json={"fen": after_e4.replace(" b ", " w ")}).json()
+    assert nothing["games"] == 0 and nothing["moves"] == []
+
+    # The game as a PGN: the player's side line off the first move, the review's words on the
+    # game's own moves with their clocks kept; or the moves alone.
+    mainline = [m["uci"] for m in state["moves"]]
+
+    def chain(ucis: list[str]) -> list[dict[str, Any]]:
+        return [{"uci": ucis[0], "children": chain(ucis[1:])}] if ucis else []
+
+    tree = [{"uci": "e2e4", "children": [*chain(mainline[1:]), *chain(["c7c5", "g1f3"])]}]
+    kept = client.post(f"{base}/pgn", json={"tree": tree, "save": True}).json()
+    assert kept["ok"] and "( 1... c5 2. Nf3 )" in kept["pgn"]
+    assert "[%eval " in kept["pgn"] and "[%clk 0:09:58]" in kept["pgn"]
+    assert '[Annotator "Sidecoach"]' in kept["pgn"]
+    saved = Path(kept["saved"])
+    assert (
+        saved.parent == tmp_path / "Downloads" and saved.read_text(encoding="utf-8") == kept["pgn"]
+    )
+    assert saved.name == "Anakin_737 vs nosegazm 2026-09-29.pgn"
+    again = client.post(f"{base}/pgn", json={"tree": tree, "save": True}).json()
+    assert Path(again["saved"]).name == "Anakin_737 vs nosegazm 2026-09-29 (2).pgn"
+    plain = client.post(f"{base}/pgn", json={"tree": [], "annotated": False}).json()
+    assert "[%eval " not in plain["pgn"] and "Annotator" not in plain["pgn"]
+    assert "saved" not in plain
+
+
 class RecordingVoice:
     """The panel's voice, keeping what it was told."""
 

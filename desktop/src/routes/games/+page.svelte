@@ -24,6 +24,8 @@
   let saidField = $state<string | null>(null);
   let show = $state<"all" | LibraryGame["source"]>("all");
   let outcome = $state<"all" | "won" | "lost" | "drawn">("all");
+  let speed = $state("all");
+  let since = $state(0);
 
   const SOURCES: Record<LibraryGame["source"], string> = { watched: "watched", chesscom: "chess.com", lichess: "Lichess", pgn: "PGN" };
   const SITE = { chesscom: "chess.com", lichess: "Lichess" } as const;
@@ -140,8 +142,18 @@
     return (g.result === "1-0") === (g.user_side === "white") ? "won" : "lost";
   }
 
+  // The time controls the library holds, fastest first, and how far back the list goes (days;
+  // 0 every game): the plan's G, beside where from and how it went.
+  const SPEEDS = ["bullet", "blitz", "rapid", "classical", "daily"];
+  const speedsHeld = $derived(SPEEDS.filter((t) => list.some((g) => g.time_class === t)));
   const shown = $derived(
-    list.filter((g) => (show === "all" || g.source === show) && (outcome === "all" || outcomeOf(g) === outcome)),
+    list.filter(
+      (g) =>
+        (show === "all" || g.source === show) &&
+        (outcome === "all" || outcomeOf(g) === outcome) &&
+        (speed === "all" || g.time_class === speed) &&
+        (!since || (g.played_at ?? g.added_at) >= Date.now() / 1000 - since * 86400),
+    ),
   );
   const sourcesHeld = $derived([...new Set(list.map((g) => g.source))]);
 
@@ -240,6 +252,21 @@
           <button class="segbtn" aria-pressed={outcome === o} onclick={() => (outcome = o as typeof outcome)}>{o === "all" ? "Any result" : o[0].toUpperCase() + o.slice(1)}</button>
         {/each}
       </div>
+      {#if speedsHeld.length > 1}
+        <div class="seg small">
+          <button class="segbtn" aria-pressed={speed === "all"} onclick={() => (speed = "all")}>Any time</button>
+          {#each speedsHeld as t (t)}
+            <button class="segbtn" aria-pressed={speed === t} onclick={() => (speed = t)}>{t[0].toUpperCase() + t.slice(1)}</button>
+          {/each}
+        </div>
+      {/if}
+      <select class="gm-since" aria-label="Played when" bind:value={since}>
+        <option value={0}>Any date</option>
+        <option value={7}>Last 7 days</option>
+        <option value={30}>Last 30 days</option>
+        <option value={90}>Last 3 months</option>
+        <option value={365}>Last year</option>
+      </select>
     </div>
     {#if job}
       <!-- The background review as a job the player sees and runs (ui/backlog.py). -->
