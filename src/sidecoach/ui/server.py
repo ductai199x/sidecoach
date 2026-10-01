@@ -331,8 +331,10 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         return {"ok": api.set_voice(body.voice)}
 
     # One of the panel's own switches at a time, set and kept in one step: two quick presses
-    # saved out of order left the switch one way and the setting the other.
-    keeping = threading.Lock()
+    # saved out of order left the switch one way and the setting the other. The settings' own
+    # lock, so a Settings save at the same moment cannot put the switch back either (the
+    # settings review, 2026-10-01).
+    keeping = settings_api.saving
 
     @app.post("/api/muted")
     def muted(body: _Muted) -> dict[str, bool]:

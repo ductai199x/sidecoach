@@ -307,6 +307,7 @@ class PanelEngine:
     _partial_busy: threading.Lock = field(default_factory=threading.Lock, init=False)
     _utterance_gen: int = field(default=0, init=False)  # bumped when an utterance ends
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _provisioning: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _warm_begun: float = field(default=0.0, init=False)
@@ -423,6 +424,8 @@ class PanelEngine:
         self._logged: dict[str, tuple[list[Any], int]] = {}
         self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
+        if self.settings.unreadable:
+            self._emit("sys", "warn", self.settings.unreadable)  # where its copy is kept
 
     # ---- control surface (called from the API / GUI thread) -------------------------------
 
@@ -792,19 +795,7 @@ class PanelEngine:
                 ["coach.compact_record"],
                 lambda: setattr(coach.conversation, "compact_record", new.coach.compact_record),
             )
-            model_fields = [
-                c
-                for c in changed
-                if (c.startswith("llm.") and not c.startswith("llm.price_"))
-                or c in ("coach.verify", "coach.verify_model")
-            ]
-
-            def reprovision() -> None:
-                assert self._coaching is not None
-                self._coaching.reprovision(new)
-                self._emit("sys", "info", f"coach: {self._coaching.detail}")
-
-            attempt(model_fields, reprovision)
+        # The model's fields are the settings API's to rebuild, after this (`reprovision`).
         # The engine's settings apply whether a coach runs or not: nested under the coach,
         # they were reported "applied now" and left undone with the coach off (the parity
         # audit, 2026-09-26).
@@ -839,6 +830,23 @@ class PanelEngine:
             )
         return sorted(set(applied))
 
+    def reprovision(self, names: Sequence[str]) -> bool:
+        """The model's settings or its key changed (`names`): the running coach's providers are
+        rebuilt from the settings as they are when this runs, one rebuild at a time, so of two
+        saves close together the later one's model is the one kept. False when it failed, which
+        the log says; True with no coach to rebuild, which the next build reads anyway."""
+        with self._provisioning:
+            coaching = self._coaching
+            if coaching is None or coaching.coach is None:
+                return True
+            try:
+                coaching.reprovision(self.settings)
+            except Exception as exc:  # noqa: BLE001 - the page must hear of it
+                self._emit("sys", "warn", f"{', '.join(names)}: not applied ({exc})")
+                return False
+            self._emit("sys", "info", f"coach: {coaching.detail}")
+            return True
+
     def _reload_voice(self) -> None:
         """A new voice model, provider, language, folder or device: the old voice is cut
         off, the new one built and loaded off the caller's thread."""
@@ -855,8 +863,8 @@ class PanelEngine:
 
     def _reload_recogniser(self) -> None:
         """A new recogniser or microphone: listening pauses, both are rebuilt, listening resumes
-        in the mode it was in."""
-        mode = self._listener.mode
+        in the mode it was in -- the one the microphone test gives back, while it runs."""
+        mode = self._hear_test_mode if self._hear_test_on else self._listener.mode
         with contextlib.suppress(Exception):
             self._listener.set_mode("off")
         self._stt = make_recogniser(self.settings, off=not self.voice_models)
@@ -868,7 +876,7 @@ class PanelEngine:
             self._state["stt_ready"] = ready
         self._emit("voice", "info", f"speech recognition reloading: {self._state['stt_detail']}")
         threading.Thread(target=self._warm_voice, name="stt-reload", daemon=True).start()
-        if mode != "off":
+        if mode != "off" or self._hear_test_on:  # the test listens again either way
             with contextlib.suppress(Exception):
                 self.set_listen(mode)
 
@@ -952,6 +960,17 @@ class PanelEngine:
         """How the coach listens: off, push-to-talk, or voice activity."""
         if mode not in MODES:
             raise ValueError(f"listen mode must be one of {MODES}")
+        if self._hear_test_on:
+            # The microphone test listens until it ends, and then gives back this mode. It gave
+            # back the one it found, undoing a Listening saved while it ran, and the save
+            # switched its own listening, so it went deaf (the settings review, 2026-10-01).
+            self._hear_test_mode = mode
+            if self._listener.mode != "vad":  # a reloaded recogniser left it off
+                with contextlib.suppress(Exception):
+                    self._listener.set_mode("vad")
+            self._set(listen=mode, ptt=False)
+            self._emit("voice", "info", f"listening: {mode} once the microphone test ends")
+            return mode
         detail = self._listener.set_mode(mode)
         self._set(listen=self._listener.mode, ptt=False)
         self._emit("voice", "info", f"listening: {detail}")
@@ -1097,19 +1116,25 @@ class PanelEngine:
 
     def set_record(self, on: bool) -> dict[str, Any]:
         """The Debug menu's switch: the same setting as Settings > Screen > Record sessions,
-        saved to the settings file, applied within a tick of a running session."""
-        from sidecoach.config import save_settings
+        saved to the settings file, applied within a tick of a running session. Saved as every
+        other settings write is (`settings_api.remember`): written on its own, a Settings save
+        at the same moment put it back, and the change counter the other windows follow stayed
+        still (the settings review, 2026-10-01)."""
+        from sidecoach.ui import settings_api
 
+        with settings_api.saving:
+            try:
+                settings_api.remember(self, {"capture": {"record": on}})
+            except OSError as exc:
+                self._emit("sys", "warn", f"the setting could not be saved: {exc}")
+                new = self.settings.model_copy(deep=True)
+                new.capture.record = on
+                self.adopt_settings(new)
         with self._lock:
-            self.settings.capture.record = on
             self._record_failed = False
             self._state["record_wanted"] = self._recording_wanted()
             running = self._state.get("running", False)
             folder = self._state.get("recording_dir")
-        try:
-            save_settings(self.settings)
-        except OSError as exc:
-            self._emit("sys", "warn", f"the setting could not be saved: {exc}")
         self._emit(
             "sys",
             "info",
