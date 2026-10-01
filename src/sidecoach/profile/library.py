@@ -10,6 +10,7 @@ names the app; nothing is sent to the player's accounts.
 
 from __future__ import annotations
 
+import bisect
 import calendar
 import difflib
 import hashlib
@@ -172,7 +173,10 @@ def from_lichess(
 def find(store: Store, key: str) -> LibraryRow | None:
     """A game of the library by its key: imported, or one Sidecoach watched."""
     if key.startswith("watched:"):
-        return next((r for r in from_watched(store) if r.key == key), None)
+        game = store.game(key[len("watched:") :])
+        if game is None or game.result is None:
+            return None
+        return watched_row(game, store.moves(game.game_id))
     return store.library_game(key)
 
 
@@ -182,53 +186,59 @@ def find(store: Store, key: str) -> LibraryRow | None:
 WATCHED_PLIES = 10
 
 
-def from_watched(store: Store, limit: int = 200) -> list[LibraryRow]:
+def from_watched(store: Store, limit: int | None = None) -> list[LibraryRow]:
     """The games Sidecoach watched to their end, as the library shows them: their moves as
     recorded (withdrawn ones left out), the player named "You", the opponent as recorded. A
-    record with no result, or whose moves do not play out as a game, is left out."""
+    record with no result, or whose moves do not play out as a game, is left out. Every one
+    unless `limit`: the Games window listed the latest 200 while the background review and Stats
+    counted all (the review of 2026-10-01)."""
     rows = []
     for game in store.games(limit):
-        moves = store.moves(game.game_id)
-        if not moves or game.result not in ("1-0", "0-1", "1/2-1/2"):
-            continue
-        pgn = chess.pgn.Game()
-        board = chess.Board(game.start_fen)
-        if game.start_fen != chess.STARTING_FEN:
-            pgn.setup(board)
-        node: chess.pgn.GameNode = pgn
-        played = 0
-        for row in sorted(moves, key=lambda m: (m.segment, m.ply)):
-            try:
-                move = board.parse_san(row.san)
-            except ValueError:
-                break  # a resync's new line: the review stops where the record does
-            node = node.add_variation(move)
-            board.push(move)
-            played += 1
-        if played < WATCHED_PLIES:
-            continue
-        you, them = "You", game.opponent or "Opponent"
-        pgn.headers["White"] = you if game.user_side == "white" else them
-        pgn.headers["Black"] = you if game.user_side == "black" else them
-        pgn.headers["Result"] = game.result or "*"
-        pgn.headers["Date"] = time.strftime("%Y.%m.%d", time.gmtime(game.started_at))
-        if game.time_control:
-            pgn.headers["TimeControl"] = game.time_control
-        rows.append(
-            LibraryRow(
-                key=f"watched:{game.game_id}",
-                source="watched",
-                added_at=game.ended_at or game.started_at,
-                pgn=str(pgn),
-                played_at=game.started_at,
-                white=pgn.headers["White"],
-                black=pgn.headers["Black"],
-                result=game.result,
-                time_class=time_class_of(game.time_control or ""),
-                user_side=game.user_side,
-            )
-        )
+        row = watched_row(game, store.moves(game.game_id))
+        if row is not None:
+            rows.append(row)
     return rows
+
+
+def watched_row(game: GameRow, moves: list[MoveRow]) -> LibraryRow | None:
+    """One watched record as the library shows it, or None when it is no game (`from_watched`)."""
+    if not moves or game.result not in ("1-0", "0-1", "1/2-1/2"):
+        return None
+    pgn = chess.pgn.Game()
+    board = chess.Board(game.start_fen)
+    if game.start_fen != chess.STARTING_FEN:
+        pgn.setup(board)
+    node: chess.pgn.GameNode = pgn
+    played = 0
+    for row in sorted(moves, key=lambda m: (m.segment, m.ply)):
+        try:
+            move = board.parse_san(row.san)
+        except ValueError:
+            break  # a resync's new line: the review stops where the record does
+        node = node.add_variation(move)
+        board.push(move)
+        played += 1
+    if played < WATCHED_PLIES:
+        return None
+    you, them = "You", game.opponent or "Opponent"
+    pgn.headers["White"] = you if game.user_side == "white" else them
+    pgn.headers["Black"] = you if game.user_side == "black" else them
+    pgn.headers["Result"] = game.result or "*"
+    pgn.headers["Date"] = time.strftime("%Y.%m.%d", time.gmtime(game.started_at))
+    if game.time_control:
+        pgn.headers["TimeControl"] = game.time_control
+    return LibraryRow(
+        key=f"watched:{game.game_id}",
+        source="watched",
+        added_at=game.ended_at or game.started_at,
+        pgn=str(pgn),
+        played_at=game.started_at,
+        white=pgn.headers["White"],
+        black=pgn.headers["Black"],
+        result=game.result,
+        time_class=time_class_of(game.time_control or ""),
+        user_side=game.user_side,
+    )
 
 
 # A watched game and an import are one game when the import started at most TWIN_BEFORE_S
@@ -241,27 +251,39 @@ TWIN_BEFORE_S = 3 * 3600.0
 TWIN_AFTER_S = 600.0
 TWIN_SHARE = 0.9
 TWIN_PLIES = 12
-# An import that says when in the day it started (chess.com, Lichess); else a date alone.
+# An import that says when in the day it started (chess.com, Lichess); else a date alone, the
+# same day or the next: within DATE_WINDOW_S of the watched game's start. The timed window lies
+# inside that one, so `reconcile` looks only at the imports played that near.
 _TIMED = re.compile(r'^\[UTCTime "', re.MULTILINE)
+DATE_WINDOW_S = 36 * 3600.0
 
 
 def reconcile(store: Store) -> dict[str, str]:
     """Each game Sidecoach watched that was imported too, from chess.com, Lichess or a PGN:
     the import is the game's record -- every move, the clocks, the names, the ratings -- and
     stands for the watched one in the library, the background review and Stats. Pairs found
-    are kept in the store; returns them all, watched key -> imported key."""
+    are kept in the store; returns them all, watched key -> imported key. Every watched game,
+    not the latest 200 (the review of 2026-10-01), each against the imports played near it."""
     twins = store.twins()
     imported = store.library()
+    dated = sorted((r.played_at, i) for i, r in enumerate(imported) if r.played_at is not None)
+    stamps = [t for t, _ in dated]
+    undated = [i for i, r in enumerate(imported) if r.played_at is None]
     moves_of: dict[str, list[str] | None] = {}  # an import's moves, read once
-    for game in store.games(limit=200):
+    for game in store.games(None):
         key = f"watched:{game.game_id}"
         if key in twins:
             continue
+        lo = bisect.bisect_left(stamps, game.started_at - DATE_WINDOW_S)
+        hi = bisect.bisect_right(stamps, game.started_at + DATE_WINDOW_S)
+        # In the library's order, as every import was looked at before: the first best wins.
+        near = [imported[i] for i in sorted([i for _, i in dated[lo:hi]] + undated)]
+        near = [row for row in near if _may_be(game, row)]
+        if not near:
+            continue
         seen = [m.san.rstrip("+#") for m in sorted(store.moves(game.game_id), key=_order)]
         best: tuple[float, str] | None = None
-        for row in imported:
-            if not _may_be(game, row):
-                continue
+        for row in near:
             if row.key not in moves_of:
                 moves_of[row.key] = _sans(row.pgn)
             share = _agreeing(seen, moves_of[row.key] or [])
@@ -312,7 +334,7 @@ def _may_be(game: GameRow | Trace, row: LibraryRow) -> bool:
     if row.played_at is None:
         return True
     if not _TIMED.search(row.pgn):
-        return abs(row.played_at - game.started_at) <= 36 * 3600
+        return abs(row.played_at - game.started_at) <= DATE_WINDOW_S
     return game.started_at - TWIN_BEFORE_S <= row.played_at <= game.started_at + TWIN_AFTER_S
 
 

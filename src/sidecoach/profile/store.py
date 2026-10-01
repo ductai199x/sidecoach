@@ -491,12 +491,13 @@ class Store:
             row = self._db.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
         return None if row is None else GameRow(**dict(row))
 
-    def games(self, limit: int = 50, *, finished: bool = True) -> list[GameRow]:
-        """The most recent games, newest first."""
+    def games(self, limit: int | None = 50, *, finished: bool = True) -> list[GameRow]:
+        """The most recent games, newest first; every one when `limit` is None."""
         clause = "WHERE result IS NOT NULL" if finished else ""
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM games {clause} ORDER BY started_at DESC LIMIT ?", (limit,)
+                f"SELECT * FROM games {clause} ORDER BY started_at DESC LIMIT ?",
+                (-1 if limit is None else limit,),
             ).fetchall()
         return [GameRow(**dict(row)) for row in rows]
 
@@ -923,12 +924,13 @@ class Store:
             )
             self._db.commit()
 
-    def library(self, limit: int = 500) -> list[LibraryRow]:
-        """The imported games, the latest played first."""
+    def library(self) -> list[LibraryRow]:
+        """Every imported game, the latest played first. Every one: the Games window listed 500
+        while the background review and Stats counted all (the review of 2026-10-01), and the
+        games past it could not be seen, opened or removed."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC"
             ).fetchall()
         return [LibraryRow(**dict(r)) for r in rows]
 

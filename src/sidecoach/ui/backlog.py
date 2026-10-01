@@ -186,7 +186,7 @@ class Backlog:
         stands for is the import's to review. Counts the job's games as it goes."""
         twins = library.reconcile(store)
         carry_twins(store, twins)
-        imported = store.library(limit=100_000)
+        imported = store.library()
         watched = [r for r in library.from_watched(store) if r.key not in twins]
         every = [*imported, *watched]
         unreviewed = {r.key for r in store.unreviewed()}
