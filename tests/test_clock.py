@@ -116,9 +116,9 @@ PARSED: list[tuple[str, int | None]] = [
 ]
 
 
-@pytest.mark.parametrize(("text", "ms"), PARSED, ids=[text or "empty" for text, _ in PARSED])
-def test_parse_clock_covers_the_formats_chesscom_draws(text: str, ms: int | None) -> None:
-    assert parse_clock(text) == ms
+def test_parse_clock_covers_the_formats_chesscom_draws() -> None:
+    wrong = [(text, got, ms) for text, ms in PARSED if (got := parse_clock(text)) != ms]
+    assert not wrong, f"(text, read, wanted): {wrong}"
 
 
 @pytest.mark.parametrize(
@@ -179,37 +179,50 @@ def test_a_clock_cut_off_at_the_frame_edge_reads_as_none() -> None:
     assert ClockReader().read(frame[:, :edge], board, 1.0) is None
 
 
-@pytest.mark.parametrize(
-    "board",
-    [
-        BoardCandidate(Region(300, 120, 0, 0), 43.0, 1.0, 60.0, 1.0),
-        BoardCandidate(Region(300, 120, 344, 344), 0.0, 1.0, 60.0, 1.0),
-        BoardCandidate(Region(-500, -500, 344, 344), 43.0, 1.0, 60.0, 1.0),
-        BoardCandidate(Region(9000, 9000, 344, 344), 43.0, 1.0, 60.0, 1.0),
-        BoardCandidate(Region(300, 120, 344, 344), float("nan"), 1.0, 60.0, 1.0),
-    ],
-)
-def test_a_bad_board_never_raises(board: BoardCandidate) -> None:
+def _read_or_raised(frame: np.ndarray, board: BoardCandidate) -> ClockReading | Exception | None:
+    """A fresh reader's reading of one frame, or what it raised."""
+    try:
+        return ClockReader().read(frame, board, 1.0)
+    except Exception as exc:  # noqa: BLE001 - raising is the failure these tests name
+        return exc
+
+
+def test_a_bad_board_never_raises() -> None:
     frame, _ = board_with_clocks("16:18", "15:34")
-    assert ClockReader().read(frame, board, 1.0) is None
+    boards = {
+        "no width": BoardCandidate(Region(300, 120, 0, 0), 43.0, 1.0, 60.0, 1.0),
+        "no cell": BoardCandidate(Region(300, 120, 344, 344), 0.0, 1.0, 60.0, 1.0),
+        "above the frame": BoardCandidate(Region(-500, -500, 344, 344), 43.0, 1.0, 60.0, 1.0),
+        "past the frame": BoardCandidate(Region(9000, 9000, 344, 344), 43.0, 1.0, 60.0, 1.0),
+        "a NaN cell": BoardCandidate(Region(300, 120, 344, 344), float("nan"), 1.0, 60.0, 1.0),
+    }
+    wrong = [
+        (name, got)
+        for name, board in boards.items()
+        if (got := _read_or_raised(frame, board)) is not None
+    ]
+    assert not wrong, wrong
 
 
-@pytest.mark.parametrize(
-    "frame",
-    [
-        np.zeros((0, 0, 3), dtype=np.uint8),
-        np.zeros((720, 1280), dtype=np.uint8),
-        np.full((720, 1280, 3), 128, dtype=np.uint8),
-        np.zeros((720, 1280, 3), dtype=np.float32),
-        np.zeros((720, 1280, 4), dtype=np.uint8),
-        np.zeros((4, 4, 3), dtype=np.uint8),
-        busy_background(1280, 720, seed=7),
-    ],
-)
-def test_a_bad_frame_never_raises(frame: np.ndarray) -> None:
+def test_a_bad_frame_never_raises() -> None:
     board = BoardCandidate(Region(300, 120, 344, 344), 43.0, 1.0, 60.0, 1.0)
-    reading = ClockReader().read(frame, board, 1.0)
-    assert reading is None or (reading.top_ms is None and reading.bottom_ms is None)
+    frames = {
+        "empty": np.zeros((0, 0, 3), dtype=np.uint8),
+        "one channel": np.zeros((720, 1280), dtype=np.uint8),
+        "flat grey": np.full((720, 1280, 3), 128, dtype=np.uint8),
+        "float": np.zeros((720, 1280, 3), dtype=np.float32),
+        "four channels": np.zeros((720, 1280, 4), dtype=np.uint8),
+        "four pixels": np.zeros((4, 4, 3), dtype=np.uint8),
+        "no clock": busy_background(1280, 720, seed=7),
+    }
+    wrong = []
+    for name, frame in frames.items():
+        got = _read_or_raised(frame, board)
+        if isinstance(got, Exception) or (
+            got is not None and (got.top_ms is not None or got.bottom_ms is not None)
+        ):
+            wrong.append((name, got))
+    assert not wrong, wrong
 
 
 def test_a_reader_without_templates_reads_nothing_rather_than_raising(tmp_path: Path) -> None:

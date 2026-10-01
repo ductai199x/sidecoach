@@ -12,9 +12,8 @@ START = chess.Board()
 AFTER_G6 = chess.Board("rnbqkbnr/ppppp2p/6p1/5P2/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 3")
 
 
-@pytest.mark.parametrize(
-    ("heard", "fixed"),
-    [
+def test_known_confusions_are_normalised() -> None:
+    confusions = [
         # "Night" and "Czech": test_without_a_board_only_the_confusions_apply.
         ("Can I take on D4 with the 9?", "can i take on d four with the knight"),
         ("The upon is passed, should I push it?", "the a pawn is passed should i push it"),
@@ -26,10 +25,11 @@ AFTER_G6 = chess.Board("rnbqkbnr/ppppp2p/6p1/5P2/8/8/PPPP1PPP/RNBQKBNR w KQkq - 
         ("Castle King's side.", "castle kingside"),
         ("should I push the pawn to e for", "should i push the pawn to e four"),
         ("bishop see six", "bishop c six"),
-    ],
-)
-def test_known_confusions_are_normalised(heard: str, fixed: str) -> None:
-    assert normalise(heard) == fixed
+    ]
+    wrong = [
+        (heard, got, fixed) for heard, fixed in confusions if (got := normalise(heard)) != fixed
+    ]
+    assert not wrong, f"(heard, normalised, wanted): {wrong}"
 
 
 def test_spoken_forms_cover_the_ways_a_move_is_said() -> None:
@@ -80,23 +80,25 @@ def test_spoken_legal_moves_become_san(
     assert result.moves == moves
 
 
-@pytest.mark.parametrize(
-    ("heard", "moves"),
-    [
+def test_a_promotion_that_names_no_piece_is_a_queen() -> None:
+    """Every promotion shares the forms that name no piece ("e eight", "pawn to e eight"); the
+    knight's, generated last, used to take them all, so "e8 queen" came out as e8=N+
+    (2026-09-23)."""
+    board = chess.Board("8/4P1k1/8/8/8/8/5K2/8 w - - 0 1")
+    promotions = [
         ("E8 Queen", ["e8=Q"]),
         ("e eight equals queen", ["e8=Q"]),
         ("pawn to e eight", ["e8=Q"]),
         # A piece named is still that piece.
         ("e eight knight", ["e8=N+"]),
         ("e eight promotes to rook", ["e8=R"]),
-    ],
-)
-def test_a_promotion_that_names_no_piece_is_a_queen(heard: str, moves: list[str]) -> None:
-    """Every promotion shares the forms that name no piece ("e eight", "pawn to e eight"); the
-    knight's, generated last, used to take them all, so "e8 queen" came out as e8=N+
-    (2026-09-23)."""
-    board = chess.Board("8/4P1k1/8/8/8/8/5K2/8 w - - 0 1")
-    assert correct(heard, board).moves == moves
+    ]
+    wrong = [
+        (heard, got, moves)
+        for heard, moves in promotions
+        if (got := correct(heard, board).moves) != moves
+    ]
+    assert not wrong, f"(heard, moves read, wanted): {wrong}"
 
 
 SCANDINAVIAN = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2")

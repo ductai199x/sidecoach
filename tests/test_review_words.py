@@ -145,120 +145,125 @@ def test_the_facts_are_told_in_colours() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("user", "said", "read"),
-    [
-        (
-            "black",
-            "White's bishop on c4 eyes f7, so Black must defend.",
-            "Your opponent's bishop on c4 eyes f7, so you must defend.",
-        ),
-        (
-            "black",
-            "Black has a strong knight, and Black also threatens Nd4.",
-            "You have a strong knight, and you also threaten Nd4.",
-        ),
-        (
-            "black",
-            "Black is a pawn up; White was careless.",
-            "You are a pawn up; your opponent was careless.",
-        ),
-        # Not a subject: the word after it is no verb of its.
-        ("black", "This gives Black chances.", "This gives you chances."),
-        (
-            "black",
-            "The Black king is safe; the white king is not, and White pieces hang.",
-            # Said again in a sentence, "your opponent's" is "their".
-            "Your king is safe; your opponent's king is not, and their pieces hang.",
-        ),
-        (
-            "white",
-            "If Black takes, White recaptures and White doesn't lose time.",
-            "If your opponent takes, you recapture and you don't lose time.",
-        ),
-        (
-            "white",
-            "White's winning chances fall because Black's knight reaches e4.",
-            "Your winning chances fall because your opponent's knight reaches e4.",
-        ),
-        # A side the model named "they": the one its sentence named on its own, not the owner.
-        ("black", "Black can reorganize their pieces.", "You can reorganize your pieces."),
-        (
-            "black",
-            "White must meet Black's threat before pursuing their own plans.",
-            "Your opponent must meet your threat before pursuing their own plans.",
-        ),
-        (
-            "black",
-            "Black's rooks and their files are open.",
-            "Your rooks and their files are open.",
-        ),
-        # "Them" of pieces stays theirs (luna, 2026-09-30).
-        (
-            "black",
-            "White forks the queen and the pawn. Black can save only one of them.",
-            "Your opponent forks the queen and the pawn. You can save only one of them.",
-        ),
-        (
-            "black",
-            "Black's king and rook are not as active as they could be.",
-            "Your king and rook are not as active as they could be.",
-        ),
-        # Luna's British plural for a side, singular for "your opponent".
-        (
-            "black",
-            "White are down a queen, and White need to act.",
-            "Your opponent is down a queen, and your opponent needs to act.",
-        ),
-        # A verb joined to the student's agrees too; one of another subject does not.
-        (
-            "black",
-            "Black blocks the file and leaves White's queen safe.",
-            "You block the file and leave your opponent's queen safe.",
-        ),
-        (
-            "black",
-            "Black neutralizes the threat and stabilizes the position.",
-            "You neutralize the threat and stabilize the position.",
-        ),
-        (
-            "black",
-            "Black not only escapes the check but also solidifies the defense.",
-            "You not only escape the check but also solidify the defense.",
-        ),
-        (
-            "black",
-            "This allows Black to regroup and opens lines.",
-            "This allows you to regroup and opens lines.",
-        ),
-        (
-            "black",
-            "Black first improves the rook, waits for the reply, and then uses it.",
-            "You first improve the rook, wait for the reply, and then use it.",
-        ),
-        (
-            "black",
-            "White makes a threat Black cannot meet, then the knight reaches g6 and attacks.",
-            "Your opponent makes a threat you cannot meet, then the knight reaches g6 and attacks.",
-        ),
-        # Governed by a preposition, a side is no subject; a verb known as one agrees anywhere.
-        ("black", "The plan for Black is to push.", "The plan for you is to push."),
-        (
-            "black",
-            "The position is forcing, meaning Black has no quiet moves.",
-            "The position is forcing, meaning you have no quiet moves.",
-        ),
-        ("black", "White forces Black to defend.", "Your opponent forces you to defend."),
-        (
-            "black",
-            "A clear win for Black, who is up a queen.",
-            "A clear win for you, who are up a queen.",
-        ),
-        (None, "Black has a strong knight.", "Black has a strong knight."),
-    ],
-)
-def test_the_student_reads_you_and_your_opponent(user: str | None, said: str, read: str) -> None:
-    assert review_words.to_student(said, user) == read
+# The student's colour, a sentence of the model's in colours, and what the student reads.
+STUDENT_READS: list[tuple[str | None, str, str]] = [
+    (
+        "black",
+        "White's bishop on c4 eyes f7, so Black must defend.",
+        "Your opponent's bishop on c4 eyes f7, so you must defend.",
+    ),
+    (
+        "black",
+        "Black has a strong knight, and Black also threatens Nd4.",
+        "You have a strong knight, and you also threaten Nd4.",
+    ),
+    (
+        "black",
+        "Black is a pawn up; White was careless.",
+        "You are a pawn up; your opponent was careless.",
+    ),
+    # Not a subject: the word after it is no verb of its.
+    ("black", "This gives Black chances.", "This gives you chances."),
+    (
+        "black",
+        "The Black king is safe; the white king is not, and White pieces hang.",
+        # Said again in a sentence, "your opponent's" is "their".
+        "Your king is safe; your opponent's king is not, and their pieces hang.",
+    ),
+    (
+        "white",
+        "If Black takes, White recaptures and White doesn't lose time.",
+        "If your opponent takes, you recapture and you don't lose time.",
+    ),
+    (
+        "white",
+        "White's winning chances fall because Black's knight reaches e4.",
+        "Your winning chances fall because your opponent's knight reaches e4.",
+    ),
+    # A side the model named "they": the one its sentence named on its own, not the owner.
+    ("black", "Black can reorganize their pieces.", "You can reorganize your pieces."),
+    (
+        "black",
+        "White must meet Black's threat before pursuing their own plans.",
+        "Your opponent must meet your threat before pursuing their own plans.",
+    ),
+    (
+        "black",
+        "Black's rooks and their files are open.",
+        "Your rooks and their files are open.",
+    ),
+    # "Them" of pieces stays theirs (luna, 2026-09-30).
+    (
+        "black",
+        "White forks the queen and the pawn. Black can save only one of them.",
+        "Your opponent forks the queen and the pawn. You can save only one of them.",
+    ),
+    (
+        "black",
+        "Black's king and rook are not as active as they could be.",
+        "Your king and rook are not as active as they could be.",
+    ),
+    # Luna's British plural for a side, singular for "your opponent".
+    (
+        "black",
+        "White are down a queen, and White need to act.",
+        "Your opponent is down a queen, and your opponent needs to act.",
+    ),
+    # A verb joined to the student's agrees too; one of another subject does not.
+    (
+        "black",
+        "Black blocks the file and leaves White's queen safe.",
+        "You block the file and leave your opponent's queen safe.",
+    ),
+    (
+        "black",
+        "Black neutralizes the threat and stabilizes the position.",
+        "You neutralize the threat and stabilize the position.",
+    ),
+    (
+        "black",
+        "Black not only escapes the check but also solidifies the defense.",
+        "You not only escape the check but also solidify the defense.",
+    ),
+    (
+        "black",
+        "This allows Black to regroup and opens lines.",
+        "This allows you to regroup and opens lines.",
+    ),
+    (
+        "black",
+        "Black first improves the rook, waits for the reply, and then uses it.",
+        "You first improve the rook, wait for the reply, and then use it.",
+    ),
+    (
+        "black",
+        "White makes a threat Black cannot meet, then the knight reaches g6 and attacks.",
+        "Your opponent makes a threat you cannot meet, then the knight reaches g6 and attacks.",
+    ),
+    # Governed by a preposition, a side is no subject; a verb known as one agrees anywhere.
+    ("black", "The plan for Black is to push.", "The plan for you is to push."),
+    (
+        "black",
+        "The position is forcing, meaning Black has no quiet moves.",
+        "The position is forcing, meaning you have no quiet moves.",
+    ),
+    ("black", "White forces Black to defend.", "Your opponent forces you to defend."),
+    (
+        "black",
+        "A clear win for Black, who is up a queen.",
+        "A clear win for you, who are up a queen.",
+    ),
+    (None, "Black has a strong knight.", "Black has a strong knight."),
+]
+
+
+def test_the_student_reads_you_and_your_opponent() -> None:
+    wrong = [
+        (user, said, got, read)
+        for user, said, read in STUDENT_READS
+        if (got := review_words.to_student(said, user)) != read
+    ]
+    assert not wrong, "\n".join(f"{u} {s!r}: read {g!r}, wanted {r!r}" for u, s, g, r in wrong)
 
 
 def test_a_side_named_but_by_its_colour_is_dropped() -> None:

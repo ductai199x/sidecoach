@@ -64,15 +64,15 @@ def _panel_board(colours: dict[str, str], cell: int = 40) -> np.ndarray:
     return img
 
 
-@pytest.mark.parametrize("name", list(looks.BOARD_THEMES))
-def test_every_theme_keeps_the_signature_the_vision_knows_the_panel_by(name: str) -> None:
-    colours = looks.BOARD_THEMES[name].colours()
+def test_every_theme_keeps_the_signature_the_vision_knows_the_panel_by() -> None:
     assert looks.SHADE_STEP == SHADE_STEP
-    for base in ("light", "dark", "light_hl", "dark_hl"):
-        b, odd = colours[base], colours[base + "_odd"]
-        assert b[1:5] == odd[1:5], f"{name} {base}: only the blue may differ"
-        assert int(odd[5:7], 16) - int(b[5:7], 16) == SHADE_STEP, f"{name} {base}"
-    assert is_own_board(_panel_board(colours), Region(20, 20, 320, 320), 40)
+    for name, theme in looks.BOARD_THEMES.items():
+        colours = theme.colours()
+        for base in ("light", "dark", "light_hl", "dark_hl"):
+            b, odd = colours[base], colours[base + "_odd"]
+            assert b[1:5] == odd[1:5], f"{name} {base}: only the blue may differ"
+            assert int(odd[5:7], 16) - int(b[5:7], 16) == SHADE_STEP, f"{name} {base}"
+        assert is_own_board(_panel_board(colours), Region(20, 20, 320, 320), 40), name
 
 
 def test_the_green_theme_is_the_board_the_panel_had() -> None:
@@ -84,16 +84,14 @@ def test_the_green_theme_is_the_board_the_panel_had() -> None:
     }  # fmt: skip
 
 
-@pytest.mark.parametrize(
-    ("name", "code"),
-    [
+def test_a_file_says_which_piece_it_is_by_its_name() -> None:
+    names = [
         ("wK.svg", "wK"), ("bq.png", "bQ"), ("wn.png", "wN"), ("b_p.webp", "bP"),
         ("white-knight.png", "wN"), ("knight_black.svg", "bN"), ("Chess_klt45.svg", "wK"),
         ("Chess_pdt45.svg", "bP"), ("king.png", None), ("white.png", None), ("logo.png", None),
-    ],
-)  # fmt: skip
-def test_a_file_says_which_piece_it_is_by_its_name(name: str, code: str | None) -> None:
-    assert looks.piece_code(name) == code
+    ]  # fmt: skip
+    wrong = [(name, got, code) for name, code in names if (got := looks.piece_code(name)) != code]
+    assert not wrong, f"(file, read, wanted): {wrong}"
 
 
 def test_an_own_set_keeps_what_it_takes_says_what_it_does_not_and_the_rest_fall_back(
