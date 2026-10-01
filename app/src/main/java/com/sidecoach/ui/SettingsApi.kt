@@ -185,6 +185,12 @@ class SettingsApi(val store: SettingsStore) {
         return out
     }
 
+    /**
+     * The fields that changed, `section.field`: a section is gone into, a field is not -- an
+     * object field (llm.extra_body) is one field, as its mark is. Gone into, its keys came out
+     * as names with no mark, and the change was told "nothing changed" (the settings review,
+     * 2026-10-01). `settings_api._changed`.
+     */
     private fun changed(old: JSONObject, new: JSONObject, prefix: String = ""): List<String> {
         val out = ArrayList<String>()
         val names = linkedSetOf<String>()
@@ -193,8 +199,8 @@ class SettingsApi(val store: SettingsStore) {
         for (key in names) {
             val a = old.opt(key)
             val b = new.opt(key)
-            if (a is JSONObject && b is JSONObject) {
-                out.addAll(changed(a, b, "$prefix$key."))
+            if (prefix.isEmpty() && a is JSONObject && b is JSONObject) {
+                out.addAll(changed(a, b, "$key."))
             } else if (a?.toString() != b?.toString()) {
                 out.add("$prefix$key")
             }
@@ -264,7 +270,7 @@ object SettingsCheck {
                     val loc = listOf(name, field)
                     val checked = check(fprop, value.opt(field), loc)
                     val refused = checked.error ?: known(loc, checked.value)
-                    if (refused != null) errors.put(refused) else section.put(field, checked.value)
+                    if (refused != null) errors.put(refused) else section.put(field, trimmed(loc, checked.value))
                 }
                 values.put(name, section)
             } else if (prop != null) {
@@ -291,6 +297,17 @@ object SettingsCheck {
         } ?: return null
         return error("value_error", loc, "Value error, $wrong", value, JSONObject().put("error", JSONObject()))
     }
+
+    /** The settings' usernames (`ProfileSettings._trimmed`). */
+    val USERNAMES = setOf("chesscom_user", "lichess_user")
+
+    /**
+     * A username without the spaces around it: a space after a pasted name went into the address
+     * the games are fetched from, and the site knew no such player (the settings review,
+     * 2026-10-01). `ProfileSettings._trimmed`.
+     */
+    private fun trimmed(loc: List<String>, value: Any?): Any? =
+        if (loc.size == 2 && loc[0] == "profile" && loc[1] in USERNAMES && value is String) Py.strip(value) else value
 
     /** Python's repr of a string: single quotes, double ones when it holds a single and no double. */
     private fun repr(s: String): String {

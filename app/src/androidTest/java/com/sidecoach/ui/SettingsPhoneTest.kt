@@ -467,6 +467,30 @@ class SettingsPhoneTest {
         }
     }
 
+    /**
+     * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
+     * went into the address the games are fetched from, and the site knew no such player; and a
+     * change to llm.extra_body was named key by key, which no mark applies to
+     * (`test_usernames_are_kept_without_spaces_around`, `test_a_key_taken_out_of_an_object_field_goes`).
+     */
+    @Test
+    fun usernamesAreTrimmedAndAnObjectFieldIsOneField() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val names = JSONObject().put("chesscom_user", " nosegazm\n").put("lichess_user", "tai ")
+            assertTrue(api.update(JSONObject().put("settings", JSONObject().put("profile", names))).getBoolean("ok"))
+            assertEquals("nosegazm", store.section("profile").getString("chesscom_user"))
+            assertEquals("tai", store.section("profile").getString("lichess_user"))
+            val extra = JSONObject().put("extra_body", JSONObject().put("top_k", 20).put("seed", 7))
+            val res = api.update(JSONObject().put("settings", JSONObject().put("llm", extra)))
+            assertEquals("[\"llm.extra_body\"]", res.getJSONArray("changed").toString())
+        } finally {
+            store.save(saved)
+        }
+    }
+
     @Test
     fun theFrameRateAndExtraFieldsReachTheCode() {
         val store = SettingsStore(app)
