@@ -617,9 +617,14 @@ class Store(val path: File?) {
         }
     }
 
-    /** The reviewed games' facts, each game once: a watched game its import stands for is left out. `stat_games`. */
+    /**
+     * The reviewed games' facts, each game once: a watched game its import stands for is left
+     * out once the import's own facts are kept. Until then the watched game counts (the review of
+     * 2026-10-01: a game whose record differed from its import left Stats the moment the import
+     * came in, until the import was opened and reviewed). `stat_games`.
+     */
     fun statGames(): List<StatGameRow> = lock.withLock {
-        rows("SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins) ORDER BY played_at") { statGameRow(it) }
+        rows("SELECT * FROM stat_games WHERE key NOT IN ($STOOD_FOR) ORDER BY played_at") { statGameRow(it) }
     }
 
     /** The facts of the games' moves, in order. `stat_moves`. */
@@ -633,12 +638,12 @@ class Store(val path: File?) {
 
     /**
      * Each game's latest review whose facts are not kept yet (a watched game its import stands
-     * for needs none). `reviews_without_stats`.
+     * for needs none once the import's are kept: [statGames]). `reviews_without_stats`.
      */
     fun reviewsWithoutStats(): List<ReviewRow> = lock.withLock {
         rows(
             "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)" +
-                " AND r.key NOT IN (SELECT watched FROM twins)" +
+                " AND r.key NOT IN ($STOOD_FOR)" +
                 " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)",
         ) { reviewRow(it) }
     }
@@ -839,6 +844,9 @@ class Store(val path: File?) {
 
         /** A removed game's rows are kept this long, for Undo (the page offers it for seconds). */
         var UNDO_KEEP_S = 600.0
+
+        /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
+        private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"
