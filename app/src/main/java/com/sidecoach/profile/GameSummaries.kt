@@ -51,6 +51,8 @@ object GameSummaries {
         40.0 to Label.MISTAKE,
     )
 
+    val SHAPES = listOf("smooth", "balanced", "sudden", "giveaway", "wild", "intense", "sharp")
+
     // White's expected score from which a side is winning, and from which it was clearly
     // winning (a giveaway throws that away); a game is close between the first two.
     private const val WINNING = 0.7

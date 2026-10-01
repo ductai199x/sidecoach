@@ -60,6 +60,8 @@ class ReviewRoom(
     private val makeEngine: EngineMaker,
     private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
     private val model: (() -> Pair<LLMProvider?, String?>)? = null,
+    /** Keeps a PGN in the phone's Downloads (its name, the text) and says where it went. */
+    private val saver: ((String, String) -> String)? = null,
 ) {
     val key = row.key
     val strength: Strength = GameReview.STRENGTHS[strength] ?: GameReview.STRENGTHS.getValue("standard")
@@ -96,6 +98,13 @@ class ReviewRoom(
     private var estimated: Pair<Pair<String?, Set<Int>>, Double?>? = null
 
     private val playback = playback(row.pgn)
+
+    // Analysis: the engine made on the first position asked of it, the explorer on the first
+    // explore, the opening book on the first opening named.
+    private val lines = ReviewAnalysis.Lines(this.strength, makeEngine)
+    private var explorer: ReviewAnalysis.Explorer? = null
+    private var book: com.sidecoach.analysis.Book? = null
+    private var bookRead = false
 
     @Volatile var touched = SystemClock.elapsedRealtime()
         private set
@@ -274,6 +283,72 @@ class ReviewRoom(
         return JSONObject(saved.toString()).put("links", links)
     }
 
+    // ---- analysis (ReviewAnalysis.kt): the engine's lines for the board, the explorer, the game
+    // as a PGN ---------------------------------------------------------------------------------
+
+    /** The engine's best lines for a position of the analysis board. `lines`. */
+    fun lines(fen: String): JSONObject {
+        touched = SystemClock.elapsedRealtime()
+        return lines.lines(fen)
+    }
+
+    /**
+     * What the player's games went on with from [fen], and the opening [moves] (UCI, from the
+     * game's start) are in. `explore`.
+     */
+    fun explore(fen: String, moves: List<String>): JSONObject {
+        touched = SystemClock.elapsedRealtime()
+        val explorer = synchronized(lock) {
+            explorer ?: run {
+                val twins = store.twins()
+                val watched = Library.fromWatched(store).filter { it.key !in twins }
+                ReviewAnalysis.Explorer(store.library() + watched).also { explorer = it }
+            }
+        }
+        val opening = openingOf(moves)
+        return explorer.explore(fen).put("opening", opening ?: JSONObject.NULL).put("book", synchronized(lock) { book != null })
+    }
+
+    /**
+     * The game as a PGN with the analysis board's lines ([tree]), annotated from the review when
+     * asked; kept in the phone's Downloads when [save]. `pgn`.
+     */
+    fun pgn(tree: JSONArray, annotated: Boolean, save: Boolean): JSONObject {
+        touched = SystemClock.elapsedRealtime()
+        val (moves, words) = synchronized(lock) { (if (status == "ready") this.moves else null) to this.words }
+        val text = ReviewAnalysis.pgn(row, moves, tree, annotated = annotated, words = words)
+        val name = ReviewAnalysis.pgnName(row)
+        val out = JSONObject().put("pgn", text).put("name", name)
+        if (save) {
+            val keep = saver ?: throw IllegalStateException("nowhere to keep the PGN")
+            out.put("saved", keep(name, text))
+        }
+        return out
+    }
+
+    /** The opening the moves are in, by the book, from the game's start position. `_opening_of`. */
+    private fun openingOf(moves: List<String>): String? {
+        val game = Library.gamesIn(row.pgn).firstOrNull() ?: return null
+        if (game.board().fen() != com.sidecoach.chess.STARTING_FEN) return null
+        val book = synchronized(lock) {
+            if (!bookRead) {
+                book = OpeningBook.load(File(files, "openings"))
+                bookRead = true
+            }
+            book
+        } ?: return null
+        val board = com.sidecoach.chess.Board()
+        val played = ArrayList<com.sidecoach.chess.Move>()
+        for (uci in moves) {
+            val m = com.sidecoach.chess.Move.fromUciOrNull(uci) ?: break
+            if (!board.isLegal(m)) break
+            board.push(m)
+            played.add(m)
+        }
+        val found = (if (played.isNotEmpty()) book.identify(played) else null) ?: return null
+        return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+    }
+
     fun close() {
         stop.set(true)
         stopped.countDown()
@@ -306,6 +381,7 @@ class ReviewRoom(
             closed = true
             runCatching { store.close() }
             retries?.close()
+            lines.close()
         }
     }
 
@@ -548,6 +624,7 @@ class ReviewRooms(
     private val files: File,
     private val makeEngine: EngineMaker,
     private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
+    private val saver: ((String, String) -> String)? = null,
 ) {
     private val rooms = LinkedHashMap<String, ReviewRoom>()
     private val lock = Any()
@@ -601,6 +678,7 @@ class ReviewRooms(
             makeEngine = makeEngine,
             mirror = mirror,
             model = ::model,
+            saver = saver,
         ).also { rooms[key] = it }
     }
 
@@ -614,6 +692,28 @@ class ReviewRooms(
 
         /** The app's rooms if any were made, without making them. */
         fun sharedOrNull(): ReviewRooms? = shared
+
+        /**
+         * A PGN kept in the phone's Downloads, where the Files app and any chess app find it --
+         * the desktop's `review_analysis.save` keeps it in the Downloads folder too. Android
+         * names a name taken anew ("x (1).pgn"); the name it kept is said.
+         */
+        fun saveToDownloads(context: Context, name: String, text: String): String {
+            val resolver = context.contentResolver
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/x-chess-pgn")
+                put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw java.io.IOException("the phone would not make a file in Downloads")
+            resolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                ?: throw java.io.IOException("the phone would not write the file")
+            val kept = resolver.query(uri, arrayOf(android.provider.MediaStore.Downloads.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            } ?: name
+            return "Downloads/$kept"
+        }
 
         /**
          * The app's rooms: the profile store in the app's files, engines of their own, every
@@ -630,6 +730,7 @@ class ReviewRooms(
                     files = app.filesDir,
                     makeEngine = ReviewRoom.engineMaker(app, settings),
                     mirror = { chan, level, text, data -> PanelEngine.emit(chan, level, text, data) },
+                    saver = { name, text -> saveToDownloads(app, name, text) },
                 ).also { shared = it }
             }
         }

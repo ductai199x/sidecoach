@@ -406,6 +406,52 @@ class PanelApi(
                 voice?.stop()
                 ok(JSONObject().put("ok", voice != null))
             }
+            // Analysis (ReviewAnalysis.kt): any move from any position, the engine's lines for the
+            // board, the explorer of the player's games, the game as a PGN.
+            "position" -> {
+                if (!json.has("fen")) return unprocessable()
+                try {
+                    ok(JSONObject().put("ok", true).apply { ReviewAnalysis.position(json.getString("fen")).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: IllegalArgumentException) {
+                    ok(JSONObject().put("ok", false).put("error", exc.message))
+                }
+            }
+            "move" -> {
+                if (!json.has("fen") || !json.has("uci")) return unprocessable()
+                try {
+                    ok(JSONObject().put("ok", true).apply { ReviewAnalysis.move(json.getString("fen"), json.getString("uci")).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: IllegalArgumentException) {
+                    ok(JSONObject().put("ok", false).put("error", exc.message))
+                }
+            }
+            "lines" -> {
+                if (!json.has("fen")) return unprocessable()
+                val room = rooms.get(key) ?: return notOpen()
+                try {
+                    ok(JSONObject().put("ok", true).apply { room.lines(json.getString("fen")).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: RuntimeException) { // `(ValueError, RuntimeError)`: a position not read, no Stockfish
+                    ok(JSONObject().put("ok", false).put("error", exc.message ?: exc.toString()))
+                }
+            }
+            "explore" -> {
+                if (!json.has("fen")) return unprocessable()
+                val room = rooms.get(key) ?: return notOpen()
+                val moves = json.optJSONArray("moves")?.let { m -> (0 until m.length()).map { m.getString(it) } } ?: emptyList()
+                try {
+                    ok(JSONObject().put("ok", true).apply { room.explore(json.getString("fen"), moves).let { p -> for (k in p.keys()) put(k, p.get(k)) } })
+                } catch (exc: IllegalArgumentException) {
+                    ok(JSONObject().put("ok", false).put("error", exc.message))
+                }
+            }
+            "pgn" -> {
+                val room = rooms.get(key) ?: return notOpen()
+                try {
+                    val got = room.pgn(json.optJSONArray("tree") ?: JSONArray(), json.optBoolean("annotated", true), json.optBoolean("save", false))
+                    ok(JSONObject().put("ok", true).apply { for (k in got.keys()) put(k, got.get(k)) })
+                } catch (exc: Exception) { // `(ValueError, OSError)`: no game in the PGN, the file not kept
+                    ok(JSONObject().put("ok", false).put("error", exc.message ?: exc.toString()))
+                }
+            }
             "close" -> {
                 val room = rooms.get(key)
                 room?.close()
@@ -477,7 +523,7 @@ class PanelApi(
         /** A review room's routes, `/api/review/{key}/<action>`, by method. */
         val REVIEW_ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf("poll", "retry"),
-            "POST" to setOf("open", "ai", "say", "try", "hint", "hush", "close"),
+            "POST" to setOf("open", "ai", "say", "try", "hint", "hush", "close", "position", "move", "lines", "explore", "pgn"),
         )
 
         /** Whether the server serves [method] [path]. */

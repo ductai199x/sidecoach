@@ -143,6 +143,8 @@ class Builder:
         self.ops: list[dict[str, Any]] = []
         self.keys: set[str] = set()
         self.dates: set[float] = set()
+        # The strength each game's facts were kept at: its review's, for the game shapes.
+        self.strengths: dict[str, str] = {}
 
     def when(self, rng: random.Random, low: float, high: float) -> float:
         """A date `low` to `high` days before now, none the same as another's (the store orders
@@ -160,11 +162,13 @@ class Builder:
     def keep(self, strength: str, index: int, reviewed: ReviewedGame, headers: dict[str, str] | None, row: LibraryRow) -> None:
         game = reviewed if headers is None else reviewed.model_copy(update={"headers": headers})
         stat_facts.keep_stats(self.store, strength, game, row)
+        self.strengths[row.key] = strength
         self.keys.add(row.key)
         self.ops.append({"op": "keep", "strength": strength, "review": index, "headers": headers, "row": row_json(row)})
 
     def save(self, strength: str, game: dict[str, Any], moves: list[dict[str, Any]]) -> None:
         self.store.save_stats(strength, game, moves)
+        self.strengths[game["key"]] = strength
         self.keys.add(game["key"])
         self.ops.append({"op": "save", "strength": strength, "game": game, "moves": moves})
 
@@ -172,9 +176,9 @@ class Builder:
         self.store.add_twin(watched, imported)
         self.ops.append({"op": "twin", "watched": watched, "imported": imported})
 
-    def review(self, key: str, strength: str, reviewed_at: float) -> None:
-        self.store.save_review(key, strength, 3, reviewed_at, "{}", None)
-        self.ops.append({"op": "review", "key": key, "strength": strength, "version": 3, "reviewed_at": reviewed_at, "report": "{}", "summary": None})
+    def review(self, key: str, strength: str, reviewed_at: float, summary: str | None = None) -> None:
+        self.store.save_review(key, strength, 3, reviewed_at, "{}", summary)
+        self.ops.append({"op": "review", "key": key, "strength": strength, "version": 3, "reviewed_at": reviewed_at, "report": "{}", "summary": summary})
 
     def setting(self, key: str, value: str) -> None:
         self.store.set_setting(key, value)
@@ -359,6 +363,15 @@ def build(b: Builder, reviews: list[dict[str, Any]], rng: random.Random) -> None
     b.review("pgn:norev2", "fast", NOW - 100)
     b.review("watched:nostats", "fast", NOW - 100)
     b.review(own[0].key, "fast", NOW - 10)
+    # The game shapes (Stats' `shapes`): the real reviews' summaries at the strength their facts
+    # were kept at, and the synthetic games' with a shape drawn, none or a summary not read.
+    for i, g in enumerate(reviews):
+        b.review(own[i].key, b.strengths[own[i].key], NOW - 5 - i, json.dumps(g["summary"]))
+    sides = {"white": {"side": "white"}, "black": {"side": "black"}}
+    for n, key in enumerate(sorted(k for k in b.keys if ":s" in k)):
+        shape = rng.choice([*stats.SHAPES, None])
+        summary = "not json" if n == 3 else json.dumps({**sides, "shape": shape})
+        b.review(key, b.strengths[key], NOW - 400 - n, summary)
     b.setting("puzzle_level", "1300")
 
 

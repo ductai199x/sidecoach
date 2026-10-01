@@ -193,6 +193,7 @@ object Stats {
         val sections = figures(d)
         for (key in sections.keys()) out.put(key, sections.get(key))
         out.put("trends", trends(d))
+        out.put("shapes", shapes(store, d))
         val level = level(d)
         out.put("ratings", ratings(d, level))
         val peers = peersLevel(d, level)
@@ -656,6 +657,31 @@ object Stats {
             .put("calm", rate(calm.count { it.label in BAD }, calm.size))
             .put("lost_on_time", lostOnTime)
             .put("lost_on_time_winning", lostOnTimeWinning)
+    }
+
+    /**
+     * How the player's games went by their shape (`GameSummaries.shapeOf`, as each review's
+     * summary has it: smooth, balanced, sudden...): how many, and won, drawn and lost -- the
+     * plan's G, which kinds of game suit the player. Only the shapes their games had, in
+     * SHAPES' order. `_shapes`.
+     */
+    private fun shapes(store: Store, d: Data): JSONArray {
+        val counts = HashMap<String, IntArray>() // games, won, drawn, lost
+        for (g in d.games) {
+            val summary = store.review(g.key, g.strength)?.summary ?: continue
+            val shape = runCatching { JSONObject(summary).let { if (it.isNull("shape")) null else it.optString("shape") } }.getOrNull()
+            if (shape.isNullOrEmpty()) continue
+            val c = counts.getOrPut(shape) { IntArray(4) }
+            c[0] += 1
+            val score = score(g.result, g.userSide)
+            if (score != null) c[if (score == 1.0) 1 else if (score == 0.5) 2 else 3] += 1
+        }
+        return JSONArray().apply {
+            for (s in GameSummaries.SHAPES) {
+                val c = counts[s] ?: continue
+                put(JSONObject().put("shape", s).put("games", c[0]).put("won", c[1]).put("drawn", c[2]).put("lost", c[3]))
+            }
+        }
     }
 
     /** `_results`. */
