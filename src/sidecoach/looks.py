@@ -42,7 +42,7 @@ class PieceSet:
 
 
 PIECE_SETS: dict[str, PieceSet] = {
-    "sidecoach": PieceSet("Sidecoach", "Sidecoach", "Sidecoach's own", "", "own1"),
+    "sidecoach": PieceSet("Sidecoach", "Sidecoach", "Sidecoach's own", "", "own2"),
     "cburnett": PieceSet("Classic", "Colin M.L. Burnett", "GPLv2+", "cburnett/", "1"),
     "merida": PieceSet("Merida", "Armando Hernandez Marroquin", "GPLv2+", "merida/", "1"),
     "chessnut": PieceSet("Chessnut", "Alexis Luengas", "Apache 2.0", "chessnut/", "1"),

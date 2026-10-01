@@ -25,18 +25,18 @@
   --sq-light-hl-odd: #f6f66c;
   --sq-dark-hl: #baca2b;
   --sq-dark-hl-odd: #baca2e;
-  --pc-wK: url(/pieces/wK.svg?v=own1);
-  --pc-wQ: url(/pieces/wQ.svg?v=own1);
-  --pc-wR: url(/pieces/wR.svg?v=own1);
-  --pc-wB: url(/pieces/wB.svg?v=own1);
-  --pc-wN: url(/pieces/wN.svg?v=own1);
-  --pc-wP: url(/pieces/wP.svg?v=own1);
-  --pc-bK: url(/pieces/bK.svg?v=own1);
-  --pc-bQ: url(/pieces/bQ.svg?v=own1);
-  --pc-bR: url(/pieces/bR.svg?v=own1);
-  --pc-bB: url(/pieces/bB.svg?v=own1);
-  --pc-bN: url(/pieces/bN.svg?v=own1);
-  --pc-bP: url(/pieces/bP.svg?v=own1);
+  --pc-wK: url(/pieces/wK.svg?v=own2);
+  --pc-wQ: url(/pieces/wQ.svg?v=own2);
+  --pc-wR: url(/pieces/wR.svg?v=own2);
+  --pc-wB: url(/pieces/wB.svg?v=own2);
+  --pc-wN: url(/pieces/wN.svg?v=own2);
+  --pc-wP: url(/pieces/wP.svg?v=own2);
+  --pc-bK: url(/pieces/bK.svg?v=own2);
+  --pc-bQ: url(/pieces/bQ.svg?v=own2);
+  --pc-bR: url(/pieces/bR.svg?v=own2);
+  --pc-bB: url(/pieces/bB.svg?v=own2);
+  --pc-bN: url(/pieces/bN.svg?v=own2);
+  --pc-bP: url(/pieces/bP.svg?v=own2);
   /* The board's side. app.js sets it from the room the main area actually has (its
      height less the info line, its width less the panel), so the board never runs
      under the footer or squeezes the panel; this is the fallback before the first

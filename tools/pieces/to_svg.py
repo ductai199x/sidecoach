@@ -1,9 +1,10 @@
-"""Sidecoach's piece set as SVG, from the round-5 sheet (round5-sheet.png, README.md): each
-piece found by its own shape, split into its flat colour layers (the silhouette in the
-outline colour, the body in its main tone, the shadow band), each layer smoothed and traced
-with potrace, the layers stacked. All 12 at one scale, bases on one line, in a square
-viewBox. Then each SVG rendered and subtracted from its source: the silhouettes' overlap
-and the colour error, per piece.
+"""Sidecoach's piece set as SVG, from the round-6 sheet (round6-sheet.png, README.md): each
+piece found by its own shape, split into its colour layers (the silhouette in the outline
+colour, then the body's tones from the lightest, each darker tone a layer over the lighter
+ones, so the shading steps as the sheet's soft shading does and no seam opens between them),
+each layer smoothed and traced with potrace, the layers stacked. All 12 at one scale, bases on
+one line, in a square viewBox. Then each SVG rendered and subtracted from its source: the
+silhouettes' overlap and the colour error, per piece.
 
     uv run --no-project --with pillow --with numpy --with opencv-python-headless \
         --with potracer --with resvg-py python tools/pieces/to_svg.py [out-dir]
@@ -11,6 +12,7 @@ and the colour error, per piece.
 Writes desktop/static/pieces/{wK..bP}.svg unless another folder is named."""
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -27,11 +29,14 @@ UP = 8  # the native crop is traced at 8x: smooth masks, then potrace's curves
 VIEW = 512  # the viewBox side
 FILL, BOTTOM = 0.86, 0.07  # the tallest piece's share of the square; the base's margin
 PAD = 4
+SHADE_SIGMA = float(os.environ.get("SHADE_SIGMA", "4"))  # the shading's smoothing, sheet pixels
+BLUR = float(os.environ.get("BLUR", "4"))  # the tones' edges softened, sheet pixels
 
-# The sheet's own tones (k-means over each side's pixels), one outline, main and shadow a side.
+# The sheet's own tones (k-means over each side's pixels, six clusters; the edge pixels'
+# cluster, a share of 1%, left out): one outline a side, the body's tones lightest first.
 PALETTE = {
-    "w": {"outline": "#2A221E", "main": "#F6F0E9", "shadow": "#D4CAC0"},
-    "b": {"outline": "#27201C", "main": "#655C56", "shadow": "#49423D"},
+    "w": {"outline": "#2E2723", "tones": ["#F7F2EC", "#E7E1D8", "#D2CBC1", "#BEB5AB"]},
+    "b": {"outline": "#2C2521", "tones": ["#948B86", "#7B736E", "#6C6460", "#5C5551", "#49423F"]},
 }
 
 
@@ -67,7 +72,7 @@ def smooth(mask: np.ndarray, sigma: float) -> np.ndarray:
     return cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigma) > 0.5
 
 
-sheet = np.array(Image.open(HERE / "round5-sheet.png").convert("RGBA"))
+sheet = np.array(Image.open(HERE / "round6-sheet.png").convert("RGBA"))
 solid = (sheet[..., 3] > 200).astype(np.uint8)
 solid = cv2.morphologyEx(solid, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
 joined = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
@@ -82,7 +87,8 @@ OUT.mkdir(parents=True, exist_ok=True)
 results = []
 for colour, row in (("w", top), ("b", bottom)):
     pal = PALETTE[colour]
-    centres = np.stack([rgb(pal[k]) for k in ("outline", "main", "shadow")])
+    fills = [pal["outline"], *pal["tones"]]  # index 0 the outline, then the tones light to dark
+    centres = np.stack([rgb(c) for c in fills])
     for p, (x, y, w, h) in zip(ORDER, sorted(row, key=lambda b: b[0]), strict=True):
         x0, y0 = max(0, x - PAD), max(0, y - PAD)
         crop = sheet[y0 : y + h + PAD, x0 : x + w + PAD]
@@ -90,19 +96,43 @@ for colour, row in (("w", top), ("b", bottom)):
         body = big[..., 3] > 127
         near = ((big[..., None, :3] - centres[None, None]) ** 2).sum(-1).argmin(-1)
         silhouette = smooth(body, UP * 0.6)
-        light = smooth(body & (near != 0), UP * 0.7) & silhouette
-        shadow = smooth(body & (near == 2), UP * 0.9) & light
-        layers = [("outline", silhouette), ("main", light), ("shadow", shadow)]
+        inside = smooth(body & (near != 0), UP * 0.7) & silhouette
+        # The shading's own grain smoothed away before it is cut into tones (inside the piece
+        # only, the outline never mixed in): cut as it comes, the black pieces' tones streaked.
+        within = (body & (near != 0)).astype(np.float32)
+        weight = cv2.GaussianBlur(within, (0, 0), UP * SHADE_SIGMA)
+        soft = cv2.GaussianBlur(big[..., :3] * within[..., None], (0, 0), UP * SHADE_SIGMA)
+        soft = soft / np.maximum(weight, 1e-3)[..., None]
+        tone = ((soft[..., None, :] - centres[None, None, 1:]) ** 2).sum(-1).argmin(-1) + 1
+        near = np.where(near == 0, 0, tone)
+        # Each darker tone over the lighter ones: its own pixels and every darker one's, grown
+        # out under the outline (clipped there) so the blur below keeps its colour to the edge.
+        far = cv2.distanceTransform((~inside).astype(np.uint8), cv2.DIST_L2, 5) > 0
+        shades = []
+        for i in range(2, len(fills)):
+            mask = smooth(body & (near >= i), UP * 0.9) & inside
+            if mask.any():
+                reach = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5)
+                shades.append((fills[i], mask | (far & (reach < UP * BLUR * 4))))
         sw, sh = round(crop.shape[1] * scale), round(crop.shape[0] * scale)
         ox, oy = (VIEW - sw) // 2, round(VIEW * (1 - BOTTOM)) - sh
-        paths = "".join(
-            f'<path fill="{pal[k]}" fill-rule="evenodd" d="{trace(m)}"/>'
-            for k, m in layers
-            if m.any()
+        body_d = trace(inside)
+        flat = (
+            f'<path fill="{fills[0]}" fill-rule="evenodd" d="{trace(silhouette)}"/>'
+            f'<path fill="{fills[1]}" fill-rule="evenodd" d="{body_d}"/>'
         )
+        soft_tones = "".join(
+            f'<path fill="{fill}" fill-rule="evenodd" d="{trace(m)}"/>' for fill, m in shades
+        )
+        # The tones' edges blurred into one another, as the sheet's soft shading; the outline
+        # and the body's edge stay crisp (the blur is clipped to the inside).
         svg = (
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {VIEW} {VIEW}">'
-            f'<g transform="translate({ox} {oy}) scale({scale:.5f})">{paths}</g></svg>'
+            f'<defs><clipPath id="in"><path fill-rule="evenodd" d="{body_d}"/></clipPath>'
+            f'<filter id="soft" x="-10%" y="-10%" width="120%" height="120%">'
+            f'<feGaussianBlur stdDeviation="{BLUR}"/></filter></defs>'
+            f'<g transform="translate({ox} {oy}) scale({scale:.5f})">{flat}'
+            f'<g clip-path="url(#in)"><g filter="url(#soft)">{soft_tones}</g></g></g></svg>'
         )
         (OUT / f"{colour}{p}.svg").write_text(svg, encoding="utf-8")
         # The check: the source crop placed as the SVG places it, against the SVG rendered.
