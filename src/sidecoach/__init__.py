@@ -1,3 +1,3 @@
 """Sidecoach: vision-first chess coaching companion."""
 
-__version__ = "0.1.43"
+__version__ = "0.1.44"

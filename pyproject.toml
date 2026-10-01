@@ -1,6 +1,6 @@
 [project]
 name = "sidecoach"
-version = "0.1.43"
+version = "0.1.44"
 description = "Vision-first chess coaching companion: watches the screen, finds the board, coaches Socratically."
 readme = "README.md"
 requires-python = ">=3.12"
