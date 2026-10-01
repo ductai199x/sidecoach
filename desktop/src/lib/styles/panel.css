@@ -579,6 +579,8 @@ html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: c
 
 /* ---- terminal ---- */
 footer { border-top: 1px solid var(--line); background: var(--panel); }
+/* Nothing in it (the strip off, the terminal folded): no line either, so no pixel to scroll to. */
+footer.bare { border-top: 0; }
 /* The debug area folds to its status strip and tab row: a player does not need the
    terminal open, and on a short screen it is the board's room. */
 footer.folded .terminal, footer.folded .conversation { display: none; }

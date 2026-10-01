@@ -214,7 +214,7 @@
   </section>
 </main>
 
-<footer bind:this={footer} class:folded>
+<footer bind:this={footer} class:folded class:bare={folded && !panes.strip}>
   <div class="tsplit" bind:this={splitTerm} role="separator" aria-orientation="horizontal" aria-label="Terminal size" title="Drag to resize the terminal; double-click to reset"></div>
   {#if panes.strip}<Strip {folded} onfold={toggleTerminal} />{/if}
   <Terminal />

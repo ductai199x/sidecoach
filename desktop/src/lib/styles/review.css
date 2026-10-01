@@ -92,7 +92,8 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .gm-empty { color: var(--muted); padding: 22px 4px; }
 .gm-games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .gm-game {
-  display: grid; grid-template-columns: 74px minmax(0, 1fr) 54px 96px 76px auto; align-items: center; gap: 10px;
+  /* fixed columns, the buttons' too (Open review, Review): every row's result and accuracies line up */
+  display: grid; grid-template-columns: 74px minmax(0, 1fr) 54px 96px 76px 108px; align-items: center; gap: 10px;
   padding: 7px 10px; background: var(--panel); border-radius: 6px;
 }
 .gm-game:hover { background: #2c2a27; }
@@ -172,9 +173,9 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 /* Narrow (a phone, a small window): two lines -- the players and the result, then the kind of
    game, the accuracies and the buttons. */
 @media (max-width: 720px) {
-  .gm-game { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "players players players result" "meta acc . go"; }
+  .gm-game { grid-template-columns: 74px auto minmax(0, 1fr) auto; grid-template-areas: "players players players result" "meta acc . go"; }
   .gm-games.selecting .gm-game {
-    grid-template-columns: 26px auto auto minmax(0, 1fr) auto;
+    grid-template-columns: 26px 74px auto minmax(0, 1fr) auto;
     grid-template-areas: "check players players players result" "check meta acc . .";
   }
   .gm-check { grid-area: check; }
