@@ -321,6 +321,40 @@ class LinksTest {
         assertEquals(setOf("Nf3", "Nc6", "Bb5", "Nc3"), conversation.movesBefore(6))
     }
 
+    /**
+     * The first move from a joined position was played in the start's position: its idea is the
+     * start's (2026-10-01: with no record for the start, it was never an earlier moment).
+     * `test_links.py`.
+     */
+    @Test
+    fun aJoinedGamesFirstMoveIsAMomentOfTheStartsIdea() {
+        val start = "4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1"
+        val conversation = Conversation()
+        conversation.newGame(GameStarted(gameId = "g", userSide = Pieces.Side.BLACK, startFen = start))
+        conversation.analysed(
+            Analysis(
+                gameId = "g", fen = start, ply = 0,
+                lines = listOf(Line(moves = listOf("e8e2"), depth = 18, expectedScore = 1.0, mate = 3)),
+                decisive = true, onlyMove = true,
+            ),
+            PositionFacts(fen = start, sideToMove = "black", phase = "endgame", theme = "a mating attack"),
+        )
+        val board = Board(start)
+        val move = board.parseSan("Re2+")!!
+        val before = board.fen()
+        board.push(move)
+        conversation.move(
+            MovePlayed(gameId = "g", ply = 1, san = "Re2+", uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = true)
+        )
+        conversation.assess(
+            MoveAssessment(gameId = "g", ply = 1, uci = move.uci(), expectedLoss = 0.0, severity = Severity.NONE, best = listOf(move.uci()), label = Label.BEST)
+        )
+        assertEquals(
+            listOf("- At Re2+ (the player's move): best -- the player found it."),
+            conversation.sameIdea("a mating attack", beforePly = 3),
+        )
+    }
+
     @Test
     fun anUnlistedEarlierMoveAndAMoveNumberAreFaults() {
         val unlisted = setOf("Bc4", "Qh5")

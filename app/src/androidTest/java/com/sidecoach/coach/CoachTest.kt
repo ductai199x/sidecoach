@@ -108,6 +108,102 @@ class CoachTest {
         return messages(coach)
     }
 
+    /** The engine's look at [board]: two of its legal moves, captures first, the first the best. */
+    private fun twoLines(board: Board, ply: Int): Analysis {
+        val (first, second) = board.legalMoves()
+            .sortedWith(compareBy<Move>({ !board.isCapture(it) }, { it.uci() }))
+            .take(2)
+        return Analysis(
+            gameId = "g", fen = board.fen(), ply = ply,
+            lines = listOf(
+                Line(moves = listOf(first.uci()), depth = 18, expectedScore = 0.7),
+                Line(moves = listOf(second.uci()), depth = 18, expectedScore = 0.5),
+            ),
+            decisive = false, onlyMove = false,
+        )
+    }
+
+    /**
+     * Every way a game begins, every way its position changes, every way the coach is asked to
+     * speak: the model is given the position the player faces -- its board, the side to move,
+     * the engine's lines, the facts -- and no other as the position now. At a puzzle's start, a
+     * joined game's, a re-read board's or after a takeback to the start, it was given none, or
+     * the withdrawn move's (Tai, 2026-10-01). `test_conversation.py`.
+     */
+    @Test
+    fun thePositionNowIsTheBoardThePlayerFaces() {
+        val joined = "4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1"
+        val reread = mapOf(
+            Pieces.Side.WHITE to "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+            Pieces.Side.BLACK to "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/2N5/PPPP1PPP/R1B1K1NR b KQkq - 5 4",
+        )
+        val starts = mapOf(
+            "game" to Triple(Board().fen(), Pieces.Side.WHITE, "game"),
+            "joined" to Triple(joined, Pieces.Side.BLACK, "game"),
+            "position" to Triple(joined, Pieces.Side.BLACK, "position"),
+            "puzzle" to Triple(joined, Pieces.Side.BLACK, "puzzle"),
+        )
+        for ((name, start) in starts) for (state in listOf("start", "moved", "taken back", "re-read")) {
+            for (trigger in listOf("stuck", "asked")) {
+                val where = "$name, $state, $trigger"
+                val (fen, side, kind) = start
+                val (coach, provider) = coach(emptyList())
+                coach.onEvent(GameStarted(gameId = "g", userSide = side, startFen = fen, kind = kind), 0.0)
+                var board = Board(fen)
+                coach.onEvent(twoLines(board, 0), 0.5)
+                var gone: String? = null
+                if (state == "moved" || state == "taken back") {
+                    for (ply in 1..2) {
+                        val move = board.legalMoves().sortedBy { it.uci() }.first()
+                        val san = board.san(move)
+                        val before = board.fen()
+                        board.push(move)
+                        coach.onEvent(
+                            MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = ply == 1),
+                            ply.toDouble(),
+                        )
+                        coach.onEvent(twoLines(board, ply), ply + 0.5)
+                    }
+                    if (state == "taken back") {
+                        gone = board.fen()
+                        board = Board(fen)
+                        coach.conversation.coachSaid("Look at the knight.") // of the withdrawn position
+                        coach.onEvent(Takeback("g", 2, fen), 3.0)
+                        coach.conversation.clock(60_000, 50_000)
+                        assertTrue("$where: withdrawn moves", coach.conversation.records.all { it.whiteMs == null })
+                    }
+                } else if (state == "re-read") {
+                    gone = fen
+                    board = Board(reread.getValue(side))
+                    coach.conversation.coachSaid("Look at the knight.") // of the board before the re-read
+                    coach.onEvent(Resync("g", board.fen(), "re-read"), 3.0)
+                    coach.onEvent(twoLines(board, 0), 3.5)
+                }
+                assertTrue(where, coach.userToMove && coach.board.fen() == board.fen())
+                if (trigger == "stuck") {
+                    stuck(coach)
+                } else {
+                    coach.ask("what should I be thinking about here?", 10.0)
+                    messages(coach)
+                }
+                assertTrue("$where: the model was asked", provider.prompts.isNotEmpty())
+                val harness = provider.prompts.last().second.single().content
+                assertEquals(where, 1, harness.split("# Position now\n").size - 1)
+                val now = harness.substringAfter("# Position now\n").substringBefore("\n# Task\n")
+                assertTrue(where, "FEN: ${board.fen()}" in now)
+                if (gone != null) {
+                    assertFalse("$where: a position no longer the game's", "FEN: $gone" in now)
+                    assertFalse("$where: said of a position no longer the game's", "Look at the knight." in now)
+                }
+                assertTrue(where, (if (board.turn == WHITE) "White" else "Black") + " to move" in now)
+                val best = board.san(Move.fromUci(twoLines(board, 0).lines[0].moves[0]))
+                val lines = now.substringAfter("## Engine lines").substringBefore("\n## ")
+                assertTrue("$where: the engine's best line\n$lines", " $best  0.70" in lines.split("\n")[1])
+                assertTrue("$where: the facts sheet", "\n## Facts (" in now)
+            }
+        }
+    }
+
     /**
      * A question asked before the engine has looked at the position on the board is told to
      * wait a moment and answered when the analysis lands, never from an older position (Tai,

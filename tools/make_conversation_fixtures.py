@@ -153,6 +153,23 @@ def play(
     )
 
     facts = facts_from_analysis(after, analysis, last_move=played_san, user=user_colour)
+    analysed(script, analysis, facts, after)
+    return after
+
+
+def analyse_start(
+    annotator: GameAnnotator, script: Script, board: chess.Board, *, user_colour: chess.Color
+) -> None:
+    """The start's analysis (ply 0) -- a puzzle's, a joined game's, a re-read board's -- as
+    the analyser measures it before any move (`cli` submit_position)."""
+    analysis = annotator.analysis_event(GAME_ID, board, 0)
+    facts = facts_from_analysis(board, analysis, last_move=None, user=user_colour)
+    analysed(script, analysis, facts, board)
+
+
+def analysed(script: Script, analysis: Any, facts: Any, after: chess.Board) -> None:
+    """The analysis of the position `after` and its facts, into the conversation and the
+    script."""
     script.convo.analysed(analysis, facts)
     # The position's facts as the lesson after the engine's move would read them, past: the
     # board once the move (and the reply) is played leaves out an idea about a piece gone
@@ -173,7 +190,7 @@ def play(
     script.record(
         {
             "op": "analysed",
-            "ply": ply,
+            "ply": analysis.ply,
             "fen": analysis.fen,
             "lines": [line_json(one) for one in analysis.lines],
             "decisive": analysis.decisive,
@@ -190,7 +207,6 @@ def play(
             },
         }
     )
-    return after
 
 
 def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
@@ -322,6 +338,10 @@ def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
     fresh = chess.Board("r1bq1rk1/pppp1ppp/2n2n2/8/1bBPP3/2N2N2/PP3PPP/R1BQ1RK1 b - - 0 8")
     convo.resync(Resync(game_id=GAME_ID, fen=fresh.fen(), reason="the board moved"), fresh)
     script.record({"op": "resync", "fen": fresh.fen(), "reason": "the board moved"})
+    # The re-read position's own analysis, before any move: the position now until one.
+    analyse_start(annotator, script, fresh, user_colour=user_colour)
+    convo.user_said("what is going on here?")
+    script.record({"op": "user_said", "text": "what is going on here?", "verdicts": None})
     board = fresh
     for san in ("Bxc3", "bxc3", "Nxe4", "Qd3"):
         ply += 1
@@ -359,6 +379,64 @@ def run(annotator: GameAnnotator, compact: bool) -> dict[str, Any]:
         },
     }
     return {"compact": compact, "steps": script.steps, "last_ply": plies}
+
+
+# Tai's puzzle (2026-10-01), Black to move: the stuck hint was asked of the model with no
+# position now at all, and it named Black's own Qxf2+ as the opponent's threat.
+PUZZLE = "4r1k1/p6p/6p1/2Q5/8/N1P2q1P/PP1K1P2/R6R b - - 0 1"
+
+
+def run_puzzle(annotator: GameAnnotator) -> dict[str, Any]:
+    """A puzzle, the player Black: the position now is the start's -- its board, its lines,
+    its facts at every level -- until a move; again after a takeback to the start."""
+    convo = Conversation()
+    script = Script(convo)
+    user_colour = chess.BLACK
+    convo.new_game(
+        GameStarted(game_id=GAME_ID, user_side=Side.BLACK, start_fen=PUZZLE, kind="puzzle")
+    )
+    script.record(
+        {
+            "op": "new_game",
+            "user_side": "black",
+            "start_fen": PUZZLE,
+            "kind": "puzzle",
+            "control": "",
+            "profile": [],
+        }
+    )
+    start = chess.Board(PUZZLE)
+    analyse_start(annotator, script, start, user_colour=user_colour)
+    for level in (
+        DisclosureLevel.SILENT,
+        DisclosureLevel.IDEA,
+        DisclosureLevel.FOCUS,
+        DisclosureLevel.MOVE,
+        DisclosureLevel.LINE,
+        DisclosureLevel.IDEA,
+    ):
+        convo.level = level
+        script.record({"op": "level", "level": int(level)})
+    convo.user_said("what is my opponent threatening?")
+    script.record({"op": "user_said", "text": "what is my opponent threatening?", "verdicts": None})
+    convo.coach_said("Look at what their queen on c5 can reach.")
+    script.record(
+        {"op": "coach_said", "text": "Look at what their queen on c5 can reach.", "nod": False}
+    )
+    board = start
+    for ply, san in enumerate(("Qxf2+", "Kd3"), start=1):
+        board = play(annotator, script, board, san, ply, ply == 1, user_colour=user_colour)
+    convo.takeback(Takeback(game_id=GAME_ID, plies=2, fen=PUZZLE))
+    script.record({"op": "takeback", "plies": 2, "fen": PUZZLE})
+    convo.user_said("and now?")
+    script.record({"op": "user_said", "text": "and now?", "verdicts": None})
+    board = play(annotator, script, start, "Re2+", 1, True, user_colour=user_colour)
+    last = convo.active_records()[-1]
+    plies = {
+        "short": convo.render_ply(last, full=False),
+        "levels": {str(int(level)): convo.render_ply(last, level) for level in DisclosureLevel},
+    }
+    return {"compact": False, "steps": script.steps, "last_ply": plies}
 
 
 def prompts() -> dict[str, Any]:
@@ -418,6 +496,15 @@ def main() -> None:
                 book=book,
             )
             runs.append(run(annotator, compact))
+        annotator = GameAnnotator(
+            engine=engine,
+            depth=DEPTH,
+            multipv=6,
+            thresholds=Thresholds(),
+            tagger=motifs,
+            book=book,
+        )
+        runs.append(run_puzzle(annotator))
     finally:
         engine.close()
 

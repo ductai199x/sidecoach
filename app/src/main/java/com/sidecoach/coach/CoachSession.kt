@@ -1504,13 +1504,7 @@ class Coach(
 
     /** The opening the game was in: the last name the book gave. */
     private fun openingSoFar(): String? {
-        synchronized(lock) {
-            for (record in conversation.records.asReversed()) {
-                val opening = record.analysis?.opening
-                if (!opening.isNullOrEmpty()) return opening
-            }
-        }
-        return null
+        synchronized(lock) { return conversation.opening() }
     }
 
     /**
@@ -1556,12 +1550,15 @@ class Coach(
         emptyList()
     }
 
-    /** What the coach has said since the last move was played. */
+    /**
+     * What the coach has said since the position now was reached: the last move, or a takeback or
+     * a re-read of the board (what was said of a withdrawn move is not). `_said_since_move`.
+     */
     private fun saidSinceMove(): List<String> {
         val entries = synchronized(lock) { conversation.entries.toList() }
         val out = ArrayList<String>()
         for (entry in entries.asReversed()) {
-            if (entry.kind == "ply") break
+            if (entry.kind == "ply" || entry.kind == "takeback" || entry.kind == "resync") break
             if (entry.kind == "coach") out.add(entry.text)
         }
         return out

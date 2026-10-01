@@ -65,16 +65,22 @@ import java.util.Locale
  */
 const val BEYOND_TITLE = "Beyond this level: the answer and how it works"
 
+/** A position of the record with the engine's word on it: a move's, or the start's. */
+interface PositionRecord {
+    val analysis: Analysis?
+    val facts: PositionFacts?
+}
+
 /** One move as it was seen, with the engine's word on it as it arrives. */
-class PlyRecord(val move: MovePlayed) {
+class PlyRecord(val move: MovePlayed) : PositionRecord {
     var assessment: MoveAssessment? = null
 
     /**
      * The analysis of the position the move led to (the side to move's lines), and the
      * facts built from it for the user's side.
      */
-    var analysis: Analysis? = null
-    var facts: PositionFacts? = null
+    override var analysis: Analysis? = null
+    override var facts: PositionFacts? = null
     var whiteMs: Int? = null
     var blackMs: Int? = null
 
@@ -83,6 +89,18 @@ class PlyRecord(val move: MovePlayed) {
 
     /** Before a re-read of the board: the move list restarted. */
     var superseded: Boolean = false
+}
+
+/**
+ * The position the move list starts from -- the game's first, a puzzle's, a game joined from the
+ * middle, a re-read board -- with the engine's word on it as it arrives: the position now until a
+ * move is played from it. Without it a stuck hint on a puzzle was asked of the model with no
+ * board, no lines and no sheet, and it named the player's own Qxf2+ as the opponent's threat
+ * (Tai's puzzle, 2026-10-01). `conversation.StartRecord`.
+ */
+class StartRecord(val fen: String = STARTING_FEN) : PositionRecord {
+    override var analysis: Analysis? = null
+    override var facts: PositionFacts? = null
 }
 
 private val PLACED_PIECE = Regex("\\b(king|queen|rook|bishop|knight|pawn) on ([a-h][1-8])\\b")
@@ -177,7 +195,7 @@ class Conversation {
     var userSide: Pieces.Side = Pieces.Side.WHITE
     val entries: MutableList<Entry> = ArrayList()
     val records: MutableList<PlyRecord> = ArrayList()
-    var startFen: String = STARTING_FEN
+    var start: StartRecord = StartRecord()
 
     /**
      * The disclosure level to render the position the user faces with, set by the coach
@@ -213,7 +231,7 @@ class Conversation {
         profile: List<String> = emptyList(),
     ) {
         userSide = event.userSide
-        startFen = event.startFen
+        start = StartRecord(event.startFen)
         entries.clear()
         records.clear()
         drained = 0
@@ -260,22 +278,30 @@ class Conversation {
         return record
     }
 
+    /**
+     * The engine's word on a position: the move's that led to it, or the start's (ply 0) --
+     * kept by the start record, as no move led there.
+     */
     fun analysed(event: Analysis, facts: PositionFacts): PlyRecord? {
-        val record = recordAt(event.ply)
-        if (record == null ||
-            record.move.fenAfter.split(" ").take(3) != event.fen.split(" ").take(3)
-        ) {
+        val same = event.fen.split(" ").take(3)
+        if (event.ply == 0 && start.fen.split(" ").take(3) == same) {
+            start.analysis = event
+            start.facts = facts
             return null
         }
+        val record = recordAt(event.ply)
+        if (record == null || record.move.fenAfter.split(" ").take(3) != same) return null
         record.analysis = event
         record.facts = facts
         noteIfFrozen(record, "analysis")
         return record
     }
 
+    /** The clocks as the last move standing left them (a withdrawn one's are not). */
     fun clock(whiteMs: Int?, blackMs: Int?) {
-        if (records.isNotEmpty()) {
-            val last = records.last()
+        val active = activeRecords()
+        if (active.isNotEmpty()) {
+            val last = active.last()
             if (last.whiteMs == null && last.blackMs == null) {
                 last.whiteMs = whiteMs
                 last.blackMs = blackMs
@@ -303,7 +329,7 @@ class Conversation {
             "position is now, ${turnText(board)}:\n${positionText(board)}\n" +
             "The move numbering restarts from this position."
         entries.add(Entry("user", "resync", text))
-        startFen = board.fen()
+        start = StartRecord(board.fen())
     }
 
     fun covered() {
@@ -358,27 +384,30 @@ class Conversation {
      * The sections: the setting; the game so far -- one line per move with its verdict, and
      * under each move, indented, what was said after it (the player's words, your reply)
      * and any event, the way a game record carries its annotations; the position now in
-     * full (the last ply, at the disclosure level in force), with what was said after it
-     * under it. Nothing is written twice: the move list is the record.
+     * full (the game as it stands, at the disclosure level in force), with what was said
+     * there under it. Nothing is written twice: the move list is the record.
+     *
+     * The position now is the last move's; after a takeback the last move still standing's, and
+     * before any move -- a puzzle, a game joined from the middle, a re-read board, a takeback to
+     * the start -- the start's ([renderStart]). It was always the last move ever played: a
+     * withdrawn move's position after a takeback, and none at all at a puzzle's start (Tai's
+     * puzzle, 2026-10-01).
      */
     fun render(): String {
         val header = entries.firstOrNull { it.kind == "game" }?.text ?: ""
-        val plyEntries = entries.filter { it.kind == "ply" }
-        val last = plyEntries.lastOrNull()
+        // Where the position now was reached: the last move, takeback or re-read. What comes
+        // after it was said there.
+        val reached = entries.indexOfLast { it.kind == "ply" || it.kind == "takeback" || it.kind == "resync" }
         var game = ArrayList<String>()
-        val now = ArrayList<String>()
-        var sink = game
+        val said = ArrayList<String>()
         if (summary.isNotEmpty()) game.add("Earlier dialogue, summarised: $summary")
         val staleNods = if (compactRecord) staleNods() else emptySet()
-        for (entry in entries) {
+        for ((i, entry) in entries.withIndex()) {
             if (entry.kind == "game" || entry.folded || entry in staleNods) continue
+            val sink = if (i > reached) said else game
             if (entry.kind == "ply") {
                 val record = entry.record!!
-                if (entry === last) {
-                    sink = now
-                    sink.add(renderPly(record, level))
-                    continue
-                }
+                if (i == reached) continue // the position now, in full below
                 if (entry.frozen == null) entry.frozen = renderPly(record, full = false)
                 sink.add(entry.frozen!!)
             } else if (entry.kind == "ask") {
@@ -389,19 +418,18 @@ class Conversation {
                 sink.add("    EVENT: ${entry.text}")
             }
         }
+        val active = activeRecords()
+        val now = if (active.isNotEmpty()) renderPly(active.last(), level) else renderStart(level)
         val sections = ArrayList<String>()
         sections.add("# Setting\n$header")
         if (game.isNotEmpty()) {
             if (compactRecord) game = ArrayList(compact(game))
             sections.add("# Game so far\n" + game.joinToString("\n"))
         }
-        if (now.isNotEmpty()) {
-            val said = now.drop(1)
-            sections.add(
-                "# Position now\n" + now[0] +
-                    (if (said.isNotEmpty()) "\n\n## Said here\n" + said.joinToString("\n") else "")
-            )
-        }
+        sections.add(
+            "# Position now\n" + now +
+                (if (said.isNotEmpty()) "\n\n## Said here\n" + said.joinToString("\n") else "")
+        )
         return sections.filter { it.isNotEmpty() }.joinToString("\n\n")
     }
 
@@ -561,12 +589,31 @@ class Conversation {
     }
 
     /**
+     * The position now before any move from the start: the board, and the standing, the lines,
+     * the facts, what stands on the board and the player's record at [wanted], as a move's
+     * position has them. `conversation.render_start`.
+     */
+    fun renderStart(wanted: DisclosureLevel? = null): String {
+        val level = wanted ?: this.level
+        val board = Board(start.fen)
+        val turn = turnText(board)
+        val sections = ArrayList<Pair<String, String>>()
+        sections.add(
+            "Board" to positionText(board, legal = true) + "\n" +
+                turn.take(1).uppercase() + turn.drop(1).lowercase() +
+                ". No move played yet from this position."
+        )
+        sections.addAll(positionSections(start, board, userColour, level))
+        return sections.joinToString("\n\n") { (title, body) -> "## $title\n$body" }
+    }
+
+    /**
      * The position the side to move faces, as (title, body) sections: the standing, the
      * engine lines, the facts, the disclosure level, what stands on the board, the player's
      * record.
      */
     private fun positionSections(
-        record: PlyRecord,
+        record: PositionRecord,
         board: Board,
         colour: Boolean,
         level: DisclosureLevel,
@@ -595,7 +642,7 @@ class Conversation {
         }
         // The inventory lists the checks and captures on offer, the answer among them.
         out.add("On the board (complete lists)" to inventoryLines(board, colour).joinToString("\n"))
-        val tally = tallyText(record)
+        val tally = tallyText(record as? PlyRecord)
         if (tally.isNotEmpty()) out.add("The player's record" to tally)
         return out
     }
@@ -762,7 +809,7 @@ class Conversation {
      * move is the answer they are finding -- and the standing is a section of its own.
      */
     private fun linesBlock(
-        record: PlyRecord,
+        record: PositionRecord,
         board: Board,
         colour: Boolean,
         level: DisclosureLevel,
@@ -866,7 +913,7 @@ class Conversation {
      * the opponent's facts are the opponent's plan and ideas, and say so.
      */
     private fun factsLines(
-        record: PlyRecord,
+        record: PositionRecord,
         board: Board,
         colour: Boolean,
         wanted: DisclosureLevel,
@@ -896,7 +943,7 @@ class Conversation {
      * The facts past [level] on the player's turn, one per line: the piece, the target, the move
      * and why it works -- the model's to teach from, not to say. `conversation._beyond_lines`.
      */
-    private fun beyondLines(record: PlyRecord, board: Board, level: DisclosureLevel): List<String> {
+    private fun beyondLines(record: PositionRecord, board: Board, level: DisclosureLevel): List<String> {
         val facts = record.facts ?: return emptyList()
         val shown = visibleFacts(facts, level)
         val every = visibleFacts(facts, DisclosureLevel.LINE)
@@ -996,14 +1043,15 @@ class Conversation {
     }
 
     /**
-     * The player's moves judged so far, as of [through]: the tally reads as the game went,
-     * and the last move's message holds the whole of it.
+     * The player's moves judged so far, as of [through] (null: every one, for the start of a
+     * re-read board): the tally reads as the game went, and the last move's message holds the
+     * whole of it.
      */
-    private fun tallyText(through: PlyRecord): String {
+    private fun tallyText(through: PlyRecord?): String {
         val counts = LinkedHashMap<String, Int>()
         val lost = ArrayList<Pair<Double, String>>()
         var n = 0
-        val throughAt = indexOf(through)
+        val throughAt = if (through != null) indexOf(through) else Int.MAX_VALUE
         for (record in judgedRecords()) {
             if (indexOf(record) > throughAt) break
             val assessment = record.assessment
@@ -1035,15 +1083,24 @@ class Conversation {
         return text
     }
 
-    /** The last opening name the book gave, up to [through]. */
-    private fun openingThrough(through: PlyRecord): String? {
-        for (record in records.take(indexOf(through) + 1).asReversed()) {
+    /**
+     * The last opening name the book gave, up to [through] (null: as the game stands), the
+     * start's among them: a game joined in the Sicilian was named only there.
+     */
+    private fun openingThrough(through: PlyRecord?): String? {
+        val start = this.start.analysis?.opening?.ifEmpty { null }
+        val end = if (through == null) records.size else indexOf(through) + 1
+        for (record in records.take(end).asReversed()) {
+            if (record.superseded && start != null) break // the moves before a re-read come before its start
             if (record.withdrawn || record.analysis == null) continue
             val opening = record.analysis?.opening
             if (!opening.isNullOrEmpty()) return opening
         }
-        return null
+        return start
     }
+
+    /** The opening the game is in, as the book last named it. `conversation.opening`. */
+    fun opening(): String? = openingThrough(null)
 
     // ---- helpers -----------------------------------------------------------------------
 
@@ -1066,10 +1123,16 @@ class Conversation {
         val lines = ArrayList<String>()
         for ((i, record) in active.withIndex()) {
             val move = record.move
-            if (i == 0 || move.ply >= beforePly || !move.byUser) continue
-            val faced = active[i - 1]
-            val facedFacts = faced.facts
-            if (faced.move.ply != move.ply - 1 || facedFacts == null) continue
+            if (move.ply >= beforePly || !move.byUser) continue
+            // The position the move was played in: the move before's, or the start's for the
+            // first move -- a joined game's first move was never a moment of its idea.
+            val facedFacts = if (i > 0) {
+                if (active[i - 1].move.ply != move.ply - 1) continue
+                active[i - 1].facts
+            } else {
+                start.facts
+            }
+            if (facedFacts == null) continue
             if ((facedFacts.theme?.ifEmpty { null } ?: facedFacts.plan) != key) continue
             val a = record.assessment ?: continue
             if (a.label != null && a.label.name.lowercase() == "book") continue
@@ -1133,10 +1196,15 @@ class Conversation {
     /** `list.index`, by identity: two records of the same move would otherwise tie. */
     private fun indexOf(record: PlyRecord): Int = records.indexOfFirst { it === record }
 
-    private fun recordBefore(record: PlyRecord): PlyRecord? {
+    /**
+     * The record of the position [record]'s move was played in: the move before's, and the
+     * start's for the first move; none for the start, or a move no longer standing.
+     */
+    private fun recordBefore(record: PositionRecord): PositionRecord? {
         val active = activeRecords()
         val i = active.indexOfFirst { it === record }
-        return if (i > 0) active[i - 1] else null
+        if (i < 0) return null
+        return if (i > 0) active[i - 1] else start
     }
 
     private fun recordAt(ply: Int): PlyRecord? {
