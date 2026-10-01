@@ -340,8 +340,9 @@ export const review = (key: string) => {
       post<{ ok: boolean; error?: string } & AnalysisPosition & { uci: string; san: string }>(`${p}/move`, { fen, uci }),
     lines: (fen: string) => post<{ ok: boolean; error?: string } & EngineLines>(`${p}/lines`, { fen }),
     explore: (fen: string, moves: string[]) => post<{ ok: boolean; error?: string } & Explored>(`${p}/explore`, { fen, moves }),
-    pgn: (tree: PgnTree[], annotated: boolean, save: boolean) =>
-      post<{ ok: boolean; error?: string; pgn: string; name: string; saved?: string }>(`${p}/pgn`, { tree, annotated, save }),
+    /** `copy`: the phone's app puts it on the clipboard (its web view's clipboard refuses writes). */
+    pgn: (tree: PgnTree[], annotated: boolean, save: boolean, copy = false) =>
+      post<{ ok: boolean; error?: string; pgn: string; name: string; saved?: string; copied?: boolean }>(`${p}/pgn`, { tree, annotated, save, copy }),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };

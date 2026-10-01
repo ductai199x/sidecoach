@@ -70,8 +70,8 @@
     view = "analysis";
   }
   /** The game as a PGN with the analysis board's lines; the room opened again when it had gone. */
-  async function savePgn(annotated: boolean, save: boolean) {
-    const ask = () => api.pgn(analysis.tree(), annotated, save);
+  async function savePgn(annotated: boolean, save: boolean, copy = false) {
+    const ask = () => api.pgn(analysis.tree(), annotated, save, copy);
     const got = await ask();
     if (!got.ok && /not open/.test(got.error ?? "") && (await reopen())) return ask();
     return got;

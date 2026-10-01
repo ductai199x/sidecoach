@@ -22,8 +22,9 @@
     room: ReviewState;
     graph: number[];
     marks: { ply: number; kind: string }[];
-    /** The game as a PGN with the board's lines: copied (`save` false) or kept in Downloads. */
-    savePgn: (annotated: boolean, save: boolean) => Promise<{ ok: boolean; error?: string; pgn?: string; saved?: string }>;
+    /** The game as a PGN with the board's lines: kept in Downloads (`save`), put on the
+     *  clipboard by the phone's app (`copy`), or only written. */
+    savePgn: (annotated: boolean, save: boolean, copy?: boolean) => Promise<{ ok: boolean; error?: string; pgn?: string; saved?: string; copied?: boolean }>;
   } = $props();
 
   type Tab = "moves" | "explorer" | "details" | "charts";
@@ -86,10 +87,20 @@
   let said = $state("");
   let saidBad = $state(false);
   let busy = $state(false);
+  // The phone's web view refuses every clipboard write: its app copies the PGN instead.
+  const onPhone = typeof document !== "undefined" && document.documentElement.dataset.app === "phone";
   // The clipboard is asked inside the click, the text to follow once Sidecoach has written it: a
   // click's leave to write lasts seconds, and asked after it, the page gets a permission prompt.
   async function copy(): Promise<void> {
     busy = true;
+    if (onPhone) {
+      const got = await savePgn(annotated, false, true).catch(() => null);
+      busy = false;
+      const done = !!(got?.ok && got.copied);
+      said = done ? "Copied: paste it anywhere a PGN goes." : got?.error || "Sidecoach is not answering.";
+      saidBad = !done;
+      return;
+    }
     let failed: string | null = null;
     const text = savePgn(annotated, false)
       .catch(() => null)
