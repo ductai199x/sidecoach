@@ -906,32 +906,40 @@ class _Assessing:
             # no stuck hint came there (the state review, 2026-10-01).
             self.analyser.reset()
             self._from.clear()
-            self._forget(event.game_id)
+            self._forget(event.game_id, event.start_fen)
             self._game = chess.Board(event.start_fen)
             self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
-            self._forget(event.game_id)
+            self._forget(event.game_id, event.fen)
             # A position adopted, not played to: it has no history to look up.
             self._game = chess.Board(event.fen)
             self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
 
-    def _forget(self, game_id: str) -> None:
-        """A game begins, or its numbering starts again (a resync): no plies stand yet."""
+    def _forget(self, game_id: str, fen: str) -> None:
+        """A game begins on `fen`, or its numbering starts again there (a resync): no plies
+        stand yet."""
         self._game_id = game_id
         self._ply = 0
         self._line.clear()
         self._fens.clear()
+        self._fens[0] = fen
 
     def _stale(self, event: object) -> bool:
         """The engine's word on a move or a position the game has since taken back: a ply
         past the game's last, or one whose move or position is no longer the game's. Passed
-        on, a withdrawn move's verdict was taken for the replacement played at its ply."""
+        on, a withdrawn move's verdict was taken for the replacement played at its ply. And
+        its word on another game, or at ply 0 on a position the game no longer begins from:
+        a measure under way when a resync re-read the board (the side to move settled by the
+        clock, the next puzzle) came after the new position's and was filed as its (the
+        state review, 2026-10-01)."""
         from sidecoach.events import Analysis, MoveAssessment
 
-        if not isinstance(event, (MoveAssessment, Analysis)) or event.game_id != self._game_id:
+        if not isinstance(event, (MoveAssessment, Analysis)):
             return False
+        if event.game_id != self._game_id:
+            return self._game_id is not None
         if event.ply > self._ply:
             return True
         if isinstance(event, MoveAssessment):

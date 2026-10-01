@@ -607,9 +607,14 @@ class Analyser:
         self._submit(_Request(game_id, ply, board.copy(stack=False), None))
 
     def reset(self) -> None:
-        """A new game: drop what is queued and forget the measured positions, since none
-        of it is about this game. What the worker is busy with finishes and is delivered;
-        the pipeline ignores an event for a game that is over."""
+        """A new game, or the board re-read: drop what is queued and forget the measured
+        positions, since none of it is about the game as it now stands. What the worker is
+        busy with is let go as a takeback lets go of it (`withdraw`): nothing about it is
+        delivered, and it is not put off to be measured later. It used to finish and be
+        delivered -- or, its full measure interrupted by the next request, be put off after
+        the reset and measured again after the new position, its analysis then the last
+        word; on a resync of the same game (the side to move settled by the clock) the
+        profile filed it as the new position's (the state review, 2026-10-01)."""
         while True:
             try:
                 self._requests.get_nowait()
@@ -620,6 +625,11 @@ class Analyser:
         with self._count_lock:
             self._outstanding = max(0, self._outstanding - len(self._deferred))
             self._deferred = []
+            current = self._current
+            if current is not None:
+                current.withdrawn = True
+        if current is not None:
+            self.annotator.engine.interrupt()
         self.annotator.reset()
 
     def withdraw(self, game_id: str, ply: int) -> None:

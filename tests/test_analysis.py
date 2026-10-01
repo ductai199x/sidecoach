@@ -952,6 +952,62 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
     assert all(e.ply <= 3 for e in analyses)
 
 
+class _SlowEngine(FakeEngine):
+    """A fake engine that takes a moment per search and stops when interrupted, as a real
+    one does (`Engine.interrupt`)."""
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        from sidecoach.analysis.engine import Interrupted
+
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            if self._interruptible and self._stopped.is_set():
+                raise Interrupted
+            time.sleep(0.005)
+        return super().analyse(board, **kwargs)
+
+
+def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path: Path) -> None:
+    """The side to move settled by the clock while the joined position is measured whole:
+    the measure, given way to the re-read position's, was put off after the reset had
+    cleared what was put off, measured again after the new reading and delivered last, and
+    on the same game at ply 0 it passed as the new position's -- the profile filed White's
+    analysis for a position with Black to move (the state review, 2026-10-01). The engine
+    lets go of what it is on at a reset, and the glue passes on nothing of a position the
+    game no longer stands on, nor of another game."""
+    from sidecoach.cli import _Assessing
+    from sidecoach.config import Settings
+    from sidecoach.events import GameStarted, Resync, Side
+
+    white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
+    black = white.replace(" w ", " b ")
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    analyser = Analyser(GameAnnotator(engine=_SlowEngine({}), depth=18, with_threats=False))
+    assessing.analyser = analyser
+    analyser.start()
+    try:
+        assessing.submit(
+            GameStarted(game_id="g", user_side=Side.WHITE, start_fen=white, kind="position")
+        )
+        assert _until(lambda: analyser._looking, 5), "the full measure never began"
+        before = assessing.drain()
+        assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
+        after = assessing.wait(timeout=10)
+        assert [e.fen for e in before if isinstance(e, Analysis)] == [white]
+        told = [e.fen for e in after if isinstance(e, Analysis)]
+        assert told and set(told) == {black}, told
+        # The glue's own check, whatever the engine sends: a word at ply 0 on the old
+        # reading, and one on another game, are not passed on.
+        word = {"ply": 0, "lines": [], "decisive": False, "only_move": False}
+        stale = Analysis(game_id="g", fen=white, **word)
+        other = Analysis(game_id="h", fen=black, **word)
+        analyser._results.put(stale)
+        analyser._results.put(other)
+        assert assessing.drain() == []
+    finally:
+        assessing.close()
+
+
 # Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.
 OVERLOADED = "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2"
 OVERLOADED_LINE = ["e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "d2b4"]
