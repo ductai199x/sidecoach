@@ -89,6 +89,38 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { granted -> PanelListen.permitted(granted) }
 
+    /**
+     * The page's file inputs -- Settings > Board's own pieces, Your games' .pgn file -- open
+     * Android's picker, and what was chosen goes back to the page. A WebView opens nothing for
+     * a file input on its own: the button did nothing at all on the phone (Tai, 2026-10-01).
+     */
+    private var filesWanted: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+    private val pickFiles = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        val clip = data?.clipData
+        val chosen = when {
+            result.resultCode != Activity.RESULT_OK || data == null -> null
+            clip != null -> Array(clip.itemCount) { clip.getItemAt(it).uri }
+            data.data != null -> arrayOf(data.data!!)
+            else -> null
+        }
+        filesWanted?.onReceiveValue(chosen)
+        filesWanted = null
+    }
+
+    /** Android's document picker for a file input: its types, one file or several. */
+    private fun pickerFor(params: WebChromeClient.FileChooserParams): Intent {
+        val types = params.acceptTypes.flatMap { it.split(",") }.map { it.trim() }.filter { "/" in it }.distinct()
+        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = types.singleOrNull() ?: "*/*"
+            if (types.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, types.toTypedArray())
+            if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         // Edge to edge on every version, as Android 15 and later always are: the bars are
@@ -187,6 +219,24 @@ class MainActivity : ComponentActivity() {
                     .setOnCancelListener { result.confirm() }
                     .show()
                 return true
+            }
+
+            override fun onShowFileChooser(
+                view: WebView?,
+                callback: android.webkit.ValueCallback<Array<android.net.Uri>>,
+                params: FileChooserParams,
+            ): Boolean {
+                // One picker at a time: one still open gets nothing back.
+                filesWanted?.onReceiveValue(null)
+                filesWanted = callback
+                return try {
+                    pickFiles.launch(pickerFor(params))
+                    true
+                } catch (e: android.content.ActivityNotFoundException) {
+                    Log.w(TAG, "no file picker on this phone: $e")
+                    filesWanted = null
+                    false
+                }
             }
 
             override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult): Boolean {
