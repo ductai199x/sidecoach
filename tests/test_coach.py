@@ -180,6 +180,20 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 2
 
 
+def test_a_question_starts_the_stuck_spell_again() -> None:
+    """A hint asked at 15 s was followed by the focus unasked at 16 s: the stuck spell ran
+    from the position, not from the answer (the coach review, 2026-10-01). The next hint
+    unasked waits a full spell from the answer, as from one said unasked."""
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 15.0)
+    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA]
+    coach.tick(16.0)
+    assert drain(coach) == [], "a second after the answer"
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.FOCUS]
+
+
 def test_naming_the_move_yourself_earns_the_move_level() -> None:
     coach, _ = scripted_coach(["What do you think?", "Yes, Qxf7 is mate."])
     play_to_scholar(coach)

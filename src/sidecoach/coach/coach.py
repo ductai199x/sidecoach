@@ -2453,6 +2453,8 @@ class Coach:
             position.disclosure.carry(self._ladder(position))
             if unlock is not None:
                 position.disclosure.apply(unlock)
+            # Answered here, the stuck spell starts again (`InterjectionPolicy.asked`).
+            self.policy.asked(ts)
         level = max(position.disclosure.level, DisclosureLevel.IDEA)
         if self.finished or position.board.is_game_over():
             # Nothing is withheld from a game that is over.
