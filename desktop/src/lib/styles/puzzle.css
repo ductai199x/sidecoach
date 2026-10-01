@@ -7,59 +7,40 @@
   grid-template-columns: var(--board) minmax(var(--panel-min), 620px);
   column-gap: 14px;
 }
-.puzzle-page .strong { color: var(--ink); font-weight: 600; }
-.pz-msg { color: var(--muted); font-size: 13px; }
-.pz-msg.good { color: var(--accent); font-weight: 600; }
-.pz-msg.bad { color: var(--error); font-weight: 600; }
-
-/* ---- stacked (a phone, a narrow window): the panel's column -- the board across the
-   width, the coach below -- with a bar of one row: back, the knight, the puzzle and its
-   facts, Give up. The wide bar's title, message and controls give way; what they said is
-   under the board. ---- */
-.pz-back, .pz-mark, .pz-head, .pz-giveup, .pz-foot { display: none; }
-html.stacked .puzzle-page #bar {
-  flex-wrap: nowrap; min-height: 56px; box-sizing: border-box; padding: 6px 12px 6px 6px;
-}
-html.stacked .puzzle-page #bar > .group:first-child { flex: 1 1 auto; flex-wrap: nowrap; gap: 8px; min-width: 0; }
-html.stacked .puzzle-page #bar .brand,
-html.stacked .puzzle-page #bar .strong,
-html.stacked .puzzle-page #bar .pz-msg,
-html.stacked .puzzle-page #bar .controls { display: none; }
-html.stacked .puzzle-page .pz-back {
-  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
-  background: transparent; color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent;
-}
-html.stacked .puzzle-page .pz-back:hover, html.stacked .puzzle-page .pz-back:active { background: var(--panel2); }
+/* ---- the bar, as the review's and the stats' windows have it: back, the knight, the puzzle
+   and its facts; then the voice, the puzzle on Lichess and Give up. ---- */
+.puzzle-page #bar { flex-wrap: nowrap; min-height: 56px; box-sizing: border-box; padding: 6px 12px 6px 6px; }
+.puzzle-page #bar > .group:first-child { flex: 1 1 auto; flex-wrap: nowrap; gap: 8px; min-width: 0; }
+.puzzle-page #bar .controls { flex: 0 0 auto; flex-wrap: nowrap; gap: 4px; }
+.pz-back.iconbtn { width: 40px; height: 40px; color: var(--ink); -webkit-tap-highlight-color: transparent; }
 .pz-back svg { width: 24px; height: 24px; fill: currentColor; }
-html.stacked .puzzle-page .pz-mark {
-  display: block; width: 26px; height: 26px; flex: 0 0 26px;
-  filter: drop-shadow(0 0 8px rgba(242, 180, 65, 0.3));
-}
-html.stacked .puzzle-page .pz-head { display: block; min-width: 0; line-height: 1.2; }
-.pz-name { font-size: 16px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pz-mark { display: block; width: 26px; height: 26px; flex: 0 0 26px; filter: drop-shadow(0 0 8px rgba(242, 180, 65, 0.3)); }
+.pz-head { min-width: 0; line-height: 1.25; }
+.pz-name { font-size: 15px; font-weight: 700; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pz-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-html.stacked .puzzle-page .pz-giveup { display: inline-flex; flex: 0 0 auto; margin-left: auto; padding: 8px 14px; }
+.pz-giveup { margin-left: 4px; padding: 7px 14px; }
+a.iconbtn { text-decoration: none; }
 
-/* Under the board, two rows that keep their places whatever is said: the message across
-   the width (green when solved, red on a miss), then what is left to find, and the links --
-   Next lit once the puzzle is done. */
-html.stacked .puzzle-page .gameinfo { display: none; }
-html.stacked .puzzle-page .pz-foot {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "say say" "left links";
+/* Under the board, two rows that keep their places whatever is said: the message across the
+   width (green when solved, red on a miss), then what is left to find, and Next -- lit once the
+   puzzle is done. */
+.puzzle-page .gameinfo { display: none; }
+.pz-foot {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 22px 30px; grid-template-areas: "say say" "left links";
   align-items: center; column-gap: 12px; padding: 6px 4px 0;
 }
-.pz-say { grid-area: say; min-height: 20px; }
-.pz-left { grid-area: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.pz-links { grid-area: links; }
-.pz-say { color: var(--ink); font-size: 14px; font-weight: 600; }
+.pz-say { grid-area: say; min-height: 20px; color: var(--ink); font-size: 14px; font-weight: 600; }
 .pz-say.good { color: var(--accent); }
 .pz-say.bad { color: var(--error); }
-.pz-left { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.pz-links { display: inline-flex; gap: 14px; white-space: nowrap; }
+.pz-left { grid-area: left; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.pz-links { grid-area: links; display: inline-flex; gap: 14px; white-space: nowrap; }
 .pz-link { color: var(--muted); font-size: 14px; font-weight: 600; text-decoration: none; padding: 6px 2px; }
 .pz-link:hover, .pz-link:active { color: var(--ink); }
 .pz-link.ready { color: var(--accent); }
+/* A phone: the knight and the Lichess link give way to the title. */
+@media (max-width: 420px) {
+  .pz-mark, .puzzle-page #bar .controls a.iconbtn { display: none; }
+}
 html.stacked .puzzle-page .coach { min-height: 80px; }
 
 /* ---- the coach, the strip ---- */

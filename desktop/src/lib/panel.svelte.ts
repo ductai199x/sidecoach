@@ -11,6 +11,7 @@ export type CoachItem =
   | { kind: "review"; id: number; review: Record<string, any>; insights: string[]; reviewKey: string | null }
   | { kind: "practice"; id: number; practice: Record<string, any> }
   | { kind: "you"; id: number; text: string; spoken: boolean }
+  | { kind: "divider"; id: number; text: string }
   | { kind: "pending"; id: number };
 
 export type ConvoTurn = {
@@ -180,6 +181,7 @@ export class PanelStore {
     // own start: the last message's marks belonged to the old one (a puzzle's arrows sat on
     // the next puzzles' boards, Tai's Pixel, 2026-09-23).
     if (line.chan === "game" && ((d && d.start_fen) || line.text.startsWith("resync:"))) this.latestMarks = null;
+    if (line.chan === "game" && d && d.start_fen && d.kind !== "puzzle") this.addDivider(d.kind === "game" ? "New game" : "New position");
     if (line.chan === "coach" && d && d.full) this.addCoach(d);
     if (line.chan === "coach" && d && d.review) this.addReview(d);
     if (line.chan === "coach" && d && d.practice) this.coach.push({ kind: "practice", id: nextId++, practice: d.practice });
@@ -220,6 +222,17 @@ export class PanelStore {
     const pending = this.coach.findIndex((c) => c.kind === "pending");
     if (pending < 0) this.coach.push(item);
     else this.coach.splice(pending, 0, item);
+  }
+
+  /** A game's start, in the pane that keeps the last games' words: a line between them, as a
+   * chat app's between conversations. None above the first; a game with no words gives its line
+   * to the next. */
+  private addDivider(text: string): void {
+    if (!this.coach.length) return;
+    const item: CoachItem = { kind: "divider", id: nextId++, text };
+    const last = this.coach.length - 1;
+    if (this.coach[last].kind === "divider") this.coach[last] = item;
+    else this.coach.push(item);
   }
 
   private addReview(d: Record<string, any>): void {

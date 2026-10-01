@@ -36,12 +36,30 @@
     return item.kind === "you" ? "you" : item.kind === "message" || item.kind === "pending" ? "coach" : "card";
   }
   const tail = (i: number): boolean => side(store.coach[i]) !== side(store.coach[i + 1]);
+  // A kind of move counted, in words: "2 inaccuracies", "1 blunder", "3 best".
+  const PLURAL: Record<string, string> = { inaccuracy: "inaccuracies", mistake: "mistakes", miss: "misses", blunder: "blunders" };
+  const kindWords = (k: string, n: number): string => (n === 1 ? k : PLURAL[k] ?? k);
+  const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 </script>
 
 <div id="coach" class="coach" use:stickToBottom>
+  {#if !store.coach.length}
+    <!-- Before the coach has said anything: what goes here, and what to do. -->
+    <div class="coach-empty">
+      {#if store.running}
+        <b>The coach is watching.</b>
+        <span>It speaks up when a move teaches something. Ask it anything below, or press Hint.</span>
+      {:else}
+        <b>Press Start, then play.</b>
+        <span>Open a game on chess.com or Lichess: the coach follows it from the screen.</span>
+      {/if}
+    </div>
+  {/if}
   {#each store.coach as item, i (item.id)}
     {#if item.kind === "pending"}
       <div class="msg typing" class:tail={tail(i)} role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>
+    {:else if item.kind === "divider"}
+      <div class="coach-divider" role="separator"><span>{item.text}</span></div>
     {:else if item.kind === "you"}
       <div class="msg you" class:tail={tail(i)} title={item.spoken ? "you, spoken" : "you"}><LinkedText text={item.text} /></div>
     {:else if item.kind === "message"}
@@ -57,13 +75,13 @@
     {:else if item.kind === "practice"}
       {@const p = item.practice}
       <div class="msg review practice">
-        <div class="meta">practice · {motifWords(p.motif)} · around {p.level}</div>
+        <div class="meta">Practice · {capital(motifWords(p.motif))} · around {p.level}</div>
         <div class="rv-head">{p.reason ? p.reason.charAt(0).toUpperCase() + p.reason.slice(1) + "." : "Puzzles to practise."}</div>
         <div class="rv-puzzles">
-          {#each p.puzzles || [] as z (z.id)}
+          {#each p.puzzles || [] as z, n (z.id)}
             <span class="rv-puzzle-wrap">
-              <a href="/puzzle/{encodeURIComponent(z.id)}" target="_blank" rel="noopener" class="rv-puzzle" title="Solve it in a window of its own: {((z.themes || []) as string[]).map(motifWords).join(', ') || 'practice'}" onclick={(e) => { if (inShell()) { e.preventDefault(); openWindow("puzzle/" + encodeURIComponent(z.id)); } }}>puzzle {z.id} · {z.rating}</a>
-              <a href={z.url} target="_blank" rel="noopener" class="rv-puzzle-link" title="Open on Lichess instead">↗</a>
+              <a href="/puzzle/{encodeURIComponent(z.id)}" target="_blank" rel="noopener" class="rv-puzzle" title="Solve it in a window of its own: {((z.themes || []) as string[]).map(motifWords).join(', ') || 'practice'}" onclick={(e) => { if (inShell()) { e.preventDefault(); openWindow("puzzle/" + encodeURIComponent(z.id)); } }}>Puzzle {n + 1} · {z.rating}</a>
+              <a href={z.url} target="_blank" rel="noopener" class="rv-puzzle-link" title="Open it on Lichess instead" aria-label="Open it on Lichess instead"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z" /></svg></a>
             </span>
           {/each}
         </div>
@@ -71,11 +89,11 @@
     {:else}
       {@const r = item.review}
       <div class="msg review">
-        <div class="meta">review · {r.result}{r.reason ? " by " + r.reason : ""}{r.accuracy != null ? " · accuracy " + r.accuracy.toFixed(1) : ""}</div>
+        <div class="meta">Game over · {r.result}{r.reason ? " by " + r.reason : ""}{r.accuracy != null ? " · accuracy " + r.accuracy.toFixed(1) : ""}</div>
         <div class="rv-head">{(r.lines && r.lines[0]) || "Game over."}</div>
         {#if tallies(r).length}
           <div class="rv-tally">
-            {#each tallies(r) as [k, n] (k)}<span class="rv-chip {k}">{n} {k}</span>{/each}
+            {#each tallies(r) as [k, n] (k)}<span class="rv-chip {k}">{n} {kindWords(k, n)}</span>{/each}
           </div>
         {/if}
         {#each r.turning_points || [] as tp (tp.ply + ":" + (tp.segment || 0))}
@@ -95,7 +113,7 @@
               onchange={(e) => panel.correct({ game_id: r.game_id, segment: tp.segment || 0, ply: tp.ply, cause: (e.currentTarget as HTMLSelectElement).value })}
             >
               {#each CAUSES as cause (cause)}
-                <option value={cause}>{cause}{tp.motif && cause === tp.cause ? " (" + motifWords(tp.motif) + ")" : ""}</option>
+                <option value={cause}>{capital(cause)}{tp.motif && cause === tp.cause ? " (" + motifWords(tp.motif) + ")" : ""}</option>
               {/each}
             </select>
           </div>

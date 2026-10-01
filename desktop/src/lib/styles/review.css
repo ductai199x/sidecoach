@@ -16,10 +16,16 @@ a.primary.linkbtn {
 a.primary.linkbtn:hover { background: var(--accent-hover); }
 
 /* ---- the games page: bringing games in, then the library, one scrolling column ---- */
+/* The window scrolls (its scrollbar at the window's edge, not the column's), the column 948px at
+   most in the middle of it; the gutter kept, so a search that shortens the list moves nothing. */
 .games-page main {
   display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; gap: 14px; overflow-y: auto;
-  max-width: 980px; width: 100%; margin: 0 auto; padding: 14px 16px 24px;
+  width: 100%; margin: 0; padding: 0 max(16px, calc((100% - 948px) / 2)) 24px;
+  scrollbar-gutter: stable;
 }
+/* The space above the first card is its own, not the scroller's: the list's toolbar sticks flush
+   at the top of the window, no strip of rows above it. */
+.games-page main > :first-child { margin-top: 14px; }
 .gm-mark, .rv-logo { width: 28px; height: 28px; }
 .gm-name, .rv-name { font-weight: 700; font-size: 15px; }
 .gm-sub, .rv-sub { color: var(--muted); font-size: 12px; }
@@ -108,7 +114,51 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .acc.b { background: #1f1e1c; color: #f0efed; box-shadow: inset 0 0 0 1px #4b4847; }
 .gm-when { color: var(--muted); font-size: 12px; text-align: right; }
 .gm-go { display: flex; align-items: center; gap: 2px; justify-content: flex-end; }
-.gm-del.iconbtn { width: 28px; height: 28px; }
+/* The list's toolbar (Gmail's): Select, the search, the order, the count; it stays at the top of
+   the window while the list scrolls. In select mode it is the action bar, tinted: select all, how
+   many, Delete, Cancel. */
+.gm-tools {
+  position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px;
+  min-height: 50px; margin-bottom: 8px; padding: 7px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 14px -10px #000c;
+}
+.gm-tools.selecting { background: #2b3423; border-color: #4f6e33; }
+/* Stuck at the top (the marker above it scrolled away): square at the window's edge. */
+.gm-tools.stuck { border-top-left-radius: 0; border-top-right-radius: 0; border-top-color: transparent; }
+.gm-stick { height: 1px; margin-bottom: -1px; }
+.gm-tool {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px 0 9px;
+  font-size: 13px; font-weight: 600; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+}
+.gm-tool svg { width: 18px; height: 18px; fill: currentColor; flex: 0 0 auto; }
+.gm-tool:hover:not(:disabled) { background: var(--panel3); }
+.gm-tool.danger { margin-left: auto; color: #ff8a7d; }
+.gm-tool.danger:hover:not(:disabled) { background: #fa412d26; border-color: #fa412d80; color: #ffb3aa; }
+.gm-tool:disabled { opacity: 0.45; }
+.gm-search, .gm-sort {
+  display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; color: var(--muted);
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+}
+.gm-search { flex: 1 1 180px; min-width: 0; }
+.gm-search:focus-within, .gm-sort:focus-within { border-color: #6b6865; color: var(--ink); }
+.gm-search svg, .gm-sort svg { width: 18px; height: 18px; fill: currentColor; flex: 0 0 auto; }
+.gm-search input { flex: 1; min-width: 0; height: 100%; padding: 0; background: none; border: 0; color: var(--ink); font: inherit; font-size: 13px; }
+.gm-search input:focus, .gm-sort select:focus { outline: none; }
+.gm-search input::placeholder { color: var(--muted); }
+.gm-sort { flex: 0 0 auto; padding-right: 4px; }
+.gm-sort select { height: 100%; padding: 0 4px; background: none; border: 0; color: var(--ink); font-size: 13px; cursor: pointer; }
+.gm-sort select option { background: var(--panel2); }
+.gm-count { margin-left: auto; padding: 0 4px; color: var(--muted); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gm-count.picked { margin-left: 4px; color: var(--ink); font-size: 13.5px; }
+.gm-box { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.gm-tools > .gm-box { margin: 0 4px 0 6px; }
+/* A row in select mode: its checkbox first, the whole row picks it; a picked row is tinted and
+   marked at its edge. */
+.gm-games.selecting .gm-game { grid-template-columns: 26px 74px minmax(0, 1fr) 54px 96px 76px; cursor: pointer; user-select: none; }
+.gm-check { display: flex; align-items: center; justify-content: center; }
+.gm-game.picked, .gm-game.picked:hover { background: #2d3824; box-shadow: inset 3px 0 0 var(--accent); }
+/* A long press on a phone starts select mode: no text selection or callout under the finger. */
+.gm-games li { -webkit-touch-callout: none; }
 /* A game just removed: a few seconds' Undo, at the foot of the window. */
 .gm-undo {
   position: fixed; left: 50%; bottom: calc(18px + var(--inset-bottom, 0px)); transform: translateX(-50%); z-index: 30;
@@ -123,10 +173,22 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
    game, the accuracies and the buttons. */
 @media (max-width: 720px) {
   .gm-game { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "players players players result" "meta acc . go"; }
+  .gm-games.selecting .gm-game {
+    grid-template-columns: 26px auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "check players players players result" "check meta acc . .";
+  }
+  .gm-check { grid-area: check; }
   .gm-players { grid-area: players; }
   .gm-result { grid-area: result; justify-self: end; min-width: 54px; padding: 2px 8px; }
   .gm-acc { grid-area: acc; } .gm-kind { grid-area: meta; } .gm-go { grid-area: go; }
   .gm-when { display: none; }
+  /* The toolbar in one line: the count is in the window's title; Cancel is its cross. */
+  .gm-tools { gap: 6px; padding: 7px 8px; }
+  .gm-tools > .gm-count:not(.picked) { display: none; }
+  .gm-tool { padding: 0 10px 0 8px; }
+  .gm-tool:not(.danger) span { display: none; }
+  .gm-tool:not(.danger) { padding: 0; width: 34px; justify-content: center; }
+  .gm-sort select { max-width: 132px; }
 }
 
 /* ---- the review page: the eval bar, the board, the review's pane ---- */
@@ -276,6 +338,9 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-ask:hover:not(:disabled) { background: var(--accent-hover); }
 .rv-ask:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 #5f8a36; }
 .rv-ask:disabled { opacity: 0.4; cursor: default; }
+.rv-ask.quiet { background: var(--panel3); text-shadow: none; box-shadow: 0 3px 0 #1c1b19; }
+.rv-ask.quiet:hover { background: #4a4744; }
+.rv-ask.quiet:active { box-shadow: 0 1px 0 #1c1b19; }
 .rv-ai .bar {
   position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
   background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
@@ -514,8 +579,9 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-step .rv-movebox { min-height: 150px; }
 
 /* The move list, as chess.com's: a row a move number, every other row striped; each move a
-   chip that hugs it, the key moves' badge and colour on it, the one shown marked. */
-.rv-row { display: grid; grid-template-columns: 38px 1fr 1fr; align-items: center; height: 30px; padding: 0 4px; border-radius: 4px; font-size: 13.5px; }
+   chip that hugs it, the key moves' badge and colour on it, the one shown marked. The two
+   moves at a fixed pitch, as the panel's, so Black's does not drift across a wide pane. */
+.rv-row { display: grid; grid-template-columns: 38px minmax(7.5em, 11em) minmax(7.5em, 11em) 1fr; align-items: center; height: 30px; padding: 0 4px; border-radius: 4px; font-size: 13.5px; }
 .rv-row:nth-child(even) { background: #2a2825; }
 .rv-row .num { color: var(--muted); font-variant-numeric: tabular-nums; padding-left: 4px; }
 .rv-row .cell { display: flex; align-items: center; gap: 6px; min-width: 0; }

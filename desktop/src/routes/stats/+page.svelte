@@ -10,6 +10,7 @@
   import "$lib/styles/stats.css";
   import { connect, stats as statsApi, type Backlog, type Figure, type Rate, type StatPosition, type StatRating, type StatsFilter, type StatsNumbers, type WorkArea } from "$lib/api";
   import Board from "$lib/Board.svelte";
+  import { edgeFade } from "$lib/fade";
   import { prefs } from "$lib/panel.svelte";
   import { className } from "$lib/review/words";
   import { inShell, onAnnounce, openWindow } from "$lib/shell.svelte";
@@ -143,6 +144,10 @@
     mistake: "Behind your peers",
     blunder: "Well behind your peers",
   };
+  // Why a figure with the peers' beside it has no grade: too few of it yet, or a figure players of
+  // every level score much alike on, where a grade would say nothing (profile/stats.py `grade`).
+  const NO_GRADE_FEW = "No grade yet: too few to go on";
+  const NO_GRADE_FLAT = "No grade: players of every level score much alike here, so it says little about strength";
   const small = (n: number | undefined) => (n ?? 0) < SMALL;
   const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
   const moveNo = (p: StatPosition) => `${Math.ceil(p.ply / 2)}${p.side === "white" ? "." : "..."}`;
@@ -302,7 +307,10 @@
   <div class="st-row" class:small={few} class:open={opened === id}>
     <button class="st-row-head" aria-expanded={opened === id} onclick={() => toggle(id, what, arg)}>
       <span class="label">{label}</span>
-      <span class="grade">{#if f?.grade && !few}<Badge kind={f.grade} size={20} title={GRADE_WORDS[f.grade]} />{/if}</span>
+      <span class="grade">
+        {#if f?.grade && !few}<Badge kind={f.grade} size={20} title={GRADE_WORDS[f.grade]} />
+        {:else if f?.value != null && f?.peers != null}<i class="nograde" title={few ? NO_GRADE_FEW : NO_GRADE_FLAT}>–</i>{/if}
+      </span>
       <span class="value">{show(f?.value)}</span>
       <span class="peers">{f?.peers != null ? show(f.peers) : ""}</span>
       <span class="n">{f?.n ? basis : ""}</span>
@@ -311,7 +319,7 @@
     {#if opened === id}
       <div class="st-more">
         <p>{def}</p>
-        {#if f?.n}<p class="st-basis">Based on {basis}{#if f.peers != null}; your peers: {show(f.peers)}{/if}{#if f.grade && !few}. {GRADE_WORDS[f.grade]}{/if}.</p>{/if}
+        {#if f?.n}<p class="st-basis">Based on {basis}{#if f.peers != null}; your peers: {show(f.peers)}{/if}{#if f.grade && !few}. {GRADE_WORDS[f.grade]}{:else if f.peers != null}. {few ? NO_GRADE_FEW : NO_GRADE_FLAT}{/if}.</p>{/if}
         {#if what}
           {@const found = behind[`${what}:${arg}`]}
           {#if !found}
@@ -352,7 +360,7 @@
 
 {#snippet peersNote()}
   {#if numbers?.peers}
-    <p class="st-note">Your peers: players rated about {numbers.peers.rating}, {numbers.peers.from === "rating" ? "your rating in these games" : "the level of your moves in these games"}.</p>
+    <p class="st-note">Your peers: players rated about {numbers.peers.rating}, {numbers.peers.from === "rating" ? "as you were on the site in these games" : "the level your moves played at in these games"}.</p>
   {/if}
 {/snippet}
 
@@ -379,7 +387,7 @@
 </header>
 
 <main>
-  <nav class="st-menu" aria-label="Sections">
+  <nav class="st-menu" aria-label="Sections" use:edgeFade>
     {#each SECTIONS as s (s.id)}
       <button class="st-item" aria-current={section === s.id ? "page" : undefined} onclick={() => go(s.id)}>
         {#if s.icon}<svg viewBox="0 0 24 24" aria-hidden="true"><path d={s.icon} /></svg>{:else}<Badge kind="brilliant" />{/if}
@@ -389,7 +397,7 @@
   </nav>
 
   <section class="st-content">
-    <div class="st-filters">
+    <div class="st-filters" use:edgeFade>
       <div class="seg small" role="group" aria-label="Time control">
         {#each [["", "All"], ["bullet", "Bullet"], ["blitz", "Blitz"], ["rapid", "Rapid"], ["daily", "Daily"]] as [value, name] (value)}
           <button class="segbtn" aria-pressed={filter.time_class === value} onclick={() => setFilter({ time_class: value })}>{name}</button>

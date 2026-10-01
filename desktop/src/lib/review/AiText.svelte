@@ -49,7 +49,7 @@
   }
 </script>
 
-{#each pieces as p, i (i)}{#if typeof p === "string"}{p}{:else}<span
+{#each pieces as p, i (i)}{#if typeof p === "string"}{p.replaceAll(" -- ", " — ")}{:else}<span
       class="lk k-{p.kind} {p.arrow ? `r-${p.arrow[2]}` : ''}"
       class:on={shown === p}
       data-i={i}

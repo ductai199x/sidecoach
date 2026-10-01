@@ -153,6 +153,7 @@ button.primary:active { transform: translateY(2px); box-shadow: 0 1px 0 #5f8a36;
 button.ghost { background: transparent; }
 button.ghost:hover { background: var(--panel2); }
 button.small { padding: 2px 8px; font-size: 12px; font-weight: 500; }
+button.iconbtn { padding: 0; } /* an icon fills its round button whatever else it is */
 button.running { background: var(--error); color: #fff; box-shadow: 0 3px 0 #b02a1c; }
 button.running:hover { background: #ff5a47; }
 /* A button that cannot be pressed now looks it -- Give up on a solved puzzle, Download
@@ -198,6 +199,8 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 
 /* ---- board ---- */
 .board-wrap { position: relative; width: var(--board); height: var(--board); flex: 0 0 auto; }
+/* Nothing followed yet: the starting position at rest, dimmed. */
+.board-wrap.idle .pc { opacity: 0.45; }
 /* The marks that go with a coach message: arrows, highlights, rings. Roles, not hues. */
 .overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .overlay .mk-good    { --mk: #81b64c; }
@@ -262,7 +265,9 @@ body.dragging-y { cursor: row-resize; user-select: none; }
 /* A window of its own (a puzzle, a review): a link drawn as a button, and the switch for the
    coach's voice there -- the speaker, struck through and yellow when off. */
 .linkbtn { display: inline-flex; align-items: center; text-decoration: none; }
-#voice.iconbtn { width: 30px; height: 30px; }
+/* A window's header icons, the size of the panel's (lib/Header.svelte): 38 px, 22 px icons. */
+#bar .controls .iconbtn { width: 38px; height: 38px; padding: 0; }
+#bar .controls .iconbtn svg { width: 22px; height: 22px; }
 #voice .ic-on, #voice .ic-off { display: none; }
 #voice[aria-pressed="true"] .ic-on { display: block; }
 #voice[aria-pressed="false"] .ic-off { display: block; }
@@ -345,6 +350,7 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 .gameinfo {
   display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
   font-size: 13px; color: var(--muted); padding: 0 2px; min-height: 22px;
+  container: gameinfo / inline-size; /* the board's tools drop their words when it is narrow */
 }
 .gameinfo .strong { color: var(--ink); font-weight: 600; }
 
@@ -356,8 +362,10 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 }
 .panel-title { font-weight: 700; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
 
+/* The move list gives way first when the window is short (down to three rows), so the coach,
+   the ask box and the quick pills always stay inside the panel. */
 .moves-wrap {
-  flex: 0 0 var(--moves, clamp(112px, 32%, 320px));
+  flex: 0 1 var(--moves, clamp(112px, 32%, 320px)); min-height: 84px;
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -379,6 +387,10 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 .mrow .mv:empty { visibility: hidden; }
 .mrow .mv:hover { background: var(--panel3); }
 .mrow .mv.cur { background: var(--panel3); box-shadow: inset 0 0 0 1px #5a5654; }
+/* Before the first move: a word where the moves will be, not an empty box. */
+.moves-empty { padding: 10px 12px; color: var(--muted); font-size: 13px; }
+html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: center; height: 40px; padding: 0 14px; }
+.moves-wrap > .moves-empty + #moves { display: none; }
 /* the move whose position the board is showing while browsing */
 .mrow .mv.view { background: #3b4a2f; box-shadow: inset 0 0 0 1px var(--accent); }
 /* The kinds of move, one colour each: their badges (lib/Badge.svelte), their text, the graph's
@@ -459,10 +471,23 @@ body.grabbing, body.grabbing * { cursor: grabbing !important; }
 }
 .rv-puzzle:hover { background: var(--panel3); border-color: var(--accent); }
 .rv-puzzle-link {
-  color: var(--muted); text-decoration: none; background: var(--panel2); border: 1px solid var(--line);
-  border-left: 0; border-radius: 0 999px 999px 0; padding: 3px 8px; font-size: 12px;
+  display: inline-flex; align-items: center; color: var(--muted); text-decoration: none; background: var(--panel2);
+  border: 1px solid var(--line); border-left: 0; border-radius: 0 999px 999px 0; padding: 0 9px 0 7px;
 }
+.rv-puzzle-link svg { width: 14px; height: 14px; fill: currentColor; }
 .rv-puzzle-link:hover { color: var(--ink); background: var(--panel3); }
+/* The coach's pane before the coach has said anything: what goes here, and what to do. */
+.coach-empty {
+  margin: auto; max-width: 300px; padding: 16px 8px; display: flex; flex-direction: column; gap: 4px;
+  text-align: center; color: var(--muted); font-size: 13px; line-height: 1.45;
+}
+.coach-empty b { color: var(--ink); font-size: 14px; font-weight: 600; }
+/* Between one game's words and the next's: a quiet rule with its label in the middle. */
+.coach-divider {
+  display: flex; align-items: center; gap: 10px; margin: 10px 0 8px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap;
+}
+.coach-divider::before, .coach-divider::after { content: ""; flex: 1 1 0; height: 1px; background: var(--line); }
 
 .rv-notes, .rv-insights { font-size: 12px; color: var(--muted); margin-top: 6px; }
 /* The card's way into Game Review: the big green button, as chess.com's at a game's end. */
@@ -667,20 +692,21 @@ html.stacked .msplit::after {
 html.stacked .msplit.live::after { background: var(--accent); width: 56px; }
 
 /* The moves in one line that scrolls sideways and follows the game (chess.com on a
-   phone): the number, then each side's move with its badge. */
-html.stacked .moves-wrap {
-  flex: 0 0 auto; overflow-x: auto; overflow-y: hidden;
+   phone): the number, then each side's move with its badge. Stacked, and side by side
+   when the panel is short or the list was dragged small (Moves.svelte's `oneline`). */
+html.stacked .moves-wrap, .moves-wrap.oneline {
+  flex: 0 0 auto; min-height: 0; overflow-x: auto; overflow-y: hidden;
   border: 0; border-radius: 8px; scrollbar-width: none;
   mask-image: linear-gradient(to right, transparent 0, #000 14px);
   -webkit-mask-image: linear-gradient(to right, transparent 0, #000 14px);
 }
-html.stacked .moves-wrap::-webkit-scrollbar { display: none; }
-html.stacked #moves { display: flex; align-items: center; width: max-content; height: 40px; padding: 0 10px 0 6px; }
-html.stacked .mrow { display: flex; align-items: center; height: auto; padding: 0; gap: 1px; font-size: 14px; background: none; }
-html.stacked .mrow .num { margin: 0 3px 0 10px; font-size: 13px; }
-html.stacked .mrow:first-child .num { margin-left: 4px; }
-html.stacked .mrow .mv { padding: 4px 6px; border-radius: 5px; white-space: nowrap; }
-html.stacked .mrow .mv:empty { display: none; }
+html.stacked .moves-wrap::-webkit-scrollbar, .moves-wrap.oneline::-webkit-scrollbar { display: none; }
+html.stacked #moves, .oneline #moves { display: flex; align-items: center; width: max-content; height: 40px; padding: 0 10px 0 6px; }
+html.stacked .mrow, .oneline .mrow { display: flex; align-items: center; height: auto; padding: 0; gap: 1px; font-size: 14px; background: none; }
+html.stacked .mrow .num, .oneline .mrow .num { margin: 0 3px 0 10px; font-size: 13px; }
+html.stacked .mrow:first-child .num, .oneline .mrow:first-child .num { margin-left: 4px; }
+html.stacked .mrow .mv, .oneline .mrow .mv { padding: 4px 6px; border-radius: 5px; white-space: nowrap; }
+html.stacked .mrow .mv:empty, .oneline .mrow .mv:empty { display: none; }
 html.stacked .coach { flex: 1 1 0; min-height: 80px; max-height: none; }
 html.stacked .terminal, html.stacked .conversation { height: clamp(120px, 30vh, 300px); }
 html.stacked .search { flex: 1 1 100px; width: auto; }
@@ -690,14 +716,13 @@ html.stacked .health .hv { margin-right: 6px; }
 html.stacked .health { align-items: flex-start; }
 html.stacked .vsplit, html.stacked .hsplit, html.stacked .tsplit { display: none; }
 
-/* A short side-by-side window (a landscape phone): tighter header and panel, and the
-   move list and the coach give way to each other down to a couple of rows each. */
-@media (max-height: 479px) {
+/* A short side-by-side window (a landscape phone): tighter header and panel; the moves are
+   one line there (above). */
+@media (max-height: 560px) {
   html:not(.stacked) #bar { padding: 5px 12px; gap: 6px 10px; }
-  html:not(.stacked) #bar button, html:not(.stacked) #bar select { padding: 4px 10px; font-size: 13px; }
+  html:not(.stacked) #bar button:not(.iconbtn, .menu-toggle), html:not(.stacked) #bar select { padding: 4px 10px; font-size: 13px; }
   html:not(.stacked) main { padding: 8px; }
   html:not(.stacked) #right { padding: 8px; gap: 6px; }
-  html:not(.stacked) .moves-wrap { flex: 0 1 var(--moves, 32%); min-height: 56px; }
   html:not(.stacked) .coach { min-height: 48px; }
   html:not(.stacked) .composer { gap: 6px; }
   html:not(.stacked) .qchip { padding: 3px 10px; font-size: 12px; }

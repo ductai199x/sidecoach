@@ -28,7 +28,8 @@ export type PaneId = "board" | "moves" | "strip" | "terminal";
 export const panes = $state({
   board: prefs.getStr("view.board") !== "0",
   moves: prefs.getStr("view.moves") !== "0",
-  strip: prefs.getStr("view.strip") !== "0",
+  // The status strip is for reporting a problem (frame rate, timings, memory): off until asked for.
+  strip: prefs.getStr("view.strip") === "1",
 });
 
 export function togglePane(id: "board" | "moves" | "strip"): void {
@@ -42,7 +43,7 @@ export function togglePane(id: "board" | "moves" | "strip"): void {
 export const PANES: { id: "board" | "moves" | "strip"; name: string; hint: string }[] = [
   { id: "board", name: "Board", hint: "The position as the coach reads it" },
   { id: "moves", name: "Move list", hint: "The game's moves and their verdicts" },
-  { id: "strip", name: "Status strip", hint: "The pipeline's status, and the terminal under it" },
+  { id: "strip", name: "Status strip", hint: "Frame rate, timings and memory, for reporting a problem" },
 ];
 
 /** The View menu's Reset layout: every remembered size and pane back to its default. */

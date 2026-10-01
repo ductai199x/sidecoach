@@ -348,10 +348,10 @@ def pack_item(settings: Settings) -> Any:
         return None
     return Item(
         "cuda",
-        f"GPU acceleration for the voice ({gpu.get('name', 'NVIDIA')})",
+        f"Faster voice and speech on your graphics card ({gpu.get('name', 'NVIDIA')})",
         size,
         lambda: installed(settings) is not None,
         lambda progress: install(settings, progress) and None,
         optional=True,
-        detail="onnxruntime-gpu and the CUDA 13 / cuDNN 9 libraries; used from the next start",
+        detail="The coach speaks and hears you sooner. From the next time Sidecoach starts.",
     )

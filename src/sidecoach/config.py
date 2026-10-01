@@ -25,10 +25,9 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 def _extra(**kw: Any) -> dict[str, Any]:
     """The schema extras the settings page reads: applies (now | next | restart), choices
     and choice_labels, kind (path, input_device, output_device, voice, persona, color, pieces,
-    board_theme), label (as a person reads it), section (the heading a field sits under on its
-    tab), only_for
-    (the AI Coach page: the providers a field is shown for), advanced (shown when asked),
-    dev (never shown in the app)."""
+    board_theme, hotkey), label (as a person reads it), section (the heading a field sits under
+    on its tab), only_for (the AI Coach page: the providers a field is shown for), advanced
+    (shown when asked), dev (never shown in the app)."""
     return dict(kw)
 
 
@@ -65,8 +64,8 @@ class CaptureSettings(BaseModel):
     # recording within a second of Save; otherwise it holds from the next Start.
     record: bool = Field(
         default=False,
-        description="Save every session -- the frames of the screen, the events and the log "
-        "-- under the data folder's recordings/, to send along with a bug report. Off, "
+        description="Save every session (the frames of the screen, the events and the log) under "
+        "the data folder's recordings/, to send along with a bug report. Off, "
         "nothing from your screen is saved. Takes effect at once, and stays on until you "
         "turn it off; a recording is a few hundred MB per game.",
         json_schema_extra=_extra(
@@ -171,20 +170,20 @@ class EngineSettings(BaseModel):
 class LLMSettings(BaseModel):
     provider: str = Field(
         default="openai",
-        description="Who the coach thinks with. OpenAI is what the coach was evaluated on; a "
-        "model on this computer costs nothing per game; with no model the coach "
-        "still speaks, from the board and its templates.",
+        description="The AI model the coach thinks with. OpenAI is the one the coach was "
+        "tested on; a model on this computer costs nothing per game; with no model the "
+        "coach still speaks, from the board and its templates.",
         json_schema_extra=_extra(
             group="provider",
             choices=["openai", "local", "dashscope", "custom", "none"],
             applies="now",
             label="Provider",
             choice_labels={
-                "openai": "OpenAI (gpt-5.6-luna) -- recommended",
+                "openai": "OpenAI (gpt-5.6-luna) — recommended",
                 "dashscope": "DashScope (Alibaba Cloud Model Studio)",
                 "local": "A model on this computer (LM Studio, Ollama, vLLM)",
                 "custom": "Another OpenAI-compatible service",
-                "none": "No model -- free and offline",
+                "none": "No model — free and offline",
             },
             section="Which model",
         ),
@@ -250,10 +249,10 @@ class LLMSettings(BaseModel):
             only_for=["openai"],
             choice_labels={
                 "": "Default (medium)",
-                "none": "None -- fastest",
+                "none": "None — fastest",
                 "low": "Low",
                 "medium": "Medium",
-                "high": "High -- slowest",
+                "high": "High — slowest",
             },
             section="Which model",
         ),
@@ -271,7 +270,7 @@ class LLMSettings(BaseModel):
             only_for=["openai"],
             choice_labels={
                 "": "Same as above",
-                "none": "None -- fastest",
+                "none": "None — fastest",
                 "low": "Low",
                 "medium": "Medium",
                 "high": "High",
@@ -647,24 +646,27 @@ class VoiceSettings(BaseModel):
     )
     mic_device: str | None = Field(
         default=None,
-        description="The microphone the coach listens to. Empty follows the system's default "
-        "input.",
+        description="The microphone the coach listens to. System default follows the one "
+        "your computer is set to use.",
         json_schema_extra=_extra(
             applies="now", kind="input_device", label="Microphone", section="Hearing you"
         ),
     )
     output_device: str | None = Field(
         default=None,
-        description="Where the voice plays. Empty follows the system's default output.",
+        description="Where the voice plays. System default follows the speaker your computer "
+        "is set to use.",
         json_schema_extra=_extra(
             applies="now", kind="output_device", label="Speaker", section="The coach's voice"
         ),
     )
     ptt_key: str = Field(
         default="ctrl_r",
-        description="Held from any window: ctrl_r (the right Ctrl), alt_r, f9, a letter, or "
-        "mouse_x1 / mouse_x2 (the side buttons). Empty disables it.",
-        json_schema_extra=_extra(applies="now", label="Push-to-talk key", section="Hearing you"),
+        description="Hold it from any window, the game's too, and the coach listens. A key "
+        "that types nothing, like Right Ctrl, or a mouse side button is best.",
+        json_schema_extra=_extra(
+            applies="now", kind="hotkey", label="Push-to-talk key", section="Hearing you"
+        ),
     )
     # The coach's words in a box over the other windows, the way Live Caption shows speech:
     # the phone's since 2026-09-23, the desktop's since Tai asked for it in fast games
@@ -767,8 +769,8 @@ class GpuSettings(BaseModel):
             applies="restart",
             label="Hardware acceleration",
             choice_labels={
-                "auto": "Automatic -- use it when it works (recommended)",
-                "cpu": "Never -- CPU only",
+                "auto": "Automatic — use it when it works (recommended)",
+                "cpu": "Never — CPU only",
                 "cuda": "Always",
             },
             section="Hardware acceleration",

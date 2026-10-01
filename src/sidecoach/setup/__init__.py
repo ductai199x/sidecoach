@@ -215,7 +215,7 @@ def items(settings: Settings) -> list[Item]:
     out.append(
         Item(
             "kokoro",
-            "The voice (Kokoro)",
+            "The coach's voice",
             sum(s for _, s in KOKORO_FILES.values()),
             kokoro_present,
             kokoro_fetch,
@@ -246,7 +246,15 @@ def items(settings: Settings) -> list[Item]:
         unpack_stockfish(archive, dest)
         archive.unlink()
 
-    out.append(Item("stockfish", "Stockfish", 60_000_000, stockfish_present, stockfish_fetch))
+    out.append(
+        Item(
+            "stockfish",
+            "The chess engine (Stockfish)",
+            60_000_000,
+            stockfish_present,
+            stockfish_fetch,
+        )
+    )
 
     openings_dir = settings.data_dir / "openings"
 
@@ -294,7 +302,7 @@ def items(settings: Settings) -> list[Item]:
     out.append(
         Item(
             "stt",
-            "Speech recognition (Parakeet) and the voice gate (Silero)",
+            "Speech recognition, to talk to the coach",
             2_450_000_000,
             stt_present,
             stt_fetch,

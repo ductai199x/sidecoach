@@ -8,8 +8,10 @@
   // another window saved comes in here too.
   import { onDestroy, onMount, tick } from "svelte";
   import { connect, del, get, post, put } from "$lib/api";
-  import { announce, inShell, onAnnounce, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
+  import { announce, inShell, onAnnounce, openWindow, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
+  import { keyFromEvent, keyFromMouse, keyName as hotkeyName, typesText } from "$lib/hotkey";
+  import "$lib/styles/review.css";
 
   type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
   type Described = {
@@ -68,6 +70,58 @@
     return data.key_envs[providerNow] ?? null;
   });
   let listening = $state("");
+
+  // The push-to-talk key, set by pressing it: "Change" waits for the next key or mouse button
+  // (Escape, or a click elsewhere, gives up), as a game's key bindings do.
+  let capturing = $state<string | null>(null);
+  let stopCapture = (): void => {};
+  function capture(section: string, key: string, p: Prop, button: HTMLElement): void {
+    const id = `${section}.${key}`;
+    stopCapture();
+    if (capturing === id) { capturing = null; return; }
+    capturing = id;
+    const take = (k: string | null) => { if (k) setValue(section, key, p, k); stopCapture(); };
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") stopCapture();
+      else take(keyFromEvent(e));
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 0) { if (!button.contains(e.target as Node)) stopCapture(); return; }
+      const k = keyFromMouse(e);
+      if (k) { e.preventDefault(); take(k); }
+    };
+    // A side button's own work (back, forward) and the wheel's (scrolling) are kept from the page.
+    const swallow = (e: MouseEvent) => { if (e.button > 0) e.preventDefault(); };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("mouseup", swallow, true);
+    window.addEventListener("auxclick", swallow, true);
+    stopCapture = () => {
+      capturing = null;
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onDown, true);
+      // The button's release comes after the press that set it: let it be swallowed first.
+      setTimeout(() => {
+        window.removeEventListener("mouseup", swallow, true);
+        window.removeEventListener("auxclick", swallow, true);
+      }, 300);
+      stopCapture = () => {};
+    };
+  }
+  onDestroy(() => stopCapture());
+
+  // The bar's back arrow, as every window's: the app's window closes, a browser tab goes back
+  // (the panel, or Your games' "Fix it in Settings" on the phone). Changes not saved are
+  // asked about first, as any settings window does.
+  function leave(): void {
+    if (dirty && !window.confirm("Leave without saving your changes?")) return;
+    window.close();
+    if (history.length > 1) history.back();
+    else window.location.href = "/";
+  }
+
   // The live test of the microphone and speech recognition under "Hearing you": while it is on the
   // page polls the level and what was heard; the coach is not asked.
   type Heard = { raw: string; heard: string; seconds: number; stt_ms: number; t: number };
@@ -210,7 +264,15 @@
   }
 
   // The settings as saved, field by field: what the page has that differs is what it sends.
-  let saved: Record<string, any> = {};
+  let saved = $state.raw<Record<string, any>>({});
+  // Anything to save: Save is lit only then, with a word beside it, as any settings window.
+  const dirty = $derived(
+    Object.keys(changes(values, saved)).length > 0 ||
+      Object.values(secrets).some(Boolean) ||
+      Object.values(clearSecrets).some(Boolean) ||
+      shell.close !== shellSaved.close ||
+      shell.autostart !== shellSaved.autostart,
+  );
 
   /** Each field of `now` that differs from `before`, section by section. */
   function changes(now: Record<string, any>, before: Record<string, any>): Record<string, any> {
@@ -410,7 +472,7 @@
       <label for="{section}-{key}">{labelOf(key, p)}</label>
       {#if p.kind === "input_device" || p.kind === "output_device"}
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
-          <option value="" selected={v == null || v === ""}>system default</option>
+          <option value="" selected={v == null || v === ""}>System default</option>
           {#each (p.kind === "input_device" ? data!.devices.inputs : data!.devices.outputs) as d (d.index)}
             <option value={d.name} selected={String(v) === d.name || String(v) === String(d.index)}>{d.name}</option>
           {/each}
@@ -423,6 +485,21 @@
           </select>
           <button type="button" class="listen" onclick={() => listen(String(v ?? ""))} disabled={!!listening} title="Hear a short line in this voice">{listening ? "Playing…" : "Listen"}</button>
         </div>
+      {:else if p.kind === "hotkey"}
+        {@const armed = capturing === `${section}.${key}`}
+        <div class="row hotkey">
+          <kbd class="keycap" class:none={!v}>{hotkeyName(String(v ?? ""))}</kbd>
+          <button
+            type="button"
+            id="{section}-{key}"
+            class="listen"
+            class:armed
+            onclick={(e) => capture(section, key, p, e.currentTarget)}
+            title={armed ? "Press the key or mouse button you want; Escape to keep the one you have" : "Choose the key by pressing it"}
+          >{armed ? "Press a key or a mouse side button…" : "Change"}</button>
+          {#if v && !armed}<button type="button" class="link" onclick={() => setValue(section, key, p, "")}>Turn off</button>{/if}
+        </div>
+        {#if typesText(String(v ?? ""))}<p class="note warn">{hotkeyName(String(v))} also types into the game while you hold it; a key like Right Ctrl does not.</p>{/if}
       {:else if p.kind === "persona"}
         <select id="{section}-{key}" onchange={(e) => setValue(section, key, p, e.currentTarget.value)}>
           {#each p.choices ?? [] as c (c)}<option value={c} selected={String(v) === c}>{data!.personas[c] ?? c}</option>{/each}
@@ -468,17 +545,26 @@
         <input id="{section}-{key}" type="text" value={v ?? ""} placeholder={isNullable(p) ? "(unset)" : ""} oninput={(e) => setValue(section, key, p, e.currentTarget.value)} />
       {/if}
     {/if}
-    <p class="desc">{p.description}{#if p.applies === "next"} <span class="applies next">· takes effect at the next Start</span>{:else if p.applies === "restart"} <span class="applies restart">· needs a <button type="button" class="link" onclick={saveAndRestart} title="Save the settings and restart Sidecoach">restart</button></span>{/if}</p>
+    <p class="desc">{p.description}{#if p.applies === "next"}{" "}<span class="applies next">· takes effect at the next Start</span>{:else if p.applies === "restart"}{" "}<span class="applies restart">· needs a <button type="button" class="link" onclick={saveAndRestart} title="Save the settings and restart Sidecoach">restart</button></span>{/if}</p>
     {#if err}<p class="err">{err}</p>{/if}
   </div>
 {/snippet}
 
 <div class="settings">
+  <header id="bar">
+    <div class="group">
+      <button class="iconbtn rv-back" aria-label="Close Settings" title="Close Settings" onclick={leave}>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      </button>
+      <img class="rv-logo" src="/logo.svg" alt="" draggable="false" />
+      <div class="rv-name">Settings</div>
+    </div>
+  </header>
   <nav class="secnav">
     {#each shownSections as [id, label] (id)}
       <button class="secbtn" class:on={section === id} onclick={() => (section = id)}>{label}</button>
     {/each}
-    <label class="ctl adv"><input type="checkbox" bind:checked={advanced} /> advanced</label>
+    <label class="ctl adv" title="Show the settings few people need"><input type="checkbox" bind:checked={advanced} /> Advanced</label>
   </nav>
 
   <div class="secbody">
@@ -495,7 +581,7 @@
           </select>
         </div>
       {:else}
-        <p class="muted">The shell's own settings show in the desktop app.</p>
+        <p class="muted">What closing the window does is set in the desktop app.</p>
       {/if}
       {#if data.schema.properties.data_dir}
         <div class="field">
@@ -543,8 +629,13 @@
           {#if section === "gpu" && gpuStatus?.gpu.found}
             <div class="field test">
               <span class="lbl">This machine</span>
-              <p class="desc"><b>CUDA:</b> {gpuStatus.active.cuda ? "ready -- the models run on the graphics card" : gpuStatus.gpu.eligible ? (gpuStatus.installed ? "not active (" + gpuStatus.active.detail + ")" : "available -- the acceleration pack is not installed yet (Help > Set up)") : "not usable: " + gpuStatus.gpu.reason}</p>
-              <p class="desc"><b>Graphics card:</b> {gpuStatus.gpu.name}{#if gpuStatus.gpu.driver} <span class="muted">(driver {gpuStatus.gpu.driver})</span>{/if}</p>
+              <p class="desc"><b>CUDA:</b>
+                {#if gpuStatus.active.cuda}ready: the models run on the graphics card.
+                {:else if gpuStatus.gpu.eligible && gpuStatus.installed}not active ({gpuStatus.active.detail}).
+                {:else if gpuStatus.gpu.eligible}available, but its pack is not downloaded yet. <a class="link" href="/setup" target="_blank" rel="noopener" onclick={(e) => { if (inShell()) { e.preventDefault(); void openWindow("setup"); } }}>Set it up</a>
+                {:else}not usable: {gpuStatus.gpu.reason}{/if}
+              </p>
+              <p class="desc"><b>Graphics card:</b> {gpuStatus.gpu.name}{#if gpuStatus.gpu.driver}{" "}<span class="muted">(driver {gpuStatus.gpu.driver})</span>{/if}</p>
               <p class="desc"><b>Memory:</b> {gb(gpuStatus.gpu.vram)} in all, {gb(gpuStatus.gpu.vram_free)} free{#if gpuStatus.gpu.used_by_app != null}; Sidecoach is using {gb(gpuStatus.gpu.used_by_app)}{:else}; what Sidecoach uses is not reported by this driver{/if}</p>
             </div>
           {/if}
@@ -596,18 +687,15 @@
   </div>
 
   <footer class="secfoot">
-    {#if !inShell()}
-      <!-- Back where Settings was opened from (the panel, Your games' "Set it in Settings" on
-           the phone); a tab of its own goes to the panel. -->
-      <button type="button" class="link back" onclick={() => (history.length > 1 ? history.back() : (window.location.href = "/"))}>&larr; Back</button>
-    {/if}
     {#if result?.ok}
-      <span class="saved">{savedLine(result)}{#if result.restart?.length} <button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
+      <span class="saved">{savedLine(result)}{#if result.restart?.length}{" "}<button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>
     {:else if result && !result.ok}
       <span class="err">Not saved: {result.errors?.length} field{result.errors?.length === 1 ? "" : "s"} need attention.</span>
+    {:else if dirty}
+      <span class="unsaved">Unsaved changes</span>
     {/if}
     <span class="spacer"></span>
-    <button class="primary" onclick={save} disabled={saving || !data}>{saving ? "Saving…" : "Save"}</button>
+    <button class="primary" onclick={save} disabled={saving || !data || !dirty} title={dirty ? "Save the changes" : "Nothing changed yet"}>{saving ? "Saving…" : "Save"}</button>
   </footer>
 </div>
 
@@ -615,7 +703,7 @@
   /* The screen, less the phone's bars when the page is drawn under them (the variables
      are nothing on a desktop), so the footer with Save stays on it. */
   .settings {
-    display: grid; grid-template-rows: auto 1fr auto;
+    display: grid; grid-template-rows: auto auto 1fr auto;
     height: 100vh; height: calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px));
   }
   /* The tabs wrap: six of them side by side would be a floor of 600px, and a phone is
@@ -630,6 +718,14 @@
   h3 { margin: 22px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .listen { flex: 0 0 auto; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
   .listen:disabled { opacity: 0.6; cursor: default; }
+  /* The push-to-talk key: the key as a keycap, Change waiting for a press lit in the accent. */
+  .keycap {
+    min-width: 44px; padding: 5px 12px; border: 1px solid var(--line); border-bottom-width: 3px; border-radius: 6px;
+    background: var(--panel2); color: var(--ink); font: inherit; font-weight: 700; text-align: center;
+  }
+  .keycap.none { color: var(--muted); font-weight: 500; }
+  .listen.armed { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 3px #81b64c33; }
+  .note.warn { margin: 6px 0 0; font-size: 12px; color: var(--warn); }
   .field { margin: 0 0 14px; max-width: 720px; border-radius: 8px; }
   /* A setting another window asked for: it blinks, on and off three times over a second (Tai,
      2026-09-30: two soft pulses read as much less than that). Each blink is on for a sixth of
@@ -667,7 +763,7 @@
   .secret input { flex: 1; }
   .secfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 18px; border-top: 1px solid var(--line); }
   .saved { color: var(--accent); font-size: 13px; }
-  .back { text-decoration: none; font-weight: 600; }
+  .unsaved { color: var(--warn); font-size: 13px; }
   .spacer { flex: 1; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 

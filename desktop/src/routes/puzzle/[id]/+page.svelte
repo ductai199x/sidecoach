@@ -253,12 +253,14 @@
     const cs = getComputedStyle(mainEl);
     const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
     const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-    const byHeight = mainEl.clientHeight - padY - 30;
+    // The strip under the board (the message, what is left, Next) keeps its room.
+    const foot = (mainEl.querySelector(".pz-foot") as HTMLElement | null)?.getBoundingClientRect().height ?? 56;
+    const byHeight = mainEl.clientHeight - padY - foot - 8;
     const byWidth = mainEl.clientWidth - padX - 14 - 340;
     document.documentElement.style.setProperty("--board", Math.max(240, Math.floor(Math.min(byHeight, byWidth))) + "px");
   }
 
-  const title = $derived(room ? `puzzle ${room.id} · ${room.motif ? motifWords(room.motif) + " · " : ""}${room.rating} · you play ${room.bottom}` : "puzzle");
+  const capital = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
   const remaining = $derived(room ? (room.status === "playing" ? `${room.remaining} move${room.remaining === 1 ? "" : "s"} to find` : room.status.replace("_", " ")) : "");
   const misses = $derived(room?.misses ? `${room.misses} miss${room.misses === 1 ? "" : "es"}` : "");
 
@@ -316,36 +318,28 @@
 
 <header id="bar">
   <div class="group">
-    <button class="pz-back" aria-label="Back to the panel" title="Back to the panel" onclick={leave}>
+    <button class="iconbtn pz-back" aria-label="Close the puzzle" title="Close the puzzle" onclick={leave}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
     </button>
     <img class="pz-mark" src="/logo.svg" alt="" draggable="false" />
     <div class="pz-head">
       <div class="pz-name">Puzzle{room?.motif ? " · " + motifWords(room.motif) : ""}</div>
-      <div class="pz-sub">{room ? `rated ${room.rating} · you play ${room.bottom}` : "…"}</div>
+      <div class="pz-sub">{room ? `Rated ${room.rating} · You play ${capital(room.bottom)}` : "…"}</div>
     </div>
-    <span class="brand">sidecoach</span>
-    <span class="strong">{title}</span>
-    <span class="pz-msg {messageClass}">{message}</span>
   </div>
-  <button class="ghost pz-giveup" title="Play the solution out" disabled={room?.status !== "playing"} onclick={giveUp}>Give up</button>
   <div class="group controls">
     {#if room?.voice_ready !== false}
-    <div class="ctlgroup" role="group" aria-label="Voice">
-      <span class="ctllabel">voice</span>
-      <button id="voice" class="iconbtn small" aria-pressed={!!room?.voice} title="The coach's answers aloud" onclick={() => { if (room) { room.voice = !room.voice; api.voice(room.voice); } }}>
-        <svg class="ic-on" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
-        <svg class="ic-off" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
+      <button id="voice" class="iconbtn" aria-pressed={!!room?.voice} title="The coach's answers aloud" aria-label="The coach's voice" onclick={() => { if (room) { room.voice = !room.voice; api.voice(room.voice); } }}>
+        <svg class="ic-on" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
+        <svg class="ic-off" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
       </button>
-    </div>
     {/if}
-    <div class="ctlgroup" role="group" aria-label="Puzzle">
-      <span class="ctllabel">puzzle</span>
-      <button class="ghost" title="Play the solution out" disabled={room?.status !== "playing"} onclick={giveUp}>Give up</button>
-      {#if nextIds.length}<a class="ghost linkbtn" href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next</a>{/if}
-      {#if room?.url}<a class="ghost linkbtn" href={room.url} target="_blank" rel="noopener" title="This puzzle on Lichess">Lichess ↗</a>{/if}
-      <button class="ghost" title="Close this puzzle" onclick={leave}>Close</button>
-    </div>
+    {#if room?.url}
+      <a class="iconbtn" href={room.url} target="_blank" rel="noopener" title="This puzzle on Lichess" aria-label="This puzzle on Lichess">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+      </a>
+    {/if}
+    <button class="ghost pz-giveup" title="Play the solution out" disabled={room?.status !== "playing"} onclick={giveUp}>Give up</button>
   </div>
 </header>
 
@@ -404,19 +398,13 @@
         </div>
       {/if}
     </div>
-    <div class="gameinfo">
-      <span class="strong">{room ? "you play " + room.bottom : "—"}</span>
-      <span>{remaining}</span>
-      <span>{misses}</span>
-    </div>
-    <!-- Stacked: what the bar says on a wide window, under the board -- the message, what is
-         left to find, and where to go next. -->
+    <!-- Under the board, at every width: what the puzzle says (green when solved, red on a miss),
+         what is left to find, and Next, lit once it is done. -->
     <div class="pz-foot">
       <span class="pz-say {messageClass}">{message}</span>
       <span class="pz-left">{[room?.status === "playing" ? remaining : "", misses].filter(Boolean).join(" · ")}</span>
       <span class="pz-links">
-        {#if nextIds.length}<a class="pz-link" class:ready={room && room.status !== "playing"} href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next ›</a>{/if}
-        {#if room?.url}<a class="pz-link" href={room.url} target="_blank" rel="noopener" title="This puzzle on Lichess">Lichess ↗</a>{/if}
+        {#if nextIds.length}<a class="pz-link" class:ready={room && room.status !== "playing"} href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
       </span>
     </div>
   </section>
@@ -424,8 +412,11 @@
   <section id="right">
     <div class="panel-title">Coach</div>
     <div class="coach" bind:this={coachEl} use:stickToBottom>
+      {#if !messages.length && !pending}
+        <div class="coach-empty"><b>Find the best move.</b><span>Stuck? Press Hint, or ask the coach anything below.</span></div>
+      {/if}
       {#each messages as m, i (m.id)}
-        <div class="msg" class:you={m.you} class:tail={pending && i === messages.length - 1 ? m.you : messages[i + 1]?.you !== m.you} role="note" title={m.meta} onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>{m.text}</div>
+        <div class="msg" class:you={m.you} class:tail={pending && i === messages.length - 1 ? m.you : messages[i + 1]?.you !== m.you} role="note" title={m.meta} onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>{m.text.replaceAll(" -- ", " — ")}</div>
       {/each}
       {#if pending}<div class="msg typing tail" role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>{/if}
     </div>
@@ -433,7 +424,7 @@
       <div class="box">
         <input type="text" placeholder="Ask the coach…" autocomplete="off" spellcheck="false" bind:value={text} onkeydown={(e) => { if (e.key === "Enter") send(); }} />
         <button class="sendbtn" data-state={text.trim() ? "send" : "quiet"} title="Send (Enter)" aria-label="Send" onclick={send}>
-          <svg class="ic ic-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 21 3l-8.5 18-2.5-7.5L3 11.5z"/></svg>
+          <svg class="ic ic-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z"/></svg>
         </button>
       </div>
       <div class="chips-row">

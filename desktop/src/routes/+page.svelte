@@ -7,6 +7,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import Board from "$lib/Board.svelte";
+  import BoardTools from "$lib/BoardTools.svelte";
   import Coach from "$lib/Coach.svelte";
   import Composer from "$lib/Composer.svelte";
   import Header from "$lib/Header.svelte";
@@ -37,7 +38,16 @@
   const folded = $derived(!terminal.open);
 
   const shown = $derived(store.shown);
-  const following = $derived(!store.state.following ? "waiting for a start" : store.state.kind === "position" ? "a position (puzzle or analysis)" : "a game");
+
+  // Side by side, the moves go to one line (as stacked) when the panel is too short for a list
+  // that leaves the coach room, or when the list was dragged under four rows; dragged down past
+  // them it is a list again. Never a list too short to read (Tai, 2026-10-01). As stacked, the
+  // line and the coach need no titles.
+  const LIST_MIN = 112;
+  let rightH = $state(0);
+  let movesPref = $state<number | null>(prefs.get("moves"));
+  const shortPanel = $derived(rightH > 0 && rightH < 540);
+  const oneline = $derived(shortPanel || (movesPref !== null && movesPref < LIST_MIN));
 
   function refit() {
     fitBoard(mainEl, splitBoard, infoEl, prefs.get("board"));
@@ -80,12 +90,15 @@
       () => { prefs.set("board", null); refit(); }));
     if (splitMoves && right) cleanups.push(splitter(splitMoves, "y", () => (right?.querySelector(".moves-wrap") as HTMLElement | null)?.getBoundingClientRect().height ?? 0,
       (start, d) => {
-        const room = Math.max(80, (right?.clientHeight ?? 0) - 260);
-        const h = Math.max(80, Math.min(room, start + d));
-        right?.style.setProperty("--moves", h + "px"); prefs.set("moves", h);
+        const room = Math.max(LIST_MIN, (right?.clientHeight ?? 0) - 260);
+        const h = Math.max(40, Math.min(room, start + d));
+        right?.style.setProperty("--moves", h + "px"); prefs.set("moves", h); movesPref = h;
       },
-      () => { right?.style.removeProperty("--moves"); prefs.set("moves", null); }));
+      () => { right?.style.removeProperty("--moves"); prefs.set("moves", null); movesPref = null; }));
     if (prefs.get("moves") !== null && right) right.style.setProperty("--moves", prefs.get("moves") + "px");
+    const rightRo = right && window.ResizeObserver ? new ResizeObserver(() => { rightH = right?.clientHeight ?? 0; }) : null;
+    if (rightRo && right) rightRo.observe(right);
+    cleanups.push(() => rightRo?.disconnect());
     if (splitTerm) cleanups.push(splitter(splitTerm, "y", () => (footer?.querySelector(store.pane === "terminal" ? ".terminal" : ".conversation") as HTMLElement | null)?.getBoundingClientRect().height ?? 0,
       (start, d) => {
         const h = Math.max(60, Math.min(window.innerHeight * 0.6, start - d));
@@ -113,6 +126,10 @@
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && store.pinnedPly !== null) store.showLive();
       if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); store.setPtt(true); }
+      // The header's and the board's one-key controls: M mutes the coach, F flips the board.
+      if (typing() || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.key.toLowerCase() === "m" && store.state.voices?.length) store.setMuted(!store.state.muted);
+      if (e.key.toLowerCase() === "f") void panel.flip();
     };
     const onKeyUp = (e: KeyboardEvent) => { if (e.code === "Space" && !typing()) { e.preventDefault(); store.setPtt(false); } };
     const onBlur = () => store.setPtt(false);
@@ -168,28 +185,37 @@
     <Board fen={shown.fen} bottom={store.bottom} lastMove={shown.lastMove} marks={store.marks} bind:board={boardEl} />
     <div class="msplit" bind:this={splitMobile} role="separator" aria-orientation="horizontal" aria-label="Board size" title="Drag to resize the board; double-tap to reset"></div>
     <div class="gameinfo" bind:this={infoEl}>
-      <span class="strong">{store.state.user_side ? "you play " + store.state.user_side : "—"}</span>
-      <span>ply {store.ply}</span>
-      <span>{following}</span>
+      {#if store.state.user_side}<span class="strong">You play {store.state.user_side === "white" ? "White" : "Black"}</span>{/if}
+      {#if store.ply}<span>Move {Math.ceil(store.ply / 2)}</span>{/if}
+      {#if store.state.kind === "position"}<span>A position: a puzzle or an analysis board</span>{/if}
+      <BoardTools />
     </div>
   </section>
 
-  <div id="splitBoard" class="vsplit" bind:this={splitBoard} title="Drag to resize the board; double-click to reset" hidden={!panes.board}></div>
+  <div id="splitBoard" class="vsplit" bind:this={splitBoard} role="separator" aria-orientation="vertical" aria-label="Board size" title="Drag to resize the board; double-click to reset" hidden={!panes.board}></div>
 
   <section id="right" bind:this={right}>
     {#if panes.moves}
-      <div class="panel-title">Moves</div>
-      <Moves />
-      <div class="hsplit" bind:this={splitMoves} title="Drag to resize the move list; double-click to reset"></div>
+      <div class="panel-title" hidden={oneline}>Moves</div>
+      <Moves {oneline} />
+      <div
+        class="hsplit"
+        bind:this={splitMoves}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Move list size"
+        hidden={shortPanel}
+        title={oneline ? "Drag down to show the moves as a list; double-click to reset" : "Drag to resize the move list; double-click to reset"}
+      ></div>
     {/if}
-    <div class="panel-title">Coach</div>
+    <div class="panel-title" hidden={oneline}>Coach</div>
     <Coach />
     <Composer />
   </section>
 </main>
 
 <footer bind:this={footer} class:folded>
-  <div class="tsplit" bind:this={splitTerm} title="Drag to resize the terminal; double-click to reset"></div>
+  <div class="tsplit" bind:this={splitTerm} role="separator" aria-orientation="horizontal" aria-label="Terminal size" title="Drag to resize the terminal; double-click to reset"></div>
   {#if panes.strip}<Strip {folded} onfold={toggleTerminal} />{/if}
   <Terminal />
 </footer>

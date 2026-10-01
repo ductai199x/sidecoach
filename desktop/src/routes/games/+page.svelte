@@ -6,6 +6,7 @@
   // the other windows: a username saved in Settings shows at once, and the background
   // reviewer's progress fills the accuracies in as it goes.
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import "$lib/styles/review.css";
   import { connect, get, games as gamesApi, jobs as jobsApi, type Backlog, type LibraryGame } from "$lib/api";
   import { announce, inShell, onAnnounce, openSetting, openWindow } from "$lib/shell.svelte";
@@ -48,6 +49,9 @@
       saidField = null;
     }
     list = res.games;
+    // A game picked that is gone (removed in another window) is no longer picked.
+    const held = new Set(list.map((g) => g.key));
+    for (const key of [...picked]) if (!held.has(key)) picked.delete(key);
     users = res.users;
     backlog = res.backlog;
     // A game reviewed since: Stats has one more to count.
@@ -122,32 +126,141 @@
     reader.readAsText(file);
   }
 
-  // The game just removed, for a few seconds' Undo (the sidecar keeps its rows a while longer).
+  // ---- select mode, as Gmail's: a checkbox on every row, the toolbar turned into the action
+  // bar (select all, how many, Delete, Cancel); a range by shift-click, a long press on a phone.
+  let selecting = $state(false);
+  const picked = new SvelteSet<string>();
+  let anchor: string | null = null; // the row a shift-click selects from
+  function startSelecting(first?: string): void {
+    selecting = true;
+    picked.clear();
+    anchor = first ?? null;
+    if (first) picked.add(first);
+  }
+  function stopSelecting(): void {
+    selecting = false;
+    picked.clear();
+    anchor = null;
+  }
+  function togglePick(key: string, range: boolean): void {
+    const keys = shown.map((g) => g.key);
+    const from = anchor ? keys.indexOf(anchor) : -1;
+    if (range && from >= 0) {
+      const to = keys.indexOf(key);
+      for (const k of keys.slice(Math.min(from, to), Math.max(from, to) + 1)) picked.add(k);
+    } else if (picked.has(key)) picked.delete(key);
+    else picked.add(key);
+    anchor = key;
+  }
+  function toggleAll(): void {
+    if (allPicked) picked.clear();
+    else for (const g of shown) picked.add(g.key);
+  }
+
+  /** A long press on a row (a phone has no shift-click): select mode with that row picked; the
+   *  tap that ends it does nothing else. */
+  const LONG_MS = 450;
+  function longPress(node: HTMLElement, key: string) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let at = { x: 0, y: 0 };
+    let fired = false;
+    let current = key;
+    const cancel = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const down = (e: PointerEvent) => {
+      if (selecting || e.pointerType === "mouse") return;
+      cancel();
+      fired = false;
+      at = { x: e.clientX, y: e.clientY };
+      timer = setTimeout(() => {
+        timer = null;
+        fired = true;
+        startSelecting(current);
+      }, LONG_MS);
+    };
+    const move = (e: PointerEvent) => {
+      if (timer && Math.hypot(e.clientX - at.x, e.clientY - at.y) > 10) cancel();
+    };
+    const click = (e: MouseEvent) => {
+      if (!fired) return;
+      fired = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const menu = (e: Event) => {
+      if (timer || fired) e.preventDefault();
+    };
+    node.addEventListener("pointerdown", down);
+    node.addEventListener("pointermove", move);
+    node.addEventListener("pointerup", cancel);
+    node.addEventListener("pointercancel", cancel);
+    node.addEventListener("click", click, true);
+    node.addEventListener("contextmenu", menu);
+    return {
+      update(k: string) {
+        current = k;
+      },
+      destroy() {
+        cancel();
+        node.removeEventListener("pointerdown", down);
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", cancel);
+        node.removeEventListener("pointercancel", cancel);
+        node.removeEventListener("click", click, true);
+        node.removeEventListener("contextmenu", menu);
+      },
+    };
+  }
+
+  // The toolbar is stuck at the top once the marker just above it has scrolled out of view.
+  let stuck = $state(false);
+  function stuckWatch(node: HTMLElement) {
+    const seen = new IntersectionObserver(([e]) => (stuck = !e.isIntersecting && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)), {
+      root: node.closest("main"),
+    });
+    seen.observe(node);
+    return { destroy: () => seen.disconnect() };
+  }
+
+  // The bar's back arrow, as Stats' and the review's: the window closes (the app's), or the
+  // page goes back where it was opened from (a browser tab, the phone).
+  function leave(): void {
+    window.close();
+    if (history.length > 1) history.back();
+  }
+
+  // Removed in one go, then a few seconds' Undo (the sidecar keeps their rows a while longer).
   const UNDO_MS = 8000;
-  let undo = $state<{ key: string; label: string } | null>(null);
+  let undo = $state<{ keys: string[]; label: string } | null>(null);
   let undoTimer: ReturnType<typeof setTimeout> | null = null;
-  async function remove(game: LibraryGame): Promise<void> {
-    const res = await gamesApi.remove(game.key).catch(() => null);
+  async function removePicked(): Promise<void> {
+    const games = pickedShown;
+    if (!games.length) return;
+    const keys = games.map((g) => g.key);
+    const res = await gamesApi.remove(keys).catch(() => null);
     if (!res?.ok) {
-      said = "Sidecoach did not answer: the game is still here. Try again in a moment.";
+      said = "Sidecoach did not answer: nothing was removed. Try again in a moment.";
       saidBad = true;
       return;
     }
-    const gone = new Set(res.removed ?? [game.key]);
+    const gone = new Set(res.removed ?? keys);
     list = list.filter((g) => !gone.has(g.key));
-    undo = { key: game.key, label: `${game.white || "White"} v ${game.black || "Black"}` };
+    stopSelecting();
+    undo = { keys, label: games.length === 1 ? `${games[0].white || "White"} v ${games[0].black || "Black"}` : `${games.length} games` };
     if (undoTimer) clearTimeout(undoTimer);
     undoTimer = setTimeout(() => (undo = null), UNDO_MS);
     void announce("games");
   }
   async function undoRemove(): Promise<void> {
     if (!undo) return;
-    const key = undo.key;
+    const keys = undo.keys;
     undo = null;
     if (undoTimer) clearTimeout(undoTimer);
-    const res = await gamesApi.restore(key).catch(() => null);
+    const res = await gamesApi.restore(keys).catch(() => null);
     if (!res?.ok) {
-      said = res?.error || "Sidecoach did not answer: the game stays removed.";
+      said = res?.error || "Sidecoach did not answer: the games stay removed.";
       saidBad = true;
     }
     await load();
@@ -176,15 +289,49 @@
   // 0 every game): the plan's G, beside where from and how it went.
   const SPEEDS = ["bullet", "blitz", "rapid", "classical", "daily"];
   const speedsHeld = $derived(SPEEDS.filter((t) => list.some((g) => g.time_class === t)));
+
+  // The list's search (a player's name) and order; a game with nothing to sort by goes last.
+  let query = $state("");
+  type Order = "new" | "old" | "best" | "worst" | "strong";
+  let order = $state<Order>("new");
+  const ORDERS: [Order, string][] = [
+    ["new", "Newest first"],
+    ["old", "Oldest first"],
+    ["best", "Your best accuracy"],
+    ["worst", "Your worst accuracy"],
+    ["strong", "Strongest opponent"],
+  ];
+  const playedAt = (g: LibraryGame) => g.played_at ?? g.added_at;
+  const yours = (g: LibraryGame) => (g.user_side && g.accuracy ? g.accuracy[g.user_side] : null) ?? null;
+  const theirElo = (g: LibraryGame) => (g.user_side === "white" ? g.black_elo : g.user_side === "black" ? g.white_elo : null) ?? null;
+  function ordered(games: LibraryGame[]): LibraryGame[] {
+    const last = (v: number | null, f: (n: number) => number) => (v == null ? Infinity : f(v));
+    const by: Record<Order, (g: LibraryGame) => number> = {
+      new: (g) => -playedAt(g),
+      old: (g) => playedAt(g),
+      best: (g) => last(yours(g), (n) => -n),
+      worst: (g) => last(yours(g), (n) => n),
+      strong: (g) => last(theirElo(g), (n) => -n),
+    };
+    const key = by[order];
+    return [...games].sort((a, b) => key(a) - key(b) || playedAt(b) - playedAt(a));
+  }
+  const needle = $derived(query.trim().toLowerCase());
   const shown = $derived(
-    list.filter(
-      (g) =>
-        (show === "all" || g.source === show) &&
-        (outcome === "all" || outcomeOf(g) === outcome) &&
-        (speed === "all" || g.time_class === speed) &&
-        (!since || (g.played_at ?? g.added_at) >= Date.now() / 1000 - since * 86400),
+    ordered(
+      list.filter(
+        (g) =>
+          (show === "all" || g.source === show) &&
+          (outcome === "all" || outcomeOf(g) === outcome) &&
+          (speed === "all" || g.time_class === speed) &&
+          (!since || playedAt(g) >= Date.now() / 1000 - since * 86400) &&
+          (!needle || `${g.white ?? ""} ${g.black ?? ""}`.toLowerCase().includes(needle)),
+      ),
     ),
   );
+  // What the action bar acts on: the games picked that are shown.
+  const pickedShown = $derived(shown.filter((g) => picked.has(g.key)));
+  const allPicked = $derived(shown.length > 0 && pickedShown.length === shown.length);
   const sourcesHeld = $derived([...new Set(list.map((g) => g.source))]);
 
   function when(g: LibraryGame): string {
@@ -203,10 +350,26 @@
     const stops = [onAnnounce("settings", () => void load()), onAnnounce("games", () => void load())];
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
+    // Select mode's keys: Esc leaves it, Delete removes what is picked, Ctrl+A picks all shown.
+    const onKey = (e: KeyboardEvent) => {
+      if (!selecting || (e.target as HTMLElement | null)?.closest?.("input[type=search], textarea, select")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        stopSelecting();
+      } else if (e.key === "Delete" && pickedShown.length) {
+        e.preventDefault();
+        void removePicked();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        for (const g of shown) picked.add(g.key);
+      }
+    };
+    window.addEventListener("keydown", onKey);
     return () => {
       document.body.classList.remove("games-page");
       for (const stop of stops) stop();
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("keydown", onKey);
       clearInterval(jobTimer);
       if (following) clearTimeout(following);
     };
@@ -217,6 +380,9 @@
 
 <header id="bar">
   <div class="group">
+    <button class="iconbtn rv-back" aria-label="Close Your games" title="Close Your games" onclick={leave}>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    </button>
     <img class="gm-mark" src="/logo.svg" alt="" draggable="false" />
     <div class="gm-head">
       <div class="gm-name">Your games</div>
@@ -270,6 +436,35 @@
   </section>
 
   <section class="gm-list" aria-label="The library">
+    <!-- The list's toolbar, at the top while the list scrolls; in select mode the action bar. -->
+    <div class="gm-stick" use:stuckWatch aria-hidden="true"></div>
+    <div class="gm-tools" class:selecting class:stuck role="toolbar" aria-label={selecting ? "The games selected" : "Your games"}>
+      {#if selecting}
+        <input class="gm-box" type="checkbox" checked={allPicked} indeterminate={pickedShown.length > 0 && !allPicked} onchange={toggleAll} aria-label="Select every game shown" title="Select every game shown (Ctrl+A)" />
+        <span class="gm-count picked"><b>{pickedShown.length}</b> selected</span>
+        <button class="gm-tool danger" disabled={!pickedShown.length} onclick={removePicked} title="Remove the selected games, their reviews and their Stats (Delete)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" /></svg><span>Delete</span>
+        </button>
+        <button class="gm-tool gm-cancel" onclick={stopSelecting} title="Leave select mode (Esc)" aria-label="Cancel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" /></svg><span>Cancel</span>
+        </button>
+      {:else}
+        <button class="gm-tool" disabled={!shown.length} onclick={() => startSelecting()} title="Select games, to remove them">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 7h-9v2h9V7zm0 8h-9v2h9v-2zM5.54 11 2 7.46l1.41-1.41 2.12 2.12 4.24-4.24 1.41 1.41L5.54 11zm0 8L2 15.46l1.41-1.41 2.12 2.12 4.24-4.24 1.41 1.41L5.54 19z" /></svg><span>Select</span>
+        </button>
+        <label class="gm-search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" /></svg>
+          <input type="search" placeholder="Search players" aria-label="Search players" bind:value={query} />
+        </label>
+        <label class="gm-sort" title="Order">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18h6v-2H3v2zM3 6v2h18V6H3zm0 7h12v-2H3v2z" /></svg>
+          <select aria-label="Order" bind:value={order}>
+            {#each ORDERS as [value, label] (value)}<option {value}>{label}</option>{/each}
+          </select>
+        </label>
+        <span class="gm-count">{shown.length === list.length ? `${list.length} game${list.length === 1 ? "" : "s"}` : `${shown.length} of ${list.length}`}</span>
+      {/if}
+    </div>
     <div class="gm-filters">
       <div class="seg small">
         <button class="segbtn" aria-pressed={show === "all"} onclick={() => (show = "all")}>All</button>
@@ -327,30 +522,53 @@
     {#if loaded && !shown.length}
       <div class="gm-empty">{list.length ? "No game matches." : "No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN."}</div>
     {/if}
-    <ol class="gm-games">
+    {#snippet cells(g: LibraryGame)}
+      {@const o = outcomeOf(g)}
+      <span class="gm-kind" title={SOURCES[g.source]}>{g.time_class || "—"}<small>{SOURCES[g.source]}</small></span>
+      <span class="gm-players">
+        <span class="gm-player" class:me={g.user_side === "white"}><i class="sw w"></i>{g.white || "White"}{#if g.white_elo}<small>({g.white_elo})</small>{/if}</span>
+        <span class="gm-player" class:me={g.user_side === "black"}><i class="sw b"></i>{g.black || "Black"}{#if g.black_elo}<small>({g.black_elo})</small>{/if}</span>
+      </span>
+      <span class="gm-result {o ?? ''}" title={o ?? ""}>{g.result && g.result !== "*" ? g.result.replaceAll("1/2", "½") : "—"}</span>
+      <span class="gm-acc" title={job?.current?.key === g.key ? "Being reviewed in the background" : "Accuracy, White then Black"}>
+        {#if g.accuracy}
+          <b class="acc w">{g.accuracy.white?.toFixed(1) ?? "–"}</b><b class="acc b">{g.accuracy.black?.toFixed(1) ?? "–"}</b>
+        {:else if job?.current?.key === g.key && job.current.total}
+          <span class="gm-row-bar" class:still={job.status !== "reviewing"}><i style:width="{Math.round((100 * job.current.done) / job.current.total)}%"></i></span>
+        {/if}
+      </span>
+      <span class="gm-when">{when(g)}</span>
+    {/snippet}
+    <ol class="gm-games" class:selecting>
       {#each shown as g (g.key)}
-        {@const o = outcomeOf(g)}
-        <li class="gm-game">
-          <span class="gm-kind" title={SOURCES[g.source]}>{g.time_class || "—"}<small>{SOURCES[g.source]}</small></span>
-          <span class="gm-players">
-            <span class="gm-player" class:me={g.user_side === "white"}><i class="sw w"></i>{g.white || "White"}{#if g.white_elo}<small>({g.white_elo})</small>{/if}</span>
-            <span class="gm-player" class:me={g.user_side === "black"}><i class="sw b"></i>{g.black || "Black"}{#if g.black_elo}<small>({g.black_elo})</small>{/if}</span>
-          </span>
-          <span class="gm-result {o ?? ''}" title={o ?? ""}>{g.result && g.result !== "*" ? g.result.replaceAll("1/2", "½") : "—"}</span>
-          <span class="gm-acc" title={job?.current?.key === g.key ? "Being reviewed in the background" : "Accuracy, White then Black"}>
-            {#if g.accuracy}
-              <b class="acc w">{g.accuracy.white?.toFixed(1) ?? "–"}</b><b class="acc b">{g.accuracy.black?.toFixed(1) ?? "–"}</b>
-            {:else if job?.current?.key === g.key && job.current.total}
-              <span class="gm-row-bar" class:still={job.status !== "reviewing"}><i style:width="{Math.round((100 * job.current.done) / job.current.total)}%"></i></span>
-            {/if}
-          </span>
-          <span class="gm-when">{when(g)}</span>
-          <span class="gm-go">
-            <a class="primary linkbtn" href="/review/{encodeURIComponent(g.key)}" target="_blank" rel="noopener" onclick={(e) => openReview(e, g.key)}>{g.reviewed ? "Open review" : "Review"}</a>
-            <button class="iconbtn small gm-del" title="Remove this game: its review and its Stats go with it" aria-label="Remove this game" onclick={() => remove(g)}>
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
-          </span>
+        <li use:longPress={g.key}>
+          {#if selecting}
+            {@const on = picked.has(g.key)}
+            <!-- In select mode the whole row is its checkbox's label: a click anywhere picks it
+                 (the label clicks the box, with the shift key of the click: a range). -->
+            <label class="gm-game" class:picked={on}>
+              <span class="gm-check">
+                <input
+                  class="gm-box"
+                  type="checkbox"
+                  checked={on}
+                  aria-label="Select {g.white || 'White'} v {g.black || 'Black'}"
+                  onclick={(e) => {
+                    e.preventDefault();
+                    togglePick(g.key, e.shiftKey);
+                  }}
+                />
+              </span>
+              {@render cells(g)}
+            </label>
+          {:else}
+            <div class="gm-game">
+              {@render cells(g)}
+              <span class="gm-go">
+                <a class="primary linkbtn" href="/review/{encodeURIComponent(g.key)}" target="_blank" rel="noopener" onclick={(e) => openReview(e, g.key)}>{g.reviewed ? "Open review" : "Review"}</a>
+              </span>
+            </div>
+          {/if}
         </li>
       {/each}
     </ol>

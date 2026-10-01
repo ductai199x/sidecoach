@@ -147,7 +147,7 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     # A game that is not in the library opens nothing.
     assert client.post("/api/review/pgn:none/open", json={}).json()["ok"] is False
     # Taken out of the library, with its review.
-    assert client.delete(f"/api/games/{key}").json()["ok"]
+    assert client.post("/api/games/remove", json={"keys": [key]}).json()["ok"]
     assert all(g["key"] != key for g in client.get("/api/games").json()["games"])
 
 
@@ -710,22 +710,29 @@ def test_a_removed_game_stays_out_until_undone_or_pasted_again(
     (key,) = first["keys"]
     assert first["added"] == 1 and key in keys()
 
-    assert client.delete(f"/api/games/{key}").json() == {"ok": True, "removed": [key]}
-    assert key not in keys()
+    # Two games selected and removed in one go, the second brought in by hand.
+    other = client.post("/api/games/import", json={"source": "pgn", "text": LONGER}).json()
+    (second,) = other["keys"]
+    both = {"keys": [key, second]}
+    assert client.post("/api/games/remove", json=both).json() == {
+        "ok": True,
+        "removed": [key, second],
+    }
+    assert not {key, second} & keys()
     again = client.post("/api/games/import", json={"source": "chesscom"}).json()
     assert (again["added"], again["already"], again["left_out"]) == (0, 0, 1)
     assert key not in keys(), "brought in again, it stays out"
 
-    assert client.post(f"/api/games/{key}/restore").json() == {"ok": True, "restored": [key]}
-    assert key in keys()
+    restored = client.post("/api/games/restore", json=both).json()
+    assert restored == {"ok": True, "restored": [key, second]} and {key, second} <= keys()
 
-    client.delete(f"/api/games/{key}")
+    client.post("/api/games/remove", json={"keys": [key]})
     pasted = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()
     assert (pasted["added"], pasted["left_out"]) == (1, 0) and key in keys(), "pasted, it is back"
 
-    client.delete(f"/api/games/{key}")
+    client.post("/api/games/remove", json={"keys": [key]})
     monkeypatch.setattr(store_module, "UNDO_KEEP_S", -1.0)
-    late = client.post(f"/api/games/{key}/restore").json()
+    late = client.post("/api/games/restore", json={"keys": [key]}).json()
     assert not late["ok"] and "too long ago" in late["error"]
 
 

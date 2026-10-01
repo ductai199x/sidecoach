@@ -188,6 +188,10 @@ class _Pgn(BaseModel):
     save: bool = False
 
 
+class _Keys(BaseModel):
+    keys: list[str] = []  # library keys: the games selected in Your games
+
+
 class _Rect(BaseModel):
     x: int
     y: int
@@ -442,30 +446,30 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             backlog.nudge()  # reviewed from now, the progress shown at once
         return done
 
-    # A game out of the player's record, with the game it is paired with; Undo puts it back
-    # for a while (Store.remove_game, restore_game).
-    @app.delete("/api/games/{key}")
-    def games_delete(key: str) -> dict[str, Any]:
+    # Games out of the player's record, the ones selected in Your games, each with the game it is
+    # paired with; Undo puts them back for a while (Store.remove_game, restore_game).
+    @app.post("/api/games/remove")
+    def games_remove(body: _Keys) -> dict[str, Any]:
         from sidecoach.profile.store import Store
 
         store = Store(store_path)
         try:
-            removed = store.remove_game(key)
+            removed = [k for key in body.keys for k in store.remove_game(key)]
         finally:
             store.close()
         return {"ok": True, "removed": removed}
 
-    @app.post("/api/games/{key}/restore")
-    def games_restore(key: str) -> dict[str, Any]:
+    @app.post("/api/games/restore")
+    def games_restore(body: _Keys) -> dict[str, Any]:
         from sidecoach.profile.store import Store
 
         store = Store(store_path)
         try:
-            restored = store.restore_game(key)
+            restored = [k for key in body.keys for k in store.restore_game(key)]
         finally:
             store.close()
         if not restored:
-            return {"ok": False, "error": "That game was removed too long ago to put back."}
+            return {"ok": False, "error": "Those games were removed too long ago to put back."}
         return {"ok": True, "restored": restored}
 
     # The card on the move shown, said in the panel's voice and captioned: a new card cuts off

@@ -195,7 +195,18 @@ def lines_for(review: GameReview, fullmoves: int) -> list[str]:
             "miss",
             "blunder",
         )
-        parts = [f"{review.tallies[k]} {k}" for k in order if review.tallies.get(k)]
+        # The kinds that are nouns take a plural; best, excellent, good and book do not.
+        plural = {
+            "inaccuracy": "inaccuracies",
+            "mistake": "mistakes",
+            "miss": "misses",
+            "blunder": "blunders",
+        }
+        parts = [
+            f"{n} {plural.get(k, k) if n > 1 else k}"
+            for k in order
+            if (n := review.tallies.get(k, 0))
+        ]
         acc = f"Accuracy {review.accuracy:.1f}. " if review.accuracy is not None else ""
         out.append(f"{acc}Your {review.moves} moves: " + ", ".join(parts) + ".")
     for tp in review.turning_points:

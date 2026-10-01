@@ -11,7 +11,7 @@
   import { page } from "$app/state";
   import "$lib/styles/review.css";
   import { beacon, connect, review as reviewApi, type AiLink, type AiPiece, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
-  import { inShell, openWindow } from "$lib/shell.svelte";
+  import { inShell, openSetting, openWindow } from "$lib/shell.svelte";
   import { placement } from "$lib/chess";
   import { boardHandle, layoutMode, splitter } from "$lib/layout";
   import { prefs } from "$lib/panel.svelte";
@@ -793,8 +793,11 @@
           <small>{ai.unavailable ?? `The AI coach on ${ai.moves} key moves${ai.estimate != null ? `, ${cents(ai.estimate)}` : ""}.`}</small>
         {/if}
       </div>
-      {#if ai.status === "none" || ai.status === "failed"}
-        <button class="rv-ask" disabled={!!ai.unavailable || asking} title={ai.unavailable ?? "Ask the AI coach why each key move mattered"} onclick={explain}>{ai.status === "failed" ? "Try again" : ai.answered > 0 ? "Finish" : "Explain"}</button>
+      {#if ai.unavailable && ai.status !== "writing"}
+        <!-- No AI coach to ask, or its key missing: the way to fix it, not a dead button. -->
+        <button class="rv-ask quiet" title="Choose the AI coach in Settings" onclick={() => void openSetting("llm.provider")}>Settings</button>
+      {:else if ai.status === "none" || ai.status === "failed"}
+        <button class="rv-ask" disabled={asking} title="Ask the AI coach why each key move mattered" onclick={explain}>{ai.status === "failed" ? "Try again" : ai.answered > 0 ? "Finish" : "Explain"}</button>
       {/if}
       {#if ai.status === "writing"}<i class="bar"></i>{/if}
     </div>

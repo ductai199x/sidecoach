@@ -2,7 +2,8 @@
   // The mirrored board: 64 squares from a FEN, the last move lit, coordinates on the
   // edges, and an SVG overlay for the marks that go with a coach message. White at the
   // bottom shows rank 8 on top and file a at the left; Black at the bottom the reverse.
-  // The square colours and the labels come from the absolute square, as on chess.com.
+  // The square colours and the labels come from the absolute square, as on chess.com. With no
+  // position to show (nothing followed yet) it rests on the starting one, dimmed.
   import { FILES, cellOf, moveSquares, ranksOf, spriteOf } from "./chess";
   import type { Mark } from "./api";
 
@@ -14,9 +15,9 @@
     board = $bindable<HTMLDivElement | null>(null),
   }: { fen?: string | null; bottom?: string; lastMove?: string | null; marks?: Mark[]; board?: HTMLDivElement | null } = $props();
 
+  const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   const squares = $derived.by(() => {
-    if (!fen) return [];
-    const ranks = ranksOf(fen);
+    const ranks = ranksOf(fen || START);
     const blackBottom = bottom === "black";
     const hl = moveSquares(lastMove);
     const out: { name: string; dark: boolean; odd: boolean; hl: boolean; piece: string | null; rankLabel: string | null; fileLabel: string | null }[] = [];
@@ -52,7 +53,7 @@
   }
 </script>
 
-<div class="board-wrap">
+<div class="board-wrap" class:idle={!fen}>
   <div class="board" bind:this={board}>
     {#each squares as sq (sq.name)}
       <div class="sq {sq.dark ? 'dark' : 'light'}" class:odd={sq.odd} class:hl={sq.hl}>

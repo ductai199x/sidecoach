@@ -1,10 +1,11 @@
 <script lang="ts">
-  // Every control but Start, in a drawer from the left: the board's side and a re-read,
-  // ending or forgetting the game, the panes, the caches and the profile, the voice when
-  // there is one, the settings and the setup -- each a row with room for a thumb. The phone
-  // had it first; on the desktop it took the menu bar's place (Tai, 2026-09-24), and there
-  // it carries what only the shell has too: the terminal, always on top, the debug tools
-  // (the dump that shows a problem first), updates, quitting and the version.
+  // The menu, a drawer from the left: where to go (Your games, Stats, Settings, the setup)
+  // and what is rarely needed (the panes, the caches, the profile, the debug tools) -- each a
+  // row with room for a thumb. What a player needs mid-game is on the page itself: the voice
+  // and Start in the header, flipping, re-reading and ending the game under the board (Tai,
+  // 2026-10-01: muting took the drawer, a scroll, a click and a close). The phone had the
+  // drawer first; on the desktop it took the menu bar's place (Tai, 2026-09-24), and there
+  // it carries what only the shell has too: the terminal, updates, quitting and the version.
   //
   // It is a history entry (SvelteKit's shallow routing), so the phone's Back closes it,
   // as it closes a drawer in any app; a tap outside it, Esc, or any of its rows too.
@@ -14,35 +15,25 @@
   import { panel } from "./api";
   import { store } from "./panel.svelte";
   import {
-    alwaysOnTop, appVersion, checkForUpdates, inShell, openDataFolder, openInBrowser, openWindow,
-    PANES, panes, quitApp, resetLayout, setAlwaysOnTop, terminal, togglePane, toggleTerminal,
+    appVersion, checkForUpdates, inShell, openDataFolder, openInBrowser, openWindow,
+    PANES, panes, quitApp, resetLayout, terminal, togglePane, toggleTerminal,
   } from "./shell.svelte";
-  import { voiceLabel } from "./voices";
 
   let { missing = [] }: { missing?: string[] } = $props();
 
   const open = $derived(!!page.state.drawer);
-  const shown = $derived(store.bottom);
-  const voices = $derived(store.state.voices || []);
   const side = $derived(store.state.user_side as string | null | undefined);
   let closeButton = $state<HTMLButtonElement | null>(null);
   const shell = inShell();
   // The phone's app marks its page (LocalServer): Debug -> Dump is there too, the one debug
   // tool it has -- what the coach saw, saved for Tai to pull off the phone.
   const onPhone = typeof document !== "undefined" && document.documentElement.dataset.app === "phone";
-  let onTop = $state(false);
   let version = $state("");
   let dumped = $state("");
 
   onMount(() => {
     if (shell) void appVersion().then((v) => (version = v));
   });
-
-  async function toggleOnTop(): Promise<void> {
-    onTop = !onTop;
-    await setAlwaysOnTop(onTop);
-    onTop = await alwaysOnTop();
-  }
 
   async function toggleRecord(): Promise<void> {
     const r = await panel.setRecord(!store.state.record_wanted);
@@ -94,7 +85,6 @@
 
   $effect(() => {
     if (open) closeButton?.focus({ preventScroll: true });
-    if (open && shell) void alwaysOnTop().then((v) => (onTop = v));
     if (!open) dumped = "";
   });
 </script>
@@ -122,22 +112,10 @@
     <div class="dsec">
       <button class="ditem setup" onclick={() => go("setup")}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-        <span>Finish setting up<span class="hint">{missing.join(", ")}</span></span>
+        <span>Finish setting up<span class="hint">Still to download: {missing.join(" · ")}</span></span>
       </button>
     </div>
   {/if}
-
-  <div class="dsec">
-    <div class="dlabel">Board &middot; side at the bottom</div>
-    <div class="seg dseg" title="Which side is at the bottom of the board the coach reads. For a game seen from its start this only turns the panel's board around; for a puzzle or a game joined mid-way it re-reads the screen the other way up.">
-      <button class="segbtn" aria-pressed={shown === "white"} onclick={() => { if (shown !== "white") panel.flip(); }}>&#9651; White</button>
-      <button class="segbtn" aria-pressed={shown === "black"} onclick={() => { if (shown !== "black") panel.flip(); }}>&#9651; Black</button>
-    </div>
-    <button class="ditem" onclick={() => act(() => panel.analyze())}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-      <span>Re-read the screen<span class="hint">A puzzle, an analysis board, a game joined late</span></span>
-    </button>
-  </div>
 
   <div class="dsec">
     <div class="dlabel">Games</div>
@@ -148,26 +126,6 @@
     <button class="ditem" onclick={() => go("stats")}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>
       <span>Your stats<span class="hint">Your openings, tactics, strategy and endgames across your games</span></span>
-    </button>
-  </div>
-
-  <div class="dsec">
-    <div class="dlabel">End the game</div>
-    <button class="ditem" onclick={() => act(() => panel.end("resigned"))}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.4 6 14 4H5v17h2v-7h5.6l.4 2h7V6z"/></svg>
-      <span>I resigned or lost on time</span>
-    </button>
-    <button class="ditem" onclick={() => act(() => panel.end("won"))}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0 0 11 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 0 0 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
-      <span>My opponent resigned or flagged</span>
-    </button>
-    <button class="ditem" onclick={() => act(() => panel.end("draw"))}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8.5h14v2.5H5zm0 4.5h14v2.5H5z"/></svg>
-      <span>Draw agreed</span>
-    </button>
-    <button class="ditem warn" onclick={() => act(() => panel.end("forget"))}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5-1-1h-5l-1 1H5v2h14V4z"/></svg>
-      <span>Forget this game<span class="hint">Wait for the next start position</span></span>
     </button>
   </div>
 
@@ -192,41 +150,12 @@
         {/if}
         <span>Terminal<span class="hint">The pipeline's log, under the status strip</span></span>
       </button>
-      <button class="ditem" role="menuitemcheckbox" aria-checked={onTop} onclick={toggleOnTop}>
-        {#if onTop}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm-9 14-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
-        {:else}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/></svg>
-        {/if}
-        <span>Always on top<span class="hint">Keep this window over the game's</span></span>
-      </button>
     {/if}
     <button class="ditem" onclick={() => act(resetLayout)}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
       <span>Reset layout<span class="hint">Every pane shown, every size back to its default</span></span>
     </button>
   </div>
-
-  {#if voices.length}
-    <div class="dsec">
-      <div class="dlabel">Voice</div>
-      <button class="ditem" aria-pressed={!!store.state.muted} onclick={() => store.setMuted(!store.state.muted)}>
-        {#if store.state.muted}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4 9.9 6.1 12 8.2V4z"/></svg>
-          <span>Unmute the coach</span>
-        {:else}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
-          <span>Mute the coach</span>
-        {/if}
-      </button>
-      <label class="dselect">
-        <span>Voice</span>
-        <select value={store.state.voice} onchange={(e) => panel.setVoice((e.currentTarget as HTMLSelectElement).value)}>
-          {#each voices as v (v)}<option value={v}>{voiceLabel(v)}</option>{/each}
-        </select>
-      </label>
-    </div>
-  {/if}
 
   <div class="dsec">
     <div class="dlabel">Data</div>
@@ -386,20 +315,9 @@
   .ditem:hover, .ditem:active, .ditem:focus-visible { background: var(--panel2); }
   .ditem svg { width: 21px; height: 21px; flex: 0 0 21px; fill: var(--muted); }
   .ditem .hint { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--muted); }
-  .ditem.warn { color: var(--warn); }
-  .ditem.warn svg { fill: var(--warn); }
   .ditem.danger { color: var(--error); }
   .ditem.danger svg { fill: var(--error); }
   .ditem.setup { background: rgba(242, 180, 65, 0.1); color: #f2b441; }
   .ditem.setup svg { fill: #f2b441; }
-
-  .dseg { display: flex; width: calc(100% - 20px); margin: 0 10px 8px; border-radius: 10px; }
-  .dseg .segbtn { flex: 1 1 0; padding: 11px 6px; font-size: 14px; white-space: nowrap; }
-
-  .dselect {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 6px 10px 4px 47px; font-size: 14px; color: var(--muted);
-  }
-  .dselect select { max-width: 60%; }
   .dversion { padding: 10px 10px 2px 47px; font-size: 12px; color: var(--muted); }
 </style>

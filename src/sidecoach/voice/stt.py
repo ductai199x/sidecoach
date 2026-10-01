@@ -121,7 +121,7 @@ class ParakeetSTT:
             except Exception as exc:  # noqa: BLE001 - degrade to off, never crash the session
                 if "LocalEntryNotFound" in type(exc).__name__ or "outgoing traffic" in str(exc):
                     # The app keeps the hub offline: the model is fetched by the setup only.
-                    self._failed = "not downloaded yet (Help > Set up)"
+                    self._failed = "not downloaded yet: open Setup from the menu"
                 else:
                     self._failed = f"{type(exc).__name__}: {exc}"
                 log.warning("Parakeet unavailable, speech recognition is off: %s", exc)

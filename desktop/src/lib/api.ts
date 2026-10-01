@@ -196,10 +196,10 @@ export const games = {
    * and the setting to fix when the username is at fault (`field`). */
   bringIn: (source: "pgn" | "chesscom" | "lichess", text = "", months = 3) =>
     post<{ ok: boolean; added?: number; already?: number; left_out?: number; keys?: string[]; error?: string; field?: string }>("/api/games/import", { source, text, months }),
-  /** The game out of the player's record, with the game it is paired with (`removed`). */
-  remove: (key: string) => del<{ ok: boolean; removed?: string[] }>(`/api/games/${encodeURIComponent(key)}`),
-  /** A game removed moments ago, put back. */
-  restore: (key: string) => post<{ ok: boolean; restored?: string[]; error?: string }>(`/api/games/${encodeURIComponent(key)}/restore`),
+  /** Games out of the player's record, each with the game it is paired with (`removed`). */
+  remove: (keys: string[]) => post<{ ok: boolean; removed?: string[] }>("/api/games/remove", { keys }),
+  /** Games removed moments ago, put back. */
+  restore: (keys: string[]) => post<{ ok: boolean; restored?: string[]; error?: string }>("/api/games/restore", { keys }),
 };
 
 export type Eval = { cp: number | null; mate: number | null; result: string | null };
