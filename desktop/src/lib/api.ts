@@ -304,6 +304,9 @@ export type ReviewState = {
   strength: string;
   game: Omit<LibraryGame, "key" | "added_at" | "reviewed" | "accuracy" | "performance">;
   start_fen: string | null;
+  /** While the game is analysed: its positions, the first before any move, each with the move
+   *  that led to it -- the board plays the game out as the progress goes. */
+  playback?: { fen: string; uci: string | null }[] | null;
   summary: GameSummary | null;
   moves: ReviewMove[];
   practice: Practice[];
@@ -315,7 +318,9 @@ export const review = (key: string) => {
   const p = `/api/review/${encodeURIComponent(key)}`;
   type Polled = { ok: boolean; closed?: boolean; error?: string; state?: ReviewState; lines?: LogLine[]; cursor?: number };
   return {
-    open: (strength = "standard") => post<Polled & { voice?: boolean }>(`${p}/open`, { strength }),
+    /** The game reviewed at `strength`; none named, at the server's own: Standard on a computer,
+     *  Fast on the phone, whose engine is slower (the plan's depth 14). */
+    open: (strength?: string) => post<Polled & { voice?: boolean }>(`${p}/open`, strength ? { strength } : {}),
     poll: (since: number) => get<Polled>(`${p}/poll?since=${since | 0}`),
     /** The card said in the panel's voice, cutting off the one before; hush stops it. */
     say: (text: string) => post<{ ok: boolean }>(`${p}/say`, { text }),

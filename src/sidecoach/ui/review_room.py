@@ -109,6 +109,7 @@ class ReviewRoom:
         self._spent = 0.0
         # The words' cost as the button says it, by model name and the moves answered already.
         self._estimated: tuple[tuple[str | None, frozenset[int]], float | None] | None = None
+        self._playback = playback(row.pgn)
         self.touched = time.monotonic()
         self.closed = False
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
@@ -142,6 +143,9 @@ class ReviewRoom:
                     "user_side": self.row.user_side,
                 },
                 "start_fen": self.reviewed.start.fen if self.reviewed else None,
+                # While the game is analysed, its positions: the page's board plays the game out
+                # as the progress goes, as chess.com's review does (Tai, 2026-09-30).
+                "playback": self._playback if self.status in ("starting", "analysing") else None,
                 "summary": self.summary.model_dump(mode="json") if self.summary else None,
                 "moves": self._moves,
                 "practice": self.practice,
@@ -486,6 +490,21 @@ def review_row(
     store.clear_progress(row.key)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
+
+
+def playback(pgn: str) -> list[dict[str, str | None]]:
+    """The game's main line as the board plays it while the game is analysed: the position
+    before any move, then each move (UCI) and the position it leaves; none for a PGN with no
+    game in it."""
+    games = library.games_in(pgn)
+    if not games:
+        return []
+    board = games[0].board()
+    out: list[dict[str, str | None]] = [{"fen": board.fen(), "uci": None}]
+    for move in games[0].mainline_moves():
+        board.push(move)
+        out.append({"fen": board.fen(), "uci": move.uci()})
+    return out
 
 
 def _opening(reviewed: ReviewedGame) -> str | None:

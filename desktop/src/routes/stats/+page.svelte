@@ -402,7 +402,7 @@
     {:else if !numbers}
       <div class="rv-progress">Adding up your games…</div>
     {:else if !numbers.overview.games}
-      <div class="st-empty">No reviewed games {filter.time_class || filter.days || filter.opponents !== "all" ? "for these filters" : "yet"}. Games you bring in, and games Sidecoach watches, are reviewed in the background{backlog?.waiting ? ` — ${backlog.waiting} waiting` : ""}.</div>
+      <div class="st-empty">No reviewed games {filter.time_class || filter.days || filter.opponents !== "all" ? "for these filters" : "yet"}. {#if backlog}Games you bring in, and games Sidecoach watches, are reviewed in the background{backlog.waiting ? ` — ${backlog.waiting} waiting` : ""}.{:else}Every game you review in Your games counts here.{/if}</div>
     {:else if section === "overview"}
       {@const o = numbers.overview}
       <div class="st-head">

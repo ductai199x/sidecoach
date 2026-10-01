@@ -195,10 +195,18 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-scroll, .rv-movebox { scrollbar-width: thin; scrollbar-color: var(--panel3) transparent; }
 .rv-foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 
-/* the analysis running */
-.rv-progress { display: flex; flex-direction: column; gap: 8px; padding: 30px 6px; text-align: center; color: var(--muted); }
-.rv-progress .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
-.rv-progress .bar i { display: block; height: 100%; background: var(--accent); transition: width 300ms ease; }
+/* the analysis running, as chess.com's card: the percent large and bold over a thick bar, white
+   on a lighter track, in a card of its own; what is happening under it */
+.rv-progress {
+  display: flex; flex-direction: column; gap: 12px; margin: 16px 2px; padding: 16px 16px 14px;
+  border-radius: 12px; background: var(--panel2); text-align: center;
+}
+.rv-progress .pct { font-size: 22px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1; }
+.rv-progress .bar { height: 18px; border-radius: 5px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.rv-progress .bar i { display: block; height: 100%; background: #fff; transition: width 300ms ease; }
+.rv-progress .what { font-size: 15px; color: var(--muted); }
+/* With the board playing the game out, the bar steps with each move: no easing to lag it. */
+.rv-progress .bar.playing i { transition: none; }
 .rv-failed { color: var(--error); padding: 20px 4px; }
 
 /* The coach's speech bubble, as chess.com's: the coach at the left, a light bubble with its

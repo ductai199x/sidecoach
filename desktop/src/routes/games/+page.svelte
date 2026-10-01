@@ -94,7 +94,15 @@
     const games = (n: number) => `${n} game${n === 1 ? "" : "s"}`;
     if (!added && !already) said = source === "pgn" ? "No games in that PGN." : `No games in the last ${months} month${months === 1 ? "" : "s"}.`;
     else if (!added) said = `Nothing new: ${already === 1 ? "that game was" : `all ${already} were`} already here.`;
-    else said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. ${backlog?.paused_by_you ? "The background review is paused: resume it below to review them." : "They are reviewed in the background; each shows its accuracy when done."}`;
+    else {
+      // No background review (the phone's, Tai 2026-09-30): the player reviews the games they pick.
+      const next = !backlog
+        ? "Press Review on one to review it; the review is kept and opens at once after."
+        : backlog.paused_by_you
+          ? "The background review is paused: resume it below to review them."
+          : "They are reviewed in the background; each shows its accuracy when done.";
+      said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}. ${next}`;
+    }
     if (source === "pgn" && added) pgn = "";
     if (added && backlog) expectUntil = Date.now() + EXPECT_MS;
     await load();

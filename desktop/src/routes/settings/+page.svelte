@@ -597,7 +597,9 @@
 
   <footer class="secfoot">
     {#if !inShell()}
-      <button type="button" class="link back" onclick={() => (window.location.href = "/")}>&larr; Back</button>
+      <!-- Back where Settings was opened from (the panel, Your games' "Set it in Settings" on
+           the phone); a tab of its own goes to the panel. -->
+      <button type="button" class="link back" onclick={() => (history.length > 1 ? history.back() : (window.location.href = "/"))}>&larr; Back</button>
     {/if}
     {#if result?.ok}
       <span class="saved">{savedLine(result)}{#if result.restart?.length} <button type="button" class="link" onclick={saveAndRestart}>Restart now</button>{/if}</span>

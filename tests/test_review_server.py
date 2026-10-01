@@ -88,8 +88,14 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     # Reviewed in a room of its own: two engines side by side, then the summary and the moves.
     opened = client.post(f"/api/review/{key}/open", json={"strength": "fast"}).json()
     assert opened["ok"] and opened["state"]["strength"] == "fast"
+    # While it is analysed, the game's positions for the board to play out as the progress goes.
+    playing = review_room.playback(GAME)
+    assert len(playing) == 13 and playing[0]["uci"] is None and playing[1]["uci"] == "e2e4"
+    if opened["state"]["status"] != "ready":
+        assert opened["state"]["playback"] == playing
     state = _until_ready(client, key)["state"]
     assert state["status"] == "ready", state["error"]
+    assert state["playback"] is None, "the review shown, the playback gone"
     assert len(made) == 2
     summary, moves = state["summary"], state["moves"]
     assert (summary["white"]["name"], summary["black"]["rating"]) == ("Anakin_737", 1018)
@@ -133,6 +139,10 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
         else {}
     )
     assert again["state"]["moves"] == moves and not made, "no engine for a saved review"
+    # An open that names no strength reviews at the server's own: Standard on a computer.
+    plain = client.post(f"/api/review/{key}/open", json={}).json()
+    assert plain["ok"] and plain["state"]["strength"] == "standard"
+    _until_ready(client, key)
 
     # A game that is not in the library opens nothing.
     assert client.post("/api/review/pgn:none/open", json={}).json()["ok"] is False

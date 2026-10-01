@@ -104,7 +104,7 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> A
     key_env = settings.api_key_env or defaults.api_key_env
     api_key = os.environ.get(key_env) if key_env else None
     if key_env and not api_key:
-        raise RuntimeError(f"{key_env} is not set: paste the key in Settings, or .env")
+        raise RuntimeError(f"{key_env} is not set: paste the key in Settings.")
 
     control = settings.thinking_control or defaults.thinking_control
     if control not in THINKING_CONTROLS:

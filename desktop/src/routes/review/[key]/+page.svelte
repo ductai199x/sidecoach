@@ -76,6 +76,33 @@
     (summary?.key_moments ?? []).filter((k) => k.kind === "book" || look.keys === "both" || k.side === look.keys),
   );
 
+  // While the game is analysed the board plays it out as the progress goes, as chess.com's review
+  // does (Tai, 2026-09-30): the first move at the start, the last at the end, one move at a time
+  // however fast the analysis runs, so a quick one plays the game end to end in a few seconds.
+  const PLAY_MS = 70;
+  let playIndex = $state(0);
+  const playback = $derived(room?.status !== "ready" ? (room?.playback ?? []) : []);
+  const playTarget = $derived(
+    playback.length && room?.progress.total
+      ? Math.min(playback.length - 1, Math.floor((room.progress.done / room.progress.total) * (playback.length - 1)))
+      : 0,
+  );
+  // The progress the bar shows: the board's, once it plays; the positions measured before.
+  const pct = $derived(
+    playback.length > 1
+      ? (100 * Math.min(playIndex, playback.length - 1)) / (playback.length - 1)
+      : room && room.progress.total
+        ? (100 * room.progress.done) / room.progress.total
+        : 0,
+  );
+  $effect(() => {
+    if (!playback.length) return;
+    const tick = setInterval(() => {
+      if (playIndex < playTarget) playIndex += 1;
+    }, PLAY_MS);
+    return () => clearInterval(tick);
+  });
+
   // What the board shows: the game at `ply`, a line's step, or the position being retried.
   const shown = $derived.by(() => {
     if (retry) {
@@ -88,6 +115,10 @@
       return { fen: step ? step.fen : line.from, uci: step ? step.uci : null, cls: step && look.marks ? "best" : null };
     }
     if (!room) return null;
+    if (playback.length) {
+      const at = playback[Math.min(playIndex, playback.length - 1)];
+      return { fen: at.fen, uci: at.uci, cls: null };
+    }
     if (!move) return { fen: room.start_fen ?? "", uci: null, cls: null };
     return { fen: move.fen_after, uci: move.uci, cls: look.marks ? move.label : null };
   });
@@ -509,9 +540,10 @@
 
   function take(s: ReviewState): void {
     const first = !room || room.status !== "ready";
+    // The player's side at the bottom from the first state, the analysis's playback too.
+    if (!room) bottom = s.game.user_side ?? "white";
     room = s;
     if (s.status === "ready" && first) {
-      bottom = s.game.user_side ?? "white";
       document.title = `sidecoach · review · ${s.game.white ?? "White"} v ${s.game.black ?? "Black"}`;
       requestAnimationFrame(fitBoard);
       // Opened at a move (Stats' positions: `#ply-12`): straight to it.
@@ -800,7 +832,9 @@
   </div>
 </header>
 
-<main class:summary={view === "summary"} class:compact>
+<!-- Stacked (the phone), the summary takes the whole height once the review is ready; while the
+     game is analysed the board stays, playing the game out over the progress card. -->
+<main class:summary={view === "summary" && room?.status === "ready"} class:compact>
   <section class="rv-left">
     <div class="rv-player">
       <i class="sw {top === 'white' ? 'w' : 'b'}"></i>{game?.[top] ?? (top === "white" ? "White" : "Black")}
@@ -853,10 +887,12 @@
       <div class="rv-scroll"><div class="rv-failed">{failure || room?.error || "The review failed."}</div></div>
     {:else if !room || room.status !== "ready" || !summary}
       <div class="rv-scroll">
-        <div class="rv-progress" role="status">
-          <div>{room?.status === "analysing" ? "Analysing the game…" : "Opening the game…"}</div>
-          <div class="bar"><i style="width: {room && room.progress.total ? (100 * room.progress.done) / room.progress.total : 0}%"></i></div>
-          {#if room?.progress.total}<div>{room.progress.done} of {room.progress.total} positions</div>{/if}
+        <!-- As chess.com's: the percent large over a thick bar, which goes with the board as it
+             plays the game out (Tai, 2026-09-30). -->
+        <div class="rv-progress" role="status" title={room?.progress.total ? `${room.progress.done} of ${room.progress.total} positions` : undefined}>
+          <div class="pct">{room?.progress.total ? `${Math.floor(pct)}%` : "0%"}</div>
+          <div class="bar" class:playing={playback.length > 1}><i style="width: {pct}%"></i></div>
+          <div class="what">{room?.status === "analysing" ? "Analysing the game" : "Opening the game…"}</div>
         </div>
       </div>
     {:else if view === "summary"}
