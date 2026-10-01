@@ -91,6 +91,27 @@ fun interface KeyStore {
 val ENVIRONMENT = KeyStore { name -> System.getenv(name) }
 
 /**
+ * The name the key is read under: the settings', else the preset's; a custom service keeps its
+ * key under CUSTOM_API_KEY unless the settings name another ("": none). `factory._key_env`.
+ */
+private fun keyEnvOf(settings: LLMSettings, defaults: ProviderDefaults?): String? = when {
+    defaults == null -> settings.apiKeyEnv ?: "CUSTOM_API_KEY"
+    settings.apiKeyEnv.isNullOrEmpty() -> defaults.apiKeyEnv
+    else -> settings.apiKeyEnv
+}
+
+/**
+ * The key a provider made from [settings] now would carry, or null: for a model kept and made
+ * again when the key changes (Game Review's kept the old one until a restart, the settings
+ * review 2026-10-01). `factory.api_key_of`.
+ */
+fun apiKeyOf(settings: LLMSettings, keys: KeyStore = ENVIRONMENT): String? {
+    if (settings.provider == "none") return null
+    val name = keyEnvOf(settings, PROVIDER_DEFAULTS[settings.provider])
+    return if (!name.isNullOrEmpty()) keys.get(name) else null
+}
+
+/**
  * The coach's model: a preset, a custom endpoint, or none at all ([OfflineProvider]), where
  * the coach speaks from the board and its templates.
  */
@@ -121,7 +142,7 @@ fun makeProvider(
         )
     }
 
-    val keyEnv = if (settings.apiKeyEnv.isNullOrEmpty()) defaults.apiKeyEnv else settings.apiKeyEnv
+    val keyEnv = keyEnvOf(settings, defaults)
     val apiKey = if (!keyEnv.isNullOrEmpty()) keys.get(keyEnv) else null
     if (!keyEnv.isNullOrEmpty() && apiKey.isNullOrEmpty()) {
         throw IllegalStateException("$keyEnv is not set: paste the key in Settings.")

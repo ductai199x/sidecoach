@@ -351,6 +351,171 @@ class SettingsPhoneTest {
         }
     }
 
+    /**
+     * A Settings save and a mute at the same moment: each read the settings, laid its change over
+     * them and saved, and the later save put back what the earlier one changed (the settings
+     * review, 2026-10-01; `test_two_writes_at_once_keep_both_changes`). One write at a time, the
+     * whole read-merge-save: while the settings are held, a mute and a save both wait, and then
+     * both changes stay.
+     */
+    @Test
+    fun twoWritesAtOnceKeepBothChanges() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val wasMuted = PanelVoice.muted
+        try {
+            val start = store.values()
+            start.getJSONObject("voice").put("muted", false)
+            start.getJSONObject("profile").put("chesscom_user", "")
+            store.save(start)
+            val user = JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", "nosegazm")))
+            val mute = Thread { PanelVoice.mute(api, true) }
+            val save = Thread { api.update(user) }
+            synchronized(SettingsApi.SAVING) {
+                mute.start()
+                mute.join(200)
+                assertTrue("the mute waits for the settings", mute.isAlive)
+                save.start()
+                save.join(200)
+                assertTrue("so does a save", save.isAlive)
+            }
+            mute.join(5000)
+            save.join(5000)
+            val now = store.values()
+            assertTrue("the mute is kept", now.getJSONObject("voice").getBoolean("muted"))
+            assertEquals("nosegazm", now.getJSONObject("profile").getString("chesscom_user"))
+        } finally {
+            PanelVoice.setMuted(wasMuted)
+            store.save(saved)
+        }
+    }
+
+    /**
+     * A key saved alone reaches the running coach and Game Review's model at once, and a key
+     * forgotten leaves both: the save changed no setting, so neither was made again until a
+     * restart (the settings review, 2026-10-01; `test_a_key_pasted_alone_reaches_the_coach_and_the_review`).
+     * OpenAI's preset at an address nothing answers: the model is made with the key and found
+     * unreachable at once, and nothing is sent anywhere.
+     */
+    @Test
+    fun aKeyPastedAloneReachesTheCoachAndTheReview() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val hadKey = store.secret("OPENAI_API_KEY")
+        var runner: CoachRunner? = null
+        var before: Pair<com.sidecoach.analysis.Assessing?, CoachRunner?>? = null
+        fun key(value: String?): JSONObject =
+            JSONObject().put("settings", JSONObject()).put("secrets", JSONObject().put("OPENAI_API_KEY", value ?: JSONObject.NULL))
+        try {
+            store.setSecret("OPENAI_API_KEY", null)
+            val values = store.values()
+            values.getJSONObject("llm").put("provider", "openai").put("base_url", "http://127.0.0.1:9/v1")
+            store.save(values)
+            val made = CoachRunner(store, enabled = true)
+            runner = made
+            before = PanelWarm.keepStages(null, made)
+            assertTrue(made.detail, "is not set" in made.detail)
+            val rooms = ReviewRooms(store, storePath = null, files = app.cacheDir, makeEngine = ReviewRoom.engineMaker(app, store))
+            assertEquals(null, rooms.model().first)
+
+            val res = api.update(key("sk-test"))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            assertFalse("the coach has the key now: ${made.detail}", "is not set" in made.detail)
+            val first = rooms.model().first
+            assertNotNull("Game Review has it too", first)
+            api.update(key("sk-other"))
+            assertTrue("a key fixed, a model made with it", rooms.model().first !== first)
+
+            api.update(key(null))
+            assertTrue("forgotten: ${made.detail}", "is not set" in made.detail)
+            assertEquals(null, rooms.model().first)
+        } finally {
+            before?.let { PanelWarm.keepStages(it.first, it.second) }
+            runner?.close()
+            store.setSecret("OPENAI_API_KEY", hadKey)
+            store.save(saved)
+        }
+    }
+
+    /**
+     * Saved settings the phone cannot read are kept in its files, once, and the log says so --
+     * never run over by the defaults in silence (`test_a_settings_file_that_cannot_be_read_is_kept_not_run_over`).
+     */
+    @Test
+    fun savedSettingsThatCannotBeReadAreKeptNotRunOver() {
+        val store = SettingsStore(app)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val torn = "{\"profile\": {\"chesscom_user\": \"nosegazm-${System.nanoTime()}" // cut short
+        fun copies(): List<File> =
+            app.filesDir.listFiles { f -> f.name.startsWith("settings.unreadable-") }.orEmpty().filter { it.readText() == torn }
+        try {
+            prefs.edit().putString("json", torn).commit()
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            assertEquals("the defaults meanwhile", "", store.values().getJSONObject("profile").optString("chesscom_user"))
+            assertEquals(1, copies().size)
+            store.values()
+            assertEquals("one copy a text", 1, copies().size)
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            val name = copies()[0].name
+            assertTrue("the log names the copy", (0 until lines.length()).any { name in lines.getJSONObject(it).getString("text") })
+        } finally {
+            copies().forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
+    /**
+     * A change the panel keeps for the next session that the check refuses keeps the value it had
+     * and is said in the log, and the rest of the change is kept: it returned without a word and
+     * kept nothing (the settings review, 2026-10-01; `test_a_change_is_never_dropped_for_a_value_already_held`).
+     */
+    @Test
+    fun aRememberedChangeIsNeverDroppedInSilence() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val start = store.values()
+            start.getJSONObject("voice").put("muted", false).put("listen", "ptt")
+            store.save(start)
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            api.remember(JSONObject().put("voice", JSONObject().put("listen", "off").put("muted", "maybe")))
+            assertEquals("the rest of the change is kept", "off", store.listen())
+            assertFalse("the refused field keeps its value", store.muted())
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            assertTrue("said", (0 until lines.length()).any { "voice.muted: not kept" in lines.getJSONObject(it).getString("text") })
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
+     * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
+     * went into the address the games are fetched from, and the site knew no such player; and a
+     * change to llm.extra_body was named key by key, which no mark applies to
+     * (`test_usernames_are_kept_without_spaces_around`, `test_a_key_taken_out_of_an_object_field_goes`).
+     */
+    @Test
+    fun usernamesAreTrimmedAndAnObjectFieldIsOneField() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val names = JSONObject().put("chesscom_user", " nosegazm\n").put("lichess_user", "tai ")
+            assertTrue(api.update(JSONObject().put("settings", JSONObject().put("profile", names))).getBoolean("ok"))
+            assertEquals("nosegazm", store.section("profile").getString("chesscom_user"))
+            assertEquals("tai", store.section("profile").getString("lichess_user"))
+            val extra = JSONObject().put("extra_body", JSONObject().put("top_k", 20).put("seed", 7))
+            val res = api.update(JSONObject().put("settings", JSONObject().put("llm", extra)))
+            assertEquals("[\"llm.extra_body\"]", res.getJSONArray("changed").toString())
+        } finally {
+            store.save(saved)
+        }
+    }
+
     @Test
     fun theFrameRateAndExtraFieldsReachTheCode() {
         val store = SettingsStore(app)

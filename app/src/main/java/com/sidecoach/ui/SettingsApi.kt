@@ -23,6 +23,19 @@ import org.json.JSONObject
  */
 class SettingsApi(val store: SettingsStore) {
 
+    companion object {
+        /**
+         * One write of the settings at a time, each whole -- read, merge, save, apply: a
+         * Settings save, a switch on the panel kept for the next session (muted, how the coach
+         * listens), the captions turned off from their own box. Each read the settings, laid its
+         * change over them and saved, and the later save put back what the earlier one changed
+         * (the settings review, 2026-10-01: the desktop lost 81 usernames in 150 rounds). A JVM
+         * monitor is re-entrant: a panel switch holds it around its own change and the
+         * remembering. `settings_api.saving`.
+         */
+        val SAVING = Any()
+    }
+
     fun describe(): JSONObject = JSONObject().apply {
         put("settings", store.values())
         put("schema", JSONObject(store.schema))
@@ -52,43 +65,47 @@ class SettingsApi(val store: SettingsStore) {
             put("ok", false)
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
-        val before = store.values()
-        // What changed, laid over the settings as they are now (`settings_api.update`'s
-        // `_merged`): the page sends only what changed, and laid over the defaults that reset
-        // every other setting on each save (Tai's phone, 2026-10-01: a save of the captions
-        // wiped all of his settings, and each caption switch saved alone reset the other).
-        val checked = SettingsCheck.validate(JSONObject(store.schema), before, given)
-        if (checked.errors.length() > 0) {
-            return JSONObject().put("ok", false).put("errors", checked.errors)
+        val stored = JSONObject()
+        val (after, changed) = synchronized(SAVING) {
+            val before = store.values()
+            // What changed, laid over the settings as they are now (`settings_api.update`'s
+            // `_merged`): the page sends only what changed, and laid over the defaults that reset
+            // every other setting on each save (Tai's phone, 2026-10-01: a save of the captions
+            // wiped all of his settings, and each caption switch saved alone reset the other).
+            val checked = SettingsCheck.validate(JSONObject(store.schema), before, given)
+            if (checked.errors.length() > 0) {
+                return JSONObject().put("ok", false).put("errors", checked.errors)
+            }
+            val wanted = checked.values
+            // The phone owns these; the page shows them and cannot move them.
+            wanted.put("data_dir", before.optString("data_dir"))
+            wanted.put("tools_dir", before.optString("tools_dir"))
+            store.save(wanted)
+            val after = store.values()
+            val changed = changed(before, after)
+
+            val secrets = body.optJSONObject("secrets")
+            if (secrets != null) {
+                val names = store.secretNames()
+                for (name in secrets.keys()) {
+                    if (name !in names) continue
+                    val value = if (secrets.isNull(name)) null else secrets.optString(name)
+                    store.setSecret(name, value)
+                    stored.put(name, true)
+                }
+            }
+
+            // What the kept coach and engine can change, they do now; a "now" field with nothing
+            // built to change is simply what the next build reads (`settings_api.update`).
+            PanelWarm.applySettings(store, changed)
+            PanelEngine.settingsTouched()
+            after to changed
         }
-        val wanted = checked.values
-        // The phone owns these; the page shows them and cannot move them.
-        wanted.put("data_dir", before.optString("data_dir"))
-        wanted.put("tools_dir", before.optString("tools_dir"))
-        store.save(wanted)
-        val after = store.values()
-        val changed = changed(before, after)
         val applies = applies(JSONObject(store.schema))
         val now = changed.filter { applies[it] == "now" }
         val later = changed.filter { applies[it] == "next" }
         val restart = changed.filter { applies[it] == "restart" }
-
-        val stored = JSONObject()
-        val secrets = body.optJSONObject("secrets")
-        if (secrets != null) {
-            val names = store.secretNames()
-            for (name in secrets.keys()) {
-                if (name !in names) continue
-                val value = if (secrets.isNull(name)) null else secrets.optString(name)
-                store.setSecret(name, value)
-                stored.put(name, true)
-            }
-        }
-
-        // What the kept coach and engine can change, they do now; a "now" field with nothing
-        // built to change is simply what the next build reads (`settings_api.update`).
-        PanelWarm.applySettings(store, changed)
-        PanelEngine.settingsTouched()
+        val keys = stored.keys().asSequence().toList()
 
         PanelEngine.emit(
             "sys",
@@ -97,8 +114,17 @@ class SettingsApi(val store: SettingsStore) {
                 (if (now.isNotEmpty()) "; applied now: " + words(now) else "") +
                 (if (later.isNotEmpty()) "; at the next Start: " + words(later) else "") +
                 (if (restart.isNotEmpty()) "; after a restart: " + words(restart) else "") +
-                (if (now.isEmpty() && later.isEmpty() && restart.isEmpty()) "; nothing changed" else ""),
+                (if (keys.isNotEmpty()) "; keys: " + keys.joinToString(", ") else "") +
+                (if (now.isEmpty() && later.isEmpty() && restart.isEmpty() && keys.isEmpty()) "; nothing changed" else ""),
         )
+        // The model is rebuilt for a change of its own fields or of a key: a key saved alone
+        // changed no field, and the coach kept the model it was built with -- offline for want of
+        // the key, or the old one -- until a restart (the settings review, 2026-10-01). Outside
+        // the lock: the model is asked whether it answers, a minute for a server that does not,
+        // and a mute pressed meanwhile does not wait for that; it builds from the settings as
+        // they are when it runs, so of two saves the later one's model is the one kept.
+        val rebuild = modelFields(changed) + keys
+        if (rebuild.isNotEmpty()) PanelWarm.reprovision(store, rebuild)
         return JSONObject().apply {
             put("ok", true)
             put("path", after.optString("data_dir"))
@@ -114,21 +140,39 @@ class SettingsApi(val store: SettingsStore) {
      * A choice made on the panel itself -- muted, how the coach listens -- kept in the settings,
      * so the next session starts as this one was left (Tai, 2026-10-01: "mute setting isn't
      * remembered between sessions"). The panel applied it already; nothing is applied again.
-     * `settings_api.remember`.
+     * A field the check refuses keeps the value it had, and the log says so: it returned
+     * without a word, and the change was not kept (the settings review, 2026-10-01); what else
+     * the change carried is kept. `settings_api.remember`.
      */
     fun remember(change: JSONObject) {
-        val before = store.values()
-        val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
-        if (checked.errors.length() > 0) return
-        val wanted = checked.values
-        wanted.put("data_dir", before.optString("data_dir"))
-        wanted.put("tools_dir", before.optString("tools_dir"))
-        store.save(wanted)
-        PanelEngine.settingsTouched()
+        synchronized(SAVING) {
+            val before = store.values()
+            val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
+            val wanted = checked.values
+            for (i in 0 until checked.errors.length()) {
+                val error = checked.errors.getJSONObject(i)
+                val loc = error.getJSONArray("loc").let { a -> (0 until a.length()).map { a.getString(it) } }
+                if (loc.size == 1) {
+                    wanted.put(loc[0], before.opt(loc[0]))
+                } else if (loc.size == 2) {
+                    wanted.optJSONObject(loc[0])?.put(loc[1], before.optJSONObject(loc[0])?.opt(loc[1]))
+                }
+                PanelEngine.emit("sys", "warn", "${loc.joinToString(".")}: not kept for the next session (${error.optString("msg")})")
+            }
+            wanted.put("data_dir", before.optString("data_dir"))
+            wanted.put("tools_dir", before.optString("tools_dir"))
+            store.save(wanted)
+            PanelEngine.settingsTouched()
+        }
     }
 
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }
+
+    /** The changed fields the coach's model is built from. `settings_api._model_fields`. */
+    private fun modelFields(changed: List<String>): List<String> = changed.filter {
+        (it.startsWith("llm.") && !it.startsWith("llm.price_")) || it == "coach.verify" || it == "coach.verify_model"
+    }
 
     /** "section.field" -> now | next | restart, from the schema's own marks. */
     private fun applies(schema: JSONObject): Map<String, String> {
@@ -152,6 +196,12 @@ class SettingsApi(val store: SettingsStore) {
         return out
     }
 
+    /**
+     * The fields that changed, `section.field`: a section is gone into, a field is not -- an
+     * object field (llm.extra_body) is one field, as its mark is. Gone into, its keys came out
+     * as names with no mark, and the change was told "nothing changed" (the settings review,
+     * 2026-10-01). `settings_api._changed`.
+     */
     private fun changed(old: JSONObject, new: JSONObject, prefix: String = ""): List<String> {
         val out = ArrayList<String>()
         val names = linkedSetOf<String>()
@@ -160,8 +210,8 @@ class SettingsApi(val store: SettingsStore) {
         for (key in names) {
             val a = old.opt(key)
             val b = new.opt(key)
-            if (a is JSONObject && b is JSONObject) {
-                out.addAll(changed(a, b, "$prefix$key."))
+            if (prefix.isEmpty() && a is JSONObject && b is JSONObject) {
+                out.addAll(changed(a, b, "$key."))
             } else if (a?.toString() != b?.toString()) {
                 out.add("$prefix$key")
             }
@@ -231,7 +281,7 @@ object SettingsCheck {
                     val loc = listOf(name, field)
                     val checked = check(fprop, value.opt(field), loc)
                     val refused = checked.error ?: known(loc, checked.value)
-                    if (refused != null) errors.put(refused) else section.put(field, checked.value)
+                    if (refused != null) errors.put(refused) else section.put(field, trimmed(loc, checked.value))
                 }
                 values.put(name, section)
             } else if (prop != null) {
@@ -258,6 +308,17 @@ object SettingsCheck {
         } ?: return null
         return error("value_error", loc, "Value error, $wrong", value, JSONObject().put("error", JSONObject()))
     }
+
+    /** The settings' usernames (`ProfileSettings._trimmed`). */
+    val USERNAMES = setOf("chesscom_user", "lichess_user")
+
+    /**
+     * A username without the spaces around it: a space after a pasted name went into the address
+     * the games are fetched from, and the site knew no such player (the settings review,
+     * 2026-10-01). `ProfileSettings._trimmed`.
+     */
+    private fun trimmed(loc: List<String>, value: Any?): Any? =
+        if (loc.size == 2 && loc[0] == "profile" && loc[1] in USERNAMES && value is String) Py.strip(value) else value
 
     /** Python's repr of a string: single quotes, double ones when it holds a single and no double. */
     private fun repr(s: String): String {

@@ -329,7 +329,6 @@ class CaptionsGestureTest {
             PanelEngine.commands.clear()
         }
         val wasMuted = PanelVoice.muted
-        val kept = SettingsStore(app).muted()
         val speaker = buttons.getValue("mute")
         tap(speaker.centerX(), speaker.centerY())
         assertTrue("the icon did not mute", waitFor { PanelVoice.muted != wasMuted })
@@ -337,7 +336,10 @@ class CaptionsGestureTest {
         shot("3b_muted")
         tap(speaker.centerX(), speaker.centerY())
         assertTrue("the icon did not unmute", waitFor { PanelVoice.muted == wasMuted })
-        assertTrue("the setting is the last press's", waitFor { SettingsStore(app).muted() == kept })
+        // The voice's state after the last press, not the setting before the first: a test
+        // process with no warm-up starts unmuted whatever the phone's settings say, and with them
+        // muted this failed once and passed after (the settings review, 2026-10-01).
+        assertTrue("the setting is the last press's", waitFor { SettingsStore(app).muted() == wasMuted })
         assertTrue("the moves went while the buttons were used", movesShown())
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
         val withRow = box()!!

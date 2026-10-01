@@ -136,11 +136,12 @@ object PanelListen {
     /**
      * A new recogniser or microphone (`_reload_recogniser`): listening pauses, both are rebuilt
      * -- the old model freed, which the phone must do itself -- the voice's warm-up runs again,
-     * and listening resumes in the mode it was in.
+     * and listening resumes in the mode it was in -- the one the microphone test gives back,
+     * while it runs.
      */
     fun reload(warm: () -> Unit) {
         val ear = listener ?: return
-        val mode = ear.mode
+        val mode = if (hearTestOn) hearTestMode else ear.mode
         runCatching { ear.setMode("off") }
         val old = stt
         val recogniser = ParakeetStt(appContext, modelDir(appContext))
@@ -153,7 +154,7 @@ object PanelListen {
         PanelEngine.set("stt_detail" to detail, "stt_ready" to ready)
         PanelEngine.emit("voice", "info", "speech recognition reloading: $detail")
         thread(name = "stt-reload", isDaemon = true) { warm() }
-        if (mode != "off") runCatching { setListen(mode) }
+        if (mode != "off" || hearTestOn) runCatching { setListen(mode) } // the test listens again either way
     }
 
     // ---- how the coach listens ---------------------------------------------------------------
@@ -170,6 +171,23 @@ object PanelListen {
     fun setListen(mode: String): String {
         if (mode !in MODES) throw IllegalArgumentException("listen mode must be one of $MODES")
         val ear = listener ?: return "off"
+        if (hearTestOn) {
+            // The microphone test listens until it ends, and then gives back this mode. It gave
+            // back the one it found, undoing a Listening saved while it ran, and the save switched
+            // its own listening, so it went deaf (the settings review, 2026-10-01).
+            hearTestMode = mode
+            if (ear.mode != "vad") { // a reloaded recogniser left it off
+                runCatching {
+                    synchronized(micLock) {
+                        ear.setMode("vad")
+                        refreshMic()
+                    }
+                }
+            }
+            PanelEngine.set("listen" to mode, "ptt" to false)
+            PanelEngine.emit("voice", "info", "listening: $mode once the microphone test ends")
+            return mode
+        }
         if (mode != "off" && !granted()) {
             pendingMode = mode
             ask()

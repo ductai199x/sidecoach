@@ -38,6 +38,14 @@ data class EngineSettings(
 
 class SettingsStore(private val context: Context) {
 
+    private companion object {
+        /** Guards [seenUnreadable], across the stores the app makes. */
+        val UNREADABLE = Any()
+
+        /** The unreadable text last kept and logged, so a read of it again says it once. */
+        var seenUnreadable: String? = null
+    }
+
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val keys = context.getSharedPreferences("keys", Context.MODE_PRIVATE)
 
@@ -62,9 +70,48 @@ class SettingsStore(private val context: Context) {
     fun values(): JSONObject {
         val out = JSONObject(defaults.toString())
         val saved = prefs.getString("json", null) ?: return withPaths(out)
-        val over = runCatching { JSONObject(saved) }.getOrNull() ?: return withPaths(out)
+        val over = runCatching { JSONObject(saved) }.getOrNull()
+        if (over == null) {
+            keepUnreadable(saved)
+            return withPaths(out)
+        }
         merge(out, over)
         return withPaths(out)
+    }
+
+    /**
+     * Saved settings the phone cannot read are never run over in silence: they are kept in the
+     * app's files as `settings.unreadable-<when>.json` -- once: the same text found again keeps no
+     * second copy -- and the log says so. Read as the defaults and said nowhere, they were lost at
+     * the next save (`config._keep_unreadable`; Tai lost his settings, the settings review
+     * 2026-10-01).
+     */
+    private fun keepUnreadable(text: String) {
+        synchronized(UNREADABLE) {
+            if (text == seenUnreadable) return
+            seenUnreadable = text
+            val folder = context.filesDir
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            val same = folder.listFiles { f -> f.name.startsWith("settings.unreadable-") && f.name.endsWith(".json") }
+                ?.firstOrNull { runCatching { it.readBytes().contentEquals(bytes) }.getOrDefault(false) }
+            val line = if (same != null) {
+                "the saved settings are not readable; they are kept as ${same.name}"
+            } else {
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(java.util.Date())
+                var copy = java.io.File(folder, "settings.unreadable-$stamp.json")
+                var n = 1
+                while (copy.exists()) {
+                    n += 1
+                    copy = java.io.File(folder, "settings.unreadable-$stamp-$n.json")
+                }
+                runCatching { copy.writeBytes(bytes) }.fold(
+                    { "the saved settings are not readable; they are kept as ${copy.name}" },
+                    { "the saved settings are not readable; no copy could be kept (${it.message})" },
+                )
+            }
+            android.util.Log.w("sidecoach.settings", line)
+            PanelEngine.emit("sys", "warn", line)
+        }
     }
 
     /** Where the phone keeps what it keeps; the page shows these and cannot change them. */

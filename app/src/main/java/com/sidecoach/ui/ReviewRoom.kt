@@ -17,6 +17,7 @@ import com.sidecoach.events.ReviewedGame
 import com.sidecoach.events.Side
 import com.sidecoach.llm.KeyStore
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.apiKeyOf
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.ThinkingControl
 import com.sidecoach.llm.Usage
@@ -716,11 +717,14 @@ class ReviewRooms(
     fun model(): Pair<LLMProvider?, String?> {
         val llm = settings.llm()
         if (llm.provider == "none") return null to ReviewRoom.NO_AI
-        val named = listOf(llm.provider, llm.model, llm.baseUrl, llm.reasoningEffort)
+        val keys = KeyStore { name -> settings.secret(name) }
+        // The key too: a key fixed or forgotten in Settings left the model made with the old one
+        // until a restart (the settings review, 2026-10-01).
+        val named = listOf(llm.provider, llm.model, llm.baseUrl, llm.reasoningEffort, apiKeyOf(llm, keys))
         synchronized(lock) {
             if (named != modelFor) {
                 try {
-                    model = makeProvider(llm, timeoutS = ReviewRoom.AI_TIMEOUT_S, keys = KeyStore { name -> settings.secret(name) })
+                    model = makeProvider(llm, timeoutS = ReviewRoom.AI_TIMEOUT_S, keys = keys)
                 } catch (exc: Exception) { // a key not given, a name not known
                     return null to (exc.message ?: exc.toString())
                 }

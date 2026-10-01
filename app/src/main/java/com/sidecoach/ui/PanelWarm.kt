@@ -483,15 +483,8 @@ object PanelWarm {
             attempt(listOf("coach.verbalized_sampling")) { coach.verbalizedSampling = store.verbalizedSampling() }
             attempt(listOf("coach.summarise_every")) { coach.summariseEvery = store.summariseEvery() }
             attempt(listOf("coach.compact_record")) { coach.conversation.compactRecord = store.compactRecord() }
-            val modelFields = changed.filter {
-                (it.startsWith("llm.") && !it.startsWith("llm.price_")) ||
-                    it == "coach.verify" || it == "coach.verify_model"
-            }
-            attempt(modelFields) {
-                runner.reprovision(store)
-                PanelEngine.emit("sys", "info", "coach: ${runner.detail}")
-            }
         }
+        // The model's fields are the settings API's to rebuild, after this ([reprovision]).
         val analyser = assessing?.analyser
         if (analyser != null) {
             val config = store.engine()
@@ -512,6 +505,28 @@ object PanelWarm {
             }
         }
         return applied.toSortedSet().toList()
+    }
+
+    private val provisioning = Any()
+
+    /**
+     * The model's settings or its key changed ([names]): the running coach's providers are
+     * rebuilt from the settings as they are when this runs, one rebuild at a time, so of two
+     * saves close together the later one's model is the one kept. False when it failed, which
+     * the log says; true with no coach to rebuild, which the next build reads anyway.
+     * `panel.reprovision`.
+     */
+    fun reprovision(store: SettingsStore, names: List<String>): Boolean = synchronized(provisioning) {
+        val runner = coaching
+        if (runner?.coach == null) return true
+        try {
+            runner.reprovision(store)
+        } catch (exc: Exception) {
+            PanelEngine.emit("sys", "warn", "${names.joinToString(", ")}: not applied (${exc.message ?: ""})")
+            return false
+        }
+        PanelEngine.emit("sys", "info", "coach: ${runner.detail}")
+        true
     }
 
     /**

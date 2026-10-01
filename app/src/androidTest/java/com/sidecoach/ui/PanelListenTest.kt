@@ -228,6 +228,48 @@ class PanelListenTest {
     }
 
     /**
+     * Listening saved while the microphone test runs (`test_listening_saved_during_the_microphone_test_is_kept`):
+     * the test gave back the mode it found when it ended, undoing the save, and the save switched
+     * the test's own listening, so it went deaf (the settings review, 2026-10-01). The test keeps
+     * listening, and gives back the mode saved.
+     */
+    @Test
+    fun listeningSavedDuringTheMicrophoneTestIsKept() {
+        allowMicrophone()
+        PanelListen.build(app)
+        val store = SettingsStore(app)
+        val saved = store.values()
+        PanelListen.stt = object : Recogniser {
+            override val loaded = true
+            override val loadSeconds: Double? = 0.0
+            override fun healthcheck() = true to "fake"
+            override fun load() = true
+            override fun prime(): Double? = 0.0
+            override fun close() = Unit
+            override fun transcribe(audio: FloatArray) = ""
+        }
+        try {
+            store.save(store.values().also { it.getJSONObject("voice").put("listen", "ptt") })
+            PanelListen.setListen("ptt")
+            val started = PanelListen.setHearTest(true)
+            org.junit.Assume.assumeTrue("no microphone here: $started", started.getBoolean("ok"))
+            assertEquals("vad", PanelListen.listener!!.mode)
+            val off = JSONObject().put("voice", JSONObject().put("listen", "off"))
+            val res = SettingsApi(store).update(JSONObject().put("settings", off))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            assertEquals("the test still hears", "vad", PanelListen.listener!!.mode)
+            assertEquals("the panel shows the mode saved", "off", PanelEngine.poll(0).getJSONObject("state").getString("listen"))
+            PanelListen.setHearTest(false)
+            assertEquals("off", PanelListen.listener!!.mode)
+            assertEquals("off", store.listen())
+        } finally {
+            if (PanelListen.hearStatus().getBoolean("on")) PanelListen.setHearTest(false)
+            PanelListen.setListen("off")
+            store.save(saved)
+        }
+    }
+
+    /**
      * `test_a_spoken_move_reaches_the_coach_as_san`, with the phone's recogniser: a real clip
      * is heard, corrected to the legal move, put in the text box and asked of the coach after the
      * quiet; the recogniser was loaded once and says where.

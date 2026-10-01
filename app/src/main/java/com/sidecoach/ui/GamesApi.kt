@@ -3,6 +3,7 @@ package com.sidecoach.ui
 import com.sidecoach.profile.Library
 import com.sidecoach.profile.LibraryRow
 import com.sidecoach.profile.Store
+import com.sidecoach.voice.Py
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -28,9 +29,14 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
         }
     }
 
+    /**
+     * The usernames, without spaces around them -- one saved before a save trimmed them too, as
+     * the desktop's settings are trimmed when they are read (`ProfileSettings._trimmed`; the
+     * settings review, 2026-10-01).
+     */
     private fun users(): Pair<String, String> {
         val profile = settings.section("profile")
-        return profile.optString("chesscom_user", "") to profile.optString("lichess_user", "")
+        return Py.strip(profile.optString("chesscom_user", "")) to Py.strip(profile.optString("lichess_user", ""))
     }
 
     /**
