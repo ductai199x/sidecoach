@@ -749,16 +749,35 @@ def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
     assert early.fen == full.fen
 
 
-def test_behind_a_fast_game_a_position_is_measured_at_the_early_depth() -> None:
-    """Behind a fast game the position is measured at EARLY_DEPTH, the threats searched with
-    it -- where the full depth capped at a second went without them."""
+def test_behind_a_fast_game_the_position_faced_is_told_early_and_still_measured_whole() -> None:
+    """Behind a fast game -- the player's move and the reply submitted together, as the
+    panel's puzzle room does -- the position the player then faces is told at EARLY_DEPTH
+    first, and then measured at the full depth and looked
+    ahead from, as every position the player faces is. It was measured at EARLY_DEPTH alone
+    and kept as the whole: never deepened, nothing looked ahead at, and the next move's
+    verdict set depth 12 against depth 18 (the state review, 2026-10-01; Tai, 2026-09-28:
+    "first usable answer is depth 12 ... the computation continues until max depth of 18")."""
     from sidecoach.analysis.annotator import EARLY_DEPTH
 
     fake = _DepthEngine({})
     annotator = GameAnnotator(engine=fake, depth=18)
-    measured = annotator.measure(chess.Board(SCHOLAR), hurry=True)
-    assert measured.lines and measured.lines[0].depth == EARLY_DEPTH
-    assert len(fake.calls) > 1, "no threat search"
+    board = chess.Board()
+    analyser = Analyser(annotator, look_ahead=2)
+    analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
+    board.push_san("e4")
+    analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
+    board.push_san("e5")
+    analyser.start()
+    try:
+        got = _drain(analyser)
+        assert _until(lambda: analyser.looked >= 1), "nothing looked ahead at"
+    finally:
+        analyser.close()
+    faced = [e for e in got if isinstance(e, Analysis) and e.ply == 2]
+    assert faced and faced[0].provisional and faced[0].lines[0].depth == EARLY_DEPTH
+    assert not faced[-1].provisional and faced[-1].lines[0].depth == 18
+    assert faced[-1].fen == board.fen()
+    assert annotator._cache[board.fen()].depth == 18, "kept at the early depth"
 
 
 class _YieldOnceEngine(FakeEngine):
