@@ -67,6 +67,24 @@ def test_reads_a_set_from_its_own_start_position(style: str, theme: str, cell: i
     assert not wrong, wrong
 
 
+@pytest.mark.slow  # -m slow: the default run reads the net on the CPU (tests/conftest.py)
+def test_the_net_runs_on_the_gpu_and_reads_as_on_the_cpu() -> None:
+    """The app takes the GPU when it has one, and the tests read the net on the CPU: this
+    keeps the GPU path tested -- it loads there, and embeds the same cells the same way."""
+    from sidecoach.voice.runtime import cuda_available
+
+    if not cuda_available():
+        pytest.skip("no CUDA on this machine")
+    gpu, cpu = CellEmbedder(device="cuda"), CellEmbedder(device="cpu")
+    assert gpu.device.name == "cuda", gpu.device.detail
+    cell = 64
+    frame = _frame(chess.Board(), "cburnett", "green", cell)
+    crops = [frame[120 + r * cell : 120 + (r + 1) * cell, 300 : 300 + cell] for r in range(8)]
+    on_gpu, on_cpu = gpu.embed(crops), cpu.embed(crops)
+    assert on_gpu.shape == on_cpu.shape == (8, 1280)
+    assert float((on_gpu * on_cpu).sum(axis=1).min()) > 0.999, "the same vectors, to rounding"
+
+
 def test_without_the_net_nothing_is_learned(monkeypatch: pytest.MonkeyPatch) -> None:
     """The net ships in the package; a broken install without it learns no set, rather
     than read pieces some other way."""
