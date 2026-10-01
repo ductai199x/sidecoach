@@ -392,6 +392,54 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A key saved alone reaches the running coach and Game Review's model at once, and a key
+     * forgotten leaves both: the save changed no setting, so neither was made again until a
+     * restart (the settings review, 2026-10-01; `test_a_key_pasted_alone_reaches_the_coach_and_the_review`).
+     * OpenAI's preset at an address nothing answers: the model is made with the key and found
+     * unreachable at once, and nothing is sent anywhere.
+     */
+    @Test
+    fun aKeyPastedAloneReachesTheCoachAndTheReview() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val hadKey = store.secret("OPENAI_API_KEY")
+        var runner: CoachRunner? = null
+        var before: Pair<com.sidecoach.analysis.Assessing?, CoachRunner?>? = null
+        fun key(value: String?): JSONObject =
+            JSONObject().put("settings", JSONObject()).put("secrets", JSONObject().put("OPENAI_API_KEY", value ?: JSONObject.NULL))
+        try {
+            store.setSecret("OPENAI_API_KEY", null)
+            val values = store.values()
+            values.getJSONObject("llm").put("provider", "openai").put("base_url", "http://127.0.0.1:9/v1")
+            store.save(values)
+            val made = CoachRunner(store, enabled = true)
+            runner = made
+            before = PanelWarm.keepStages(null, made)
+            assertTrue(made.detail, "is not set" in made.detail)
+            val rooms = ReviewRooms(store, storePath = null, files = app.cacheDir, makeEngine = ReviewRoom.engineMaker(app, store))
+            assertEquals(null, rooms.model().first)
+
+            val res = api.update(key("sk-test"))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            assertFalse("the coach has the key now: ${made.detail}", "is not set" in made.detail)
+            val first = rooms.model().first
+            assertNotNull("Game Review has it too", first)
+            api.update(key("sk-other"))
+            assertTrue("a key fixed, a model made with it", rooms.model().first !== first)
+
+            api.update(key(null))
+            assertTrue("forgotten: ${made.detail}", "is not set" in made.detail)
+            assertEquals(null, rooms.model().first)
+        } finally {
+            before?.let { PanelWarm.keepStages(it.first, it.second) }
+            runner?.close()
+            store.setSecret("OPENAI_API_KEY", hadKey)
+            store.save(saved)
+        }
+    }
+
+    /**
      * Saved settings the phone cannot read are kept in its files, once, and the log says so --
      * never run over by the defaults in silence (`test_a_settings_file_that_cannot_be_read_is_kept_not_run_over`).
      */

@@ -105,6 +105,7 @@ class SettingsApi(val store: SettingsStore) {
         val now = changed.filter { applies[it] == "now" }
         val later = changed.filter { applies[it] == "next" }
         val restart = changed.filter { applies[it] == "restart" }
+        val keys = stored.keys().asSequence().toList()
 
         PanelEngine.emit(
             "sys",
@@ -113,8 +114,17 @@ class SettingsApi(val store: SettingsStore) {
                 (if (now.isNotEmpty()) "; applied now: " + words(now) else "") +
                 (if (later.isNotEmpty()) "; at the next Start: " + words(later) else "") +
                 (if (restart.isNotEmpty()) "; after a restart: " + words(restart) else "") +
-                (if (now.isEmpty() && later.isEmpty() && restart.isEmpty()) "; nothing changed" else ""),
+                (if (keys.isNotEmpty()) "; keys: " + keys.joinToString(", ") else "") +
+                (if (now.isEmpty() && later.isEmpty() && restart.isEmpty() && keys.isEmpty()) "; nothing changed" else ""),
         )
+        // The model is rebuilt for a change of its own fields or of a key: a key saved alone
+        // changed no field, and the coach kept the model it was built with -- offline for want of
+        // the key, or the old one -- until a restart (the settings review, 2026-10-01). Outside
+        // the lock: the model is asked whether it answers, a minute for a server that does not,
+        // and a mute pressed meanwhile does not wait for that; it builds from the settings as
+        // they are when it runs, so of two saves the later one's model is the one kept.
+        val rebuild = modelFields(changed) + keys
+        if (rebuild.isNotEmpty()) PanelWarm.reprovision(store, rebuild)
         return JSONObject().apply {
             put("ok", true)
             put("path", after.optString("data_dir"))
@@ -148,6 +158,10 @@ class SettingsApi(val store: SettingsStore) {
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }
 
+    /** The changed fields the coach's model is built from. `settings_api._model_fields`. */
+    private fun modelFields(changed: List<String>): List<String> = changed.filter {
+        (it.startsWith("llm.") && !it.startsWith("llm.price_")) || it == "coach.verify" || it == "coach.verify_model"
+    }
 
     /** "section.field" -> now | next | restart, from the schema's own marks. */
     private fun applies(schema: JSONObject): Map<String, String> {
