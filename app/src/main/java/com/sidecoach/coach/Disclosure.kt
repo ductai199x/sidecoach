@@ -36,7 +36,6 @@ val HINT_CEILING = DisclosureLevel.MOVE
 
 enum class Unlock(val slug: String) {
     STUCK("stuck"),
-    DECISIVE("decisive"),
     HINT("hint"),
     ASK_MOVE("ask_move"),
     ASK_LINE("ask_line"),
@@ -226,11 +225,6 @@ class Disclosure(var level: DisclosureLevel = DisclosureLevel.SILENT) {
                 // A player stuck for a while gets the idea at once, the focus next.
                 if (level.value < AUTONOMOUS_CEILING.value) {
                     level = DisclosureLevel.of(level.value + 1)
-                }
-            Unlock.DECISIVE ->
-                // The critical moment's first word is the idea.
-                if (level.value < DisclosureLevel.IDEA.value) {
-                    level = DisclosureLevel.IDEA
                 }
             Unlock.HINT ->
                 // Two hints, then the move.

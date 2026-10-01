@@ -109,6 +109,22 @@ class SettingsApi(val store: SettingsStore) {
         }
     }
 
+    /**
+     * A choice made on the panel itself -- muted, how the coach listens -- kept in the settings,
+     * so the next session starts as this one was left (Tai, 2026-10-01: "mute setting isn't
+     * remembered between sessions"). The panel applied it already; nothing is applied again.
+     * `settings_api.remember`.
+     */
+    fun remember(change: JSONObject) {
+        val before = store.values()
+        val checked = SettingsCheck.validate(JSONObject(store.schema), before, change)
+        if (checked.errors.length() > 0) return
+        val wanted = checked.values
+        wanted.put("data_dir", before.optString("data_dir"))
+        wanted.put("tools_dir", before.optString("tools_dir"))
+        store.save(wanted)
+    }
+
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }
 
@@ -210,8 +226,10 @@ object SettingsCheck {
                         section.put(field, value.opt(field))
                         continue
                     }
-                    val checked = check(fprop, value.opt(field), listOf(name, field))
-                    if (checked.error != null) errors.put(checked.error) else section.put(field, checked.value)
+                    val loc = listOf(name, field)
+                    val checked = check(fprop, value.opt(field), loc)
+                    val refused = checked.error ?: known(loc, checked.value)
+                    if (refused != null) errors.put(refused) else section.put(field, checked.value)
                 }
                 values.put(name, section)
             } else if (prop != null) {
@@ -222,6 +240,29 @@ object SettingsCheck {
             }
         }
         return Result(values, errors)
+    }
+
+    /**
+     * The fields pydantic checks with a validator of their own: the board's pieces, a shipped
+     * set or one of the player's own (`BoardSettings._known_pieces`), and its theme
+     * (`_known_theme`). The page offers only those; a name it does not is refused as there.
+     */
+    private fun known(loc: List<String>, value: Any?): JSONObject? {
+        if (loc.size != 2 || loc[0] != "board" || value !is String) return null
+        val wrong = when (loc[1]) {
+            "pieces" -> if (value !in Looks.PIECE_SETS && Looks.ownId(value) == null) "no piece set named ${repr(value)}" else null
+            "theme" -> if (value !in Looks.BOARD_THEMES) "no board theme named ${repr(value)}" else null
+            else -> null
+        } ?: return null
+        return error("value_error", loc, "Value error, $wrong", value, JSONObject().put("error", JSONObject()))
+    }
+
+    /** Python's repr of a string: single quotes, double ones when it holds a single and no double. */
+    private fun repr(s: String): String {
+        val quote = if ('\'' in s && '"' !in s) '"' else '\''
+        val body = s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        val inner = if (quote == '\'') body.replace("'", "\\'") else body
+        return "$quote$inner$quote"
     }
 
     private fun copy(value: Any?): Any? = when (value) {

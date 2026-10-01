@@ -302,6 +302,7 @@ class PanelParityTest {
         for (i in 0 until served.length()) {
             val one = served.getJSONObject(i)
             val path = one.getString("path").replace("{puzzle_id}", "abc").replace("{key}", "abc")
+                .replace("{set_id}", "abc")
             check("served ${one.getString("method")} $path", PanelApi.serves(one.getString("method"), path), true)
         }
         val api = PanelApi(

@@ -574,6 +574,14 @@ def settings_fixture() -> list[dict[str, Any]]:
         ("section null", {"engine": None}),
         ("unknown field", {"coach.bogus": 1}),
         ("verify model null", {"coach.verify_model": None}),
+        # The board's own validators (BoardSettings._known_pieces, _known_theme).
+        ("pieces unknown", {"board.pieces": "neo"}),
+        ("pieces an own set", {"board.pieces": "own:neo-2"}),
+        ("pieces an own set of no such id", {"board.pieces": "own:../x"}),
+        ("pieces the one own set from before", {"board.pieces": "custom"}),
+        ("pieces with a quote", {"board.pieces": "it's"}),
+        ("theme unknown", {"board.theme": "plaid"}),
+        ("theme known", {"board.theme": "night"}),
     ]
     out = []
     for label, changes in cases:
@@ -653,6 +661,12 @@ def routes_fixture() -> list[dict[str, Any]]:
         ("GET", "/api/puzzle/abc/open"),
         ("POST", "/api/puzzle/abc/poll"),
         ("GET", "/api/puzzle/abc/nope"),
+        ("GET", "/api/pieces/own"),
+        ("GET", "/api/pieces/own/abc"),
+        ("POST", "/api/pieces/own/abc"),
+        ("PUT", "/api/pieces/own/abc/images"),
+        ("POST", "/api/pieces/own/abc/nope"),
+        ("DELETE", "/api/pieces/own/abc/restore"),
     ]
     with tempfile.TemporaryDirectory() as tmp:
         engine = PanelEngine(

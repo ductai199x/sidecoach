@@ -17,6 +17,7 @@ import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +60,17 @@ class LinksTest {
     private fun messages(coach: Coach): List<CoachMessage> {
         coach.speaker.runPending()
         return coach.poll()
+    }
+
+    /**
+     * `stuck` (desktop `tests/coaching.py`): the player stuck on the position the stuck limit
+     * long: the coach's first word unasked (the only one while they think -- Tai, 2026-10-01).
+     */
+    private fun stuck(coach: Coach): List<CoachMessage> {
+        val since = coach.policy.stuckFrom
+        assertNotNull(since)
+        coach.tick(since!! + coach.policy.stuckThreshold())
+        return messages(coach)
     }
 
     private fun start(coach: Coach, fen: String = Board().fen()) {
@@ -189,7 +201,7 @@ class LinksTest {
         )
         scholarWithAnEarlierMoment(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
-        messages(coach)
+        stuck(coach)
         missTheMate(coach)
         val out = messages(coach)
         assertTrue(out.size == 1 && out[0].trigger == Trigger.POST_MISTAKE)
@@ -226,7 +238,7 @@ class LinksTest {
             move(coach, board, i + 1, san, byUser = (i + 1) % 2 == 1, ts = (i + 1).toDouble())
         }
         coach.onEvent(mateAnalysis(6), 7.0)
-        messages(coach)
+        stuck(coach)
         missTheMate(coach)
         messages(coach)
         assertTrue("# Earlier in this game" !in harness(given(provider, 1)))

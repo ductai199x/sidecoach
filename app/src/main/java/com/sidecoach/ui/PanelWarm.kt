@@ -146,6 +146,8 @@ object PanelWarm {
                 Captions.configure(appContext, SettingsStore(appContext).captions())
                 Captions.style(SettingsStore(appContext).captionStyle())
                 Captions.keep(SettingsStore(appContext).captionsKeep())
+                PanelVoice.startMuted(SettingsStore(appContext).muted()) // as the last session left it
+                PanelEngine.set("captions" to SettingsStore(appContext).captionState())
                 PanelListen.build(appContext)
                 stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
@@ -439,10 +441,13 @@ object PanelWarm {
         if (changed.any { it == "engine.stockfish_path" || it == "tools_dir" }) engineStale = true
         attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
         attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
+        attempt(listOf("voice.muted")) { PanelVoice.setMuted(store.muted()) }
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
         attempt(listOf("voice.captions")) { Captions.configure(appContext, store.captions(), ask = true) }
         attempt(CAPTION_LOOK) { Captions.style(store.captionStyle()) }
         attempt(listOf("voice.captions_keep")) { Captions.keep(store.captionsKeep()) }
+        // The page's CC and pin read them (`restyle_captions`'s `caption_settings`).
+        if (changed.any { it.startsWith("voice.captions") }) PanelEngine.set("captions" to store.captionState())
         // Saved, and seen at once: a sample line in the new look over the settings page.
         if (changed.any { it == "voice.captions" || it in CAPTION_LOOK }) Captions.preview()
         if (changed.any { it in VOICE_RELOAD }) {

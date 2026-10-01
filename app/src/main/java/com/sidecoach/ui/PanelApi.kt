@@ -117,7 +117,7 @@ class PanelApi(
 
             path == "/api/muted" -> {
                 if (!json.has("muted")) return unprocessable()
-                PanelVoice.setMuted(json.getBoolean("muted"))
+                PanelVoice.mute(settings, json.getBoolean("muted"))  // the next session too
                 ok(done())
             }
 
@@ -139,7 +139,14 @@ class PanelApi(
 
             path == "/api/listen" -> {
                 if (!json.has("mode")) return unprocessable()
-                ok(JSONObject().put("ok", true).put("mode", PanelListen.setListen(json.getString("mode"))))
+                val wanted = json.getString("mode")
+                // Set and kept in one step, as muted is (`PanelVoice.mute`).
+                val mode = synchronized(PanelListen) {
+                    PanelListen.setListen(wanted).also { // refuses a mode there is not
+                        settings.remember(JSONObject().put("voice", JSONObject().put("listen", wanted))) // the next session too
+                    }
+                }
+                ok(JSONObject().put("ok", true).put("mode", mode))
             }
 
             path == "/api/ptt" -> {
@@ -216,12 +223,12 @@ class PanelApi(
                 val (pieces, theme) = store.board()
                 ok(Looks.look(pieces, theme, store.files))
             }
-            path == "/api/pieces/custom" && method == "DELETE" -> {
-                Looks.clearCustom(settings.store.files)
-                ok(done())
-            }
-            path == "/api/pieces/custom" ->
-                json.optJSONArray("files")?.let { ok(Looks.saveCustom(settings.store.files, it)) } ?: unprocessable()
+            // A player's own sets: a new one from the images chosen, more images for one, a new
+            // name, deleted (put aside for its Undo) and back (`server.py`'s /api/pieces/own).
+            path == "/api/pieces/own" ->
+                json.optJSONArray("files")?.let { ok(Looks.createOwn(settings.store.files, json.optString("name", ""), it)) }
+                    ?: unprocessable()
+            path.startsWith("/api/pieces/own/") -> ownSet(method, path.removePrefix("/api/pieces/own/"), json)
 
             // The long jobs the panel's bell shows: the setup's fetch; no background review here.
             path == "/api/jobs" -> ok(setup.jobs())
@@ -285,6 +292,22 @@ class PanelApi(
     }
 
     private fun done(): JSONObject = JSONObject().put("ok", true)
+
+    /** `/api/pieces/own/{set_id}` (PUT, DELETE) and its `/images` and `/restore` (POST). */
+    private fun ownSet(method: String, rest: String, json: JSONObject): LocalServer.Reply? {
+        val files = settings.store.files
+        val parts = rest.split('/')
+        val id = parts[0]
+        return when {
+            parts.size == 1 && method == "PUT" ->
+                if (json.has("name")) ok(Looks.renameOwn(files, id, json.optString("name"))) else unprocessable()
+            parts.size == 1 && method == "DELETE" -> ok(Looks.deleteOwn(files, id))
+            parts.size == 2 && parts[1] == "images" ->
+                json.optJSONArray("files")?.let { ok(Looks.addImages(files, id, it)) } ?: unprocessable()
+            parts.size == 2 && parts[1] == "restore" -> ok(Looks.restoreOwn(files, id))
+            else -> null
+        }
+    }
 
     /**
      * A puzzle on a page of its own (ui/puzzle_room.py): `/api/puzzle/<id>/<action>`, as
@@ -502,11 +525,17 @@ class PanelApi(
                 "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record",
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
-                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/custom",
+                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/own",
                 "/api/jobs/reviews", "/api/games/remove", "/api/games/restore",
             ),
             "PUT" to setOf("/api/settings"),
-            "DELETE" to setOf("/api/pieces/custom"),
+        )
+
+        /** An own set's routes, `/api/pieces/own/{set_id}[/<action>]`, by method. */
+        val OWN_SET_ROUTES: Map<String, Set<String>> = mapOf(
+            "PUT" to setOf(""),
+            "DELETE" to setOf(""),
+            "POST" to setOf("images", "restore"),
         )
 
         /** A puzzle room's routes, `/api/puzzle/{puzzle_id}/<action>`, by method. */
@@ -524,6 +553,12 @@ class PanelApi(
         /** Whether the server serves [method] [path]. */
         fun serves(method: String, path: String): Boolean {
             if (path in ROUTES[method].orEmpty()) return true
+            if (path.startsWith("/api/pieces/own/")) {
+                // `{set_id}` is one segment of the path, as Starlette matches it.
+                val parts = path.removePrefix("/api/pieces/own/").split('/')
+                if (parts[0].isEmpty() || parts.size > 2) return false
+                return parts.getOrElse(1) { "" } in OWN_SET_ROUTES[method].orEmpty()
+            }
             if (path.startsWith("/api/review/")) {
                 val parts = path.removePrefix("/api/review/").split('/')
                 return parts.size == 2 && parts[0].isNotEmpty() && parts[1] in REVIEW_ROUTES[method].orEmpty()

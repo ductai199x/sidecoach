@@ -7,13 +7,15 @@ import java.util.Base64
 
 /**
  * How the boards look (`sidecoach/looks.py`): the piece sets Sidecoach ships, the board colour
- * themes, and a player's own piece images.
+ * themes, and a player's own piece sets.
  *
  * The shipped sets are Sidecoach's own (the default) and every Lichess set whose licence allows
  * any use: static files beside the page, under /pieces/ and /pieces/<set>/. The themes are
- * plain colours. A player's own pieces are images they choose, kept only in the app's files
- * (pieces/custom) and handed to the page inline. Nothing names or fetches any other product's
- * set.
+ * plain colours. A player's own sets are images they choose, each set named and kept apart in
+ * the app's files (pieces/own/<id>/, its name in set.json) and handed to the page inline. A set
+ * deleted waits [UNDO_S] in pieces/own/.removed/ for its Undo. The one own set there was before
+ * (pieces/custom) becomes the set "My pieces" (own:custom). Nothing names or fetches any other
+ * product's set.
  *
  * The board's squares carry the panel's signature for the desktop's vision: its odd rows three
  * units bluer than its even rows, square colour and highlight alike; every theme keeps it.
@@ -22,7 +24,8 @@ object Looks {
     const val SHADE_STEP = 3
     val CODES: List<String> = "wb".flatMap { c -> "KQRBNP".map { p -> "$c$p" } }
     const val DEFAULT_SET = "sidecoach"
-    const val CUSTOM = "custom"
+    const val CUSTOM = "custom" // the one own set before there were several; now the own set of that id
+    const val OWN = "own:" // an own set as the board setting names it: "own:<id>"
     const val DEFAULT_THEME = "green"
 
     class PieceSet(val label: String, val author: String, val licence: String, val folder: String, val version: String) {
@@ -113,8 +116,6 @@ object Looks {
     private val SHORT = Regex("([wb])[-_ ]?([kqrbnp])")
     private val WIKIMEDIA = Regex("chess_([kqrbnp])([ld])t\\d*")
 
-    fun customDir(files: File): File = File(File(files, "pieces"), CUSTOM)
-
     /** `Path(name).stem`: the last part of the path without its last suffix. */
     private fun stem(filename: String): String {
         val name = filename.substringAfterLast('/').substringAfterLast('\\')
@@ -155,9 +156,42 @@ object Looks {
         return null
     }
 
-    /** The player's own pieces as data URLs, by code: the ones there are. `custom_images`. */
-    fun customImages(files: File): Map<String, String> {
-        val folder = customDir(files)
+    const val LEGACY_NAME = "My pieces"
+    const val DEFAULT_NAME = "My set"
+    const val REMOVED = ".removed"
+    const val UNDO_S = 600 // a deleted set can come back this long
+    const val MAX_NAME = 40
+    private val ID = Regex("[a-z0-9][a-z0-9-]{0,39}")
+
+    fun ownRoot(files: File): File = File(File(files, "pieces"), "own")
+
+    /**
+     * The own set a board setting names ("own:<id>", or "custom", the one own set before there
+     * were several), or null for a shipped set. `own_id`.
+     */
+    fun ownId(pieces: String): String? {
+        if (pieces == CUSTOM) return CUSTOM
+        if (pieces.startsWith(OWN) && ID.matches(pieces.removePrefix(OWN))) return pieces.removePrefix(OWN)
+        return null
+    }
+
+    private fun meta(folder: File): JSONObject =
+        runCatching { JSONObject(File(folder, "set.json").readText()) }.getOrElse { JSONObject() }
+
+    private fun writeMeta(folder: File, name: String, order: Int) {
+        File(folder, "set.json").writeText(JSONObject().put("name", name).put("order", order).toString())
+    }
+
+    /** `" ".join(str(name).split())[:MAX_NAME].strip()`. */
+    private fun cleanName(name: Any?): String {
+        val text = if (name == null || name == JSONObject.NULL) "" else name.toString()
+        return text.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").take(MAX_NAME).trim()
+    }
+
+    private fun slug(name: String): String =
+        name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(32).trim('-').ifEmpty { "set" }
+
+    private fun images(folder: File): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         if (!folder.isDirectory) return out
         for (path in folder.listFiles().orEmpty().sortedBy { it.name }) {
@@ -171,11 +205,68 @@ object Looks {
     }
 
     /**
-     * Images the player chose, each {"name", "data" (base64)}: each one a piece names is kept
-     * (in place of that piece's last one); what was not taken is said, and why. `save_custom`.
+     * The one own set there was before (pieces/custom) as the set "My pieces": copied, the copy
+     * read back, then the old files removed; nothing is lost if a copy is not the same.
+     * `_migrate`.
      */
-    fun saveCustom(files: File, given: JSONArray): JSONObject {
-        val folder = customDir(files)
+    private fun migrate(files: File) {
+        val old = File(File(files, "pieces"), CUSTOM)
+        if (!old.isDirectory) return
+        val pieces = old.listFiles().orEmpty().filter { it.isFile && stem(it.name) in CODES }
+        val new = File(ownRoot(files), CUSTOM)
+        if (pieces.isEmpty() || new.exists()) return
+        new.mkdirs()
+        for (p in pieces) p.copyTo(File(new, p.name))
+        if (pieces.all { File(new, it.name).readBytes().contentEquals(it.readBytes()) }) {
+            writeMeta(new, LEGACY_NAME, 0)
+            for (p in pieces) p.delete()
+            if (old.listFiles().isNullOrEmpty()) old.delete() // nothing else was in it
+        } else {
+            new.deleteRecursively()
+        }
+    }
+
+    /** Sets deleted longer ago than their Undo, gone for good. `_purge`. */
+    private fun purge(files: File) {
+        val bin = File(ownRoot(files), REMOVED)
+        if (!bin.isDirectory) return
+        val now = System.currentTimeMillis()
+        for (d in bin.listFiles().orEmpty()) {
+            if (d.isDirectory && now - d.lastModified() > UNDO_S * 1000L) d.deleteRecursively()
+        }
+    }
+
+    class OwnSet(val id: String, val name: String, val order: Int)
+
+    /** The player's own sets, in the order they were added. `own_sets`. */
+    fun ownSets(files: File): List<OwnSet> {
+        migrate(files)
+        purge(files)
+        val root = ownRoot(files)
+        if (!root.isDirectory) return emptyList()
+        val out = ArrayList<OwnSet>()
+        for (d in root.listFiles().orEmpty()) {
+            if (d.isDirectory && ID.matches(d.name)) {
+                val m = meta(d)
+                val name = cleanName(m.opt("name")).ifEmpty { d.name }
+                out.add(OwnSet(d.name, name, m.optInt("order", 0)))
+            }
+        }
+        return out.sortedWith(compareBy<OwnSet>({ it.order }, { it.name.lowercase() }, { it.id }))
+    }
+
+    /** An own set's pieces as data URLs, by code: the ones it has. `own_images`. */
+    fun ownImages(files: File, setId: String): Map<String, String> {
+        migrate(files)
+        if (!ID.matches(setId)) return emptyMap()
+        return images(File(ownRoot(files), setId))
+    }
+
+    /**
+     * Each image a piece names kept in the set's folder (in place of that piece's last one);
+     * what was not taken, and why. `_save`.
+     */
+    private fun save(folder: File, given: JSONArray): Pair<List<String>, JSONArray> {
         val taken = ArrayList<String>()
         val skipped = JSONArray()
         for (i in 0 until given.length()) {
@@ -207,18 +298,94 @@ object Looks {
             File(folder, code + EXT.getValue(kind)).writeBytes(data)
             taken.add(code)
         }
-        val have = customImages(files).keys
+        return taken to skipped
+    }
+
+    private fun result(files: File, setId: String, taken: List<String>, skipped: JSONArray): JSONObject {
+        val have = ownImages(files, setId).keys
         return JSONObject()
             .put("ok", taken.isNotEmpty())
+            .put("id", OWN + setId)
+            .put("name", cleanName(meta(File(ownRoot(files), setId)).opt("name")).ifEmpty { setId })
             .put("taken", JSONArray(taken))
             .put("skipped", skipped)
             .put("missing", JSONArray(CODES.filter { it !in have }))
     }
 
-    /** The player's own pieces gone (the files one by one; the folder stays). `clear_custom`. */
-    fun clearCustom(files: File) {
-        val folder = customDir(files)
-        if (folder.isDirectory) for (path in folder.listFiles().orEmpty()) if (path.isFile) path.delete()
+    private fun missing(setId: String): JSONObject =
+        JSONObject().put("ok", false).put("id", OWN + setId).put("error", "There is no such set.")
+
+    /**
+     * A new own set from the images chosen, named (made unique: "My set 2"); nothing is made
+     * when no image was taken. `create_own`.
+     */
+    fun createOwn(files: File, name: String, given: JSONArray): JSONObject {
+        val sets = ownSets(files)
+        val names = sets.map { it.name.lowercase() }.toSet()
+        val base = cleanName(name).ifEmpty { DEFAULT_NAME }
+        var shown = base
+        var n = 2
+        while (shown.lowercase() in names) {
+            shown = "${base.take(MAX_NAME - 4)} $n"
+            n += 1
+        }
+        val root = ownRoot(files)
+        var setId = slug(shown)
+        var k = 2
+        while (File(root, setId).exists() || File(File(root, REMOVED), setId).exists()) {
+            setId = "${slug(shown)}-$k"
+            k += 1
+        }
+        val folder = File(root, setId)
+        val (taken, skipped) = save(folder, given)
+        if (taken.isEmpty()) {
+            folder.deleteRecursively()
+            return JSONObject().put("ok", false).put("taken", JSONArray()).put("skipped", skipped)
+                .put("missing", JSONArray(CODES))
+        }
+        writeMeta(folder, shown, (sets.maxOfOrNull { it.order } ?: 0) + 1)
+        return result(files, setId, taken, skipped)
+    }
+
+    /** Images added to an own set, each in place of its piece's last one. `add_images`. */
+    fun addImages(files: File, setId: String, given: JSONArray): JSONObject {
+        val folder = File(ownRoot(files), setId)
+        if (!ID.matches(setId) || !folder.isDirectory) return missing(setId)
+        val (taken, skipped) = save(folder, given)
+        return result(files, setId, taken, skipped)
+    }
+
+    /** `rename_own`. */
+    fun renameOwn(files: File, setId: String, name: String): JSONObject {
+        val folder = File(ownRoot(files), setId)
+        if (!ID.matches(setId) || !folder.isDirectory) return missing(setId)
+        val shown = cleanName(name)
+        if (shown.isEmpty()) return JSONObject().put("ok", false).put("id", OWN + setId).put("error", "A set needs a name.")
+        writeMeta(folder, shown, meta(folder).optInt("order", 0))
+        return JSONObject().put("ok", true).put("id", OWN + setId).put("name", shown)
+    }
+
+    /** An own set put aside for its Undo ([UNDO_S]), then gone. `delete_own`. */
+    fun deleteOwn(files: File, setId: String): JSONObject {
+        val root = ownRoot(files)
+        val folder = File(root, setId)
+        if (!ID.matches(setId) || !folder.isDirectory) return missing(setId)
+        val aside = File(File(root, REMOVED), setId)
+        aside.parentFile?.mkdirs()
+        if (aside.exists()) aside.deleteRecursively()
+        if (!folder.renameTo(aside)) return JSONObject().put("ok", false).put("id", OWN + setId).put("error", "Could not delete it.")
+        aside.setLastModified(System.currentTimeMillis())
+        return JSONObject().put("ok", true).put("id", OWN + setId)
+    }
+
+    /** A set deleted within its Undo, back as it was. `restore_own`. */
+    fun restoreOwn(files: File, setId: String): JSONObject {
+        val root = ownRoot(files)
+        val aside = File(File(root, REMOVED), setId)
+        if (!ID.matches(setId) || !aside.isDirectory || File(root, setId).exists() || !aside.renameTo(File(root, setId))) {
+            return JSONObject().put("ok", false).put("id", OWN + setId).put("error", "That set was deleted too long ago to put back.")
+        }
+        return JSONObject().put("ok", true).put("id", OWN + setId)
     }
 
     // ---- what the pages read ----
@@ -232,7 +399,8 @@ object Looks {
         val images = LinkedHashMap<String, String>()
         for (c in CODES) images[c] = base.url(c)
         val set = PIECE_SETS[pieces]
-        if (pieces == CUSTOM) images.putAll(customImages(files))
+        val own = ownId(pieces)
+        if (own != null) images.putAll(ownImages(files, own))
         else if (set != null) for (c in CODES) images[c] = set.url(c)
         val board = BOARD_THEMES[theme] ?: BOARD_THEMES.getValue(DEFAULT_THEME)
         return JSONObject()
@@ -244,10 +412,19 @@ object Looks {
 
     /**
      * What the settings page offers: every set with its preview images, author and licence,
-     * every theme with its colours, and the player's own pieces as they are. `catalogue`.
+     * every theme with its colours, and the player's own sets, each with its pieces and what it
+     * lacks (Sidecoach's stand in). `catalogue`.
      */
     fun catalogue(files: File): JSONObject {
-        val own = customImages(files)
+        val own = JSONArray()
+        for (o in ownSets(files)) {
+            val images = ownImages(files, o.id)
+            own.put(
+                JSONObject().put("name", OWN + o.id).put("label", o.name)
+                    .put("images", JSONObject(images as Map<*, *>))
+                    .put("missing", JSONArray(CODES.filter { it !in images })),
+            )
+        }
         return JSONObject()
             .put(
                 "sets",
@@ -269,9 +446,6 @@ object Looks {
                     },
                 ),
             )
-            .put(
-                "custom",
-                JSONObject().put("images", JSONObject(own as Map<*, *>)).put("missing", JSONArray(CODES.filter { it !in own })),
-            )
+            .put("own", own)
     }
 }

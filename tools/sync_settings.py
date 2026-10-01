@@ -57,13 +57,18 @@ def main() -> None:
         "Shows what the coach says in a small box over other apps, like Live Caption, so you "
         "can read it while you play. Touch and hold the box to move it; double-tap it to see "
         "more; tap it for its buttons; drag it onto the cross at the bottom of the screen to "
-        "turn captions off. The first time, Android asks you to let Sidecoach display over "
-        "other apps."
+        "turn captions off. CC at the top of the panel turns them on and off too. The first "
+        "time, Android asks you to let Sidecoach display over other apps."
     )
     voice["captions_keep"]["description"] = (
         "Keeps the caption box on screen all the time, over every app, Sidecoach too: its "
         "buttons, and the coach's last words once it has spoken. Off, the box comes up when the "
-        "coach speaks, fades a few seconds after, and steps aside while Sidecoach itself is open."
+        "coach speaks, fades a few seconds after, and steps aside while Sidecoach itself is open. "
+        "The pin beside CC at the top of the panel does the same."
+    )
+    voice["muted"]["description"] = (
+        "The coach stays silent; its words still show, on the panel and in the captions. The "
+        "speaker button at the top of the panel does the same."
     )
     # What the phone does not honour is not on its page (Tai's rule of 2026-09-21: no dead
     # option shown; 2026-09-24: the phone's page showed the desktop's devices, folders, GPU
@@ -114,9 +119,9 @@ def main() -> None:
     )
     llm = schema["$defs"][refs["llm"]]["properties"]
     llm["provider"]["description"] = (
-        "Who the coach thinks with. OpenAI is what the coach was evaluated on; a model on your "
-        "own computer costs nothing per game; with no model the coach still speaks, from the "
-        "board and its templates."
+        "The AI model the coach thinks with. OpenAI is the one the coach was tested on; a model "
+        "on your own computer costs nothing per game; with no model the coach still speaks, from "
+        "the board and its templates."
     )
     llm["provider"]["choice_labels"]["local"] = "A model on your own computer (LM Studio, Ollama, vLLM)"
     llm["base_url"]["description"] = (

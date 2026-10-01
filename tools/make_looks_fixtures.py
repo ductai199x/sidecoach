@@ -1,7 +1,8 @@
 """Record what the desktop's `looks.py` gives, for the phone's port (ui/Looks.kt): the catalogue
 the settings page offers, the look for every set and theme (and names it does not know), which
-piece a file's name says, an image's type from its bytes, and a player's own pieces saved
-(taken, skipped and why, missing), read back, and cleared.
+piece a file's name says, an image's type from its bytes, and a player's own sets step by
+step: the one set from before taken in as "My pieces", sets made (names made unique), images
+added (taken, skipped and why, missing), renamed, deleted, put back, and gone past their Undo.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python D:/sidecoach-android/tools/make_looks_fixtures.py
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -60,9 +62,46 @@ def main() -> None:
             for p in [*looks.PIECE_SETS, "custom", "nonesuch"]
             for t in [*looks.BOARD_THEMES, "nonesuch"]
         ]
-        saves = []
-        rounds = [
-            [{"name": "wK.png", "data": b64(PNG)}, {"name": "Chess_qdt45.svg", "data": b64(SVG)}],
+        steps: list[dict] = []
+
+        def step(op: str, result: object, **args: object) -> None:
+            steps.append({"op": op, **args, "result": result})
+
+        def sets() -> None:
+            step("sets", looks.own_sets(data_dir))
+
+        def catalogue() -> None:
+            step("catalogue", looks.catalogue(data_dir))
+
+        def look(pieces: str, theme: str = "green") -> None:
+            step("look", looks.look(pieces, theme, data_dir), pieces=pieces, theme=theme)
+
+        # The one own set there was before: its pieces beside a file that is none.
+        old = {"wK.png": PNG, "bQ.svg": SVG, "notes.txt": b"not a piece"}
+        old_dir = data_dir / "pieces" / "custom"
+        old_dir.mkdir(parents=True)
+        for name, data in old.items():
+            (old_dir / name).write_bytes(data)
+        steps.append({"op": "legacy", "files": [{"name": n, "data": b64(d)} for n, d in old.items()]})
+        sets()
+        look("custom")
+        look("own:custom")
+        catalogue()
+
+        def create(name: str, files: list[dict[str, str]]) -> None:
+            step("create", looks.create_own(data_dir, name, files), name=name, files=files)
+
+        def add(set_id: str, files: list[dict[str, str]]) -> None:
+            step("add", looks.add_images(data_dir, set_id, files), id=set_id, files=files)
+
+        one = [{"name": "wK.png", "data": b64(PNG)}, {"name": "Chess_qdt45.svg", "data": b64(SVG)}]
+        create("Neo", one)
+        create("neo", [{"name": "bP.png", "data": b64(PNG)}])  # the same name: made unique
+        create("", [{"name": "notes.txt", "data": b64(b"hi")}])  # nothing taken, nothing made
+        create("", [{"name": "wN.webp", "data": b64(WEBP)}])  # no name: "My set"
+        create("  Néo   ünïcode, a set with a name far longer than forty letters  ", one)
+        add(
+            "neo",
             [
                 {"name": "notes.txt", "data": b64(b"hi")},
                 {"name": "bP.png", "data": "not base64!!"},
@@ -70,32 +109,40 @@ def main() -> None:
                 {"name": "white-knight.webp", "data": b64(WEBP)},
                 {"name": "wK.jpg", "data": b64(JPEG)},  # in place of the PNG
             ],
-            [],
-        ]
-        for files in rounds:
-            result = looks.save_custom(data_dir, files)
-            saves.append(
-                {
-                    "files": files,
-                    "result": result,
-                    "images": looks.custom_images(data_dir),
-                    "look": looks.look("custom", "green", data_dir),
-                    "catalogue": looks.catalogue(data_dir),
-                }
-            )
-        looks.clear_custom(data_dir)
-        cleared = looks.catalogue(data_dir)
+        )
+        add("nope", one)
+        sets()
+        for set_id, name in [("neo", "  Neo   wood "), ("neo", "   "), ("nope", "x"), ("../x", "x")]:
+            step("rename", looks.rename_own(data_dir, set_id, name), id=set_id, name=name)
+        look("own:neo", "brown")
+        look("own:../x")
+        catalogue()
+        for op, set_id in [("delete", "neo"), ("delete", "../x"), ("delete", "nope")]:
+            step(op, looks.delete_own(data_dir, set_id), id=set_id)
+        sets()
+        look("own:neo")
+        step("restore", looks.restore_own(data_dir, "neo"), id="neo")
+        step("restore", looks.restore_own(data_dir, "neo"), id="neo")  # back already
+        look("own:neo")
+        # Past its Undo it is gone for good.
+        step("delete", looks.delete_own(data_dir, "neo-2"), id="neo-2")
+        aside = looks.own_root(data_dir) / looks.REMOVED / "neo-2"
+        old_time = aside.stat().st_mtime - looks.UNDO_S - 5
+        os.utime(aside, (old_time, old_time))
+        steps.append({"op": "expire", "id": "neo-2"})
+        sets()
+        step("restore", looks.restore_own(data_dir, "neo-2"), id="neo-2")
+        catalogue()
     fixture = {
         "catalogue": empty_catalogue,
         "looks": looks_,
         "codes": [[n, looks.piece_code(n)] for n in NAMES],
         "sniff": [[name, b64(data), looks.sniff(data)] for name, data in SAMPLES.items()],
-        "saves": saves,
-        "cleared": cleared,
+        "steps": steps,
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(fixture, indent=1), encoding="utf-8")
-    print(f"{OUT}: {len(looks_)} looks, {len(NAMES)} names, {len(SAMPLES)} images, {len(saves)} saves")
+    print(f"{OUT}: {len(looks_)} looks, {len(NAMES)} names, {len(SAMPLES)} images, {len(steps)} steps")
 
 
 if __name__ == "__main__":

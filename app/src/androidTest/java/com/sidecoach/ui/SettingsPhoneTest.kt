@@ -7,13 +7,16 @@ import com.sidecoach.analysis.Engine
 import com.sidecoach.chess.Board
 import com.sidecoach.coach.CoachRunner
 import com.sidecoach.events.Line
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.Base64
 
 /**
  * The settings page as the phone serves it (Tai, 2026-09-24: "when I go to settings, and then
@@ -132,6 +135,80 @@ class SettingsPhoneTest {
      * defaults, and each caption switch saved alone turned the other off). The desktop's
      * `test_a_save_changes_only_what_it_sends`.
      */
+    /**
+     * What the panel's page sends since 2026-10-01, over the phone's own routes (the shared page
+     * has two servers: every new request shape is served here too). Muted and the listening mode
+     * are kept in the settings for the next session. The header's CC and pin save the captions
+     * alone, and the poll says so, which is what the buttons follow. A player's own sets are
+     * made, given more images, renamed, deleted and put back.
+     */
+    @Test
+    fun thePagesNewRequestsAreServedAndKept() {
+        val store = SettingsStore(app)
+        val saved = store.values()
+        val api = PanelApi(
+            "test",
+            SetupApi.shared(app),
+            SettingsApi(store),
+            files = app.filesDir,
+            rooms = { PuzzleRooms.shared(app) },
+            dumps = File(app.cacheDir, "dumps"),
+        )
+        fun call(method: String, path: String, body: JSONObject = JSONObject()): JSONObject {
+            val reply = api.handle(method, path, emptyMap(), body.toString(), ByteArray(0))
+            assertNotNull("$method $path is not served", reply)
+            assertEquals("$method $path", 200, reply!!.status)
+            return JSONObject(String(reply.body))
+        }
+        fun captions(): JSONObject = PanelEngine.poll(0).getJSONObject("state").getJSONObject("captions")
+        val png = Base64.getEncoder().encodeToString(
+            byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10) + ByteArray(16),
+        )
+        fun image(name: String) = JSONArray().put(JSONObject().put("name", name).put("data", png))
+        var made: String? = null
+        try {
+            assertTrue(call("POST", "/api/muted", JSONObject().put("muted", true)).getBoolean("ok"))
+            assertTrue("muted is kept", SettingsStore(app).muted())
+            assertTrue(PanelVoice.muted)
+            call("POST", "/api/muted", JSONObject().put("muted", false))
+            assertFalse(SettingsStore(app).muted())
+            assertEquals("off", call("POST", "/api/listen", JSONObject().put("mode", "off")).getString("mode"))
+            assertEquals("the listening mode is kept", "off", SettingsStore(app).listen())
+
+            val both = JSONObject().put("captions", true).put("captions_keep", true)
+            assertTrue(call("PUT", "/api/settings", JSONObject().put("settings", JSONObject().put("voice", both)).put("secrets", JSONObject())).getBoolean("ok"))
+            assertTrue(captions().getBoolean("on") && captions().getBoolean("keep"))
+            val off = JSONObject().put("captions", false)
+            assertTrue(call("PUT", "/api/settings", JSONObject().put("settings", JSONObject().put("voice", off)).put("secrets", JSONObject())).getBoolean("ok"))
+            assertFalse("CC follows the captions turned off", captions().getBoolean("on"))
+            assertTrue("the pin's setting is kept", captions().getBoolean("keep"))
+            assertEquals(saved.getJSONObject("profile").toString(), store.values().getJSONObject("profile").toString())
+
+            val first = call("POST", "/api/pieces/own", JSONObject().put("name", "Phone test").put("files", image("wK.png")))
+            assertTrue(first.toString(), first.getBoolean("ok"))
+            made = first.getString("id").removePrefix(Looks.OWN)
+            val id = made
+            assertEquals("Phone wood", call("PUT", "/api/pieces/own/$id", JSONObject().put("name", "Phone wood")).getString("name"))
+            assertEquals("bQ", call("POST", "/api/pieces/own/$id/images", JSONObject().put("files", image("bQ.png"))).getJSONArray("taken").getString(0))
+            fun labels(): List<String> {
+                val own = Looks.catalogue(store.files).getJSONArray("own")
+                return (0 until own.length()).map { own.getJSONObject(it).getString("label") }
+            }
+            assertTrue(labels().contains("Phone wood"))
+            assertTrue(call("DELETE", "/api/pieces/own/$id").getBoolean("ok"))
+            assertFalse(labels().contains("Phone wood"))
+            assertTrue(call("POST", "/api/pieces/own/$id/restore").getBoolean("ok"))
+            assertTrue(labels().contains("Phone wood"))
+            assertFalse("no such set", call("PUT", "/api/pieces/own/nope", JSONObject().put("name", "x")).getBoolean("ok"))
+        } finally {
+            store.save(saved)
+            made?.let {
+                File(Looks.ownRoot(store.files), it).deleteRecursively()
+                File(File(Looks.ownRoot(store.files), Looks.REMOVED), it).deleteRecursively()
+            }
+        }
+    }
+
     @Test
     fun aSaveOfOneFieldKeepsEveryOther() {
         val store = SettingsStore(app)

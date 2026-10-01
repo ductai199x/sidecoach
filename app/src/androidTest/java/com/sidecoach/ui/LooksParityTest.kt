@@ -3,6 +3,7 @@ package com.sidecoach.ui
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.GameReviewParityTest
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,8 +14,9 @@ import java.util.Base64
 /**
  * How the boards look, as the desktop's (ui/Looks.kt): `tools/make_looks_fixtures.py` records
  * `looks.py`'s catalogue, the look for every set and theme, which piece a file's name says, an
- * image's type from its bytes, and a player's own pieces saved over three rounds, read back and
- * cleared -- all replayed here in a folder of the test's own.
+ * image's type from its bytes, and a player's own sets step by step -- the one set from before
+ * taken in, sets made, added to, renamed, deleted, put back and gone past their Undo -- all
+ * replayed here in a folder of the test's own.
  */
 @RunWith(AndroidJUnit4::class)
 class LooksParityTest {
@@ -50,16 +52,45 @@ class LooksParityTest {
             val got = Looks.sniff(Base64.getDecoder().decode(one.getString(1)))
             if (got != want) failures.add("sniff ${one.getString(0)}: mine $got, python $want")
         }
-        val saves = fixture.getJSONArray("saves")
-        for (i in 0 until saves.length()) {
-            val one = saves.getJSONObject(i)
-            GameReviewParityTest.same("save $i", Looks.saveCustom(files, one.getJSONArray("files")), one.getJSONObject("result"), failures)
-            GameReviewParityTest.same("save $i images", JSONObject(Looks.customImages(files) as Map<*, *>), one.getJSONObject("images"), failures)
-            GameReviewParityTest.same("save $i look", Looks.look("custom", "green", files), one.getJSONObject("look"), failures)
-            GameReviewParityTest.same("save $i catalogue", Looks.catalogue(files), one.getJSONObject("catalogue"), failures)
+        val steps = fixture.getJSONArray("steps")
+        for (i in 0 until steps.length()) {
+            val one = steps.getJSONObject(i)
+            val op = one.getString("op")
+            val id = one.optString("id")
+            val what = "step $i $op $id"
+            val got: Any? = when (op) {
+                "legacy" -> {
+                    val old = File(File(files, "pieces"), "custom").apply { mkdirs() }
+                    val given = one.getJSONArray("files")
+                    for (k in 0 until given.length()) {
+                        val f = given.getJSONObject(k)
+                        File(old, f.getString("name")).writeBytes(Base64.getDecoder().decode(f.getString("data")))
+                    }
+                    null
+                }
+                "expire" -> {
+                    val aside = File(File(Looks.ownRoot(files), Looks.REMOVED), id)
+                    aside.setLastModified(aside.lastModified() - (Looks.UNDO_S + 5) * 1000L)
+                    null
+                }
+                "sets" -> JSONArray(
+                    Looks.ownSets(files).map { JSONObject().put("id", it.id).put("name", it.name).put("order", it.order) },
+                )
+                "look" -> Looks.look(one.getString("pieces"), one.getString("theme"), files)
+                "catalogue" -> Looks.catalogue(files)
+                "create" -> Looks.createOwn(files, one.getString("name"), one.getJSONArray("files"))
+                "add" -> Looks.addImages(files, id, one.getJSONArray("files"))
+                "rename" -> Looks.renameOwn(files, id, one.getString("name"))
+                "delete" -> Looks.deleteOwn(files, id)
+                "restore" -> Looks.restoreOwn(files, id)
+                else -> {
+                    failures.add("$what: no such step")
+                    null
+                }
+            }
+            if (got is JSONObject) GameReviewParityTest.same(what, got, one.getJSONObject("result"), failures)
+            if (got is JSONArray) GameReviewParityTest.same(what, got, one.getJSONArray("result"), failures)
         }
-        Looks.clearCustom(files)
-        GameReviewParityTest.same("cleared", Looks.catalogue(files), fixture.getJSONObject("cleared"), failures)
         assertTrue("${failures.size} failures:\n" + failures.take(30).joinToString("\n"), failures.isEmpty())
     }
 }

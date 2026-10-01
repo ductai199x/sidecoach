@@ -1168,8 +1168,8 @@ class Coach(
         position.leads = leads
         if (event.provisional) {
             // Measured early, the full depth to follow: what the player asks is answered from it
-            // now; the coach's own words -- a lesson, the decisive question -- and the
-            // conversation's record wait for the full depth.
+            // now; the coach's own words -- a lesson -- and the conversation's record wait for
+            // the full depth.
             val asked = pendingAsk
             if (position === current && asked != null) {
                 val (text, _) = asked
@@ -1185,22 +1185,10 @@ class Coach(
             val (text, _) = pending
             pendingAsk = null
             ask(text, ts)
-            return
         }
-        if (position === current && userToMove) {
-            val decisive = event.decisive &&
-                !obviousRecapture(position, event) &&
-                !carryingOut(position)
-            val trigger = policy.onPositionAnalysed(event.ply, decisive = decisive)
-            if (trigger != null) {
-                // The question is the combination's first word: once its idea was given, at
-                // this move or at an earlier one of it, it is not asked again.
-                position.disclosure.carry(ladder(position))
-                val level = position.disclosure.apply(Unlock.DECISIVE) ?: return
-                policy.said(position.ply, ts)
-                speak(trigger, position, level, ts)
-            }
-        }
+        // Nothing is said of its own at a decisive moment: while the player thinks, the first
+        // word unasked is the stuck hint (Tai, 2026-10-01: nothing "until the user is stuck or
+        // actively request a hint or after they have made a move").
     }
 
     /**
@@ -1230,42 +1218,6 @@ class Coach(
         }
         val facts = position.facts ?: return false
         return facts.candidates.isNotEmpty() && facts.candidates[0] == move.san
-    }
-
-    /**
-     * The player's last move and the reply to it are the first two moves of the engine's line
-     * from a decisive position: they found the idea and are playing it out, so a question about
-     * the next step asks what they already know (Tai's desktop, 2026-09-24: after Qd1+ Rxd1
-     * Rxd1+ Qe1, "You can mate in one move ... Which check leaves their king no square at
-     * all?", heard as the puzzle's hint). An opponent who leaves the line gets the question,
-     * unless the combination's idea was given already ([ladder]).
-     */
-    private fun carryingOut(position: CoachPosition): Boolean {
-        val own = moves[position.ply - 1]
-        val reply = moves[position.ply]
-        val before = positions[position.ply - 2]
-        if (own == null || reply == null || !own.byUser || before == null) return false
-        val analysis = before.analysis
-        if (analysis == null || !analysis.decisive || analysis.lines.isEmpty()) return false
-        return analysis.lines[0].moves.take(2) == listOf(own.uci, reply.uci)
-    }
-
-    /**
-     * The opponent just took something and the engine's move takes back on the same square:
-     * the lines diverge because everything else drops a piece, not because there is anything
-     * to find, so the decisive question stays unasked (a book recapture drew "This is a
-     * moment to slow down", offline, 2026-09-21). A recapture that is not the best move -- a
-     * zwischenzug on -- keeps the question.
-     */
-    private fun obviousRecapture(position: CoachPosition, event: Analysis): Boolean {
-        val last = moves[position.ply] ?: return false
-        val before = positions[position.ply - 1] ?: return false
-        if (event.lines.isEmpty() || event.lines[0].moves.isEmpty()) return false
-        val taken = Move.fromUciOrNull(last.uci) ?: return false
-        val best = Move.fromUciOrNull(event.lines[0].moves[0]) ?: return false
-        return before.board.isCapture(taken) &&
-            best.to == taken.to &&
-            position.board.isCapture(best)
     }
 
     private fun onAssessment(event: MoveAssessment, ts: Double) {
@@ -2307,6 +2259,8 @@ class Coach(
                 ) to reviewLines.take(4).joinToString(" ")
         }
         if (trigger == Trigger.DECISIVE_QUESTION) {
+            // Never fired live since 2026-10-01 (nothing unasked before the stuck limit); the
+            // eval's recorded requests of it still replay (tools/eval/judge.py).
             val (template, note) = coolHint(facts, ideaTemplate(facts))
             return "$IDEA_DIRECTIVE $NO_FIGURES$note" to template
         }

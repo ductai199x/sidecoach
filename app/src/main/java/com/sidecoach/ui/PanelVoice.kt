@@ -136,6 +136,29 @@ object PanelVoice {
         PanelEngine.emit("voice", "info", "voice set to $name", JSONObject().put("detail", detail))
     }
 
+    private val keeping = Any()
+
+    /**
+     * Muted from the panel or the caption box's own button, and kept for the next session:
+     * `/api/muted`, which sets it and remembers it (`settings_api.remember`). One press at a
+     * time: two quick ones, each on its own thread, saved out of order left the voice unmuted
+     * and the setting muted.
+     */
+    fun mute(settings: SettingsApi, on: Boolean) {
+        synchronized(keeping) {
+            setMuted(on)
+            settings.remember(JSONObject().put("voice", JSONObject().put("muted", on)))
+        }
+    }
+
+    /** Muted as the last session was left, at the warm-up, with no word in the log
+     * (`self.muted = self.muted or self.settings.voice.muted`). */
+    fun startMuted(on: Boolean) {
+        muted = on
+        PanelEngine.set("muted" to on)
+        Captions.muted(on)
+    }
+
     /** `set_muted`. */
     fun setMuted(on: Boolean) {
         muted = on

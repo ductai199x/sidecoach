@@ -1107,11 +1107,10 @@ def case_for(
 
 def policy_cases() -> list[dict]:
     """Scripted runs of the interjection policy, so the whole state machine is compared: two
-    unprompted words per position, each after its own stuck spell; and (the parity audit,
-    2026-09-29) a position analysed after the board moved on, a threshold the clock's share
-    sets between the floor and the setting, and a quiet position between two decisive ones
-    that lets the question come again within DECISIVE_EVERY plies. CoachPrimitivesTest runs the
-    same script, step for step."""
+    unprompted words per position, each after its own stuck spell, counted from `stuck_from`
+    (since desktop 2026-10-01 nothing comes before the first: no question at a decisive
+    moment); and (the parity audit, 2026-09-29) a threshold the clock's share sets between
+    the floor and the setting. CoachPrimitivesTest runs the same script, step for step."""
     from sidecoach.events import Label, MoveAssessment, Severity
 
     def assessment(severity: Severity, label: Label | None) -> MoveAssessment:
@@ -1136,6 +1135,7 @@ def policy_cases() -> list[dict]:
                         "reason": policy.last_reason,
                         "threshold": policy.stuck_threshold(),
                         "scramble": policy.in_scramble,
+                        "stuck_from": policy.stuck_from,
                     }
                 )
 
@@ -1143,10 +1143,7 @@ def policy_cases() -> list[dict]:
             note("new position", None)
             note("tick 10", policy.tick(10.0))
             note("tick 60", policy.tick(60.0))
-            note("analysed quiet", policy.on_position_analysed(2, decisive=False))
-            note("analysed decisive", policy.on_position_analysed(2, decisive=True))
             policy.said(2, 60.0)
-            note("analysed after said", policy.on_position_analysed(2, decisive=True))
             note("tick soon after said", policy.tick(80.0))
             note("tick after said", policy.tick(120.0))
             policy.said(2, 120.0)
@@ -1154,13 +1151,11 @@ def policy_cases() -> list[dict]:
             policy.new_position(2, 300.0, user_to_move=True)
             note("same ply again", policy.tick(400.0))
             policy.new_position(4, 100.0, user_to_move=True)
-            note("analysed decisive again", policy.on_position_analysed(4, decisive=True))
             policy.said(4)
             note("tick after said without a time", policy.tick(150.0))
             policy.said(3, 150.0)
             note("said of another ply", policy.tick(151.0))
             policy.new_position(12, 200.0, user_to_move=True)
-            note("analysed decisive later", policy.on_position_analysed(12, decisive=True))
             policy.set_remaining(20_000)
             note("tick in scramble", policy.tick(400.0))
             policy.set_remaining(600_000)
@@ -1174,9 +1169,6 @@ def policy_cases() -> list[dict]:
             note("blunder", policy.on_user_move_assessed(assessment(Severity.BLUNDER, Label.BLUNDER)))
             note("fine move", policy.on_user_move_assessed(assessment(Severity.NONE, Label.BEST)))
             note("miss", policy.on_user_move_assessed(assessment(Severity.NONE, Label.MISS)))
-            # An analysis of a ply the board has left: "position moved on".
-            policy.new_position(20, 800.0, user_to_move=True)
-            note("analysed another ply", policy.on_position_analysed(18, decisive=True))
             # The clock's share between the floor and the setting: five minutes gives 24 s;
             # 100 s, above the scramble, still hints at the floor.
             policy.new_position(22, 900.0, user_to_move=True)
@@ -1186,16 +1178,6 @@ def policy_cases() -> list[dict]:
             policy.set_remaining(100_000)
             policy.new_position(24, 1000.0, user_to_move=True)
             note("100 s, at the floor", policy.tick(1021.0))
-            # A quiet position between two decisive ones: the question comes again within
-            # DECISIVE_EVERY plies, where a decisive stretch would hold it back.
-            policy.new_position(30, 1100.0, user_to_move=True)
-            note("decisive at 30", policy.on_position_analysed(30, decisive=True))
-            policy.new_position(32, 1110.0, user_to_move=True)
-            note("decisive at 32, in the stretch", policy.on_position_analysed(32, decisive=True))
-            policy.new_position(34, 1120.0, user_to_move=True)
-            note("quiet at 34", policy.on_position_analysed(34, decisive=False))
-            policy.new_position(36, 1130.0, user_to_move=True)
-            note("decisive at 36, after the quiet one", policy.on_position_analysed(36, decisive=True))
             runs.append({"control": control.value, "quiet": quiet, "steps": steps})
     return runs
 

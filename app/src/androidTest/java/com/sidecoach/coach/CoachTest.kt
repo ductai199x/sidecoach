@@ -51,9 +51,9 @@ import org.junit.runner.RunWith
 /**
  * When the coach speaks: the desktop's `tests/test_coach.py` for desktop 88b84a6, driven the
  * way the desktop drives it -- a scripted model, the events by hand. A question asked before
- * the engine has looked is answered when it has; no decisive question while the player plays
- * out the line they found, and one again when the opponent leaves it; and the next puzzle's
- * question after a long one.
+ * the engine has looked is answered when it has; nothing unasked while the player thinks until
+ * they are stuck, a decisive moment included (Tai, 2026-10-01); and a hint never said twice
+ * along the combination the player is carrying out.
  */
 @RunWith(AndroidJUnit4::class)
 class CoachTest {
@@ -94,6 +94,18 @@ class CoachTest {
     private fun messages(coach: Coach): List<CoachMessage> {
         coach.speaker.runPending()
         return coach.poll()
+    }
+
+    /**
+     * `stuck` (desktop `tests/coaching.py`): the player stuck on the position the stuck limit
+     * long: the coach's first word unasked (the only one while they think -- Tai, 2026-10-01),
+     * and what it then has for them.
+     */
+    private fun stuck(coach: Coach): List<CoachMessage> {
+        val since = coach.policy.stuckFrom
+        assertNotNull(since)
+        coach.tick(since!! + coach.policy.stuckThreshold())
+        return messages(coach)
     }
 
     /**
@@ -155,13 +167,13 @@ class CoachTest {
     }
 
     /**
-     * `test_the_coachs_own_words_wait_for_the_full_depth` (desktop 316026b): the decisive
-     * question is the coach's own: an early analysis asks nothing, the full depth does -- and an
-     * early one that comes after it replaces nothing.
+     * `test_an_analysis_early_or_full_says_nothing_of_its_own` (desktop, 2026-10-01): what the
+     * engine finds is no reason to speak while the player thinks: neither its early look nor the
+     * full depth says a word, a decisive moment included (Tai, 2026-10-01); the stuck limit does.
      */
     @Test
-    fun theCoachsOwnWordsWaitForTheFullDepth() {
-        val (coach, _) = coach(
+    fun anAnalysisEarlyOrFullSaysNothingOfItsOwn() {
+        val (coach, provider) = coach(
             listOf("You can mate right now: their king on e8 is short of squares. Which check does it?")
         )
         playToScholar(coach)
@@ -169,11 +181,9 @@ class CoachTest {
         coach.onEvent(early, 7.0)
         assertEquals(emptyList<CoachMessage>(), messages(coach))
         coach.onEvent(mateAnalysis(6), 8.0)
-        val out = messages(coach)
-        assertEquals(listOf(Trigger.DECISIVE_QUESTION), out.map { it.trigger })
-        coach.onEvent(early, 9.0)
-        val analysis = coach.positions.getValue(6).analysis
-        assertTrue(analysis != null && !analysis.provisional)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        assertTrue(provider.prompts.isEmpty())
+        assertEquals(listOf(Trigger.STUCK), stuck(coach).map { it.trigger })
     }
 
     private fun puzzle(coach: Coach, fen: String = QD1): Board {
@@ -237,7 +247,8 @@ class CoachTest {
     /**
      * After 1...Qd1+ 2.Rxd1 Rxd1+ 3.Qe1 the coach asked "You can mate in one move ... Which
      * check leaves their king no square at all?" -- a fresh question in the middle of the
-     * combination the player was carrying out (Tai's desktop, 2026-09-24).
+     * combination the player was carrying out (Tai's desktop, 2026-09-24): nothing unasked comes
+     * while the line is played.
      */
     @Test
     fun noNewQuestionWhileThePlayerPlaysOutTheLineTheyFound() {
@@ -251,15 +262,15 @@ class CoachTest {
                 analysed(coach, board, ply, QD1_LINE.drop(ply), 2.5 + ply, (5 - ply) / 2)
             }
         }
-        val asked = messages(coach).filter { it.trigger == Trigger.DECISIVE_QUESTION }.map { it.text }
-        assertEquals(asked.toString(), emptyList<String>(), asked)
+        val unasked = messages(coach).filter { it.trigger != Trigger.POST_MOVE }.map { it.text }
+        assertEquals(unasked.toString(), emptyList<String>(), unasked)
     }
 
     /**
      * A reply off the engine's line brought the idea back: the stuck hint's "a tactic that wins a
-     * knight ... a pin" at a puzzle's start came again as the question after the move was found
-     * (Tai's phone, 2026-09-29: "Each level can only be said once and if the level higher was
-     * said then the lower one can't be said"). The next hint unasked is the focus
+     * knight ... a pin" at a puzzle's start came again after the move was found (Tai's phone,
+     * 2026-09-29: "Each level can only be said once and if the level higher was said then the
+     * lower one can't be said"). The next hint unasked is the focus
      * (`test_no_new_question_while_the_line_is_played_out_nor_a_hint_said_twice`).
      */
     @Test
@@ -267,57 +278,42 @@ class CoachTest {
         val (coach, _) = coach(emptyList())
         val board = puzzle(coach)
         analysed(coach, board, 0, QD1_LINE, 1.0, 3)
-        val first = messages(coach)
-        assertEquals(listOf(Trigger.DECISIVE_QUESTION to DisclosureLevel.IDEA), first.map { it.trigger to it.level })
+        assertEquals("a puzzle's first position says nothing of its own", emptyList<CoachMessage>(), messages(coach))
+        val first = stuck(coach)
+        assertEquals(listOf(Trigger.STUCK to DisclosureLevel.IDEA), first.map { it.trigger to it.level })
         played(coach, board, 1, "c2d1", true, 3.0)
         played(coach, board, 2, "a5e1", false, 4.0) // blocks instead of taking: off the line
         analysed(coach, board, 2, listOf("d1e1"), 4.5, 1)
         assertEquals(emptyList<CoachMessage>(), messages(coach).filter { it.trigger != Trigger.POST_MOVE })
         coach.tick(4.0 + coach.policy.stuckThreshold() + 1)
-        val stuck = messages(coach).filter { it.trigger == Trigger.STUCK }
-        assertEquals(stuck.toString(), listOf(DisclosureLevel.FOCUS), stuck.map { it.level })
-    }
-
-    /**
-     * The decisive stretch pointed at in one puzzle said nothing about the next: move numbers
-     * start again, and a new puzzle's first position fell inside the last one's stretch, so its
-     * question was never asked (Tai's desktop, 2026-09-24).
-     */
-    @Test
-    fun theNextPuzzleGetsItsQuestionAfterALongOne() {
-        val (coach, _) = coach(emptyList())
-        val board = puzzle(coach, "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
-        for ((i, uci) in listOf("g8f8", "a1a2", "f8e7", "a2a3").withIndex()) {
-            val ply = i + 1
-            played(coach, board, ply, uci, ply % 2 == 1, ply.toDouble())
-        }
-        analysed(coach, board, 4, listOf("e7d6", "a3a6"), 5.0, null)
-        assertEquals(listOf(Trigger.DECISIVE_QUESTION), messages(coach).map { it.trigger })
-        coach.onEvent(
-            Resync(gameId = "g", fen = QD1, reason = "position adopted after 30 unexplained cells"),
-            20.0,
-        )
-        analysed(coach, Board(QD1), 0, QD1_LINE, 21.0, 3)
-        assertEquals(listOf(Trigger.DECISIVE_QUESTION), messages(coach).map { it.trigger })
+        val focus = messages(coach).filter { it.trigger == Trigger.STUCK }
+        assertEquals(focus.toString(), listOf(DisclosureLevel.FOCUS), focus.map { it.level })
     }
 
     /**
      * The counts of what was said unasked were kept by ply, and every puzzle starts at ply 0:
-     * after one puzzle's question and focus there, the next puzzle's log said "gave the idea and
-     * the focus here" before a word of it (Tai's phone, 2026-09-29).
+     * after one puzzle's idea and focus there, the next puzzle's log said "gave the idea and the
+     * focus here" before a word of it (Tai's phone, 2026-09-29). Each comes after its own stuck
+     * spell, and nothing before the first (Tai, 2026-10-01).
      */
     @Test
     fun aNewPuzzleGetsItsHintsWhateverTheLastOneHad() {
         val (coach, _) = coach(emptyList())
+
+        fun bothHints(): List<DisclosureLevel> {
+            assertEquals("nothing before the stuck limit", emptyList<CoachMessage>(), messages(coach))
+            val levels = stuck(coach).map { it.level }.toMutableList()
+            levels += stuck(coach).map { it.level } // a full stuck spell from the idea
+            return levels
+        }
+
         val board = puzzle(coach)
         analysed(coach, board, 0, QD1_LINE, 1.0, 3)
-        coach.tick(1.0 + coach.policy.stuckThreshold() + 1)
-        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), messages(coach).map { it.level })
+        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), bothHints())
         val next = "6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1"
         coach.onEvent(Resync(gameId = "g", fen = next, reason = "adopted"), 100.0)
         analysed(coach, Board(next), 0, listOf("g8f8"), 101.0, null)
-        coach.tick(101.0 + coach.policy.stuckThreshold() + 1)
-        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), messages(coach).map { it.level })
+        assertEquals(listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS), bothHints())
     }
 
     /** White, the user, to move with Qxf7# on the board, after black's Nf6 (`_play_to_scholar`). */
@@ -396,17 +392,22 @@ class CoachTest {
     /**
      * The first hint whole is on the sheet, the least the model's says, and the idea level names
      * the key fact on the board, as the first hint does (parity pass, 2026-09-25; desktop
-     * 717cc9c, `test_a_decisive_moment_earns_the_idea_and_names_no_move`).
+     * 717cc9c, now `test_stuck_at_a_decisive_moment_the_player_gets_the_idea_and_no_move`). A
+     * decisive moment says nothing of its own (Tai, 2026-10-01: nothing "until the user is stuck
+     * or actively request a hint or after they have made a move"); stuck, the player gets the
+     * idea.
      */
     @Test
-    fun aDecisiveMomentsSheetCarriesTheFirstHintWhole() {
+    fun stuckAtADecisiveMomentTheSheetCarriesTheFirstHintWhole() {
         val (coach, provider) = coach(
             listOf("You can mate right now: their king on e8 is short of squares. Which check does it?")
         )
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
-        val out = messages(coach)
-        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION)
+        assertEquals("nothing before the stuck limit", emptyList<CoachMessage>(), messages(coach))
+        assertTrue("nothing before the stuck limit", provider.prompts.isEmpty())
+        val out = stuck(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.STUCK)
         assertEquals(DisclosureLevel.IDEA, out[0].level)
         val messages = given(provider, 0)
         val current = currentMoveMessage(messages)
@@ -447,7 +448,7 @@ class CoachTest {
         val (coach, _) = coach(listOf(thin))
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
-        val out = messages(coach)
+        val out = stuck(coach)
         assertEquals(thin, out[0].text)
         val spoken = coach.spoken.last()
         assertTrue(spoken.attempts == 1 && coach.speaker.fallbacks == 0 && spoken.problems.isEmpty())
@@ -469,7 +470,7 @@ class CoachTest {
                 "Qxf7 was mate on the spot, sharper than the bishop. Do you see why?",
             )
         )
-        bishopCheckInsteadOfMate(coach)
+        bishopCheckInsteadOfMate(coach, stuckFirst = true)
         val messages = given(provider)
         val content = messages.last().content
         val faced = content.substringAfter("# The position they faced, before Bxf7+").substringBefore("# Task")
@@ -569,7 +570,7 @@ class CoachTest {
         )
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
-        val out = messages(coach)
+        val out = stuck(coach)
         assertTrue(out.size == 1 && out[0].text.startsWith("Their king on e8 is boxed in"))
         val spoken = coach.spoken.last()
         assertTrue(spoken.attempts == 1 && spoken.problems.isEmpty() && coach.speaker.fallbacks == 0)
@@ -839,11 +840,16 @@ class CoachTest {
         assertTrue("They ask what the opponent threatens" in directiveOf(given(provider, 0)))
     }
 
-    /** `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged. */
-    private fun bishopCheckInsteadOfMate(coach: Coach) {
+    /**
+     * `_bishop_check_instead_of_mate`: the user plays Bxf7+ where Qxf7 was mate, and it is judged;
+     * [stuckFirst], after the stuck hint, as the desktop's
+     * `test_feedback_after_the_users_move_may_say_everything_about_that_position` plays it
+     * (desktop, 2026-10-01).
+     */
+    private fun bishopCheckInsteadOfMate(coach: Coach, stuckFirst: Boolean = false) {
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
-        messages(coach)
+        if (stuckFirst) stuck(coach) else messages(coach)
         val board = Board(SCHOLAR)
         val move = board.parseSan("Bxf7+")!!
         board.push(move)
@@ -1038,7 +1044,7 @@ class CoachTest {
             best = listOf("h5f7"),
             label = Label.GOOD,
         )
-        coach.messages += RULE_SPACING // past the decisive question's rule of thumb (desktop 3d9568d)
+        coach.messages += RULE_SPACING // clear of any rule of thumb said before (desktop 3d9568d)
         val rulesBefore = coach.rulesSaid()
         val (_, fine) = coach.instruction(
             Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), good, played,
@@ -1072,6 +1078,7 @@ class CoachTest {
         val (coach, _) = coach(emptyList())
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 6.5)
+        stuck(coach)
         val position = coach.positions.getValue(6)
         val board = Board(SCHOLAR)
         val move = board.parseSan("a3")!!
@@ -1108,7 +1115,7 @@ class CoachTest {
 
         fun hasRule(text: String) = saidRules().any { it.lowercase().trimEnd('.') in text.lowercase() }
 
-        // The decisive question's first hint said its principle: no rule for a few messages.
+        // The stuck hint's idea said its principle: no rule for a few messages.
         var (instruction, soon) = lesson()
         assertTrue(soon, !hasRule(soon) && RULE_HELD in instruction)
         coach.messages += RULE_SPACING
@@ -1682,7 +1689,7 @@ class CoachTest {
             val coach = Coach(ScriptedProvider(replies), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)), draftCheck = checker)
             playToScholar(coach)
             coach.onEvent(mateAnalysis(6), 7.0)
-            return coach to messages(coach)
+            return coach to stuck(coach) // stuck: the first word unasked
         }
         var (coach, out) = checked(listOf("[p=0.6] Your rook on f7 is strong.\n[p=0.4] Their king on e8 is short of squares, is it not?"))
         assertEquals("Their king on e8 is short of squares, is it not?", out[0].text)
@@ -1982,7 +1989,7 @@ class CoachTest {
             val id = "p$n"
             coach.onEvent(GameStarted(gameId = id, userSide = Pieces.Side.WHITE, startFen = SCHOLAR, kind = "position"), 10.0 * n)
             coach.onEvent(mateAnalysis(0).let { Analysis(gameId = id, fen = it.fen, ply = 0, lines = it.lines, decisive = it.decisive, onlyMove = it.onlyMove, tags = it.tags) }, 10.0 * n + 0.5)
-            messages(coach) // the decisive-moment nudge on the position itself
+            assertEquals(emptyList<CoachMessage>(), messages(coach)) // the position itself: nothing said unasked
             provider.prompts.clear()
             mateInOnePlayed(coach, gameId = id, ply = 1, ts = 10.0 * n + 1.0)
             assertEquals("the mating move is not commented on", emptyList<CoachMessage>(), messages(coach))
@@ -2052,9 +2059,10 @@ class CoachTest {
     }
 
     /**
-     * No model at all (llm.provider none): the factory's offline provider; a decisive moment
-     * gets the question template, the player's best move the verdict from the board, a typed
-     * question the hint template -- and nothing is ever called (`test_offline_coach.py`).
+     * No model at all (llm.provider none): the factory's offline provider; a decisive moment says
+     * nothing, and stuck, the player gets the idea's template; the player's best move the verdict
+     * from the board, a typed question the hint template -- and nothing is ever called
+     * (`test_offline_coach.py`, `test_a_stuck_hint_and_a_move_get_the_templates_with_no_call`).
      */
     @Test
     fun offlineTheTemplatesSpeakAndNothingIsCalled() {
@@ -2067,9 +2075,11 @@ class CoachTest {
         assertTrue((none as OfflineProvider).withEffort("low") === none)
         val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         playToScholar(coach)
+        // A decisive moment says nothing; stuck, the idea's template, no model.
         coach.onEvent(mateAnalysis(6), 7.0)
-        var out = messages(coach)
-        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION && "?" in out[0].text)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        var out = stuck(coach)
+        assertTrue(out.size == 1 && out[0].trigger == Trigger.STUCK && "?" in out[0].text)
         assertEquals(1, coach.speaker.fallbacks)
         coach.ask("hint", 8.0)
         out = messages(coach)
@@ -2080,30 +2090,6 @@ class CoachTest {
         assertTrue(out.size == 1 && out[0].trigger == Trigger.POST_MOVE)
         assertTrue(out[0].text, out[0].text in MATE && "Qxf7#" !in out[0].text)
         assertEquals("nothing was ever called", 0, coach.speaker.failures)
-    }
-
-    /**
-     * 9...Nxd4 in a Dragon drew "This is a moment to slow down": when the opponent has just
-     * captured and the engine's move takes back there, no decisive question; a zwischenzug as
-     * the best move keeps it (`test_offline_coach.py`).
-     */
-    @Test
-    fun noDecisiveQuestionOnAnObviousRecapture() {
-        val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
-        val board = playFromStart(coach, listOf("e4", "c5", "Nf3", "d6", "d4", "cxd4"))
-        fun analysed(first: String, second: String, ts: Double) = coach.onEvent(
-            Analysis(
-                gameId = "g", fen = board.fen(), ply = 6,
-                lines = listOf(Line(moves = listOf(first), depth = 12, expectedScore = 0.52), Line(moves = listOf(second), depth = 12, expectedScore = 0.35)),
-                decisive = true, onlyMove = false,
-            ),
-            ts,
-        )
-        analysed("f3d4", "c2c3", 7.0)
-        assertEquals("the recapture is the move; no question", emptyList<CoachMessage>(), messages(coach))
-        analysed("f1b5", "f3d4", 8.0)
-        val out = messages(coach)
-        assertTrue(out.size == 1 && out[0].trigger == Trigger.DECISIVE_QUESTION)
     }
 
     /**

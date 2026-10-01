@@ -536,23 +536,7 @@
     "dark_hl_odd": "#a4aa4d"
    }
   ],
-  "custom": {
-   "images": {},
-   "missing": [
-    "wK",
-    "wQ",
-    "wR",
-    "wB",
-    "wN",
-    "wP",
-    "bK",
-    "bQ",
-    "bR",
-    "bB",
-    "bN",
-    "bP"
-   ]
-  }
+  "own": []
  },
  "looks": [
   {
@@ -11051,43 +11035,39 @@
    null
   ]
  ],
- "saves": [
+ "steps": [
   {
+   "op": "legacy",
    "files": [
     {
      "name": "wK.png",
      "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
     },
     {
-     "name": "Chess_qdt45.svg",
+     "name": "bQ.svg",
      "data": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+"
+    },
+    {
+     "name": "notes.txt",
+     "data": "bm90IGEgcGllY2U="
     }
-   ],
+   ]
+  },
+  {
+   "op": "sets",
+   "result": [
+    {
+     "id": "custom",
+     "name": "My pieces",
+     "order": 0
+    }
+   ]
+  },
+  {
+   "op": "look",
+   "pieces": "custom",
+   "theme": "green",
    "result": {
-    "ok": true,
-    "taken": [
-     "wK",
-     "bQ"
-    ],
-    "skipped": [],
-    "missing": [
-     "wQ",
-     "wR",
-     "wB",
-     "wN",
-     "wP",
-     "bK",
-     "bR",
-     "bB",
-     "bN",
-     "bP"
-    ]
-   },
-   "images": {
-    "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-    "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
-   },
-   "look": {
     "pieces": "custom",
     "theme": "green",
     "images": {
@@ -11114,8 +11094,44 @@
      "dark_hl": "#baca2b",
      "dark_hl_odd": "#baca2e"
     }
-   },
-   "catalogue": {
+   }
+  },
+  {
+   "op": "look",
+   "pieces": "own:custom",
+   "theme": "green",
+   "result": {
+    "pieces": "own:custom",
+    "theme": "green",
+    "images": {
+     "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA",
+     "wQ": "/pieces/wQ.svg?v=own2",
+     "wR": "/pieces/wR.svg?v=own2",
+     "wB": "/pieces/wB.svg?v=own2",
+     "wN": "/pieces/wN.svg?v=own2",
+     "wP": "/pieces/wP.svg?v=own2",
+     "bK": "/pieces/bK.svg?v=own2",
+     "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+     "bR": "/pieces/bR.svg?v=own2",
+     "bB": "/pieces/bB.svg?v=own2",
+     "bN": "/pieces/bN.svg?v=own2",
+     "bP": "/pieces/bP.svg?v=own2"
+    },
+    "board": {
+     "light": "#eeeed2",
+     "light_odd": "#eeeed5",
+     "dark": "#769656",
+     "dark_odd": "#769659",
+     "light_hl": "#f6f669",
+     "light_hl_odd": "#f6f66c",
+     "dark_hl": "#baca2b",
+     "dark_hl_odd": "#baca2e"
+    }
+   }
+  },
+  {
+   "op": "catalogue",
+   "result": {
     "sets": [
      {
       "name": "sidecoach",
@@ -11652,27 +11668,203 @@
       "dark_hl_odd": "#a4aa4d"
      }
     ],
-    "custom": {
-     "images": {
-      "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-      "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
-     },
-     "missing": [
-      "wQ",
-      "wR",
-      "wB",
-      "wN",
-      "wP",
-      "bK",
-      "bR",
-      "bB",
-      "bN",
-      "bP"
-     ]
-    }
+    "own": [
+     {
+      "name": "own:custom",
+      "label": "My pieces",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     }
+    ]
    }
   },
   {
+   "op": "create",
+   "name": "Neo",
+   "files": [
+    {
+     "name": "wK.png",
+     "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+     "name": "Chess_qdt45.svg",
+     "data": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+"
+    }
+   ],
+   "result": {
+    "ok": true,
+    "id": "own:neo",
+    "name": "Neo",
+    "taken": [
+     "wK",
+     "bQ"
+    ],
+    "skipped": [],
+    "missing": [
+     "wQ",
+     "wR",
+     "wB",
+     "wN",
+     "wP",
+     "bK",
+     "bR",
+     "bB",
+     "bN",
+     "bP"
+    ]
+   }
+  },
+  {
+   "op": "create",
+   "name": "neo",
+   "files": [
+    {
+     "name": "bP.png",
+     "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+    }
+   ],
+   "result": {
+    "ok": true,
+    "id": "own:neo-2",
+    "name": "neo 2",
+    "taken": [
+     "bP"
+    ],
+    "skipped": [],
+    "missing": [
+     "wK",
+     "wQ",
+     "wR",
+     "wB",
+     "wN",
+     "wP",
+     "bK",
+     "bQ",
+     "bR",
+     "bB",
+     "bN"
+    ]
+   }
+  },
+  {
+   "op": "create",
+   "name": "",
+   "files": [
+    {
+     "name": "notes.txt",
+     "data": "aGk="
+    }
+   ],
+   "result": {
+    "ok": false,
+    "taken": [],
+    "skipped": [
+     {
+      "name": "notes.txt",
+      "why": "the name does not say which piece it is"
+     }
+    ],
+    "missing": [
+     "wK",
+     "wQ",
+     "wR",
+     "wB",
+     "wN",
+     "wP",
+     "bK",
+     "bQ",
+     "bR",
+     "bB",
+     "bN",
+     "bP"
+    ]
+   }
+  },
+  {
+   "op": "create",
+   "name": "",
+   "files": [
+    {
+     "name": "wN.webp",
+     "data": "UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
+    }
+   ],
+   "result": {
+    "ok": true,
+    "id": "own:my-set",
+    "name": "My set",
+    "taken": [
+     "wN"
+    ],
+    "skipped": [],
+    "missing": [
+     "wK",
+     "wQ",
+     "wR",
+     "wB",
+     "wP",
+     "bK",
+     "bQ",
+     "bR",
+     "bB",
+     "bN",
+     "bP"
+    ]
+   }
+  },
+  {
+   "op": "create",
+   "name": "  N\u00e9o   \u00fcn\u00efcode, a set with a name far longer than forty letters  ",
+   "files": [
+    {
+     "name": "wK.png",
+     "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+     "name": "Chess_qdt45.svg",
+     "data": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+"
+    }
+   ],
+   "result": {
+    "ok": true,
+    "id": "own:n-o-n-code-a-set-with-a-name-far",
+    "name": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+    "taken": [
+     "wK",
+     "bQ"
+    ],
+    "skipped": [],
+    "missing": [
+     "wQ",
+     "wR",
+     "wB",
+     "wN",
+     "wP",
+     "bK",
+     "bR",
+     "bB",
+     "bN",
+     "bP"
+    ]
+   }
+  },
+  {
+   "op": "add",
+   "id": "neo",
    "files": [
     {
      "name": "notes.txt",
@@ -11697,6 +11889,8 @@
    ],
    "result": {
     "ok": true,
+    "id": "own:neo",
+    "name": "Neo",
     "taken": [
      "wN",
      "wK"
@@ -11726,15 +11920,104 @@
      "bN",
      "bP"
     ]
-   },
-   "images": {
-    "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-    "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
-    "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
-   },
-   "look": {
-    "pieces": "custom",
-    "theme": "green",
+   }
+  },
+  {
+   "op": "add",
+   "id": "nope",
+   "files": [
+    {
+     "name": "wK.png",
+     "data": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+     "name": "Chess_qdt45.svg",
+     "data": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+"
+    }
+   ],
+   "result": {
+    "ok": false,
+    "id": "own:nope",
+    "error": "There is no such set."
+   }
+  },
+  {
+   "op": "sets",
+   "result": [
+    {
+     "id": "custom",
+     "name": "My pieces",
+     "order": 0
+    },
+    {
+     "id": "neo",
+     "name": "Neo",
+     "order": 1
+    },
+    {
+     "id": "neo-2",
+     "name": "neo 2",
+     "order": 2
+    },
+    {
+     "id": "my-set",
+     "name": "My set",
+     "order": 3
+    },
+    {
+     "id": "n-o-n-code-a-set-with-a-name-far",
+     "name": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+     "order": 4
+    }
+   ]
+  },
+  {
+   "op": "rename",
+   "id": "neo",
+   "name": "  Neo   wood ",
+   "result": {
+    "ok": true,
+    "id": "own:neo",
+    "name": "Neo wood"
+   }
+  },
+  {
+   "op": "rename",
+   "id": "neo",
+   "name": "   ",
+   "result": {
+    "ok": false,
+    "id": "own:neo",
+    "error": "A set needs a name."
+   }
+  },
+  {
+   "op": "rename",
+   "id": "nope",
+   "name": "x",
+   "result": {
+    "ok": false,
+    "id": "own:nope",
+    "error": "There is no such set."
+   }
+  },
+  {
+   "op": "rename",
+   "id": "../x",
+   "name": "x",
+   "result": {
+    "ok": false,
+    "id": "own:../x",
+    "error": "There is no such set."
+   }
+  },
+  {
+   "op": "look",
+   "pieces": "own:neo",
+   "theme": "brown",
+   "result": {
+    "pieces": "own:neo",
+    "theme": "brown",
     "images": {
      "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
      "wQ": "/pieces/wQ.svg?v=own2",
@@ -11750,1189 +12033,24 @@
      "bP": "/pieces/bP.svg?v=own2"
     },
     "board": {
-     "light": "#eeeed2",
-     "light_odd": "#eeeed5",
-     "dark": "#769656",
-     "dark_odd": "#769659",
-     "light_hl": "#f6f669",
-     "light_hl_odd": "#f6f66c",
-     "dark_hl": "#baca2b",
-     "dark_hl_odd": "#baca2e"
-    }
-   },
-   "catalogue": {
-    "sets": [
-     {
-      "name": "sidecoach",
-      "label": "Sidecoach",
-      "author": "Sidecoach",
-      "licence": "Sidecoach's own",
-      "images": {
-       "wK": "/pieces/wK.svg?v=own2",
-       "wQ": "/pieces/wQ.svg?v=own2",
-       "wR": "/pieces/wR.svg?v=own2",
-       "wB": "/pieces/wB.svg?v=own2",
-       "wN": "/pieces/wN.svg?v=own2",
-       "wP": "/pieces/wP.svg?v=own2",
-       "bK": "/pieces/bK.svg?v=own2",
-       "bQ": "/pieces/bQ.svg?v=own2",
-       "bR": "/pieces/bR.svg?v=own2",
-       "bB": "/pieces/bB.svg?v=own2",
-       "bN": "/pieces/bN.svg?v=own2",
-       "bP": "/pieces/bP.svg?v=own2"
-      }
-     },
-     {
-      "name": "cburnett",
-      "label": "Classic",
-      "author": "Colin M.L. Burnett",
-      "licence": "GPLv2+",
-      "images": {
-       "wK": "/pieces/cburnett/wK.svg?v=1",
-       "wQ": "/pieces/cburnett/wQ.svg?v=1",
-       "wR": "/pieces/cburnett/wR.svg?v=1",
-       "wB": "/pieces/cburnett/wB.svg?v=1",
-       "wN": "/pieces/cburnett/wN.svg?v=1",
-       "wP": "/pieces/cburnett/wP.svg?v=1",
-       "bK": "/pieces/cburnett/bK.svg?v=1",
-       "bQ": "/pieces/cburnett/bQ.svg?v=1",
-       "bR": "/pieces/cburnett/bR.svg?v=1",
-       "bB": "/pieces/cburnett/bB.svg?v=1",
-       "bN": "/pieces/cburnett/bN.svg?v=1",
-       "bP": "/pieces/cburnett/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "merida",
-      "label": "Merida",
-      "author": "Armando Hernandez Marroquin",
-      "licence": "GPLv2+",
-      "images": {
-       "wK": "/pieces/merida/wK.svg?v=1",
-       "wQ": "/pieces/merida/wQ.svg?v=1",
-       "wR": "/pieces/merida/wR.svg?v=1",
-       "wB": "/pieces/merida/wB.svg?v=1",
-       "wN": "/pieces/merida/wN.svg?v=1",
-       "wP": "/pieces/merida/wP.svg?v=1",
-       "bK": "/pieces/merida/bK.svg?v=1",
-       "bQ": "/pieces/merida/bQ.svg?v=1",
-       "bR": "/pieces/merida/bR.svg?v=1",
-       "bB": "/pieces/merida/bB.svg?v=1",
-       "bN": "/pieces/merida/bN.svg?v=1",
-       "bP": "/pieces/merida/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "chessnut",
-      "label": "Chessnut",
-      "author": "Alexis Luengas",
-      "licence": "Apache 2.0",
-      "images": {
-       "wK": "/pieces/chessnut/wK.svg?v=1",
-       "wQ": "/pieces/chessnut/wQ.svg?v=1",
-       "wR": "/pieces/chessnut/wR.svg?v=1",
-       "wB": "/pieces/chessnut/wB.svg?v=1",
-       "wN": "/pieces/chessnut/wN.svg?v=1",
-       "wP": "/pieces/chessnut/wP.svg?v=1",
-       "bK": "/pieces/chessnut/bK.svg?v=1",
-       "bQ": "/pieces/chessnut/bQ.svg?v=1",
-       "bR": "/pieces/chessnut/bR.svg?v=1",
-       "bB": "/pieces/chessnut/bB.svg?v=1",
-       "bN": "/pieces/chessnut/bN.svg?v=1",
-       "bP": "/pieces/chessnut/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "celtic",
-      "label": "Celtic",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/celtic/wK.svg?v=1",
-       "wQ": "/pieces/celtic/wQ.svg?v=1",
-       "wR": "/pieces/celtic/wR.svg?v=1",
-       "wB": "/pieces/celtic/wB.svg?v=1",
-       "wN": "/pieces/celtic/wN.svg?v=1",
-       "wP": "/pieces/celtic/wP.svg?v=1",
-       "bK": "/pieces/celtic/bK.svg?v=1",
-       "bQ": "/pieces/celtic/bQ.svg?v=1",
-       "bR": "/pieces/celtic/bR.svg?v=1",
-       "bB": "/pieces/celtic/bB.svg?v=1",
-       "bN": "/pieces/celtic/bN.svg?v=1",
-       "bP": "/pieces/celtic/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "spatial",
-      "label": "Spatial",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/spatial/wK.svg?v=1",
-       "wQ": "/pieces/spatial/wQ.svg?v=1",
-       "wR": "/pieces/spatial/wR.svg?v=1",
-       "wB": "/pieces/spatial/wB.svg?v=1",
-       "wN": "/pieces/spatial/wN.svg?v=1",
-       "wP": "/pieces/spatial/wP.svg?v=1",
-       "bK": "/pieces/spatial/bK.svg?v=1",
-       "bQ": "/pieces/spatial/bQ.svg?v=1",
-       "bR": "/pieces/spatial/bR.svg?v=1",
-       "bB": "/pieces/spatial/bB.svg?v=1",
-       "bN": "/pieces/spatial/bN.svg?v=1",
-       "bP": "/pieces/spatial/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "fantasy",
-      "label": "Fantasy",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/fantasy/wK.svg?v=1",
-       "wQ": "/pieces/fantasy/wQ.svg?v=1",
-       "wR": "/pieces/fantasy/wR.svg?v=1",
-       "wB": "/pieces/fantasy/wB.svg?v=1",
-       "wN": "/pieces/fantasy/wN.svg?v=1",
-       "wP": "/pieces/fantasy/wP.svg?v=1",
-       "bK": "/pieces/fantasy/bK.svg?v=1",
-       "bQ": "/pieces/fantasy/bQ.svg?v=1",
-       "bR": "/pieces/fantasy/bR.svg?v=1",
-       "bB": "/pieces/fantasy/bB.svg?v=1",
-       "bN": "/pieces/fantasy/bN.svg?v=1",
-       "bP": "/pieces/fantasy/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "papercut",
-      "label": "Papercut",
-      "author": "Nikolay Anzarov",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/papercut/wK.svg?v=1",
-       "wQ": "/pieces/papercut/wQ.svg?v=1",
-       "wR": "/pieces/papercut/wR.svg?v=1",
-       "wB": "/pieces/papercut/wB.svg?v=1",
-       "wN": "/pieces/papercut/wN.svg?v=1",
-       "wP": "/pieces/papercut/wP.svg?v=1",
-       "bK": "/pieces/papercut/bK.svg?v=1",
-       "bQ": "/pieces/papercut/bQ.svg?v=1",
-       "bR": "/pieces/papercut/bR.svg?v=1",
-       "bB": "/pieces/papercut/bB.svg?v=1",
-       "bN": "/pieces/papercut/bN.svg?v=1",
-       "bP": "/pieces/papercut/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "mpchess",
-      "label": "MPChess",
-      "author": "Maxime Chupin",
-      "licence": "GPLv3+",
-      "images": {
-       "wK": "/pieces/mpchess/wK.svg?v=1",
-       "wQ": "/pieces/mpchess/wQ.svg?v=1",
-       "wR": "/pieces/mpchess/wR.svg?v=1",
-       "wB": "/pieces/mpchess/wB.svg?v=1",
-       "wN": "/pieces/mpchess/wN.svg?v=1",
-       "wP": "/pieces/mpchess/wP.svg?v=1",
-       "bK": "/pieces/mpchess/bK.svg?v=1",
-       "bQ": "/pieces/mpchess/bQ.svg?v=1",
-       "bR": "/pieces/mpchess/bR.svg?v=1",
-       "bB": "/pieces/mpchess/bB.svg?v=1",
-       "bN": "/pieces/mpchess/bN.svg?v=1",
-       "bP": "/pieces/mpchess/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "pirouetti",
-      "label": "Pirouetti",
-      "author": "pirouetti",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/pirouetti/wK.svg?v=1",
-       "wQ": "/pieces/pirouetti/wQ.svg?v=1",
-       "wR": "/pieces/pirouetti/wR.svg?v=1",
-       "wB": "/pieces/pirouetti/wB.svg?v=1",
-       "wN": "/pieces/pirouetti/wN.svg?v=1",
-       "wP": "/pieces/pirouetti/wP.svg?v=1",
-       "bK": "/pieces/pirouetti/bK.svg?v=1",
-       "bQ": "/pieces/pirouetti/bQ.svg?v=1",
-       "bR": "/pieces/pirouetti/bR.svg?v=1",
-       "bB": "/pieces/pirouetti/bB.svg?v=1",
-       "bN": "/pieces/pirouetti/bN.svg?v=1",
-       "bP": "/pieces/pirouetti/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "rhosgfx",
-      "label": "RhosGFX",
-      "author": "RhosGFX",
-      "licence": "CC0 (public domain)",
-      "images": {
-       "wK": "/pieces/rhosgfx/wK.svg?v=1",
-       "wQ": "/pieces/rhosgfx/wQ.svg?v=1",
-       "wR": "/pieces/rhosgfx/wR.svg?v=1",
-       "wB": "/pieces/rhosgfx/wB.svg?v=1",
-       "wN": "/pieces/rhosgfx/wN.svg?v=1",
-       "wP": "/pieces/rhosgfx/wP.svg?v=1",
-       "bK": "/pieces/rhosgfx/bK.svg?v=1",
-       "bQ": "/pieces/rhosgfx/bQ.svg?v=1",
-       "bR": "/pieces/rhosgfx/bR.svg?v=1",
-       "bB": "/pieces/rhosgfx/bB.svg?v=1",
-       "bN": "/pieces/rhosgfx/bN.svg?v=1",
-       "bP": "/pieces/rhosgfx/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "totoy",
-      "label": "Totoy",
-      "author": "Kosal Sen",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/totoy/wK.svg?v=1",
-       "wQ": "/pieces/totoy/wQ.svg?v=1",
-       "wR": "/pieces/totoy/wR.svg?v=1",
-       "wB": "/pieces/totoy/wB.svg?v=1",
-       "wN": "/pieces/totoy/wN.svg?v=1",
-       "wP": "/pieces/totoy/wP.svg?v=1",
-       "bK": "/pieces/totoy/bK.svg?v=1",
-       "bQ": "/pieces/totoy/bQ.svg?v=1",
-       "bR": "/pieces/totoy/bR.svg?v=1",
-       "bB": "/pieces/totoy/bB.svg?v=1",
-       "bN": "/pieces/totoy/bN.svg?v=1",
-       "bP": "/pieces/totoy/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "kiwen-suwi",
-      "label": "Kiwen-suwi",
-      "author": "neverRare",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/kiwen-suwi/wK.svg?v=1",
-       "wQ": "/pieces/kiwen-suwi/wQ.svg?v=1",
-       "wR": "/pieces/kiwen-suwi/wR.svg?v=1",
-       "wB": "/pieces/kiwen-suwi/wB.svg?v=1",
-       "wN": "/pieces/kiwen-suwi/wN.svg?v=1",
-       "wP": "/pieces/kiwen-suwi/wP.svg?v=1",
-       "bK": "/pieces/kiwen-suwi/bK.svg?v=1",
-       "bQ": "/pieces/kiwen-suwi/bQ.svg?v=1",
-       "bR": "/pieces/kiwen-suwi/bR.svg?v=1",
-       "bB": "/pieces/kiwen-suwi/bB.svg?v=1",
-       "bN": "/pieces/kiwen-suwi/bN.svg?v=1",
-       "bP": "/pieces/kiwen-suwi/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "firi",
-      "label": "Firi",
-      "author": "James Faure",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/firi/wK.svg?v=1",
-       "wQ": "/pieces/firi/wQ.svg?v=1",
-       "wR": "/pieces/firi/wR.svg?v=1",
-       "wB": "/pieces/firi/wB.svg?v=1",
-       "wN": "/pieces/firi/wN.svg?v=1",
-       "wP": "/pieces/firi/wP.svg?v=1",
-       "bK": "/pieces/firi/bK.svg?v=1",
-       "bQ": "/pieces/firi/bQ.svg?v=1",
-       "bR": "/pieces/firi/bR.svg?v=1",
-       "bB": "/pieces/firi/bB.svg?v=1",
-       "bN": "/pieces/firi/bN.svg?v=1",
-       "bP": "/pieces/firi/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "pixel",
-      "label": "Pixel",
-      "author": "therealqtpi",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/pixel/wK.svg?v=1",
-       "wQ": "/pieces/pixel/wQ.svg?v=1",
-       "wR": "/pieces/pixel/wR.svg?v=1",
-       "wB": "/pieces/pixel/wB.svg?v=1",
-       "wN": "/pieces/pixel/wN.svg?v=1",
-       "wP": "/pieces/pixel/wP.svg?v=1",
-       "bK": "/pieces/pixel/bK.svg?v=1",
-       "bQ": "/pieces/pixel/bQ.svg?v=1",
-       "bR": "/pieces/pixel/bR.svg?v=1",
-       "bB": "/pieces/pixel/bB.svg?v=1",
-       "bN": "/pieces/pixel/bN.svg?v=1",
-       "bP": "/pieces/pixel/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "shapes",
-      "label": "Shapes",
-      "author": "flugsio",
-      "licence": "CC BY-SA 4.0",
-      "images": {
-       "wK": "/pieces/shapes/wK.svg?v=1",
-       "wQ": "/pieces/shapes/wQ.svg?v=1",
-       "wR": "/pieces/shapes/wR.svg?v=1",
-       "wB": "/pieces/shapes/wB.svg?v=1",
-       "wN": "/pieces/shapes/wN.svg?v=1",
-       "wP": "/pieces/shapes/wP.svg?v=1",
-       "bK": "/pieces/shapes/bK.svg?v=1",
-       "bQ": "/pieces/shapes/bQ.svg?v=1",
-       "bR": "/pieces/shapes/bR.svg?v=1",
-       "bB": "/pieces/shapes/bB.svg?v=1",
-       "bN": "/pieces/shapes/bN.svg?v=1",
-       "bP": "/pieces/shapes/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "letter",
-      "label": "Letters",
-      "author": "usolando",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/letter/wK.svg?v=1",
-       "wQ": "/pieces/letter/wQ.svg?v=1",
-       "wR": "/pieces/letter/wR.svg?v=1",
-       "wB": "/pieces/letter/wB.svg?v=1",
-       "wN": "/pieces/letter/wN.svg?v=1",
-       "wP": "/pieces/letter/wP.svg?v=1",
-       "bK": "/pieces/letter/bK.svg?v=1",
-       "bQ": "/pieces/letter/bQ.svg?v=1",
-       "bR": "/pieces/letter/bR.svg?v=1",
-       "bB": "/pieces/letter/bB.svg?v=1",
-       "bN": "/pieces/letter/bN.svg?v=1",
-       "bP": "/pieces/letter/bP.svg?v=1"
-      }
-     }
-    ],
-    "themes": [
-     {
-      "name": "green",
-      "label": "Green",
-      "light": "#eeeed2",
-      "light_odd": "#eeeed5",
-      "dark": "#769656",
-      "dark_odd": "#769659",
-      "light_hl": "#f6f669",
-      "light_hl_odd": "#f6f66c",
-      "dark_hl": "#baca2b",
-      "dark_hl_odd": "#baca2e"
-     },
-     {
-      "name": "brown",
-      "label": "Brown",
-      "light": "#f0d9b5",
-      "light_odd": "#f0d9b8",
-      "dark": "#b58863",
-      "dark_odd": "#b58866",
-      "light_hl": "#f8ec74",
-      "light_hl_odd": "#f8ec77",
-      "dark_hl": "#dac44b",
-      "dark_hl_odd": "#dac44e"
-     },
-     {
-      "name": "blue",
-      "label": "Blue",
-      "light": "#dee3e6",
-      "light_odd": "#dee3e9",
-      "dark": "#8ca2ad",
-      "dark_odd": "#8ca2b0",
-      "light_hl": "#eef18c",
-      "light_hl_odd": "#eef18f",
-      "dark_hl": "#c6d070",
-      "dark_hl_odd": "#c6d073"
-     },
-     {
-      "name": "ocean",
-      "label": "Ocean",
-      "light": "#eae9d2",
-      "light_odd": "#eae9d5",
-      "dark": "#4b7399",
-      "dark_odd": "#4b739c",
-      "light_hl": "#f4f482",
-      "light_hl_odd": "#f4f485",
-      "dark_hl": "#a5b966",
-      "dark_hl_odd": "#a5b969"
-     },
-     {
-      "name": "grey",
-      "label": "Grey",
-      "light": "#e3e3e3",
-      "light_odd": "#e3e3e6",
-      "dark": "#a1a1a1",
-      "dark_odd": "#a1a1a4",
-      "light_hl": "#f1f18b",
-      "light_hl_odd": "#f1f18e",
-      "dark_hl": "#d0d06a",
-      "dark_hl_odd": "#d0d06d"
-     },
-     {
-      "name": "purple",
-      "label": "Purple",
-      "light": "#eeeaf2",
-      "light_odd": "#eeeaf5",
-      "dark": "#8877b7",
-      "dark_odd": "#8877ba",
-      "light_hl": "#f6f492",
-      "light_hl_odd": "#f6f495",
-      "dark_hl": "#c4bb75",
-      "dark_hl_odd": "#c4bb78"
-     },
-     {
-      "name": "olive",
-      "label": "Olive",
-      "light": "#e8e7c8",
-      "light_odd": "#e8e7cb",
-      "dark": "#8a9153",
-      "dark_odd": "#8a9156",
-      "light_hl": "#f4f37e",
-      "light_hl_odd": "#f4f381",
-      "dark_hl": "#c4c843",
-      "dark_hl_odd": "#c4c846"
-     },
-     {
-      "name": "sand",
-      "label": "Sand",
-      "light": "#f2e4c3",
-      "light_odd": "#f2e4c6",
-      "dark": "#c9a26b",
-      "dark_odd": "#c9a26e",
-      "light_hl": "#f8f27b",
-      "light_hl_odd": "#f8f27e",
-      "dark_hl": "#e4d04f",
-      "dark_hl_odd": "#e4d052"
-     },
-     {
-      "name": "walnut",
-      "label": "Walnut",
-      "light": "#e3c49a",
-      "light_odd": "#e3c49d",
-      "dark": "#8b5a3c",
-      "dark_odd": "#8b5a3f",
-      "light_hl": "#f1e266",
-      "light_hl_odd": "#f1e269",
-      "dark_hl": "#c5ac38",
-      "dark_hl_odd": "#c5ac3b"
-     },
-     {
-      "name": "cherry",
-      "label": "Cherry",
-      "light": "#f1d9c9",
-      "light_odd": "#f1d9cc",
-      "dark": "#b56060",
-      "dark_odd": "#b56063",
-      "light_hl": "#f8ec7e",
-      "light_hl_odd": "#f8ec81",
-      "dark_hl": "#dab04a",
-      "dark_hl_odd": "#dab04d"
-     },
-     {
-      "name": "coral",
-      "label": "Coral",
-      "light": "#f4e3d7",
-      "light_odd": "#f4e3da",
-      "dark": "#e07a5f",
-      "dark_odd": "#e07a62",
-      "light_hl": "#faf185",
-      "light_hl_odd": "#faf188",
-      "dark_hl": "#f0bc49",
-      "dark_hl_odd": "#f0bc4c"
-     },
-     {
-      "name": "ice",
-      "label": "Ice",
-      "light": "#eef3f7",
-      "light_odd": "#eef3fa",
-      "dark": "#a3bfd6",
-      "dark_odd": "#a3bfd9",
-      "light_hl": "#f6f995",
-      "light_hl_odd": "#f6f998",
-      "dark_hl": "#d1df84",
-      "dark_hl_odd": "#d1df87"
-     },
-     {
-      "name": "tournament",
-      "label": "Tournament",
-      "light": "#eeeee6",
-      "light_odd": "#eeeee9",
-      "dark": "#3d6b50",
-      "dark_odd": "#3d6b53",
-      "light_hl": "#f6f68c",
-      "light_hl_odd": "#f6f68f",
-      "dark_hl": "#9eb542",
-      "dark_hl_odd": "#9eb545"
-     },
-     {
-      "name": "teal",
-      "label": "Teal",
-      "light": "#e0ece8",
-      "light_odd": "#e0eceb",
-      "dark": "#4f8a83",
-      "dark_odd": "#4f8a86",
-      "light_hl": "#f0f68e",
-      "light_hl_odd": "#f0f691",
-      "dark_hl": "#a7c45b",
-      "dark_hl_odd": "#a7c45e"
-     },
-     {
-      "name": "rose",
-      "label": "Rose",
-      "light": "#f3e3e6",
-      "light_odd": "#f3e3e9",
-      "dark": "#c07a8a",
-      "dark_odd": "#c07a8d",
-      "light_hl": "#f9f18c",
-      "light_hl_odd": "#f9f18f",
-      "dark_hl": "#e0bc5e",
-      "dark_hl_odd": "#e0bc61"
-     },
-     {
-      "name": "night",
-      "label": "Night",
-      "light": "#9aa3ad",
-      "light_odd": "#9aa3b0",
-      "dark": "#4a5460",
-      "dark_odd": "#4a5463",
-      "light_hl": "#ccd170",
-      "light_hl_odd": "#ccd173",
-      "dark_hl": "#a4aa4a",
-      "dark_hl_odd": "#a4aa4d"
-     }
-    ],
-    "custom": {
-     "images": {
-      "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-      "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
-      "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
-     },
-     "missing": [
-      "wQ",
-      "wR",
-      "wB",
-      "wP",
-      "bK",
-      "bR",
-      "bB",
-      "bN",
-      "bP"
-     ]
+     "light": "#f0d9b5",
+     "light_odd": "#f0d9b8",
+     "dark": "#b58863",
+     "dark_odd": "#b58866",
+     "light_hl": "#f8ec74",
+     "light_hl_odd": "#f8ec77",
+     "dark_hl": "#dac44b",
+     "dark_hl_odd": "#dac44e"
     }
    }
   },
   {
-   "files": [],
+   "op": "look",
+   "pieces": "own:../x",
+   "theme": "green",
    "result": {
-    "ok": false,
-    "taken": [],
-    "skipped": [],
-    "missing": [
-     "wQ",
-     "wR",
-     "wB",
-     "wP",
-     "bK",
-     "bR",
-     "bB",
-     "bN",
-     "bP"
-    ]
-   },
-   "images": {
-    "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-    "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
-    "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
-   },
-   "look": {
-    "pieces": "custom",
+    "pieces": "own:../x",
     "theme": "green",
-    "images": {
-     "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
-     "wQ": "/pieces/wQ.svg?v=own2",
-     "wR": "/pieces/wR.svg?v=own2",
-     "wB": "/pieces/wB.svg?v=own2",
-     "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA",
-     "wP": "/pieces/wP.svg?v=own2",
-     "bK": "/pieces/bK.svg?v=own2",
-     "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-     "bR": "/pieces/bR.svg?v=own2",
-     "bB": "/pieces/bB.svg?v=own2",
-     "bN": "/pieces/bN.svg?v=own2",
-     "bP": "/pieces/bP.svg?v=own2"
-    },
-    "board": {
-     "light": "#eeeed2",
-     "light_odd": "#eeeed5",
-     "dark": "#769656",
-     "dark_odd": "#769659",
-     "light_hl": "#f6f669",
-     "light_hl_odd": "#f6f66c",
-     "dark_hl": "#baca2b",
-     "dark_hl_odd": "#baca2e"
-    }
-   },
-   "catalogue": {
-    "sets": [
-     {
-      "name": "sidecoach",
-      "label": "Sidecoach",
-      "author": "Sidecoach",
-      "licence": "Sidecoach's own",
-      "images": {
-       "wK": "/pieces/wK.svg?v=own2",
-       "wQ": "/pieces/wQ.svg?v=own2",
-       "wR": "/pieces/wR.svg?v=own2",
-       "wB": "/pieces/wB.svg?v=own2",
-       "wN": "/pieces/wN.svg?v=own2",
-       "wP": "/pieces/wP.svg?v=own2",
-       "bK": "/pieces/bK.svg?v=own2",
-       "bQ": "/pieces/bQ.svg?v=own2",
-       "bR": "/pieces/bR.svg?v=own2",
-       "bB": "/pieces/bB.svg?v=own2",
-       "bN": "/pieces/bN.svg?v=own2",
-       "bP": "/pieces/bP.svg?v=own2"
-      }
-     },
-     {
-      "name": "cburnett",
-      "label": "Classic",
-      "author": "Colin M.L. Burnett",
-      "licence": "GPLv2+",
-      "images": {
-       "wK": "/pieces/cburnett/wK.svg?v=1",
-       "wQ": "/pieces/cburnett/wQ.svg?v=1",
-       "wR": "/pieces/cburnett/wR.svg?v=1",
-       "wB": "/pieces/cburnett/wB.svg?v=1",
-       "wN": "/pieces/cburnett/wN.svg?v=1",
-       "wP": "/pieces/cburnett/wP.svg?v=1",
-       "bK": "/pieces/cburnett/bK.svg?v=1",
-       "bQ": "/pieces/cburnett/bQ.svg?v=1",
-       "bR": "/pieces/cburnett/bR.svg?v=1",
-       "bB": "/pieces/cburnett/bB.svg?v=1",
-       "bN": "/pieces/cburnett/bN.svg?v=1",
-       "bP": "/pieces/cburnett/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "merida",
-      "label": "Merida",
-      "author": "Armando Hernandez Marroquin",
-      "licence": "GPLv2+",
-      "images": {
-       "wK": "/pieces/merida/wK.svg?v=1",
-       "wQ": "/pieces/merida/wQ.svg?v=1",
-       "wR": "/pieces/merida/wR.svg?v=1",
-       "wB": "/pieces/merida/wB.svg?v=1",
-       "wN": "/pieces/merida/wN.svg?v=1",
-       "wP": "/pieces/merida/wP.svg?v=1",
-       "bK": "/pieces/merida/bK.svg?v=1",
-       "bQ": "/pieces/merida/bQ.svg?v=1",
-       "bR": "/pieces/merida/bR.svg?v=1",
-       "bB": "/pieces/merida/bB.svg?v=1",
-       "bN": "/pieces/merida/bN.svg?v=1",
-       "bP": "/pieces/merida/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "chessnut",
-      "label": "Chessnut",
-      "author": "Alexis Luengas",
-      "licence": "Apache 2.0",
-      "images": {
-       "wK": "/pieces/chessnut/wK.svg?v=1",
-       "wQ": "/pieces/chessnut/wQ.svg?v=1",
-       "wR": "/pieces/chessnut/wR.svg?v=1",
-       "wB": "/pieces/chessnut/wB.svg?v=1",
-       "wN": "/pieces/chessnut/wN.svg?v=1",
-       "wP": "/pieces/chessnut/wP.svg?v=1",
-       "bK": "/pieces/chessnut/bK.svg?v=1",
-       "bQ": "/pieces/chessnut/bQ.svg?v=1",
-       "bR": "/pieces/chessnut/bR.svg?v=1",
-       "bB": "/pieces/chessnut/bB.svg?v=1",
-       "bN": "/pieces/chessnut/bN.svg?v=1",
-       "bP": "/pieces/chessnut/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "celtic",
-      "label": "Celtic",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/celtic/wK.svg?v=1",
-       "wQ": "/pieces/celtic/wQ.svg?v=1",
-       "wR": "/pieces/celtic/wR.svg?v=1",
-       "wB": "/pieces/celtic/wB.svg?v=1",
-       "wN": "/pieces/celtic/wN.svg?v=1",
-       "wP": "/pieces/celtic/wP.svg?v=1",
-       "bK": "/pieces/celtic/bK.svg?v=1",
-       "bQ": "/pieces/celtic/bQ.svg?v=1",
-       "bR": "/pieces/celtic/bR.svg?v=1",
-       "bB": "/pieces/celtic/bB.svg?v=1",
-       "bN": "/pieces/celtic/bN.svg?v=1",
-       "bP": "/pieces/celtic/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "spatial",
-      "label": "Spatial",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/spatial/wK.svg?v=1",
-       "wQ": "/pieces/spatial/wQ.svg?v=1",
-       "wR": "/pieces/spatial/wR.svg?v=1",
-       "wB": "/pieces/spatial/wB.svg?v=1",
-       "wN": "/pieces/spatial/wN.svg?v=1",
-       "wP": "/pieces/spatial/wP.svg?v=1",
-       "bK": "/pieces/spatial/bK.svg?v=1",
-       "bQ": "/pieces/spatial/bQ.svg?v=1",
-       "bR": "/pieces/spatial/bR.svg?v=1",
-       "bB": "/pieces/spatial/bB.svg?v=1",
-       "bN": "/pieces/spatial/bN.svg?v=1",
-       "bP": "/pieces/spatial/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "fantasy",
-      "label": "Fantasy",
-      "author": "Maurizio Monge",
-      "licence": "MIT",
-      "images": {
-       "wK": "/pieces/fantasy/wK.svg?v=1",
-       "wQ": "/pieces/fantasy/wQ.svg?v=1",
-       "wR": "/pieces/fantasy/wR.svg?v=1",
-       "wB": "/pieces/fantasy/wB.svg?v=1",
-       "wN": "/pieces/fantasy/wN.svg?v=1",
-       "wP": "/pieces/fantasy/wP.svg?v=1",
-       "bK": "/pieces/fantasy/bK.svg?v=1",
-       "bQ": "/pieces/fantasy/bQ.svg?v=1",
-       "bR": "/pieces/fantasy/bR.svg?v=1",
-       "bB": "/pieces/fantasy/bB.svg?v=1",
-       "bN": "/pieces/fantasy/bN.svg?v=1",
-       "bP": "/pieces/fantasy/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "papercut",
-      "label": "Papercut",
-      "author": "Nikolay Anzarov",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/papercut/wK.svg?v=1",
-       "wQ": "/pieces/papercut/wQ.svg?v=1",
-       "wR": "/pieces/papercut/wR.svg?v=1",
-       "wB": "/pieces/papercut/wB.svg?v=1",
-       "wN": "/pieces/papercut/wN.svg?v=1",
-       "wP": "/pieces/papercut/wP.svg?v=1",
-       "bK": "/pieces/papercut/bK.svg?v=1",
-       "bQ": "/pieces/papercut/bQ.svg?v=1",
-       "bR": "/pieces/papercut/bR.svg?v=1",
-       "bB": "/pieces/papercut/bB.svg?v=1",
-       "bN": "/pieces/papercut/bN.svg?v=1",
-       "bP": "/pieces/papercut/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "mpchess",
-      "label": "MPChess",
-      "author": "Maxime Chupin",
-      "licence": "GPLv3+",
-      "images": {
-       "wK": "/pieces/mpchess/wK.svg?v=1",
-       "wQ": "/pieces/mpchess/wQ.svg?v=1",
-       "wR": "/pieces/mpchess/wR.svg?v=1",
-       "wB": "/pieces/mpchess/wB.svg?v=1",
-       "wN": "/pieces/mpchess/wN.svg?v=1",
-       "wP": "/pieces/mpchess/wP.svg?v=1",
-       "bK": "/pieces/mpchess/bK.svg?v=1",
-       "bQ": "/pieces/mpchess/bQ.svg?v=1",
-       "bR": "/pieces/mpchess/bR.svg?v=1",
-       "bB": "/pieces/mpchess/bB.svg?v=1",
-       "bN": "/pieces/mpchess/bN.svg?v=1",
-       "bP": "/pieces/mpchess/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "pirouetti",
-      "label": "Pirouetti",
-      "author": "pirouetti",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/pirouetti/wK.svg?v=1",
-       "wQ": "/pieces/pirouetti/wQ.svg?v=1",
-       "wR": "/pieces/pirouetti/wR.svg?v=1",
-       "wB": "/pieces/pirouetti/wB.svg?v=1",
-       "wN": "/pieces/pirouetti/wN.svg?v=1",
-       "wP": "/pieces/pirouetti/wP.svg?v=1",
-       "bK": "/pieces/pirouetti/bK.svg?v=1",
-       "bQ": "/pieces/pirouetti/bQ.svg?v=1",
-       "bR": "/pieces/pirouetti/bR.svg?v=1",
-       "bB": "/pieces/pirouetti/bB.svg?v=1",
-       "bN": "/pieces/pirouetti/bN.svg?v=1",
-       "bP": "/pieces/pirouetti/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "rhosgfx",
-      "label": "RhosGFX",
-      "author": "RhosGFX",
-      "licence": "CC0 (public domain)",
-      "images": {
-       "wK": "/pieces/rhosgfx/wK.svg?v=1",
-       "wQ": "/pieces/rhosgfx/wQ.svg?v=1",
-       "wR": "/pieces/rhosgfx/wR.svg?v=1",
-       "wB": "/pieces/rhosgfx/wB.svg?v=1",
-       "wN": "/pieces/rhosgfx/wN.svg?v=1",
-       "wP": "/pieces/rhosgfx/wP.svg?v=1",
-       "bK": "/pieces/rhosgfx/bK.svg?v=1",
-       "bQ": "/pieces/rhosgfx/bQ.svg?v=1",
-       "bR": "/pieces/rhosgfx/bR.svg?v=1",
-       "bB": "/pieces/rhosgfx/bB.svg?v=1",
-       "bN": "/pieces/rhosgfx/bN.svg?v=1",
-       "bP": "/pieces/rhosgfx/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "totoy",
-      "label": "Totoy",
-      "author": "Kosal Sen",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/totoy/wK.svg?v=1",
-       "wQ": "/pieces/totoy/wQ.svg?v=1",
-       "wR": "/pieces/totoy/wR.svg?v=1",
-       "wB": "/pieces/totoy/wB.svg?v=1",
-       "wN": "/pieces/totoy/wN.svg?v=1",
-       "wP": "/pieces/totoy/wP.svg?v=1",
-       "bK": "/pieces/totoy/bK.svg?v=1",
-       "bQ": "/pieces/totoy/bQ.svg?v=1",
-       "bR": "/pieces/totoy/bR.svg?v=1",
-       "bB": "/pieces/totoy/bB.svg?v=1",
-       "bN": "/pieces/totoy/bN.svg?v=1",
-       "bP": "/pieces/totoy/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "kiwen-suwi",
-      "label": "Kiwen-suwi",
-      "author": "neverRare",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/kiwen-suwi/wK.svg?v=1",
-       "wQ": "/pieces/kiwen-suwi/wQ.svg?v=1",
-       "wR": "/pieces/kiwen-suwi/wR.svg?v=1",
-       "wB": "/pieces/kiwen-suwi/wB.svg?v=1",
-       "wN": "/pieces/kiwen-suwi/wN.svg?v=1",
-       "wP": "/pieces/kiwen-suwi/wP.svg?v=1",
-       "bK": "/pieces/kiwen-suwi/bK.svg?v=1",
-       "bQ": "/pieces/kiwen-suwi/bQ.svg?v=1",
-       "bR": "/pieces/kiwen-suwi/bR.svg?v=1",
-       "bB": "/pieces/kiwen-suwi/bB.svg?v=1",
-       "bN": "/pieces/kiwen-suwi/bN.svg?v=1",
-       "bP": "/pieces/kiwen-suwi/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "firi",
-      "label": "Firi",
-      "author": "James Faure",
-      "licence": "CC BY 4.0",
-      "images": {
-       "wK": "/pieces/firi/wK.svg?v=1",
-       "wQ": "/pieces/firi/wQ.svg?v=1",
-       "wR": "/pieces/firi/wR.svg?v=1",
-       "wB": "/pieces/firi/wB.svg?v=1",
-       "wN": "/pieces/firi/wN.svg?v=1",
-       "wP": "/pieces/firi/wP.svg?v=1",
-       "bK": "/pieces/firi/bK.svg?v=1",
-       "bQ": "/pieces/firi/bQ.svg?v=1",
-       "bR": "/pieces/firi/bR.svg?v=1",
-       "bB": "/pieces/firi/bB.svg?v=1",
-       "bN": "/pieces/firi/bN.svg?v=1",
-       "bP": "/pieces/firi/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "pixel",
-      "label": "Pixel",
-      "author": "therealqtpi",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/pixel/wK.svg?v=1",
-       "wQ": "/pieces/pixel/wQ.svg?v=1",
-       "wR": "/pieces/pixel/wR.svg?v=1",
-       "wB": "/pieces/pixel/wB.svg?v=1",
-       "wN": "/pieces/pixel/wN.svg?v=1",
-       "wP": "/pieces/pixel/wP.svg?v=1",
-       "bK": "/pieces/pixel/bK.svg?v=1",
-       "bQ": "/pieces/pixel/bQ.svg?v=1",
-       "bR": "/pieces/pixel/bR.svg?v=1",
-       "bB": "/pieces/pixel/bB.svg?v=1",
-       "bN": "/pieces/pixel/bN.svg?v=1",
-       "bP": "/pieces/pixel/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "shapes",
-      "label": "Shapes",
-      "author": "flugsio",
-      "licence": "CC BY-SA 4.0",
-      "images": {
-       "wK": "/pieces/shapes/wK.svg?v=1",
-       "wQ": "/pieces/shapes/wQ.svg?v=1",
-       "wR": "/pieces/shapes/wR.svg?v=1",
-       "wB": "/pieces/shapes/wB.svg?v=1",
-       "wN": "/pieces/shapes/wN.svg?v=1",
-       "wP": "/pieces/shapes/wP.svg?v=1",
-       "bK": "/pieces/shapes/bK.svg?v=1",
-       "bQ": "/pieces/shapes/bQ.svg?v=1",
-       "bR": "/pieces/shapes/bR.svg?v=1",
-       "bB": "/pieces/shapes/bB.svg?v=1",
-       "bN": "/pieces/shapes/bN.svg?v=1",
-       "bP": "/pieces/shapes/bP.svg?v=1"
-      }
-     },
-     {
-      "name": "letter",
-      "label": "Letters",
-      "author": "usolando",
-      "licence": "AGPLv3+",
-      "images": {
-       "wK": "/pieces/letter/wK.svg?v=1",
-       "wQ": "/pieces/letter/wQ.svg?v=1",
-       "wR": "/pieces/letter/wR.svg?v=1",
-       "wB": "/pieces/letter/wB.svg?v=1",
-       "wN": "/pieces/letter/wN.svg?v=1",
-       "wP": "/pieces/letter/wP.svg?v=1",
-       "bK": "/pieces/letter/bK.svg?v=1",
-       "bQ": "/pieces/letter/bQ.svg?v=1",
-       "bR": "/pieces/letter/bR.svg?v=1",
-       "bB": "/pieces/letter/bB.svg?v=1",
-       "bN": "/pieces/letter/bN.svg?v=1",
-       "bP": "/pieces/letter/bP.svg?v=1"
-      }
-     }
-    ],
-    "themes": [
-     {
-      "name": "green",
-      "label": "Green",
-      "light": "#eeeed2",
-      "light_odd": "#eeeed5",
-      "dark": "#769656",
-      "dark_odd": "#769659",
-      "light_hl": "#f6f669",
-      "light_hl_odd": "#f6f66c",
-      "dark_hl": "#baca2b",
-      "dark_hl_odd": "#baca2e"
-     },
-     {
-      "name": "brown",
-      "label": "Brown",
-      "light": "#f0d9b5",
-      "light_odd": "#f0d9b8",
-      "dark": "#b58863",
-      "dark_odd": "#b58866",
-      "light_hl": "#f8ec74",
-      "light_hl_odd": "#f8ec77",
-      "dark_hl": "#dac44b",
-      "dark_hl_odd": "#dac44e"
-     },
-     {
-      "name": "blue",
-      "label": "Blue",
-      "light": "#dee3e6",
-      "light_odd": "#dee3e9",
-      "dark": "#8ca2ad",
-      "dark_odd": "#8ca2b0",
-      "light_hl": "#eef18c",
-      "light_hl_odd": "#eef18f",
-      "dark_hl": "#c6d070",
-      "dark_hl_odd": "#c6d073"
-     },
-     {
-      "name": "ocean",
-      "label": "Ocean",
-      "light": "#eae9d2",
-      "light_odd": "#eae9d5",
-      "dark": "#4b7399",
-      "dark_odd": "#4b739c",
-      "light_hl": "#f4f482",
-      "light_hl_odd": "#f4f485",
-      "dark_hl": "#a5b966",
-      "dark_hl_odd": "#a5b969"
-     },
-     {
-      "name": "grey",
-      "label": "Grey",
-      "light": "#e3e3e3",
-      "light_odd": "#e3e3e6",
-      "dark": "#a1a1a1",
-      "dark_odd": "#a1a1a4",
-      "light_hl": "#f1f18b",
-      "light_hl_odd": "#f1f18e",
-      "dark_hl": "#d0d06a",
-      "dark_hl_odd": "#d0d06d"
-     },
-     {
-      "name": "purple",
-      "label": "Purple",
-      "light": "#eeeaf2",
-      "light_odd": "#eeeaf5",
-      "dark": "#8877b7",
-      "dark_odd": "#8877ba",
-      "light_hl": "#f6f492",
-      "light_hl_odd": "#f6f495",
-      "dark_hl": "#c4bb75",
-      "dark_hl_odd": "#c4bb78"
-     },
-     {
-      "name": "olive",
-      "label": "Olive",
-      "light": "#e8e7c8",
-      "light_odd": "#e8e7cb",
-      "dark": "#8a9153",
-      "dark_odd": "#8a9156",
-      "light_hl": "#f4f37e",
-      "light_hl_odd": "#f4f381",
-      "dark_hl": "#c4c843",
-      "dark_hl_odd": "#c4c846"
-     },
-     {
-      "name": "sand",
-      "label": "Sand",
-      "light": "#f2e4c3",
-      "light_odd": "#f2e4c6",
-      "dark": "#c9a26b",
-      "dark_odd": "#c9a26e",
-      "light_hl": "#f8f27b",
-      "light_hl_odd": "#f8f27e",
-      "dark_hl": "#e4d04f",
-      "dark_hl_odd": "#e4d052"
-     },
-     {
-      "name": "walnut",
-      "label": "Walnut",
-      "light": "#e3c49a",
-      "light_odd": "#e3c49d",
-      "dark": "#8b5a3c",
-      "dark_odd": "#8b5a3f",
-      "light_hl": "#f1e266",
-      "light_hl_odd": "#f1e269",
-      "dark_hl": "#c5ac38",
-      "dark_hl_odd": "#c5ac3b"
-     },
-     {
-      "name": "cherry",
-      "label": "Cherry",
-      "light": "#f1d9c9",
-      "light_odd": "#f1d9cc",
-      "dark": "#b56060",
-      "dark_odd": "#b56063",
-      "light_hl": "#f8ec7e",
-      "light_hl_odd": "#f8ec81",
-      "dark_hl": "#dab04a",
-      "dark_hl_odd": "#dab04d"
-     },
-     {
-      "name": "coral",
-      "label": "Coral",
-      "light": "#f4e3d7",
-      "light_odd": "#f4e3da",
-      "dark": "#e07a5f",
-      "dark_odd": "#e07a62",
-      "light_hl": "#faf185",
-      "light_hl_odd": "#faf188",
-      "dark_hl": "#f0bc49",
-      "dark_hl_odd": "#f0bc4c"
-     },
-     {
-      "name": "ice",
-      "label": "Ice",
-      "light": "#eef3f7",
-      "light_odd": "#eef3fa",
-      "dark": "#a3bfd6",
-      "dark_odd": "#a3bfd9",
-      "light_hl": "#f6f995",
-      "light_hl_odd": "#f6f998",
-      "dark_hl": "#d1df84",
-      "dark_hl_odd": "#d1df87"
-     },
-     {
-      "name": "tournament",
-      "label": "Tournament",
-      "light": "#eeeee6",
-      "light_odd": "#eeeee9",
-      "dark": "#3d6b50",
-      "dark_odd": "#3d6b53",
-      "light_hl": "#f6f68c",
-      "light_hl_odd": "#f6f68f",
-      "dark_hl": "#9eb542",
-      "dark_hl_odd": "#9eb545"
-     },
-     {
-      "name": "teal",
-      "label": "Teal",
-      "light": "#e0ece8",
-      "light_odd": "#e0eceb",
-      "dark": "#4f8a83",
-      "dark_odd": "#4f8a86",
-      "light_hl": "#f0f68e",
-      "light_hl_odd": "#f0f691",
-      "dark_hl": "#a7c45b",
-      "dark_hl_odd": "#a7c45e"
-     },
-     {
-      "name": "rose",
-      "label": "Rose",
-      "light": "#f3e3e6",
-      "light_odd": "#f3e3e9",
-      "dark": "#c07a8a",
-      "dark_odd": "#c07a8d",
-      "light_hl": "#f9f18c",
-      "light_hl_odd": "#f9f18f",
-      "dark_hl": "#e0bc5e",
-      "dark_hl_odd": "#e0bc61"
-     },
-     {
-      "name": "night",
-      "label": "Night",
-      "light": "#9aa3ad",
-      "light_odd": "#9aa3b0",
-      "dark": "#4a5460",
-      "dark_odd": "#4a5463",
-      "light_hl": "#ccd170",
-      "light_hl_odd": "#ccd173",
-      "dark_hl": "#a4aa4a",
-      "dark_hl_odd": "#a4aa4d"
-     }
-    ],
-    "custom": {
-     "images": {
-      "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
-      "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
-      "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
-     },
-     "missing": [
-      "wQ",
-      "wR",
-      "wB",
-      "wP",
-      "bK",
-      "bR",
-      "bB",
-      "bN",
-      "bP"
-     ]
-    }
-   }
-  }
- ],
- "cleared": {
-  "sets": [
-   {
-    "name": "sidecoach",
-    "label": "Sidecoach",
-    "author": "Sidecoach",
-    "licence": "Sidecoach's own",
     "images": {
      "wK": "/pieces/wK.svg?v=own2",
      "wQ": "/pieces/wQ.svg?v=own2",
@@ -12946,539 +12064,1464 @@
      "bB": "/pieces/bB.svg?v=own2",
      "bN": "/pieces/bN.svg?v=own2",
      "bP": "/pieces/bP.svg?v=own2"
-    }
-   },
-   {
-    "name": "cburnett",
-    "label": "Classic",
-    "author": "Colin M.L. Burnett",
-    "licence": "GPLv2+",
-    "images": {
-     "wK": "/pieces/cburnett/wK.svg?v=1",
-     "wQ": "/pieces/cburnett/wQ.svg?v=1",
-     "wR": "/pieces/cburnett/wR.svg?v=1",
-     "wB": "/pieces/cburnett/wB.svg?v=1",
-     "wN": "/pieces/cburnett/wN.svg?v=1",
-     "wP": "/pieces/cburnett/wP.svg?v=1",
-     "bK": "/pieces/cburnett/bK.svg?v=1",
-     "bQ": "/pieces/cburnett/bQ.svg?v=1",
-     "bR": "/pieces/cburnett/bR.svg?v=1",
-     "bB": "/pieces/cburnett/bB.svg?v=1",
-     "bN": "/pieces/cburnett/bN.svg?v=1",
-     "bP": "/pieces/cburnett/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "merida",
-    "label": "Merida",
-    "author": "Armando Hernandez Marroquin",
-    "licence": "GPLv2+",
-    "images": {
-     "wK": "/pieces/merida/wK.svg?v=1",
-     "wQ": "/pieces/merida/wQ.svg?v=1",
-     "wR": "/pieces/merida/wR.svg?v=1",
-     "wB": "/pieces/merida/wB.svg?v=1",
-     "wN": "/pieces/merida/wN.svg?v=1",
-     "wP": "/pieces/merida/wP.svg?v=1",
-     "bK": "/pieces/merida/bK.svg?v=1",
-     "bQ": "/pieces/merida/bQ.svg?v=1",
-     "bR": "/pieces/merida/bR.svg?v=1",
-     "bB": "/pieces/merida/bB.svg?v=1",
-     "bN": "/pieces/merida/bN.svg?v=1",
-     "bP": "/pieces/merida/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "chessnut",
-    "label": "Chessnut",
-    "author": "Alexis Luengas",
-    "licence": "Apache 2.0",
-    "images": {
-     "wK": "/pieces/chessnut/wK.svg?v=1",
-     "wQ": "/pieces/chessnut/wQ.svg?v=1",
-     "wR": "/pieces/chessnut/wR.svg?v=1",
-     "wB": "/pieces/chessnut/wB.svg?v=1",
-     "wN": "/pieces/chessnut/wN.svg?v=1",
-     "wP": "/pieces/chessnut/wP.svg?v=1",
-     "bK": "/pieces/chessnut/bK.svg?v=1",
-     "bQ": "/pieces/chessnut/bQ.svg?v=1",
-     "bR": "/pieces/chessnut/bR.svg?v=1",
-     "bB": "/pieces/chessnut/bB.svg?v=1",
-     "bN": "/pieces/chessnut/bN.svg?v=1",
-     "bP": "/pieces/chessnut/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "celtic",
-    "label": "Celtic",
-    "author": "Maurizio Monge",
-    "licence": "MIT",
-    "images": {
-     "wK": "/pieces/celtic/wK.svg?v=1",
-     "wQ": "/pieces/celtic/wQ.svg?v=1",
-     "wR": "/pieces/celtic/wR.svg?v=1",
-     "wB": "/pieces/celtic/wB.svg?v=1",
-     "wN": "/pieces/celtic/wN.svg?v=1",
-     "wP": "/pieces/celtic/wP.svg?v=1",
-     "bK": "/pieces/celtic/bK.svg?v=1",
-     "bQ": "/pieces/celtic/bQ.svg?v=1",
-     "bR": "/pieces/celtic/bR.svg?v=1",
-     "bB": "/pieces/celtic/bB.svg?v=1",
-     "bN": "/pieces/celtic/bN.svg?v=1",
-     "bP": "/pieces/celtic/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "spatial",
-    "label": "Spatial",
-    "author": "Maurizio Monge",
-    "licence": "MIT",
-    "images": {
-     "wK": "/pieces/spatial/wK.svg?v=1",
-     "wQ": "/pieces/spatial/wQ.svg?v=1",
-     "wR": "/pieces/spatial/wR.svg?v=1",
-     "wB": "/pieces/spatial/wB.svg?v=1",
-     "wN": "/pieces/spatial/wN.svg?v=1",
-     "wP": "/pieces/spatial/wP.svg?v=1",
-     "bK": "/pieces/spatial/bK.svg?v=1",
-     "bQ": "/pieces/spatial/bQ.svg?v=1",
-     "bR": "/pieces/spatial/bR.svg?v=1",
-     "bB": "/pieces/spatial/bB.svg?v=1",
-     "bN": "/pieces/spatial/bN.svg?v=1",
-     "bP": "/pieces/spatial/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "fantasy",
-    "label": "Fantasy",
-    "author": "Maurizio Monge",
-    "licence": "MIT",
-    "images": {
-     "wK": "/pieces/fantasy/wK.svg?v=1",
-     "wQ": "/pieces/fantasy/wQ.svg?v=1",
-     "wR": "/pieces/fantasy/wR.svg?v=1",
-     "wB": "/pieces/fantasy/wB.svg?v=1",
-     "wN": "/pieces/fantasy/wN.svg?v=1",
-     "wP": "/pieces/fantasy/wP.svg?v=1",
-     "bK": "/pieces/fantasy/bK.svg?v=1",
-     "bQ": "/pieces/fantasy/bQ.svg?v=1",
-     "bR": "/pieces/fantasy/bR.svg?v=1",
-     "bB": "/pieces/fantasy/bB.svg?v=1",
-     "bN": "/pieces/fantasy/bN.svg?v=1",
-     "bP": "/pieces/fantasy/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "papercut",
-    "label": "Papercut",
-    "author": "Nikolay Anzarov",
-    "licence": "CC BY 4.0",
-    "images": {
-     "wK": "/pieces/papercut/wK.svg?v=1",
-     "wQ": "/pieces/papercut/wQ.svg?v=1",
-     "wR": "/pieces/papercut/wR.svg?v=1",
-     "wB": "/pieces/papercut/wB.svg?v=1",
-     "wN": "/pieces/papercut/wN.svg?v=1",
-     "wP": "/pieces/papercut/wP.svg?v=1",
-     "bK": "/pieces/papercut/bK.svg?v=1",
-     "bQ": "/pieces/papercut/bQ.svg?v=1",
-     "bR": "/pieces/papercut/bR.svg?v=1",
-     "bB": "/pieces/papercut/bB.svg?v=1",
-     "bN": "/pieces/papercut/bN.svg?v=1",
-     "bP": "/pieces/papercut/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "mpchess",
-    "label": "MPChess",
-    "author": "Maxime Chupin",
-    "licence": "GPLv3+",
-    "images": {
-     "wK": "/pieces/mpchess/wK.svg?v=1",
-     "wQ": "/pieces/mpchess/wQ.svg?v=1",
-     "wR": "/pieces/mpchess/wR.svg?v=1",
-     "wB": "/pieces/mpchess/wB.svg?v=1",
-     "wN": "/pieces/mpchess/wN.svg?v=1",
-     "wP": "/pieces/mpchess/wP.svg?v=1",
-     "bK": "/pieces/mpchess/bK.svg?v=1",
-     "bQ": "/pieces/mpchess/bQ.svg?v=1",
-     "bR": "/pieces/mpchess/bR.svg?v=1",
-     "bB": "/pieces/mpchess/bB.svg?v=1",
-     "bN": "/pieces/mpchess/bN.svg?v=1",
-     "bP": "/pieces/mpchess/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "pirouetti",
-    "label": "Pirouetti",
-    "author": "pirouetti",
-    "licence": "AGPLv3+",
-    "images": {
-     "wK": "/pieces/pirouetti/wK.svg?v=1",
-     "wQ": "/pieces/pirouetti/wQ.svg?v=1",
-     "wR": "/pieces/pirouetti/wR.svg?v=1",
-     "wB": "/pieces/pirouetti/wB.svg?v=1",
-     "wN": "/pieces/pirouetti/wN.svg?v=1",
-     "wP": "/pieces/pirouetti/wP.svg?v=1",
-     "bK": "/pieces/pirouetti/bK.svg?v=1",
-     "bQ": "/pieces/pirouetti/bQ.svg?v=1",
-     "bR": "/pieces/pirouetti/bR.svg?v=1",
-     "bB": "/pieces/pirouetti/bB.svg?v=1",
-     "bN": "/pieces/pirouetti/bN.svg?v=1",
-     "bP": "/pieces/pirouetti/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "rhosgfx",
-    "label": "RhosGFX",
-    "author": "RhosGFX",
-    "licence": "CC0 (public domain)",
-    "images": {
-     "wK": "/pieces/rhosgfx/wK.svg?v=1",
-     "wQ": "/pieces/rhosgfx/wQ.svg?v=1",
-     "wR": "/pieces/rhosgfx/wR.svg?v=1",
-     "wB": "/pieces/rhosgfx/wB.svg?v=1",
-     "wN": "/pieces/rhosgfx/wN.svg?v=1",
-     "wP": "/pieces/rhosgfx/wP.svg?v=1",
-     "bK": "/pieces/rhosgfx/bK.svg?v=1",
-     "bQ": "/pieces/rhosgfx/bQ.svg?v=1",
-     "bR": "/pieces/rhosgfx/bR.svg?v=1",
-     "bB": "/pieces/rhosgfx/bB.svg?v=1",
-     "bN": "/pieces/rhosgfx/bN.svg?v=1",
-     "bP": "/pieces/rhosgfx/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "totoy",
-    "label": "Totoy",
-    "author": "Kosal Sen",
-    "licence": "CC BY 4.0",
-    "images": {
-     "wK": "/pieces/totoy/wK.svg?v=1",
-     "wQ": "/pieces/totoy/wQ.svg?v=1",
-     "wR": "/pieces/totoy/wR.svg?v=1",
-     "wB": "/pieces/totoy/wB.svg?v=1",
-     "wN": "/pieces/totoy/wN.svg?v=1",
-     "wP": "/pieces/totoy/wP.svg?v=1",
-     "bK": "/pieces/totoy/bK.svg?v=1",
-     "bQ": "/pieces/totoy/bQ.svg?v=1",
-     "bR": "/pieces/totoy/bR.svg?v=1",
-     "bB": "/pieces/totoy/bB.svg?v=1",
-     "bN": "/pieces/totoy/bN.svg?v=1",
-     "bP": "/pieces/totoy/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "kiwen-suwi",
-    "label": "Kiwen-suwi",
-    "author": "neverRare",
-    "licence": "CC BY 4.0",
-    "images": {
-     "wK": "/pieces/kiwen-suwi/wK.svg?v=1",
-     "wQ": "/pieces/kiwen-suwi/wQ.svg?v=1",
-     "wR": "/pieces/kiwen-suwi/wR.svg?v=1",
-     "wB": "/pieces/kiwen-suwi/wB.svg?v=1",
-     "wN": "/pieces/kiwen-suwi/wN.svg?v=1",
-     "wP": "/pieces/kiwen-suwi/wP.svg?v=1",
-     "bK": "/pieces/kiwen-suwi/bK.svg?v=1",
-     "bQ": "/pieces/kiwen-suwi/bQ.svg?v=1",
-     "bR": "/pieces/kiwen-suwi/bR.svg?v=1",
-     "bB": "/pieces/kiwen-suwi/bB.svg?v=1",
-     "bN": "/pieces/kiwen-suwi/bN.svg?v=1",
-     "bP": "/pieces/kiwen-suwi/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "firi",
-    "label": "Firi",
-    "author": "James Faure",
-    "licence": "CC BY 4.0",
-    "images": {
-     "wK": "/pieces/firi/wK.svg?v=1",
-     "wQ": "/pieces/firi/wQ.svg?v=1",
-     "wR": "/pieces/firi/wR.svg?v=1",
-     "wB": "/pieces/firi/wB.svg?v=1",
-     "wN": "/pieces/firi/wN.svg?v=1",
-     "wP": "/pieces/firi/wP.svg?v=1",
-     "bK": "/pieces/firi/bK.svg?v=1",
-     "bQ": "/pieces/firi/bQ.svg?v=1",
-     "bR": "/pieces/firi/bR.svg?v=1",
-     "bB": "/pieces/firi/bB.svg?v=1",
-     "bN": "/pieces/firi/bN.svg?v=1",
-     "bP": "/pieces/firi/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "pixel",
-    "label": "Pixel",
-    "author": "therealqtpi",
-    "licence": "AGPLv3+",
-    "images": {
-     "wK": "/pieces/pixel/wK.svg?v=1",
-     "wQ": "/pieces/pixel/wQ.svg?v=1",
-     "wR": "/pieces/pixel/wR.svg?v=1",
-     "wB": "/pieces/pixel/wB.svg?v=1",
-     "wN": "/pieces/pixel/wN.svg?v=1",
-     "wP": "/pieces/pixel/wP.svg?v=1",
-     "bK": "/pieces/pixel/bK.svg?v=1",
-     "bQ": "/pieces/pixel/bQ.svg?v=1",
-     "bR": "/pieces/pixel/bR.svg?v=1",
-     "bB": "/pieces/pixel/bB.svg?v=1",
-     "bN": "/pieces/pixel/bN.svg?v=1",
-     "bP": "/pieces/pixel/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "shapes",
-    "label": "Shapes",
-    "author": "flugsio",
-    "licence": "CC BY-SA 4.0",
-    "images": {
-     "wK": "/pieces/shapes/wK.svg?v=1",
-     "wQ": "/pieces/shapes/wQ.svg?v=1",
-     "wR": "/pieces/shapes/wR.svg?v=1",
-     "wB": "/pieces/shapes/wB.svg?v=1",
-     "wN": "/pieces/shapes/wN.svg?v=1",
-     "wP": "/pieces/shapes/wP.svg?v=1",
-     "bK": "/pieces/shapes/bK.svg?v=1",
-     "bQ": "/pieces/shapes/bQ.svg?v=1",
-     "bR": "/pieces/shapes/bR.svg?v=1",
-     "bB": "/pieces/shapes/bB.svg?v=1",
-     "bN": "/pieces/shapes/bN.svg?v=1",
-     "bP": "/pieces/shapes/bP.svg?v=1"
-    }
-   },
-   {
-    "name": "letter",
-    "label": "Letters",
-    "author": "usolando",
-    "licence": "AGPLv3+",
-    "images": {
-     "wK": "/pieces/letter/wK.svg?v=1",
-     "wQ": "/pieces/letter/wQ.svg?v=1",
-     "wR": "/pieces/letter/wR.svg?v=1",
-     "wB": "/pieces/letter/wB.svg?v=1",
-     "wN": "/pieces/letter/wN.svg?v=1",
-     "wP": "/pieces/letter/wP.svg?v=1",
-     "bK": "/pieces/letter/bK.svg?v=1",
-     "bQ": "/pieces/letter/bQ.svg?v=1",
-     "bR": "/pieces/letter/bR.svg?v=1",
-     "bB": "/pieces/letter/bB.svg?v=1",
-     "bN": "/pieces/letter/bN.svg?v=1",
-     "bP": "/pieces/letter/bP.svg?v=1"
+    },
+    "board": {
+     "light": "#eeeed2",
+     "light_odd": "#eeeed5",
+     "dark": "#769656",
+     "dark_odd": "#769659",
+     "light_hl": "#f6f669",
+     "light_hl_odd": "#f6f66c",
+     "dark_hl": "#baca2b",
+     "dark_hl_odd": "#baca2e"
     }
    }
-  ],
-  "themes": [
-   {
-    "name": "green",
-    "label": "Green",
-    "light": "#eeeed2",
-    "light_odd": "#eeeed5",
-    "dark": "#769656",
-    "dark_odd": "#769659",
-    "light_hl": "#f6f669",
-    "light_hl_odd": "#f6f66c",
-    "dark_hl": "#baca2b",
-    "dark_hl_odd": "#baca2e"
-   },
-   {
-    "name": "brown",
-    "label": "Brown",
-    "light": "#f0d9b5",
-    "light_odd": "#f0d9b8",
-    "dark": "#b58863",
-    "dark_odd": "#b58866",
-    "light_hl": "#f8ec74",
-    "light_hl_odd": "#f8ec77",
-    "dark_hl": "#dac44b",
-    "dark_hl_odd": "#dac44e"
-   },
-   {
-    "name": "blue",
-    "label": "Blue",
-    "light": "#dee3e6",
-    "light_odd": "#dee3e9",
-    "dark": "#8ca2ad",
-    "dark_odd": "#8ca2b0",
-    "light_hl": "#eef18c",
-    "light_hl_odd": "#eef18f",
-    "dark_hl": "#c6d070",
-    "dark_hl_odd": "#c6d073"
-   },
-   {
-    "name": "ocean",
-    "label": "Ocean",
-    "light": "#eae9d2",
-    "light_odd": "#eae9d5",
-    "dark": "#4b7399",
-    "dark_odd": "#4b739c",
-    "light_hl": "#f4f482",
-    "light_hl_odd": "#f4f485",
-    "dark_hl": "#a5b966",
-    "dark_hl_odd": "#a5b969"
-   },
-   {
-    "name": "grey",
-    "label": "Grey",
-    "light": "#e3e3e3",
-    "light_odd": "#e3e3e6",
-    "dark": "#a1a1a1",
-    "dark_odd": "#a1a1a4",
-    "light_hl": "#f1f18b",
-    "light_hl_odd": "#f1f18e",
-    "dark_hl": "#d0d06a",
-    "dark_hl_odd": "#d0d06d"
-   },
-   {
-    "name": "purple",
-    "label": "Purple",
-    "light": "#eeeaf2",
-    "light_odd": "#eeeaf5",
-    "dark": "#8877b7",
-    "dark_odd": "#8877ba",
-    "light_hl": "#f6f492",
-    "light_hl_odd": "#f6f495",
-    "dark_hl": "#c4bb75",
-    "dark_hl_odd": "#c4bb78"
-   },
-   {
-    "name": "olive",
-    "label": "Olive",
-    "light": "#e8e7c8",
-    "light_odd": "#e8e7cb",
-    "dark": "#8a9153",
-    "dark_odd": "#8a9156",
-    "light_hl": "#f4f37e",
-    "light_hl_odd": "#f4f381",
-    "dark_hl": "#c4c843",
-    "dark_hl_odd": "#c4c846"
-   },
-   {
-    "name": "sand",
-    "label": "Sand",
-    "light": "#f2e4c3",
-    "light_odd": "#f2e4c6",
-    "dark": "#c9a26b",
-    "dark_odd": "#c9a26e",
-    "light_hl": "#f8f27b",
-    "light_hl_odd": "#f8f27e",
-    "dark_hl": "#e4d04f",
-    "dark_hl_odd": "#e4d052"
-   },
-   {
-    "name": "walnut",
-    "label": "Walnut",
-    "light": "#e3c49a",
-    "light_odd": "#e3c49d",
-    "dark": "#8b5a3c",
-    "dark_odd": "#8b5a3f",
-    "light_hl": "#f1e266",
-    "light_hl_odd": "#f1e269",
-    "dark_hl": "#c5ac38",
-    "dark_hl_odd": "#c5ac3b"
-   },
-   {
-    "name": "cherry",
-    "label": "Cherry",
-    "light": "#f1d9c9",
-    "light_odd": "#f1d9cc",
-    "dark": "#b56060",
-    "dark_odd": "#b56063",
-    "light_hl": "#f8ec7e",
-    "light_hl_odd": "#f8ec81",
-    "dark_hl": "#dab04a",
-    "dark_hl_odd": "#dab04d"
-   },
-   {
-    "name": "coral",
-    "label": "Coral",
-    "light": "#f4e3d7",
-    "light_odd": "#f4e3da",
-    "dark": "#e07a5f",
-    "dark_odd": "#e07a62",
-    "light_hl": "#faf185",
-    "light_hl_odd": "#faf188",
-    "dark_hl": "#f0bc49",
-    "dark_hl_odd": "#f0bc4c"
-   },
-   {
-    "name": "ice",
-    "label": "Ice",
-    "light": "#eef3f7",
-    "light_odd": "#eef3fa",
-    "dark": "#a3bfd6",
-    "dark_odd": "#a3bfd9",
-    "light_hl": "#f6f995",
-    "light_hl_odd": "#f6f998",
-    "dark_hl": "#d1df84",
-    "dark_hl_odd": "#d1df87"
-   },
-   {
-    "name": "tournament",
-    "label": "Tournament",
-    "light": "#eeeee6",
-    "light_odd": "#eeeee9",
-    "dark": "#3d6b50",
-    "dark_odd": "#3d6b53",
-    "light_hl": "#f6f68c",
-    "light_hl_odd": "#f6f68f",
-    "dark_hl": "#9eb542",
-    "dark_hl_odd": "#9eb545"
-   },
-   {
-    "name": "teal",
-    "label": "Teal",
-    "light": "#e0ece8",
-    "light_odd": "#e0eceb",
-    "dark": "#4f8a83",
-    "dark_odd": "#4f8a86",
-    "light_hl": "#f0f68e",
-    "light_hl_odd": "#f0f691",
-    "dark_hl": "#a7c45b",
-    "dark_hl_odd": "#a7c45e"
-   },
-   {
-    "name": "rose",
-    "label": "Rose",
-    "light": "#f3e3e6",
-    "light_odd": "#f3e3e9",
-    "dark": "#c07a8a",
-    "dark_odd": "#c07a8d",
-    "light_hl": "#f9f18c",
-    "light_hl_odd": "#f9f18f",
-    "dark_hl": "#e0bc5e",
-    "dark_hl_odd": "#e0bc61"
-   },
-   {
-    "name": "night",
-    "label": "Night",
-    "light": "#9aa3ad",
-    "light_odd": "#9aa3b0",
-    "dark": "#4a5460",
-    "dark_odd": "#4a5463",
-    "light_hl": "#ccd170",
-    "light_hl_odd": "#ccd173",
-    "dark_hl": "#a4aa4a",
-    "dark_hl_odd": "#a4aa4d"
+  },
+  {
+   "op": "catalogue",
+   "result": {
+    "sets": [
+     {
+      "name": "sidecoach",
+      "label": "Sidecoach",
+      "author": "Sidecoach",
+      "licence": "Sidecoach's own",
+      "images": {
+       "wK": "/pieces/wK.svg?v=own2",
+       "wQ": "/pieces/wQ.svg?v=own2",
+       "wR": "/pieces/wR.svg?v=own2",
+       "wB": "/pieces/wB.svg?v=own2",
+       "wN": "/pieces/wN.svg?v=own2",
+       "wP": "/pieces/wP.svg?v=own2",
+       "bK": "/pieces/bK.svg?v=own2",
+       "bQ": "/pieces/bQ.svg?v=own2",
+       "bR": "/pieces/bR.svg?v=own2",
+       "bB": "/pieces/bB.svg?v=own2",
+       "bN": "/pieces/bN.svg?v=own2",
+       "bP": "/pieces/bP.svg?v=own2"
+      }
+     },
+     {
+      "name": "cburnett",
+      "label": "Classic",
+      "author": "Colin M.L. Burnett",
+      "licence": "GPLv2+",
+      "images": {
+       "wK": "/pieces/cburnett/wK.svg?v=1",
+       "wQ": "/pieces/cburnett/wQ.svg?v=1",
+       "wR": "/pieces/cburnett/wR.svg?v=1",
+       "wB": "/pieces/cburnett/wB.svg?v=1",
+       "wN": "/pieces/cburnett/wN.svg?v=1",
+       "wP": "/pieces/cburnett/wP.svg?v=1",
+       "bK": "/pieces/cburnett/bK.svg?v=1",
+       "bQ": "/pieces/cburnett/bQ.svg?v=1",
+       "bR": "/pieces/cburnett/bR.svg?v=1",
+       "bB": "/pieces/cburnett/bB.svg?v=1",
+       "bN": "/pieces/cburnett/bN.svg?v=1",
+       "bP": "/pieces/cburnett/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "merida",
+      "label": "Merida",
+      "author": "Armando Hernandez Marroquin",
+      "licence": "GPLv2+",
+      "images": {
+       "wK": "/pieces/merida/wK.svg?v=1",
+       "wQ": "/pieces/merida/wQ.svg?v=1",
+       "wR": "/pieces/merida/wR.svg?v=1",
+       "wB": "/pieces/merida/wB.svg?v=1",
+       "wN": "/pieces/merida/wN.svg?v=1",
+       "wP": "/pieces/merida/wP.svg?v=1",
+       "bK": "/pieces/merida/bK.svg?v=1",
+       "bQ": "/pieces/merida/bQ.svg?v=1",
+       "bR": "/pieces/merida/bR.svg?v=1",
+       "bB": "/pieces/merida/bB.svg?v=1",
+       "bN": "/pieces/merida/bN.svg?v=1",
+       "bP": "/pieces/merida/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "chessnut",
+      "label": "Chessnut",
+      "author": "Alexis Luengas",
+      "licence": "Apache 2.0",
+      "images": {
+       "wK": "/pieces/chessnut/wK.svg?v=1",
+       "wQ": "/pieces/chessnut/wQ.svg?v=1",
+       "wR": "/pieces/chessnut/wR.svg?v=1",
+       "wB": "/pieces/chessnut/wB.svg?v=1",
+       "wN": "/pieces/chessnut/wN.svg?v=1",
+       "wP": "/pieces/chessnut/wP.svg?v=1",
+       "bK": "/pieces/chessnut/bK.svg?v=1",
+       "bQ": "/pieces/chessnut/bQ.svg?v=1",
+       "bR": "/pieces/chessnut/bR.svg?v=1",
+       "bB": "/pieces/chessnut/bB.svg?v=1",
+       "bN": "/pieces/chessnut/bN.svg?v=1",
+       "bP": "/pieces/chessnut/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "celtic",
+      "label": "Celtic",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/celtic/wK.svg?v=1",
+       "wQ": "/pieces/celtic/wQ.svg?v=1",
+       "wR": "/pieces/celtic/wR.svg?v=1",
+       "wB": "/pieces/celtic/wB.svg?v=1",
+       "wN": "/pieces/celtic/wN.svg?v=1",
+       "wP": "/pieces/celtic/wP.svg?v=1",
+       "bK": "/pieces/celtic/bK.svg?v=1",
+       "bQ": "/pieces/celtic/bQ.svg?v=1",
+       "bR": "/pieces/celtic/bR.svg?v=1",
+       "bB": "/pieces/celtic/bB.svg?v=1",
+       "bN": "/pieces/celtic/bN.svg?v=1",
+       "bP": "/pieces/celtic/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "spatial",
+      "label": "Spatial",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/spatial/wK.svg?v=1",
+       "wQ": "/pieces/spatial/wQ.svg?v=1",
+       "wR": "/pieces/spatial/wR.svg?v=1",
+       "wB": "/pieces/spatial/wB.svg?v=1",
+       "wN": "/pieces/spatial/wN.svg?v=1",
+       "wP": "/pieces/spatial/wP.svg?v=1",
+       "bK": "/pieces/spatial/bK.svg?v=1",
+       "bQ": "/pieces/spatial/bQ.svg?v=1",
+       "bR": "/pieces/spatial/bR.svg?v=1",
+       "bB": "/pieces/spatial/bB.svg?v=1",
+       "bN": "/pieces/spatial/bN.svg?v=1",
+       "bP": "/pieces/spatial/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "fantasy",
+      "label": "Fantasy",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/fantasy/wK.svg?v=1",
+       "wQ": "/pieces/fantasy/wQ.svg?v=1",
+       "wR": "/pieces/fantasy/wR.svg?v=1",
+       "wB": "/pieces/fantasy/wB.svg?v=1",
+       "wN": "/pieces/fantasy/wN.svg?v=1",
+       "wP": "/pieces/fantasy/wP.svg?v=1",
+       "bK": "/pieces/fantasy/bK.svg?v=1",
+       "bQ": "/pieces/fantasy/bQ.svg?v=1",
+       "bR": "/pieces/fantasy/bR.svg?v=1",
+       "bB": "/pieces/fantasy/bB.svg?v=1",
+       "bN": "/pieces/fantasy/bN.svg?v=1",
+       "bP": "/pieces/fantasy/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "papercut",
+      "label": "Papercut",
+      "author": "Nikolay Anzarov",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/papercut/wK.svg?v=1",
+       "wQ": "/pieces/papercut/wQ.svg?v=1",
+       "wR": "/pieces/papercut/wR.svg?v=1",
+       "wB": "/pieces/papercut/wB.svg?v=1",
+       "wN": "/pieces/papercut/wN.svg?v=1",
+       "wP": "/pieces/papercut/wP.svg?v=1",
+       "bK": "/pieces/papercut/bK.svg?v=1",
+       "bQ": "/pieces/papercut/bQ.svg?v=1",
+       "bR": "/pieces/papercut/bR.svg?v=1",
+       "bB": "/pieces/papercut/bB.svg?v=1",
+       "bN": "/pieces/papercut/bN.svg?v=1",
+       "bP": "/pieces/papercut/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "mpchess",
+      "label": "MPChess",
+      "author": "Maxime Chupin",
+      "licence": "GPLv3+",
+      "images": {
+       "wK": "/pieces/mpchess/wK.svg?v=1",
+       "wQ": "/pieces/mpchess/wQ.svg?v=1",
+       "wR": "/pieces/mpchess/wR.svg?v=1",
+       "wB": "/pieces/mpchess/wB.svg?v=1",
+       "wN": "/pieces/mpchess/wN.svg?v=1",
+       "wP": "/pieces/mpchess/wP.svg?v=1",
+       "bK": "/pieces/mpchess/bK.svg?v=1",
+       "bQ": "/pieces/mpchess/bQ.svg?v=1",
+       "bR": "/pieces/mpchess/bR.svg?v=1",
+       "bB": "/pieces/mpchess/bB.svg?v=1",
+       "bN": "/pieces/mpchess/bN.svg?v=1",
+       "bP": "/pieces/mpchess/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "pirouetti",
+      "label": "Pirouetti",
+      "author": "pirouetti",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/pirouetti/wK.svg?v=1",
+       "wQ": "/pieces/pirouetti/wQ.svg?v=1",
+       "wR": "/pieces/pirouetti/wR.svg?v=1",
+       "wB": "/pieces/pirouetti/wB.svg?v=1",
+       "wN": "/pieces/pirouetti/wN.svg?v=1",
+       "wP": "/pieces/pirouetti/wP.svg?v=1",
+       "bK": "/pieces/pirouetti/bK.svg?v=1",
+       "bQ": "/pieces/pirouetti/bQ.svg?v=1",
+       "bR": "/pieces/pirouetti/bR.svg?v=1",
+       "bB": "/pieces/pirouetti/bB.svg?v=1",
+       "bN": "/pieces/pirouetti/bN.svg?v=1",
+       "bP": "/pieces/pirouetti/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "rhosgfx",
+      "label": "RhosGFX",
+      "author": "RhosGFX",
+      "licence": "CC0 (public domain)",
+      "images": {
+       "wK": "/pieces/rhosgfx/wK.svg?v=1",
+       "wQ": "/pieces/rhosgfx/wQ.svg?v=1",
+       "wR": "/pieces/rhosgfx/wR.svg?v=1",
+       "wB": "/pieces/rhosgfx/wB.svg?v=1",
+       "wN": "/pieces/rhosgfx/wN.svg?v=1",
+       "wP": "/pieces/rhosgfx/wP.svg?v=1",
+       "bK": "/pieces/rhosgfx/bK.svg?v=1",
+       "bQ": "/pieces/rhosgfx/bQ.svg?v=1",
+       "bR": "/pieces/rhosgfx/bR.svg?v=1",
+       "bB": "/pieces/rhosgfx/bB.svg?v=1",
+       "bN": "/pieces/rhosgfx/bN.svg?v=1",
+       "bP": "/pieces/rhosgfx/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "totoy",
+      "label": "Totoy",
+      "author": "Kosal Sen",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/totoy/wK.svg?v=1",
+       "wQ": "/pieces/totoy/wQ.svg?v=1",
+       "wR": "/pieces/totoy/wR.svg?v=1",
+       "wB": "/pieces/totoy/wB.svg?v=1",
+       "wN": "/pieces/totoy/wN.svg?v=1",
+       "wP": "/pieces/totoy/wP.svg?v=1",
+       "bK": "/pieces/totoy/bK.svg?v=1",
+       "bQ": "/pieces/totoy/bQ.svg?v=1",
+       "bR": "/pieces/totoy/bR.svg?v=1",
+       "bB": "/pieces/totoy/bB.svg?v=1",
+       "bN": "/pieces/totoy/bN.svg?v=1",
+       "bP": "/pieces/totoy/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "kiwen-suwi",
+      "label": "Kiwen-suwi",
+      "author": "neverRare",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/kiwen-suwi/wK.svg?v=1",
+       "wQ": "/pieces/kiwen-suwi/wQ.svg?v=1",
+       "wR": "/pieces/kiwen-suwi/wR.svg?v=1",
+       "wB": "/pieces/kiwen-suwi/wB.svg?v=1",
+       "wN": "/pieces/kiwen-suwi/wN.svg?v=1",
+       "wP": "/pieces/kiwen-suwi/wP.svg?v=1",
+       "bK": "/pieces/kiwen-suwi/bK.svg?v=1",
+       "bQ": "/pieces/kiwen-suwi/bQ.svg?v=1",
+       "bR": "/pieces/kiwen-suwi/bR.svg?v=1",
+       "bB": "/pieces/kiwen-suwi/bB.svg?v=1",
+       "bN": "/pieces/kiwen-suwi/bN.svg?v=1",
+       "bP": "/pieces/kiwen-suwi/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "firi",
+      "label": "Firi",
+      "author": "James Faure",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/firi/wK.svg?v=1",
+       "wQ": "/pieces/firi/wQ.svg?v=1",
+       "wR": "/pieces/firi/wR.svg?v=1",
+       "wB": "/pieces/firi/wB.svg?v=1",
+       "wN": "/pieces/firi/wN.svg?v=1",
+       "wP": "/pieces/firi/wP.svg?v=1",
+       "bK": "/pieces/firi/bK.svg?v=1",
+       "bQ": "/pieces/firi/bQ.svg?v=1",
+       "bR": "/pieces/firi/bR.svg?v=1",
+       "bB": "/pieces/firi/bB.svg?v=1",
+       "bN": "/pieces/firi/bN.svg?v=1",
+       "bP": "/pieces/firi/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "pixel",
+      "label": "Pixel",
+      "author": "therealqtpi",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/pixel/wK.svg?v=1",
+       "wQ": "/pieces/pixel/wQ.svg?v=1",
+       "wR": "/pieces/pixel/wR.svg?v=1",
+       "wB": "/pieces/pixel/wB.svg?v=1",
+       "wN": "/pieces/pixel/wN.svg?v=1",
+       "wP": "/pieces/pixel/wP.svg?v=1",
+       "bK": "/pieces/pixel/bK.svg?v=1",
+       "bQ": "/pieces/pixel/bQ.svg?v=1",
+       "bR": "/pieces/pixel/bR.svg?v=1",
+       "bB": "/pieces/pixel/bB.svg?v=1",
+       "bN": "/pieces/pixel/bN.svg?v=1",
+       "bP": "/pieces/pixel/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "shapes",
+      "label": "Shapes",
+      "author": "flugsio",
+      "licence": "CC BY-SA 4.0",
+      "images": {
+       "wK": "/pieces/shapes/wK.svg?v=1",
+       "wQ": "/pieces/shapes/wQ.svg?v=1",
+       "wR": "/pieces/shapes/wR.svg?v=1",
+       "wB": "/pieces/shapes/wB.svg?v=1",
+       "wN": "/pieces/shapes/wN.svg?v=1",
+       "wP": "/pieces/shapes/wP.svg?v=1",
+       "bK": "/pieces/shapes/bK.svg?v=1",
+       "bQ": "/pieces/shapes/bQ.svg?v=1",
+       "bR": "/pieces/shapes/bR.svg?v=1",
+       "bB": "/pieces/shapes/bB.svg?v=1",
+       "bN": "/pieces/shapes/bN.svg?v=1",
+       "bP": "/pieces/shapes/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "letter",
+      "label": "Letters",
+      "author": "usolando",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/letter/wK.svg?v=1",
+       "wQ": "/pieces/letter/wQ.svg?v=1",
+       "wR": "/pieces/letter/wR.svg?v=1",
+       "wB": "/pieces/letter/wB.svg?v=1",
+       "wN": "/pieces/letter/wN.svg?v=1",
+       "wP": "/pieces/letter/wP.svg?v=1",
+       "bK": "/pieces/letter/bK.svg?v=1",
+       "bQ": "/pieces/letter/bQ.svg?v=1",
+       "bR": "/pieces/letter/bR.svg?v=1",
+       "bB": "/pieces/letter/bB.svg?v=1",
+       "bN": "/pieces/letter/bN.svg?v=1",
+       "bP": "/pieces/letter/bP.svg?v=1"
+      }
+     }
+    ],
+    "themes": [
+     {
+      "name": "green",
+      "label": "Green",
+      "light": "#eeeed2",
+      "light_odd": "#eeeed5",
+      "dark": "#769656",
+      "dark_odd": "#769659",
+      "light_hl": "#f6f669",
+      "light_hl_odd": "#f6f66c",
+      "dark_hl": "#baca2b",
+      "dark_hl_odd": "#baca2e"
+     },
+     {
+      "name": "brown",
+      "label": "Brown",
+      "light": "#f0d9b5",
+      "light_odd": "#f0d9b8",
+      "dark": "#b58863",
+      "dark_odd": "#b58866",
+      "light_hl": "#f8ec74",
+      "light_hl_odd": "#f8ec77",
+      "dark_hl": "#dac44b",
+      "dark_hl_odd": "#dac44e"
+     },
+     {
+      "name": "blue",
+      "label": "Blue",
+      "light": "#dee3e6",
+      "light_odd": "#dee3e9",
+      "dark": "#8ca2ad",
+      "dark_odd": "#8ca2b0",
+      "light_hl": "#eef18c",
+      "light_hl_odd": "#eef18f",
+      "dark_hl": "#c6d070",
+      "dark_hl_odd": "#c6d073"
+     },
+     {
+      "name": "ocean",
+      "label": "Ocean",
+      "light": "#eae9d2",
+      "light_odd": "#eae9d5",
+      "dark": "#4b7399",
+      "dark_odd": "#4b739c",
+      "light_hl": "#f4f482",
+      "light_hl_odd": "#f4f485",
+      "dark_hl": "#a5b966",
+      "dark_hl_odd": "#a5b969"
+     },
+     {
+      "name": "grey",
+      "label": "Grey",
+      "light": "#e3e3e3",
+      "light_odd": "#e3e3e6",
+      "dark": "#a1a1a1",
+      "dark_odd": "#a1a1a4",
+      "light_hl": "#f1f18b",
+      "light_hl_odd": "#f1f18e",
+      "dark_hl": "#d0d06a",
+      "dark_hl_odd": "#d0d06d"
+     },
+     {
+      "name": "purple",
+      "label": "Purple",
+      "light": "#eeeaf2",
+      "light_odd": "#eeeaf5",
+      "dark": "#8877b7",
+      "dark_odd": "#8877ba",
+      "light_hl": "#f6f492",
+      "light_hl_odd": "#f6f495",
+      "dark_hl": "#c4bb75",
+      "dark_hl_odd": "#c4bb78"
+     },
+     {
+      "name": "olive",
+      "label": "Olive",
+      "light": "#e8e7c8",
+      "light_odd": "#e8e7cb",
+      "dark": "#8a9153",
+      "dark_odd": "#8a9156",
+      "light_hl": "#f4f37e",
+      "light_hl_odd": "#f4f381",
+      "dark_hl": "#c4c843",
+      "dark_hl_odd": "#c4c846"
+     },
+     {
+      "name": "sand",
+      "label": "Sand",
+      "light": "#f2e4c3",
+      "light_odd": "#f2e4c6",
+      "dark": "#c9a26b",
+      "dark_odd": "#c9a26e",
+      "light_hl": "#f8f27b",
+      "light_hl_odd": "#f8f27e",
+      "dark_hl": "#e4d04f",
+      "dark_hl_odd": "#e4d052"
+     },
+     {
+      "name": "walnut",
+      "label": "Walnut",
+      "light": "#e3c49a",
+      "light_odd": "#e3c49d",
+      "dark": "#8b5a3c",
+      "dark_odd": "#8b5a3f",
+      "light_hl": "#f1e266",
+      "light_hl_odd": "#f1e269",
+      "dark_hl": "#c5ac38",
+      "dark_hl_odd": "#c5ac3b"
+     },
+     {
+      "name": "cherry",
+      "label": "Cherry",
+      "light": "#f1d9c9",
+      "light_odd": "#f1d9cc",
+      "dark": "#b56060",
+      "dark_odd": "#b56063",
+      "light_hl": "#f8ec7e",
+      "light_hl_odd": "#f8ec81",
+      "dark_hl": "#dab04a",
+      "dark_hl_odd": "#dab04d"
+     },
+     {
+      "name": "coral",
+      "label": "Coral",
+      "light": "#f4e3d7",
+      "light_odd": "#f4e3da",
+      "dark": "#e07a5f",
+      "dark_odd": "#e07a62",
+      "light_hl": "#faf185",
+      "light_hl_odd": "#faf188",
+      "dark_hl": "#f0bc49",
+      "dark_hl_odd": "#f0bc4c"
+     },
+     {
+      "name": "ice",
+      "label": "Ice",
+      "light": "#eef3f7",
+      "light_odd": "#eef3fa",
+      "dark": "#a3bfd6",
+      "dark_odd": "#a3bfd9",
+      "light_hl": "#f6f995",
+      "light_hl_odd": "#f6f998",
+      "dark_hl": "#d1df84",
+      "dark_hl_odd": "#d1df87"
+     },
+     {
+      "name": "tournament",
+      "label": "Tournament",
+      "light": "#eeeee6",
+      "light_odd": "#eeeee9",
+      "dark": "#3d6b50",
+      "dark_odd": "#3d6b53",
+      "light_hl": "#f6f68c",
+      "light_hl_odd": "#f6f68f",
+      "dark_hl": "#9eb542",
+      "dark_hl_odd": "#9eb545"
+     },
+     {
+      "name": "teal",
+      "label": "Teal",
+      "light": "#e0ece8",
+      "light_odd": "#e0eceb",
+      "dark": "#4f8a83",
+      "dark_odd": "#4f8a86",
+      "light_hl": "#f0f68e",
+      "light_hl_odd": "#f0f691",
+      "dark_hl": "#a7c45b",
+      "dark_hl_odd": "#a7c45e"
+     },
+     {
+      "name": "rose",
+      "label": "Rose",
+      "light": "#f3e3e6",
+      "light_odd": "#f3e3e9",
+      "dark": "#c07a8a",
+      "dark_odd": "#c07a8d",
+      "light_hl": "#f9f18c",
+      "light_hl_odd": "#f9f18f",
+      "dark_hl": "#e0bc5e",
+      "dark_hl_odd": "#e0bc61"
+     },
+     {
+      "name": "night",
+      "label": "Night",
+      "light": "#9aa3ad",
+      "light_odd": "#9aa3b0",
+      "dark": "#4a5460",
+      "dark_odd": "#4a5463",
+      "light_hl": "#ccd170",
+      "light_hl_odd": "#ccd173",
+      "dark_hl": "#a4aa4a",
+      "dark_hl_odd": "#a4aa4d"
+     }
+    ],
+    "own": [
+     {
+      "name": "own:custom",
+      "label": "My pieces",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:neo",
+      "label": "Neo wood",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
+       "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:neo-2",
+      "label": "neo 2",
+      "images": {
+       "bP": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wK",
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bQ",
+       "bR",
+       "bB",
+       "bN"
+      ]
+     },
+     {
+      "name": "own:my-set",
+      "label": "My set",
+      "images": {
+       "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
+      },
+      "missing": [
+       "wK",
+       "wQ",
+       "wR",
+       "wB",
+       "wP",
+       "bK",
+       "bQ",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:n-o-n-code-a-set-with-a-name-far",
+      "label": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     }
+    ]
    }
-  ],
-  "custom": {
-   "images": {},
-   "missing": [
-    "wK",
-    "wQ",
-    "wR",
-    "wB",
-    "wN",
-    "wP",
-    "bK",
-    "bQ",
-    "bR",
-    "bB",
-    "bN",
-    "bP"
+  },
+  {
+   "op": "delete",
+   "id": "neo",
+   "result": {
+    "ok": true,
+    "id": "own:neo"
+   }
+  },
+  {
+   "op": "delete",
+   "id": "../x",
+   "result": {
+    "ok": false,
+    "id": "own:../x",
+    "error": "There is no such set."
+   }
+  },
+  {
+   "op": "delete",
+   "id": "nope",
+   "result": {
+    "ok": false,
+    "id": "own:nope",
+    "error": "There is no such set."
+   }
+  },
+  {
+   "op": "sets",
+   "result": [
+    {
+     "id": "custom",
+     "name": "My pieces",
+     "order": 0
+    },
+    {
+     "id": "neo-2",
+     "name": "neo 2",
+     "order": 2
+    },
+    {
+     "id": "my-set",
+     "name": "My set",
+     "order": 3
+    },
+    {
+     "id": "n-o-n-code-a-set-with-a-name-far",
+     "name": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+     "order": 4
+    }
    ]
+  },
+  {
+   "op": "look",
+   "pieces": "own:neo",
+   "theme": "green",
+   "result": {
+    "pieces": "own:neo",
+    "theme": "green",
+    "images": {
+     "wK": "/pieces/wK.svg?v=own2",
+     "wQ": "/pieces/wQ.svg?v=own2",
+     "wR": "/pieces/wR.svg?v=own2",
+     "wB": "/pieces/wB.svg?v=own2",
+     "wN": "/pieces/wN.svg?v=own2",
+     "wP": "/pieces/wP.svg?v=own2",
+     "bK": "/pieces/bK.svg?v=own2",
+     "bQ": "/pieces/bQ.svg?v=own2",
+     "bR": "/pieces/bR.svg?v=own2",
+     "bB": "/pieces/bB.svg?v=own2",
+     "bN": "/pieces/bN.svg?v=own2",
+     "bP": "/pieces/bP.svg?v=own2"
+    },
+    "board": {
+     "light": "#eeeed2",
+     "light_odd": "#eeeed5",
+     "dark": "#769656",
+     "dark_odd": "#769659",
+     "light_hl": "#f6f669",
+     "light_hl_odd": "#f6f66c",
+     "dark_hl": "#baca2b",
+     "dark_hl_odd": "#baca2e"
+    }
+   }
+  },
+  {
+   "op": "restore",
+   "id": "neo",
+   "result": {
+    "ok": true,
+    "id": "own:neo"
+   }
+  },
+  {
+   "op": "restore",
+   "id": "neo",
+   "result": {
+    "ok": false,
+    "id": "own:neo",
+    "error": "That set was deleted too long ago to put back."
+   }
+  },
+  {
+   "op": "look",
+   "pieces": "own:neo",
+   "theme": "green",
+   "result": {
+    "pieces": "own:neo",
+    "theme": "green",
+    "images": {
+     "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
+     "wQ": "/pieces/wQ.svg?v=own2",
+     "wR": "/pieces/wR.svg?v=own2",
+     "wB": "/pieces/wB.svg?v=own2",
+     "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA",
+     "wP": "/pieces/wP.svg?v=own2",
+     "bK": "/pieces/bK.svg?v=own2",
+     "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+     "bR": "/pieces/bR.svg?v=own2",
+     "bB": "/pieces/bB.svg?v=own2",
+     "bN": "/pieces/bN.svg?v=own2",
+     "bP": "/pieces/bP.svg?v=own2"
+    },
+    "board": {
+     "light": "#eeeed2",
+     "light_odd": "#eeeed5",
+     "dark": "#769656",
+     "dark_odd": "#769659",
+     "light_hl": "#f6f669",
+     "light_hl_odd": "#f6f66c",
+     "dark_hl": "#baca2b",
+     "dark_hl_odd": "#baca2e"
+    }
+   }
+  },
+  {
+   "op": "delete",
+   "id": "neo-2",
+   "result": {
+    "ok": true,
+    "id": "own:neo-2"
+   }
+  },
+  {
+   "op": "expire",
+   "id": "neo-2"
+  },
+  {
+   "op": "sets",
+   "result": [
+    {
+     "id": "custom",
+     "name": "My pieces",
+     "order": 0
+    },
+    {
+     "id": "neo",
+     "name": "Neo wood",
+     "order": 1
+    },
+    {
+     "id": "my-set",
+     "name": "My set",
+     "order": 3
+    },
+    {
+     "id": "n-o-n-code-a-set-with-a-name-far",
+     "name": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+     "order": 4
+    }
+   ]
+  },
+  {
+   "op": "restore",
+   "id": "neo-2",
+   "result": {
+    "ok": false,
+    "id": "own:neo-2",
+    "error": "That set was deleted too long ago to put back."
+   }
+  },
+  {
+   "op": "catalogue",
+   "result": {
+    "sets": [
+     {
+      "name": "sidecoach",
+      "label": "Sidecoach",
+      "author": "Sidecoach",
+      "licence": "Sidecoach's own",
+      "images": {
+       "wK": "/pieces/wK.svg?v=own2",
+       "wQ": "/pieces/wQ.svg?v=own2",
+       "wR": "/pieces/wR.svg?v=own2",
+       "wB": "/pieces/wB.svg?v=own2",
+       "wN": "/pieces/wN.svg?v=own2",
+       "wP": "/pieces/wP.svg?v=own2",
+       "bK": "/pieces/bK.svg?v=own2",
+       "bQ": "/pieces/bQ.svg?v=own2",
+       "bR": "/pieces/bR.svg?v=own2",
+       "bB": "/pieces/bB.svg?v=own2",
+       "bN": "/pieces/bN.svg?v=own2",
+       "bP": "/pieces/bP.svg?v=own2"
+      }
+     },
+     {
+      "name": "cburnett",
+      "label": "Classic",
+      "author": "Colin M.L. Burnett",
+      "licence": "GPLv2+",
+      "images": {
+       "wK": "/pieces/cburnett/wK.svg?v=1",
+       "wQ": "/pieces/cburnett/wQ.svg?v=1",
+       "wR": "/pieces/cburnett/wR.svg?v=1",
+       "wB": "/pieces/cburnett/wB.svg?v=1",
+       "wN": "/pieces/cburnett/wN.svg?v=1",
+       "wP": "/pieces/cburnett/wP.svg?v=1",
+       "bK": "/pieces/cburnett/bK.svg?v=1",
+       "bQ": "/pieces/cburnett/bQ.svg?v=1",
+       "bR": "/pieces/cburnett/bR.svg?v=1",
+       "bB": "/pieces/cburnett/bB.svg?v=1",
+       "bN": "/pieces/cburnett/bN.svg?v=1",
+       "bP": "/pieces/cburnett/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "merida",
+      "label": "Merida",
+      "author": "Armando Hernandez Marroquin",
+      "licence": "GPLv2+",
+      "images": {
+       "wK": "/pieces/merida/wK.svg?v=1",
+       "wQ": "/pieces/merida/wQ.svg?v=1",
+       "wR": "/pieces/merida/wR.svg?v=1",
+       "wB": "/pieces/merida/wB.svg?v=1",
+       "wN": "/pieces/merida/wN.svg?v=1",
+       "wP": "/pieces/merida/wP.svg?v=1",
+       "bK": "/pieces/merida/bK.svg?v=1",
+       "bQ": "/pieces/merida/bQ.svg?v=1",
+       "bR": "/pieces/merida/bR.svg?v=1",
+       "bB": "/pieces/merida/bB.svg?v=1",
+       "bN": "/pieces/merida/bN.svg?v=1",
+       "bP": "/pieces/merida/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "chessnut",
+      "label": "Chessnut",
+      "author": "Alexis Luengas",
+      "licence": "Apache 2.0",
+      "images": {
+       "wK": "/pieces/chessnut/wK.svg?v=1",
+       "wQ": "/pieces/chessnut/wQ.svg?v=1",
+       "wR": "/pieces/chessnut/wR.svg?v=1",
+       "wB": "/pieces/chessnut/wB.svg?v=1",
+       "wN": "/pieces/chessnut/wN.svg?v=1",
+       "wP": "/pieces/chessnut/wP.svg?v=1",
+       "bK": "/pieces/chessnut/bK.svg?v=1",
+       "bQ": "/pieces/chessnut/bQ.svg?v=1",
+       "bR": "/pieces/chessnut/bR.svg?v=1",
+       "bB": "/pieces/chessnut/bB.svg?v=1",
+       "bN": "/pieces/chessnut/bN.svg?v=1",
+       "bP": "/pieces/chessnut/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "celtic",
+      "label": "Celtic",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/celtic/wK.svg?v=1",
+       "wQ": "/pieces/celtic/wQ.svg?v=1",
+       "wR": "/pieces/celtic/wR.svg?v=1",
+       "wB": "/pieces/celtic/wB.svg?v=1",
+       "wN": "/pieces/celtic/wN.svg?v=1",
+       "wP": "/pieces/celtic/wP.svg?v=1",
+       "bK": "/pieces/celtic/bK.svg?v=1",
+       "bQ": "/pieces/celtic/bQ.svg?v=1",
+       "bR": "/pieces/celtic/bR.svg?v=1",
+       "bB": "/pieces/celtic/bB.svg?v=1",
+       "bN": "/pieces/celtic/bN.svg?v=1",
+       "bP": "/pieces/celtic/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "spatial",
+      "label": "Spatial",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/spatial/wK.svg?v=1",
+       "wQ": "/pieces/spatial/wQ.svg?v=1",
+       "wR": "/pieces/spatial/wR.svg?v=1",
+       "wB": "/pieces/spatial/wB.svg?v=1",
+       "wN": "/pieces/spatial/wN.svg?v=1",
+       "wP": "/pieces/spatial/wP.svg?v=1",
+       "bK": "/pieces/spatial/bK.svg?v=1",
+       "bQ": "/pieces/spatial/bQ.svg?v=1",
+       "bR": "/pieces/spatial/bR.svg?v=1",
+       "bB": "/pieces/spatial/bB.svg?v=1",
+       "bN": "/pieces/spatial/bN.svg?v=1",
+       "bP": "/pieces/spatial/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "fantasy",
+      "label": "Fantasy",
+      "author": "Maurizio Monge",
+      "licence": "MIT",
+      "images": {
+       "wK": "/pieces/fantasy/wK.svg?v=1",
+       "wQ": "/pieces/fantasy/wQ.svg?v=1",
+       "wR": "/pieces/fantasy/wR.svg?v=1",
+       "wB": "/pieces/fantasy/wB.svg?v=1",
+       "wN": "/pieces/fantasy/wN.svg?v=1",
+       "wP": "/pieces/fantasy/wP.svg?v=1",
+       "bK": "/pieces/fantasy/bK.svg?v=1",
+       "bQ": "/pieces/fantasy/bQ.svg?v=1",
+       "bR": "/pieces/fantasy/bR.svg?v=1",
+       "bB": "/pieces/fantasy/bB.svg?v=1",
+       "bN": "/pieces/fantasy/bN.svg?v=1",
+       "bP": "/pieces/fantasy/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "papercut",
+      "label": "Papercut",
+      "author": "Nikolay Anzarov",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/papercut/wK.svg?v=1",
+       "wQ": "/pieces/papercut/wQ.svg?v=1",
+       "wR": "/pieces/papercut/wR.svg?v=1",
+       "wB": "/pieces/papercut/wB.svg?v=1",
+       "wN": "/pieces/papercut/wN.svg?v=1",
+       "wP": "/pieces/papercut/wP.svg?v=1",
+       "bK": "/pieces/papercut/bK.svg?v=1",
+       "bQ": "/pieces/papercut/bQ.svg?v=1",
+       "bR": "/pieces/papercut/bR.svg?v=1",
+       "bB": "/pieces/papercut/bB.svg?v=1",
+       "bN": "/pieces/papercut/bN.svg?v=1",
+       "bP": "/pieces/papercut/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "mpchess",
+      "label": "MPChess",
+      "author": "Maxime Chupin",
+      "licence": "GPLv3+",
+      "images": {
+       "wK": "/pieces/mpchess/wK.svg?v=1",
+       "wQ": "/pieces/mpchess/wQ.svg?v=1",
+       "wR": "/pieces/mpchess/wR.svg?v=1",
+       "wB": "/pieces/mpchess/wB.svg?v=1",
+       "wN": "/pieces/mpchess/wN.svg?v=1",
+       "wP": "/pieces/mpchess/wP.svg?v=1",
+       "bK": "/pieces/mpchess/bK.svg?v=1",
+       "bQ": "/pieces/mpchess/bQ.svg?v=1",
+       "bR": "/pieces/mpchess/bR.svg?v=1",
+       "bB": "/pieces/mpchess/bB.svg?v=1",
+       "bN": "/pieces/mpchess/bN.svg?v=1",
+       "bP": "/pieces/mpchess/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "pirouetti",
+      "label": "Pirouetti",
+      "author": "pirouetti",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/pirouetti/wK.svg?v=1",
+       "wQ": "/pieces/pirouetti/wQ.svg?v=1",
+       "wR": "/pieces/pirouetti/wR.svg?v=1",
+       "wB": "/pieces/pirouetti/wB.svg?v=1",
+       "wN": "/pieces/pirouetti/wN.svg?v=1",
+       "wP": "/pieces/pirouetti/wP.svg?v=1",
+       "bK": "/pieces/pirouetti/bK.svg?v=1",
+       "bQ": "/pieces/pirouetti/bQ.svg?v=1",
+       "bR": "/pieces/pirouetti/bR.svg?v=1",
+       "bB": "/pieces/pirouetti/bB.svg?v=1",
+       "bN": "/pieces/pirouetti/bN.svg?v=1",
+       "bP": "/pieces/pirouetti/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "rhosgfx",
+      "label": "RhosGFX",
+      "author": "RhosGFX",
+      "licence": "CC0 (public domain)",
+      "images": {
+       "wK": "/pieces/rhosgfx/wK.svg?v=1",
+       "wQ": "/pieces/rhosgfx/wQ.svg?v=1",
+       "wR": "/pieces/rhosgfx/wR.svg?v=1",
+       "wB": "/pieces/rhosgfx/wB.svg?v=1",
+       "wN": "/pieces/rhosgfx/wN.svg?v=1",
+       "wP": "/pieces/rhosgfx/wP.svg?v=1",
+       "bK": "/pieces/rhosgfx/bK.svg?v=1",
+       "bQ": "/pieces/rhosgfx/bQ.svg?v=1",
+       "bR": "/pieces/rhosgfx/bR.svg?v=1",
+       "bB": "/pieces/rhosgfx/bB.svg?v=1",
+       "bN": "/pieces/rhosgfx/bN.svg?v=1",
+       "bP": "/pieces/rhosgfx/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "totoy",
+      "label": "Totoy",
+      "author": "Kosal Sen",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/totoy/wK.svg?v=1",
+       "wQ": "/pieces/totoy/wQ.svg?v=1",
+       "wR": "/pieces/totoy/wR.svg?v=1",
+       "wB": "/pieces/totoy/wB.svg?v=1",
+       "wN": "/pieces/totoy/wN.svg?v=1",
+       "wP": "/pieces/totoy/wP.svg?v=1",
+       "bK": "/pieces/totoy/bK.svg?v=1",
+       "bQ": "/pieces/totoy/bQ.svg?v=1",
+       "bR": "/pieces/totoy/bR.svg?v=1",
+       "bB": "/pieces/totoy/bB.svg?v=1",
+       "bN": "/pieces/totoy/bN.svg?v=1",
+       "bP": "/pieces/totoy/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "kiwen-suwi",
+      "label": "Kiwen-suwi",
+      "author": "neverRare",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/kiwen-suwi/wK.svg?v=1",
+       "wQ": "/pieces/kiwen-suwi/wQ.svg?v=1",
+       "wR": "/pieces/kiwen-suwi/wR.svg?v=1",
+       "wB": "/pieces/kiwen-suwi/wB.svg?v=1",
+       "wN": "/pieces/kiwen-suwi/wN.svg?v=1",
+       "wP": "/pieces/kiwen-suwi/wP.svg?v=1",
+       "bK": "/pieces/kiwen-suwi/bK.svg?v=1",
+       "bQ": "/pieces/kiwen-suwi/bQ.svg?v=1",
+       "bR": "/pieces/kiwen-suwi/bR.svg?v=1",
+       "bB": "/pieces/kiwen-suwi/bB.svg?v=1",
+       "bN": "/pieces/kiwen-suwi/bN.svg?v=1",
+       "bP": "/pieces/kiwen-suwi/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "firi",
+      "label": "Firi",
+      "author": "James Faure",
+      "licence": "CC BY 4.0",
+      "images": {
+       "wK": "/pieces/firi/wK.svg?v=1",
+       "wQ": "/pieces/firi/wQ.svg?v=1",
+       "wR": "/pieces/firi/wR.svg?v=1",
+       "wB": "/pieces/firi/wB.svg?v=1",
+       "wN": "/pieces/firi/wN.svg?v=1",
+       "wP": "/pieces/firi/wP.svg?v=1",
+       "bK": "/pieces/firi/bK.svg?v=1",
+       "bQ": "/pieces/firi/bQ.svg?v=1",
+       "bR": "/pieces/firi/bR.svg?v=1",
+       "bB": "/pieces/firi/bB.svg?v=1",
+       "bN": "/pieces/firi/bN.svg?v=1",
+       "bP": "/pieces/firi/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "pixel",
+      "label": "Pixel",
+      "author": "therealqtpi",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/pixel/wK.svg?v=1",
+       "wQ": "/pieces/pixel/wQ.svg?v=1",
+       "wR": "/pieces/pixel/wR.svg?v=1",
+       "wB": "/pieces/pixel/wB.svg?v=1",
+       "wN": "/pieces/pixel/wN.svg?v=1",
+       "wP": "/pieces/pixel/wP.svg?v=1",
+       "bK": "/pieces/pixel/bK.svg?v=1",
+       "bQ": "/pieces/pixel/bQ.svg?v=1",
+       "bR": "/pieces/pixel/bR.svg?v=1",
+       "bB": "/pieces/pixel/bB.svg?v=1",
+       "bN": "/pieces/pixel/bN.svg?v=1",
+       "bP": "/pieces/pixel/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "shapes",
+      "label": "Shapes",
+      "author": "flugsio",
+      "licence": "CC BY-SA 4.0",
+      "images": {
+       "wK": "/pieces/shapes/wK.svg?v=1",
+       "wQ": "/pieces/shapes/wQ.svg?v=1",
+       "wR": "/pieces/shapes/wR.svg?v=1",
+       "wB": "/pieces/shapes/wB.svg?v=1",
+       "wN": "/pieces/shapes/wN.svg?v=1",
+       "wP": "/pieces/shapes/wP.svg?v=1",
+       "bK": "/pieces/shapes/bK.svg?v=1",
+       "bQ": "/pieces/shapes/bQ.svg?v=1",
+       "bR": "/pieces/shapes/bR.svg?v=1",
+       "bB": "/pieces/shapes/bB.svg?v=1",
+       "bN": "/pieces/shapes/bN.svg?v=1",
+       "bP": "/pieces/shapes/bP.svg?v=1"
+      }
+     },
+     {
+      "name": "letter",
+      "label": "Letters",
+      "author": "usolando",
+      "licence": "AGPLv3+",
+      "images": {
+       "wK": "/pieces/letter/wK.svg?v=1",
+       "wQ": "/pieces/letter/wQ.svg?v=1",
+       "wR": "/pieces/letter/wR.svg?v=1",
+       "wB": "/pieces/letter/wB.svg?v=1",
+       "wN": "/pieces/letter/wN.svg?v=1",
+       "wP": "/pieces/letter/wP.svg?v=1",
+       "bK": "/pieces/letter/bK.svg?v=1",
+       "bQ": "/pieces/letter/bQ.svg?v=1",
+       "bR": "/pieces/letter/bR.svg?v=1",
+       "bB": "/pieces/letter/bB.svg?v=1",
+       "bN": "/pieces/letter/bN.svg?v=1",
+       "bP": "/pieces/letter/bP.svg?v=1"
+      }
+     }
+    ],
+    "themes": [
+     {
+      "name": "green",
+      "label": "Green",
+      "light": "#eeeed2",
+      "light_odd": "#eeeed5",
+      "dark": "#769656",
+      "dark_odd": "#769659",
+      "light_hl": "#f6f669",
+      "light_hl_odd": "#f6f66c",
+      "dark_hl": "#baca2b",
+      "dark_hl_odd": "#baca2e"
+     },
+     {
+      "name": "brown",
+      "label": "Brown",
+      "light": "#f0d9b5",
+      "light_odd": "#f0d9b8",
+      "dark": "#b58863",
+      "dark_odd": "#b58866",
+      "light_hl": "#f8ec74",
+      "light_hl_odd": "#f8ec77",
+      "dark_hl": "#dac44b",
+      "dark_hl_odd": "#dac44e"
+     },
+     {
+      "name": "blue",
+      "label": "Blue",
+      "light": "#dee3e6",
+      "light_odd": "#dee3e9",
+      "dark": "#8ca2ad",
+      "dark_odd": "#8ca2b0",
+      "light_hl": "#eef18c",
+      "light_hl_odd": "#eef18f",
+      "dark_hl": "#c6d070",
+      "dark_hl_odd": "#c6d073"
+     },
+     {
+      "name": "ocean",
+      "label": "Ocean",
+      "light": "#eae9d2",
+      "light_odd": "#eae9d5",
+      "dark": "#4b7399",
+      "dark_odd": "#4b739c",
+      "light_hl": "#f4f482",
+      "light_hl_odd": "#f4f485",
+      "dark_hl": "#a5b966",
+      "dark_hl_odd": "#a5b969"
+     },
+     {
+      "name": "grey",
+      "label": "Grey",
+      "light": "#e3e3e3",
+      "light_odd": "#e3e3e6",
+      "dark": "#a1a1a1",
+      "dark_odd": "#a1a1a4",
+      "light_hl": "#f1f18b",
+      "light_hl_odd": "#f1f18e",
+      "dark_hl": "#d0d06a",
+      "dark_hl_odd": "#d0d06d"
+     },
+     {
+      "name": "purple",
+      "label": "Purple",
+      "light": "#eeeaf2",
+      "light_odd": "#eeeaf5",
+      "dark": "#8877b7",
+      "dark_odd": "#8877ba",
+      "light_hl": "#f6f492",
+      "light_hl_odd": "#f6f495",
+      "dark_hl": "#c4bb75",
+      "dark_hl_odd": "#c4bb78"
+     },
+     {
+      "name": "olive",
+      "label": "Olive",
+      "light": "#e8e7c8",
+      "light_odd": "#e8e7cb",
+      "dark": "#8a9153",
+      "dark_odd": "#8a9156",
+      "light_hl": "#f4f37e",
+      "light_hl_odd": "#f4f381",
+      "dark_hl": "#c4c843",
+      "dark_hl_odd": "#c4c846"
+     },
+     {
+      "name": "sand",
+      "label": "Sand",
+      "light": "#f2e4c3",
+      "light_odd": "#f2e4c6",
+      "dark": "#c9a26b",
+      "dark_odd": "#c9a26e",
+      "light_hl": "#f8f27b",
+      "light_hl_odd": "#f8f27e",
+      "dark_hl": "#e4d04f",
+      "dark_hl_odd": "#e4d052"
+     },
+     {
+      "name": "walnut",
+      "label": "Walnut",
+      "light": "#e3c49a",
+      "light_odd": "#e3c49d",
+      "dark": "#8b5a3c",
+      "dark_odd": "#8b5a3f",
+      "light_hl": "#f1e266",
+      "light_hl_odd": "#f1e269",
+      "dark_hl": "#c5ac38",
+      "dark_hl_odd": "#c5ac3b"
+     },
+     {
+      "name": "cherry",
+      "label": "Cherry",
+      "light": "#f1d9c9",
+      "light_odd": "#f1d9cc",
+      "dark": "#b56060",
+      "dark_odd": "#b56063",
+      "light_hl": "#f8ec7e",
+      "light_hl_odd": "#f8ec81",
+      "dark_hl": "#dab04a",
+      "dark_hl_odd": "#dab04d"
+     },
+     {
+      "name": "coral",
+      "label": "Coral",
+      "light": "#f4e3d7",
+      "light_odd": "#f4e3da",
+      "dark": "#e07a5f",
+      "dark_odd": "#e07a62",
+      "light_hl": "#faf185",
+      "light_hl_odd": "#faf188",
+      "dark_hl": "#f0bc49",
+      "dark_hl_odd": "#f0bc4c"
+     },
+     {
+      "name": "ice",
+      "label": "Ice",
+      "light": "#eef3f7",
+      "light_odd": "#eef3fa",
+      "dark": "#a3bfd6",
+      "dark_odd": "#a3bfd9",
+      "light_hl": "#f6f995",
+      "light_hl_odd": "#f6f998",
+      "dark_hl": "#d1df84",
+      "dark_hl_odd": "#d1df87"
+     },
+     {
+      "name": "tournament",
+      "label": "Tournament",
+      "light": "#eeeee6",
+      "light_odd": "#eeeee9",
+      "dark": "#3d6b50",
+      "dark_odd": "#3d6b53",
+      "light_hl": "#f6f68c",
+      "light_hl_odd": "#f6f68f",
+      "dark_hl": "#9eb542",
+      "dark_hl_odd": "#9eb545"
+     },
+     {
+      "name": "teal",
+      "label": "Teal",
+      "light": "#e0ece8",
+      "light_odd": "#e0eceb",
+      "dark": "#4f8a83",
+      "dark_odd": "#4f8a86",
+      "light_hl": "#f0f68e",
+      "light_hl_odd": "#f0f691",
+      "dark_hl": "#a7c45b",
+      "dark_hl_odd": "#a7c45e"
+     },
+     {
+      "name": "rose",
+      "label": "Rose",
+      "light": "#f3e3e6",
+      "light_odd": "#f3e3e9",
+      "dark": "#c07a8a",
+      "dark_odd": "#c07a8d",
+      "light_hl": "#f9f18c",
+      "light_hl_odd": "#f9f18f",
+      "dark_hl": "#e0bc5e",
+      "dark_hl_odd": "#e0bc61"
+     },
+     {
+      "name": "night",
+      "label": "Night",
+      "light": "#9aa3ad",
+      "light_odd": "#9aa3b0",
+      "dark": "#4a5460",
+      "dark_odd": "#4a5463",
+      "light_hl": "#ccd170",
+      "light_hl_odd": "#ccd173",
+      "dark_hl": "#a4aa4a",
+      "dark_hl_odd": "#a4aa4d"
+     }
+    ],
+    "own": [
+     {
+      "name": "own:custom",
+      "label": "My pieces",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:neo",
+      "label": "Neo wood",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/jpeg;base64,/9j/4AAAAAAAAAAAAAAAAAAAAAA=",
+       "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:my-set",
+      "label": "My set",
+      "images": {
+       "wN": "data:image/webp;base64,UklGRhAAAABXRUJQVlA4IAAAAAAAAAAA"
+      },
+      "missing": [
+       "wK",
+       "wQ",
+       "wR",
+       "wB",
+       "wP",
+       "bK",
+       "bQ",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     },
+     {
+      "name": "own:n-o-n-code-a-set-with-a-name-far",
+      "label": "N\u00e9o \u00fcn\u00efcode, a set with a name far longe",
+      "images": {
+       "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NSA0NSI+PGNpcmNsZSByPSI1Ii8+PC9zdmc+",
+       "wK": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "missing": [
+       "wQ",
+       "wR",
+       "wB",
+       "wN",
+       "wP",
+       "bK",
+       "bR",
+       "bB",
+       "bN",
+       "bP"
+      ]
+     }
+    ]
+   }
   }
- }
+ ]
 }

@@ -201,6 +201,27 @@ class SettingsStore(private val context: Context) {
     /** Whether the captions' box stays on screen between lines ([Captions.keep]). */
     fun captionsKeep(): Boolean = section("voice").optBoolean("captions_keep", false)
 
+    /** The coach's voice silent, as the last session left it. */
+    fun muted(): Boolean = section("voice").optBoolean("muted", false)
+
+    /**
+     * The captions' settings as the page reads them (`panel.caption_settings`): the header's CC
+     * and pin follow them, the box turned off from itself included. The phone's box draws its
+     * own sample line, so `preview` stays 0.
+     */
+    fun captionState(): Map<String, Any> {
+        val voice = section("voice")
+        return mapOf(
+            "on" to voice.optBoolean("captions", false),
+            "keep" to voice.optBoolean("captions_keep", false),
+            "text" to voice.optString("captions_text_color", "#FFFFFF"),
+            "background" to voice.optString("captions_background", "#1F1F1F"),
+            "opacity" to voice.optInt("captions_opacity", 92),
+            "size" to voice.optInt("captions_text_size", 17),
+            "preview" to 0,
+        )
+    }
+
     /** How the captions' box looks; a colour that does not read keeps the default. */
     fun captionStyle(): Captions.Style {
         val voice = section("voice")

@@ -8,12 +8,13 @@ import com.sidecoach.events.Trigger
  * When the coach speaks without being asked: `sidecoach/coach/policy.py`.
  *
  * DESIGN.md section 5.5, in priority order: an explicit ask is always answered; a lesson
- * after a mistake; brief feedback after every move the user plays; an orienting question at a
- * decisive moment; a hint once the user has been stuck for a while. Higher numbers yield to
- * lower ones when they collide. While the user is thinking, at most two unprompted messages per
- * position -- the idea, then, if they are still stuck, the focus -- each after its own wait, so
- * the coach never nags and never gives the move unasked. A quiet toggle silences everything but
- * explicit asks.
+ * after a mistake; brief feedback after every move the user plays; a hint once the user has
+ * been stuck for a while. Higher numbers yield to lower ones when they collide. While the user
+ * is thinking the coach says nothing until they are stuck -- no question at a decisive moment
+ * (Tai, 2026-10-01: nothing "until the user is stuck or actively request a hint or after they
+ * have made a move") -- and then at most two messages per position: the idea, then, if they
+ * are still stuck, the focus, each after its own wait, so the coach never nags and never gives
+ * the move unasked. A quiet toggle silences everything but explicit asks.
  *
  * Time control scales all of it: rapid and slower get every trigger, with the stuck threshold
  * shrinking as the clock runs down; blitz gets the brief post-move feedback only; bullet gets
@@ -38,12 +39,6 @@ fun timeControlOf(initialMs: Int?, incrementMs: Int = 0): TimeControl {
     if (estimated >= 3 * 60_000) return TimeControl.BLITZ
     return TimeControl.BULLET
 }
-
-/**
- * In a run of decisive positions (a won endgame: every move is "the" move), the decisive
- * question is asked at most once in this many plies.
- */
-const val DECISIVE_EVERY = 8
 
 /**
  * Unprompted messages in one position while the user thinks: the idea, then the focus (Tai,
@@ -93,9 +88,6 @@ class InterjectionPolicy(
      */
     var lastReason: String? = null
 
-    /** The last ply the decisive question was asked at, while the positions stay decisive. */
-    private var lastDecisivePly: Int? = null
-
     // What the board is doing
 
     /** The board reached `ply`; the user is (or is not) the one to move. */
@@ -107,15 +99,12 @@ class InterjectionPolicy(
     }
 
     /**
-     * A new game, or a position adopted: move numbers start again, so the decisive stretch
-     * pointed at in the last one says nothing about this one. A puzzle's first position was
-     * skipped as part of the previous puzzle's stretch, which ended at a higher ply (Tai's
-     * desktop, 2026-09-24: the mate in three was never asked, only hinted 45 s later). Nor do
-     * its counts: kept by ply, the last puzzles' words at their first positions left a new
-     * puzzle "gave the idea and the focus here" before a hint (Tai's phone, 2026-09-29).
+     * A new game, or a position adopted: move numbers start again, so what was said in the
+     * last one says nothing about this one. Kept by ply, the last puzzles' words at their first
+     * positions left a new puzzle "gave the idea and the focus here" before a hint (Tai's
+     * phone, 2026-09-29).
      */
     fun restart() {
-        lastDecisivePly = null
         spoken.clear()
         saidTs = null
     }
@@ -132,6 +121,17 @@ class InterjectionPolicy(
     /** When the position the user is thinking in appeared (the loop's clock). */
     val positionSince: Double? get() = since
 
+    /**
+     * When the stuck spell being counted began: the position, or the last thing said in it.
+     */
+    val stuckFrom: Double?
+        get() {
+            val began = since
+            val said = saidTs
+            if (began == null || said == null) return began
+            return maxOf(began, said)
+        }
+
     // The triggers
 
     /** After the user's move is measured: a lesson if it was a mistake, else a word. */
@@ -147,41 +147,17 @@ class InterjectionPolicy(
     }
 
     /**
-     * The engine has looked at the position the user is thinking in. The decisive question is
-     * asked when a position turns decisive, not on every move of a won endgame: once a stretch
-     * of decisive positions has been pointed at, the next question waits for a quiet position
-     * in between, or [DECISIVE_EVERY] plies.
-     */
-    fun onPositionAnalysed(ply: Int, decisive: Boolean): Trigger? {
-        if (!maySpeakNow(ply)) return null
-        if ((spoken[ply] ?: 0) != 0) return silent("already spoke in this position")
-        if (!decisive) {
-            lastDecisivePly = null
-            return silent("position not decisive")
-        }
-        val last = lastDecisivePly
-        if (last != null && ply - last < DECISIVE_EVERY) {
-            return silent("decisive stretch already pointed at (ply $last)")
-        }
-        lastDecisivePly = ply
-        lastReason = null
-        return Trigger.DECISIVE_QUESTION
-    }
-
-    /**
      * Time passing while the user thinks; a hint once they have been stuck long enough, counted
      * from the position or from the last thing said in it.
      */
     fun tick(ts: Double): Trigger? {
         val ply = plyValue
-        val began = since
-        if (ply == null || began == null) return silent("no position yet")
+        if (ply == null || since == null) return silent("no position yet")
         if (!maySpeakNow(ply)) return null
         if (inScramble) return silent("time scramble: no stuck hints")
         val threshold = stuckThreshold()
-        val said = saidTs
-        val from = if (said != null) maxOf(began, said) else began
-        if (ts - from < threshold) {
+        val from = stuckFrom
+        if (from == null || ts - from < threshold) {
             return silent("waiting for a stuck hint at ${formatted(threshold, 0)}s")
         }
         lastReason = null

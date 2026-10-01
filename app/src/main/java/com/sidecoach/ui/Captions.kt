@@ -33,6 +33,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.sidecoach.R
+import org.json.JSONObject
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -438,18 +439,20 @@ object Captions {
         target = null
     }
 
-    /** Captions off from the box itself: the setting follows, as the page's switch would. */
+    /**
+     * Captions off from the box itself: the setting follows, as the page's CC would -- the
+     * settings' update, so the page's CC goes off with it and brings the box back when pressed
+     * (the captions' window's `turnOff`).
+     */
     private fun turnOff() {
         on = false
         drop()
         val ctx = app ?: return
         Thread({
             runCatching {
-                val store = SettingsStore(ctx)
-                val values = store.values()
-                values.optJSONObject("voice")?.put("captions", false)
-                store.save(values)
-                PanelEngine.emit("sys", "info", "captions off; Settings > The coach's voice turns them on again")
+                val off = JSONObject().put("voice", JSONObject().put("captions", false))
+                SettingsApi(SettingsStore(ctx)).update(JSONObject().put("settings", off).put("secrets", JSONObject()))
+                PanelEngine.emit("sys", "info", "captions off; the CC button at the top of the panel turns them on again")
             }
         }, "captions-off").start()
     }
@@ -899,7 +902,12 @@ object Captions {
 
         private fun toggleMute() {
             val now = !PanelVoice.muted
-            Thread({ runCatching { PanelVoice.setMuted(now) } }, "captions-mute").start()
+            val ctx = app
+            Thread({
+                runCatching {
+                    if (ctx != null) PanelVoice.mute(SettingsApi(SettingsStore(ctx)), now) else PanelVoice.setMuted(now)
+                }
+            }, "captions-mute").start()
             showMuted(now)
             rest()
         }

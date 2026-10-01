@@ -4,7 +4,7 @@ For each game: every position measured by real engines side by side at a review 
 (`measure_all`), then the review walked from those measurements (`review_game` with all of them
 known, so the walk searches nothing) -- with the motif tagger and the opening book. Recorded:
 the PGN, the measurements (`measured_json`), the review (`ReviewedGame`), each move's clock and
-time spent (`_clocks`), the summary (`summarize`), the moves as the page draws them
+time spent (`clocks`), the summary (`summarize`), the moves as the page draws them
 (`move_views`), the tactics the mistakes passed up (`missed_motifs`, for each side and both),
 and the key moves the AI coach writes on (`review_words.key_plies`).
 
@@ -111,7 +111,7 @@ def review(game: chess.pgn.Game, strength_name: str, engines: list[Engine], book
     return {
         "measured": [json.loads(game_review.measured_json(m)) for m in measured],
         "reviewed": reviewed.model_dump(mode="json"),
-        "clocks": [list(c) for c in game_review._clocks(game)],
+        "clocks": [list(c) for c in game_review.clocks(game)],
         "summary": summarize(reviewed).model_dump(mode="json"),
         "views": move_views(reviewed),
         "missed": {

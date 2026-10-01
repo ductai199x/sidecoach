@@ -590,6 +590,7 @@ class CoachPrimitivesTest {
                         "reason" to policy.lastReason,
                         "threshold" to policy.stuckThreshold(),
                         "scramble" to policy.inScramble,
+                        "stuck_from" to policy.stuckFrom,
                     ),
                 )
             }
@@ -603,10 +604,7 @@ class CoachPrimitivesTest {
             note("new position", null)
             note("tick 10", policy.tick(10.0))
             note("tick 60", policy.tick(60.0))
-            note("analysed quiet", policy.onPositionAnalysed(2, decisive = false))
-            note("analysed decisive", policy.onPositionAnalysed(2, decisive = true))
             policy.said(2, 60.0)
-            note("analysed after said", policy.onPositionAnalysed(2, decisive = true))
             note("tick soon after said", policy.tick(80.0))
             note("tick after said", policy.tick(120.0))
             policy.said(2, 120.0)
@@ -614,13 +612,11 @@ class CoachPrimitivesTest {
             policy.newPosition(2, 300.0, userToMove = true)
             note("same ply again", policy.tick(400.0))
             policy.newPosition(4, 100.0, userToMove = true)
-            note("analysed decisive again", policy.onPositionAnalysed(4, decisive = true))
             policy.said(4)
             note("tick after said without a time", policy.tick(150.0))
             policy.said(3, 150.0)
             note("said of another ply", policy.tick(151.0))
             policy.newPosition(12, 200.0, userToMove = true)
-            note("analysed decisive later", policy.onPositionAnalysed(12, decisive = true))
             policy.setRemaining(20_000)
             note("tick in scramble", policy.tick(400.0))
             policy.setRemaining(600_000)
@@ -634,13 +630,9 @@ class CoachPrimitivesTest {
             note("blunder", policy.onUserMoveAssessed(assessment(Severity.BLUNDER, Label.BLUNDER)))
             note("fine move", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.BEST)))
             note("miss", policy.onUserMoveAssessed(assessment(Severity.NONE, Label.MISS)))
-            // The branches the script had never run (the parity audit, 2026-09-29): an analysis
-            // of a ply the board has left; the clock's share between the floor and the setting
-            // (five minutes gives 24 s, 100 s still hints at the floor); a quiet position
-            // between two decisive ones, which lets the question come again within
-            // DECISIVE_EVERY plies.
-            policy.newPosition(20, 800.0, userToMove = true)
-            note("analysed another ply", policy.onPositionAnalysed(18, decisive = true))
+            // The branches the script had never run (the parity audit, 2026-09-29): the clock's
+            // share between the floor and the setting (five minutes gives 24 s, 100 s still
+            // hints at the floor).
             policy.newPosition(22, 900.0, userToMove = true)
             policy.setRemaining(300_000)
             note("five minutes, before the share", policy.tick(920.0))
@@ -648,14 +640,6 @@ class CoachPrimitivesTest {
             policy.setRemaining(100_000)
             policy.newPosition(24, 1000.0, userToMove = true)
             note("100 s, at the floor", policy.tick(1021.0))
-            policy.newPosition(30, 1100.0, userToMove = true)
-            note("decisive at 30", policy.onPositionAnalysed(30, decisive = true))
-            policy.newPosition(32, 1110.0, userToMove = true)
-            note("decisive at 32, in the stretch", policy.onPositionAnalysed(32, decisive = true))
-            policy.newPosition(34, 1120.0, userToMove = true)
-            note("quiet at 34", policy.onPositionAnalysed(34, decisive = false))
-            policy.newPosition(36, 1130.0, userToMove = true)
-            note("decisive at 36, after the quiet one", policy.onPositionAnalysed(36, decisive = true))
 
             check("${run.getString("control")} steps", seen.size, steps.length())
             for (k in 0 until minOf(steps.length(), seen.size)) {
@@ -670,6 +654,11 @@ class CoachPrimitivesTest {
                     check("$label threshold", threshold, want.getDouble("threshold"))
                 }
                 check("$label scramble", got["scramble"], want.getBoolean("scramble"))
+                check(
+                    "$label stuck from",
+                    got["stuck_from"],
+                    if (want.isNull("stuck_from")) null else want.getDouble("stuck_from"),
+                )
             }
         }
     }
