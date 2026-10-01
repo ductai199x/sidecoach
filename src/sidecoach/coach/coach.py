@@ -2893,16 +2893,19 @@ class Coach:
             position.board, event, last_move=position.last_move, user=self.user_colour, pick=peek
         )
         position.leads = leads
+        # The record shows what the coach answers from, the early depth until the full one
+        # replaces it: kept back until the full depth, a question answered from the early
+        # one was asked of the model with "Engine lines: not in yet." and no facts (the coach
+        # review, 2026-10-01).
+        self.conversation.analysed(event, position.facts)
         if event.provisional:
             # Measured early, the full depth to follow: what the player asks is answered
-            # from it now; the coach's own words -- a lesson -- and the conversation's record
-            # wait for the full depth.
+            # from it now; the coach's own words -- a lesson -- wait for the full depth.
             if position is self._current and self._pending_ask is not None:
                 text, _asked = self._pending_ask
                 self._pending_ask = None
                 self.ask(text, ts)
             return
-        self.conversation.analysed(event, position.facts)
         if self._held_lesson is not None and self._held_lesson[3].ply == event.ply:
             self._release_lesson(ts)  # what the move allowed is known now
         if position is self._current and self._pending_ask is not None:
@@ -3580,7 +3583,18 @@ class Coach:
             messages: list[ChatMessage] = [
                 {"role": "user", "content": f"{harness}{faced}{earlier}\n\n# Task\n{directive}"},
             ]
-            problem = harness_problem(harness, self.board, self.user_side)
+            # What the coach holds for the position on the board, which the position now must
+            # show (the early depth was answered from but never shown: the coach review).
+            held = self._current
+            if held is not None and held.board.fen() != self.board.fen():
+                held = None
+            problem = harness_problem(
+                harness,
+                self.board,
+                self.user_side,
+                lines=held is not None and held.analysis is not None and bool(held.analysis.lines),
+                facts=held is not None and held.facts is not None,
+            )
         if problem:
             self.harness_problems.append(f"{trigger.value} at ply {position.ply}: {problem}")
         unlisted: frozenset[str] | None = None

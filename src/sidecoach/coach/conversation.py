@@ -199,13 +199,22 @@ def ways(board: chess.Board, sans: Sequence[str], side: Side) -> str:
 _NOW_FEN = re.compile(r"# Position now\n## Board\nFEN: (\S+ [wb])")
 
 
-def harness_problem(harness: str, board: chess.Board, user_side: Side) -> str | None:
+def harness_problem(
+    harness: str,
+    board: chess.Board,
+    user_side: Side,
+    *,
+    lines: bool = False,
+    facts: bool = False,
+) -> str | None:
     """What is wrong with a harness about to go to the model, or None: it must have the position
     now, that position must be the game's as it stands (`board`) with its side to move, and the
     setting must name the player's colour. Checked before every request and logged when it
     fails, so a gap like the puzzle start's -- no position now at all, and the model named the
     player's own Qxf2+ as the opponent's threat (2026-10-01) -- shows the first time it
-    happens."""
+    happens. `lines` and `facts`: the coach has the engine's lines and the facts for that
+    position, so the position now must show them -- a question answered from the early depth
+    was asked with "Engine lines: not in yet." and no facts (the coach review, 2026-10-01)."""
     side = "White" if user_side == Side.WHITE else "Black"
     if f"You coach {side}." not in harness:
         return f"the setting does not say the player is {side}"
@@ -215,6 +224,13 @@ def harness_problem(harness: str, board: chess.Board, user_side: Side) -> str | 
     now = " ".join(board.fen().split(" ")[:2])
     if found.group(1) != now:
         return f"the position now is {found.group(1)}, the game's is {now}"
+    shown = harness[found.start() :].split("\n\n## Said here\n", 1)[0]
+    if lines:
+        body = shown.split("\n## Engine lines", 1)[-1].split("\n", 2)
+        if "\n## Engine lines" not in shown or len(body) < 2 or body[1].strip() == "not in yet.":
+            return "the position now has no engine lines, though the coach has them"
+    if facts and not board.is_game_over() and "\n## Facts (" not in shown:
+        return "the position now has no facts, though the coach has them"
     return None
 
 
@@ -342,7 +358,9 @@ class Conversation:
 
     def analysed(self, event: Analysis, facts: PositionFacts) -> PlyRecord | None:
         """The engine's word on a position: the move's that led to it, or the start's (ply
-        0) -- kept by the start record, as no move led there."""
+        0) -- kept by the start record, as no move led there. The early depth stands until
+        the full one replaces it; only the full depth, landing after the model has seen the
+        move's line, gets a note of its own."""
         same = event.fen.split(" ")[:3]
         if event.ply == 0 and self.start.fen.split(" ")[:3] == same:
             self.start.analysis = event
@@ -353,7 +371,8 @@ class Conversation:
             return None
         record.analysis = event
         record.facts = facts
-        self._note_if_frozen(record, "analysis")
+        if not event.provisional:
+            self._note_if_frozen(record, "analysis")
         return record
 
     def clock(self, white_ms: int | None, black_ms: int | None) -> None:
