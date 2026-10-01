@@ -2314,6 +2314,17 @@ class Coach:
     def close(self) -> None:
         self.speaker.close()
 
+    def pause(self, ts: float) -> None:
+        """The screen is no longer read (the panel's Stop; the coach outlives it): a lesson
+        held for its analysis is said now, as at a game's end, and nothing more is said
+        unasked until the board is read again -- the next Start's new game or re-read. Kept
+        on the position it last read, the coach gave stuck hints about the last session's
+        board on the next Start's first ticks (the game-state review, 2026-10-01). Asked before
+        then, it answers from the last position it read."""
+        self._release_lesson(ts)
+        self._current = None
+        self.policy.pause()
+
     @property
     def user_colour(self) -> chess.Color:
         return self.user_side.color

@@ -1923,6 +1923,11 @@ class PanelEngine:
             late = assessing.wait(timeout=patience)
             coaching.events(late, time.monotonic())
             coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
+            if coaching.coach is not None:
+                # Nothing unasked until the next Start reads the board again: the coach
+                # outlives the session, and the first ticks after Start gave stuck hints about
+                # this one's last position (the game-state review, 2026-10-01).
+                coaching.coach.pause(time.monotonic())
             coaching.wait()
             self._coach_meta(coaching)
             # The strip once more, with the replies that came after the last tick.

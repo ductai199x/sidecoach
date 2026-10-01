@@ -102,6 +102,15 @@ class InterjectionPolicy:
         self._spoken.clear()
         self._said_ts = None
 
+    def pause(self) -> None:
+        """The screen is no longer read (Stop): no position is being thought in until the board
+        is read again, and no stuck spell runs. Kept, the next Start's first ticks gave stuck
+        hints about the last session's board (the game-state review, 2026-10-01)."""
+        self._ply = None
+        self._since = None
+        self._said_ts = None
+        self._user_to_move = False
+
     def withdraw(self, ply: int) -> None:
         """The moves after `ply` were taken back: what was said unasked at the plies past it
         was said of positions that are gone. Kept by ply, both hints said after 1.e4 left
