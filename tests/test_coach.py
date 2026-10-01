@@ -2214,15 +2214,129 @@ def test_the_coachs_one_moment_is_no_turn_of_the_conversation() -> None:
     assert "You have already told them the verdict" not in directive
 
 
-def _looked(coach: Coach, board: chess.Board, ply: int, ucis: list[str], ts: float) -> None:
-    """The engine's look at `board`: `ucis` its lines, best first."""
+def _looked(
+    coach: Coach,
+    board: chess.Board,
+    ply: int,
+    ucis: list[str],
+    ts: float,
+    threats: list[str] | None = None,
+) -> None:
+    """The engine's look at `board`: `ucis` its lines, best first; `threats` (UCI) what the
+    other side would play if the side to move passed."""
     lines = [Line(moves=[u], depth=18, expected_score=0.5 - i / 10) for i, u in enumerate(ucis)]
     coach.on_event(
         Analysis(
-            game_id="g", fen=board.fen(), ply=ply, lines=lines, decisive=False, only_move=False
+            game_id="g",
+            fen=board.fen(),
+            ply=ply,
+            lines=lines,
+            decisive=False,
+            only_move=False,
+            threats=threats or [],
         ),
         ts,
     )
+
+
+def _judged(coach: Coach, ply: int, uci: str, ts: float) -> None:
+    """The engine's verdict on the move at `ply`: its own best."""
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=ply,
+            uci=uci,
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[uci],
+            label=Label.BEST,
+        ),
+        ts,
+    )
+
+
+# White to move; Black's queen and bishop threaten Qxf2#.
+QH4 = "rnb1k1nr/pppp1ppp/8/2b1p3/2B1P2q/2N5/PPPP1PPP/R1BQK1NR w KQkq - 6 4"
+
+
+def test_their_threat_after_the_players_move_waits_for_the_position_now() -> None:
+    """Right after the player's move, its position not yet read, "what are they threatening?"
+    was answered from the position before the move: "They threaten Qxf2#", the threat the
+    move had just stopped (the coach review, 2026-10-01). It waits for the engine's look at
+    the position on the board, where their threat is their best move."""
+    coach = offline_coach()
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=QH4, kind="position"), 0.0
+    )
+    board = chess.Board(QH4)
+    _looked(coach, board, 0, ["d1e2", "d1f3"], 0.5, threats=["h4f2"])
+    assert coach.positions[0].facts is not None and coach.positions[0].facts.threats == ["Qxf2#"]
+    _played(coach, board, 1, "d1e2", True, 3.0)  # Qe2 guards f2
+    _judged(coach, 1, "d1e2", 3.2)
+    drain(coach)
+    coach.ask("what are they threatening?", 3.5)
+    assert not any("Qxf2" in m.text for m in drain(coach))
+    _looked(coach, board, 1, ["g8f6", "b8c6"], 4.0)
+    said = [m.text for m in drain(coach)]
+    assert said and said[-1].startswith("It's their move, and their best is"), said
+
+
+def test_a_hint_before_the_verdict_is_answered_and_climbs_no_rung_of_the_position_left() -> None:
+    """Pressed between the player's move and its verdict, "hint" got "Give me a moment; I am
+    still reading this position." with nothing queued -- the promise never kept -- and the
+    rung was climbed at the position the player had moved from: the combination's next stuck
+    hint skipped the idea (the coach review, 2026-10-01)."""
+    coach = offline_coach()
+    start_game(coach, Side.BLACK)
+    board = play(coach, ["e4"], user_side=Side.BLACK)
+    _looked(coach, board, 1, ["e7e5", "c7c5"], 1.5)
+    _played(coach, board, 2, "e7e5", True, 3.0)  # the engine's best
+    coach.ask("hint", 3.05)
+    assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "a moment"
+    _judged(coach, 2, "e7e5", 3.1)
+    drain(coach)
+    _looked(coach, board, 2, ["g1f3", "b1c3"], 3.6)
+    kept = [m.text for m in drain(coach) if m.trigger is Trigger.USER_ASK]
+    assert len(kept) == 1 and "moment" not in kept[0], kept
+    assert coach.positions[1].disclosure.hinted is DisclosureLevel.SILENT
+    _played(coach, board, 3, "g1f3", False, 5.0)
+    _looked(coach, board, 3, ["b8c6", "g8f6"], 5.5)
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.IDEA]
+
+
+def test_a_question_held_for_the_engine_is_answered_whatever_the_board_does() -> None:
+    """The coach's "One moment" was a promise it did not keep when the board changed under it:
+    a takeback neither answered nor dropped the question, a re-read and a new game dropped it,
+    and the game's end left it waiting (the coach review, 2026-10-01). It is answered at the
+    position the player faces once the coach has read it, and at the game's end at once."""
+    from sidecoach.events import Resync, Takeback
+
+    four = chess.Board()
+    for san in SCHOLAR_MOVES[:4]:
+        four.push_san(san)
+    other = chess.Board(QH4)
+    for change in ("takeback", "re-read", "new game", "game over"):
+        coach = offline_coach()
+        play_to_scholar(coach)
+        _looked(coach, four, 4, ["d1h5", "g1f3"], 6.5)
+        coach.ask("hint", 7.0)  # the position now not read yet
+        assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "a moment"
+        if change == "takeback":
+            coach.on_event(Takeback(game_id="g", plies=2, fen=four.fen()), 8.0)
+        elif change == "re-read":
+            coach.on_event(Resync(game_id="g", fen=QH4, reason="re-read"), 8.0)
+            _looked(coach, other, 0, ["d1e2", "d1f3"], 8.5)
+        elif change == "new game":
+            coach.on_event(
+                GameStarted(game_id="g", user_side=Side.WHITE, start_fen=QH4, kind="position"),
+                8.0,
+            )
+            _looked(coach, other, 0, ["d1e2", "d1f3"], 8.5)
+        else:
+            coach.on_event(GameEnded(game_id="g", result="1-0", reason="resigned"), 8.0)
+        answered = drain(coach)
+        assert [m.trigger for m in answered] == [Trigger.USER_ASK], change
+        assert "moment" not in answered[0].text, change
 
 
 def test_the_hints_said_at_a_withdrawn_ply_do_not_count_against_the_next_position_there() -> None:

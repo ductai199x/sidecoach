@@ -2346,6 +2346,12 @@ class Coach:
             self._current = None
             self.finished = True
             self.conversation.ended(event)
+            if self._pending_ask is not None:
+                # The question held for the engine's look, answered now: nothing is withheld
+                # from a game that is over, and left waiting it was never answered.
+                text, _asked = self._pending_ask
+                self._pending_ask = None
+                self.ask(text, ts)
         elif isinstance(event, Recommendation):
             self._on_recommendation(event, ts)
         elif isinstance(event, PuzzleOutcome):
@@ -2412,8 +2418,9 @@ class Coach:
         if (
             position is not None
             and position.facts is None
-            and self.user_to_move
+            and (self.user_to_move or self._waits_for_the_board(text))
             and not self.finished
+            and not position.board.is_game_over()  # a finished board has nothing to read
         ):
             # The engine is still looking at the position on the board: said so, and
             # answered the moment its analysis lands -- never from an older position's
@@ -2438,10 +2445,14 @@ class Coach:
             )
             return
         unlock = unlock_for(text, position.board, position.facts.candidates)
-        # A hint asked for climbs from what the combination has had already.
-        position.disclosure.carry(self._ladder(position))
-        if unlock is not None:
-            position.disclosure.apply(unlock)
+        if position is self._current:
+            # A hint asked for climbs from what the combination has had already -- in the
+            # position the player faces only: climbed in the one they had moved from, a hint
+            # asked before the new one was read made the combination's next hint skip a rung
+            # (the coach review, 2026-10-01).
+            position.disclosure.carry(self._ladder(position))
+            if unlock is not None:
+                position.disclosure.apply(unlock)
         level = max(position.disclosure.level, DisclosureLevel.IDEA)
         if self.finished or position.board.is_game_over():
             # Nothing is withheld from a game that is over.
@@ -2628,6 +2639,33 @@ class Coach:
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
 
+    def _waits_for_the_board(self, text: str) -> bool:
+        """On the opponent's move, the position on the board not yet read: whether the words
+        wait for it. Their threat is read from it: answered from the position before the
+        player's move, "they threaten Qxf2#" was said of the threat the move had just
+        stopped. So is anything but the player's last move once its verdict is in and the
+        position it was played from is read: answered from an older position, the coach said
+        "Give me a moment; I am still reading this position." with nothing waiting (the coach
+        review, 2026-10-01)."""
+        if _ASK_THREAT.search(text):
+            return True
+        own = self._last_own_move()
+        if own is None:
+            return True
+        faced = self.positions.get(own.move.ply - 1)
+        return faced is None or faced.facts is None
+
+    def _answer_pending(self, ts: float) -> None:
+        """The question held for the engine's look, answered at the position the player faces
+        now once the coach has read it: wherever the board went meanwhile -- a takeback, a
+        re-read, the next game -- "One moment" was a promise (the coach review, 2026-10-01)."""
+        position = self._current
+        if self._pending_ask is None or position is None or position.facts is None:
+            return
+        text, _asked = self._pending_ask
+        self._pending_ask = None
+        self.ask(text, ts)
+
     def poll(self) -> list[CoachMessage]:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
@@ -2676,7 +2714,8 @@ class Coach:
         # the last game's sentences when the model failed (the parity audit, 2026-09-26).
         self._review_lines = []
         self._elicit_asked, self._elicit_answered = None, False
-        self._pending_ask = None
+        # A question held for the engine's look stays: it is answered at this game's first
+        # position once read (`_answer_pending`), as a hint pressed as the next puzzle appears.
         self.finished = False
         self._current = self.positions[0]
         self.policy.restart()
@@ -2894,6 +2933,8 @@ class Coach:
         self._current = position
         self.policy.withdraw(ply)
         self.policy.new_position(ply, ts, user_to_move=self.user_to_move)
+        # A question held for the engine's look is answered here, read already or once read.
+        self._answer_pending(ts)
 
     def _on_resync(self, event: Resync, ts: float) -> None:
         """The board was re-read: the position jumped; the move numbering restarts."""
@@ -2903,7 +2944,7 @@ class Coach:
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self._current = self.positions[0]
-        self._pending_ask = None
+        # A question held for the engine's look stays, answered once this position is read.
         self.policy.restart()
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
 
@@ -2935,17 +2976,13 @@ class Coach:
         if event.provisional:
             # Measured early, the full depth to follow: what the player asks is answered
             # from it now; the coach's own words -- a lesson -- wait for the full depth.
-            if position is self._current and self._pending_ask is not None:
-                text, _asked = self._pending_ask
-                self._pending_ask = None
-                self.ask(text, ts)
+            if position is self._current:
+                self._answer_pending(ts)
             return
         if self._held_lesson is not None and self._held_lesson[3].ply == event.ply:
             self._release_lesson(ts)  # what the move allowed is known now
-        if position is self._current and self._pending_ask is not None:
-            text, _asked = self._pending_ask
-            self._pending_ask = None
-            self.ask(text, ts)
+        if position is self._current:
+            self._answer_pending(ts)
         # Nothing is said of its own at a decisive moment: while the player thinks, the
         # first word unasked is the stuck hint (Tai, 2026-10-01: nothing "until the user is
         # stuck or actively request a hint or after they have made a move").
