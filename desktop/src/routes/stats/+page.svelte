@@ -183,7 +183,7 @@
       { id: "strategy" as Section, name: "Strategy", ...rated("strategy", num(n.strategy.all.overall), "accuracy"), trend: n.trends.strategy, sub: "" },
       { id: "endgames" as Section, name: "Endgames", ...rated("endgames", num(n.endgames.accuracy.overall), "accuracy"), trend: n.trends.endgames, sub: "" },
       { id: "time" as Section, name: "Time", value: pct(n.time.pressure), unit: "mistakes short of time", trend: null, sub: ["opening", "middlegame", "endgame"].map((p) => `${className(p)} ${num(tm[p], "s")}`).join(" · ") },
-      { id: "moves" as Section, name: "Brilliant Moves", value: String(n.galleries.brilliant ?? 0), unit: "brilliant", trend: null, sub: `${n.galleries.great ?? 0} great · ${n.galleries.miss ?? 0} misses · ${n.galleries.blunder ?? 0} blunders` },
+      { id: "moves" as Section, name: "Brilliant Moves", value: String(n.galleries.brilliant ?? 0), unit: "brilliant", trend: null, sub: `${n.galleries.great ?? 0} great · ${plural(n.galleries.miss ?? 0, "miss", "misses")} · ${plural(n.galleries.blunder ?? 0, "blunder")}` },
     ].map((c) => ({ ...c, icon: icon(c.id) }));
   });
 

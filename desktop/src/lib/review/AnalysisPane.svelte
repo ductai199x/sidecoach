@@ -86,19 +86,28 @@
   let said = $state("");
   let saidBad = $state(false);
   let busy = $state(false);
+  // The clipboard is asked inside the click, the text to follow once Sidecoach has written it: a
+  // click's leave to write lasts seconds, and asked after it, the page gets a permission prompt.
   async function copy(): Promise<void> {
     busy = true;
-    const got = await savePgn(annotated, false).catch(() => null);
-    busy = false;
-    if (!got?.ok || !got.pgn) return void ((said = got?.error || "Sidecoach is not answering."), (saidBad = true));
+    let failed: string | null = null;
+    const text = savePgn(annotated, false)
+      .catch(() => null)
+      .then((got) => {
+        if (!got?.ok || !got.pgn) throw new Error((failed = got?.error || "Sidecoach is not answering."));
+        return new Blob([got.pgn], { type: "text/plain" });
+      });
+    text.catch(() => {});
     try {
-      await navigator.clipboard.writeText(got.pgn);
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
       said = "Copied: paste it anywhere a PGN goes.";
       saidBad = false;
     } catch {
-      said = "The PGN could not be copied here; Save it instead.";
+      await text.catch(() => {});
+      said = failed ?? "The PGN could not be copied here; Save it instead.";
       saidBad = true;
     }
+    busy = false;
   }
   async function keep(): Promise<void> {
     busy = true;
