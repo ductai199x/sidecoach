@@ -445,6 +445,41 @@ def test_the_tools_folder_is_the_apps_in_the_app(
     assert engine.settings.tools_dir == tmp_path / "tools"
 
 
+SAVE_QUEUE_CHECK = """
+import { saveQueue } from "%s";
+const sent = [];
+let release;
+const q = saveQueue((keepalive) => {
+  sent.push(keepalive);
+  return sent.length === 1 ? new Promise((r) => (release = r)) : Promise.resolve();
+});
+q.flush();      // a change saved, on its way
+q.flush(true);  // another made since, and the page closing
+console.log(JSON.stringify(sent));
+release();
+"""
+
+
+def test_a_change_made_while_a_save_is_on_its_way_outlives_the_page(tmp_path: Path) -> None:
+    """The page closing while a save was on its way only asked for one more round, which a
+    page gone never runs, and without keepalive: the change made since was lost (the settings
+    review, 2026-10-01). It goes at once, in a request of its own that outlives the page."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node here")
+    module = Path(__file__).parent.parent / "desktop" / "src" / "lib" / "savequeue.ts"
+    script = tmp_path / "check.mjs"
+    script.write_text(SAVE_QUEUE_CHECK % module.resolve().as_uri(), encoding="utf-8")
+    run = subprocess.run(
+        [node, "--no-warnings", str(script)], capture_output=True, text=True, timeout=30
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "[false,true]"
+
+
 def test_usernames_are_kept_without_spaces_around(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

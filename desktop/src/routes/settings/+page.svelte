@@ -11,6 +11,7 @@
   import { announce, inShell, onAnnounce, openWindow, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
   import { keyFromEvent, keyFromMouse, keyName as hotkeyName, typesText } from "$lib/hotkey";
+  import { saveQueue } from "$lib/savequeue";
   import "$lib/styles/review.css";
 
   type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
@@ -382,12 +383,10 @@
 
   // Every change is saved as it is made (Tai, 2026-10-01: a username typed into Settings was
   // lost when the window closed before Save; "save each change as you make it, with no Save
-  // button"). One save at a time, in order: what changes while one is on its way goes with
-  // the next, so two quick changes can never land in the wrong order.
+  // button"). One save at a time, in order (lib/savequeue.ts).
   const TYPING_MS = 600;
   let typing: ReturnType<typeof setTimeout> | null = null;
-  let inFlight: Promise<void> | null = null;
-  let again = false;
+  const queue = saveQueue((keepalive) => saveOnce(keepalive));
 
   /** Save once the typing pauses. */
   function soon(): void {
@@ -405,17 +404,7 @@
       clearTimeout(typing);
       typing = null;
     }
-    if (inFlight) {
-      again = true;
-      return inFlight;
-    }
-    inFlight = (async () => {
-      do {
-        again = false;
-        await saveOnce(keepalive);
-      } while (again);
-    })().finally(() => (inFlight = null));
-    return inFlight;
+    return queue.flush(keepalive);
   }
 
   /** The changes, less the fields the sidecar refused and nobody has changed since. */
@@ -464,7 +453,7 @@
           // The rest of the changes go on their own -- when the refused fields are out of them,
           // so a refusal the page cannot place is said, not sent again and again.
           const rest = sendable(changes(sent, saved));
-          if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) again = true;
+          if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) queue.more();
           failure = refused.length ? "" : "Not saved: Sidecoach refused the change.";
           return;
         }
