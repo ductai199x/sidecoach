@@ -49,12 +49,10 @@ class Backlog:
         settings: Settings,
         store_path: Path | None,
         *,
-        busy: Callable[[], bool],
         make_engine: Callable[..., Engine] | None = None,
     ) -> None:
         self.settings = settings
         self.store_path = store_path
-        self._busy = busy
         self._make_engine = make_engine
         self._stop = threading.Event()
         self._wake = threading.Event()  # games came in, or the player resumed: look now
@@ -62,7 +60,6 @@ class Backlog:
         self._store = Store(store_path)
         self._lock = threading.Lock()
         self.paused_by_you = self._store.setting(PAUSED_KEY) == "1"
-        self.waiting_for_you = False  # stepped aside for the player's own game or review
         self.reviewing: str | None = None
         self._current: dict[str, Any] | None = None
         self.total = 0  # the library's games a review covers or will
@@ -100,9 +97,11 @@ class Backlog:
             self._thread.join(timeout)
 
     def state(self) -> dict[str, Any]:
-        """What the panel and the Games window show: reviewing, paused (by the player), waiting
-        (for the player's own game or review), done (every game reviewed), or empty (no games);
-        games reviewed of all, the game under way with its positions, the seconds left."""
+        """What the panel and the Games window show: reviewing, paused (by the player), done
+        (every game reviewed), or empty (no games); games reviewed of all, the game under way
+        with its positions, the seconds left. It runs beside everything else -- a game followed,
+        a review open -- below normal priority; only the player's Pause stops it (Tai,
+        2026-10-01: it stepped aside on its own, which he never asked for)."""
         with self._lock:
             current = dict(self._current) if self._current else None
             runs = list(self._runs[-ETA_GAMES:])
@@ -121,8 +120,6 @@ class Backlog:
             status = "done"
         elif self.paused_by_you:
             status = "paused"
-        elif self.waiting_for_you:
-            status = "waiting"
         else:
             status = "reviewing"
         # The time left: this session's pace a position measured (a game gone on from where it
@@ -144,24 +141,20 @@ class Backlog:
             "current": current,
             "eta_s": eta,
             "paused_by_you": self.paused_by_you,
-            # The Games window's older reading: stepped aside for the player's own work.
-            "paused": status == "waiting",
         }
 
     def _run(self) -> None:
         store = self._store
         try:
             while not self._stop.is_set():
-                if self.paused_by_you or self._busy():
-                    # Standing by, the counts kept fresh for the page now and then (reading the
-                    # library is not free), at once when games come in.
-                    self.waiting_for_you = not self.paused_by_you
+                if self.paused_by_you:
+                    # Paused by the player: the counts kept fresh for the page now and then
+                    # (reading the library is not free), at once when games come in.
                     if time.monotonic() - self._counted > REST_S:
                         self._todo(store)
                     self._wake.wait(IDLE_S)
                     self._wake.clear()
                     continue
-                self.waiting_for_you = False
                 if self._keep_saved(store):
                     continue
                 todo = self._todo(store)
@@ -211,15 +204,15 @@ class Backlog:
         return sorted(todo, key=lambda r: r.played_at or r.added_at, reverse=True)
 
     def _review(self, store: Store, row: LibraryRow) -> None:
-        # Stopped part way by the player (a pause, their own game or review) or the app closing:
-        # it keeps what it measured and goes on from there later.
+        # Stopped part way by the player's Pause or the app closing: it keeps what it measured
+        # and goes on from there later.
         halt = threading.Event()
 
         def progress(done: int, total: int) -> None:
             with self._lock:
                 if self._current is not None:
                     self._current.update(done=done, total=total)
-            if self.paused_by_you or self._busy() or self._stop.is_set():
+            if self.paused_by_you or self._stop.is_set():
                 halt.set()
 
         strength = STRENGTHS[STRENGTH]

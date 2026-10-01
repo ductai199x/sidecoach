@@ -80,7 +80,7 @@
     const m = Math.round(s / 60);
     return m < 60 ? `about ${m} min left` : `about ${Math.floor(m / 60)} h ${m % 60} min left`;
   }
-  const job = $derived(backlog && (backlog.status === "reviewing" || backlog.status === "paused" || backlog.status === "waiting") ? backlog : null);
+  const job = $derived(backlog && (backlog.status === "reviewing" || backlog.status === "paused") ? backlog : null);
   const jobFrac = $derived(job && job.total ? Math.min(1, (job.done + (job.current && job.current.total ? job.current.done / job.current.total : 0)) / job.total) : 0);
 
   async function bringIn(): Promise<void> {
@@ -497,7 +497,7 @@
       <!-- The background review as a job the player sees and runs (ui/backlog.py). -->
       <div class="gm-job" class:still={job.status !== "reviewing"} role="status" aria-label="The background review">
         <div class="gm-job-head">
-          <b>{job.status === "paused" ? "Background review paused" : job.status === "waiting" ? "Background review waits for you" : "Reviewing your games in the background"}</b>
+          <b>{job.status === "paused" ? "Background review paused" : "Reviewing your games in the background"}</b>
           <span class="gm-job-count">{job.done} of {job.total} games{job.eta_s != null ? ` · ${minutesLeft(job.eta_s)}` : ""}</span>
           {#if job.status === "paused"}
             <button class="primary gm-job-btn" onclick={() => pauseReviews(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Resume</button>
@@ -509,8 +509,6 @@
         <small class="gm-job-detail">
           {#if job.status === "paused"}
             Paused by you: nothing is lost, and Sidecoach stays paused after a restart. Stats counts the games reviewed so far.
-          {:else if job.status === "waiting"}
-            It steps aside while you play a game or a review is analysing, and goes on after.
           {:else if job.current}
             Now: {job.current.white ?? "White"} v {job.current.black ?? "Black"}{job.current.total ? ` · ${job.current.done} of ${job.current.total} positions` : ""}. One game at a time, below normal priority.
           {:else}

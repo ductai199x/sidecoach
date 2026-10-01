@@ -435,9 +435,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     if background:
         from sidecoach.ui.backlog import Backlog
 
-        backlog = Backlog(
-            engine.settings, store_path, busy=lambda: engine.running or reviews.busy()
-        )
+        backlog = Backlog(engine.settings, store_path)
         backlog.start()
         engine.settings_followers.append(lambda s: setattr(backlog, "settings", s))
     app.state.backlog = backlog  # closed with the panel (`serve`)

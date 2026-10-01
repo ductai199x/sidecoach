@@ -12,7 +12,7 @@
   import { inShell, openWindow } from "./shell.svelte";
 
   type Reviews = {
-    status: "reviewing" | "paused" | "waiting" | "done" | "empty";
+    status: "reviewing" | "paused" | "done" | "empty";
     total: number; done: number; waiting: number;
     current: { key: string; white: string | null; black: string | null; done: number; total: number } | null;
     eta_s: number | null;
@@ -24,7 +24,7 @@
     detail: string;
     meta: string;
     frac: number;
-    state: "running" | "paused" | "waiting" | "done" | "failed";
+    state: "running" | "paused" | "done" | "failed";
     sign: string; // what a clearing is of: a job cleared stays hidden until it changes
   };
 
@@ -71,15 +71,14 @@
       const game = r.current ? `${r.current.white ?? "White"} v ${r.current.black ?? "Black"}` : "";
       out.push({
         id: "reviews",
-        title: r.status === "done" ? "Every game reviewed" : r.status === "paused" ? "Game reviews paused" : r.status === "waiting" ? "Game reviews wait for you" : "Reviewing your games",
+        title: r.status === "done" ? "Every game reviewed" : r.status === "paused" ? "Game reviews paused" : "Reviewing your games",
         detail:
           r.status === "reviewing" && r.current ? `${game} · ${r.current.done} of ${r.current.total} positions`
-          : r.status === "waiting" ? "They go on when your game or your review is done."
           : r.status === "paused" ? "Resume when the computer is free: nothing is lost."
           : r.status === "done" ? "Stats counts all of them." : "Getting the games ready…",
         meta: `${r.done} of ${r.total} games${r.eta_s != null ? " · " + minutes(r.eta_s) : ""}`,
         frac: r.total ? Math.min(1, (r.done + share) / r.total) : 0,
-        state: r.status === "done" ? "done" : r.status === "paused" ? "paused" : r.status === "waiting" ? "waiting" : "running",
+        state: r.status === "done" ? "done" : r.status === "paused" ? "paused" : "running",
         sign: `${r.status === "done" ? "done" : "on"}:${r.total}`,
       });
     }
@@ -99,7 +98,7 @@
     }
     return out;
   });
-  const active = $derived(jobs.filter((j) => j.state === "running" || j.state === "paused" || j.state === "waiting"));
+  const active = $derived(jobs.filter((j) => j.state === "running" || j.state === "paused"));
   // Finished here, and not cleared: a job the app started with already done is none of these.
   const finished = $derived(jobs.filter((j) => (j.state === "done" || j.state === "failed") && seen[j.id] && cleared[j.id] !== j.sign));
   const shown = $derived(active.length > 0 || finished.length > 0);
@@ -201,7 +200,7 @@
           <div class="jb-peek-row">
             <b>{j.title}</b>
             {#if j.meta}<small>{j.meta}</small>{/if}
-            {#if j.state === "running" || j.state === "paused" || j.state === "waiting"}{@render bar(j)}{/if}
+            {#if j.state === "running" || j.state === "paused"}{@render bar(j)}{/if}
           </div>
         {/each}
       </div>

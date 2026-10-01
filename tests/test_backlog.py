@@ -48,15 +48,11 @@ def test_a_game_brought_in_is_reviewed_in_the_background_and_its_facts_kept(
     store = Store(path)
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
-    busy = [True]
-    backlog = backlog_module.Backlog(settings, path, busy=lambda: busy[0], make_engine=engine_for)
+    backlog = backlog_module.Backlog(settings, path, make_engine=engine_for)
     backlog.start()
     try:
-        # The player is busy: nothing is reviewed, and the job says it waits for them.
-        assert _until(lambda: backlog.state()["status"] == "waiting")
-        assert backlog.state()["paused"] and backlog.state()["total"] == 1
-        assert not made and not store.stat_games()
-        busy[0] = False
+        # It runs at once, beside whatever else runs: only the player's Pause stops it (Tai,
+        # 2026-10-01: it waited on its own while a game was followed, which he never asked for).
         assert _until(lambda: any(g["key"] == row.key for g in store.stat_games()))
         game = next(g for g in store.stat_games() if g["key"] == row.key)
         assert (game["user_side"], game["bot"], game["strength"]) == ("black", False, "standard")
@@ -102,7 +98,7 @@ def test_the_player_pauses_and_resumes_and_a_pause_outlives_a_restart(
     store = Store(path)
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
-    first = backlog_module.Backlog(settings, path, busy=lambda: False, make_engine=engine_for)
+    first = backlog_module.Backlog(settings, path, make_engine=engine_for)
     assert first.pause(True)["paused_by_you"]
     first.start()
     try:
@@ -114,7 +110,7 @@ def test_the_player_pauses_and_resumes_and_a_pause_outlives_a_restart(
         first.join(10.0)
 
     # Sidecoach started again: still paused, until the player resumes.
-    again = backlog_module.Backlog(settings, path, busy=lambda: False, make_engine=engine_for)
+    again = backlog_module.Backlog(settings, path, make_engine=engine_for)
     assert again.paused_by_you
     again.start()
     try:

@@ -791,11 +791,6 @@ class ReviewRooms:
         finally:
             store.close()
 
-    def busy(self) -> bool:
-        """Whether a room is reviewing a game now (the background reviewer waits for it)."""
-        with self._lock:
-            return any(r.status == "analysing" and not r.closed for r in self._rooms.values())
-
     def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
         with self._lock:
             room = self._rooms.get(key)
