@@ -468,8 +468,10 @@ class PanelEngine:
                     )
                     self._stage("pieces", "done", f"on {net.device.detail}")
                 else:
-                    self._emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
-                    self._stage("pieces", "off", "no embedding net; silhouettes instead")
+                    self._emit(
+                        "sys", "warn", "pieces: no embedding net (a broken install): no set learned"
+                    )
+                    self._stage("pieces", "off", "no embedding net: no piece set can be learned")
                 self._warm_voice()
                 self._stage("vision", "loading")
                 self._warm_pipeline()

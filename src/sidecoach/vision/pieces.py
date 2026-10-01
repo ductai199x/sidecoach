@@ -116,13 +116,11 @@ EMPTY_MAX_FRACTION = 0.04
 # Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece, a pawn,
 # covers a third. Anything in between is reported as unknown, which carries no evidence.
 PIECE_MIN_FRACTION = 0.16
-# A piece's side is read from its brightness first: when it lies within one side's
-# exemplars' range of brightness, widened by this much, and not the other's, the shape
-# is matched among that side's pieces alone. A brightness in both ranges or neither (a
-# badge over the piece, a set whose sides are close, a queen whose fill read as dark as
-# the other side's) matches every piece with a brightness penalty, as before; a
-# pixel-art king, whose fill read a tenth brighter on the dark square than on the light
-# one, was outscored there by the queen's shape on the penalty.
+# The brightness vote on a piece's side (`_side_of`, one of the three in `_vote_side`): a
+# piece whose fill's brightness lies within one side's exemplars' range of brightness,
+# widened by this much, and not the other's, votes for that side. A brightness in both
+# ranges or neither (a badge over the piece, a set whose sides are close, a queen whose
+# fill read as dark as the other side's) casts no vote.
 SIDE_MARGIN = 0.05
 _KERNEL = np.ones((3, 3), dtype=np.uint8)
 # The colour of a piece is its fill's. A silhouette's ink (its pixels that are not the
@@ -256,8 +254,8 @@ class Silhouette:
     # bright fill of a white one -- with its enclosed detail filled in. A piece's outline
     # is the other tone, and whether it shows depends on the square under it: a light
     # outline vanishes on a light square and stands out on a dark one, so the full mask
-    # of one piece is two shapes, and at small cells a black queen on a dark square
-    # matched the pawn learned on a light one. Shapes are compared on this mask.
+    # of one piece is two shapes. A kind's exemplar keeps this mask, fused over its start
+    # cells, and the fill vote (`_fill_side`) reads a cell's colour under it.
     tone: np.ndarray
     fraction: float
     luminance: float
@@ -351,7 +349,7 @@ def settle_tolerance(cell_px: float | None) -> float:
 
 
 def _badge_blind(size: int) -> np.ndarray:
-    """Pixels that take part in silhouette comparison: everything but the badge corner."""
+    """Pixels a fill's colour is read from (`_fill_colour`): everything but the badge corner."""
     keep = np.ones((size, size), dtype=bool)
     keep[: int(size * 0.38), int(size * 0.62) :] = False
     return keep
