@@ -7,6 +7,7 @@ import com.sidecoach.events.PuzzleOutcome
 import com.sidecoach.events.Recommendation
 import com.sidecoach.events.GameReview
 import com.sidecoach.profile.Causes
+import com.sidecoach.profile.Library
 import com.sidecoach.profile.Profiler
 import java.io.File
 import com.sidecoach.Maintenance
@@ -815,6 +816,20 @@ object PanelEngine {
      * the insights of the moment). [tick] lets a finished game's review time out waiting for
      * the engine; [flush] reviews it now.
      */
+    /**
+     * The key Game Review opens a game Sidecoach watched by (the end-of-game card's button),
+     * when the library holds it as a game: finished, and its moves play out (Library.kt).
+     * `_reviewable`.
+     */
+    private fun reviewable(profiler: Profiler, gameId: String): String? {
+        val key = "watched:$gameId"
+        return try {
+            if (Library.find(profiler.store, key) != null) key else null
+        } catch (_: Exception) { // no button is better than a broken card
+            null
+        }
+    }
+
     fun profile(profiler: Profiler, events: List<Event>, tick: Boolean = false, flush: Boolean = false): List<Event> {
         val out = ArrayList<Event>()
         val now = System.currentTimeMillis() / 1000.0
@@ -839,7 +854,8 @@ object PanelEngine {
                         "coach",
                         "info",
                         "review: " + elide(event.lines.joinToString(" "), 80),
-                        JSONObject().put("review", review).put("insights", JSONArray(insights)),
+                        JSONObject().put("review", review).put("insights", JSONArray(insights))
+                            .put("review_key", reviewable(profiler, event.gameId) ?: JSONObject.NULL),
                     )
                 }
                 is Recommendation -> {

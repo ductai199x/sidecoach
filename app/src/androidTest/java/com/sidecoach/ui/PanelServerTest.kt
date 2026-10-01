@@ -94,16 +94,21 @@ class PanelServerTest {
         val page = scripts.toString()
         val calls = Regex("(?<=[`\"'}])/api/[a-z_]+(?:/[a-z_]+)*").findAll(page).map { it.value }.toSortedSet()
         assertTrue("the page's calls were not found: $calls", calls.size >= 25 && "/api/dump" in calls)
-        // A room's routes are built on `/api/puzzle/<id>`: its actions follow the base.
-        val base = Regex("(\\w+)=`/api/puzzle/\\$\\{[^`]*\\}`").find(page)
-        assertTrue("the page's puzzle routes were not found", base != null && "/api/puzzle" in calls)
-        val name = Regex.escape(base!!.groupValues[1])
-        val actions = Regex("`\\$\\{$name\\}/([a-z_]+)").findAll(page.substring(base.range.last, minOf(page.length, base.range.last + 2000)))
-            .map { it.groupValues[1] }.toSortedSet()
-        assertTrue("the rooms' actions were not found: $actions", actions.size >= 5)
-        fun served(path: String) = listOf("GET", "POST", "PUT").any { PanelApi.serves(it, path) }
-        val missing = (calls - "/api/puzzle").filterNot { served(it) } +
-            actions.map { "/api/puzzle/abc/$it" }.filterNot { served(it) }
+        // A room's routes are built on `/api/puzzle/<id>` or `/api/review/<key>`: its actions follow
+        // the base, up to the next route the page builds (the bundle names both bases alike).
+        fun served(path: String) = listOf("GET", "POST", "PUT", "DELETE").any { PanelApi.serves(it, path) }
+        val missing = ArrayList<String>()
+        for (room in listOf("puzzle", "review")) {
+            val base = Regex("(\\w+)=`/api/$room/\\$\\{[^`]*\\}`").find(page)
+            assertTrue("the page's $room routes were not found", base != null && "/api/$room" in calls)
+            val name = Regex.escape(base!!.groupValues[1])
+            val next = page.indexOf("`/api/", base.range.last).let { if (it < 0) page.length else it }
+            val actions = Regex("`\\$\\{$name\\}/([a-z_]+)").findAll(page.substring(base.range.last, minOf(next, base.range.last + 2000)))
+                .map { it.groupValues[1] }.toSortedSet()
+            assertTrue("the $room rooms' actions were not found: $actions", actions.size >= 5)
+            missing += actions.map { "/api/$room/abc/$it" }.filterNot { served(it) }
+        }
+        missing += (calls - "/api/puzzle" - "/api/review").filterNot { served(it) }
         assertEquals("the page calls what the phone does not serve", emptyList<String>(), missing)
     }
 
