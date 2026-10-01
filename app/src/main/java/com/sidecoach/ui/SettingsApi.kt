@@ -53,7 +53,11 @@ class SettingsApi(val store: SettingsStore) {
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
         val before = store.values()
-        val checked = SettingsCheck.validate(JSONObject(store.schema), store.defaults(), given)
+        // What changed, laid over the settings as they are now (`settings_api.update`'s
+        // `_merged`): the page sends only what changed, and laid over the defaults that reset
+        // every other setting on each save (Tai's phone, 2026-10-01: a save of the captions
+        // wiped all of his settings, and each caption switch saved alone reset the other).
+        val checked = SettingsCheck.validate(JSONObject(store.schema), before, given)
         if (checked.errors.length() > 0) {
             return JSONObject().put("ok", false).put("errors", checked.errors)
         }
@@ -164,13 +168,14 @@ object SettingsCheck {
     /** What one field came to: its value, or the error that refused it. */
     private class Checked(val value: Any?, val error: JSONObject? = null)
 
-    fun validate(schema: JSONObject, defaults: JSONObject, given: JSONObject): Result {
+    /** [given] checked and laid over [under] (the settings as they are): what it leaves out stays. */
+    fun validate(schema: JSONObject, under: JSONObject, given: JSONObject): Result {
         val defs = schema.optJSONObject("\$defs") ?: JSONObject()
         val properties = schema.optJSONObject("properties") ?: JSONObject()
         val values = JSONObject()
         val errors = JSONArray()
-        for (name in defaults.keys()) {
-            val base = defaults.opt(name)
+        for (name in under.keys()) {
+            val base = under.opt(name)
             if (!given.has(name)) {
                 values.put(name, copy(base))
                 continue

@@ -127,6 +127,45 @@ class SettingsPhoneTest {
     }
 
     /**
+     * The page sends what changed, and only that: a save of one field keeps every other as it
+     * is (Tai's phone, 2026-10-01: a save of the captions reset all of his settings to the
+     * defaults, and each caption switch saved alone turned the other off). The desktop's
+     * `test_a_save_changes_only_what_it_sends`.
+     */
+    @Test
+    fun aSaveOfOneFieldKeepsEveryOther() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            val mine = store.values()
+            mine.getJSONObject("profile").put("chesscom_user", "nosegazm")
+            mine.getJSONObject("board").put("pieces", "cburnett")
+            mine.getJSONObject("voice").put("voice", "bm_george")
+            mine.getJSONObject("voice").put("captions", false)
+            mine.getJSONObject("voice").put("captions_keep", false)
+            assertTrue(api.update(JSONObject().put("settings", mine)).getBoolean("ok"))
+
+            val one = api.update(JSONObject().put("settings", JSONObject().put("voice", JSONObject().put("captions", true))))
+            assertTrue(one.toString(), one.getBoolean("ok"))
+            val two = api.update(JSONObject().put("settings", JSONObject().put("voice", JSONObject().put("captions_keep", true))))
+            assertTrue(two.toString(), two.getBoolean("ok"))
+
+            val now = store.values()
+            assertEquals("nosegazm", now.getJSONObject("profile").getString("chesscom_user"))
+            assertEquals("cburnett", now.getJSONObject("board").getString("pieces"))
+            assertEquals("bm_george", now.getJSONObject("voice").getString("voice"))
+            assertTrue("the first switch was turned off by the second's save", now.getJSONObject("voice").getBoolean("captions"))
+            assertTrue(now.getJSONObject("voice").getBoolean("captions_keep"))
+            // The rest of a section a save touches stays too, every section it does not touch.
+            assertEquals(saved.getJSONObject("coach").toString(), now.getJSONObject("coach").toString())
+            assertEquals(saved.getJSONObject("engine").toString(), now.getJSONObject("engine").toString())
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
      * With a coach and an engine built, a save changes them in place: the persona and the rating
      * band in the system message, the nudge time, the thresholds, the engine's depth and lines
      * (`test_a_save_reaches_the_running_coach_and_engine`).
