@@ -580,24 +580,56 @@ def test_a_queen_nobody_can_read_is_not_moved_there_and_back() -> None:
     assert all(san in played for san in told), told
 
 
-def test_browsing_to_the_start_of_a_long_game_is_not_a_new_game() -> None:
-    """The move list's first entry shows the start position; a game longer than the history
-    the reconciler looks back through is still on. The start position is checked however
-    long the game (42 plies against a history of 40, once; here 6 against 4)."""
-    model, rec = _setup()
-    rec.history_depth = 4
-    board = chess.Board()
-    _feed(model, rec, board, Side.WHITE, 0.0)
-    line = ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
-    assert len(line) > rec.history_depth
-    ts = _play(model, rec, board, line)
-    assert len(rec.board.move_stack) == len(line)
-    events = []
-    for i in range(6):
-        events += _feed(model, rec, chess.Board(), Side.WHITE, ts + 0.1 * (i + 1))
-    assert not any(isinstance(e, GameStarted | GameEnded | Takeback) for e in events)
-    assert rec.viewing == 0
-    assert len(rec.board.move_stack) == len(line)
+# A Ruy Lopez of 60 plies, longer than the forty the history was once looked through.
+LONG_GAME = [
+    "e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3",
+    "d6", "c3", "O-O", "h3", "Nb8", "d4", "Nbd7", "c4", "c6", "cxb5", "axb5", "Nc3", "Bb7",
+    "Bg5", "b4", "Nb1", "h6", "Bh4", "c5", "dxe5", "Nxe4", "Bxe7", "Qxe7", "exd6", "Qf6",
+    "Nbd2", "Nxd6", "Nc4", "Nxc4", "Bxc4", "Nb6", "Ne5", "Rae8", "Bxf7+", "Rxf7", "Nxf7",
+    "Rxe1+", "Qxe1", "Kxf7", "Qe3", "Qg5", "Qxg5", "hxg5", "b3", "Ke6", "a3", "Kd6",
+]  # fmt: skip
+
+
+def test_browsing_anywhere_in_a_long_game_is_browsing() -> None:
+    """A click anywhere in the move list shows that position, however far back: browsing,
+    the game kept, and stepping forward through the list tells nothing. Only the last forty
+    plies were looked through, and the start: the position after ten plies of sixty was one
+    no move explains, adopted by a resync -- the game numbered again from it, or after the
+    end a new game begun -- and stepping forward told the game's own moves a second time
+    (the state review, 2026-10-01)."""
+    for finished in (False, True):
+        model, rec = _setup()
+        _feed(model, rec, chess.Board(), Side.WHITE, 0.0)
+        played = chess.Board()
+        for san in LONG_GAME:
+            played.push_san(san)
+        assert len(played.move_stack) == 60
+        rec.board = played.copy()
+        first = rec.game_id
+        if finished:
+            rec.end("1/2-1/2", "draw agreed")
+        shown = chess.Board()
+        for move in played.move_stack[:10]:
+            shown.push(move)
+        events = []
+        ts = 1.0
+        for _ in range(12):
+            ts += 0.1
+            events += _feed(model, rec, shown, Side.WHITE, ts)
+        for move in played.move_stack[10:16]:
+            shown.push(move)
+            for _ in range(3):
+                ts += 0.1
+                events += _feed(model, rec, shown, Side.WHITE, ts, highlight=move)
+        assert not any(
+            isinstance(e, GameStarted | GameEnded | Resync | Takeback | MovePlayed) for e in events
+        ), [type(e).__name__ for e in events]
+        assert rec.viewing == 16 and rec.game_id == first
+        assert rec.board.move_stack == played.move_stack and rec.finished == finished
+        for _ in range(2):
+            ts += 0.1
+            _feed(model, rec, played, Side.WHITE, ts, highlight=played.peek())
+        assert rec.viewing is None
 
 
 QUEUE_BOARD = "4k3/P7/8/3p4/4P3/8/P7/4K3 w - - 0 1"
