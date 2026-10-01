@@ -35,6 +35,13 @@ class SetupApi(private val context: Context) {
         return JSONObject().put("ok", true)
     }
 
+    /**
+     * The long jobs the panel's bell shows (`GET /api/jobs`): a fetch of the setup under way.
+     * The phone reviews no game in the background (Tai, 2026-09-30: the player asks for each
+     * review, as on chess.com), so `reviews` is null, as on a desktop panel without one.
+     */
+    fun jobs(): JSONObject = JSONObject().put("reviews", JSONObject.NULL).put("setup", setup.runState())
+
     /** The free space where the app keeps its files, or null when it cannot be told: `setup.free_space`. */
     private fun freeBytes(): Long? = try {
         val stat = StatFs(context.filesDir.absolutePath)

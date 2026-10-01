@@ -21,7 +21,7 @@ import org.json.JSONObject
  * in it, so the page never shows one that does nothing (Tai, 2026-09-24: the Voice setting
  * listed one voice, and the page showed the desktop's devices, folders and GPU switches).
  */
-class SettingsApi(private val store: SettingsStore) {
+class SettingsApi(val store: SettingsStore) {
 
     fun describe(): JSONObject = JSONObject().apply {
         put("settings", store.values())
@@ -35,6 +35,7 @@ class SettingsApi(private val store: SettingsStore) {
         )
         // The keys are in the app's own storage, which nothing else on the phone can read.
         put("keyring", true)
+        put("looks", Looks.catalogue(store.files))
         put("key_envs", store.keyEnvs)
         put("devices", JSONObject().apply { put("inputs", JSONArray()); put("outputs", JSONArray()) })
         put("voices", JSONArray(Voices.english(PanelVoice.tts?.voicesPath)))

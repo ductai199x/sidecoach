@@ -201,6 +201,23 @@ class PanelApi(
             method == "DELETE" && path.startsWith("/api/games/") && games != null ->
                 ok(games.delete(path.removePrefix("/api/games/")))
 
+            // How the boards look (Looks.kt): every page reads it; the pieces a player chose.
+            path == "/api/look" -> settings.store.let { store ->
+                val (pieces, theme) = store.board()
+                ok(Looks.look(pieces, theme, store.files))
+            }
+            path == "/api/pieces/custom" && method == "DELETE" -> {
+                Looks.clearCustom(settings.store.files)
+                ok(done())
+            }
+            path == "/api/pieces/custom" ->
+                json.optJSONArray("files")?.let { ok(Looks.saveCustom(settings.store.files, it)) } ?: unprocessable()
+
+            // The long jobs the panel's bell shows: the setup's fetch; no background review here.
+            path == "/api/jobs" -> ok(setup.jobs())
+            path == "/api/jobs/reviews" ->
+                if (json.has("paused")) ok(JSONObject().put("ok", false).put("error", "no background review here")) else unprocessable()
+
             else -> {
                 Log.i(TAG, "no route for $method $path")
                 null
@@ -334,7 +351,7 @@ class PanelApi(
         val ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf(
                 "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
-                "/api/games",
+                "/api/games", "/api/look", "/api/jobs",
             ),
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
@@ -342,9 +359,11 @@ class PanelApi(
                 "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record",
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
-                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import",
+                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/custom",
+                "/api/jobs/reviews",
             ),
             "PUT" to setOf("/api/settings"),
+            "DELETE" to setOf("/api/pieces/custom"),
         )
 
         /** The routes with one path parameter, `{key}` (one segment, as Starlette matches it), by method. */

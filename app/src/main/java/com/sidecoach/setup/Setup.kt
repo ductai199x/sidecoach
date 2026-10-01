@@ -405,6 +405,7 @@ class Setup(private val context: Context) {
         synchronized(lock) {
             state.put("total", total)
             state.put("queue", JSONArray(todo.map { it.id }))
+            state.put("titles", JSONObject().apply { for (item in todo) put(item.id, item.title) })
         }
         val worker = Thread({
             var base = 0L
@@ -435,6 +436,14 @@ class Setup(private val context: Context) {
         synchronized(lock) { thread = worker }
         worker.start()
         return true
+    }
+
+    /**
+     * The fetch under way or last run, alone (the panel's bell asks often; [status] also looks
+     * at every item on disk): empty when none has run since the app started. `run_state`.
+     */
+    fun runState(): JSONObject = synchronized(lock) {
+        JSONObject(state.toString()).apply { if (!has("titles")) put("titles", JSONObject()) }
     }
 
     /** Stop after the item being fetched. */

@@ -74,6 +74,13 @@ class SettingsStore(private val context: Context) {
         return out
     }
 
+    /** The app's own files: the data folder, as `settings.data_dir` is on the desktop. */
+    val files: java.io.File get() = context.filesDir
+
+    /** The boards' look as set (`settings.board`): the piece set and the theme. */
+    fun board(): Pair<String, String> =
+        section("board").let { it.optString("pieces", Looks.DEFAULT_SET) to it.optString("theme", Looks.DEFAULT_THEME) }
+
     /** One section of the settings, or an empty object. */
     fun section(name: String): JSONObject = values().optJSONObject(name) ?: JSONObject()
 
