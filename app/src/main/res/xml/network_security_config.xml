@@ -2,13 +2,14 @@
 <!--
   The panel's page is served by the app to itself over plain HTTP on the loopback address,
   so that the frontend is the desktop's own and talks to the backend the same way it does
-  there. Android forbids cleartext by default, and rightly; this permits it for 127.0.0.1
-  and nothing else. Everything the app fetches from the world (the engine's network, a
-  model) stays HTTPS.
+  there. And a model on the player's own computer (LM Studio, Ollama: Settings > AI Coach >
+  Server address, "http://192.168.1.20:1234/v1") is served over plain HTTP on their own
+  network, at an address only they know: Android cannot name a network's addresses ahead
+  (2026-09-30: "Cleartext HTTP traffic to 10.0.2.2 not permitted" on the emulator, and the same
+  on a phone for any computer on the Wi-Fi). So plain HTTP is allowed to the addresses the
+  app is told; everything it fetches on its own (the engine's network, Setup's files, OpenAI)
+  is HTTPS by its URL.
 -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
