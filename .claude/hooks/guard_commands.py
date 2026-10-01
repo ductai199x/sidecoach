@@ -15,6 +15,11 @@ Blocked (exit 2, the reason goes back to Claude):
     Move-Item): moves of data go through a Write'd Python script, copy-verify-then-remove
   - deleting or moving files from an inline `python -c` (rmtree, remove, unlink, rename)
   - format, diskpart, Format-Volume, cipher /w
+  - the WHOLE test suite, desktop or phone (pytest with no test file named; the phone's
+    tools/test.ps1 without -Class; connected*AndroidTest or am instrument without a class):
+    Tai, 2026-10-01, the third time, "DO NOT RUN THE WHOLE FUCKING TEST SUITE". Not a block
+    but a reminder to say yes to: only when Tai asked for the full suite does the command
+    carry FULL_SUITE_ASKED=1, and then it runs.
 
 Reads the hook JSON on stdin: {"tool_name": ..., "tool_input": {"command": ...}}.
 """
@@ -73,8 +78,47 @@ def all_scratch(paths: list[str]) -> bool:
     return bool(paths) and all(SCRATCH.search(p) for p in paths)
 
 
+FULL_SUITE = (
+    "this runs the WHOLE {what} test suite. Tai's rule (2026-10-01, said three times): never "
+    "the full suite unless he asked for it. Run only the test files (phone: the classes) that "
+    "import what you changed. If Tai did ask for the full suite, say so and rerun with "
+    "FULL_SUITE_ASKED=1 in the command."
+)
+
+
+def _targeted(args: list[str]) -> bool:
+    """Whether pytest's arguments name a test file or node (tests/x.py, x.py::name): the
+    tests folder alone is the whole suite."""
+    return any(not a.startswith("-") and (".py" in a or "::" in a) for a in args)
+
+
+def full_suite(words: list[str]) -> str | None:
+    """'desktop' or 'phone' when the command runs every test of that suite, else None."""
+    low = [w.lower() for w in words]
+    for i, w in enumerate(low):
+        name = w.replace("\\", "/").rsplit("/", 1)[-1]
+        if name in ("pytest", "pytest.exe", "py.test") or (
+            w == "-m" and i + 1 < len(low) and low[i + 1] == "pytest" and i > 0
+        ):
+            start = i + 2 if w == "-m" else i + 1
+            return None if _targeted(words[start:]) else "desktop"
+        if name.endswith("test.ps1"):  # tools\test.ps1 reaches here as toolstest.ps1
+            return None if "-class" in low[i + 1 :] else "phone"
+        if re.fullmatch(r"connected\w*androidtest", name):
+            named = any("instrumentationrunnerarguments.class" in a for a in low)
+            return None if named else "phone"
+        if w == "instrument" and i > 0 and low[i - 1] == "am":
+            return None if "class" in low[i + 1 :] else "phone"
+    return None
+
+
 def check(command: str) -> str | None:
     """The reason to refuse `command`, or None."""
+    if "FULL_SUITE_ASKED=1" not in command:
+        for words in segments(command):
+            what = full_suite(words)
+            if what:
+                return FULL_SUITE.format(what=what)
     # Heredocs and here-strings, anywhere on the line (not a shift inside $(( ))).
     if re.search(r"(?<!<)<<(?!<)-?\s*['\"]?[A-Za-z_]", command) or "<<<" in command:
         return (
