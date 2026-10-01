@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.AfterClass
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,26 +34,13 @@ class EngineTest {
         override fun launch(): Process = super.launch().also { started.add(it) }
     }
 
-    private fun engine(): Watched? {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
-        if (!binary.exists()) {
-            Log.w(TAG, "no engine at $binary")
-            return null
-        }
-        val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
-        if (net == null) {
-            Log.w(TAG, "no network in ${context.filesDir}; run tools/push_net.ps1")
-            return null
-        }
-        return Watched(binary, net)
-    }
+    private fun engine(): Watched? = Companion.engine()
 
     @Test
     fun theEngineStartsAndNamesItself() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use {
+        engine!!.let {
             it.open()
             Log.i(TAG, "engine: ${it.name}")
             assertTrue("the engine did not name itself", it.name.contains("Stockfish"))
@@ -61,7 +49,7 @@ class EngineTest {
 
     @Test
     fun itSeesWhatAnyEngineMustSee() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
         val cases = listOf(
             // Mate in one: the back rank.
@@ -75,7 +63,7 @@ class EngineTest {
                 "the Italian",
             ),
         )
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             for ((fen, best, what) in cases) {
                 val board = Board(fen)
                 val began = System.currentTimeMillis()
@@ -122,27 +110,32 @@ class EngineTest {
     /** `test_no_single_position_may_hold_up_a_game`: a search that would take minutes is cut at the cap. */
     @Test
     fun noSinglePositionMayHoldUpAGame() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             // A knight endgame that takes minutes to reach depth 14 with four lines.
             val slow = Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
+            val cap = sf.maxSeconds
             sf.maxSeconds = 0.5
-            val began = System.currentTimeMillis()
-            val lines = sf.analyse(slow, depth = 40, multipv = 4)
-            val took = System.currentTimeMillis() - began
-            assertTrue("no lines", lines.isNotEmpty())
-            assertTrue("the cap did not hold: $took ms", took < 5000)
-            assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
+            try {
+                val began = System.currentTimeMillis()
+                val lines = sf.analyse(slow, depth = 40, multipv = 4)
+                val took = System.currentTimeMillis() - began
+                assertTrue("no lines", lines.isNotEmpty())
+                assertTrue("the cap did not hold: $took ms", took < 5000)
+                assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
+            } finally {
+                sf.maxSeconds = cap
+            }
         }
     }
 
     /** `test_multipv_is_ordered_best_first_and_bounded_by_the_legal_moves`. */
     @Test
     fun theLinesAreBestFirstAndNoMoreThanTheLegalMoves() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             val lines = sf.analyse(Board(), depth = 10, multipv = 4)
             assertEquals(4, lines.size)
             assertEquals(lines.map { it.expectedScore }.sortedDescending(), lines.map { it.expectedScore })
@@ -156,9 +149,9 @@ class EngineTest {
      */
     @Test
     fun theEngineModelCanBeAskedForInstead() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             val board = Board(BLACK_WINS)
             val human = sf.analyse(board, depth = 10)[0]
             assertTrue(sf.scoreModel == "human" && human.expectedScore < 1.0)
@@ -287,9 +280,9 @@ class EngineTest {
 
     @Test
     fun theBestLineIsCarriedOnForTheCoach() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             // `carry_best`: the best line kept to MIN_BEST_PLIES, searched on from its end when
             // Stockfish's own stops short; the other lines cut as always; a verdict's search
             // (no `carry_best`) cut like the rest.
@@ -312,23 +305,14 @@ class EngineTest {
         }
     }
 
-    @Test
-    fun aFinishedPositionHasNoLines() {
-        val engine = engine()
-        assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use {
-            // Checkmate: there is nothing to play.
-            assertTrue(it.analyse(Board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"), depth = 8).isEmpty())
-            // Stalemate, likewise.
-            assertTrue(it.analyse(Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"), depth = 8).isEmpty())
-        }
-    }
+    // A finished position has no lines before the engine is asked (`Engine.analyse`'s game-over
+    // return): EngineParityTest's "checkmate" and "a claimable threefold repetition".
 
     @Test
     fun theMoverAlwaysSeesItsOwnScore() {
-        val engine = engine()
+        val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
-        engine!!.use { sf ->
+        engine!!.let { sf ->
             // The same position, a rook up for White, asked with either side to move: the
             // expected score is always the mover's own, so the two must be near opposites.
             val white = sf.analyse(Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1"), depth = 12)
@@ -355,6 +339,38 @@ class EngineTest {
 
     companion object {
         private const val TAG = "sidecoach.engine"
+
+        private fun engine(): Watched? {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
+            if (!binary.exists()) {
+                Log.w(TAG, "no engine at $binary")
+                return null
+            }
+            val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
+            if (net == null) {
+                Log.w(TAG, "no network in ${context.filesDir}; run tools/push_net.ps1")
+                return null
+            }
+            return Watched(binary, net)
+        }
+
+        /**
+         * One engine for the tests that only ask it things, started once for the class: each
+         * start loads the 98 MB network, nearly half a second of every such test. The tests that
+         * end, pause or interrupt an engine start their own, and a test that changes a setting
+         * puts it back.
+         */
+        private var kept: Watched? = null
+
+        private fun shared(): Watched? = kept ?: engine()?.also { kept = it }
+
+        @JvmStatic
+        @AfterClass
+        fun closeShared() {
+            kept?.close()
+            kept = null
+        }
 
         /** Black to move at queen odds: winning, with no mate in sight to hide the numbers. */
         private const val BLACK_WINS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR b KQkq - 0 1"

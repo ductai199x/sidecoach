@@ -1,7 +1,6 @@
 package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.parseSquare
@@ -29,10 +28,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class StoryTest {
 
-    private val data: JSONObject by lazy {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        JSONObject(context.assets.open("chess/coach.json").bufferedReader().use { it.readText() })
-    }
+    private val data: JSONObject get() = stories
 
     private fun strings(a: JSONArray): List<String> = (0 until a.length()).map { a.getString(it) }
 
@@ -256,5 +252,13 @@ class StoryTest {
         )
         assertEquals("Use your bishop on c8. Which of their pieces has no safe square left?", focusTemplate(facts))
         assertEquals("Bg4, and after Bxf7, Bxh5; you win a queen for a bishop and a pawn.", moveTemplate(facts))
+    }
+
+    private companion object {
+        /**
+         * The stories and the trap tests of coach.json, read once for the class: its 29 MB of
+         * positions are skipped (each test read the whole file into a tree, thirteen a run).
+         */
+        val stories: JSONObject by lazy { fixture("chess/coach.json", setOf("stories", "trap_tests")) }
     }
 }

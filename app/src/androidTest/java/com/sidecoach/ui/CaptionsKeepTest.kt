@@ -45,6 +45,9 @@ class CaptionsKeepTest {
         app.getSharedPreferences("captions", 0).edit().clear().commit()
         // A fresh start: a test before this one may have closed the panel (Captions.quit).
         Captions.reset()
+        // The fade a second after the words, not five: the test is about whether the box fades
+        // or stays, not how long the shipped fade waits; the test waited out five of them.
+        Captions.hideAfterMs = FADE_MS
         Captions.configure(app, true)
         try {
             // Off: the words, then the fade.
@@ -71,7 +74,7 @@ class CaptionsKeepTest {
             Captions.keep(true)
             Captions.show("Their knight on e4 attacks your queen on d6.")
             assertTrue("no caption box", waitFor(3000) { box() != null })
-            Thread.sleep(8000)
+            Thread.sleep(3 * FADE_MS)
             assertNotNull("the kept box faded", box())
 
             // Always on screen means always (Tai, 2026-09-29: "is it always on screen or
@@ -112,6 +115,12 @@ class CaptionsKeepTest {
         } finally {
             Captions.keep(false)
             Captions.configure(app, false)
+            Captions.hideAfterMs = Captions.HIDE_AFTER_MS
         }
+    }
+
+    private companion object {
+        /** The fade's wait in this test: a second, against the five the box ships with. */
+        const val FADE_MS = 1000L
     }
 }

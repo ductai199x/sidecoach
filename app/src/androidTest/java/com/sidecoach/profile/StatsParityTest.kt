@@ -9,6 +9,7 @@ import com.sidecoach.events.ReviewedGame
 import com.sidecoach.ui.StatsApi
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.AfterClass
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -160,11 +161,23 @@ class StatsParityTest {
         private fun asset(name: String): String =
             instrumentation.context.assets.open(name).bufferedReader(Charsets.UTF_8).use { it.readText() }
 
-        private val fixture: JSONObject by lazy { JSONObject(asset("profile/stats.json")) }
+        // The fixtures, read once for the class and let go after it: the suite's other classes
+        // share the 192 MB heap, and the trees of these two are tens of megabytes of it.
+        private var stats: JSONObject? = null
+        private var reviewed: List<ReviewedGame>? = null
 
-        private val reviews: List<ReviewedGame> by lazy {
-            val games = JSONObject(asset("profile/reviews.json")).getJSONArray("games")
-            (0 until games.length()).map { ReviewJson.reviewed(games.getJSONObject(it).getJSONObject("reviewed")) }
+        private val fixture: JSONObject get() = stats ?: JSONObject(asset("profile/stats.json")).also { stats = it }
+
+        private val reviews: List<ReviewedGame>
+            get() = reviewed ?: JSONObject(asset("profile/reviews.json")).getJSONArray("games").let { games ->
+                (0 until games.length()).map { ReviewJson.reviewed(games.getJSONObject(it).getJSONObject("reviewed")) }
+            }.also { reviewed = it }
+
+        @JvmStatic
+        @AfterClass
+        fun letGo() {
+            stats = null
+            reviewed = null
         }
 
         /**

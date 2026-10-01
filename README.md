@@ -30,7 +30,7 @@ the profile of the player, the motif tagger and the opening book.
 | --- | --- | --- |
 | `chess/` | `python-chess` (the subset the reconciler uses) | `ChessTest`: 685 positions, 20,314 legal moves in the library's own order, every SAN and resulting FEN, perft to depth four |
 | `vision/BoardDetect`, `BoardRefine`, `BoardTracker` | `vision/board_detect.py`, `tracker.py` | `BoardDetectTest` |
-| `vision/Silhouette`, `Covers`, `Pieces`, `ThemeModel`, `CellEmbedder` | `vision/pieces.py` | `SilhouetteTest` (fractions to four decimals), `ClassifyTest` (0 of 64 cells differ) |
+| `vision/Silhouette`, `Covers`, `Pieces`, `ThemeModel`, `CellEmbedder` | `vision/pieces.py` | `SilhouetteTest` (fractions to four decimals), `LandingTest` (every cell's kind and symbol, 0 of 64 differ) |
 | `vision/Coordinates`, `ResultBadges`, `ThemeCache`, `ChangeGate` | `vision/coordinates.py`, `result_badges.py`, `theme_cache.py`, `replay/recording.py` | through `PipelineTest` |
 | `state/Reconcile` | `state/reconcile.py` | `ReconcileTest`: eight games, every frame's events identical |
 | `state/Pipeline` | `state/pipeline.py` | `PipelineTest`: three games from the pixels up, every gate decision and every event identical |
@@ -64,18 +64,28 @@ The SDK is the one Android Studio installs (`%LOCALAPPDATA%\Android\Sdk`); `loca
 points at it and is not committed. JDK 17.
 
 ```
-gradlew.bat assembleDebug                      # the APK
-gradlew.bat installDebug                       # onto the phone over adb
+gradlew.bat assemblePhone                      # the APK the phone runs
+gradlew.bat installPhone                       # onto the phone over adb
 powershell -File tools\install.ps1 -Serial <serial>   # the same, checked: refuses a live
                                                # session, prints what landed
 powershell -File tools\test.ps1                # the parity suite, on a device or emulator
 powershell -File tools\test.ps1 -Class com.sidecoach.state.PipelineTest
+powershell -File tools\test.ps1 -All           # and every case of the sweeps, and the screenshots
 ```
 
+The phone runs the `phone` build type: the debug build in all but being debuggable, signed with
+the same debug key, so it installs over a debug build and keeps the app's files and settings. A
+debuggable app's code runs without inlining or intrinsics; the tests run the phone's build too
+(`testBuildType`). The debug build (`installDebug`) is for `tools/play_game.ps1`'s rendered game
+and for `run-as`, which only a debuggable app allows.
+
 The tests are instrumented, not unit tests: they need OpenCV's native library, the ONNX
-runtime and the engine, so they run on a device. Twenty-five seconds on the emulator for
-twenty-three of them. `tools/test.ps1` rather than Gradle's `connectedDebugAndroidTest`,
-which uninstalls the app when it is done and takes the engine's network with it.
+runtime and the engine, so they run on a device. `tools/test.ps1` rather than Gradle's
+`connectedPhoneAndroidTest`, which uninstalls the app when it is done and takes the engine's
+network with it. It installs only what changed, and pushes the model files the tests load once
+(through the app's external files: `com.sidecoach.FilesIn` moves them in). A test that holds one
+behaviour to many cases of one kind runs a representative few by default; `-All` adds the rest
+(the cases marked `sweep` in their fixtures, as the desktop's `--sweep`).
 
 The engine is built from source with the NDK, without its 98 MB network; the app fetches the
 network on first run, as the desktop fetches the engine:

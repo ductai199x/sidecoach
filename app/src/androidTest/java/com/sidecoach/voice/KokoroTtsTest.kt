@@ -69,8 +69,10 @@ class KokoroTtsTest {
             times.add(SystemClock.elapsedRealtime())
             synchronized(heard) { heard.add(line) }
         }
-        val line = "That was fine. The centre holds, and the bishop is doing real work; your knight is " +
-            "still waiting on b1, though, and it wants to come to c3 or d2 before you castle."
+        // Long enough to be cut in two (past Kokoro.WHOLE_BELOW_S of speech): the second piece is
+        // made while the first plays. The line used to be four pieces, ten seconds of speech made
+        // and then played out in real time, for the same order of events.
+        val line = "That was fine. The centre holds, and the bishop is doing real work on the long diagonal."
         val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line, voice = true)), 1.0f, "en-us")
         assertTrue("the line is not cut: ${pieces.map { it.first }}", pieces.size > 1)
         val began = SystemClock.elapsedRealtime()

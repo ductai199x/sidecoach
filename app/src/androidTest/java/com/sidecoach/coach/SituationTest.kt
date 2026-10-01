@@ -1,23 +1,16 @@
 package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.PositionalFact
 import com.sidecoach.analysis.Traps
 import com.sidecoach.analysis.atHome
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
-import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
-import com.sidecoach.events.Analysis
 import com.sidecoach.events.Line
-import com.sidecoach.events.MotifTag
-import org.json.JSONArray
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -53,17 +46,7 @@ class SituationTest {
         assertTrue(said, said!!.startsWith("careful, though: hxg4 looks like it wins a knight, but after hxg4 Qh4"))
     }
 
-    @Test
-    fun theRookTheLineWinsLaterIsNotYet() {
-        // 16.Re2: the rook on a8 falls later; 16.Qxa8? Nxh3+ mates.
-        val board = Board("r1b2rk1/2p2ppp/p2b4/1p6/3P3q/1BP2Q1P/PP3nP1/RNB1R1K1 w - - 0 16")
-        val trap = line(listOf("f3a8", "f2h3", "g2h3", "h4e1", "g1g2", "e1e2", "g2g1", "e2h2"), 0.0, mate = -8)
-        assertEquals(
-            "their rook on a8 can be won, but not at once: Qxa8 right away runs into Nxh3+, and they " +
-                "have mate",
-            Situation.trapWords(board, trap, parseSquare("a8"), 0.68),
-        )
-    }
+    // theRookTheLineWinsLaterIsNotYet: coach.json's trap_tests 'on the target, into mate, the worst': held by StoryTest#trapsAreRankedAndSaidAsTheDesktopSaysThem.
 
     @Test
     fun aCaptureThatComesOutAheadIsNoTrap() {
@@ -86,22 +69,8 @@ class SituationTest {
         )
     }
 
-    /** `test_material_given_for_their_attack_is_not_won`, in tests/test_idea.py since the consolidations of 2026-09-28/29. */
-    @Test
-    fun materialGivenForTheirAttackIsNotWon() {
-        // 29.exf4 in a lost game: the knight Black gives with ...Ng4+ is not "won back".
-        val board = Board("6rk/3b1prq/1p1p1n2/p1pP1n1p/P1P1pp2/2P1P1PP/R6K/2BQ1NRB w - - 0 29")
-        val moves = listOf("e3f4", "f6g4", "h3g4", "h5h4", "h1e4", "h4g3", "h2g2", "f5h4", "g2h3", "d7g4")
-        val analysis = Analysis(
-            gameId = "",
-            fen = board.fen(),
-            ply = 0,
-            lines = listOf(line(moves, 0.055)),
-            decisive = false,
-            onlyMove = false,
-        )
-        assertNotEquals("win", IdeaReader.read(board, analysis).goal)
-    }
+    // `test_material_given_for_their_attack_is_not_won`, in tests/test_idea.py since the consolidations of 2026-09-28/29.
+    // materialGivenForTheirAttackIsNotWon: coach.json's test_situation case 6rk/3b1prq: idea.goal held by CoachPrimitivesTest.
 
     @Test
     fun oneGoodMoveIsSaidInTheSingular() {
@@ -139,14 +108,7 @@ class SituationTest {
         assertEquals(listOf(parseSquare("c1")), atHome(board, WHITE))
     }
 
-    @Test
-    fun theKingsFaceToFaceInAPawnEnding() {
-        val board = Board("8/8/5k2/8/4K3/5P2/8/8 b - - 5 51")  // Lichess R8gGn, ...Ke6
-        assertEquals(
-            "The kings stand close, yours on f6 and theirs on e4: whichever has to give way loses ground",
-            Situation.kingsKey(board, Move.fromUci("f6e6")),
-        )
-    }
+    // theKingsFaceToFaceInAPawnEnding: coach.json's case 'lichess R8gGn': facts.key held by CoachPrimitivesTest.
 
     @Test
     fun theirPasserNearQueeningIsThePointOfTakingIt() {
@@ -172,55 +134,10 @@ class SituationTest {
         assertFalse(said("more space gives your pieces room and cramps theirs", text))
     }
 
-    /** `tests/test_verdicts.py`'s change: a pawn to the centre is a lesson only with what it opens. */
-    @Test
-    fun aCentrePawnsLessonIsWhatItOpens() {
-        var board = Board(STARTING_FEN)
-        assertEquals("centre" to listOf("that lets your bishop out"), lesson(board, Move.fromUci("e2e4"), emptyList<MotifTag>(), "opening"))
-        board = Board("rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2")
-        val said = lesson(board, Move.fromUci("c2c4"), emptyList<MotifTag>(), "opening")
-        assertTrue(said == null || said.first != "centre")
-    }
+    // `tests/test_verdicts.py`'s change: a pawn to the centre is a lesson only with what it opens.
+    // aCentrePawnsLessonIsWhatItOpens: the same two lesson() calls and asserts as VerdictsTest#theLessonIsWhatTheBoardTeachesNotWhatTheMoveDid.
 
-    /**
-     * Desktop 3895242, Lichess vgdbX: were White to pass, ...e6 would come, and then exd5 wins the
-     * queen -- and e6 is White's own answer. Said by their piece, never as the move.
-     */
-    @Test
-    fun theirThreatToTheSquareTheBestMoveTakesIsSaidByTheirPiece() {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        val text = context.assets.open("chess/coach.json").bufferedReader().use { it.readText() }
-        val cases = JSONObject(text).getJSONArray("cases")
-        var found: JSONObject? = null
-        for (i in 0 until cases.length()) {
-            if (cases.getJSONObject(i).getString("source") == "cache: vgdbX") found = cases.getJSONObject(i)
-        }
-        assertNotNull("the vgdbX case is in the coach fixture", found)
-        val case = found!!
-        val fen = case.getString("fen")
-        assertEquals("1rbqkb1r/3npppp/2B5/p2QP3/8/5N2/PPP2nPP/R1B1K2R w KQk - 0 12", fen)
-        val o = case.getJSONObject("analysis")
-        val analysis = Analysis(
-            gameId = "g",
-            fen = fen,
-            ply = 0,
-            lines = lines(o.getJSONArray("lines")),
-            decisive = o.getBoolean("decisive"),
-            onlyMove = o.getBoolean("only_move"),
-            threats = (0 until o.getJSONArray("threats").length()).map { o.getJSONArray("threats").getString(it) },
-            traps = lines(o.getJSONArray("traps")),
-            defences = lines(o.getJSONArray("defences")),
-            threatens = lines(o.getJSONArray("threatens")),
-            opening = if (o.isNull("opening")) null else o.getString("opening"),
-            inBook = o.getBoolean("in_book"),
-        )
-        val board = Board(fen)
-        assertEquals("e5e6", analysis.lines[0].moves[0])
-        val facts = factsFromAnalysis(board, analysis, lastMove = "e4", user = board.turn)
-        assertEquals("Their pawn on e7 is one move from winning material", facts.key)
-        assertEquals(case.getJSONObject("facts").getString("key"), facts.key)
-        assertFalse(facts.key!!.contains("e6"))  // the key names their piece, never the answer
-    }
+    // theirThreatToTheSquareTheBestMoveTakesIsSaidByTheirPiece: coach.json's case 'cache: vgdbX' (desktop 3895242): facts.key held by CoachPrimitivesTest on the whole case.
 
     @Test
     fun theFirstHintIsSaidTheWayACoachSpeaks() {
@@ -269,16 +186,5 @@ class SituationTest {
         val sacrifice = "That is a fork: two at once. It comes on your third move, after a sacrifice."
         assertEquals("a sacrifice is said", sacrifice, Situation.withinBudget(sacrifice, budget = 1))
         assertEquals("One. Two.", Situation.withinBudget("One. Two.", budget = 5))
-    }
-
-    private fun lines(a: JSONArray): List<Line> = (0 until a.length()).map { k ->
-        val l = a.getJSONObject(k)
-        Line(
-            moves = (0 until l.getJSONArray("moves").length()).map { l.getJSONArray("moves").getString(it) },
-            depth = l.getInt("depth"),
-            expectedScore = l.getDouble("expected_score"),
-            scoreCp = if (l.isNull("score_cp")) null else l.getInt("score_cp"),
-            mate = if (l.isNull("mate")) null else l.getInt("mate"),
-        )
     }
 }

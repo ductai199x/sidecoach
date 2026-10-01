@@ -13,6 +13,7 @@ import com.sidecoach.llm.ThinkingControl
 import com.sidecoach.llm.Transport
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.AfterClass
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,12 +35,6 @@ import java.util.concurrent.ConcurrentHashMap
  */
 @RunWith(AndroidJUnit4::class)
 class ReviewWordsParityTest {
-    private val data: JSONObject by lazy { fixture("coach/review_words.json") }
-
-    private val games: List<Pair<JSONObject, ReviewedGame>> by lazy {
-        val all = data.getJSONArray("games")
-        (0 until all.length()).map { all.getJSONObject(it) }.map { it to ReviewJson.reviewed(it.getJSONObject("reviewed")) }
-    }
 
     /**
      * The desktop's scripted model, replaying its replies: each ply's text and token counts, or
@@ -296,6 +291,27 @@ class ReviewWordsParityTest {
     }
 
     companion object {
+        /**
+         * The fixture and its games, read once for the class rather than once a test, and let go
+         * after it: the suite's other classes share the 192 MB heap.
+         */
+        private var read: JSONObject? = null
+        private var reviewed: List<Pair<JSONObject, ReviewedGame>>? = null
+
+        private val data: JSONObject get() = read ?: fixture("coach/review_words.json").also { read = it }
+
+        private val games: List<Pair<JSONObject, ReviewedGame>>
+            get() = reviewed ?: data.getJSONArray("games").let { all ->
+                (0 until all.length()).map { all.getJSONObject(it) }.map { it to ReviewJson.reviewed(it.getJSONObject("reviewed")) }
+            }.also { reviewed = it }
+
+        @JvmStatic
+        @AfterClass
+        fun letGo() {
+            read = null
+            reviewed = null
+        }
+
         private val PLY = Regex("\"key move\": \\{\"ply\": (\\d+)")
 
         /** The ply a request asks about, read from its message. */

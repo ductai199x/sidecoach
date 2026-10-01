@@ -51,7 +51,7 @@ class ThemeStoreTest {
 
             // Written and read back: the crops pixel for pixel, the palette and the vectors exactly.
             val store = ThemeStore(directory)
-            val key = store.save(model)!!
+            assertNotNull("the set is stored", store.save(model))
             val back = store.candidates(model.lightBg, model.darkBg).single().second
             assertEquals(model.landingCrops.keys, back.landingCrops.keys)
             for ((kind, crop) in model.landingCrops) {
@@ -80,17 +80,8 @@ class ThemeStoreTest {
                 store.get(doubleArrayOf(10.0, 10.0, 10.0), doubleArrayOf(250.0, 250.0, 250.0)),
             )
 
-            // The same file stamped with an older version: not read, so the set is learned again.
-            val file = File(directory, "theme-$key.bin")
-            val bytes = file.readBytes()
-            for (older in listOf(1, 2, 3)) {
-                bytes[0] = 0; bytes[1] = 0; bytes[2] = 0; bytes[3] = older.toByte()
-                file.writeBytes(bytes)
-                assertTrue(
-                    "a version $older file is ignored",
-                    ThemeStore(directory).candidates(model.lightBg, model.darkBg).isEmpty(),
-                )
-            }
+            // A file of an older version is not read, so the set is learned again:
+            // ThemeMigrationTest#aFileOlderThanTheOldestNewerThanTodayOrCutShortIsRelearned.
         }
         directory.deleteRecursively()
     }

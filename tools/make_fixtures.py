@@ -16,7 +16,7 @@ about 664 px across -- a cell of 83.
 A board with `classified_from` is also read by the desktop's recogniser, learned from that
 start board the way the pipeline learns one (its orientation read from the start frame):
 `symbols` and `kinds` are what `classify_frame` named in each cell, in screen order, for
-ClassifyTest and ThemeStoreTest to hold the phone to. The k-means palette is seeded
+ThemeStoreTest to hold the phone to (LandingTest reads the same pairs from landing.json). The k-means palette is seeded
 (`cv2.setRNGSeed`) so the file comes out the same every time.
 """
 

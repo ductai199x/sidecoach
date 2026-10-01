@@ -12,6 +12,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * What the player asks about, held to the desktop's answer.
@@ -27,6 +28,8 @@ class NamedTest {
     private val failures = ArrayList<String>()
     private var mismatches = 0
 
+    /** Safe from the replay's several threads. */
+    @Synchronized
     private fun check(what: String, mine: Any?, theirs: Any?) {
         if (mine != theirs) {
             mismatches += 1
@@ -50,11 +53,13 @@ class NamedTest {
     }
 
     private fun examinations() {
-        val cases = fixture("chess/named.json").getJSONArray("cases")
-        var asks = 0
+        // Every position on its own, side by side on the cores; the counts kept safe from them.
+        val positions = AtomicInteger()
+        val asks = AtomicInteger()
         val began = System.currentTimeMillis()
-        for (i in 0 until cases.length()) {
-            val case = cases.getJSONObject(i)
+        // The positions streamed one at a time (11 MB of them): never all in memory at once.
+        forEachInParallel("chess/named.json", "cases") { case ->
+            positions.incrementAndGet()
             val board = Board(case.getString("fen"))
             val moved = Board(case.getString("moved"))
             val fenLabel = case.getString("fen")
@@ -64,7 +69,7 @@ class NamedTest {
             for (k in 0 until list.length()) {
                 val ask = list.getJSONObject(k)
                 val words = ask.getString("text")
-                asks += 1
+                asks.incrementAndGet()
                 val probes = probesByWords(words, board)
                 check("\"$words\" probes", probes.map { showProbe(it) }, probeStrings(ask.getJSONArray("probes")))
                 check(
@@ -178,7 +183,7 @@ class NamedTest {
             }
         }
         val took = System.currentTimeMillis() - began
-        Log.i(TAG, "${cases.length()} positions, $asks asks, $took ms")
+        Log.i(TAG, "$positions positions, $asks asks, $took ms")
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
@@ -192,7 +197,8 @@ class NamedTest {
      */
     @Test
     fun theDesktopsNamedAndInventoryTestsMatch() {
-        val root = fixture("chess/named.json")
+        // Only the desktop's calls: the positions, nearly all of the file, are the other test's.
+        val root = fixture("chess/named.json", setOf("tests"))
         val tests = root.getJSONObject("tests")
         assertTrue("the desktop's named tests ran", tests.getJSONArray("ran").length() >= 17)
         val calls = tests.getJSONArray("calls")

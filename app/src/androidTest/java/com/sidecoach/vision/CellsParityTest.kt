@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Sweep
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -44,12 +45,18 @@ class CellsParityTest {
         val geometry = BoardGeometry(Region(margin, margin, 8 * cell, 8 * cell), cell.toDouble())
         val failures = ArrayList<String>()
         var cellsCompared = 0
+        var sets = 0
         var learnMs = 0L
         var readMs = 0L
         CellEmbedder.load(context.targetContext).use { embedder ->
             val cases = index.getJSONArray("cases")
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)
+                // The lichess sheets past the first three are the sweep's (`tools/test.ps1 -All`):
+                // the cases kept hold every synthetic set, every dialog, every arrow colour, both
+                // tints and both boards.
+                if (case.optBoolean("sweep") && !Sweep.all) continue
+                sets++
                 // A case on a board of its own size (a fractional pitch, 641 px: the parity
                 // audit, 2026-09-29) carries its geometry.
                 val region = case.optJSONArray("region")
@@ -94,7 +101,7 @@ class CellsParityTest {
             }
             Log.i(
                 TAG,
-                "${cases.length()} sets, $cellsCompared cells: ${failures.size} differences " +
+                "$sets of ${cases.length()} sets, $cellsCompared cells: ${failures.size} differences " +
                     "(learned in $learnMs ms, read in $readMs ms)",
             )
         }

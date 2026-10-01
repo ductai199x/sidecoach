@@ -1,9 +1,6 @@
 package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.sidecoach.chess.Board
-import com.sidecoach.chess.Move
-import com.sidecoach.events.MotifTag
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -45,38 +42,13 @@ class CausesReviewTest {
         cause = cause,
     )
 
-    /**
-     * Even when the move also allowed one: the tactic-blind student was told it kept missing
-     * their threats and wrote down the threat habit (the simulated students; desktop b9be768).
+    /*
+     * A chance let go with a tactic on the board is the tactic never considered (desktop
+     * b9be768), and a capture or check that comes out behind is a line miscalculated (desktop
+     * adc4b26): cases 3 to 7 of profile.json's `cause_tables.classify`, the same positions,
+     * moves and tags, cause and motif held to the desktop's by
+     * `ProfileTest#winsMaterialAndTheCauseMatchThePython`.
      */
-    @Test
-    fun aChanceLetGoWithATacticOnTheBoardIsTheTacticNeverConsidered() {
-        val board = Board()
-        val move = Move.fromUci("e2e4")
-        var found = Causes.classify(board, move, availableTags = listOf(FORK), allowedTags = listOf(FORK), missedChance = true)
-        assertEquals(Causes.NOT_CONSIDERED to "fork", found)
-        // Not a miss: the tactic allowed comes first, as before.
-        found = Causes.classify(board, move, availableTags = listOf(FORK), allowedTags = listOf(FORK))
-        assertEquals(Causes.MISSED_THREAT, found.first)
-        // A mate allowed is the threat whatever else.
-        found = Causes.classify(board, move, availableTags = listOf(FORK), replyMate = 1, missedChance = true)
-        assertEquals(Causes.MISSED_THREAT, found.first)
-    }
-
-    /**
-     * Even when the reply it allows wins material: the player began it. As a threat missed, the
-     * greedy student heard "what their moves threatened" after every game (desktop adc4b26).
-     */
-    @Test
-    fun aCaptureOrCheckThatComesOutBehindIsALineMiscalculated() {
-        // 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nd4 4.Nxe5?, allowing the fork ...Qg5.
-        val board = Board("r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
-        var found = Causes.classify(board, Move.fromUci("f3e5"), allowedTags = listOf(FORK))
-        assertEquals(Causes.MISCALCULATED to "fork", found)
-        // A mate allowed is still the threat.
-        found = Causes.classify(board, Move.fromUci("f3e5"), replyMate = 2)
-        assertEquals(Causes.MISSED_THREAT, found.first)
-    }
 
     /**
      * Asked "What do I keep missing?", the reviews named the move that cost most and never the
@@ -112,9 +84,5 @@ class CausesReviewTest {
         // One mistake of each kind is no pattern.
         lines = review(listOf(missed(3, 0.2), missed(15, 0.3, Causes.POSITIONAL))).lines
         assertTrue(lines.toString(), lines.none { it.startsWith("What you kept missing") })
-    }
-
-    companion object {
-        private val FORK = MotifTag(name = "fork", squares = listOf("e5", "c6", "g6"))
     }
 }

@@ -19,6 +19,8 @@ import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 
 /**
@@ -34,11 +36,15 @@ import kotlin.math.abs
 @RunWith(AndroidJUnit4::class)
 class CoachPrimitivesTest {
 
-    private fun fixtures(): JSONObject = fixture("chess/coach.json")
+    /** coach.json less its positions, which [forEachIn] streams one at a time. */
+    private fun fixtures(): JSONObject =
+        fixture(COACH, setOf("persons", "unlocks", "controls", "policy", "standings"))
 
     private val failures = ArrayList<String>()
     private var mismatches = 0
 
+    /** Safe from the replay's several threads. */
+    @Synchronized
     private fun check(what: String, mine: Any?, theirs: Any?) {
         if (mine != theirs) {
             mismatches += 1
@@ -98,12 +104,13 @@ class CoachPrimitivesTest {
         }
 
         // The positions.
-        val cases = data.getJSONArray("cases")
-        var deepCases = 0
-        var trapped = 0
-        val goals = HashMap<String, Int>()
-        for (i in 0 until cases.length()) {
-            val case = cases.getJSONObject(i)
+        // Every position on its own, side by side on the cores; the counts kept safe from them.
+        val positions = AtomicInteger()
+        val deepCases = AtomicInteger()
+        val trapped = AtomicInteger()
+        val goals = ConcurrentHashMap<String, Int>()
+        forEachInParallel(COACH, "cases") { case ->
+            positions.incrementAndGet()
             val board = boardOf(case)
             val us = board.turn
             val analysis = analysisFrom(case.getString("fen"), case.getJSONObject("analysis"))
@@ -111,7 +118,7 @@ class CoachPrimitivesTest {
             checkFacts(case.getString("fen"), facts, case.getJSONObject("facts"))
 
             val idea = IdeaReader.read(board, analysis)
-            goals[idea.goal] = (goals[idea.goal] ?: 0) + 1
+            goals.merge(idea.goal, 1, Int::plus)
             checkIdea(case.getString("fen"), idea, case.getJSONObject("idea"))
             checkWords(case.getString("fen"), idea, board, case.getJSONObject("words"))
             checkTemplates(case.getString("fen"), facts, board, case.getJSONObject("templates"))
@@ -140,7 +147,7 @@ class CoachPrimitivesTest {
                     ranked.map { Situation.trapWords(board, it, idea.target, top, best) },
                     (0 until words.length()).map { if (words.isNull(it)) null else words.getString(it) },
                 )
-                trapped += 1
+                trapped.incrementAndGet()
             }
             check("material us", materialText(board, us), case.getString("material_us"))
             check("material them", materialText(board, !us), case.getString("material_them"))
@@ -182,7 +189,7 @@ class CoachPrimitivesTest {
             }
 
             val leaks = case.getJSONArray("leaks")
-            if (case.getJSONArray("verdicts").length() > 0) deepCases += 1
+            if (case.getJSONArray("verdicts").length() > 0) deepCases.incrementAndGet()
             for (k in 0 until leaks.length()) {
                 val o = leaks.getJSONObject(k)
                 val said = if (o.isNull("said")) null else o.getString("said")
@@ -280,7 +287,7 @@ class CoachPrimitivesTest {
         val took = System.currentTimeMillis() - began
         Log.i(
             TAG,
-            "${cases.length()} positions ($deepCases with the whole sweep, $trapped with traps read), " +
+            "$positions positions ($deepCases with the whole sweep, $trapped with traps read), " +
                 "${persons.length()} rewrites, goals $goals, ${took} ms",
         )
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
@@ -757,5 +764,6 @@ class CoachPrimitivesTest {
 
     companion object {
         private const val TAG = "sidecoach.coach"
+        private const val COACH = "chess/coach.json"
     }
 }

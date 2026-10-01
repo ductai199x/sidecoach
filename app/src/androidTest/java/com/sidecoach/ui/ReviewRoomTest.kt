@@ -171,7 +171,10 @@ class ReviewRoomTest {
             mkdirs()
         }
         val settings = SettingsStore(context)
-        val fast = GameReview.STRENGTHS.getValue("fast")
+        // "fast" by name, as the store keys it, at depth 8: what is checked is the pairing, the
+        // headers and clocks carried, and which positions are searched again -- not the verdicts,
+        // which two reviews of sixteen plies at depth 14 took most of the class's time to reach.
+        val fast = GameReview.STRENGTHS.getValue("fast").copy(depth = 8)
 
         fun watchedAndImported(name: String, sans: List<String>): Pair<Store, LibraryRow> {
             val store = Store(File(files, "$name.sqlite"))

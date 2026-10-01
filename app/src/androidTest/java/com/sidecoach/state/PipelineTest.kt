@@ -3,6 +3,8 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Parallel
+import com.sidecoach.Sweep
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
@@ -27,6 +29,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
+import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 
@@ -73,173 +76,193 @@ class PipelineTest {
     private fun readAll(sameFrameShortcut: Boolean) {
         val context = InstrumentationRegistry.getInstrumentation().context
         val text = context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() }
-        val runs = JSONObject(text).getJSONArray("runs")
-        val failures = ArrayList<String>()
-        CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext).use { net ->
-            for (r in 0 until runs.length()) {
-                val run = runs.getJSONObject(r)
-                val name = run.getString("name")
-                // A scenario that pins a behaviour of the pipeline's is replayed once; the still
-                // screen's shortcut is held to the others (`READ_ONCE` in the generator).
-                if (sameFrameShortcut && run.optBoolean("read_once")) continue
-                // A scenario in sessions shares one theme cache between them, as the app's does:
-                // each session a fresh pipeline on it, as a Stop and Start is.
-                val themes = if (run.optBoolean("cache")) {
-                    java.io.File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "pipeline-themes/$name")
-                        .apply { deleteRecursively(); mkdirs() }
-                } else {
-                    null
-                }
-                // Its listings counted: each read from the cache (`ThemeStore.candidates`) lists
-                // the directory once, and a scenario may say how often its last session read it.
-                val counted = themes?.let { CountedDir(it.path) }
-                val store = counted?.let { ThemeStore(it) }
-                var pipeline = GamePipeline(net, store)
-                var gate = ChangeGate()
-                val frames = run.getJSONArray("frames")
-                val decoded = HashMap<String, Mat>()
-                var moves = 0
-                var lastFile: String? = null
-                var lastPixels: FramePixels? = null
-                var lastMat: Mat? = null
-                var shortcuts = 0
-                val began = System.currentTimeMillis()
-                for (f in 0 until frames.length()) {
-                    val frame = frames.getJSONObject(f)
-                    if (frame.has("call")) {
-                        // What the desktop's test did to its pipeline between frames.
-                        val done = call(pipeline, frame.getJSONObject("call"), lastMat, frame.getDouble("ts"))
-                            .map { line(it) }
-                        val wanted = frame.getJSONArray("events").let { a -> List(a.length()) { a.getString(it) } }
-                        if (done != wanted && failures.size < 8) {
-                            failures.add(
-                                "$name frame $f (${frame.getJSONObject("call")}):\n  kotlin: " +
-                                    "${done.joinToString(" | ")}\n  python: ${wanted.joinToString(" | ")}",
-                            )
-                        }
-                        continue
-                    }
-                    if (frame.optBoolean("session")) {
-                        pipeline = GamePipeline(net, store)
-                        gate = ChangeGate()
-                        lastFile = null
-                        lastPixels = null
-                        counted?.listings = 0
-                    }
-                    val file = frame.getString("file")
-                    val mat = decoded.getOrPut(file) { load(file) }
-                    val same = sameFrameShortcut && file == lastFile
-                    if (same) shortcuts++
-                    val pixels = lastPixels.takeIf { same } ?: FramePixels.of(mat)
-                    val ts = frame.getDouble("ts")
-                    val changed = if (frame.optBoolean("forced")) {
-                        // Passed by hand, as the desktop's test passes it: the gate is not asked.
-                        frame.getBoolean("changed")
-                    } else {
-                        gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
-                        if (same) gate.changedAgain(pixels, ts) else gate.changed(pixels, ts)
-                    }
-                    lastFile = file
-                    lastPixels = pixels
-                    lastMat = mat
-                    if (changed != frame.getBoolean("changed") && failures.size < 8) {
-                        failures.add(
-                            "$name frame $f ($file): the gate says changed=$changed, " +
-                                "python says ${frame.getBoolean("changed")}",
-                        )
-                    }
-                    val id = frame.optInt("id", f)
-                    val events = pipeline.process(mat, ts, changed, id, pixels, sameFrame = same)
-                    // Every event carries the tick's time and frame (`_stamp`).
-                    if (events.any { it.ts != ts || it.sourceFrameId != id } && failures.size < 8) {
-                        failures.add("$name frame $f ($file): an event not stamped with the tick")
-                    }
-                    val mine = events.map { line(it) }
-                    val theirs = frame.getJSONArray("events").let { a ->
-                        List(a.length()) { a.getString(it) }
-                    }
-                    moves += mine.count { it.startsWith("MovePlayed") }
-                    if (mine != theirs && failures.size < 8) {
-                        failures.add(
-                            "$name frame $f ($file):\n  kotlin: ${mine.joinToString(" | ")}" +
-                                "\n  python: ${theirs.joinToString(" | ")}",
-                        )
-                    }
-                    if (frame.has("lock")) {
-                        // Where the tracker's lock stands after this frame (a board moved: desktop
-                        // 17c45a6's `test_a_board_moved_any_fraction_of_a_cell_is_found_again`).
-                        val region = pipeline.board?.region
-                        val mine = region?.let { listOf(it.x, it.y, it.w, it.h) }
-                        val theirs = if (frame.isNull("lock")) {
-                            null
-                        } else {
-                            frame.getJSONArray("lock").let { a -> List(a.length()) { a.getInt(it) } }
-                        }
-                        if (mine != theirs && failures.size < 8) {
-                            failures.add("$name frame $f ($file): the lock is at $mine, python's at $theirs")
-                        }
-                    }
-                    if (frame.has("asked")) {
-                        // "Re-read the screen" on this frame: `GameWatcher.analyse`, from the lock.
-                        val lock = pipeline.board
-                        val asked = if (lock == null) {
-                            listOf("no board locked to re-read")
-                        } else {
-                            pipeline.coldStart(
-                                mat, BoardGeometry(lock.region, lock.cellPx), null, frame.getDouble("ts"),
-                            ).map { line(it) }
-                        }
-                        val wanted = frame.getJSONArray("asked").let { a ->
-                            List(a.length()) { a.getString(it) }
-                        }
-                        if (asked != wanted && failures.size < 8) {
-                            failures.add(
-                                "$name frame $f ($file) re-read:\n  kotlin: ${asked.joinToString(" | ")}" +
-                                    "\n  python: ${wanted.joinToString(" | ")}",
-                            )
-                        }
-                    }
-                }
-                val took = System.currentTimeMillis() - began
-                for (mat in decoded.values) mat.release()
-                val rec = pipeline.reconciler
-                Log.i(
-                    "sidecoach.state",
-                    "$name: ${frames.length()} frames ($shortcuts read again), $moves moves, " +
-                        "${pipeline.bootstraps} bootstraps, $took ms — ${rec?.pgn()}",
-                )
-                // No game at the end is an empty record on both sides.
-                if ((rec?.pgn() ?: "") != run.getString("pgn")) {
-                    failures.add("$name: pgn is '${rec?.pgn()}', python's is '${run.getString("pgn")}'")
-                }
-                if ((rec?.board?.fen() ?: "") != run.getString("final_fen")) {
-                    failures.add(
-                        "$name: final fen is ${rec?.board?.fen()}, " +
-                            "python's is ${run.getString("final_fen")}",
-                    )
-                }
-                if (pipeline.bootstraps != run.getInt("bootstraps")) {
-                    failures.add(
-                        "$name: ${pipeline.bootstraps} bootstraps, " +
-                            "python had ${run.getInt("bootstraps")}",
-                    )
-                }
-                if (run.has("reads") && counted?.listings != run.getInt("reads")) {
-                    // `test_a_puzzle_left_still_is_read_once`: a still board read from the cache
-                    // once, not every tick (the parity audit, 2026-09-29).
-                    failures.add("$name: read from the cache ${counted?.listings} times, python ${run.getInt("reads")}")
-                }
-                if (themes != null) {
-                    val learned = themes.listFiles { f -> f.name.startsWith("theme-") }?.size ?: 0
-                    if (learned != run.getInt("themes")) {
-                        failures.add("$name: $learned learned sets cached, python had ${run.getInt("themes")}")
-                    }
-                    themes.deleteRecursively()
-                }
-                if (failures.size >= 8) break
+        val all = JSONObject(text).getJSONArray("runs")
+        // A scenario that pins a behaviour of the pipeline's is replayed once; the still screen's
+        // shortcut is held to the others (`READ_ONCE` in the generator), and of those to the few
+        // that meet every event it passes on unless the sweep is asked for (`SHORTCUT_SWEEP`,
+        // `tools/test.ps1 -All`).
+        val runs = (0 until all.length()).map { all.getJSONObject(it) }
+            .filter { !(sameFrameShortcut && it.optBoolean("read_once")) }
+            .filter { !(sameFrameShortcut && it.optBoolean("shortcut_sweep") && !Sweep.all) }
+        val failures = java.util.Collections.synchronizedList(ArrayList<String>())
+        // The scenarios side by side: each its own pipeline, and each thread its own net, one
+        // thread to a net. Two at a time: a scenario holds its frames' pixels and planes and,
+        // while it learns a start position, its net's 38 MB input buffer (a direct buffer is on
+        // the Java heap here); three or four of them ran the 192 MB heap out, and three were no
+        // faster than two.
+        // OpenCV's own threads kept to one meanwhile: the replays are the parallelism, and its
+        // pool's idle workers waited by reading the clock, a trap to the host on the emulator,
+        // a fifth of the CPU. Its answers do not depend on how many threads it uses.
+        val target = InstrumentationRegistry.getInstrumentation().targetContext
+        val openCvThreads = Core.getNumThreads()
+        Core.setNumThreads(1)
+        try {
+            Parallel.forEach(runs, threads = 2, resource = { CellEmbedder.load(target, threads = 2) }) { run, net ->
+                if (failures.size < 8) replay(run, net, sameFrameShortcut, failures)
             }
+        } finally {
+            Core.setNumThreads(openCvThreads)
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** One scenario through a fresh pipeline, its differences from the desktop's into [failures]. */
+    private fun replay(run: JSONObject, net: CellEmbedder, sameFrameShortcut: Boolean, failures: MutableList<String>) {
+        val name = run.getString("name")
+        // A scenario in sessions shares one theme cache between them, as the app's does:
+        // each session a fresh pipeline on it, as a Stop and Start is.
+        val themes = if (run.optBoolean("cache")) {
+            java.io.File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "pipeline-themes/$name")
+                .apply { deleteRecursively(); mkdirs() }
+        } else {
+            null
+        }
+        // Its listings counted: each read from the cache (`ThemeStore.candidates`) lists
+        // the directory once, and a scenario may say how often its last session read it.
+        val counted = themes?.let { CountedDir(it.path) }
+        val store = counted?.let { ThemeStore(it) }
+        var pipeline = GamePipeline(net, store)
+        var gate = ChangeGate()
+        val frames = run.getJSONArray("frames")
+        val decoded = HashMap<String, Mat>()
+        var moves = 0
+        var lastFile: String? = null
+        var lastPixels: FramePixels? = null
+        var lastMat: Mat? = null
+        var shortcuts = 0
+        val began = System.currentTimeMillis()
+        for (f in 0 until frames.length()) {
+            val frame = frames.getJSONObject(f)
+            if (frame.has("call")) {
+                // What the desktop's test did to its pipeline between frames.
+                val done = call(pipeline, frame.getJSONObject("call"), lastMat, frame.getDouble("ts"))
+                    .map { line(it) }
+                val wanted = frame.getJSONArray("events").let { a -> List(a.length()) { a.getString(it) } }
+                if (done != wanted && failures.size < 8) {
+                    failures.add(
+                        "$name frame $f (${frame.getJSONObject("call")}):\n  kotlin: " +
+                            "${done.joinToString(" | ")}\n  python: ${wanted.joinToString(" | ")}",
+                    )
+                }
+                continue
+            }
+            if (frame.optBoolean("session")) {
+                pipeline = GamePipeline(net, store)
+                gate = ChangeGate()
+                lastFile = null
+                lastPixels = null
+                counted?.listings = 0
+            }
+            val file = frame.getString("file")
+            val mat = decoded.getOrPut(file) { load(file) }
+            val same = sameFrameShortcut && file == lastFile
+            if (same) shortcuts++
+            val pixels = lastPixels.takeIf { same } ?: FramePixels.of(mat)
+            val ts = frame.getDouble("ts")
+            val changed = if (frame.optBoolean("forced")) {
+                // Passed by hand, as the desktop's test passes it: the gate is not asked.
+                frame.getBoolean("changed")
+            } else {
+                gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
+                if (same) gate.changedAgain(pixels, ts) else gate.changed(pixels, ts)
+            }
+            lastFile = file
+            lastPixels = pixels
+            lastMat = mat
+            if (changed != frame.getBoolean("changed") && failures.size < 8) {
+                failures.add(
+                    "$name frame $f ($file): the gate says changed=$changed, " +
+                        "python says ${frame.getBoolean("changed")}",
+                )
+            }
+            val id = frame.optInt("id", f)
+            val events = pipeline.process(mat, ts, changed, id, pixels, sameFrame = same)
+            // Every event carries the tick's time and frame (`_stamp`).
+            if (events.any { it.ts != ts || it.sourceFrameId != id } && failures.size < 8) {
+                failures.add("$name frame $f ($file): an event not stamped with the tick")
+            }
+            val mine = events.map { line(it) }
+            val theirs = frame.getJSONArray("events").let { a ->
+                List(a.length()) { a.getString(it) }
+            }
+            moves += mine.count { it.startsWith("MovePlayed") }
+            if (mine != theirs && failures.size < 8) {
+                failures.add(
+                    "$name frame $f ($file):\n  kotlin: ${mine.joinToString(" | ")}" +
+                        "\n  python: ${theirs.joinToString(" | ")}",
+                )
+            }
+            if (frame.has("lock")) {
+                // Where the tracker's lock stands after this frame (a board moved: desktop
+                // 17c45a6's `test_a_board_moved_any_fraction_of_a_cell_is_found_again`).
+                val region = pipeline.board?.region
+                val mine = region?.let { listOf(it.x, it.y, it.w, it.h) }
+                val theirs = if (frame.isNull("lock")) {
+                    null
+                } else {
+                    frame.getJSONArray("lock").let { a -> List(a.length()) { a.getInt(it) } }
+                }
+                if (mine != theirs && failures.size < 8) {
+                    failures.add("$name frame $f ($file): the lock is at $mine, python's at $theirs")
+                }
+            }
+            if (frame.has("asked")) {
+                // "Re-read the screen" on this frame: `GameWatcher.analyse`, from the lock.
+                val lock = pipeline.board
+                val asked = if (lock == null) {
+                    listOf("no board locked to re-read")
+                } else {
+                    pipeline.coldStart(
+                        mat, BoardGeometry(lock.region, lock.cellPx), null, frame.getDouble("ts"),
+                    ).map { line(it) }
+                }
+                val wanted = frame.getJSONArray("asked").let { a ->
+                    List(a.length()) { a.getString(it) }
+                }
+                if (asked != wanted && failures.size < 8) {
+                    failures.add(
+                        "$name frame $f ($file) re-read:\n  kotlin: ${asked.joinToString(" | ")}" +
+                            "\n  python: ${wanted.joinToString(" | ")}",
+                    )
+                }
+            }
+        }
+        val took = System.currentTimeMillis() - began
+        for (mat in decoded.values) mat.release()
+        val rec = pipeline.reconciler
+        Log.i(
+            "sidecoach.state",
+            "$name: ${frames.length()} frames ($shortcuts read again), $moves moves, " +
+                "${pipeline.bootstraps} bootstraps, $took ms — ${rec?.pgn()}",
+        )
+        // No game at the end is an empty record on both sides.
+        if ((rec?.pgn() ?: "") != run.getString("pgn")) {
+            failures.add("$name: pgn is '${rec?.pgn()}', python's is '${run.getString("pgn")}'")
+        }
+        if ((rec?.board?.fen() ?: "") != run.getString("final_fen")) {
+            failures.add(
+                "$name: final fen is ${rec?.board?.fen()}, " +
+                    "python's is ${run.getString("final_fen")}",
+            )
+        }
+        if (pipeline.bootstraps != run.getInt("bootstraps")) {
+            failures.add(
+                "$name: ${pipeline.bootstraps} bootstraps, " +
+                    "python had ${run.getInt("bootstraps")}",
+            )
+        }
+        if (run.has("reads") && counted?.listings != run.getInt("reads")) {
+            // `test_a_puzzle_left_still_is_read_once`: a still board read from the cache
+            // once, not every tick (the parity audit, 2026-09-29).
+            failures.add("$name: read from the cache ${counted?.listings} times, python ${run.getInt("reads")}")
+        }
+        if (themes != null) {
+            val learned = themes.listFiles { f -> f.name.startsWith("theme-") }?.size ?: 0
+            if (learned != run.getInt("themes")) {
+                failures.add("$name: $learned learned sets cached, python had ${run.getInt("themes")}")
+            }
+            themes.deleteRecursively()
+        }
     }
 
     /**

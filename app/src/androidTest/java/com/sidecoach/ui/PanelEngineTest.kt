@@ -153,8 +153,9 @@ class PanelEngineTest {
     /**
      * With no session running, Flip, Re-read and End game wait for the next Start (the
      * desktop's command queue: `test_with_no_session_flip_re_read_and_end_wait_for_the_next_start`),
-     * an ask is answered at once, and the voice's controls take (`test_controls_and_static_page`
-     * in tests/test_panel_server.py).
+     * and an ask is answered at once, not queued with them. The voice's controls with no session
+     * are `thePanelStartsWithTheSettingsVoiceAndItsControlsTakeEffect`'s (and PanelServerTest's
+     * over HTTP).
      */
     @Test
     fun controlsWithoutASessionWaitForTheNextStart() {
@@ -166,13 +167,7 @@ class PanelEngineTest {
             PanelEngine.endGame("resigned")
             PanelEngine.ask("hint")
             assertEquals(listOf("flip" to null, "analyze" to null, "end" to "resigned"), PanelEngine.commands.toList())
-            PanelVoice.setVoice("am_adam")
-            assertEquals("am_adam", PanelVoice.voice)
-            PanelVoice.setMuted(true)
-            assertTrue(PanelVoice.muted)
         } finally {
-            PanelVoice.setMuted(false)
-            PanelVoice.setVoice(SettingsStore(app).voice())
             PanelEngine.commands.clear()
         }
     }
@@ -414,25 +409,6 @@ class PanelEngineTest {
         }
         assertFalse(PanelListen.mic!!.isOpen)
         PanelListen.setListen(before)
-    }
-
-    /**
-     * The saved voice is the one the panel speaks with from the start (Tai, 2026-09-21: the
-     * settings said bm_george, the panel came up with af_sarah).
-     */
-    @Test
-    fun thePanelStartsWithTheSettingsVoice() {
-        val store = SettingsStore(app)
-        val saved = store.values()
-        try {
-            store.save(store.values().also { it.getJSONObject("voice").put("voice", "bm_george") })
-            PanelVoice.build(app, store)
-            assertEquals("bm_george", PanelVoice.voice)
-            assertEquals("bm_george", PanelEngine.poll(Int.MAX_VALUE).getJSONObject("state").getString("voice"))
-        } finally {
-            store.save(saved)
-            PanelVoice.build(app, store)
-        }
     }
 
     /**

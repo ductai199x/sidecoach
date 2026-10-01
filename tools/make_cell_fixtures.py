@@ -62,6 +62,7 @@ from sidecoach.vision.coordinates import learn_rank_labels, read_bottom_side  # 
 from sidecoach.vision.theme_cache import palette_key, sample_palette  # noqa: E402
 from sidecoach.vision.pieces import CELL, ThemeModel, silhouette  # noqa: E402
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at  # noqa: E402
+from tests.pieceset import sheet_sets  # noqa: E402
 from tests.synth import (  # noqa: E402
     ARROWS,
     PIECE_STYLES,
@@ -78,6 +79,16 @@ THEMES = ("green", "brown")
 COLOURS = tuple(ARROWS)  # orange, green, blue, red
 # The sets the dialog is drawn over, faded in for the first two, opaque for the others.
 DIALOG = {"anarcandy": 0.6, "cburnett": 0.6, "merida": 1.0, "pixel": 1.0}
+
+
+def swept(style: str, fractional: bool) -> bool:
+    """A case the phone's default run leaves to `tools/test.ps1 -All` (`sweep` in the case), as
+    the desktop's tests/test_pieces.py does with --sweep: every lichess sheet past the first
+    three, unless the dialog is drawn over it. Kept: every synthetic style, three sheets, the
+    four dialog sets and the fractional board -- with them every arrow colour, both tints and
+    both boards (Tai, 2026-10-01: "SLIM DOWN THE SUITE AND MAKE IT BLAZING FAST")."""
+    sheets = sheet_sets()
+    return style in sheets and style not in sheets[:3] and style not in DIALOG and not fractional
 
 
 def dressed() -> tuple[chess.Board, dict]:
@@ -282,6 +293,7 @@ def main() -> None:
             {
                 "style": style,
                 "theme": theme,
+                **({"sweep": True} if swept(style, fractional) else {}),
                 **extra,
                 "start": f"{name}-start.png",
                 "dressed": boards[0]["file"],

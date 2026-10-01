@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Parallel
 import com.sidecoach.chess.Move
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -47,7 +48,9 @@ class OpeningsTest {
         assertEquals("$pass: named lines", data.getInt("names"), book.size)
         assertEquals("$pass: positions", data.getInt("positions"), book.positionCount)
         val cases = data.getJSONArray("cases")
-        for (i in 0 until cases.length()) {
+        // The cases side by side on the cores: the book is only read, each trace on a board of
+        // its own, and the first case that differs fails the test as before.
+        Parallel.forEach((0 until cases.length()).toList()) { i ->
             val case = cases.getJSONObject(i)
             val ucis = case.getJSONArray("moves")
             val moves = (0 until ucis.length()).map { Move.fromUci(ucis.getString(it)) }

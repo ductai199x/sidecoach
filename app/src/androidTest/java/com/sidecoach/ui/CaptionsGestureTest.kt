@@ -71,7 +71,15 @@ class CaptionsGestureTest {
         event.recycle()
     }
 
+    /**
+     * The screenshots are for a person to look at, so they are taken when asked for
+     * (`tools/test.ps1 -All`, or `-e shots true`): a dozen screen grabs saved as PNGs were
+     * seconds of every run that nobody looked at.
+     */
+    private val shooting = InstrumentationRegistry.getArguments().getString("shots") == "true"
+
     private fun shot(name: String) {
+        if (!shooting) return
         val image = automation.takeScreenshot() ?: return
         File(shots, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
         Log.i(TAG, "screenshot $name")
@@ -344,15 +352,16 @@ class CaptionsGestureTest {
         )
         assertTrue("the buttons went with the moves", buttonsShown())
 
-        // Left alone, the moves go by themselves after their real four seconds: not before
-        // (the tap is handled after it is sent, so they last at least that long from here),
-        // and not long after, however slow the emulator.
-        Captions.controlsMs = Captions.CONTROLS_MS
+        // Left alone, the moves go by themselves after their time ([MOVES_MS] here, the timer
+        // the box keeps, shorter than the four seconds it ships with): not before (the tap is
+        // handled after it is sent, so they last at least that long from here), and not long
+        // after, however slow the emulator.
+        Captions.controlsMs = MOVES_MS
         Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
         val tapped = SystemClock.uptimeMillis()
         tap(cx, cy)
         assertTrue("a tap showed no moves again", waitFor { (box()?.height() ?: 0) > first.height() })
-        val early = Captions.CONTROLS_MS - 500 - (SystemClock.uptimeMillis() - tapped)
+        val early = MOVES_MS - 500 - (SystemClock.uptimeMillis() - tapped)
         if (early > 0) Thread.sleep(early)
         assertTrue(
             "the moves went within ${SystemClock.uptimeMillis() - tapped} ms of the tap",
@@ -487,5 +496,8 @@ class CaptionsGestureTest {
 
         /** The box's fade and its moves' timeout while the gestures run: longer than any run. */
         private const val LONG_MS = 600_000L
+
+        /** The moves' own timeout where it is checked: long enough to be told from a tap's. */
+        private const val MOVES_MS = 1500L
     }
 }

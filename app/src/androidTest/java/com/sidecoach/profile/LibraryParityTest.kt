@@ -6,6 +6,7 @@ import com.sidecoach.llm.HttpReply
 import com.sidecoach.llm.Transport
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.AfterClass
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -21,11 +22,6 @@ import java.time.ZoneOffset
  */
 @RunWith(AndroidJUnit4::class)
 class LibraryParityTest {
-
-    private val fixture: JSONObject by lazy {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        JSONObject(context.assets.open("profile/library.json").bufferedReader().use { it.readText() })
-    }
 
     @Test
     fun pastedGamesAreTheDesktopsRows() {
@@ -256,6 +252,22 @@ class LibraryParityTest {
     }
 
     companion object {
+        /**
+         * The 10 MB fixture, read once for the class (each of its seven tests read it again) and
+         * let go after it: the suite's other classes share the 192 MB heap.
+         */
+        private var read: JSONObject? = null
+
+        private val fixture: JSONObject
+            get() = read ?: InstrumentationRegistry.getInstrumentation().context.assets.open("profile/library.json")
+                .bufferedReader().use { JSONObject(it.readText()) }.also { read = it }
+
+        @JvmStatic
+        @AfterClass
+        fun letGo() {
+            read = null
+        }
+
         fun strings(array: JSONArray): List<String> = (0 until array.length()).map { array.get(it).toString() }
 
         private fun optString(o: JSONObject, name: String): String? = if (o.isNull(name)) null else o.getString(name)

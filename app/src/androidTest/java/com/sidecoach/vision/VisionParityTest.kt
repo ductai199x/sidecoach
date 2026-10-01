@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Parallel
 import com.sidecoach.chess.Board
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,11 +25,6 @@ import kotlin.math.abs
  */
 @RunWith(AndroidJUnit4::class)
 class VisionParityTest {
-
-    private val index: JSONObject by lazy {
-        val assets = InstrumentationRegistry.getInstrumentation().context.assets
-        JSONObject(assets.open("vision/index.json").bufferedReader().use { it.readText() })
-    }
 
     @Test
     fun theGateCountsChangesAndPadsTheBoardAsTheDesktopDoes() {
@@ -169,24 +165,32 @@ class VisionParityTest {
      */
     @Test
     fun boardsAtTheFramesEdgeAreFoundAndFollowedAsTheDesktopFindsThem() {
-        val edges = index.getJSONObject("edges")
-        val failures = ArrayList<String>()
-        val grays = HashMap<String, Plane>()
-        fun gray(file: String): Plane = grays.getOrPut(file) {
-            val mat = Fixtures.asset("vision/$file")
-            BoardDetect.toGray(mat).also { mat.release() }
-        }
-        val detections = edges.getJSONArray("detections")
-        for (d in 0 until detections.length()) {
-            checkDetection(detections.getJSONObject(d), ::gray, failures)
-            grays.clear()
-        }
-        val runs = edges.getJSONArray("runs")
-        for (r in 0 until runs.length()) {
-            checkRun(runs.getJSONObject(r), ::gray, failures)
-            grays.clear()
-        }
+        val failures = replayEach(index.getJSONObject("edges"))
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /**
+     * A section's detections and runs, two cases side by side, each reading its own pages and
+     * letting them go after it: a 1920 by 1200 grey plane is nine megabytes, and two cases'
+     * pages at once fit the heap. Each case its own detector and tracker, as before.
+     */
+    private fun replayEach(section: JSONObject): List<String> {
+        val failures = java.util.Collections.synchronizedList(ArrayList<String>())
+        val detections = section.getJSONArray("detections")
+        val runs = section.getJSONArray("runs")
+        val cases: List<((String) -> Plane) -> Unit> =
+            (0 until detections.length()).map { d -> { gray: (String) -> Plane -> checkDetection(detections.getJSONObject(d), gray, failures) } } +
+                (0 until runs.length()).map { r -> { gray: (String) -> Plane -> checkRun(runs.getJSONObject(r), gray, failures) } }
+        Parallel.forEach(cases, threads = 2) { case ->
+            val grays = HashMap<String, Plane>()
+            case { file ->
+                grays.getOrPut(file) {
+                    val mat = Fixtures.asset("vision/$file")
+                    BoardDetect.toGray(mat).also { mat.release() }
+                }
+            }
+        }
+        return failures
     }
 
     /**
@@ -205,23 +209,7 @@ class VisionParityTest {
      */
     @Test
     fun theDesktopsDetectorAndTrackerTestsGoTheSameWay() {
-        val desk = index.getJSONObject("desk")
-        val failures = ArrayList<String>()
-        val grays = HashMap<String, Plane>()
-        fun gray(file: String): Plane = grays.getOrPut(file) {
-            val mat = Fixtures.asset("vision/$file")
-            BoardDetect.toGray(mat).also { mat.release() }
-        }
-        val detections = desk.getJSONArray("detections")
-        for (d in 0 until detections.length()) {
-            checkDetection(detections.getJSONObject(d), ::gray, failures)
-            grays.clear()
-        }
-        val runs = desk.getJSONArray("runs")
-        for (r in 0 until runs.length()) {
-            checkRun(runs.getJSONObject(r), ::gray, failures)
-            grays.clear()
-        }
+        val failures = replayEach(index.getJSONObject("desk"))
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
@@ -323,6 +311,12 @@ class VisionParityTest {
     companion object {
         /** The same arithmetic: only the JSON's six decimals between them. */
         private const val EXACT = 2e-6
+
+        /** The fixture's index, read once for the class rather than once a test. */
+        private val index: JSONObject by lazy {
+            val assets = InstrumentationRegistry.getInstrumentation().context.assets
+            JSONObject(assets.open("vision/index.json").bufferedReader().use { it.readText() })
+        }
 
         @JvmStatic
         @BeforeClass

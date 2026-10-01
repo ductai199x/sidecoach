@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * What the player claims and what the coach drafts, held to the desktop's answer.
@@ -27,6 +28,8 @@ class ClaimsTest {
     private val failures = ArrayList<String>()
     private var mismatches = 0
 
+    /** Safe from the replay's several threads. */
+    @Synchronized
     private fun check(what: String, mine: Any?, theirs: Any?) {
         if (mine != theirs) {
             mismatches += 1
@@ -36,7 +39,8 @@ class ClaimsTest {
 
     @Test
     fun everyClaimAndDraftMatchesThePython() {
-        val root = fixture("chess/claims.json")
+        // The prompt and the replies; the positions (nearly all of the 14 MB) stream one at a time.
+        val root = fixture(CLAIMS, setOf("system", "replies"))
 
         // The prompt is sent to a model, so a drifted copy would not fail anywhere else.
         check("extraction system prompt", EXTRACT_SYSTEM, root.getString("system"))
@@ -52,19 +56,20 @@ class ClaimsTest {
             )
         }
 
-        val cases = root.getJSONArray("cases")
-        var verified = 0
-        var drafted = 0
+        // Every position on its own, side by side on the cores; the counts kept safe from them.
+        val positions = AtomicInteger()
+        val verified = AtomicInteger()
+        val drafted = AtomicInteger()
         val began = System.currentTimeMillis()
-        for (i in 0 until cases.length()) {
-            val case = cases.getJSONObject(i)
+        forEachInParallel(CLAIMS, "cases") { case ->
+            positions.incrementAndGet()
             val fen = case.getString("fen")
             val board = Board(fen)
             val engine = recorded(case.getJSONObject("engine"))
             val facts = factsFrom(case.getJSONObject("facts"))
             val stale = factsFrom(case.getJSONObject("stale_facts"))
             val claims = claimList(case.getJSONArray("claims"))
-            verified += claims.size * 4
+            verified.addAndGet(claims.size * 4)
 
             check(
                 "$fen bare",
@@ -96,7 +101,7 @@ class ClaimsTest {
             for (k in 0 until drafts.length()) {
                 val draft = drafts.getJSONObject(k)
                 val words = draft.getString("text")
-                drafted += 2
+                drafted.addAndGet(2)
                 check(
                     "$fen draft \"$words\"",
                     checkDraft(words, board).map { "${it.text}|${it.reason}" },
@@ -110,7 +115,7 @@ class ClaimsTest {
             }
         }
         val took = System.currentTimeMillis() - began
-        Log.i(TAG, "${cases.length()} positions, $verified verdicts, $drafted drafts, $took ms")
+        Log.i(TAG, "$positions positions, $verified verdicts, $drafted drafts, $took ms")
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
@@ -124,7 +129,7 @@ class ClaimsTest {
      */
     @Test
     fun theDesktopsClaimTestsAndTheCheckedLinesMatch() {
-        val root = fixture("chess/claims.json")
+        val root = fixture(CLAIMS, setOf("tests", "lines"))
         val tests = root.getJSONObject("tests")
         assertTrue("the desktop's claim tests ran", tests.getJSONArray("ran").length() >= 60)
 
@@ -274,5 +279,6 @@ class ClaimsTest {
 
     companion object {
         private const val TAG = "sidecoach.coach"
+        private const val CLAIMS = "chess/claims.json"
     }
 }
