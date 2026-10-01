@@ -959,7 +959,7 @@ def _read_settings(path: Path) -> Settings:
         try:
             settings = Settings.model_validate(data)
         except ValidationError as exc:
-            dropped = _drop_refused(data, exc)
+            dropped = drop_refused(data, exc)
             if not dropped:
                 break
             refused.extend(dropped)
@@ -973,9 +973,9 @@ def _read_settings(path: Path) -> Settings:
     return settings
 
 
-def _drop_refused(data: dict[str, Any], exc: ValidationError) -> list[str]:
-    """Take out of `data` each field (`section.field`, or a top-level one) an error names;
-    returns the dotted names taken."""
+def drop_refused(data: dict[str, Any], exc: ValidationError) -> list[str]:
+    """Take out of `data` each field (`section.field`, or a top-level one) an error names, so it
+    takes its default; returns the dotted names taken."""
     dropped: list[str] = []
     for error in exc.errors(include_url=False):
         loc = [str(part) for part in error["loc"][:2]]

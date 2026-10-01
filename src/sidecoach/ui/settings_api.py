@@ -21,6 +21,7 @@ from sidecoach.coach.prompt import PERSONAS
 from sidecoach.config import (
     KEY_ENVS,
     Settings,
+    drop_refused,
     save_settings,
     secrets_get,
     secrets_set,
@@ -156,10 +157,40 @@ def _merged(base: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _in_change(loc: tuple[Any, ...], change: dict[str, Any]) -> bool:
+    """Whether a validation error's place is a field `change` itself sets."""
+    if not loc or loc[0] not in change:
+        return False
+    section = change[loc[0]]
+    return len(loc) < 2 or not isinstance(section, dict) or loc[1] in section
+
+
+def _say(engine: Any, text: str) -> None:
+    emit = getattr(engine, "_emit", None)
+    if emit is not None:
+        emit("sys", "warn", text)
+
+
 def _validated(engine: Any, change: dict[str, Any]) -> Settings:
     """The settings as they are now with `change` laid over them, validated; raises
-    ValidationError."""
-    new = Settings.model_validate(_merged(engine.settings.model_dump(mode="json"), change))
+    ValidationError for a field `change` sets. A value the running settings hold and the
+    settings refuse (`sidecoach panel --fps 60` sets one past its bound) is put back to its
+    default, and the log says so: left, it refused every later save and mute for a field
+    nobody had sent (the settings review, 2026-10-01)."""
+    data = _merged(engine.settings.model_dump(mode="json"), change)
+    for _ in range(len(data) + 1):  # each round takes at least one field out
+        try:
+            new = Settings.model_validate(data)
+            break
+        except ValidationError as exc:
+            if any(_in_change(e["loc"], change) for e in exc.errors()):
+                raise
+            dropped = drop_refused(data, exc)
+            if not dropped:
+                raise
+            _say(engine, f"settings: {', '.join(dropped)} could not be kept, back at the default")
+    else:
+        new = Settings.model_validate(data)  # raises what is left
     data_dir = os.environ.get("SIDECOACH_DATA_DIR")
     if data_dir:
         # The shell owns the data directory, and Stockfish's under it (`load_settings`); the
@@ -176,9 +207,16 @@ def remember(engine: Any, change: dict[str, Any]) -> None:
     """A choice made on the panel itself -- muted, how the coach listens, Debug > Record --
     kept in the settings file, so the next session starts as this one was left (Tai,
     2026-10-01: "mute setting isn't remembered between sessions"). The panel applied it
-    already; nothing is applied again."""
+    already; nothing is applied again. A change the settings refuse is said, not raised: the
+    switch has moved, and only its keeping failed (the settings review, 2026-10-01)."""
     with saving:
-        new = _validated(engine, change)
+        try:
+            new = _validated(engine, change)
+        except ValidationError as exc:
+            for error in exc.errors(include_url=False):
+                where = ".".join(str(part) for part in error["loc"])
+                _say(engine, f"{where}: not kept for the next session ({error['msg']})")
+            return
         new._source = save_settings(new, engine.settings.source)
         if hasattr(engine, "adopt_settings"):
             engine.adopt_settings(new)

@@ -417,6 +417,32 @@ def test_listening_saved_during_the_microphone_test_is_kept(
     assert listener.mode == "off" and engine.settings.voice.listen == "off"
 
 
+def test_a_change_is_never_dropped_for_a_value_already_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sidecoach panel --fps 60` puts a frame rate the settings refuse into the running
+    settings; from then on each save validated the whole settings and failed on it: a mute was
+    a 500 and not kept, and a Settings save was refused for a field the page never sent (the
+    settings review, 2026-10-01). The value held is put back to its default, and the log says
+    so; the change goes. A change refused itself is said, never dropped in silence."""
+    from sidecoach.config import load_settings
+    from sidecoach.ui import settings_api
+
+    client, engine = _client(tmp_path, monkeypatch)
+    engine.settings.capture.fps = 60  # as the command line sets it, past the field's bound
+    assert client.post("/api/muted", json={"muted": True}).json()["ok"]
+    saved = load_settings(tmp_path / "sidecoach.toml")
+    assert saved.voice.muted is True and saved.capture.fps == 10
+    lines = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert any("capture.fps" in text for text in lines), lines
+    user = {"settings": {"profile": {"chesscom_user": "nosegazm"}}, "secrets": {}}
+    assert client.put("/api/settings", json=user).json()["ok"]
+
+    settings_api.remember(engine, {"voice": {"speed": 9}})  # past its bound: refused, and said
+    assert engine.settings.voice.speed == 1.0
+    assert any("voice.speed" in ln["text"] for ln in engine.poll(0)["lines"])
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
