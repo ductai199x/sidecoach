@@ -1,9 +1,9 @@
 """Suite-wide options: `--seeds N` (or `--seeds A-B`) widens the random-game sweeps
 (tests/test_stress.py, tests/test_board_geometry.py) and `--sweep` adds the cases marked
 `sweep` (every lichess set, every board size): the default run keeps a representative few of
-each and is fast (Tai, 2026-10-01); the guard that keeps the suite off a
-live session; the tests that load the embedding net kept to a few workers while the rest use
-every core; and `make_panel`, the panel most panel tests start from."""
+each and is fast (Tai, 2026-10-01); the guard that keeps the suite off a live session; the
+workers started together; the vision tests kept together a module at a time; and
+`make_panel`, the panel most panel tests start from."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import os
 import pathlib
 import socket
 import tempfile
-import zlib
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -23,18 +23,13 @@ if TYPE_CHECKING:
     from sidecoach.config import Settings
     from sidecoach.ui.panel import PanelEngine
 
-# The tests that run the embedding net (vision/embedding.py: the synthetic vision suite,
-# the panel over rendered games) are dealt into this many xdist groups, so this many
-# workers hold a CUDA session (half a GB each); everything else spreads over every worker
-# (`--dist loadgroup` in pyproject; the group is the mark below). The voice models, loaded
-# in every worker by the panel tests, once had the GPU at 18 GB and the machine lagging
-# (Tai: "the rest should run on all 24"); they no longer load (PanelEngine.voice_models,
-# off under pytest: SIDECOACH_VOICE_MODELS=0 in pytest_configure).
-# Measured 2026-09-28 on 24 workers, once the net really was on the GPU (a broken ml_dtypes
-# had kept it on the CPU: voice/runtime._probe_cuda) and OpenCV kept to a thread a worker
-# (pytest_configure): 8 groups 119 s, 16 groups 93 s and 78 s with one OpenCV thread, 24
-# no faster -- the vision suite is our own Python on the CPU, the net 10 % of it.
-EMBEDDER_WORKERS = int(os.environ.get("SIDECOACH_TEST_EMBEDDER_WORKERS", "16"))
+# The tests that run the embedding net (vision/embedding.py: the synthetic vision suite, the
+# panel over rendered games) go to the workers a module at a time, in chunks of this many
+# consecutive tests: a module's tests read the same themes and sets, and dealt out one by one
+# every worker learned them again (test_cold_start: 6.8 s alone, 23 s summed over the
+# workers; measured 2026-10-01). Everything else spreads over every worker (`--dist
+# loadgroup` in pyproject; the group is the mark below).
+VISION_CHUNK = 6
 # Test modules that load the net without the `vision` mark. A test elsewhere that loads it
 # -- a panel session started, which builds the stages -- is marked `embedder` instead, so
 # the rest of its module runs on every core.
@@ -42,6 +37,33 @@ EMBEDDER_MODULES = {
     "test_embedding",
     "test_theme_cache",
 }
+
+
+def _start_workers_together() -> None:
+    """xdist starts its workers one after another (NodeManager.setup_nodes), a Python start
+    each, 0.9 s on this machine: twelve took eight seconds before the first test, and every
+    worker waited for the last. Started from threads they come up together (2026-10-01: one
+    small file on 12 workers 9.6 s -> 4.4 s). xdist 3's own code, threaded; any other version
+    is left alone."""
+    try:
+        import xdist
+        from xdist import workermanage
+    except ImportError:
+        return
+    if not xdist.__version__.startswith("3."):
+        return
+
+    def setup_nodes(self: Any, putevent: Callable[..., None]) -> list[Any]:
+        self.config.hook.pytest_xdist_setupnodes(config=self.config, specs=self.specs)
+        self.trace("setting up nodes")
+        with ThreadPoolExecutor(max_workers=max(1, len(self.specs))) as pool:
+            return list(pool.map(lambda spec: self.setup_node(spec, putevent), self.specs))
+
+    workermanage.NodeManager.setup_nodes = setup_nodes  # type: ignore[method-assign]
+
+
+if not os.environ.get("PYTEST_XDIST_WORKER"):
+    _start_workers_together()
 
 # The panel's port when it serves a live game (sidecoach panel). The suite runs a dozen
 # workers that each load the embedding net on the GPU: started during a live game it froze
@@ -78,15 +100,17 @@ def _serving_a_session(port: int) -> bool:
     try:
         import urllib.request
 
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.5) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.2) as r:
             return bool(json.loads(r.read().decode("utf-8")).get("running"))
     except Exception:  # noqa: BLE001 - not a panel, or not answering
         return False
 
 
 def _live_panel_up() -> bool:
+    # A port on this machine answers at once; on Windows a closed one sat out the whole
+    # timeout, 0.5 s in the controller and in every worker (2026-10-01).
     try:
-        socket.create_connection(("127.0.0.1", LIVE_PANEL_PORT), timeout=0.5).close()
+        socket.create_connection(("127.0.0.1", LIVE_PANEL_PORT), timeout=0.05).close()
         return True
     except OSError:
         pass
@@ -124,13 +148,17 @@ def pytest_configure(config: pytest.Config) -> None:
     # No panel built by a test loads Kokoro or Parakeet; the one that wants the real recogniser
     # says so (PanelEngine(voice_models=True)).
     os.environ.setdefault("SIDECOACH_VOICE_MODELS", "0")
+    # The embedding net on the CPU: a dozen workers each starting a CUDA session took 4 s for
+    # a worker's first vision test, against 1.4 s on the CPU, and a test alone is no slower
+    # there (2026-10-01). The GPU path keeps one test of its own (-m slow, test_embedding).
+    os.environ.setdefault("SIDECOACH_EMBED_DEVICE", "cpu")
     # A Settings made by a test has no file of its own; a save from it (set_record, the
     # settings API) would land on `sidecoach.toml` in the working directory -- the
     # developer's -- as one did on 2026-09-22. It lands in a scratch file instead.
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="sidecoach-tests-")) / "sidecoach.toml"
     os.environ["SIDECOACH_CONFIG"] = str(scratch)
-    if os.environ.get("SIDECOACH_TEST_ALONGSIDE") == "1":
-        return
+    if os.environ.get("SIDECOACH_TEST_ALONGSIDE") == "1" or os.environ.get("PYTEST_XDIST_WORKER"):
+        return  # the controller has looked, once
     if _live_panel_up():
         pytest.exit(
             f"a sidecoach panel is serving on :{LIVE_PANEL_PORT}, or the desktop app has a "
@@ -148,15 +176,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if swept:
             config.hook.pytest_deselected(items=swept)
             items[:] = [item for item in items if not item.get_closest_marker("sweep")]
+    counted: dict[str, int] = {}
     for item in items:
         module = item.path.stem
         marked = item.get_closest_marker("vision") or item.get_closest_marker("embedder")
         if marked is None and module not in EMBEDDER_MODULES:
             continue
-        # The same test lands in the same group on every run; a module's tests spread
-        # over the groups rather than queueing behind one another.
-        group = zlib.crc32(item.nodeid.encode()) % EMBEDDER_WORKERS
-        item.add_marker(pytest.mark.xdist_group(f"embedder-{group}"))
+        # A module's consecutive tests together, VISION_CHUNK at a time: they share what a
+        # worker learns (the themes, the sets), and a long module still spreads.
+        index = counted.get(module, 0)
+        counted[module] = index + 1
+        item.add_marker(pytest.mark.xdist_group(f"{module}-{index // VISION_CHUNK}"))
 
 
 # A run of this many test files or fewer goes on one process: the 24 workers' start (each
