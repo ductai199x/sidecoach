@@ -40,6 +40,7 @@ import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.PuzzleRooms
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
+import com.sidecoach.ui.StatsApi
 import java.io.File
 
 /**
@@ -119,6 +120,7 @@ class MainActivity : ComponentActivity() {
                 // The app's own folder on shared storage, where `adb pull` reaches a dump.
                 dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
                 games = GamesApi(filesDir, store),
+                stats = StatsApi(filesDir),
             ),
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches

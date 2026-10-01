@@ -28,6 +28,8 @@ class PanelApi(
     private val dumps: File = File(files, "dumps"),
     /** Your games: the library, imports, taking a game out. */
     private val games: GamesApi? = null,
+    /** Stats: the player's reviewed games added up. */
+    private val stats: StatsApi? = null,
 ) : LocalServer.Api {
 
     override fun handle(
@@ -201,6 +203,10 @@ class PanelApi(
             method == "DELETE" && path.startsWith("/api/games/") && games != null ->
                 ok(games.delete(path.removePrefix("/api/games/")))
 
+            // Stats: the player's games added up (profile/Stats.kt).
+            path == "/api/stats" && stats != null -> ok(stats.stats(query))
+            path == "/api/stats/positions" && stats != null -> ok(stats.positions(query))
+
             // How the boards look (Looks.kt): every page reads it; the pieces a player chose.
             path == "/api/look" -> settings.store.let { store ->
                 val (pieces, theme) = store.board()
@@ -351,7 +357,7 @@ class PanelApi(
         val ROUTES: Map<String, Set<String>> = mapOf(
             "GET" to setOf(
                 "/api/health", "/api/poll", "/api/hear_test", "/api/settings", "/api/setup/status",
-                "/api/games", "/api/look", "/api/jobs",
+                "/api/games", "/api/look", "/api/jobs", "/api/stats", "/api/stats/positions",
             ),
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
