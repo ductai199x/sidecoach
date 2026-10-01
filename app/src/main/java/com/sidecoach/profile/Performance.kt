@@ -100,11 +100,13 @@ object Performance {
         return (if (ply < OPENING_PLIES) 0 else 3) + zone
     }
 
-    /** Each context's and bucket's log chance at every rating of the grid: (C, B, G). */
-    private val TABLE: Array<Array<DoubleArray>> by lazy {
+    private val TABLE: Array<Array<DoubleArray>> by lazy { table(WEIGHTS) }
+
+    /** Each context's and bucket's log chance at every rating of the grid: (C, B, G). `_table`. */
+    private fun table(weights: Array<Array<DoubleArray>>): Array<Array<DoubleArray>> =
         Array(CONTEXTS) { c ->
             val logits = Array(BUCKETS) { b ->
-                val w = WEIGHTS[c][b]
+                val w = weights[c][b]
                 DoubleArray(GRID.size) { g ->
                     val x = (GRID[g] - CENTRE) / SPREAD
                     w[0] * 1.0 + w[1] * x + w[2] * (x * x)
@@ -117,7 +119,6 @@ object Performance {
             }
             logits
         }
-    }
 
     /** A side's moves' rating (Lichess rapid), the middle 80% of the weight, and how many moves. */
     data class Estimate(val rating: Int, val low: Int, val high: Int, val moves: Int)
@@ -125,13 +126,18 @@ object Performance {
     /** One move as the estimate reads it: its ply, its loss, and the mover's expected score before it. */
     data class Played(val ply: Int, val loss: Double, val score: Double)
 
-    /** The rating one side's moves were played at, with the broad prior. `estimate`. */
-    fun estimate(moves: List<Played>): Estimate {
+    /**
+     * The rating one side's moves were played at, with the broad prior. [model]: fitted weights
+     * (per context, per bucket, the logit's (1, x, x^2)), when not the shipped model's -- a Stats
+     * category's (`categories.json`). `estimate`.
+     */
+    fun estimate(moves: List<Played>, model: Array<Array<DoubleArray>>? = null): Estimate {
+        val logChance = if (model != null) table(model) else TABLE
         val counts = Array(CONTEXTS) { DoubleArray(BUCKETS) }
         for (move in moves) counts[context(move.ply, move.score)][bucket(move.loss)] += 1.0
         val logWeight = DoubleArray(GRID.size) { g ->
             var total = 0.0
-            for (c in 0 until CONTEXTS) for (b in 0 until BUCKETS) total += counts[c][b] * TABLE[c][b][g]
+            for (c in 0 until CONTEXTS) for (b in 0 until BUCKETS) total += counts[c][b] * logChance[c][b][g]
             val z = (GRID[g] - PRIOR_MEAN) / PRIOR_SPREAD
             total - 0.5 * (z * z)
         }
@@ -174,6 +180,16 @@ object Performance {
         val (c0, l0) = points[i - 1]
         val (c1, l1) = points[i]
         return maxOf(100, Math.rint(c0 + (lichess - l0) * (c1 - c0) / (l1 - l0)).toInt())
+    }
+
+    /** A chess.com rapid rating on Lichess's rapid scale: [CHESSCOM_LICHESS] read the other way. `lichess`. */
+    fun lichess(chesscomRating: Double): Double {
+        val points = CHESSCOM_LICHESS
+        var i = points.indexOfFirst { it.first >= chesscomRating }.let { if (it < 0) points.size else it } // bisect_left
+        i = minOf(maxOf(i, 1), points.size - 1)
+        val (c0, l0) = points[i - 1]
+        val (c1, l1) = points[i]
+        return l0 + (chesscomRating - c0) * (l1 - l0) / (c1 - c0)
     }
 
     /**
