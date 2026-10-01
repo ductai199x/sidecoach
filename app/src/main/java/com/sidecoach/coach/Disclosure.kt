@@ -306,7 +306,6 @@ fun numberedKey(text: String): String = SPACES.replace(text, "").trimEnd('+', '#
  * over the words `_TOKEN_SPLIT` (`[^A-Za-z0-9+#=!?]+`) leaves. Both are read by hand below
  * ([tokensOf], [destinationOf]).
  */
-private val TRAILING_MARKS = Regex("[+#!?]+$")
 private val WORD_RE = Regex("[a-z0-9=+#-]+")
 
 /** Destination squares of every bare square or SAN token in `text`. */
@@ -364,8 +363,50 @@ private fun destinationOf(token: String): String? {
     return if (i == stop) token.substring(stop, end) else null
 }
 
-/** `TRAILING_MARKS.replace(token, "")` for a token, which holds no line break for `$` to stop at. */
-private fun trailingMarksOff(token: String): String = token.trimEnd('+', '#', '!', '?')
+/**
+ * `TRAILING_MARKS.replace(text, "")` (`[+#!?]+$`) read by hand: the check, mate and comment marks
+ * at the end, or before a line break that ends the text, where the regex's `$` stops as well
+ * (ICU's line breaks, which Android's regex is).
+ */
+private fun trailingMarksOff(text: String): String {
+    val lineBreak = when {
+        text.endsWith("\r\n") -> 2
+        text.isNotEmpty() && text.last() in LINE_BREAKS -> 1
+        else -> 0
+    }
+    val body = text.length - lineBreak
+    var end = body
+    while (end > 0 && text[end - 1].let { it == '+' || it == '#' || it == '!' || it == '?' }) end--
+    return if (end == body) text else text.substring(0, end) + text.substring(body)
+}
+
+private const val LINE_BREAKS = "\n\u000b\u000c\r\u0085\u2028\u2029"
+
+/**
+ * Whether [text] holds a digit followed by a full stop, which every [NUMBERED_MOVE] begins with
+ * (`\d` is any decimal digit, as ICU reads it): without one the record has nothing to take out,
+ * and the regex is not run -- a coach's reply rarely numbers its moves.
+ */
+private fun mayNumberMoves(text: String): Boolean {
+    var i = 0
+    while (i < text.length) {
+        val point = text.codePointAt(i)
+        val next = i + Character.charCount(point)
+        if (Character.isDigit(point) && next < text.length && text[next] == '.') return true
+        i = next
+    }
+    return false
+}
+
+/**
+ * The patterns made of a piece word, a square or a move, compiled once (each compile is a native
+ * regex on Android): there are a few hundred of them, and a reply's check compiled several.
+ */
+private val compiled = object : LinkedHashMap<String, Regex>(256, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Regex>?): Boolean = size > 512
+}
+
+private fun regexOf(pattern: String): Regex = synchronized(compiled) { compiled.getOrPut(pattern) { Regex(pattern) } }
 
 /**
  * Withheld items that `text` mentions. An empty list means the draft is clean.
@@ -450,11 +491,15 @@ fun leakCheck(
     // again. Only a numbered move the game actually played -- "5. cxd5 wins it" of the move to
     // find was let through by any number at all (the second audit).
     val played = record.map { numberedKey(it) }.toSet()
-    val movesText = NUMBERED_MOVE.replace(text) { m -> if (numberedKey(m.value) in played) " " else m.value }
+    val movesText = if (!mayNumberMoves(text)) {
+        text
+    } else {
+        NUMBERED_MOVE.replace(text) { m -> if (numberedKey(m.value) in played) " " else m.value }
+    }
     if (level.value < DisclosureLevel.MOVE.value) {
         val answer = (facts.candidates + facts.line.filterIndexed { i, _ -> i % 2 == 0 })
             .filter { it.isNotEmpty() }
-            .map { TRAILING_MARKS.replace(it, "") }
+            .map { trailingMarksOff(it) }
             .toSet()
         val answerSquares = squaresIn(answer.joinToString(" ")) - allowedSquares
         for (token in tokensOf(movesText)) {
@@ -468,17 +513,17 @@ fun leakCheck(
             }
         }
     } else if (level.value < DisclosureLevel.LINE.value) {
-        val visibleMoves = (facts.candidates + facts.threats).map { TRAILING_MARKS.replace(it, "") }.toSet()
+        val visibleMoves = (facts.candidates + facts.threats).map { trailingMarksOff(it) }.toSet()
         // The move's why names its continuation ("after Qf6, Bg2 ..."): what the level shows may
         // be said -- compared without check marks, as `allowedMoves` holds them ("Rc6+" was
         // withheld while the sheet gave it: the pre-spend audit, 2026-09-25).
         val withheldMoves = facts.line.filter {
-            TRAILING_MARKS.replace(it, "") !in visibleMoves && TRAILING_MARKS.replace(it, "") !in allowedMoves
+            trailingMarksOff(it) !in visibleMoves && trailingMarksOff(it) !in allowedMoves
         }
         val withheldSquares = squaresIn(withheldMoves.joinToString(" ")) - allowedSquares
         for (square in (squaresIn(movesText) intersect withheldSquares).sorted()) add("square $square")
         for (move in withheldMoves) {
-            if (Regex("(?<![A-Za-z])${Regex.escape(move)}(?![A-Za-z0-9])").containsMatchIn(movesText)) {
+            if (regexOf("(?<![A-Za-z])${Regex.escape(move)}(?![A-Za-z0-9])").containsMatchIn(movesText)) {
                 add("move $move")
             }
         }
@@ -515,7 +560,7 @@ fun leakCheck(
         val onSheet = (visible.values.filterIsInstance<String>() + shown).joinToString(" ").lowercase()
         for (found in PIECE_ON_SQUARE.findAll(onSheet).map { it.groupValues[1] to it.groupValues[2] }.toSet()) {
             val (pieceWord, square) = found
-            scrubbed = Regex("\\b${pieceWord}s? on $square\\b").replace(scrubbed, " ")
+            scrubbed = regexOf("\\b${pieceWord}s? on $square\\b").replace(scrubbed, " ")
         }
         scrubbed = PIECE_WORD_CONTEXTS.replace(scrubbed, " ")
         // The piece to move is named when it is said on its own square, or as "your <piece>" with
@@ -538,8 +583,8 @@ fun leakCheck(
             // paraphrase of the first hint was refused for it, and the bare template spoke (the
             // benchmark's smoke run, 2026-09-25; Tai: "a vague coach is worse than no coach at
             // all").
-            if (Regex("\\byour ${pieceWord}s?\\b").containsMatchIn(onSheet)) continue
-            val mention = Regex(
+            if (regexOf("\\byour ${pieceWord}s?\\b").containsMatchIn(onSheet)) continue
+            val mention = regexOf(
                 "\\b(your |my |with (?:the |a |your )?|(?:([a-h])-))?${Regex.escape(pieceWord)}s?\\b" +
                     "(?: (?:on|from) ([a-h][1-8]))?"
             )

@@ -39,6 +39,9 @@ object IdeaWords {
     )
     private val ORDINAL = mapOf(1 to "first", 2 to "second", 3 to "third", 4 to "fourth", 5 to "fifth")
 
+    /** What a line's words are split on, compiled once rather than at every line read. */
+    private val SPACES = Regex("\\s+")
+
     /** Counts to thirty in words: a queen's squares, a pawn's way to queening. */
     private val WORDS = listOf(
         "zero",
@@ -1012,7 +1015,7 @@ object IdeaWords {
 
     private fun line(board: Board, plies: List<String>): String {
         val text = sanLine(board, plies, limit = plies.size)
-        return text.split(Regex("\\s+")).filter { it.isNotEmpty() && !it.endsWith(".") && !it.endsWith("...") }
+        return text.split(SPACES).filter { it.isNotEmpty() && !it.endsWith(".") && !it.endsWith("...") }
             .joinToString(" ")
     }
 

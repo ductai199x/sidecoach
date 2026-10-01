@@ -86,6 +86,9 @@ class ThemeModel(
 
     private val cells = HashMap<Int, Cell>()
 
+    /** The buffer each cell's pixels are read into before they are compared ([classifyFrame]). */
+    private var scratch = ByteArray(0)
+
     /** The silhouette cell [i] of the last frame read was taken as, for the parity tests. */
     internal fun silAt(i: Int): Sil? = cells[i]?.sil
 
@@ -213,24 +216,30 @@ class ThemeModel(
         embedder: CellEmbedder,
     ): MutableList<Pieces.CellReading> {
         val crops = ArrayList<Mat>(64)
-        val bytes = ArrayList<ByteArray>(64)
         for (r in 0 until 8) {
-            for (c in 0 until 8) {
-                val crop = geometry.crop(frame, r, c, 2 * Squares.CELL)
-                crops.add(crop)
-                val raw = ByteArray(crop.rows() * crop.cols() * 3)
-                crop.get(0, 0, raw)
-                bytes.add(raw)
-            }
+            for (c in 0 until 8) crops.add(geometry.crop(frame, r, c, 2 * Squares.CELL))
         }
         try {
+            // Each cell's pixels read into one buffer and compared with the last frame's, and
+            // kept in an array of their own only where they changed: an array a cell a frame was
+            // 64 objects of 27 kB each, each one mapped on its own by ART's large-object space,
+            // and most of the garbage a frame made. An unchanged cell keeps the last frame's.
+            val bytes = arrayOfNulls<ByteArray>(64)
             val sils = ArrayList<Sil>(64)
             for (i in 0 until 64) {
+                val crop = crops[i]
+                val size = crop.rows() * crop.cols() * 3
+                if (scratch.size != size) scratch = ByteArray(size)
+                crop.get(0, 0, scratch)
                 val last = cells[i]
-                sils.add(
-                    if (last != null && samePixels(last.crop, bytes[i])) last.sil
-                    else SilhouetteReader.of(crops[i], Squares.CELL, pieceColours, palette, bytes[i]),
-                )
+                if (last != null && samePixels(last.crop, scratch)) {
+                    bytes[i] = last.crop
+                    sils.add(last.sil)
+                } else {
+                    val own = scratch.copyOf()
+                    bytes[i] = own
+                    sils.add(SilhouetteReader.of(crop, Squares.CELL, pieceColours, palette, own))
+                }
             }
             val covered = coveredCells(sils)
             val cellPx = geometry.cellPx
@@ -238,7 +247,7 @@ class ThemeModel(
             for (i in 0 until 64) {
                 val last = cells[i]
                 val same = last != null && last.sil === sils[i] && last.covered == covered[i] &&
-                    last.cellPx == cellPx && samePixels(last.crop, bytes[i])
+                    last.cellPx == cellPx && samePixels(last.crop, bytes[i]!!)
                 if (!same) fresh.add(i)
             }
             lastFresh = fresh.size
@@ -267,7 +276,7 @@ class ThemeModel(
                     continue
                 }
                 val reading = classify(sils[i], i / 8, i % 8, covered[i], cellPx, vectors[i], crops[i])
-                cells[i] = Cell(bytes[i], sils[i], covered[i], cellPx, reading)
+                cells[i] = Cell(bytes[i]!!, sils[i], covered[i], cellPx, reading)
                 readings.add(reading)
             }
 
@@ -1057,6 +1066,7 @@ class ThemeModel(
  * 0.4 million calls, most of a frame's time on the emulator.
  */
 private fun samePixels(a: ByteArray, b: ByteArray): Boolean {
+    if (a === b) return true
     if (a.size != b.size) return false
     for (k in a.indices) if (a[k] != b[k]) return false
     return true

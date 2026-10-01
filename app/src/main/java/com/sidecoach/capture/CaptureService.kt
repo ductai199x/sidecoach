@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.Manifest
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
@@ -27,6 +26,7 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.sidecoach.BuildConfig
 import com.sidecoach.MainActivity
 import com.sidecoach.SidecoachApp
 import com.sidecoach.R
@@ -190,10 +190,10 @@ class CaptureService : Service() {
             val (net, engine, coach) = PanelWarm.forSession(this)
             vision = GameWatcher(this, File(filesDir, "themes"), net, engine, coach)
         }
-        // The window's numbers go to a file in a debug build only: the installed app saves
-        // nothing of a session (Tai, 2026-09-21).
-        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        val logPath = if (debuggable) "spike/capture-$stamp.jsonl" else null
+        // The window's numbers go to a file in a developer's build only (debug, and the phone's
+        // build, which was a debug build until 2026-10-01): a release saves nothing of a session
+        // (Tai, 2026-09-21).
+        val logPath = if (BuildConfig.DEV_TOOLS) "spike/capture-$stamp.jsonl" else null
         stats = CaptureStats(this, logPath?.let { File(filesDir, it) }).also {
             it.engineCpu = { vision?.engineCpuMs() ?: 0 }
         }

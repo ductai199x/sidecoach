@@ -48,17 +48,40 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "DEV_TOOLS", "true")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            buildConfigField("boolean", "DEV_TOOLS", "false")
+        }
+        // The build Tai's phone runs and the tests test (tools/install.ps1, tools/test.ps1):
+        // debug's in all but being debuggable. A debuggable app's code runs without inlining or
+        // intrinsics and calls native code through generic trampolines -- the parity suite ran
+        // several times slower for it, and so did the app on the phone. Signed with the debug
+        // key, so it installs over a debug build and keeps its files and settings (Tai,
+        // 2026-10-01). No R8 yet: one change at a time.
+        create("phone") {
+            initWith(getByName("debug"))
+            isDebuggable = false
+            isJniDebuggable = false
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
+            // The developer's tools the debug build had, kept on: the capture window's numbers
+            // in files/spike, and the panel's WebView open to chrome://inspect.
+            buildConfigField("boolean", "DEV_TOOLS", "true")
         }
     }
+    // The instrumentation tests run against the phone's build, not the debuggable one.
+    testBuildType = "phone"
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     androidResources {
         // The net is read straight out of the APK; compressing it would only cost time.

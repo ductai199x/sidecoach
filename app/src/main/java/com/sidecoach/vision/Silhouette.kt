@@ -110,8 +110,10 @@ object SilhouetteReader {
         palette: List<DoubleArray> = emptyList(),
         bytes: ByteArray? = null,
     ): Sil {
-        // The crop is 8-bit BGR, as the capture hands it over.
-        val patchBytes = bytes ?: ByteArray(patch.rows() * patch.cols() * 3).also { patch.get(0, 0, it) }
+        // The crop is 8-bit BGR, as the capture hands it over. Read into this thread's buffer
+        // when the caller has not: they are only looked at here, and a new array each time was
+        // a large object a cell (see `ThemeModel.classifyFrame`).
+        val patchBytes = bytes ?: scratch(patch.rows() * patch.cols() * 3).also { patch.get(0, 0, it) }
         val key = Digest.of(patchBytes) { digest ->
             digest.longs(patch.rows().toLong(), patch.cols().toLong(), size.toLong())
             for ((fill, outline) in colours) {
@@ -125,6 +127,15 @@ object SilhouetteReader {
         val sil = read(patch, patchBytes, size, colours, palette)
         synchronized(silhouettes) { silhouettes[key] = sil }
         return sil
+    }
+
+    private val scratches: ThreadLocal<ByteArray> = ThreadLocal.withInitial { ByteArray(0) }
+
+    /** This thread's buffer of exactly [size] bytes (OpenCV's `get` fills only what it holds). */
+    private fun scratch(size: Int): ByteArray {
+        val held = scratches.get()!!
+        if (held.size == size) return held
+        return ByteArray(size).also { scratches.set(it) }
     }
 
     private fun read(

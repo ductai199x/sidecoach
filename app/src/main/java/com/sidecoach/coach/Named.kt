@@ -408,6 +408,7 @@ private val ENGINE_ON = Regex(
 private val PROBE_LINE = Regex("after (?<moves>.+?) the expected score is")
 private val REPLY_LINE = Regex("(?:the opponent's reply would be|the engine then plays) (?<moves>[^;]+)")
 private val MOVE_NUMBER = Regex("^\\d{1,3}\\.(?:\\.\\.)?")
+private val SPACES = Regex("\\s+")
 
 /**
  * The positions along each examination: after every move of the probe, then after every move
@@ -507,7 +508,7 @@ private val MOVE_NUMBERED = Regex("^\\d+\\.")
 private fun firstMoves(line: String, n: Int): String {
     val out = ArrayList<String>()
     var moves = 0
-    for (token in line.split(Regex("\\s+")).filter { it.isNotEmpty() }) {
+    for (token in line.split(SPACES).filter { it.isNotEmpty() }) {
         out.add(token)
         if (!MOVE_NUMBERED.containsMatchIn(token)) {
             moves += 1

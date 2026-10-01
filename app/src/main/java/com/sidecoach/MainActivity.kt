@@ -249,8 +249,9 @@ class MainActivity : ComponentActivity() {
                 return true
             }
         }
-        if (0 != applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) {
-            // chrome://inspect reaches it, as it reaches the desktop's window.
+        if (BuildConfig.DEV_TOOLS) {
+            // chrome://inspect reaches it, as it reaches the desktop's window: in a debug build,
+            // and in the phone's build, which was a debug build until 2026-10-01.
             WebView.setWebContentsDebuggingEnabled(true)
         }
         setContentView(framed(view))

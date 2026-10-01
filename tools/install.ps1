@@ -6,9 +6,11 @@
 # The serial is required: never whichever device adb picks. It refuses a version that differs
 # from the desktop's (the desktop's scripts\bump_version.py sets both), a device that is absent
 # or offline, and one where the capture service runs -- a coaching session is live there, and an
-# install kills it -- unless -Force. The debug build is the one the phone runs (gradlew
-# :app:installDebug); the engine's network is pushed by tools\test.ps1 for the test APK, and the
-# app fetches its own.
+# install kills it -- unless -Force. The `phone` build type is the one the phone runs (gradlew
+# :app:installPhone): the debug build's in all but being debuggable, signed with the same debug
+# key, so it installs over a debug install and keeps the app's files and settings
+# (app/build.gradle.kts). The engine's network is pushed by tools\test.ps1 for the tests, and
+# the app fetches its own.
 
 param(
     [Parameter(Mandatory = $true)][string]$Serial,
@@ -43,7 +45,7 @@ if (-not $Force -and $services -match "CaptureService") {
 
 Write-Host "building and installing $phone on $Serial..."
 $env:ANDROID_SERIAL = $Serial
-& (Join-Path $root "gradlew.bat") -p $root -q :app:installDebug --console=plain
+& (Join-Path $root "gradlew.bat") -p $root -q :app:installPhone --console=plain
 if ($LASTEXITCODE -ne 0) { throw "the install failed" }
 
 $package = (& $adb -s $Serial shell dumpsys package com.sidecoach) -join "`n"

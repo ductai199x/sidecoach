@@ -37,6 +37,7 @@ class CellEmbedder private constructor(
     private var direct: FloatBuffer? = null
     private var directCells = 0
     private val planeFloats = FloatArray(INPUT * INPUT)
+    private var keyBytes = ByteArray(0)
     private val planes = ArrayList<Mat>(3)
 
     /**
@@ -77,12 +78,14 @@ class CellEmbedder private constructor(
      */
     fun embed(crops: List<Mat>): Array<FloatArray> {
         if (crops.isEmpty()) return emptyArray()
-        // The crops are 8-bit BGR, as the cells are cut; anything else is run, not kept.
+        // The crops are 8-bit BGR, as the cells are cut; anything else is run, not kept. Each is
+        // read into one buffer for its key: a new array a crop was a large object each.
         val keys = crops.map { crop ->
             if (crop.depth() != CvType.CV_8U) return@map null
-            val bytes = ByteArray((crop.total() * crop.elemSize()).toInt())
-            crop.get(0, 0, bytes)
-            Digest.of(bytes) { it.longs(crop.rows().toLong(), crop.cols().toLong(), crop.type().toLong()) }
+            val size = (crop.total() * crop.elemSize()).toInt()
+            if (keyBytes.size != size) keyBytes = ByteArray(size)
+            crop.get(0, 0, keyBytes)
+            Digest.of(keyBytes) { it.longs(crop.rows().toLong(), crop.cols().toLong(), crop.type().toLong()) }
         }
         val out = arrayOfNulls<FloatArray>(crops.size)
         val todo = ArrayList<Int>()
@@ -133,14 +136,16 @@ class CellEmbedder private constructor(
     }
 
     /**
-     * The input buffer for [cells] crops, cleared and limited to them: the largest asked for so
-     * far is kept, since with the cache above each batch is only the cells not seen before and
-     * its size changes from one frame to the next.
+     * The input buffer for [cells] crops, cleared and limited to them. With the cache above a
+     * batch is only the cells not seen before, and its size changes from one frame to the next:
+     * a buffer up to twice the size asked for serves, so a frame of one or two new cells does not
+     * make a new one. A larger one is let go -- on Android a direct buffer lives on the Java heap,
+     * and the start position's 64 cells are 38 MB of it.
      */
     private fun bufferFor(cells: Int): FloatBuffer {
         val floats = cells * 3 * INPUT * INPUT
         val held = direct
-        if (held != null && directCells >= cells) {
+        if (held != null && directCells >= cells && directCells <= maxOf(2 * cells, 4)) {
             held.clear()
             held.limit(floats)
             return held

@@ -15,12 +15,12 @@ import kotlin.math.abs
  */
 
 data class Piece(val pieceType: Int, val colour: Boolean) {
-    fun symbol(): String {
-        val s = PIECE_SYMBOLS[pieceType]
-        return if (colour) s.uppercase() else s
-    }
+    fun symbol(): String = if (colour) UPPER_SYMBOLS[pieceType] else PIECE_SYMBOLS[pieceType]
 
     companion object {
+        /** [PIECE_SYMBOLS] in capitals, made once: a FEN asks for a symbol a piece. */
+        private val UPPER_SYMBOLS = Array(PIECE_SYMBOLS.size) { PIECE_SYMBOLS[it].uppercase() }
+
         fun fromSymbol(symbol: Char): Piece =
             Piece(PIECE_SYMBOLS.indexOf(symbol.lowercaseChar().toString()), symbol.isUpperCase())
 
@@ -1301,7 +1301,7 @@ class Board {
      * `ValueError`. Missing trailing fields take python-chess's defaults.
      */
     fun setFen(fen: String) {
-        val parts = ArrayDeque(fen.trim().split(Regex("\\s+")).filter { it.isNotEmpty() })
+        val parts = ArrayDeque(fen.trim().split(WHITESPACE).filter { it.isNotEmpty() })
 
         // Board part.
         val boardPart = parts.removeFirstOrNull() ?: throw IllegalArgumentException("empty fen")
@@ -1463,6 +1463,9 @@ class Board {
 
         /** python-chess's `FEN_CASTLING_REGEX`: at most two rights a side, White's first. */
         private val FEN_CASTLING_REGEX = Regex("(?:-|[KQABCDEFGH]{0,2}[kqabcdefgh]{0,2})")
+
+        /** What a FEN's fields are split on, compiled once: every Board(fen) splits one. */
+        private val WHITESPACE = Regex("\\s+")
 
         /** `chess.SQUARE_NAMES`: a1, b1, ... h8. */
         private val SQUARE_NAMES = List(64) { squareName(it) }
