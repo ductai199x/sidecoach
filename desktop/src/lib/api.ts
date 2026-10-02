@@ -219,8 +219,11 @@ export const puzzle = (id: string) => {
   const p = `/api/puzzle/${encodeURIComponent(id)}`;
   return {
     open: () => post<{ ok: boolean; error?: string; next?: string[]; state?: PuzzleState }>(`${p}/open`),
-    poll: (since: number) =>
-      get<{ ok: boolean; closed?: boolean; state?: PuzzleState; lines?: LogLine[]; cursor?: number }>(`${p}/poll?since=${since | 0}`),
+    /** `hidden`: the page is out of view, so the room does not take its quiet for its end. */
+    poll: (since: number, hidden = false) =>
+      get<{ ok: boolean; closed?: boolean; state?: PuzzleState; lines?: LogLine[]; cursor?: number }>(
+        `${p}/poll?since=${since | 0}${hidden ? "&hidden=1" : ""}`,
+      ),
     // Played at once, answered with the state they leave.
     move: (uci: string) => post<{ ok: boolean; state?: PuzzleState }>(`${p}/move`, { uci }),
     retract: () => post<{ ok: boolean; state?: PuzzleState }>(`${p}/retract`),

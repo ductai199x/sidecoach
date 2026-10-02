@@ -459,11 +459,11 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         return {"ok": True, "next": following, "state": room.poll(0)["state"]}
 
     @app.get("/api/puzzle/{puzzle_id}/poll")
-    def puzzle_poll(puzzle_id: str, since: int = 0) -> dict[str, Any]:
+    def puzzle_poll(puzzle_id: str, since: int = 0, hidden: bool = False) -> dict[str, Any]:
         room = rooms.get(puzzle_id)
         if room is None:
             return {"ok": False, "closed": True}
-        return {"ok": True, **room.poll(since)}
+        return {"ok": True, **room.poll(since, hidden=hidden)}
 
     # A move, a take-back, a give-up: played at once, answered with the state they leave.
     @app.post("/api/puzzle/{puzzle_id}/move")
