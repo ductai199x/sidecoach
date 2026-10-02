@@ -91,7 +91,9 @@ class GamesApiTest {
     fun everyGameIsListedHoweverMany() {
         assertTrue(maxOf(Library.TWIN_BEFORE_S, Library.TWIN_AFTER_S) <= Library.DATE_WINDOW_S)
         val store = Store(null)
+        // A site's games are told apart by their ids, whatever they play (a pasted one is not).
         val row = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+            .copy(source = "chesscom", key = "chesscom:first")
         val start = row.playedAt!!
         // The first game played: imported and watched, older than every other.
         store.addLibraryGame(row)
