@@ -259,6 +259,53 @@ def test_after_a_stop_the_coach_says_nothing_unasked_until_the_board_is_read_aga
     assert [m.trigger for m in stuck(coach)] == [Trigger.STUCK]
 
 
+def test_the_session_is_ended_before_the_wait_for_the_coachs_replies(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At a quit the shell's close gives the loop 10 s, and the loop waited up to 30 s for the
+    coach's replies before it wrote the session's end: with a reply on its way, the session
+    was never ended. The end is written while the coach is still being waited for."""
+    import threading
+
+    from sidecoach.profile.profiler import Profiler
+
+    engine = make_panel(record=False)
+    engine.warm(background=False)
+    ended = threading.Event()
+    waiting = threading.Event()
+    release = threading.Event()
+    ended_while_waiting: list[bool] = []
+    real_end = Profiler.end_session
+
+    def end_session(self: Profiler, ts: float) -> str | None:
+        ended.set()
+        return real_end(self, ts)
+
+    def coach_wait(*_: object, **__: object) -> None:
+        ended_while_waiting.append(ended.is_set())
+        waiting.set()
+        release.wait(30)  # a reply on its way, until the test lets it land
+
+    monkeypatch.setattr(Profiler, "end_session", end_session)
+    prepare = engine._prepare_stages
+
+    def stages() -> tuple[object, object]:
+        assessing, coaching = prepare()
+        coaching.wait = coach_wait
+        return assessing, coaching
+
+    monkeypatch.setattr(engine, "_prepare_stages", stages)
+    engine.start()  # a session that reads nothing, then ends
+    try:
+        assert waiting.wait(30), "the loop waits for the coach"
+        assert ended_while_waiting == [True], "the session's end comes first"
+    finally:
+        release.set()
+        assert engine._thread is not None
+        engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+
+
 def test_a_coach_message_is_handled_once_across_sessions(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
