@@ -389,35 +389,38 @@ def _ring_indices(
                 continue
             ys, xs = np.mgrid[cy0:cy1, cx0:cx1]
             on_ring = (ys < y0 + band) | (ys >= y1 - band) | (xs < x0 + band) | (xs >= x1 - band)
-            flat = (ys * width + xs)[on_ring].astype(np.int32)  # a 4K frame has 8.3M pixels
+            flat = (ys * width + xs)[on_ring].astype(_RING_INDEX)
             cells, rows = groups.setdefault(flat.size, ([], []))
             cells.append(r * side + c)
             rows.append(flat)
     return [(cells, np.stack(rows)) for cells, rows in groups.values()]
 
 
-# The rings by geometry, newest used last, within RING_CACHE_BYTES: a detection fits many
-# geometries, and at 64 of them the cache held 71 MB at 1440p and 103 MB at 4K of int64
-# indices (round 2, finding 10); the lock's own geometry is used every frame and stays.
-RING_CACHE_BYTES = 24_000_000
+# The ring indices' type. numpy indexes with intp and casts int32 indices to it on every
+# read: a lock's two reads a tick took 1 ms longer at 1440p and 2 ms at 4K (round 3).
+_RING_INDEX = np.intp
+# The rings by geometry, the least recently read dropped past RING_CACHE_KEYS. What a lock
+# reads again comes within eight other geometries read (99.3% of its re-reads in the
+# geometry sweep, seeds 1-20; a still lock reads four in all, its own two and a re-fit's
+# two), so its rings stay; a detection's forty geometries, read once, pass through. A
+# 24 MB budget held three of a 4K board's and every re-fit dropped the lock's own and
+# built them again, 35-43 ms each, and the old bound of 64 geometries held 445 MB at
+# 1440p and 991 MB at 4K of a board dragged larger for 30 frames (round 3, finding 10).
+RING_CACHE_KEYS = 8
 _RING_CACHE: OrderedDict[
     tuple[tuple[int, ...], Region, float, int], list[tuple[list[int], np.ndarray]]
 ] = OrderedDict()
-_ring_cache_bytes = 0
 
 
 def _cells(gray: np.ndarray, region: Region, cell: float, pad: int = 1) -> np.ndarray:
     """The border-ring medians of a board's cells and of `pad` rings of cells around it, an
     (8 + 2 pad)-square grid; NaN where the frame shows less than half a cell."""
-    global _ring_cache_bytes
     key = (gray.shape, region, cell, pad)
     groups = _RING_CACHE.get(key)
     if groups is None:
         groups = _RING_CACHE[key] = _ring_indices(gray.shape, region, cell, pad)
-        _ring_cache_bytes += sum(indices.nbytes for _, indices in groups)
-        while _ring_cache_bytes > RING_CACHE_BYTES and len(_RING_CACHE) > 1:
-            _, dropped = _RING_CACHE.popitem(last=False)
-            _ring_cache_bytes -= sum(indices.nbytes for _, indices in dropped)
+        if len(_RING_CACHE) > RING_CACHE_KEYS:
+            _RING_CACHE.popitem(last=False)
     else:
         _RING_CACHE.move_to_end(key)
     side = 8 + 2 * pad

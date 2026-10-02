@@ -232,24 +232,44 @@ def test_a_candidate_off_a_board_by_a_fraction_is_refused_though_its_outer_row_i
     assert fit_score(gray, Region(582, 24, 1090, 1090), 136.2)[0] == 0.0
 
 
-def test_the_ring_cache_stays_within_its_budget() -> None:
+def test_the_ring_cache_holds_a_bounded_count_of_geometries() -> None:
     """A detection on a big board fits many geometries, and the ring cache held up to 64 of
-    them in int64: 71 MB at 1440p, 103 MB at 4K (round 2 finding 10). Indices are int32,
-    the cache keeps the newest used within RING_CACHE_BYTES, and a geometry read again is
-    the same medians."""
+    them: 71 MB at 1440p, 103 MB at 4K (round 2 finding 10), 445 and 991 MB of a board
+    dragged larger. It keeps the RING_CACHE_KEYS read last, and a geometry read again is the
+    same medians."""
     from sidecoach.vision import board_detect
 
     board_detect._RING_CACHE.clear()
-    board_detect._ring_cache_bytes = 0
     frame = synthetic_board(width=2560, height=1440, x0=200, y0=100, cell=150)
     best = detect_boards(frame)[0]
-    held = sum(i.nbytes for groups in board_detect._RING_CACHE.values() for _, i in groups)
-    assert held <= board_detect.RING_CACHE_BYTES
-    assert held == board_detect._ring_cache_bytes
-    dtypes = {i.dtype for groups in board_detect._RING_CACHE.values() for _, i in groups}
-    assert dtypes == {np.dtype(np.int32)}
+    assert len(board_detect._RING_CACHE) <= board_detect.RING_CACHE_KEYS
     gray = to_gray(frame)
     first = board_detect._cells(gray, best.region, best.cell_px)
+    assert next(reversed(board_detect._RING_CACHE))[1:] == (best.region, best.cell_px, 1)
     board_detect._RING_CACHE.clear()
-    board_detect._ring_cache_bytes = 0
     assert np.array_equal(first, board_detect._cells(gray, best.region, best.cell_px), True)
+
+
+def test_a_still_lock_at_4k_never_builds_its_rings_again(monkeypatch) -> None:
+    """A lock on a still 4K board reads its own rings every tick and a re-fit's every tenth.
+    Within a 24 MB budget only three of them fitted, and every re-fit dropped the lock's own
+    and built them again, 35-43 ms each: a re-fit tick went from 100 ms to 160 (round 3,
+    finding 10). Each geometry is built once."""
+    from sidecoach.vision import board_detect
+    from sidecoach.vision.tracker import BoardTracker
+
+    board_detect._RING_CACHE.clear()
+    built: list[tuple[Any, ...]] = []
+    real = board_detect._ring_indices
+
+    def counted(shape: tuple[int, ...], region: Region, cell: float, pad: int) -> Any:
+        built.append((shape, region, cell, pad))
+        return real(shape, region, cell, pad)
+
+    frame = synthetic_board(width=3840, height=2160, x0=200, y0=100, cell=225)
+    tracker = BoardTracker()
+    assert tracker.update(frame) is not None and tracker.verified
+    monkeypatch.setattr(board_detect, "_ring_indices", counted)
+    for _ in range(30):  # three re-fits
+        assert tracker.update(frame) is not None and tracker.verified
+    assert len(built) == len(set(built)), built
