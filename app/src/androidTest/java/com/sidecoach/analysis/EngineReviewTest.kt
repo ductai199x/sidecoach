@@ -191,22 +191,17 @@ class EngineReviewTest {
         val board = played("Nf3", "Nf6", "Ng1")
         val fake = FakeEngine(mapOf(board.fen() to listOf(Line(moves = listOf("f6g8"), depth = 6, expectedScore = 0.5))))
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        // Driven a step at a time on this thread, as the worker drives it.
         val analyser = Analyser(annotator, lookAhead = 1)
-        analyser.start()
-        try {
-            val before = board.copy()
-            before.pop()
-            analyser.submitMove("g", before, Move.fromUci("f3g1"), 3, byUser = false)
-            val deadline = System.currentTimeMillis() + 5000
-            while (analyser.looked < 2 && System.currentTimeMillis() < deadline) Thread.sleep(10)
-            assertTrue("looked ${analyser.looked}", analyser.looked >= 2)
-        } finally {
-            analyser.close()
+        analyser.planAhead(board, listOf(Line(moves = listOf("f6g8"), depth = 6, expectedScore = 0.5)))
+        while (analyser.ahead.isNotEmpty()) {
+            val (next, moves) = analyser.ahead.removeAt(0)
+            analyser.lookAhead(next, moves, analyser.ahead)
         }
+        assertEquals(2, analyser.looked)
         val target = played("Nf3", "Nf6", "Ng1", "Ng8").fen()
         val ahead = fake.calls.indices.filter { fake.calls[it] == target }.map { fake.histories[it] }
-        assertTrue(fake.histories.toString(), ahead.isNotEmpty())
-        assertEquals(listOf("g1f3", "g8f6", "f3g1", "f6g8"), ahead.last())
+        assertEquals(listOf(listOf("g1f3", "g8f6", "f3g1", "f6g8")), ahead)
     }
 
     @Test
@@ -242,53 +237,88 @@ class EngineReviewTest {
 
     // ---- the engine ------------------------------------------------------------------------
 
+    /**
+     * An engine whose process is a shell script speaking UCI: the handshake, the options a
+     * Stockfish has, and to `go` the lines given, then `bestmove`. No Stockfish, no clock.
+     */
+    private class Scripted(binary: File, private val answer: List<String>) :
+        Engine(binary, null, threads = 2, hashMb = 64, multipv = 4) {
+        override fun launch(): Process {
+            val lines = answer.joinToString("; ") { "echo '$it'" }
+            val script = "while read l; do case \"\$l\" in " +
+                "uci) echo 'id name scripted'; " +
+                "echo 'option name MultiPV type spin default 1 min 1 max 500'; " +
+                "echo 'option name Threads type spin default 1 min 1 max 1024'; " +
+                "echo 'option name Hash type spin default 16 min 1 max 33554432'; echo uciok;; " +
+                "isready) echo readyok;; go*) $lines; echo 'bestmove d2d4';; quit) exit 0;; esac; done"
+            return ProcessBuilder("sh", "-c", script).redirectErrorStream(true).start()
+        }
+    }
+
+    private fun scripted(answer: List<String>): Scripted {
+        val binary = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "scripted-engine")
+        binary.writeText("")
+        return Scripted(binary, answer)
+    }
+
+    /** Four lines at depth 13, then the first two of depth 14 before the time cap cut it. */
+    private val cut = listOf(
+        "info depth 13 multipv 1 score cp 40 pv e2e4",
+        "info depth 13 multipv 2 score cp 30 pv d2d4",
+        "info depth 13 multipv 3 score cp 20 pv g1f3",
+        "info depth 13 multipv 4 score cp 10 pv c2c4",
+        "info depth 14 multipv 1 score cp 45 pv d2d4",
+        "info depth 14 multipv 2 score cp 35 pv e2e4",
+    )
+
     @Test
     fun aSearchCutShortGivesLinesOfOneDepth() {
-        val sf = engine()
-        assumeTrue("the engine or its network is missing", sf != null)
-        sf!!.use {
-            it.multipv = 4
-            it.maxSeconds = 0.15
-            val slow = Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-            val quiet = Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
-            for (board in listOf(slow, quiet)) {
-                repeat(4) { _ ->
-                    val lines = it.analyse(board, depth = 40, multipv = 4)
-                    assertEquals(4, lines.size)
-                    assertEquals(lines.map { l -> l.depth }.toString(), 1, lines.map { l -> l.depth }.toSet().size)
-                }
-            }
+        scripted(cut).use { sf ->
+            val lines = sf.analyse(Board(), depth = 40, multipv = 4)
+            assertEquals(listOf(13, 13, 13, 13), lines.map { it.depth })
+            assertEquals(listOf("e2e4", "d2d4", "g1f3", "c2c4"), lines.map { it.moves[0] })
+        }
+        scripted(cut.take(4)).use { sf ->
+            assertEquals(listOf(13, 13, 13, 13), sf.analyse(Board(), depth = 13, multipv = 4).map { it.depth })
         }
     }
 
     @Test
     fun settingsSavedMidSearchWaitForTheSearchToEnd() {
-        val sf = engine()
-        assumeTrue("the engine or its network is missing", sf != null)
-        sf!!.use {
-            it.maxSeconds = 1.5
-            val quiet = Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
-            var took = 0L
-            val worker = Thread {
-                val started = System.currentTimeMillis()
-                it.analyse(quiet, depth = 60)
-                took = System.currentTimeMillis() - started
-            }
-            worker.start()
-            Thread.sleep(400)
-            val saved = System.currentTimeMillis()
-            it.reconfigure(threads = 1, hashMb = 32)
-            assertTrue("the save does not wait on the search", System.currentTimeMillis() - saved < 200)
-            worker.join(10_000)
-            assertTrue("the search was cut short at $took ms", took > 1200)
-            assertEquals(1, it.threads)
-            assertEquals(32, it.hashMb)
+        scripted(cut.take(4)).use { sf ->
+            var owedDuring: Boolean? = null
+            sf.analyse(Board(), depth = 13, multipv = 4, onDepth = {
+                // The save comes from another thread while this search holds the engine.
+                val saver = Thread { sf.reconfigure(threads = 1, hashMb = 32) }
+                saver.start()
+                saver.join()
+                owedDuring = sf.optionsOwed
+            })
+            assertEquals("kept for after the search", true, owedDuring)
+            assertEquals(1, sf.threads)
+            assertEquals(32, sf.hashMb)
+            sf.analyse(Board(), depth = 13, multipv = 4)
+            assertFalse("set before the next search", sf.optionsOwed)
+            sf.reconfigure(threads = 2)
+            assertFalse("with no search running, set at once", sf.optionsOwed)
         }
     }
 
-    /** An engine whose first process answers the handshake and then never a search. */
+    /**
+     * An engine whose first process answers the handshake and then never a search, on a clock
+     * that runs an hour at every look while that process lives: the watchdog's patience runs
+     * out at once on it, and the real engine after it runs on the real clock.
+     */
     private class FirstSilent(binary: File, net: File) : Engine(binary, net, threads = 1, hashMb = 16, multipv = 2) {
         var launched = 0
+        private var fake = 0L
+
+        override fun now(): Long = if (launched == 1) {
+            fake += 3_600_000
+            fake
+        } else {
+            super.now()
+        }
 
         override fun launch(): Process {
             launched += 1
@@ -307,18 +337,10 @@ class EngineReviewTest {
         val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
         assumeTrue("the engine or its network is missing", binary.exists() && net != null)
         FirstSilent(binary, net!!).use { sf ->
-            sf.maxSeconds = 0.3
-            sf.watchdogS = 4.0
-            var lines: List<Line>? = null
-            val worker = Thread { lines = sf.analyse(Board(), depth = 30) }
-            val started = System.currentTimeMillis()
-            worker.start()
-            worker.join(30_000)
-            assertFalse("the search still waits on the silent engine", worker.isAlive)
-            assertNotNull("searched again on a new engine", lines)
-            assertTrue(lines!!.isNotEmpty())
-            assertEquals(2, sf.launched)
-            assertTrue(System.currentTimeMillis() - started < 20_000)
+            sf.maxSeconds = 5.0
+            val lines = sf.analyse(Board(), depth = 6)
+            assertTrue("searched again on a new engine", lines.isNotEmpty())
+            assertEquals("the silent engine was replaced", 2, sf.launched)
         }
     }
 

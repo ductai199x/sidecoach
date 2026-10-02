@@ -163,7 +163,8 @@ open class Engine(
     }
 
     /** Threads or hash saved while a search ran: set on the process before the next search. */
-    @Volatile private var optionsOwed = false
+    @Volatile internal var optionsOwed = false
+        private set
 
     /**
      * Threads and hash on the running engine (the settings saved mid-session). Never during a
@@ -246,7 +247,7 @@ open class Engine(
             if (paused) return
             paused = true
             if (runningSince != 0L) {
-                ranMs += SystemClock.elapsedRealtime() - runningSince
+                ranMs += now() - runningSince
                 runningSince = 0
             }
             signal(SIGSTOP)
@@ -260,7 +261,7 @@ open class Engine(
             if (!paused) return
             paused = false
             signal(SIGCONT)
-            if (budgetMs != 0L) runningSince = SystemClock.elapsedRealtime()
+            if (budgetMs != 0L) runningSince = now()
             clock.notifyAll()
         }
     }
@@ -275,7 +276,7 @@ open class Engine(
         val number = synchronized(clock) {
             budgetMs = ms
             ranMs = 0
-            runningSince = if (paused) 0 else SystemClock.elapsedRealtime()
+            runningSince = if (paused) 0 else now()
             ++searchNumber
         }
         val target = process
@@ -310,7 +311,7 @@ open class Engine(
                     clock.wait()
                     continue
                 }
-                val left = budgetMs - ranMs - (SystemClock.elapsedRealtime() - runningSince)
+                val left = budgetMs - ranMs - (now() - runningSince)
                 if (left <= 0) {
                     if (stopSent) {
                         runCatching { target?.destroyForcibly() }
@@ -326,6 +327,9 @@ open class Engine(
             }
         }
     }
+
+    /** The clock a search's time is kept on ([arm], [watch], [pause]); a test drives its own. */
+    protected open fun now(): Long = SystemClock.elapsedRealtime()
 
     /** How long past its time a search may run before its engine is taken for hung ([watch]). */
     @Volatile var watchdogS: Double = 10.0

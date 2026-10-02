@@ -615,7 +615,8 @@ class Analyser(
      * is looking ahead now (a request then interrupts it). The worker alone changes the list;
      * a new game or a takeback puts a new one in its place.
      */
-    @Volatile private var ahead: MutableList<Pair<Board, Int>> = ArrayList()
+    // Internal, as the desktop test reaches its _ahead: a test drives the look ahead a step at a time.
+    @Volatile internal var ahead: MutableList<Pair<Board, Int>> = ArrayList()
 
     /**
      * The game's positions whose full measure gave way to a newer request ([yielding]), measured
@@ -932,7 +933,7 @@ class Analyser(
      * its [lookAhead] best moves first; after the best reply to each follows as each is
      * measured ([lookAhead]).
      */
-    private fun planAhead(board: Board, lines: List<Line>) {
+    internal fun planAhead(board: Board, lines: List<Line>) {
         val ahead = ArrayList<Pair<Board, Int>>()
         for (line in lines.take(lookAhead)) {
             val move = lineMoves(line).take(1)
@@ -950,7 +951,7 @@ class Analyser(
      * ahead, the best reply to it goes next in [ahead], the plan it came from -- unless the game
      * has planned anew meanwhile (a new game, a takeback).
      */
-    private fun lookAhead(board: Board, moves: Int, ahead: MutableList<Pair<Board, Int>>) {
+    internal fun lookAhead(board: Board, moves: Int, ahead: MutableList<Pair<Board, Int>>) {
         val engine = annotator.engine
         looking = true
         val measured = try {
