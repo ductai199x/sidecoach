@@ -12,6 +12,10 @@ from typing import Protocol, runtime_checkable
 
 from sidecoach.voice.notation import speak_notation
 
+# Who gave a line (`say`'s owner): the live coach; the rooms name their own (a review, the
+# puzzles), and a room's stop stops only its own lines (round 3 audit, E5).
+COACH = "coach"
+
 
 @runtime_checkable
 class TTSProvider(Protocol):
@@ -21,17 +25,19 @@ class TTSProvider(Protocol):
         """(ready, detail): whether the voice can speak, and why not when it cannot."""
         ...
 
-    def say(self, text: str, *, voice: str | None = None) -> None:
+    def say(self, text: str, *, voice: str | None = None, owner: str = COACH) -> None:
         """Speak a line. Chess notation in it is read aloud in words (see `speak_notation`).
 
         Returns once the line is queued, not once it finishes: speaking is asynchronous so
         the coach is never blocked waiting on audio. `voice` speaks this one line in
         another voice (the settings page's preview) and leaves the coach's voice as it is.
+        `owner` is who gave the line.
         """
         ...
 
-    def stop(self) -> None:
-        """Cut off anything now playing or queued -- for a barge-in or a new position."""
+    def stop(self, owner: str | None = None) -> None:
+        """Cut off anything now playing or queued -- for a barge-in or a new position. With
+        `owner`, only that owner's lines, queued or playing."""
         ...
 
     @property
@@ -52,10 +58,10 @@ class NullTTS:
     def healthcheck(self) -> tuple[bool, str]:
         return False, self._reason
 
-    def say(self, text: str, *, voice: str | None = None) -> None:
+    def say(self, text: str, *, voice: str | None = None, owner: str = COACH) -> None:
         return None
 
-    def stop(self) -> None:
+    def stop(self, owner: str | None = None) -> None:
         return None
 
     @property

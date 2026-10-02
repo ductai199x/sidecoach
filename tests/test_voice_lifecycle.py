@@ -308,6 +308,74 @@ def test_the_voice_follows_the_systems_output_mid_line(
     assert second.played >= 2400, "the whole line on the new output"
 
 
+class HeldKokoro(FakeKokoro):
+    """The model, holding the line that starts with `held` in synthesis until the test lets it
+    go (`synthesising` says it began): the lines queued behind it wait their turn."""
+
+    def __init__(self, held: str) -> None:
+        self.held = held
+        self.synthesising = threading.Event()
+        self.go = threading.Event()
+
+    def create(self, text: str, voice: str, speed: float, lang: str) -> tuple[Any, int]:
+        if text.startswith(self.held):
+            self.synthesising.set()
+            assert self.go.wait(HANG_S), "the test never let the line go"
+        return super().create(text, voice, speed, lang)
+
+
+def _played(voice: WatchedTTS) -> list[str]:
+    played: list[str] = []
+    voice.on_play = played.append  # the moment a line's audio is queued to the device
+    return played
+
+
+def test_a_rooms_stop_cuts_its_own_line_and_leaves_the_coachs_queued_one(
+    voice: WatchedTTS,
+) -> None:
+    """Round 3 audit, E5 (Tai, 2026-10-02): a card is being said, a coach line is queued after
+    it, and the review is closed. Before, the room's stop stopped the voice only when a room
+    had given the last line -- here the coach had, so the card played on after the review
+    closed. Now the review's own lines stop, the playing card and a later one, and the coach's
+    line is said."""
+    model = HeldKokoro("Card one")
+    voice._kokoro = model
+    played = _played(voice)
+    voice.say("Card one.", owner="review")
+    assert model.synthesising.wait(HANG_S)
+    voice.say("Coach line.")
+    voice.say("Card two.", owner="review")
+    voice.stop(owner="review")
+    model.go.set()
+    voice.line_done()  # the card, cut
+    voice.line_done()  # the coach's line
+    assert not voice.busy
+    assert played == ["Coach line."]
+
+
+def test_a_rooms_stop_leaves_the_coachs_playing_line_and_drops_its_queued_card(
+    voice: WatchedTTS,
+) -> None:
+    """The other order: the coach is speaking and a card is queued after it, then the review is
+    closed. Before, the card having given the last line, the stop cut the coach's line off; now
+    the coach's line is said whole and the card never is."""
+    model = HeldKokoro("Coach line")
+    voice._kokoro = model
+    played = _played(voice)
+    voice.say("Coach line.")
+    assert model.synthesising.wait(HANG_S)
+    voice.say("Card one.", owner="review")
+    voice.stop(owner="review")
+    model.go.set()
+    voice.line_done()
+    assert not voice.busy
+    assert played == ["Coach line."]
+    # A card said after the room's stop is said.
+    voice.say("Card two.", owner="review")
+    voice.line_done()
+    assert played == ["Coach line.", "Card two."]
+
+
 def test_a_closed_voice_releases_its_worker_model_and_stream(voice: WatchedTTS) -> None:
     voice.say("A line.")
     voice.line_done()

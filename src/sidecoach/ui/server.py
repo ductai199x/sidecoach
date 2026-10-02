@@ -572,7 +572,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     # The card on the move shown, said in the panel's voice and captioned: a new card cuts off
     # the one before, as the player steps on; closing the review silences it.
-    review_speak, review_hush = _room_voice(engine)
+    review_speak, review_hush = _room_voice(engine, REVIEW_VOICE)
 
     @app.post("/api/review/{key}/open")
     def review_open(key: str, body: _Review) -> dict[str, Any]:
@@ -1041,7 +1041,7 @@ def _rooms_for(engine: PanelEngine) -> Any:
     puzzles = None
     with contextlib.suppress(Exception):
         puzzles = open_store(engine.settings.data_dir)
-    speak, stop = _room_voice(engine)
+    speak, stop = _room_voice(engine, PUZZLE_VOICE)
     rooms = PuzzleRooms(
         engine.settings,
         store_path=engine.settings.data_dir / "profile.sqlite",
@@ -1062,13 +1062,17 @@ def _rooms_for(engine: PanelEngine) -> Any:
 
 # What the panel's voice was last given, when a room (a review, a puzzle) gave it.
 ROOM_VOICE = "room"
+# The rooms' lines in the voice's queue, each room's own (`TTSProvider.say`'s owner).
+REVIEW_VOICE = "review"
+PUZZLE_VOICE = "puzzle"
 
 
 def _room_voice(
-    engine: PanelEngine,
+    engine: PanelEngine, owner: str
 ) -> tuple[Callable[[str], None] | None, Callable[[], None] | None]:
     """The panel's voice for a room of its own (a puzzle, a review): speak -- the words
-    captioned as the panel's are, then said -- and stop; (None, None) when the panel has no
+    captioned as the panel's are, then said, as `owner`'s lines -- and stop, which stops only
+    `owner`'s lines; (None, None) when the panel has no
     voice. The voice is looked up when it speaks, not when the room was made: a reload swaps
     it (`_reload_voice`), and the rooms spoke on through the old one, over the new (the parity
     audit, 2026-09-29; the phone looks it up at each call)."""
@@ -1088,13 +1092,13 @@ def _room_voice(
         if getattr(engine, "muted", False) or engine._ptt_held():
             return
         engine._voicing = (ROOM_VOICE, None)
-        engine._tts.say(text)
+        engine._tts.say(text, owner=owner)
 
     def stop() -> None:
-        # Only a room's own words: closing a review cut off the live coach mid-sentence.
-        voicing = getattr(engine, "_voicing", None)
-        if voicing is not None and voicing[0] == ROOM_VOICE:
-            engine._tts.stop()
+        # Only this room's own lines, queued or playing, whoever gave the last line: closing
+        # a review cut off the live coach mid-sentence, and a card queued before a coach line
+        # played on after the review closed (round 3 audit, E5; Tai, 2026-10-02).
+        engine._tts.stop(owner=owner)
 
     return speak, stop
 

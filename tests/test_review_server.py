@@ -279,11 +279,11 @@ class RecordingVoice:
     def healthcheck(self) -> tuple[bool, str]:
         return True, "recording"
 
-    def say(self, text: str) -> None:
-        self.heard.append(f"say {text}")
+    def say(self, text: str, *, voice: str | None = None, owner: str = "coach") -> None:
+        self.heard.append(f"say {text}" if owner == "coach" else f"say {text} ({owner})")
 
-    def stop(self) -> None:
-        self.heard.append("stop")
+    def stop(self, owner: str | None = None) -> None:
+        self.heard.append("stop" if owner is None else f"stop ({owner})")
 
 
 def test_a_card_is_said_in_the_panels_voice_and_captioned(
@@ -308,15 +308,16 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     room = _room(client, key)
     assert room.settled.wait(HANG_S), "the review never settled"
 
-    # The live coach speaking: a card does not cut it off (voice finding 12, 2026-10-01) ...
+    # The live coach speaking: a card does not cut it off (voice finding 12, 2026-10-01): the
+    # stop before it is the review's own lines' (round 3 audit, E5) ...
     engine._voicing = ("post_move", 10)
     assert client.post(f"/api/review/{key}/say", json={"text": "Na5 is a mistake."}).json()["ok"]
-    assert voice.heard == ["say Na5 is a mistake."]
+    assert voice.heard == ["stop (review)", "say Na5 is a mistake. (review)"]
     captioned = [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
     assert "Na5 is a mistake." in captioned
     # ... and a card cuts off the card before it.
     assert client.post(f"/api/review/{key}/say", json={"text": "Bb5 was better."}).json()["ok"]
-    assert voice.heard[-2:] == ["stop", "say Bb5 was better."]
+    assert voice.heard[-2:] == ["stop (review)", "say Bb5 was better. (review)"]
     # Muted: the card is captioned, not said.
     engine.set_muted(True)
     voice.heard.clear()
@@ -336,14 +337,16 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     assert client.post(f"/api/review/{key}/say", json={"text": "Qd2 holds."}).json()["ok"]
     assert client.post(f"/api/review/{key}/hush").json()["ok"]
     client.post(f"/api/review/{key}/close")
-    assert voice.heard[-2:] == ["stop", "stop"]
+    assert voice.heard[-2:] == ["stop (review)", "stop (review)"]
     room.join(HANG_S)
     assert room.closed, "the room's thread ended, its store closed"
-    # Closing a review while the coach has the voice leaves the coach speaking.
+    # Closing a review while the coach has the voice stops the review's lines only: the
+    # coach's are the voice's to keep (test_voice_lifecycle's owner tests).
     engine._voicing = ("post_move", 12)
     voice.heard.clear()
     client.post(f"/api/review/{key}/close")
-    assert voice.heard == []
+    assert voice.heard == ["stop (review)"]
+    assert "stop" not in voice.heard, "nothing of the coach's stopped"
 
 
 def test_a_move_is_retried_and_graded_as_the_review_graded_it(

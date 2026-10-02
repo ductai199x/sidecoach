@@ -21,7 +21,9 @@ import time
 from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import Path
+from typing import NamedTuple
 
+from sidecoach.voice.base import COACH
 from sidecoach.voice.devices import follows_system_default, output_changes, system_default
 from sidecoach.voice.notation import speak_notation
 from sidecoach.voice.runtime import Device
@@ -44,6 +46,15 @@ VOICES_FILE = "voices-v1.0.bin"
 # A stream whose device has not asked for samples for this long is taken for dead and
 # reopened at the next line.
 STREAM_DEAD_S = 1.5
+
+
+class _Stamp(NamedTuple):
+    """A queued line's owner, and the stops it came after: everything's (`generation`) and
+    its owner's own (`cut`). A stop since then cancels it."""
+
+    owner: str
+    generation: int
+    cut: int
 
 
 class _Stream:
@@ -171,7 +182,8 @@ class KokoroTTS:
         self._playback: int | None = None  # resolved once, when unconfigured
         self.device: Device | None = None  # where the graph actually loaded
         self.load_seconds: float | None = None
-        self._queue: queue.Queue[tuple[str, str, str | None] | None] = queue.Queue()
+        # (spoken, given, voice, the line's stamp: its owner and the stops it was queued after)
+        self._queue: queue.Queue[tuple[str, str, str | None, _Stamp] | None] = queue.Queue()
         # Called with the line as given to `say` the moment its audio starts to play,
         # for whoever measures the way from a move to the first sound (the panel).
         self.on_play: Callable[[str], None] | None = None
@@ -181,9 +193,13 @@ class KokoroTTS:
         self._failed = False
         self._failed_files: tuple[tuple[int, int] | None, ...] = ()
         self._load_lock = threading.Lock()
-        # Bumped on every stop so a synthesis in flight knows its line was cancelled and
-        # does not play over what comes next.
+        # Bumped on every stop of everything, so a synthesis in flight knows its line was
+        # cancelled and does not play over what comes next; `_cuts` the same, an owner's own
+        # stops (a room's), which cancel that owner's lines and no one else's.
         self._generation = 0
+        self._cuts: dict[str, int] = {}
+        # The line being synthesised or played (its stamp), None between lines.
+        self._current: _Stamp | None = None
         self._lock = threading.Lock()
         self._playing = False
         # The open output stream (see _Stream) and the output it was opened for (`_output`):
@@ -321,36 +337,55 @@ class KokoroTTS:
             self._kokoro.create("Ready.", voice=self.voice, speed=self.speed, lang=self.lang)  # type: ignore[attr-defined]
         return time.perf_counter() - begun
 
-    def say(self, text: str, *, voice: str | None = None) -> None:
+    def say(self, text: str, *, voice: str | None = None, owner: str = COACH) -> None:
         """Queue a line to be spoken. Notation in it is read aloud in words. `voice` speaks
-        this line in another voice (a preview) without changing the coach's."""
+        this line in another voice (a preview) without changing the coach's. `owner` is who
+        gave it (the coach, a review, the puzzles): `stop(owner)` stops that owner's lines."""
         if self._failed and not self._files_arrived():
             return
         spoken = speak_notation(text, voice=True).strip()
         if not spoken:
             return
         self._ensure_worker()
-        self._queue.put((spoken, text, voice))
+        with self._lock:
+            stamp = _Stamp(owner, self._generation, self._cuts.get(owner, 0))
+        self._queue.put((spoken, text, voice, stamp))
 
     @property
     def busy(self) -> bool:
         """Whether a line is playing or waiting to play."""
         return self._playing or not self._queue.empty()
 
-    def stop(self) -> None:
-        """Drop everything queued and silence anything now playing."""
+    def _stale(self, stamp: _Stamp) -> bool:
+        """Whether a stop since the line was queued cancelled it. Under `_lock`."""
+        return stamp.generation != self._generation or stamp.cut != self._cuts.get(stamp.owner, 0)
+
+    def stop(self, owner: str | None = None) -> None:
+        """Drop everything queued and silence anything now playing. With `owner`, only that
+        owner's lines, queued or playing: a room's stop (a review closed, the puzzles' voice
+        off) left the coach's lines alone only when the room had given the last line, and cut
+        them off when it had (round 3 audit, E5; Tai, 2026-10-02)."""
         with self._lock:
-            self._generation += 1
+            if owner is None:
+                self._generation += 1
+            else:
+                self._cuts[owner] = self._cuts.get(owner, 0) + 1
+            current = self._current
+            cut_now = owner is None or (current is not None and current.owner == owner)
             # Under the lock with the voice's following of the output: a line moving to a new
             # stream is cleared there too, never carried past the stop.
-            if self._stream is not None:
+            if cut_now and self._stream is not None:
                 self._stream.clear()
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        if self._sd is not None:
+        # The queue's own lock: the lines kept stay in their order, none taken meanwhile.
+        with self._queue.mutex:
+            kept = [
+                item
+                for item in self._queue.queue
+                if owner is not None and (item is None or item[3].owner != owner)
+            ]
+            self._queue.queue.clear()
+            self._queue.queue.extend(kept)
+        if cut_now and self._sd is not None:
             # Stopping audio must never raise out of stop().
             with contextlib.suppress(Exception):
                 self._sd.stop()  # type: ignore[attr-defined]
@@ -384,16 +419,26 @@ class KokoroTTS:
             # Busy from the moment a line is taken up, through synthesis, until it has
             # finished playing -- so a caller asking `busy` mid-synthesis gets the truth.
             self._playing = True
+            spoken, given, voice, stamp = item
+            with self._lock:
+                self._current = stamp
             try:
-                self._speak_one(*item)
+                self._speak_one(spoken, given, voice, stamp)
             finally:
+                with self._lock:
+                    self._current = None
                 self._playing = False
 
-    def _speak_one(self, text: str, given: str = "", voice: str | None = None) -> None:
+    def _speak_one(
+        self, text: str, given: str = "", voice: str | None = None, stamp: _Stamp | None = None
+    ) -> None:
         if not self.load():
             return  # degraded to silence
         with self._lock:
-            generation = self._generation
+            if stamp is None:
+                stamp = _Stamp(COACH, self._generation, self._cuts.get(COACH, 0))
+            if self._stale(stamp):
+                return  # stopped while it waited its turn
         try:
             samples, sample_rate = self._kokoro.create(  # type: ignore[attr-defined]
                 text, voice=voice or self.voice, speed=self.speed, lang=self.lang
@@ -403,7 +448,7 @@ class KokoroTTS:
             return
         # A stop between synthesis and playback means this line was cancelled.
         with self._lock:
-            if generation != self._generation:
+            if self._stale(stamp):
                 return
         try:
             import numpy as np
@@ -416,7 +461,7 @@ class KokoroTTS:
             # landing while the stream opened was ignored, and the line played over a mute
             # or a barge-in (voice finding 13, 2026-10-01).
             with self._lock:
-                if generation != self._generation:
+                if self._stale(stamp):
                     return
                 if stream is not None:
                     stream.queue(samples)
@@ -485,12 +530,12 @@ class KokoroTTS:
         if old is None or output == self._stream_output or output == self._failed_output:
             return None
         with self._lock:
-            generation = self._generation
+            line = self._current
         new = self._new_stream(sample_rate, output)
         if new is None:
             return None
         with self._lock:
-            if self._stream is not old or generation != self._generation:
+            if self._stream is not old or line is None or self._stale(line):
                 new.close()  # stopped or replaced meanwhile: nothing to carry over
                 return None
             for chunk in old.take():
