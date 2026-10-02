@@ -1486,6 +1486,25 @@ internal fun player(facts: PositionFacts): Boolean? {
 }
 
 /**
+ * A rate-limited call is asked again once after this long, when the provider's timeout,
+ * counted from the first call, leaves room for it. `coach.py` RATE_BACKOFF_S.
+ */
+@Volatile
+var RATE_BACKOFF_S = 2.0
+
+/**
+ * How long to wait before asking again after a failed call, or null to give up: only a rate
+ * limit (429) is worth a second call; a timeout spent the time, a refused key or a bad request
+ * will fail the same way, and each would be paid or wasted twice. `coach.py` `_retry_wait`.
+ */
+internal fun retryWait(exc: Exception, provider: LLMProvider, beganNs: Long): Double? {
+    if (!(exc.message ?: "").startsWith("429")) return null
+    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS
+    if (budget != null && (System.nanoTime() - beganNs) / 1e9 + RATE_BACKOFF_S >= budget) return null
+    return RATE_BACKOFF_S
+}
+
+/**
  * Runs the model on a worker thread and checks what it says.
  *
  * A draft with a false claim about the board or against the record is sent back once with the
@@ -1535,6 +1554,37 @@ class Speaker(
 
     private object Stop
 
+    /**
+     * The providers replaced mid-session: their calls still count (`Speaker._retired`).
+     */
+    private val retired = ArrayList<LLMProvider>()
+
+    /** Every provider this Speaker has used, each once. */
+    private fun providers(): List<LLMProvider> =
+        (listOfNotNull(provider, routineProvider, verifier) + synchronized(retired) { retired.toList() })
+            .distinctBy { System.identityHashCode(it) }
+
+    /**
+     * A new model mid-game: the next call goes to it; the old ones are kept, for what they
+     * were paid. `Speaker.replace_providers`.
+     */
+    fun replaceProviders(provider: LLMProvider, routineProvider: LLMProvider? = null, verifier: LLMProvider? = null) {
+        synchronized(retired) { retired.addAll(providers()) }
+        this.provider = provider
+        this.routineProvider = routineProvider ?: provider
+        this.verifier = verifier
+    }
+
+    /**
+     * The model-call ledgers of every provider used, each once: the spend before a model
+     * change, and a verifier's on another endpoint, included. `Speaker.usages`.
+     */
+    fun usages(): List<com.sidecoach.llm.Usage> =
+        providers().mapNotNull { com.sidecoach.llm.usageOf(it) }.distinctBy { System.identityHashCode(it) }
+
+    /** Counted down when the Speaker closes: a rate limit's wait ends with it. */
+    private val closed = java.util.concurrent.CountDownLatch(1)
+
     val pending: Int get() = requests.size + (if (busy) 1 else 0)
 
     fun start() {
@@ -1546,7 +1596,13 @@ class Speaker(
         }
     }
 
+    /**
+     * Stop: what is queued is dropped unasked (the session is gone; nobody would hear it, and
+     * each would be paid), and a call in flight is not asked again.
+     */
     fun close(timeoutMs: Long = 10000) {
+        closed.countDown()
+        requests.clear()
         val running = thread
         thread = null
         if (running != null) {
@@ -1615,6 +1671,7 @@ class Speaker(
      * needed.
      */
     fun speakNow(request: CoachRequest): Spoken {
+        val began = System.nanoTime()
         var messages = vsWrap(request.messages, request.candidates)
         var problems: List<String> = emptyList()
         var text = ""
@@ -1647,7 +1704,7 @@ class Speaker(
                 epoch = request.epoch,
             )
         }
-        while (attempts < 2) {
+        while (attempts < 2 && !(attempts > 0 && closed.count == 0L)) {
             attempts += 1
             var stats: MutableMap<String, Any?> = LinkedHashMap()
             var reader: FirstCandidate? = null
@@ -1660,6 +1717,7 @@ class Speaker(
                 reader = FirstCandidate(request.streamTo, { t -> problemsOf(t, request) }, limit = limit)
             }
             var raw: String
+            var failed: Exception? = null
             try {
                 val completion = complete(provider, request, messages, reader?.let { it::feed })
                 raw = completion.text
@@ -1668,6 +1726,7 @@ class Speaker(
                 failures += 1
                 lastError = "${exc::class.java.simpleName}: ${exc.message}"
                 raw = ""
+                failed = exc
             }
             if (reader != null) {
                 reader.finish()
@@ -1688,6 +1747,15 @@ class Speaker(
                 stats["stream_problems"] = reader.problems.ifEmpty {
                     if (reader.declined) listOf("the voice declined") else listOf("the stream ended early")
                 }
+            }
+            if (failed != null) {
+                // A failed call is not a draft: no complaint, no second paid call for a
+                // timeout or a refused key. A rate limit is waited out once, inside the
+                // provider's timeout counted from the first call.
+                problems = listOf("the call failed: $lastError")
+                val wait = retryWait(failed, provider, began) ?: break
+                if (closed.await((wait * 1000).toLong(), TimeUnit.MILLISECONDS)) break
+                continue
             }
             val scored = parseCandidates(raw).map { (prob, candidate) ->
                 Triple(prob, candidate, problemsOf(candidate, request))
@@ -2059,7 +2127,7 @@ class Speaker(
     private fun run() {
         while (true) {
             val request = requests.take()
-            if (request === Stop) return
+            if (request === Stop || closed.count == 0L) return
             busy = true
             try {
                 when (request) {

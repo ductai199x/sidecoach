@@ -91,14 +91,19 @@ fun interface KeyStore {
 val ENVIRONMENT = KeyStore { name -> System.getenv(name) }
 
 /**
- * The name the key is read under: the settings', else the preset's; a custom service keeps its
- * key under CUSTOM_API_KEY unless the settings name another ("": none). `factory._key_env`.
+ * The name the key is read under: the preset's; a custom service keeps its key under
+ * CUSTOM_API_KEY unless the settings name another ("": none). `factory._key_env`.
  */
-private fun keyEnvOf(settings: LLMSettings, defaults: ProviderDefaults?): String? = when {
-    defaults == null -> settings.apiKeyEnv ?: "CUSTOM_API_KEY"
-    settings.apiKeyEnv.isNullOrEmpty() -> defaults.apiKeyEnv
-    else -> settings.apiKeyEnv
-}
+private fun keyEnvOf(settings: LLMSettings, defaults: ProviderDefaults?): String? =
+    // A preset's key is its own: a custom service's variable left in the settings sent no
+    // key, or the wrong one, to OpenAI (the API review, 2026-10-01).
+    if (defaults == null) settings.apiKeyEnv ?: "CUSTOM_API_KEY" else defaults.apiKeyEnv
+
+/**
+ * The presets served by a company, at an address of their own (and their *_BASE_URL):
+ * llm.base_url is not theirs to take. `factory.HOSTED`.
+ */
+val HOSTED = setOf("openai", "dashscope")
 
 /**
  * The key a provider made from [settings] now would carry, or null: for a model kept and made
@@ -163,9 +168,12 @@ fun makeProvider(
     }
 
     val envUrl = defaults.baseUrlEnv?.let { keys.get(it) }
+    // The server address is the local server's or a custom service's: a hosted preset's is
+    // its own, or the key went over plain HTTP to an old LAN address.
+    val ownUrl = if (settings.provider in HOSTED) null else settings.baseUrl?.ifEmpty { null }
     return OpenAICompatProvider(
         settings.provider,
-        settings.baseUrl?.ifEmpty { null } ?: envUrl?.ifEmpty { null } ?: defaults.baseUrl,
+        ownUrl ?: envUrl?.ifEmpty { null } ?: defaults.baseUrl,
         settings.model?.ifEmpty { null } ?: defaults.model,
         apiKey = apiKey,
         thinkingControl = wanted,

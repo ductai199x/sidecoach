@@ -120,7 +120,20 @@ open class Engine(
             .directory(binary.parentFile)
             .start()
 
+    /**
+     * Closed by its owner: a search under way (a request's next one, a crash's restart) does
+     * not start another process nobody would close. [open] opens it again. `engine._closed`.
+     */
+    @Volatile
+    private var closedByOwner = false
+
     fun open() {
+        closedByOwner = false
+        start()
+    }
+
+    private fun start() {
+        if (closedByOwner) throw EngineUnavailable("the engine was closed")
         if (process != null) return
         if (!binary.exists()) throw EngineUnavailable("no engine at $binary")
         val started = try {
@@ -174,6 +187,12 @@ open class Engine(
     }
 
     override fun close() {
+        closedByOwner = true
+        drop()
+    }
+
+    /** The process gone (a crash's restart starts another; [close] does not). */
+    private fun drop() {
         val current = process ?: return
         // A stopped process reads nothing, `quit` included: it is let go on first.
         synchronized(clock) {
@@ -276,6 +295,7 @@ open class Engine(
      * it resumed; `stop` ends the search as `movetime` does, with its best move.
      */
     private fun watch(number: Int) {
+        var stopSent = false
         synchronized(clock) {
             while (searchNumber == number && budgetMs != 0L) {
                 if (paused) {
@@ -284,14 +304,31 @@ open class Engine(
                 }
                 val left = budgetMs - ranMs - (SystemClock.elapsedRealtime() - runningSince)
                 if (left <= 0) {
+                    if (stopSent) {
+                        // Not ended [streamGraceMs] of running time past its `stop`: a wedged
+                        // engine. Its process is killed, the search ends as a crash does, and the
+                        // restart answers it; the reader held the lock forever (`engine._watchdog`).
+                        Log.w(TAG, "the engine did not end its search: killed")
+                        budgetMs = 0
+                        runCatching { process?.destroyForcibly() }
+                        return
+                    }
                     runCatching { send("stop") }
-                    budgetMs = 0
-                    return
+                    stopSent = true
+                    budgetMs += streamGraceMs
+                    continue
                 }
                 clock.wait(left)
             }
         }
     }
+
+    /**
+     * How long past its `stop` a search may run before the engine is taken for wedged:
+     * python-chess's own timeout for a search (`engine.STREAM_GRACE_S`).
+     */
+    @Volatile
+    var streamGraceMs: Long = 10_000
 
     /**
      * The best lines for `board`, best first, from the side to move's point of view. A
@@ -393,11 +430,11 @@ open class Engine(
         onDepth: ((List<Info>) -> Unit)? = null,
     ): List<Info> {
         for (attempt in 1..2) {
-            open()
+            start()
             try {
                 return search(board, depth, timeS, multipv, onDepth)
             } catch (exc: IOException) {
-                close()
+                drop()
                 if (attempt == 2) throw EngineUnavailable("engine died twice on ${board.fen()}: $exc")
             }
         }

@@ -9,8 +9,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.Usage
 import com.sidecoach.llm.modelOf
-import com.sidecoach.llm.pricesFor
-import com.sidecoach.llm.usageOf
+import com.sidecoach.llm.total
 import com.sidecoach.profile.Puzzle
 import com.sidecoach.profile.PuzzleStore
 import com.sidecoach.profile.Puzzles
@@ -126,10 +125,9 @@ class PuzzleRoom(
         state["voice"] = voice
         state["voice_ready"] = speak != null
         state["closed"] = closed
-        val usage = usage()
-        if (usage != null) {
-            val model = modelOf(coaching.coach?.speaker?.provider)
-            state["llm"] = usage.summary(pricesFor(settings.llm(), model))
+        val ledgers = usages()
+        if (ledgers.isNotEmpty()) {
+            state["llm"] = total(ledgers, settings.llm(), modelOf(coaching.coach?.speaker?.provider))
         }
         return jsonOf(state)
     }
@@ -303,12 +301,23 @@ class PuzzleRoom(
         runCatching { mirror("puzzle", level, "$id $chan: $text", data) }
     }
 
-    /** The room's model calls, for the parent panel's strip. */
-    fun usage(): Usage? = usageOf(coaching.coach?.speaker?.provider)
+    /** The coach's ledgers, kept past its close. */
+    @Volatile
+    private var ledgers: List<Usage> = emptyList()
+
+    /**
+     * The room's model-call ledgers, for the parent panel's strip: kept from the start, as
+     * the coach is closed with the room. `PuzzleRoom.usages`.
+     */
+    fun usages(): List<Usage> {
+        coaching.coach?.speaker?.let { ledgers = it.usages() }
+        return ledgers
+    }
 
     private fun finish() {
         closed = true
         runCatching { assessing.close() }
+        usages() // the ledgers kept before the coach goes
         runCatching { coaching.close() }
         store.close()
     }
@@ -361,35 +370,76 @@ class PuzzleRooms(
     private val mirror: ((String, String, String, JSONObject?) -> Unit)? = null,
 ) {
     private val rooms = LinkedHashMap<String, PuzzleRoom>()
+
+    /** The ledgers of rooms replaced by a reopened puzzle. */
+    private val spent = ArrayList<Usage>()
     private val lock = Any()
 
     /** The motif each puzzle was recommended for, told by the session's profiler. */
     var motifs: Map<String, String> = emptyMap()
 
-    fun open(puzzleId: String): PuzzleRoom? = synchronized(lock) {
-        val room = rooms[puzzleId]
-        if (room != null && !room.closed && !room.closing) return room
-        val files = dataDir
-        if (puzzles == null && files != null) {
-            puzzles = runCatching { Puzzles.openStore(files) }.getOrNull()
+    /** The rooms being made, by puzzle: a second open of one waits for the first's. */
+    private val opening = HashMap<String, CountDownLatch>()
+
+    /**
+     * The puzzle's room, made if it has none open. It is made outside the lock: making one asks
+     * the model whether it answers, and the session loop reads the rooms' spend under this lock
+     * every tick -- the live game froze for the length of that check (the API review,
+     * 2026-10-01). Two opens of one puzzle at once make one room. `PuzzleRooms.open`.
+     */
+    fun open(puzzleId: String): PuzzleRoom? {
+        var found: Puzzle? = null
+        var mine: CountDownLatch? = null
+        while (true) {
+            var waitFor: CountDownLatch? = null
+            synchronized(lock) {
+                val room = rooms[puzzleId]
+                if (room != null && !room.closed && !room.closing) return room
+                waitFor = opening[puzzleId]
+                if (waitFor == null) {
+                    val files = dataDir
+                    if (puzzles == null && files != null) {
+                        puzzles = runCatching { Puzzles.openStore(files) }.getOrNull()
+                    }
+                    found = puzzles?.get(puzzleId) ?: return null
+                    mine = CountDownLatch(1).also { opening[puzzleId] = it }
+                }
+            }
+            val other = waitFor ?: break
+            other.await() // another open is making it: take that one
         }
-        val puzzle = puzzles?.get(puzzleId) ?: return null
-        PuzzleRoom(
-            context,
-            settings,
-            puzzle,
-            motifs[puzzleId],
-            storePath = storePath,
-            speak = speak,
-            stopSpeaking = stopSpeaking,
-            analysis = analysis,
-            coach = coach,
-            mirror = mirror,
-        ).also { rooms[puzzleId] = it }
+        val puzzle = found!!
+        val making = mine!!
+        try {
+            val room = PuzzleRoom(
+                context,
+                settings,
+                puzzle,
+                motifs[puzzleId],
+                storePath = storePath,
+                speak = speak,
+                stopSpeaking = stopSpeaking,
+                analysis = analysis,
+                coach = coach,
+                mirror = mirror,
+            )
+            synchronized(lock) {
+                // A puzzle opened again: the closed room's calls still count.
+                rooms[puzzleId]?.let { spent.addAll(it.usages()) }
+                rooms[puzzleId] = room
+            }
+            return room
+        } finally {
+            synchronized(lock) { opening.remove(puzzleId) }
+            making.countDown()
+        }
     }
 
     /** The model-call ledgers of the rooms, open or closed, for the panel's strip. */
-    fun usages(): List<Usage> = synchronized(lock) { rooms.values.mapNotNull { it.usage() } }
+    fun usages(): List<Usage> {
+        val (all, before) = synchronized(lock) { rooms.values.toList() to spent.toList() }
+        return before + all.flatMap { it.usages() }
+    }
 
     fun get(puzzleId: String): PuzzleRoom? {
         val room = synchronized(lock) { rooms[puzzleId] }

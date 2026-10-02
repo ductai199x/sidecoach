@@ -123,6 +123,18 @@ private fun answered(turn: ToolRound): List<Pair<ToolCall, String>> {
 }
 
 /**
+ * Whether a failed call had reached the server, and is billed: a read that timed out or a
+ * connection dropped mid-reply (`openai_compat.py` `_SENT_LOST`), not a connection refused,
+ * a name not found or a connect timeout.
+ */
+fun lostAfterSending(exc: java.io.IOException): Boolean = when (exc) {
+    is java.net.ConnectException, is java.net.UnknownHostException -> false
+    is java.net.SocketTimeoutException -> !(exc.message ?: "").contains("connect", ignoreCase = true)
+    is java.net.SocketException, is java.io.EOFException -> true
+    else -> false
+}
+
+/**
  * The rounds of tool calls as chat messages: the reply that asked, then each result.
  * `openai_compat.chat_turns`.
  */
@@ -239,7 +251,7 @@ class OpenAICompatProvider(
      * The session's tokens over every call, shared with the provider's copies at other
      * efforts: one figure for the panel.
      */
-    val usage: Usage = usage ?: Usage()
+    val usage: Usage = (usage ?: Usage()).also { if (it.model == null) it.model = model }
 
     private val headers: Map<String, String> =
         if (apiKey != null) mapOf("Authorization" to "Bearer $apiKey") else emptyMap()
@@ -418,9 +430,28 @@ class OpenAICompatProvider(
         return stream(body, onDelta)
     }
 
+    /**
+     * [call], and a call that reached the server and then failed -- a read timeout, a
+     * dropped connection -- counted all the same, as it is billed: estimated from what was
+     * sent and what came back. A refused connection or a connect timeout never reached it.
+     * `openai_compat.py` `_lost`.
+     */
+    private inline fun <T> sent(body: JSONObject, received: () -> Int, call: () -> T): T = try {
+        call()
+    } catch (exc: java.io.IOException) {
+        if (lostAfterSending(exc)) {
+            usage.record(
+                mapOf("lost" to exc::class.java.simpleName),
+                promptChars = chars(body),
+                completionChars = received(),
+            )
+        }
+        throw exc
+    }
+
     private fun send(body: JSONObject): Completion {
         val started = System.nanoTime()
-        val reply = transport.post(endpoint, headers, body.toString(), timeoutMs)
+        val reply = sent(body, { 0 }) { transport.post(endpoint, headers, body.toString(), timeoutMs) }
         if (reply.status != 200) {
             // The status code stays in the message: the callers' backoff keys on "429".
             throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
@@ -496,54 +527,56 @@ class OpenAICompatProvider(
         var usageJson = JSONObject()
         var finish: String? = null
         var stopped = false
-        val reply = transport.postLines(
-            endpoint,
-            headers,
-            body.toString(),
-            timeoutMs,
-        ) line@{ line ->
-            if (!line.startsWith("data: ")) return@line true
-            val payload = line.substring(6).trim()
-            if (payload == "[DONE]") return@line false
-            val chunk = try {
-                JSONObject(payload)
-            } catch (_: JSONException) {
-                return@line true
-            }
-            chunk.optJSONObject("usage")?.let { usageJson = it }
-            val choices = chunk.optJSONArray("choices") ?: JSONArray()
-            for (index in 0 until choices.length()) {
-                val choice = choices.optJSONObject(index) ?: continue
-                val delta = choice.optJSONObject("delta") ?: JSONObject()
-                val thought = text(delta, "reasoning_content")
-                if (!thought.isNullOrEmpty()) reasoning.append(thought)
-                val reason = text(choice, "finish_reason")
-                if (!reason.isNullOrEmpty()) finish = reason
-                val pieces = delta.optJSONArray("tool_calls") ?: JSONArray()
-                for (p in 0 until pieces.length()) {
-                    val piece = pieces.optJSONObject(p) ?: continue
-                    val call = calls.getOrPut(piece.optInt("index", 0)) {
-                        JSONObject().put("id", "").put(
-                            "function",
-                            JSONObject().put("name", "").put("arguments", ""),
-                        )
+        val reply = sent(body, { parts.length }) {
+            transport.postLines(
+                endpoint,
+                headers,
+                body.toString(),
+                timeoutMs,
+            ) line@{ line ->
+                if (!line.startsWith("data: ")) return@line true
+                val payload = line.substring(6).trim()
+                if (payload == "[DONE]") return@line false
+                val chunk = try {
+                    JSONObject(payload)
+                } catch (_: JSONException) {
+                    return@line true
+                }
+                chunk.optJSONObject("usage")?.let { usageJson = it }
+                val choices = chunk.optJSONArray("choices") ?: JSONArray()
+                for (index in 0 until choices.length()) {
+                    val choice = choices.optJSONObject(index) ?: continue
+                    val delta = choice.optJSONObject("delta") ?: JSONObject()
+                    val thought = text(delta, "reasoning_content")
+                    if (!thought.isNullOrEmpty()) reasoning.append(thought)
+                    val reason = text(choice, "finish_reason")
+                    if (!reason.isNullOrEmpty()) finish = reason
+                    val pieces = delta.optJSONArray("tool_calls") ?: JSONArray()
+                    for (p in 0 until pieces.length()) {
+                        val piece = pieces.optJSONObject(p) ?: continue
+                        val call = calls.getOrPut(piece.optInt("index", 0)) {
+                            JSONObject().put("id", "").put(
+                                "function",
+                                JSONObject().put("name", "").put("arguments", ""),
+                            )
+                        }
+                        text(piece, "id")?.takeIf { it.isNotEmpty() }?.let { call.put("id", it) }
+                        val function = piece.optJSONObject("function") ?: JSONObject()
+                        val into = call.getJSONObject("function")
+                        into.put("name", into.getString("name") + (text(function, "name") ?: ""))
+                        into.put("arguments", into.getString("arguments") + (text(function, "arguments") ?: ""))
                     }
-                    text(piece, "id")?.takeIf { it.isNotEmpty() }?.let { call.put("id", it) }
-                    val function = piece.optJSONObject("function") ?: JSONObject()
-                    val into = call.getJSONObject("function")
-                    into.put("name", into.getString("name") + (text(function, "name") ?: ""))
-                    into.put("arguments", into.getString("arguments") + (text(function, "arguments") ?: ""))
+                    val piece = text(delta, "content")
+                    if (piece.isNullOrEmpty()) continue
+                    if (first == null) first = (System.nanoTime() - started) / 1e9
+                    parts.append(piece)
+                    if (!onDelta(piece)) {
+                        stopped = true
+                        break
+                    }
                 }
-                val piece = text(delta, "content")
-                if (piece.isNullOrEmpty()) continue
-                if (first == null) first = (System.nanoTime() - started) / 1e9
-                parts.append(piece)
-                if (!onDelta(piece)) {
-                    stopped = true
-                    break
-                }
+                !stopped
             }
-            !stopped
         }
         if (reply.status != 200) {
             throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
@@ -594,43 +627,45 @@ class OpenAICompatProvider(
         val preambles = HashSet<Int>() // the output items that are preambles, by index
         var completed = JSONObject()
         var stopped = false
-        val reply = transport.postLines(endpoint, headers, body.toString(), timeoutMs) line@{ line ->
-            if (!line.startsWith("data: ")) return@line true
-            val event = try {
-                JSONObject(line.substring(6))
-            } catch (_: JSONException) {
-                return@line true
-            }
-            when (text(event, "type")) {
-                "response.output_item.added" -> {
-                    if (text(event.optJSONObject("item") ?: JSONObject(), "phase") == "commentary") {
-                        preambles.add(event.optInt("output_index", 0))
-                    }
+        val reply = sent(body, { parts.length }) {
+            transport.postLines(endpoint, headers, body.toString(), timeoutMs) line@{ line ->
+                if (!line.startsWith("data: ")) return@line true
+                val event = try {
+                    JSONObject(line.substring(6))
+                } catch (_: JSONException) {
+                    return@line true
                 }
-                "response.output_text.delta" -> {
-                    val piece = text(event, "delta") ?: ""
-                    if (piece.isEmpty() || event.optInt("output_index", 0) in preambles) return@line true
-                    if (first == null) first = (System.nanoTime() - started) / 1e9
-                    parts.append(piece)
-                    if (!onDelta(piece)) {
-                        stopped = true
+                when (text(event, "type")) {
+                    "response.output_item.added" -> {
+                        if (text(event.optJSONObject("item") ?: JSONObject(), "phase") == "commentary") {
+                            preambles.add(event.optInt("output_index", 0))
+                        }
+                    }
+                    "response.output_text.delta" -> {
+                        val piece = text(event, "delta") ?: ""
+                        if (piece.isEmpty() || event.optInt("output_index", 0) in preambles) return@line true
+                        if (first == null) first = (System.nanoTime() - started) / 1e9
+                        parts.append(piece)
+                        if (!onDelta(piece)) {
+                            stopped = true
+                            return@line false
+                        }
+                    }
+                    "response.output_item.done" -> {
+                        items[event.optInt("output_index", 0)] = event.optJSONObject("item") ?: JSONObject()
+                    }
+                    "response.completed", "response.incomplete" -> {
+                        completed = event.optJSONObject("response") ?: JSONObject()
                         return@line false
                     }
+                    "response.failed" -> {
+                        val error = (event.optJSONObject("response") ?: JSONObject()).optJSONObject("error") ?: JSONObject()
+                        throw RuntimeException("failed: ${field(error, "code")}: ${field(error, "message")}")
+                    }
+                    "error" -> throw RuntimeException("error: ${field(event, "code")}: ${field(event, "message")}")
                 }
-                "response.output_item.done" -> {
-                    items[event.optInt("output_index", 0)] = event.optJSONObject("item") ?: JSONObject()
-                }
-                "response.completed", "response.incomplete" -> {
-                    completed = event.optJSONObject("response") ?: JSONObject()
-                    return@line false
-                }
-                "response.failed" -> {
-                    val error = (event.optJSONObject("response") ?: JSONObject()).optJSONObject("error") ?: JSONObject()
-                    throw RuntimeException("failed: ${field(error, "code")}: ${field(error, "message")}")
-                }
-                "error" -> throw RuntimeException("error: ${field(event, "code")}: ${field(event, "message")}")
+                true
             }
-            true
         }
         if (reply.status != 200) {
             throw RuntimeException("${reply.status}: ${reply.text.take(200)}")

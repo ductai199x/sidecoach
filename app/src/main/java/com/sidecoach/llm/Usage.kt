@@ -56,6 +56,13 @@ fun pricesFor(llm: LLMSettings, model: String? = null): Prices {
 
 class Usage {
     private val lock = Any()
+
+    /**
+     * The model these calls went to, for their prices (a verifier on another model is
+     * priced as itself); null for a ledger no provider named. `Usage.model`.
+     */
+    @Volatile
+    var model: String? = null
     var calls = 0
         private set
 
@@ -143,6 +150,16 @@ private fun asInt(value: Any?): Int? = when (value) {
 
 private val COUNT_KEYS =
     listOf("calls", "estimated", "prompt", "cached", "completion", "reasoning")
+
+/**
+ * Several ledgers as one summary, each once and priced as its own model ([model] for one
+ * that names none). `usage.total`.
+ */
+fun total(ledgers: List<Usage>, llm: LLMSettings, model: String? = null): Map<String, Any?> =
+    combine(
+        ledgers.distinctBy { System.identityHashCode(it) }
+            .map { it.summary(pricesFor(llm, it.model ?: model)) },
+    )
 
 /**
  * Several ledgers' summaries as one (the game's coach and the puzzle rooms'): the counts

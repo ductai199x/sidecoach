@@ -1464,9 +1464,7 @@ class Coach(
         claims: ClaimsCheck? = null,
     ) {
         synchronized(lock) {
-            speaker.provider = provider
-            speaker.routineProvider = routineProvider ?: provider
-            speaker.verifier = verifier
+            speaker.replaceProviders(provider, routineProvider, verifier)
             this.summariser = summariser ?: provider
             this.claims = claims
         }

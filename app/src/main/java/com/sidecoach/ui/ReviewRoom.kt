@@ -798,6 +798,9 @@ class ReviewRooms(
     private var model: LLMProvider? = null
     private var modelFor: List<Any?>? = null
 
+    /** The ledgers of the models replaced. */
+    private val spentLedgers = ArrayList<Usage>()
+
     /** The model the reviews' words are asked of, and why there is none. `model`. */
     fun model(): Pair<LLMProvider?, String?> {
         val llm = settings.llm()
@@ -809,7 +812,9 @@ class ReviewRooms(
         synchronized(lock) {
             if (named != modelFor) {
                 try {
+                    val old = usageOf(model)
                     model = makeProvider(llm, timeoutS = ReviewRoom.AI_TIMEOUT_S, keys = keys)
+                    if (old != null) spentLedgers.add(old) // its calls still count
                 } catch (exc: Exception) { // a key not given, a name not known
                     return null to (exc.message ?: exc.toString())
                 }
@@ -820,7 +825,7 @@ class ReviewRooms(
     }
 
     /** The model calls of the reviews' words, for the panel's strip. `usages`. */
-    fun usages(): List<Usage> = synchronized(lock) { listOfNotNull(usageOf(model)) }
+    fun usages(): List<Usage> = synchronized(lock) { spentLedgers + listOfNotNull(usageOf(model)) }
 
     /** A game of the library by its key: imported, or one Sidecoach watched. `row`. */
     fun row(key: String): LibraryRow? {
