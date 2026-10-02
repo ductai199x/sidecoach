@@ -303,7 +303,7 @@ object Captions {
      * pieces bold (Tai, 2026-09-29: "why are the pieces and their names and square names and SAN
      * annotations not highlighted"). The desktop's `captions.runs`.
      */
-    private const val MOVE = """(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?"""
+    private const val MOVE = """(?:O-O(?:-O)?|0-0(?:-0)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=?[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?"""
     private const val PIECE = """(?:[Kk]ing|[Qq]ueen|[Rr]ook|[Bb]ishop|[Kk]night|[Pp]awn)s?"""
     private val TOKENS = Regex("""(?<![A-Za-z0-9])(?:($MOVE)|($PIECE))(?![A-Za-z0-9])""")
 

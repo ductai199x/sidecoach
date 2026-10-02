@@ -36,16 +36,17 @@ object Notation {
     // space (the parity audit, 2026-09-26).
     private const val NOT_AFTER_WORD = """(?<![\p{L}\p{N}_])"""
     private const val NOT_BEFORE_WORD = """(?![\p{L}\p{N}_])"""
-    private val MOVE = Regex(NOT_AFTER_WORD + """([KQRBNP])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=[QRBN])?([+#])?(?![A-Za-z0-9])""")
+    private val MOVE = Regex(NOT_AFTER_WORD + """([KQRBNP])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=?[QRBN])?([+#])?(?![A-Za-z0-9])""")
     // A square or a pawn move with a capital file letter, as a sentence's first word has it:
     // "G4", "Dxe5", "Exd8=Q+". A capital B before a capture is a bishop's ("Bxc6" is SAN); straight
     // before a rank it is the square. The whole token is checked, so an opening's code ("A40") is
     // not one.
-    private val CAPITAL = Regex(NOT_AFTER_WORD + """([A-H])(?=(x[a-h])?[1-8](?:=[QRBN])?[+#]?(?![A-Za-z0-9]))""")
+    private val CAPITAL = Regex(NOT_AFTER_WORD + """([A-H])(?=(x[a-h])?[1-8](?:=?[QRBN])?[+#]?(?![A-Za-z0-9]))""")
 
     // The file letter a as the voice reads it (see the note above).
     private val VOICED = mapOf("a" to "eh")
-    private val CASTLE = Regex(NOT_AFTER_WORD + """(O-O-O|O-O)([+#])?(?![A-Za-z0-9])""")
+    // Castling with the letter O, or with zeros as many write it ("0-0" was read "zero dash zero").
+    private val CASTLE = Regex(NOT_AFTER_WORD + """(O-O-O|O-O|0-0-0|0-0)([+#])?(?![A-Za-z0-9-])""")
     private val RESULT = Regex(NOT_AFTER_WORD + """(1-0|0-1|1/2-1/2|½-½)""" + NOT_BEFORE_WORD)
 
     private fun file(letter: String, voice: Boolean): String = if (voice) VOICED[letter] ?: letter else letter
@@ -64,7 +65,7 @@ object Notation {
     }
 
     private fun castle(match: MatchResult): String {
-        val side = if (match.groupValues[1] == "O-O-O") "queenside" else "kingside"
+        val side = if (match.groupValues[1].length == 5) "queenside" else "kingside"
         return "castles $side${mark(match.groups[2]?.value)}"
     }
 
@@ -86,7 +87,7 @@ object Notation {
         if (!capture.isNullOrEmpty()) words.add("takes")
         words.add(square(toFile, toRank, voice))
         var text = words.joinToString(" ")
-        if (!promo.isNullOrEmpty()) text += " promotes to ${PIECE.getValue(promo.substring(1, 2))}"
+        if (!promo.isNullOrEmpty()) text += " promotes to ${PIECE.getValue(promo.takeLast(1))}"
         return text + mark(check)
     }
 

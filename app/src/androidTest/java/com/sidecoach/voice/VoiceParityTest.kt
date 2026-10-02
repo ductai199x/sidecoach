@@ -49,6 +49,20 @@ class VoiceParityTest {
         return out
     }
 
+    /** Castling with zeros and a promotion without the sign, as the desktop reads them
+     * (`test_castling_with_zeros_and_a_promotion_without_the_sign`, voice finding 19). */
+    @Test
+    fun castlingWithZerosAndAPromotionWithoutTheSignAreRead() {
+        val cases = mapOf(
+            "Castle with 0-0 now." to "Castle with castles kingside now.",
+            "0-0-0+ wins" to "castles queenside check wins",
+            "Then e8Q wins." to "Then e eight promotes to queen wins.",
+            "d1N+" to "d one promotes to knight check",
+            "The score was 10-0." to "The score was 10-0.",
+        )
+        for ((text, spoken) in cases) org.junit.Assert.assertEquals(text, spoken, Notation.speak(text))
+    }
+
     @Test
     fun theFrontEndSaysWhatTheDesktopSays() {
         val tokenizer = KokoroTokenizer(app)

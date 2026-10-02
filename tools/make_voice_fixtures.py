@@ -119,6 +119,12 @@ EDGES = [
     "defended by Rf8 and Pg7",
     "Ra4 keeps the rook active, and bxa5 or Nad7 come next.",
     "The pawn on a2 is weak: a plan on the a-file.",
+    # Castling with zeros and a promotion without the sign (voice finding 19, 2026-10-01).
+    "Castle with 0-0 now.",
+    "0-0-0+ wins",
+    "Then e8Q wins.",
+    "d1N+",
+    "The score was 10-0.",
 ]
 
 LONG = [
