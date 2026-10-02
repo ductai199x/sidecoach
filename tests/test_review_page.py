@@ -25,6 +25,17 @@ def test_the_follow_up_moves_the_eval_bar_to_the_position_after_the_move() -> No
     assert re.search(r'const fromBefore = \$derived\(line\?\.kind === "best" \|\| !!retry\)', page)
 
 
+def test_retry_is_the_players_own_moves_only() -> None:
+    """Retry was offered on the opponent's mistakes, and the opponent had an accuracy "after
+    retries"."""
+    page = _page()
+    button = re.search(r'<button class="rv-tool" disabled=\{([^}]*)\} title="Find a better', page)
+    assert button is not None and "!mine(move)" in button.group(1)
+    assert "if (!move || !mine(move)) return;" in page
+    retries = page[page.index("const afterRetries") :][:600]
+    assert "side !== room.game.user_side) continue" in retries
+
+
 def test_move_numbers_come_from_the_position_not_the_ply() -> None:
     """A game set up from a position (Black to move at move 23) was numbered from "1." by its
     plies, its pairs off by one."""
