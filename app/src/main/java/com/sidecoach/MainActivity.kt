@@ -202,6 +202,23 @@ class MainActivity : ComponentActivity() {
                 return true
             }
 
+            // The page's renderer ended (killed for memory, or crashed): without this the
+            // whole app went with it (setup finding 5). The window is built again; the server,
+            // the session and the setup live outside it.
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: android.webkit.RenderProcessGoneDetail?,
+            ): Boolean {
+                Log.w(TAG, "the page's renderer ended (crashed: ${detail?.didCrash()}); the window is rebuilt")
+                if (view != null && view === web) {
+                    (view.parent as? android.view.ViewGroup)?.removeView(view)
+                    view.destroy()
+                    web = null
+                }
+                recreate()
+                return true
+            }
+
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -349,6 +366,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCapture() {
+        // A session already running: a second Start asked for the screen again, and the new
+        // projection ended the one under way (setup finding 8).
+        if (CaptureService.capture.value.running) {
+            PanelEngine.emit("sys", "info", "a session is already running")
+            return
+        }
         // A chess app that can be told it is being recorded is named first, and the screen
         // is shared only on Continue (`RecordingNotice`).
         val installed = RecordingNotice.installed(this)

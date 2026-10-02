@@ -60,6 +60,8 @@ import java.util.Locale
 class CaptureService : Service() {
 
     private var projection: MediaProjection? = null
+    /** The foreground types the running session took (the microphone's only when allowed). */
+    private var foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
     private var display: VirtualDisplay? = null
     private var reader: ImageReader? = null
     private var thread: HandlerThread? = null
@@ -115,6 +117,15 @@ class CaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (projection != null) {
+            // A second Start while a session runs: it built a second projection, which ended
+            // the first (and with it this service), and leaked the first's threads (setup
+            // finding 8). The session under way goes on. A start by startForegroundService
+            // still owes a startForeground: the same notification, the types it has.
+            Log.i(TAG, "a session is already running; this Start is ignored")
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(), foregroundTypes)
+            return START_NOT_STICKY
+        }
 
         // The foreground notification first: the projection may not be taken before the
         // service carries the mediaProjection type. The microphone type too, when the person
@@ -143,6 +154,8 @@ class CaptureService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
             )
         }
+        foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+            (if (hears) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
         PanelListen.sessionHolds(hears)
 
         val manager = getSystemService(MediaProjectionManager::class.java)
@@ -304,6 +317,7 @@ class CaptureService : Service() {
             ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
         image.planes[0].buffer.rewind()
         synchronized(frameLock) {
+            if (full.isRecycled) return  // the session ended under us
             full.copyPixelsFromBuffer(image.planes[0].buffer)
             frameVersion++
         }
@@ -326,11 +340,13 @@ class CaptureService : Service() {
         val full = frame ?: return
         val padded = full.width
         val scale = PREVIEW_WIDTH.toFloat() / width
-        val visible = synchronized(frameLock) {
-            if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height)
+        // Scaled under the lock: the frame itself may be what is scaled, and Stop recycles it.
+        val small = synchronized(frameLock) {
+            if (full.isRecycled) return
+            val visible = if (padded == width) full else Bitmap.createBitmap(full, 0, 0, width, height)
+            Bitmap.createScaledBitmap(visible, PREVIEW_WIDTH, (height * scale).toInt(), true)
+                .also { if (visible !== full) visible.recycle() }
         }
-        val small = Bitmap.createScaledBitmap(visible, PREVIEW_WIDTH, (height * scale).toInt(), true)
-        if (visible !== full) visible.recycle()
         // The outgoing preview is not recycled: the screen may still be drawing it, and a
         // recycled bitmap under a Canvas takes the whole app down. It is 360 pixels wide and
         // goes out twice a second; the collector can have it.
@@ -398,7 +414,7 @@ class CaptureService : Service() {
     private fun readTheBoard(still: Boolean = false) {
         try {
             val copy = if (still) null else synchronized(frameLock) {
-                val full = frame ?: return
+                val full = frame?.takeUnless { it.isRecycled } ?: return
                 if (frameVersion == readVersion) {
                     null // nothing new from the display: the last frame again
                 } else {
@@ -487,8 +503,13 @@ class CaptureService : Service() {
         } else {
             PanelEngine.running(false)
         }
-        frame?.recycle()
-        frame = null
+        // Under the frame's lock: the vision thread may be copying it, and the capture thread
+        // (quit safely, not at once) filling it; a recycled bitmap under either crashed the
+        // app at Stop (setup finding 9). Both check for a recycled frame under the lock.
+        synchronized(frameLock) {
+            frame?.recycle()
+            frame = null
+        }
         preview = null
         state.value = state.value.copy(running = false, preview = null)
         super.onDestroy()
