@@ -3,7 +3,10 @@ grade of each phase, the moves the review stops at, the graph."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import chess
+import pytest
 
 from sidecoach.events import (
     Analysis,
@@ -33,9 +36,11 @@ def test_a_phase_is_graded_as_the_kind_of_move_it_amounts_to() -> None:
     ]
 
 
-def _game(labels: list[tuple[str, Label, float, float]]) -> ReviewedGame:
+def _game(
+    labels: list[tuple[str, Label, float, float]], fen: str = chess.STARTING_FEN
+) -> ReviewedGame:
     """A game of these moves (san, label, accuracy, the mover's expected score after)."""
-    board = chess.Board()
+    board = chess.Board(fen)
     start = Analysis(
         game_id="g",
         fen=board.fen(),
@@ -140,7 +145,7 @@ def test_the_summary_counts_grades_and_finds_where_to_stop() -> None:
 
 def test_each_side_is_given_the_rating_it_played_at() -> None:
     sans = "e4 e5 Nf3 Nc6 Bc4 Bc5 c3 Nf6 d3 d6 O-O O-O a4 a6 Re1 h6 h3 Re8 Nbd2 Be6 Bb3 Ba7 Nf1 d5"
-    game = _game([(san, Label.BEST, 100, 0.5) for san in sans.split()])
+    game = _game([(san, Label.BEST, 100.0, 0.5) for san in sans.split()])
     # White plays the best move every time; Black throws a quarter of the game away four times.
     moves = [
         m.model_copy(
@@ -214,3 +219,37 @@ def test_the_shape_of_a_game_from_its_graph() -> None:
     assert shape_of(intense, "1-0") == "intense"
     # Too short to have a shape.
     assert shape_of([0.5] * 6, "1-0") is None
+    # Big swings that never changed who led, the leader winning: sharp.
+    sharp = [0.5, 0.75, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 1.0]
+    assert shape_of(sharp, "1-0") == "sharp"
+
+
+def test_no_shape_says_a_side_kept_the_upper_hand_it_lost() -> None:
+    """ "A sharp game with big swings, and Black kept the upper hand" of a game whose lead
+    went from White to Black (the review of 2026-10-01): "sharp" was the shape of every game no
+    other shape fitted. A game no shape fits has none, and its summary says only who won."""
+    once = [0.5, 0.55, 0.6, 0.7, 0.75, 0.74, 0.72, 0.6, 0.5, 0.4, 0.3, 0.25, 0.26, 0.25, 0.3, 0.27]
+    assert shape_of(once, "0-1") is None
+    led = [0.5, 0.6, 0.72, 0.72, 0.73, 0.72, 0.71, 0.72, 0.72, 0.72, 0.6, 0.55]
+    assert shape_of(led, "0-1") is None
+
+
+def test_a_game_set_up_from_a_position_is_rated_from_where_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A game set up from a position counted its first moves as the opening's, by their place
+    in the game, for the rating it was played at (the review of 2026-10-01)."""
+    from sidecoach.profile import game_summary, performance
+
+    seen: list[int] = []
+    real = performance.estimate
+
+    def spy(played: list[dict[str, float]], **kw: Any) -> Any:
+        seen.extend(int(m["ply"]) for m in played)
+        return real(played, **kw)
+
+    monkeypatch.setattr(game_summary.performance, "estimate", spy)
+    shuffle = [("Kd7", Label.BEST, 100.0, 0.5), ("Kd1", Label.BEST, 100.0, 0.5)]
+    shuffle += [("Ke8", Label.BEST, 100.0, 0.5), ("Ke1", Label.BEST, 100.0, 0.5)]
+    summarize(_game(shuffle * 4, fen="4k3/8/8/8/8/8/4P3/4K3 b - - 0 23"))
+    assert seen and min(seen) == 45

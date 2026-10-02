@@ -26,7 +26,14 @@ from typing import Any
 
 from sidecoach.profile import performance
 from sidecoach.profile.game_summary import SHAPES
-from sidecoach.profile.stat_facts import ENDGAMES, KINDS, STRUCTURES, THEMES, standing
+from sidecoach.profile.stat_facts import (
+    ENDGAMES,
+    KINDS,
+    STRUCTURES,
+    THEMES,
+    standing,
+    termination_kind,
+)
 from sidecoach.profile.store import Store
 
 BAD = ("mistake", "miss", "blunder")
@@ -67,7 +74,7 @@ RATING_GAMES = 10
 
 @dataclass(frozen=True)
 class Filter:
-    time_class: str | None = None  # bullet, blitz, rapid, daily; None for all
+    time_class: str | None = None  # bullet, blitz, rapid, classical, daily; None for all
     days: int | None = None  # the last so many days; None for all time
     opponents: str = "all"  # all, people, bots
 
@@ -116,27 +123,6 @@ def family(opening: str | None) -> str | None:
     return name.split(":")[0].strip()
 
 
-def termination_kind(text: str | None) -> str:
-    """How a game ended, from chess.com's and Lichess's Termination header."""
-    t = (text or "").lower()
-    for word, kind in (
-        ("checkmate", "checkmate"),
-        ("resign", "resignation"),
-        ("on time", "time"),
-        ("time forfeit", "time"),
-        ("timeout", "time"),
-        ("abandon", "abandoned"),
-        ("agreement", "agreement"),
-        ("repetition", "repetition"),
-        ("stalemate", "stalemate"),
-        ("insufficient", "insufficient material"),
-        ("50", "fifty moves"),
-    ):
-        if word in t:
-            return kind
-    return "other"
-
-
 class _Data:
     """Games (their `key`, `user_side`, `result`...) and their moves, both sides'; the player's
     moves apart. From the store (`of`), or from any rows shaped as its (the peers' sample)."""
@@ -149,6 +135,7 @@ class _Data:
         for m in moves:
             self.all_by_game[m["key"]].append(m)
             if m["side"] == by_key[m["key"]]["user_side"]:
+                m["before"] = performance.plies_before(m["fen"])
                 self.moves_by_game[m["key"]].append(m)
         self.moves = [m for g in games for m in self.moves_by_game[g["key"]]]
 
@@ -157,16 +144,10 @@ class _Data:
         """The filter's games in the store, each with the player's rating in it when the game
         records one (the library's copy of its headers)."""
         games = _games(store, f)
+        elos = store.library_elos()
         for g in games:
-            row = store.library_game(g["key"])
-            elo = (
-                None
-                if row is None
-                else row.white_elo
-                if g["user_side"] == "white"
-                else row.black_elo
-            )
-            g["user_elo"] = elo
+            white, black = elos.get(g["key"], (None, None))
+            g["user_elo"] = white if g["user_side"] == "white" else black
         return cls(games, store.stat_moves([g["key"] for g in games]))
 
 
@@ -183,6 +164,9 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
         compare(out, peers[0])
         out["peers"] = {"rating": performance.for_site(peers[0], _site(d)), "from": peers[1]}
     out["work"] = work(out["costs"])
+    # The reviewed games whose player's side is not known (no username of theirs in them): the
+    # page says why they are left out, rather than showing nothing (the review of 2026-10-01).
+    out["unsided"] = sum(1 for g in store.stat_games() if g["user_side"] not in ("white", "black"))
     return out
 
 
@@ -239,6 +223,8 @@ MOTIFS = {
     "endgame.other": "endgame",
 }
 WORK = 3  # the areas Work on this names
+WORK_GAMES = 3  # the games before it names any
+WORK_MOVES = 3  # the moves an area needs before it is named
 
 
 def area(m: dict[str, Any]) -> str | None:
@@ -257,12 +243,17 @@ def area(m: dict[str, Any]) -> str | None:
 
 
 def _costs(d: _Data) -> dict[str, Any]:
-    """Each area's cost: the expected score its moves lost, a game (`n`, the games)."""
+    """Each area's cost: the expected score its moves lost, a game (`n`, the games), and how
+    many moves it counts (`moves`). The cost ranks the areas and meets the peers'; it is no
+    count of points: a position lost can swing back, and the losses add up past the games
+    lost ("11.1 points" for one area when 9 were lost in all, the review of 2026-10-01)."""
     lost: dict[str, float] = defaultdict(float)
+    count: dict[str, int] = defaultdict(int)
     for m in d.moves:
         where = area(m)
         if where is not None:
             lost[where] += m["loss"]
+            count[where] += 1
     games = len(d.games)
     names = [
         *(f"missed.{k}" for k in KINDS),
@@ -273,7 +264,11 @@ def _costs(d: _Data) -> dict[str, Any]:
     ]
     out: dict[str, Any] = {}
     for name in names:
-        figure = {"value": round(lost[name] / games, 4) if games else None, "n": games}
+        figure = {
+            "value": round(lost[name] / games, 4) if games else None,
+            "n": games,
+            "moves": count[name],
+        }
         head, _, kind = name.partition(".")
         if kind:
             out.setdefault(head, {})[kind] = figure
@@ -284,10 +279,15 @@ def _costs(d: _Data) -> dict[str, Any]:
 
 def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
     """The areas that cost the player most (WORK of them), dearest first: each with its cost a
-    game and its peers' (when known), and its puzzles' motif; its positions are `positions`'
-    "area" selector's."""
+    game and its peers' (when known), the moves it counts, and its puzzles' motif; its
+    positions are `positions`' "area" selector's. Nothing over fewer than WORK_GAMES games, and
+    no area of fewer than WORK_MOVES moves: one game's blunder is no area to work on."""
     ranked = sorted(
-        ((path, figure) for path, figure in walk(costs) if figure["value"]),
+        (
+            (path, figure)
+            for path, figure in walk(costs)
+            if figure["value"] and figure["n"] >= WORK_GAMES and figure["moves"] >= WORK_MOVES
+        ),
         key=lambda pf: -pf[1]["value"],
     )
     out = []
@@ -297,6 +297,7 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
                 "area": path,
                 "cost": figure["value"],
                 "games": figure["n"],
+                "moves": figure["moves"],
                 "peers": figure.get("peers"),
                 "grade": figure.get("grade"),
                 "motif": MOTIFS.get(path),
@@ -309,9 +310,17 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _rated(moves: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Moves as the rating model reads them: the plies before each (the store counts White's
-    first move as ply 1), the loss, the mover's expected score."""
-    return [{"ply": m["ply"] - 1, "loss": m["loss"], "score": m["score"]} for m in moves]
+    """Moves as the rating model reads them: the plies before each (by the position it was
+    played from: a game set up from a position starts at its own move), the loss, the mover's
+    expected score."""
+    return [
+        {
+            "ply": m["before"] if "before" in m else performance.plies_before(m["fen"]),
+            "loss": m["loss"],
+            "score": m["score"],
+        }
+        for m in moves
+    ]
 
 
 def _site(d: _Data) -> str | None:
@@ -406,7 +415,7 @@ def _game_rating(game: dict[str, Any], moves: list[dict[str, Any]]) -> int | Non
     game's site."""
     if len(moves) < performance.MIN_MOVES:
         return None
-    played = [{"ply": m["ply"] - 1, "loss": m["loss"], "score": m["score"]} for m in moves]
+    played = _rated(moves)
     site = "lichess" if game["source"] == "lichess" else None
     return performance.for_site(performance.estimate(played).rating, site)
 
@@ -627,12 +636,9 @@ def _shapes(store: Store, d: _Data) -> list[dict[str, Any]]:
     plan's G, which kinds of game suit the player. Only the shapes their games had, in
     SHAPES' order."""
     counts: dict[str, dict[str, int]] = {}
+    shapes = store.review_shapes()
     for g in d.games:
-        review = store.review(g["key"], g["strength"])
-        try:
-            shape = json.loads(review.summary).get("shape") if review and review.summary else None
-        except ValueError:
-            shape = None
+        shape = shapes.get((g["key"], g["strength"]))
         if not shape:
             continue
         c = counts.setdefault(shape, {"games": 0, "won": 0, "drawn": 0, "lost": 0})
@@ -676,6 +682,9 @@ _SELECT: dict[str, Callable[[dict[str, Any], str], bool]] = {
     "area": lambda m, name: area(m) == name,
 }
 POSITIONS_MAX = 60
+# The games read at a time for them: every game's moves were read for each area's positions,
+# a second and more at a thousand games (the review of 2026-10-01).
+POSITIONS_BATCH = 50
 
 
 def positions(store: Store, f: Filter, what: str, arg: str = "") -> list[dict[str, Any]]:
@@ -684,9 +693,21 @@ def positions(store: Store, f: Filter, what: str, arg: str = "") -> list[dict[st
     select = _SELECT.get(what)
     if select is None:
         return []
-    d = _Data.of(store, f)
+    games = list(reversed(_games(store, f)))
+    out: list[dict[str, Any]] = []
+    for at in range(0, len(games), POSITIONS_BATCH):
+        if len(out) >= POSITIONS_MAX:
+            break
+        batch = games[at : at + POSITIONS_BATCH]
+        out += _positions(_Data(batch, store.stat_moves([g["key"] for g in batch])), what, arg)
+    return out[:POSITIONS_MAX]
+
+
+def _positions(d: _Data, what: str, arg: str) -> list[dict[str, Any]]:
+    """`positions` over `d`'s games, in their order."""
+    select = _SELECT[what]
     out = []
-    for g in reversed(d.games):
+    for g in d.games:
         limit = PRESSURE_MS.get(g["time_class"] or "")
         for m in d.moves_by_game[g["key"]]:
             if what == "time.pressure" and (
@@ -709,4 +730,4 @@ def positions(store: Store, f: Filter, what: str, arg: str = "") -> list[dict[st
                 )
         if len(out) >= POSITIONS_MAX:
             break
-    return out[:POSITIONS_MAX]
+    return out

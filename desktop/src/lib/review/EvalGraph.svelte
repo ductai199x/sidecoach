@@ -10,7 +10,7 @@
     onpick,
   }: {
     graph: number[];
-    marks?: { ply: number; kind: string }[];
+    marks?: { ply: number; kind: string; move?: string }[];
     at?: number | null;
     height?: number;
     onpick?: (ply: number) => void;
@@ -61,7 +61,7 @@
     {#if at !== null}<line class="at" x1={at} y1="0" x2={at} y2="100" />{/if}
   </svg>
   {#each dots as d (d.ply)}
-    <i class="gdot" class:on={d.ply === at} style="left: {d.x}%; top: {d.y}%; background: var(--cls-{d.kind})" title="{d.kind}, move {Math.ceil(d.ply / 2)}"></i>
+    <i class="gdot" class:on={d.ply === at} style="left: {d.x}%; top: {d.y}%; background: var(--cls-{d.kind})" title="{d.kind}, move {d.move ?? Math.ceil(d.ply / 2)}"></i>
   {/each}
 </div>
 

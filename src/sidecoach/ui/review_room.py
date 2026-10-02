@@ -49,8 +49,14 @@ from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries, measured
 
+# Why a room has nothing more to do: its game was removed (or the profile reset) meanwhile.
+GONE = "This game is no longer in your record."
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
+# What a review's summary and its Stats facts are made of from its report (`rederive`): raised
+# when that changes, the reviews kept. 2: the phases are Lichess's Divider's (efdd8a3).
+DERIVED = 2
+DERIVED_KEY = "reviews.derived"
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
@@ -124,6 +130,11 @@ class ReviewRoom:
         self._book: Any = None
         self.touched = time.monotonic()
         self.closed = False
+        # Set once the review is ready or failed, and while no words are being written: what a
+        # caller waits on rather than polling the state against a clock.
+        self.settled = threading.Event()
+        self.words_done = threading.Event()
+        self.words_done.set()
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
         self._thread.start()
 
@@ -200,7 +211,12 @@ class ReviewRoom:
                 return None
             if model is None:
                 return unavailable
+            if not self.store.in_record(self.key):
+                # Removed meanwhile: the words would be paid for and saved on nothing (the
+                # review of 2026-10-01).
+                return GONE
             self.words_status, self.words_error = "writing", None
+            self.words_done.clear()
             reviewed = self.reviewed
         threading.Thread(
             target=self._write_words, args=(reviewed, model), name=f"words-{self.key}", daemon=True
@@ -208,6 +224,12 @@ class ReviewRoom:
         return None
 
     def _write_words(self, reviewed: ReviewedGame, model: Any) -> None:
+        try:
+            self._words(reviewed, model)
+        finally:
+            self.words_done.set()
+
+    def _words(self, reviewed: ReviewedGame, model: Any) -> None:
         # A model that reasons by its effort (luna) reasons at REVIEW_EFFORT here, whatever the
         # live coach is set to; a local model does not reason: it reasons worse about chess,
         # not better (Tai, 2026-09-30).
@@ -243,7 +265,24 @@ class ReviewRoom:
                 thinking=reasons,
                 answered=answered,
                 on_answer=keep,
+                stop=lambda: not self.store.in_record(self.key),
             )
+            if not self.store.in_record(self.key):
+                raise RuntimeError(GONE)
+            if words.failed:
+                # Some calls failed: the answers paid for are kept (`keep`), and Try again asks
+                # the rest. They were saved as done, the failed moves without words for good and
+                # nothing offered to finish them (the review of 2026-10-01).
+                total = len(review_words.key_plies(reviewed))
+                first = next(iter(words.dropped[p] for p in sorted(words.failed)))
+                with self._lock:
+                    self.words_status = "failed"
+                    self.words_error = (
+                        f"Written on {total - len(words.failed)} of {total} key moves; the rest"
+                        f" failed ({first})."
+                    )
+                self._emit("sys", "error", f"the AI coach's words: {self.words_error}")
+                return
             cost = None if words.cost is None else words.cost + spent_before
             saved = {
                 "model": words.model,
@@ -253,8 +292,9 @@ class ReviewRoom:
             }
             shown = self._shown(saved, reviewed)
         except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"
+            gone = not self.store.in_record(self.key)
             with self._lock:
-                self.words_status, self.words_error = "failed", str(exc)
+                self.words_status, self.words_error = "failed", GONE if gone else str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
             return
         # The room stays open while they are written (`_run`), so its store is open to keep them.
@@ -360,6 +400,15 @@ class ReviewRoom:
             self._stop.clear()
             return True
 
+    def closing(self, now: float) -> bool:
+        """Whether the room ends at `now`: closed, or idle, and no words being written. Closed or
+        idle while the AI coach's words are written, it stays open until they are saved: its
+        store closed under them lost every answer that came after, each one paid for (the review
+        of 2026-10-01)."""
+        writing = self.words_status == "writing"
+        idle = now - self.touched > IDLE_CLOSE_S
+        return not writing and (self._stop.is_set() or idle)
+
     def join(self, timeout: float = 5.0) -> None:
         self._thread.join(timeout)
 
@@ -376,15 +425,11 @@ class ReviewRoom:
                     self.status = "failed"
                     self.error = str(exc)
                 self._emit("sys", "error", f"review failed: {exc!r}")
+            self.settled.set()
             while True:
                 with self._lock:
-                    # Closed, or idle, while the AI coach's words are written: open until they
-                    # are saved. Its store closed under them lost every answer that came after,
-                    # each one paid for (the review of 2026-10-01).
-                    writing = self.words_status == "writing"
                     stopped = self._stop.is_set()
-                    idle = time.monotonic() - self.touched > IDLE_CLOSE_S
-                    if not writing and (stopped or idle):
+                    if self.closing(time.monotonic()):
                         self.closed = True
                         break
                 if stopped:
@@ -444,7 +489,7 @@ class ReviewRoom:
             if not self._stop.is_set():  # not stopped: the game went from the record meanwhile
                 with self._lock:
                     self.status = "failed"
-                    self.error = "This game is no longer in your record."
+                    self.error = GONE
                 self._emit("sys", "warn", f"{self.key} left the record while it was reviewed")
             return
         reviewed, summary = done
@@ -633,6 +678,33 @@ def review_row(
     return reviewed, summary
 
 
+def rederive(store: Store) -> int:
+    """Every saved review's summary, and its facts for Stats, made again from its report when
+    what they are made of has changed since (DERIVED): no engine, a few hundredths of a second
+    a game. The phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106
+    sides' phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review
+    of 2026-10-01). Returns the reviews made again."""
+    if store.setting(DERIVED_KEY) == str(DERIVED):
+        return 0
+    counted = store.stat_strengths()
+    done = 0
+    for key, strength in store.saved_reviews():
+        saved = store.review(key, strength)
+        if saved is None or saved.version != REVIEW_VERSION:
+            continue
+        try:
+            reviewed = ReviewedGame.model_validate_json(saved.report)
+            store.set_review_summary(key, strength, summarize(reviewed).model_dump_json())
+            row = library.find(store, key)
+            if counted.get(key) == strength and row is not None:
+                keep_stats(store, strength, reviewed, row)
+        except Exception:  # noqa: BLE001 - a review that cannot be read is left as it is
+            continue
+        done += 1
+    store.set_setting(DERIVED_KEY, str(DERIVED))
+    return done
+
+
 def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
     """Each watched game's review carried to its import when the import has none and the two
     are the same game position for position (Sidecoach read every move): the watched review's
@@ -642,9 +714,9 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
     the watched review measured (`review_row`). Returns the imports given a review."""
     carried = []
     for watched, imported in twins.items():
-        if store.latest_review(imported) is not None:
+        if store.best_review(imported) is not None:
             continue
-        old = store.latest_review(watched)
+        old = store.best_review(watched)
         row = library.find(store, imported)
         if old is None or old.version != REVIEW_VERSION or row is None:
             continue
@@ -855,7 +927,18 @@ class ReviewRooms:
         finally:
             store.close()
 
-    def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
+    def open(self, key: str, strength: str | None = None) -> ReviewRoom | None:
+        """The game's room at `strength`; with none, at the strongest review saved (else
+        Standard). It opened at Standard always: a game reviewed Deep was reviewed again at
+        Standard, its Stats overwritten (the review of 2026-10-01)."""
+        if strength is None:
+            store = Store(self.store_path)
+            try:
+                best = store.best_review(key)
+            finally:
+                store.close()
+            strength = best.strength if best is not None and best.strength in STRENGTHS else None
+            strength = strength or "standard"
         with self._lock:
             room = self._rooms.get(key)
             if room is not None and room.strength.name == strength and room.reopen():

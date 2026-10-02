@@ -52,6 +52,18 @@ PRIOR = (1500.0, 400.0)
 MIN_MOVES = 8
 
 
+def plies_before(fen: str) -> int:
+    """The half-moves played before a position, by its FEN's move number and side to move: a
+    game set up from a position starts where the position says, not at the opening (the review
+    of 2026-10-01: such a game's moves counted as the opening's for the rating)."""
+    fields = fen.split()
+    try:
+        number = int(fields[5]) if len(fields) > 5 else 1
+    except ValueError:
+        number = 1
+    return 2 * (max(number, 1) - 1) + (1 if len(fields) > 1 and fields[1] == "b" else 0)
+
+
 def bucket(loss: float) -> int:
     return bisect.bisect_right(EDGES, loss)
 

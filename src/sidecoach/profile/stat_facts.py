@@ -24,6 +24,7 @@ The definitions are ours, as chess.com publishes none, and each is shown on the 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
@@ -200,6 +201,60 @@ def bot_game(headers: dict[str, str]) -> bool:
     return False
 
 
+def termination_kind(text: str | None) -> str:
+    """How a game ended, from chess.com's and Lichess's Termination header."""
+    t = (text or "").lower()
+    for word, kind in (
+        ("checkmate", "checkmate"),
+        ("resign", "resignation"),
+        ("on time", "time"),
+        ("time forfeit", "time"),
+        ("timeout", "time"),
+        ("abandon", "abandoned"),
+        ("agreement", "agreement"),
+        ("repetition", "repetition"),
+        ("stalemate", "stalemate"),
+        ("insufficient", "insufficient material"),
+        ("50", "fifty moves"),
+    ):
+        if word in t:
+            return kind
+    return "other"
+
+
+def ended_by(text: str | None, result: str | None, game: ReviewedGame) -> str | None:
+    """How a game ended, in words `termination_kind` reads: its Termination header when that
+    says, else what the final position proves (a mate, a stalemate, dead material, a repetition,
+    fifty moves), else, for Lichess's "Normal" (a game neither lost on time nor abandoned), a
+    resignation or a draw agreed. Lichess's "Normal" and a watched game's missing header made
+    most of "How your games ended" "other" (the review of 2026-10-01)."""
+    if termination_kind(text) != "other":
+        return text
+    board = chess.Board(game.start.fen)
+    try:
+        for move in game.moves:
+            board.push_uci(move.assessment.uci)
+    except ValueError:
+        return text
+    if board.is_checkmate():
+        return "checkmate"
+    if board.is_stalemate():
+        return "stalemate"
+    if result == "1/2-1/2":
+        if board.is_insufficient_material():
+            return "insufficient material"
+        if board.is_repetition(3):  # the sites draw it as the position comes the third time
+            return "repetition"
+        if board.halfmove_clock >= 100:
+            return "50 moves"
+    if (text or "").strip().lower() == "normal":
+        if result in ("1-0", "0-1"):
+            return "resignation"
+        if result == "1/2-1/2":
+            return "agreement"
+    return text
+
+
 def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFact]]:
     """A reviewed game's facts: the game's, and every move's."""
     moves: list[MoveFact] = []
@@ -236,6 +291,7 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
         before = move.after
     opening = next((m.after.opening for m in reversed(game.moves) if m.after.opening), None)
     headers = game.headers
+    result = headers.get("Result") or row.result
     fact = GameFact(
         key=row.key,
         source=row.source,
@@ -243,11 +299,18 @@ def facts_of(game: ReviewedGame, row: LibraryRow) -> tuple[GameFact, list[MoveFa
         played_at=row.played_at,
         user_side=row.user_side,
         bot=bot_game(headers),
-        result=headers.get("Result") or row.result,
+        result=result,
         opening=opening or game.start.opening,
-        termination=headers.get("Termination"),
+        termination=ended_by(headers.get("Termination") or _termination(row), result, game),
     )
     return fact, moves
+
+
+def _termination(row: LibraryRow) -> str | None:
+    """The Termination header of the library's copy of a game: a watched game's says how
+    Sidecoach saw it end ("lost on time", "checkmate")."""
+    found = re.search(r'^\[Termination "([^"]*)"\]', row.pgn, re.M)
+    return found.group(1) if found else None
 
 
 def keep_stats(store: Store, strength: str, reviewed: ReviewedGame, row: LibraryRow) -> None:

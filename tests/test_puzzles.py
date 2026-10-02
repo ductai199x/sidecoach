@@ -165,11 +165,12 @@ def test_the_weak_motif_is_the_one_missed_most_often_over_the_games(tmp_path: Pa
     from sidecoach.profile.store import CellRow
 
     profiler = Profiler(Store(None), session_id="s", ts=0.0, puzzles=_store(tmp_path))
+    games = frozenset({"a", "b", "c"})
     rows = [
-        CellRow("missedThreat", "pin", "middlegame", errors=2, chances=0, expected_loss=0.9),
-        CellRow(None, "pin", "middlegame", errors=0, chances=9, expected_loss=0.0),
-        CellRow("missedThreat", "fork", "middlegame", errors=2, chances=0, expected_loss=0.5),
-        CellRow(None, "fork", "middlegame", errors=0, chances=4, expected_loss=0.0),
+        CellRow("missedThreat", "pin", "middlegame", errors=3, chances=0, expected_loss=0.9),
+        CellRow(None, "pin", "middlegame", 3, 9, 0.0, games),
+        CellRow("missedThreat", "fork", "middlegame", errors=3, chances=0, expected_loss=0.5),
+        CellRow(None, "fork", "middlegame", 3, 4, 0.0, games),
     ]
     profiler.store.cells = lambda: rows  # type: ignore[method-assign]
     review = GameReview(
@@ -180,10 +181,10 @@ def test_the_weak_motif_is_the_one_missed_most_often_over_the_games(tmp_path: Pa
             TurningPoint(ply=5, san="Qh5", label="mistake", expected_loss=0.3, motif="pin")
         ],
     )
-    assert profiler._weak_motif(review) == ("fork", "fork: 2 of 4 chances missed over your games")
-    # Missed once, or over too few chances: the game's turning point still leads.
-    rows[2] = CellRow("missedThreat", "fork", "middlegame", errors=1, chances=0, expected_loss=0.5)
-    rows[0] = CellRow("missedThreat", "pin", "middlegame", errors=1, chances=0, expected_loss=0.9)
+    assert profiler._weak_motif(review) == ("fork", "fork: 3 of 4 chances missed over your games")
+    # Missed in too few games: the game's turning point still leads.
+    rows[1] = CellRow(None, "pin", "middlegame", 3, 9, 0.0, frozenset({"a"}))
+    rows[3] = CellRow(None, "fork", "middlegame", 3, 4, 0.0, frozenset({"a", "b"}))
     assert profiler._weak_motif(review) == ("pin", "pin: the turning point of this game")
 
 

@@ -30,19 +30,35 @@ GAME = """[Event "Live Chess"]
 """
 
 
-def _until_ready(client: Any, key: str, seconds: float = 20.0) -> dict[str, Any]:
-    deadline = time.monotonic() + seconds
-    polled: dict[str, Any] = {}
-    while time.monotonic() < deadline:
-        polled = client.get(f"/api/review/{key}/poll").json()
-        if polled.get("state", {}).get("status") in ("ready", "failed"):
-            return polled
-        time.sleep(0.05)
-    state = polled.get("state", {})
-    lines = [line.get("text") for line in polled.get("lines", [])]
-    raise AssertionError(
-        f"the review never finished: {state.get('status')} {state.get('progress')} {lines[-3:]}"
-    )
+# How long an event may take before the test calls it lost: a bound on a hang, never what a
+# test asserts.
+HANG_S = 60.0
+
+
+def _room(client: Any, key: str) -> Any:
+    room = client.app.state.reviews.get(key)
+    assert room is not None, f"no room open for {key}"
+    return room
+
+
+def _until_ready(client: Any, key: str) -> dict[str, Any]:
+    """The room's state once its review is ready or failed: waited on, not polled."""
+    assert _room(client, key).settled.wait(HANG_S), "the review never settled"
+    return client.get(f"/api/review/{key}/poll").json()
+
+
+def _until_written(client: Any, key: str) -> dict[str, Any]:
+    """The room's AI words once they are no longer being written: waited on, not polled."""
+    assert _room(client, key).words_done.wait(HANG_S), "the words were never done"
+    return client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
+
+
+def _close(client: Any, key: str) -> None:
+    """The room closed, and its thread ended."""
+    room = _room(client, key)
+    assert client.post(f"/api/review/{key}/close").json()["ok"]
+    room.join(HANG_S)
+    assert room.closed
 
 
 def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
@@ -130,8 +146,7 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     # Listed with its accuracies now; opened again, the saved review is read, not redone.
     row = next(g for g in client.get("/api/games").json()["games"] if g["key"] == key)
     assert row["reviewed"] and set(row["accuracy"]) == {"white", "black"}
-    assert client.post(f"/api/review/{key}/close").json()["ok"]
-    time.sleep(0.5)
+    _close(client, key)
     made.clear()
     again = (
         _until_ready(client, key)
@@ -139,7 +154,22 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
         else {}
     )
     assert again["state"]["moves"] == moves and not made, "no engine for a saved review"
-    # An open that names no strength reviews at the server's own: Standard on a computer.
+    # An open that names no strength opens at the strongest review saved: it opened at Standard
+    # always, and a game reviewed Deep was reviewed again, its Stats overwritten (the review of
+    # 2026-10-01).
+    plain = client.post(f"/api/review/{key}/open", json={}).json()
+    assert plain["ok"] and plain["state"]["strength"] == "fast" and not made
+    _until_ready(client, key)
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    assert _until_ready(client, key)["state"]["strength"] == "standard"
+    # A Fast look after it lowers nothing: Stats and Your games keep the strongest.
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    store.save_stats("fast", {**store.stat_games()[0], "strength": "fast"}, [])
+    assert [(g["strength"], len(store.stat_moves([key]))) for g in store.stat_games()] == [
+        ("standard", 12)
+    ]
+    assert store.best_review(key).strength == "standard"  # type: ignore[union-attr]
+    store.close()
     plain = client.post(f"/api/review/{key}/open", json={}).json()
     assert plain["ok"] and plain["state"]["strength"] == "standard"
     _until_ready(client, key)
@@ -355,7 +385,7 @@ def review_room_game(engine: PanelEngine, key: str) -> Any:
 
     store = Store(engine.settings.data_dir / "profile.sqlite")
     try:
-        saved = store.latest_review(key)
+        saved = store.best_review(key)
         assert saved is not None
         return ReviewedGame.model_validate_json(saved.report)
     finally:
@@ -421,10 +451,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     put = client.put("/api/settings", json={"settings": {"llm": {"provider": "local"}}})
     assert put.json()["ok"]
     assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
-    deadline = time.monotonic() + 10
-    while ai["status"] != "ready" and time.monotonic() < deadline:
-        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
-        time.sleep(0.05)
+    ai = _until_written(client, key)
     why = "Your knight on c6 guards your pawn on e5."
     words = {
         "model": "local-model",
@@ -453,8 +480,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     assert [(a["user"], a["thinking"]) for a in asked] == [("black", False)]
     assert any(Model.usage in source() for source in engine.extra_usage)
 
-    client.post(f"/api/review/{key}/close")
-    time.sleep(0.5)
+    _close(client, key)
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     assert _until_ready(client, key)["state"]["ai"]["words"] == words
     assert len(asked) == 1, "kept, not written again"
@@ -536,8 +562,7 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     }
     store.set_review_words(key, "fast", json.dumps(partial))
     store.close()
-    client.post(f"/api/review/{key}/close")
-    time.sleep(0.5)
+    _close(client, key)
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     ai = _until_ready(client, key)["state"]["ai"]
     assert (ai["status"], ai["answered"], ai["words"]) == ("none", 2, None)
@@ -559,10 +584,7 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     monkeypatch.setattr(review_room.review_words, "write", write)
     engine.settings.llm.provider = "local"
     assert client.post(f"/api/review/{key}/ai").json()["ok"]
-    deadline = time.monotonic() + 10
-    while ai["status"] != "ready" and time.monotonic() < deadline:
-        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
-        time.sleep(0.05)
+    ai = _until_written(client, key)
     assert ai["status"] == "ready" and ai["answered"] == 0
     assert set(told[0]["answered"]) == {first, second}, "the answers paid for, not asked again"
     assert abs(ai["words"]["cost"] - 0.006) < 1e-9, "what was paid before counted in"
@@ -798,6 +820,87 @@ def test_a_review_under_way_saves_nothing_for_a_game_removed_meanwhile(
     store.close()
 
 
+def test_a_review_window_on_a_game_removed_meanwhile_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A game removed while its review window analysed it left the page at 100% for good (the
+    review of 2026-10-01): the room ends failed, saying why."""
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    progress = review_room.ReviewRoom._progress
+
+    def removing(self: Any, done: int, total: int) -> None:
+        if done == 3:
+            store.remove_game(row.key)
+        progress(self, done, total)
+
+    monkeypatch.setattr(review_room.ReviewRoom, "_progress", removing)
+    rooms = review_room.ReviewRooms(
+        Settings(data_dir=tmp_path), store_path=path, make_engine=lambda **_: FakeEngine()
+    )
+    room = rooms.open(row.key, "fast")
+    assert room is not None and room.settled.wait(HANG_S)
+    state = room.state()
+    assert state["status"] == "failed" and "no longer" in state["error"], state
+    room.close()
+    store.close()
+
+
+def test_no_ai_words_are_paid_for_on_a_game_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AI words on a game removed meanwhile were paid for, then saved on nothing (the review of
+    2026-10-01). Removed while they are written, no more calls are made and the room says why;
+    removed before, none are asked."""
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    stopped: list[bool] = []
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        stopped.append(kw["stop"]())
+        store.remove_game(row.key)  # removed while the first answer is written
+        stopped.append(kw["stop"]())
+        return ReviewWords(texts={2: {"why": "a"}}, model="gpt-x", cost=0.01)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
+    assert room.write_words() is None
+    assert room.words_done.wait(HANG_S)
+    assert stopped == [False, True], "no more calls once it is gone"
+    assert (room.words_status, room.words_error) == ("failed", review_room.GONE)
+    assert room.write_words() == review_room.GONE, "none asked on a game gone"
+    room.close()
+    store.close()
+
+
 def test_the_review_saved_first_stays_with_the_words_paid_for(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -833,6 +936,109 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
     store.close()
 
 
+def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106
+    sides' phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review
+    of 2026-10-01). A saved review's summary and its facts for Stats are made again from its
+    report, once, no engine."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.events import GameSummary, ReviewedGame
+    from sidecoach.profile import library
+    from sidecoach.profile.game_summary import summarize
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    fast = STRENGTHS["fast"]
+    made = review_room.review_row(
+        Settings(data_dir=tmp_path),
+        row,
+        store,
+        fast,
+        workers=1,
+        make_engine=lambda **_: FakeEngine(),
+    )
+    assert made is not None
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    fresh = summarize(ReviewedGame.model_validate_json(saved.report))
+    phases = [m["phase"] for m in store.stat_moves([row.key])]
+    # As an older rule left them, the rule's version of before.
+    stale = fresh.model_copy(update={"shape": "old"})
+    store.set_review_summary(row.key, "fast", stale.model_dump_json())
+    store._db.execute("UPDATE stat_moves SET phase = 'endgame'")
+    store.set_setting(review_room.DERIVED_KEY, "1")
+    assert review_room.rederive(store) == 1
+    again = store.review(row.key, "fast")
+    assert again is not None and GameSummary.model_validate_json(again.summary or "{}") == fresh
+    assert [m["phase"] for m in store.stat_moves([row.key])] == phases
+    assert review_room.rederive(store) == 0, "once"
+    store.close()
+
+
+def test_ai_words_cut_short_by_failed_calls_offer_try_again_for_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Some calls failed and the words were saved as done: the failed moves had none for good,
+    and nothing offered to finish them (the review of 2026-10-01). The room says it could not
+    finish, keeps the answers paid for, and Try again asks the rest alone."""
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    asked: list[set[int]] = []
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        answered = set(kw["answered"])
+        asked.append(answered)
+        paid = {"prompt_tokens": 1, "completion_tokens": 1}
+        if not answered:
+            kw["on_answer"](2, "### why\nMove 2.", paid)
+            return ReviewWords(
+                texts={2: {"why": "a"}}, dropped={4: "the call failed: 429"}, failed={4}
+            )
+        kw["on_answer"](4, "### why\nMove 4.", paid)
+        return ReviewWords(texts={2: {"why": "a"}, 4: {"why": "b"}}, model="gpt-x", cost=0.01)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    monkeypatch.setattr(review_room.review_words, "key_plies", lambda game: [2, 4])
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
+    assert room.write_words() is None
+    assert room.words_done.wait(HANG_S)
+    ai = room.state()["ai"]
+    assert ai["status"] == "failed" and "1 of 2" in ai["error"] and ai["answered"] == 1
+    saved = store.review(row.key, "fast")
+    assert saved is not None and json.loads(saved.words or "{}").get("partial"), "kept, not done"
+    assert room.write_words() is None  # Try again
+    assert room.words_done.wait(HANG_S) and room.words_status == "ready"
+    assert asked == [set(), {2}], "the rest alone"
+    room.close()
+    store.close()
+
+
 def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -859,7 +1065,7 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
 
     def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
         asked.append(1)
-        go.wait(10)  # each answer arrives, and is paid for, after the window closed
+        assert go.wait(HANG_S)  # each answer arrives, and is paid for, after the window closed
         paid = {"prompt_tokens": 1, "completion_tokens": 1}
         for ply in (2, 4):
             kw["on_answer"](ply, f"### why\nMove {ply}.", paid)
@@ -874,45 +1080,42 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
     rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
-
-    def until(check: Callable[[], bool]) -> bool:
-        deadline = time.monotonic() + 10
-        while not check() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        return check()
-
     room = rooms.open(row.key, "fast")
-    assert room is not None and until(lambda: room.status == "ready")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
     assert room.write_words() is None
     room.close()
-    time.sleep(review_room.TICK_S * 3)
-    assert rooms.get(row.key) is room and not room.closed, "open while its words are written"
+    # The room's own rule, asked at any moment: closed while writing, it does not end.
+    assert not room.closing(time.monotonic()), "open while its words are written"
+    assert rooms.get(row.key) is room and not room.closed
     assert rooms.open(row.key, "fast") is room, "opened again: the same room, still writing"
     assert room.state()["ai"]["status"] == "writing"
     go.set()
-    assert until(lambda: room.words_status == "ready")
+    assert room.words_done.wait(HANG_S) and room.words_status == "ready"
     saved = store.review(row.key, "fast")
     assert saved is not None and json.loads(saved.words or "{}")["texts"] == {
         "2": {"why": "a"},
         "4": {"why": "b"},
     }, "saved whole"
     assert asked == [1], "asked once"
-    time.sleep(review_room.TICK_S * 3)
-    assert rooms.get(row.key) is room, "opened again, it stays open"
+    assert not room.closing(time.monotonic()), "opened again, it stays open"
+    assert rooms.get(row.key) is room
 
     room.close()
-    assert until(lambda: room.closed), "closed with nothing being written: closed at once"
+    room.join(HANG_S)
+    assert room.closed, "closed with nothing being written: closed at once"
 
     # Closed while writing, not opened again: open until the words are saved, then closed.
     go.clear()
     store.set_review_words(row.key, "fast", "")
     again = rooms.open(row.key, "fast")
-    assert again is not None and again is not room and until(lambda: again.status == "ready")
+    assert again is not None and again is not room
+    assert again.settled.wait(HANG_S) and again.status == "ready"
     assert again.write_words() is None
     again.close()
-    time.sleep(review_room.TICK_S * 3)
+    assert not again.closing(time.monotonic()) and not again.closed, "writing: stays"
     go.set()
-    assert until(lambda: again.closed), "closed once its words are saved"
+    again.join(HANG_S)
+    assert again.closed, "closed once its words are saved"
     saved = store.review(row.key, "fast")
     assert saved is not None and "partial" not in json.loads(saved.words or "{}")
     store.close()
@@ -973,11 +1176,9 @@ def test_a_deep_review_stopped_part_way_keeps_its_positions_through_standard(
     room = review_room.ReviewRoom(
         settings, row, store_path=path, strength="standard", make_engine=engines
     )
-    deadline = time.monotonic() + 10
-    while room.status != "ready" and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert room.settled.wait(HANG_S)
     room.close()
-    room.join()
+    room.join(HANG_S)
     assert room.status == "ready"
     assert deep_kept() == kept, "Standard opened"
     assert store.progress(row.key, "standard", standard.depth, standard.multipv) == []

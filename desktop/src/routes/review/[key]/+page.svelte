@@ -23,7 +23,7 @@
   import AnalysisPane from "$lib/review/AnalysisPane.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
-  import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
+  import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, moveLabel, moveNumber, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
   import { motifWords } from "$lib/chess";
 
   const key = decodeURIComponent(page.params.key ?? "");
@@ -111,7 +111,9 @@
   // The moves the review stops at: every side's, or the one side the settings name; and the
   // last book move for both, where the game leaves known theory (Tai, 2026-09-30).
   const keyMoments = $derived(
-    (summary?.key_moments ?? []).filter((k) => k.kind === "book" || look.keys === "both" || k.side === look.keys),
+    (summary?.key_moments ?? [])
+      .filter((k) => k.kind === "book" || look.keys === "both" || k.side === look.keys)
+      .map((k) => ({ ...k, move: moves[k.ply - 1] ? moveLabel(moves[k.ply - 1].fen_before) : undefined })),
   );
 
   // While the game is analysed the board plays it out as the progress goes, as chess.com's review
@@ -202,14 +204,22 @@
     else if (analysisLines?.white_score != null && analysisLines.lines[0])
       analysisBar = { score: analysisLines.white_score, eval: { ...analysisLines.lines[0].eval, result: null } };
   });
-  const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : line || retry ? whiteBefore : (graph[ply] ?? 0.5));
-  const barEval = $derived(view === "analysis" ? (analysisBar?.eval ?? null) : line || retry ? null : (move?.eval ?? null));
+  // The best line and a retry start from the position before the move; the follow-up from the
+  // one after it, where the bar stayed before it (the review of 2026-10-01).
+  const fromBefore = $derived(line?.kind === "best" || !!retry);
+  const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : fromBefore ? whiteBefore : (graph[ply] ?? 0.5));
+  const barEval = $derived(view === "analysis" ? (analysisBar?.eval ?? null) : fromBefore ? null : (move?.eval ?? null));
 
+  // The player's own moves, every move when their side is not known: only these are theirs to
+  // retry. Retry was offered on the opponent's mistakes, and the opponent had an accuracy
+  // "after retries" (the review of 2026-10-01).
+  const mine = (m: ReviewMove): boolean => !room?.game.user_side || m.side === room.game.user_side;
   // Each side's accuracy with its retried moves' best tries in their place (chess.com's
   // "accuracy after retries"): the plain mean, as the review's own.
   const afterRetries = $derived.by(() => {
     const out: Partial<Record<"white" | "black", { before: number; after: number }>> = {};
     for (const side of ["white", "black"] as const) {
+      if (room?.game.user_side && side !== room.game.user_side) continue;
       const own = moves.filter((m) => m.side === side);
       if (!own.some((m) => retried[m.ply])) continue;
       const mean = (pick: (m: ReviewMove) => number) => own.reduce((s, m) => s + pick(m), 0) / own.length;
@@ -290,7 +300,7 @@
 
   // ---- Retry ----
   async function startRetry(): Promise<void> {
-    if (!move) return;
+    if (!move || !mine(move)) return;
     stopLine();
     if (await desk.open(move.ply)) return;
     // The room went with a sidecar that started again: opened again, and asked once more.
@@ -559,7 +569,7 @@
   const rows = $derived.by(() => {
     const out: { n: number; white: ReviewMove | null; black: ReviewMove | null }[] = [];
     for (const m of moves) {
-      const n = Math.ceil(m.ply / 2);
+      const n = moveNumber(m.fen_before).n;
       if (!out.length || out[out.length - 1].n !== n) out.push({ n, white: null, black: null });
       out[out.length - 1][m.side] = m;
     }
@@ -1145,7 +1155,7 @@
                 <div class="rv-tries">
                   <span></span><span class="head">You played</span><span class="head">New move</span>
                   {#each improvedMoves as m (m.ply)}
-                    <span class="muted">{Math.ceil(m.ply / 2)}{m.side === 'white' ? '.' : '...'}</span>
+                    <span class="muted">{moveLabel(m.fen_before)}</span>
                     <span class="cls-text {m.label ?? ''}"><Badge kind={m.label} /> {m.san}</span>
                     <span class="cls-text {retried[m.ply].label ?? ''}"><Badge kind={retried[m.ply].label} /> {retried[m.ply].san}</span>
                   {/each}
@@ -1202,7 +1212,7 @@
             <button class="rv-tool" disabled={retry.solved} title="Show the move" onclick={() => desk.giveUp()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg><span>Show</span></button>
             <button class="rv-tool" title="Back to the game (Esc)" onclick={() => desk.close()}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg><span>Back</span></button>
           {:else}
-            <button class="rv-tool" disabled={!move || !BAD.has(move.label ?? "")} title="Find a better move yourself" onclick={startRetry}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg><span>Retry</span></button>
+            <button class="rv-tool" disabled={!move || !BAD.has(move.label ?? "") || !mine(move)} title="Find a better move yourself" onclick={startRetry}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg><span>Retry</span></button>
             <button class="rv-tool" aria-pressed={line?.kind === "best"} disabled={!move || !move.best_line.length || move.best_uci === move.uci} title={line?.kind === "best" ? "Back to the game" : "The best move; its line on asking"} onclick={() => toggleLine("best")}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.2" cy="10.2" r="6.4" fill="none" stroke="currentColor" stroke-width="2.3"/><path d="M15 15l5.2 5.2" stroke="currentColor" stroke-width="2.7" stroke-linecap="round"/><path d="M10.2 6.9l.95 2.3 2.5.2-1.9 1.63.6 2.44-2.15-1.33-2.15 1.33.6-2.44-1.9-1.63 2.5-.2z"/></svg><span>Best</span></button>
             <button class="rv-tool" aria-pressed={line?.kind === "follow"} disabled={!move || !move.follow_line.length} title={line?.kind === "follow" ? "Back to the game" : "What follows the move played"} onclick={() => toggleLine("follow")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 18l8-6-8-6zM13 18l8-6-8-6z"/></svg><span>Follow-up</span></button>
           {/if}

@@ -305,6 +305,11 @@ def test_the_better_move_waits_for_the_answer() -> None:
     assert review_words.names_the_answer("Bc4 was the move.", game, 3), "side unknown: kept back"
     assert not review_words.names_the_answer("Developing the bishop first was better.", game, 3)
     assert not review_words.names_the_answer("Nc6 defends e5.", game, 4), "a great move is named"
+    # In words too: "the knight to e4" gave the answer before it was asked for (the review of
+    # 2026-10-01).
+    assert review_words.names_the_answer("Bringing the bishop out to c4 was better.", game, 3)
+    assert review_words.names_the_answer("The Bishop to c4 first.", game, 3)
+    assert not review_words.names_the_answer("The bishop belonged on the long diagonal.", game, 3)
 
 
 def test_a_lesson_is_general_advice() -> None:
@@ -418,6 +423,7 @@ def test_a_failed_call_drops_its_move_alone() -> None:
     words = review_words.write(game, _Model(answers), user="black", opening=None, prices=Prices())
     assert set(words.texts) == {3, 6}
     assert words.dropped == {4: "the call failed: 429: slow down"}
+    assert words.failed == {4}, "to ask again, not dropped for good"
     with pytest.raises(RuntimeError, match="down"):
         review_words.write(
             game,
@@ -426,3 +432,47 @@ def test_a_failed_call_drops_its_move_alone() -> None:
             opening=None,
             prices=Prices(),
         )
+
+
+def test_the_calls_go_a_few_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every key move asked at once set a provider's rate limit off (the review of
+    2026-10-01): the calls go on a pool of PARALLEL workers at most."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    pools: list[int] = []
+
+    class Counted(ThreadPoolExecutor):
+        def __init__(self, max_workers: int) -> None:
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
+
+    monkeypatch.setattr(review_words, "ThreadPoolExecutor", Counted)
+    monkeypatch.setattr(review_words, "PARALLEL", 2)
+    model = _Model(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."}))
+    review_words.write(_game(), model, user="black", opening=None, prices=Prices())
+    assert pools == [2] and sorted(model.asked) == [3, 4, 6]
+    # Fewer moves than that: as many workers as moves.
+    review_words.write(
+        _game(),
+        model,
+        user="black",
+        opening=None,
+        prices=Prices(),
+        answered={3: "### why\nWhite played Nf3 early.", 4: "### why\nWhite played Nf3 early."},
+    )
+    assert pools == [2, 1]
+
+
+def test_no_call_is_made_once_told_to_stop() -> None:
+    """The game removed while its words are written: the calls not made yet are not made."""
+    model = _Model(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."}))
+    words = review_words.write(
+        _game(),
+        model,
+        user="black",
+        opening=None,
+        prices=Prices(),
+        answered={3: "### why\nWhite played Nf3 early."},
+        stop=lambda: True,
+    )
+    assert model.asked == [] and words.failed == {4, 6}

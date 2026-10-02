@@ -219,27 +219,70 @@ def test_work_on_this_names_what_cost_most(tmp_path: Path) -> None:
     """Each costly move counts in one area (a missed tactic first, then one handed over, then the
     phase's), the dearest areas first, each with its puzzles' motif and its own positions."""
     store = Store(tmp_path / "profile.sqlite")
-    store.save_stats(
-        "standard",
-        _game("a"),
-        [
-            _move(3, "white", phase="opening", label="blunder", loss=0.5),
-            _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
-            _move(23, "white", allowed="free piece", label="mistake", loss=0.2),
-            _move(25, "white", phase="endgame", endgame="rook", label="mistake", loss=0.1),
-            _move(27, "white", label="inaccuracy", loss=0.05),  # no area: not a mistake
-            _move(29, "white", chance="pin", found=True, loss=0.0),  # found: costs nothing
-        ],
-    )
+    for key in "abc":
+        store.save_stats(
+            "standard",
+            _game(key),
+            [
+                _move(3, "white", phase="opening", label="blunder", loss=0.5),
+                _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
+                _move(23, "white", allowed="free piece", label="mistake", loss=0.2),
+                _move(25, "white", phase="endgame", endgame="rook", label="mistake", loss=0.1),
+                _move(27, "white", label="inaccuracy", loss=0.05),  # no area: not a mistake
+                _move(29, "white", chance="pin", found=True, loss=0.0),  # found: costs nothing
+            ],
+        )
     everything = stats(store, Filter())
     assert everything["costs"]["opening"]["value"] == 0.5
+    assert everything["costs"]["opening"]["moves"] == 3
     assert everything["costs"]["missed"]["pin"]["value"] == 0.0
     work = everything["work"]
     assert [w["area"] for w in work] == ["opening", "missed.fork", "allowed.free piece"]
     assert [w["motif"] for w in work] == ["opening", "fork", "hangingPiece"]
+    assert [(w["moves"], w["games"]) for w in work] == [(3, 3)] * 3
     behind = positions(store, Filter(), "area", "missed.fork")
-    assert [p["ply"] for p in behind] == [21]
+    assert [p["ply"] for p in behind] == [21, 21, 21]
     assert area(_move(1, "white", label="best")) is None
+
+
+def test_work_on_this_waits_for_several_games(tmp_path: Path) -> None:
+    """One game's blunders were "Work on this", and the cost read as points: 11.1 for one area
+    when 9 were lost in all (the review of 2026-10-01). Nothing is named over fewer than three
+    games, nor an area of fewer than three moves; each area says how many moves it counts."""
+    store = Store(tmp_path / "profile.sqlite")
+    moves = [
+        _move(3 + 2 * i, "white", phase="opening", label="blunder", loss=0.5) for i in range(4)
+    ]
+    store.save_stats("standard", _game("a"), moves)
+    assert stats(store, Filter())["work"] == []
+    store.save_stats("standard", _game("b"), [_move(21, "white", label="best")])
+    store.save_stats(
+        "standard", _game("c"), [_move(21, "white", allowed="fork", label="mistake", loss=0.4)]
+    )
+    work = stats(store, Filter())["work"]
+    assert [(w["area"], w["moves"], w["games"]) for w in work] == [("opening", 4, 3)]
+
+
+def test_a_game_reviewed_before_the_username_counts_once_it_is_set(tmp_path: Path) -> None:
+    """A PGN pasted and reviewed before the username was set kept no side and never reached
+    Stats, even pasted again after (the review of 2026-10-01), and Stats said nothing of why.
+    The side is the library's as it is now; setting the username fills it."""
+    from sidecoach.profile import library
+
+    store = Store(tmp_path / "profile.sqlite")
+    row = LibraryRow("pgn:1", "pgn", 0.0, "1. e4 *", played_at=time.time(), white="Tai")
+    store.add_library_game(row)
+    store.save_stats("standard", _game("pgn:1", user_side=None), [_move(1, "white")])
+    shown = stats(store, Filter())
+    assert (shown["overview"]["games"], shown["unsided"]) == (0, 1)
+    library.refresh(store, ["tai"])
+    shown = stats(store, Filter())
+    assert (shown["overview"]["games"], shown["unsided"]) == (1, 0)
+    # Pasted again with the username known: the import's row has the side, and Stats follows.
+    other = LibraryRow("pgn:2", "pgn", 0.0, "1. e4 *", played_at=time.time(), black="Tai")
+    store.save_stats("standard", _game("pgn:2", user_side=None), [_move(2, "black")])
+    store.add_library_game(other.__class__(**{**other.__dict__, "user_side": "black"}))
+    assert stats(store, Filter())["overview"]["games"] == 2
 
 
 def test_chesscom_and_lichess_ratings_convert_both_ways() -> None:
@@ -252,3 +295,49 @@ def test_names_are_read_as_players_read_them() -> None:
     assert termination_kind("nosegazm won on time") == "time"
     assert termination_kind("Time forfeit") == "time"
     assert termination_kind("Game drawn by repetition") == "repetition"
+
+
+def test_stats_read_the_store_in_a_few_queries(tmp_path: Path) -> None:
+    """Stats took 1.4 s, and each area's positions 0.64 s more, at a thousand games (the review of
+    2026-10-01): a library row read a game for its ratings, a review a game for its shape, every
+    game's moves for each area's positions. Now one query each, and the positions read the
+    latest games a batch at a time until they have enough."""
+    from sidecoach.profile import stats as st
+
+    store = Store(tmp_path / "profile.sqlite")
+    for i in range(st.POSITIONS_BATCH * 3):
+        game = _game(f"g{i:03}", played_at=time.time() - 3600 * (i + 1))
+        store.save_stats("standard", game, [_move(3, "white", label="blunder", loss=0.4)])
+    asked: list[int] = []
+    moves = store.stat_moves
+
+    def counted(keys: list[str]) -> list[dict[str, Any]]:
+        asked.append(len(keys))
+        return moves(keys)
+
+    store.stat_moves = counted  # type: ignore[method-assign]
+    store.library_game = None  # type: ignore[assignment,method-assign]
+    store.review = None  # type: ignore[assignment,method-assign]
+    stats(store, Filter())
+    assert asked == [st.POSITIONS_BATCH * 3]
+    asked.clear()
+    found = positions(store, Filter(), "gallery", "blunder")
+    assert len(found) == st.POSITIONS_MAX and asked == [st.POSITIONS_BATCH, st.POSITIONS_BATCH]
+    assert found[0]["key"] == "g000", "the latest first"
+
+
+def test_the_facts_kept_for_stats_are_the_strongest_reviews(tmp_path: Path) -> None:
+    """A Fast look after a Deep review lowered Stats (the review of 2026-10-01): a game's facts
+    are replaced only by a review as strong or stronger, and the reviews still to keep facts of
+    are each game's strongest."""
+    store = Store(tmp_path / "profile.sqlite")
+    store.save_stats("deep", _game("a"), [_move(1, "white", loss=0.0)])
+    store.save_stats("fast", _game("a"), [_move(1, "white", loss=0.4, label="blunder")])
+    assert [g["strength"] for g in store.stat_games()] == ["deep"]
+    assert store.stat_moves(["a"])[0]["loss"] == 0.0
+    store.save_stats("deep", _game("a"), [_move(1, "white", loss=0.1, label="inaccuracy")])
+    assert store.stat_moves(["a"])[0]["loss"] == 0.1, "as strong: replaced"
+    for strength, at in (("deep", 1.0), ("fast", 2.0)):
+        store.save_review("b", strength, 1, at, "{}", None)
+    assert [(r.key, r.strength) for r in store.reviews_without_stats()] == [("b", "deep")]
+    assert store.best_review("b").strength == "deep"  # type: ignore[union-attr]

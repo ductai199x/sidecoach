@@ -17,7 +17,7 @@ from sidecoach.profile.library import (
     reconcile,
     time_class_of,
 )
-from sidecoach.profile.store import Store
+from sidecoach.profile.store import LibraryRow, Store
 
 GAME = """[Event "Live Chess"]
 [Site "Chess.com"]
@@ -55,6 +55,26 @@ def test_a_pasted_pgn_brings_in_every_game_and_knows_whose_side() -> None:
     assert rows[1].key != first.key
 
 
+def test_games_kept_by_the_old_lines_are_classed_again() -> None:
+    """A Lichess game kept as blitz by chess.com's lines (8+0) is rapid once the library is
+    refreshed; a chess.com game keeps its archive's class; once done, not again."""
+    from sidecoach.profile import library
+
+    store = Store(None)
+    lichess = '[Site "https://lichess.org/abc"]\n[TimeControl "480"]\n\n1. e4 *'
+    store.add_library_game(LibraryRow("lichess:abc", "lichess", 0.0, lichess, time_class="blitz"))
+    pasted = '[Site "https://lichess.org/xyz"]\n[TimeControl "-"]\n\n1. e4 *'
+    store.add_library_game(LibraryRow("pgn:xyz", "pgn", 0.0, pasted))
+    chesscom = '[TimeControl "480"]\n\n1. e4 *'
+    store.add_library_game(LibraryRow("chesscom:1", "chesscom", 0.0, chesscom, time_class="blitz"))
+    library.refresh(store, [])
+    classes = {r.key: r.time_class for r in store.library()}
+    assert classes == {"lichess:abc": "rapid", "pgn:xyz": "daily", "chesscom:1": "blitz"}
+    store.set_time_class("lichess:abc", "blitz")
+    library.refresh(store, [])
+    assert store.library_game("lichess:abc").time_class == "blitz", "once"  # type: ignore[union-attr]
+
+
 def test_time_classes_by_the_expected_length_of_a_game() -> None:
     assert [
         time_class_of(c)
@@ -70,6 +90,12 @@ def test_time_classes_by_the_expected_length_of_a_game() -> None:
         "daily",
         None,
     ]
+    # Lichess's own lines (its estimated time, the base plus forty increments): 8+0 is rapid,
+    # 3+2 blitz, 20+0 rapid, 25+0 classical; "-" is correspondence. chess.com's 8+0 is blitz.
+    assert [
+        time_class_of(c, lichess=True) for c in ("15", "60", "480", "180+2", "1200", "1500", "-")
+    ] == ["bullet", "bullet", "rapid", "blitz", "rapid", "classical", "daily"]
+    assert (time_class_of("480"), time_class_of("-")) == ("blitz", None)
     # As Sidecoach words the clock it read at a watched game's start.
     assert [time_class_of(c) for c in ("30 s", "3 min", "15 min", "2.5 min")] == [
         "bullet",

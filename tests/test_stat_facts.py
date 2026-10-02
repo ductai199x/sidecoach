@@ -20,6 +20,7 @@ from sidecoach.events import (
 from sidecoach.profile.stat_facts import (
     bot_game,
     chance_in,
+    ended_by,
     endgame_of,
     facts_of,
     kind_of,
@@ -177,3 +178,54 @@ def test_a_game_gives_each_move_its_facts() -> None:
     assert (first.chance, first.found, first.allowed) == ("fork", True, None)
     assert (second.chance, second.found, second.allowed) == (None, False, "pin")
     assert first.phase == "opening" and first.structure == "semi-open" and first.spent_ms == 4000
+
+
+def _played(sans: list[str], result: str, headers: dict[str, str] | None = None) -> ReviewedGame:
+    board = chess.Board()
+    moves = []
+    for ply, san in enumerate(sans, start=1):
+        move = board.parse_san(san)
+        side = Side.WHITE if board.turn == chess.WHITE else Side.BLACK
+        before = board.fen()
+        board.push(move)
+        moves.append(
+            ReviewedMove(
+                ply=ply,
+                san=san,
+                side=side,
+                fen_before=before,
+                assessment=MoveAssessment(
+                    game_id="g",
+                    ply=ply,
+                    uci=move.uci(),
+                    expected_loss=0.0,
+                    severity=Severity.NONE,
+                    best=[],
+                ),
+                after=_analysis(board.fen(), decisive=False, tags=[]),
+            )
+        )
+    return ReviewedGame(
+        headers={"Result": result, **(headers or {})},
+        start=_analysis(decisive=False, tags=[]),
+        moves=moves,
+        strength="standard",
+        depth=18,
+    )
+
+
+def test_how_a_game_ended_when_its_header_does_not_say() -> None:
+    """Lichess's "Normal" and a watched game's missing header made most of "How your games
+    ended" "other" (the review of 2026-10-01). The final position says what it proves; a
+    Lichess "Normal" game not mated is a resignation, or a draw agreed."""
+    mate = ["f3", "e5", "g4", "Qh4#"]
+    assert ended_by("Normal", "0-1", _played(mate, "0-1")) == "checkmate"
+    assert ended_by(None, "0-1", _played(mate, "0-1")) == "checkmate"
+    short = ["e4", "e5"]
+    assert ended_by("Normal", "1-0", _played(short, "1-0")) == "resignation"
+    assert ended_by("Normal", "1/2-1/2", _played(short, "1/2-1/2")) == "agreement"
+    shuffle = ["Nf3", "Nf6", "Ng1", "Ng8"] * 2
+    assert ended_by("Normal", "1/2-1/2", _played(shuffle, "1/2-1/2")) == "repetition"
+    # A header that says stays; a watched game's own words ("lost on time") are read as they are.
+    assert ended_by("nosegazm won on time", "1-0", _played(short, "1-0")) == "nosegazm won on time"
+    assert ended_by(None, "1-0", _played(short, "1-0")) is None, "nothing proves how"

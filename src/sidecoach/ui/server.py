@@ -204,7 +204,7 @@ class _Import(BaseModel):
 
 
 class _Review(BaseModel):
-    strength: str = "standard"
+    strength: str | None = None  # None: the strongest review saved, else Standard
 
 
 class _Card(BaseModel):
@@ -499,6 +499,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     store_path = engine.settings.data_dir / "profile.sqlite"
     reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+    app.state.reviews = reviews
     engine.settings_followers.append(lambda s: setattr(reviews, "settings", s))
     # The AI coach's words on reviews count in the panel's strip with the game's.
     engine.extra_usage.append(reviews.usages)
@@ -510,6 +511,20 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         backlog.start()
         engine.settings_followers.append(lambda s: setattr(backlog, "settings", s))
     app.state.backlog = backlog  # closed with the panel (`serve`)
+
+    def rederive_saved() -> None:
+        """The saved reviews' summaries and Stats made again when their rule changed."""
+        from sidecoach.profile.store import Store
+        from sidecoach.ui.review_room import rederive
+
+        with contextlib.suppress(Exception):  # never in the way of the panel
+            store = Store(store_path)
+            try:
+                rederive(store)
+            finally:
+                store.close()
+
+    threading.Thread(target=rederive_saved, name="rederive", daemon=True).start()
 
     @app.get("/games")
     @app.get("/stats")
@@ -691,6 +706,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             return {"ok": False, "error": str(exc)}
 
     # ---- Stats: the player's games added up (profile/stats.py; docs/stats-plan.md) ---------
+    from sidecoach.profile import library
     from sidecoach.profile import stats as stat_sums
     from sidecoach.profile.store import Store
 
@@ -703,6 +719,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     def stats_now(time_class: str = "", days: int = 0, opponents: str = "all") -> dict[str, Any]:
         store = Store(store_path)
         try:
+            library.refresh(store, _user_names(engine))
             numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
             _drills(numbers["work"], engine.settings.data_dir, store)
         finally:
@@ -865,6 +882,12 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     return app
 
 
+def _user_names(engine: PanelEngine) -> list[str]:
+    """The player's usernames from Settings."""
+    profile = engine.settings.profile
+    return [n for n in (profile.chesscom_user, profile.lichess_user) if n]
+
+
 def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
     """The games Game Review can open, the latest played first -- imported and watched, a
     watched game its import stands for once, as the import -- each with its review's
@@ -875,6 +898,7 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
     store = Store(store_path)
     try:
+        library.refresh(store, _user_names(engine))
         twins = library.reconcile(store)
         carry_twins(store, twins)  # a pair's review goes with the import that stands for it
         watched = [r for r in library.from_watched(store) if r.key not in twins]
@@ -885,7 +909,7 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
             stood_for.setdefault(imported, []).append(was)
         out = []
         for row in rows:
-            review = store.latest_review(row.key)
+            review = store.best_review(row.key)
             # An import not reviewed yet whose watched game was: that review's accuracies until
             # the import has its own (the review of 2026-10-01: pairing a record that differs
             # from its import took the game's accuracy away; it is not reviewed for that).
@@ -921,8 +945,8 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
 
 def _latest(store: Any, keys: list[str]) -> Any | None:
-    """The latest review of any of these games, or None."""
-    reviews = [r for r in (store.latest_review(k) for k in keys) if r is not None]
+    """The latest of these games' reviews (each game's strongest), or None."""
+    reviews = [r for r in (store.best_review(k) for k in keys) if r is not None]
     return max(reviews, key=lambda r: r.reviewed_at, default=None)
 
 

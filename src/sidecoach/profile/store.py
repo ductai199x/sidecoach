@@ -246,6 +246,14 @@ WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
 RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 # A removed game's rows are kept this long, for Undo (the page offers it for seconds).
 UNDO_KEEP_S = 600.0
+# The review strengths, weakest first: a stronger review stands for the game.
+STRENGTH_RANK = {"fast": 1, "standard": 2, "deep": 3}
+_RANK = (
+    "CASE strength "
+    + " ".join(f"WHEN '{name}' THEN {rank}" for name, rank in STRENGTH_RANK.items())
+    + " ELSE 0 END"
+)
+
 # The watched games Stats leaves out: those whose import's facts are kept (the import counts).
 _STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
@@ -326,7 +334,8 @@ class CellRow:
     """One cell of the error taxonomy, computed from the record: mistakes (`errors`) by
     cause, motif and phase with the expected score they cost, and the occasions
     (`chances`) -- moves in a phase, moves with a tactic on the board -- with the cause
-    None."""
+    None. A tactic's occasions count in `errors` those the player missed: a mistake that
+    did not play the tactic on the board. `games`: the games its errors came from."""
 
     cause: str | None
     motif: str | None
@@ -334,6 +343,7 @@ class CellRow:
     errors: int
     chances: int
     expected_loss: float
+    games: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -393,6 +403,11 @@ class SessionRow:
 
 def _tags(value: str | None) -> list[str]:
     return json.loads(value) if value else []
+
+
+def _ids(value: str | None) -> frozenset[str]:
+    """A JSON array of game ids, its nulls left out."""
+    return frozenset(g for g in json.loads(value or "[]") if g is not None)
 
 
 def _move_row(row: sqlite3.Row) -> MoveRow:
@@ -763,11 +778,16 @@ class Store:
         """The error taxonomy as counts: mistakes by (cause, motif, phase) with the score
         they cost; the occasions with cause None -- every judged move of the player's in
         its phase (motif None), and every such move with a tactic on the board, per
-        tactic. Computed from the record, so a correction or a takeback needs no
-        bookkeeping."""
+        tactic, with those of its occasions the player missed (a mistake that did not
+        play it). The motif of a mistake is the tactic it allowed as often as the one it
+        let go, so the mistakes alone never say how often a tactic on the board was missed:
+        "about 100% (5 of 4)" counted the forks walked into over the forks the player had
+        (the review of 2026-10-01). Computed from the record, so a correction or a takeback
+        needs no bookkeeping."""
         with self._lock:
             errors = self._db.execute(
-                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss"
+                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss,"
+                " json_group_array(DISTINCT game_id) AS games"
                 " FROM evidence GROUP BY cause, motif, phase"
             ).fetchall()
             phases = self._db.execute(
@@ -775,9 +795,16 @@ class Store:
                 " WHERE by_user = 1 AND withdrawn = 0 AND severity IS NOT NULL"
                 " AND phase IS NOT NULL GROUP BY phase"
             ).fetchall()
+            missed = (
+                "(e.move_id IS NOT NULL AND NOT EXISTS"
+                " (SELECT 1 FROM json_each(m.tags) p WHERE p.value = t.value))"
+            )
             motifs = self._db.execute(
-                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n"
-                " FROM moves m, json_each(m.available_tags) t"
+                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n,"
+                f" SUM({missed}) AS missed,"
+                f" json_group_array(DISTINCT CASE WHEN {missed} THEN m.game_id END) AS games"
+                " FROM moves m JOIN json_each(m.available_tags) t"
+                " LEFT JOIN evidence e ON e.move_id = m.move_id"
                 " WHERE m.by_user = 1 AND m.withdrawn = 0 AND m.severity IS NOT NULL"
                 " GROUP BY m.phase, t.value"
             ).fetchall()
@@ -789,6 +816,7 @@ class Store:
                 errors=int(r["n"]),
                 chances=0,
                 expected_loss=float(r["loss"] or 0.0),
+                games=_ids(r["games"]),
             )
             for r in errors
         ]
@@ -808,9 +836,10 @@ class Store:
                 cause=None,
                 motif=r["motif"],
                 phase=r["phase"],
-                errors=0,
+                errors=int(r["missed"] or 0),
                 chances=int(r["n"]),
                 expected_loss=0.0,
+                games=_ids(r["games"]),
             )
             for r in motifs
         ]
@@ -922,6 +951,27 @@ class Store:
                     row.pgn,
                 ),
             )
+            self._db.commit()
+
+    def fill_sides(self, names: Sequence[str]) -> None:
+        """The player's side in each imported game that has none, by their usernames (lower
+        case): a game brought in before the username was set."""
+        if not names:
+            return
+        marks = ",".join("?" * len(names))
+        with self._lock:
+            self._db.execute(
+                f"UPDATE library SET user_side = CASE WHEN lower(white) IN ({marks}) THEN 'white'"
+                f" WHEN lower(black) IN ({marks}) THEN 'black' END"
+                f" WHERE user_side IS NULL AND (lower(white) IN ({marks})"
+                f" OR lower(black) IN ({marks}))",
+                (*names, *names, *names, *names),
+            )
+            self._db.commit()
+
+    def set_time_class(self, key: str, time_class: str | None) -> None:
+        with self._lock:
+            self._db.execute("UPDATE library SET time_class = ? WHERE key = ?", (time_class, key))
             self._db.commit()
 
     def library(self) -> list[LibraryRow]:
@@ -1082,9 +1132,15 @@ class Store:
     # ---- Stats: a reviewed game's facts (profile/stat_facts.py) --------------------------------
 
     def save_stats(self, strength: str, game: dict[str, Any], moves: list[dict[str, Any]]) -> None:
-        """A game's facts from its review at `strength`, in place of any before."""
+        """A game's facts from its review at `strength`, in place of any before from a review
+        no stronger: Stats keeps the strongest review's facts."""
         with self._lock:
             key = game["key"]
+            kept = self._db.execute(
+                f"SELECT {_RANK} AS rank FROM stat_games WHERE key = ?", (key,)
+            ).fetchone()
+            if kept is not None and kept["rank"] > STRENGTH_RANK.get(strength, 0):
+                return
             self._db.execute("DELETE FROM stat_moves WHERE key = ?", (key,))
             self._db.execute(
                 "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at,"
@@ -1108,10 +1164,17 @@ class Store:
         """The reviewed games' facts, each game once: a watched game its import stands for is
         left out once the import's own facts are kept. Until then the watched game counts (the
         review of 2026-10-01: a game whose record differed from its import left Stats the moment
-        the import came in, until the import was reviewed -- on the phone, until it was opened)."""
+        the import came in, until the import was reviewed -- on the phone, until it was opened).
+        The player's side and the time class are the library's as it is now, when it has the
+        game: a game reviewed before the username was set kept no side and never reached Stats
+        (the review of 2026-10-01)."""
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM stat_games WHERE key NOT IN ({_STOOD_FOR}) ORDER BY played_at"
+                "SELECT s.key, s.strength, s.source, s.played_at, s.bot, s.result, s.opening,"
+                " s.termination, COALESCE(l.user_side, s.user_side) AS user_side,"
+                " COALESCE(l.time_class, s.time_class) AS time_class"
+                " FROM stat_games s LEFT JOIN library l ON l.key = s.key"
+                f" WHERE s.key NOT IN ({_STOOD_FOR}) ORDER BY s.played_at"
             ).fetchall()
         return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
 
@@ -1121,10 +1184,30 @@ class Store:
             return []
         marks = ",".join("?" * len(keys))
         with self._lock:
-            rows = self._db.execute(
+            cursor = self._db.cursor()
+            cursor.row_factory = None
+            cursor.execute(
                 f"SELECT * FROM stat_moves WHERE key IN ({marks}) ORDER BY key, ply", keys
+            )
+            names = [c[0] for c in cursor.description]
+            rows = cursor.fetchall()
+        found = names.index("found")
+        return [{**dict(zip(names, r, strict=True)), "found": bool(r[found])} for r in rows]
+
+    def library_elos(self) -> dict[str, tuple[int | None, int | None]]:
+        """Each imported game's players' ratings, White's and Black's, by its key."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, white_elo, black_elo FROM library").fetchall()
+        return {str(r["key"]): (r["white_elo"], r["black_elo"]) for r in rows}
+
+    def review_shapes(self) -> dict[tuple[str, str], str | None]:
+        """Each saved review's game shape (its summary's), by the game's key and strength."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT key, strength, json_extract(summary, '$.shape') AS shape FROM reviews"
+                " WHERE json_valid(summary)"
             ).fetchall()
-        return [{**dict(r), "found": bool(r["found"])} for r in rows]
+        return {(str(r["key"]), str(r["strength"])): r["shape"] for r in rows}
 
     def unreviewed(self) -> list[LibraryRow]:
         """The library's imported games no review covers yet, the latest played first."""
@@ -1136,13 +1219,14 @@ class Store:
         return [LibraryRow(**dict(r)) for r in rows]
 
     def reviews_without_stats(self) -> list[ReviewRow]:
-        """Each game's latest review whose facts are not kept yet (a watched game its import
-        stands for needs none once the import's are kept: `stat_games`)."""
+        """Each game's strongest review (`best_review`) whose facts are not kept yet (a watched
+        game its import stands for needs none once the import's are kept: `stat_games`)."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
                 f" AND r.key NOT IN ({_STOOD_FOR})"
-                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
+                " AND r.rowid = (SELECT rowid FROM reviews WHERE key = r.key"
+                f" ORDER BY {_RANK} DESC, reviewed_at DESC LIMIT 1)"
             ).fetchall()
         return [ReviewRow(**dict(r)) for r in rows]
 
@@ -1182,11 +1266,35 @@ class Store:
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
 
-    def latest_review(self, key: str) -> ReviewRow | None:
-        """The game's latest review, at whatever strength."""
+    def saved_reviews(self) -> list[tuple[str, str]]:
+        """Every saved review, by its game's key and its strength."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, strength FROM reviews").fetchall()
+        return [(str(r["key"]), str(r["strength"])) for r in rows]
+
+    def set_review_summary(self, key: str, strength: str, summary: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?",
+                (summary, key, strength),
+            )
+            self._db.commit()
+
+    def stat_strengths(self) -> dict[str, str]:
+        """The strength of the review each game's Stats facts come from, by its key."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, strength FROM stat_games").fetchall()
+        return {str(r["key"]): str(r["strength"]) for r in rows}
+
+    def best_review(self, key: str) -> ReviewRow | None:
+        """The game's strongest review (deep, standard, fast), the latest of that strength: the
+        one the review opens at, Your games shows and Stats counts. The latest was shown, and a
+        Fast look after a Deep review lowered them all (the review of 2026-10-01)."""
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", (key,)
+                f"SELECT * FROM reviews WHERE key = ? ORDER BY {_RANK} DESC, reviewed_at DESC"
+                " LIMIT 1",
+                (key,),
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
 

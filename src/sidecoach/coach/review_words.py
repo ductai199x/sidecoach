@@ -114,6 +114,13 @@ class ReviewWords:
     model: str = ""
     cost: float | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # The plies whose call failed: not done, to ask again (Try again), never dropped for good.
+    failed: set[int] = field(default_factory=set)
+
+
+# The calls asked at once: every key move at once (MOST of them) set a provider's rate limit
+# off, and the moves whose calls failed were left without words (the review of 2026-10-01).
+PARALLEL = 4
 
 
 def key_plies(game: ReviewedGame) -> list[int]:
@@ -583,8 +590,21 @@ def names_the_answer(text: str, game: ReviewedGame, ply: int, user: str | None =
     if label not in BAD or not move.assessment.best or theirs:
         return False
     board = chess.Board(move.fen_before)
-    best = board.san(chess.Move.from_uci(move.assessment.best[0])).rstrip("+#")
-    return re.search(rf"(?<![\w]){re.escape(best)}(?![\w])", text) is not None
+    answer = chess.Move.from_uci(move.assessment.best[0])
+    best = board.san(answer).rstrip("+#")
+    if re.search(rf"(?<![\w]){re.escape(best)}(?![\w])", text) is not None:
+        return True
+    # In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
+    # castling. Notation alone was caught, and "the knight to e4" showed the answer before it
+    # was asked for (the review of 2026-10-01).
+    if board.is_castling(answer):
+        return re.search(r"\bcastl(?:e|es|ed|ing)\b", text, re.I) is not None
+    piece = board.piece_type_at(answer.from_square)
+    name = chess.piece_name(piece) if piece is not None else "piece"
+    square = chess.square_name(answer.to_square)
+    verbs = r"(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
+    found = rf"\b{name}s?\b(?:\s+\w+){{0,2}}\s+{verbs}\s+{square}\b"
+    return re.search(found, text, re.I) is not None
 
 
 def problems(part: str, paragraph: str, game: ReviewedGame, ply: int) -> str:
@@ -641,13 +661,16 @@ def write(
     thinking: bool = False,
     answered: dict[int, str] | None = None,
     on_answer: Callable[[int, str, dict[str, Any]], None] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> ReviewWords:
     """The model's review of the game's key moves, checked: a call a move, all at once. Without
     thinking unless asked: a small model reasons worse about chess, not better (Tai,
-    2026-09-30). A call that fails drops its move; when every one fails (and none was answered
-    before), the first failure is raised. `answered`: the answers already paid for (words the
-    app was closed in the middle of), not asked again; `on_answer(ply, text, stats)` is handed
-    each new answer the moment it arrives, to keep it. The cost is of the new calls."""
+    2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
+    fails (and none was answered before), the first failure is raised. `answered`: the answers
+    already paid for (words the app was closed in the middle of), not asked again;
+    `on_answer(ply, text, stats)` is handed each new answer the moment it arrives, to keep it.
+    `stop()` true asks no more (the game removed meanwhile): the calls not made fail. The cost
+    is of the new calls."""
     answered = dict(answered or {})
     plies = key_plies(game)
     words = ReviewWords(texts={}, model=getattr(provider, "model", ""))
@@ -660,6 +683,8 @@ def write(
         provider = at_effort("none")
 
     def ask(ply: int) -> Completion | Exception:
+        if stop is not None and stop():
+            return RuntimeError("stopped")
         try:
             return provider.chat(
                 SYSTEM,
@@ -673,7 +698,7 @@ def write(
 
     replies: dict[int, Completion | Exception] = {}
     if todo:
-        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+        with ThreadPoolExecutor(max_workers=min(PARALLEL, len(todo))) as pool:
             asked = {pool.submit(ask, ply): ply for ply in todo}
             for done in as_completed(asked):
                 ply, reply = asked[done], done.result()
@@ -689,6 +714,7 @@ def write(
         reply = replies.get(ply)
         if isinstance(reply, Exception):
             words.dropped[ply] = f"the call failed: {reply}"
+            words.failed.add(ply)
             continue
         if reply is not None:
             spent.record(reply.stats)

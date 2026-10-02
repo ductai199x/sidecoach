@@ -12,7 +12,7 @@
   import Board from "$lib/Board.svelte";
   import { edgeFade } from "$lib/fade";
   import { prefs } from "$lib/panel.svelte";
-  import { className } from "$lib/review/words";
+  import { className, moveLabel } from "$lib/review/words";
   import { inShell, onAnnounce, openWindow } from "$lib/shell.svelte";
   import Sparkline from "$lib/stats/Sparkline.svelte";
   import TrendChart from "$lib/stats/TrendChart.svelte";
@@ -167,7 +167,7 @@
   const NO_GRADE_FLAT = "No grade: players of every level score much alike here, so it says little about strength";
   const small = (n: number | undefined) => (n ?? 0) < SMALL;
   const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
-  const moveNo = (p: StatPosition) => `${Math.ceil(p.ply / 2)}${p.side === "white" ? "." : "..."}`;
+  const moveNo = (p: StatPosition) => moveLabel(p.fen);
 
   // The rating now (the last ten games' moves pooled, the trend's last point) and how it moved
   // against the ten games before them (said only once there are twenty).
@@ -262,11 +262,8 @@
     "endgame.other": "With few pieces left, the king is a fighter: bring it in, and count before each pawn push.",
     quiet: "With no tactic on the board, a plan wins: improve your worst piece, and aim at their weak squares.",
   };
-  const costWords = (w: WorkArea) => {
-    const total = (w.cost * w.games).toFixed(1);
-    const peers = w.peers != null ? `; players of your rating ${w.peers.toFixed(2)}` : "";
-    return `${total} points over your ${plural(w.games, "game")} · ${w.cost.toFixed(2)} a game${peers}`;
-  };
+  // A count, never the summed loss: positions swing back, and the losses add up past the games.
+  const costWords = (w: WorkArea) => `${plural(w.moves, "move")} in your ${plural(w.games, "game")}`;
 
   // What each figure means (ours: chess.com publishes none), shown when the row opens.
   const DEF: Record<string, string> = {
@@ -416,7 +413,7 @@
   <section class="st-content">
     <div class="st-filters" use:edgeFade>
       <div class="seg small" role="group" aria-label="Time control">
-        {#each [["", "All"], ["bullet", "Bullet"], ["blitz", "Blitz"], ["rapid", "Rapid"], ["daily", "Daily"]] as [value, name] (value)}
+        {#each [["", "All"], ["bullet", "Bullet"], ["blitz", "Blitz"], ["rapid", "Rapid"], ["classical", "Classical"], ["daily", "Daily"]] as [value, name] (value)}
           <button class="segbtn" aria-pressed={filter.time_class === value} onclick={() => setFilter({ time_class: value })}>{name}</button>
         {/each}
       </div>
@@ -437,6 +434,8 @@
     {/if}
     {#if !numbers}
       {#if !failure}<div class="rv-progress">Adding up your games…</div>{/if}
+    {:else if !numbers.overview.games && numbers.unsided}
+      <div class="st-empty">{plural(numbers.unsided, "reviewed game")} {numbers.unsided === 1 ? "does" : "do"} not say which side was yours. Add your chess.com or Lichess username in Settings and they count here.</div>
     {:else if !numbers.overview.games}
       <div class="st-empty">No reviewed games {filter.time_class || filter.days || filter.opponents !== "all" ? "for these filters" : "yet"}. {#if backlog}Games you bring in, and games Sidecoach watches, are reviewed in the background{backlog.waiting ? ` — ${backlog.waiting} waiting` : ""}.{:else}Every game you review in Your games counts here.{/if}</div>
     {:else if section === "overview"}

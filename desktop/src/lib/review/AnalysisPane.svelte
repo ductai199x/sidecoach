@@ -9,7 +9,7 @@
   import type { Explored, ReviewMove, ReviewState } from "$lib/api";
   import type { AnalysisDesk, Node } from "./analysis.svelte";
   import EvalGraph from "./EvalGraph.svelte";
-  import { KEY, className, evalSide, evalText, numbered, openingName } from "./words";
+  import { KEY, className, evalSide, evalText, moveLabel, numbered, openingName } from "./words";
 
   let {
     desk,
@@ -21,7 +21,7 @@
     desk: AnalysisDesk;
     room: ReviewState;
     graph: number[];
-    marks: { ply: number; kind: string }[];
+    marks: { ply: number; kind: string; move?: string }[];
     /** The game as a PGN with the board's lines: kept in Downloads (`save`), put on the
      *  clipboard by the phone's app (`copy`), or only written. */
     savePgn: (annotated: boolean, save: boolean, copy?: boolean) => Promise<{ ok: boolean; error?: string; pgn?: string; saved?: string; copied?: boolean }>;
@@ -150,7 +150,7 @@
       .slice(0, 12);
   });
   const gameAt = $derived(node?.game ? node.ply : null);
-  const moveText = (m: ReviewMove) => `${Math.ceil(m.ply / 2)}${m.side === "white" ? "." : "..."} ${m.san}`;
+  const moveText = (m: ReviewMove) => `${moveLabel(m.fen_before)} ${m.san}`;
 </script>
 
 <div class="an-engine">
