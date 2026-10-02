@@ -134,7 +134,8 @@
     if (room) sound(room.positions[shown].fen, uci);
     optimistic = uci;
     inFlight = room?.version ?? null;
-    const res = await api.move(uci);
+    // A failed request must not leave the board waiting on it: the polls are heard again.
+    const res = await api.move(uci).catch(() => null);
     inFlight = null;
     if (res && res.state) render(res.state);
     else { optimistic = null; if (room) renderPieces(room.positions[shown].fen); }
@@ -149,9 +150,11 @@
   let nextId = 1;
 
   function addMessage(line: LogLine) {
-    pending = false;
     const d = line.data || {};
     const you = line.chan === "user";
+    // The echo of the player's own line is not the answer: the dots stay until the coach's
+    // (or a warning that none is coming).
+    if (!you || line.level !== "info") pending = false;
     const marks: Mark[] | null = !you && d.annotations && d.annotations.length ? d.annotations : null;
     messages.push({ id: nextId++, you, meta: you ? "you" : String(d.trigger || "coach").replace("_", " "), text: you ? line.text.replace(/^you: /, "") : d.full || line.text, marks });
     if (marks) coachMarks = marks;
@@ -161,7 +164,7 @@
     if (!t) return;
     pending = true;
     tick().then(() => { if (coachEl) coachEl.scrollTop = coachEl.scrollHeight; });
-    api.ask(t);
+    api.ask(t).catch(() => { pending = false; });
   }
   function send() { const t = text.trim(); if (t) { ask(t); text = ""; } }
 
@@ -187,9 +190,12 @@
       if (!retracting) {
         retracting = true;
         setTimeout(async () => {
-          const res = await api.retract();
+          const res = await api.retract().catch(() => null);
           retracting = false;
           if (res && res.state) render(res.state);
+          // Not taken back (the request failed): the piece goes back here, and the board
+          // takes moves again; the room's next state says the rest.
+          else if (wrongShown && room) { wrongShown = null; renderPieces(room.positions[shown].fen); }
         }, 800);
       }
     } else if (!s.wrong && wrongShown) {
@@ -276,7 +282,7 @@
   // Close the room, then leave: a window or a tab of its own closes; a page with the panel
   // behind it (a phone, where the panel opened it in its own view) goes back to the panel.
   async function leave(): Promise<void> {
-    await api.close();
+    await api.close().catch(() => {});
     window.close();
     if (history.length > 1) { history.back(); return; }
     message = "closed — you can close this tab";
