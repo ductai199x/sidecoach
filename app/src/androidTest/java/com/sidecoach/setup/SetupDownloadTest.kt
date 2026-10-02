@@ -13,6 +13,9 @@ import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * The setup's downloads and its run, against a fake local server: a body cut short, a whole
@@ -116,51 +119,106 @@ class SetupDownloadTest {
         }
     }
 
-    private fun waitIdle(setup: Setup) {
-        val deadline = System.currentTimeMillis() + 10_000
-        while (setup.runState().optBoolean("running") && System.currentTimeMillis() < deadline) Thread.sleep(20)
+    /**
+     * The setup's run thread has ended (joined, not polled against a clock), and its state says
+     * so. [workers] has the run's thread, put there by the item's fetch (or the space check) on it.
+     */
+    private fun runOver(setup: Setup, workers: LinkedBlockingQueue<Thread>) {
+        val worker = workers.poll(HANG_MS, TimeUnit.MILLISECONDS)
+        assertTrue("the run never began", worker != null)
+        worker!!.join(HANG_MS)
+        assertFalse("the setup run never ended", worker.isAlive)
+        assertFalse(setup.runState().optBoolean("running"))
     }
 
+    /**
+     * A second tap while the first setup still looks at the items (detection and the disk checks
+     * take a while in the real items()), or while it fetches them, is refused: one run, one fetch.
+     * Each step is held by a latch, so the second tap lands exactly there (desktop 0bf0f27).
+     */
     @Test
     fun aDoubleTapRunsOneSetup() {
-        val fetched = java.util.concurrent.atomic.AtomicInteger()
+        val fetched = java.util.Collections.synchronizedList(ArrayList<String>())
+        val looked = java.util.concurrent.atomic.AtomicInteger()
+        val looking = CountDownLatch(1)
+        val lookedEnough = CountDownLatch(1)
+        val fetching = CountDownLatch(1)
+        val fetchedEnough = CountDownLatch(1)
+        val workers = LinkedBlockingQueue<Thread>()
         val setup = Setup(app, itemsOf = {
-            Thread.sleep(300)  // what looking at the items on disk costs
-            listOf(Item("kokoro", "voice", 10, { false }, { fetched.incrementAndGet(); Thread.sleep(300) }))
+            looked.incrementAndGet()
+            looking.countDown()
+            assertTrue(lookedEnough.await(HANG_MS, TimeUnit.MILLISECONDS))
+            listOf(
+                Item("kokoro", "voice", 10, { false }, {
+                    workers.put(Thread.currentThread())
+                    fetched.add(Thread.currentThread().name)
+                    fetching.countDown()
+                    assertTrue(fetchedEnough.await(HANG_MS, TimeUnit.MILLISECONDS))
+                }),
+            )
         })
         val results = java.util.Collections.synchronizedList(ArrayList<Boolean>())
         val a = Thread { results += setup.start() }
-        val b = Thread { results += setup.start() }
         a.start()
-        Thread.sleep(50)
-        b.start()
-        a.join()
-        b.join()
-        waitIdle(setup)
+        assertTrue("the first tap never looked at the items", looking.await(HANG_MS, TimeUnit.MILLISECONDS))
+        results += setup.start() // the second tap, while the first one looks
+        assertEquals("refused", listOf(false), results.toList())
+        assertEquals("without looking at the items again", 1, looked.get())
+        lookedEnough.countDown()
+        a.join(HANG_MS)
+        assertFalse(a.isAlive)
         assertEquals(listOf(false, true), results.sorted())
-        assertEquals(1, fetched.get())
+        assertTrue("the run never fetched", fetching.await(HANG_MS, TimeUnit.MILLISECONDS))
+        assertFalse("a tap while the item is fetched is refused too", setup.start())
+        fetchedEnough.countDown()
+        runOver(setup, workers)
+        assertEquals("one fetch, on the setup's thread", listOf("setup"), fetched.toList())
+        // And a later run is allowed once this one is over.
+        assertTrue(setup.start())
+        runOver(setup, workers)
+        assertEquals(2, fetched.size)
     }
 
+    /**
+     * Cancel pressed while the first item is mid-way: the item stops at its next chunk (its
+     * progress call raises), and the second item never begins. The fetch holds at chunk 10
+     * until the Cancel is in, so the chunk it stops at is exact.
+     */
     @Test
     fun cancelStopsTheItemUnderWay() {
-        val chunks = java.util.concurrent.atomic.AtomicInteger()
-        val fetch: (Progress) -> Unit = { progress ->
+        val chunks = java.util.Collections.synchronizedList(ArrayList<Int>())
+        val begun = java.util.Collections.synchronizedList(ArrayList<String>())
+        val midway = CountDownLatch(1)
+        val cancelled = CountDownLatch(1)
+        val workers = LinkedBlockingQueue<Thread>()
+        fun fetcher(name: String): (Progress) -> Unit = { progress ->
+            workers.put(Thread.currentThread())
+            begun.add(name)
             for (n in 0 until 200) {
                 progress(n.toLong(), 200)
-                chunks.incrementAndGet()
-                Thread.sleep(10)
+                chunks.add(n)
+                if (n == 10) {
+                    midway.countDown()
+                    assertTrue(cancelled.await(HANG_MS, TimeUnit.MILLISECONDS))
+                }
             }
         }
         val setup = Setup(app, itemsOf = {
-            listOf(Item("a", "A", 200, { false }, fetch), Item("b", "B", 200, { false }, fetch))
+            listOf(Item("a", "A", 200, { false }, fetcher("a")), Item("b", "B", 200, { false }, fetcher("b")))
         })
         assertTrue(setup.start())
-        Thread.sleep(200)
+        assertTrue("the first item never got under way", midway.await(HANG_MS, TimeUnit.MILLISECONDS))
+        assertEquals("a", setup.runState().getString("item"))
+        assertTrue(setup.runState().getBoolean("running"))
         setup.cancel()
-        waitIdle(setup)
+        cancelled.countDown()
+        runOver(setup, workers)
         val state = setup.runState()
         assertFalse(state.getBoolean("running"))
-        assertTrue("the first item ran on: ${chunks.get()}", chunks.get() < 100)
+        assertTrue("the first item ran on: ${chunks.size}", chunks.size < 100)
+        assertEquals("stopped at the first chunk after the Cancel", (0..10).toList(), chunks.toList())
+        assertEquals("the second never began", listOf("a"), begun.toList())
         assertEquals(0, state.getJSONArray("finished").length())
         assertEquals(0, state.getJSONObject("errors").length())
     }
@@ -168,14 +226,23 @@ class SetupDownloadTest {
     @Test
     fun tooLittleSpaceIsAnErrorNotAFetch() {
         var fetched = false
+        val workers = LinkedBlockingQueue<Thread>()
         val setup = Setup(
             app,
             itemsOf = { listOf(Item("big", "Big", 1_000_000_000_000, { false }, { fetched = true })) },
-            freeSpace = { 1_000_000_000L },
+            freeSpace = {
+                workers.put(Thread.currentThread()) // the run's thread looks at the space
+                1_000_000_000L
+            },
         )
         assertTrue(setup.start())
-        waitIdle(setup)
+        runOver(setup, workers)
         assertFalse(fetched)
         assertTrue(setup.runState().getJSONObject("errors").getString("big").contains("free space"))
+    }
+
+    private companion object {
+        // A safety net for a thread's signal, never the expected path.
+        const val HANG_MS = 60_000L
     }
 }

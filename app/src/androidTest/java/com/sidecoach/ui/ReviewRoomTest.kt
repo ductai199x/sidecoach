@@ -1,6 +1,5 @@
 package com.sidecoach.ui
 
-import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.Engine
@@ -57,21 +56,43 @@ class ReviewRoomTest {
         }
     }
 
-    private fun maker(): EngineMaker? {
+    /**
+     * The engines a review makes, as the app makes them (`ReviewRoom.engineMaker`): the bundled
+     * Stockfish with the network, the threads the review asks for (GameReview.THREADS) and the
+     * settings' default hash, 64 MB. [closing] runs as each engine is closed, before its review
+     * goes on to save -- where a test holds a review that is to finish second.
+     */
+    private fun maker(closing: (() -> Unit)? = null): EngineMaker? {
         val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
         val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
         if (!binary.exists() || net == null) return null
-        return EngineMaker { threads, multipv -> Engine(binary, net, threads = threads, hashMb = 64, multipv = multipv) }
+        if (closing == null) return EngineMaker { threads, multipv -> Engine(binary, net, threads = threads, hashMb = 64, multipv = multipv) }
+        return EngineMaker { threads, multipv ->
+            object : Engine(binary, net, threads = threads, hashMb = 64, multipv = multipv) {
+                override fun close() {
+                    closing()
+                    super.close()
+                }
+            }
+        }
     }
 
-    private fun until(room: ReviewRoom, seconds: Int, what: String, done: (JSONObject) -> Boolean): JSONObject {
-        val end = SystemClock.elapsedRealtime() + seconds * 1000L
-        while (true) {
-            val state = room.state()
-            if (done(state)) return state
-            assertTrue("$what: ${state.toString().take(400)}", SystemClock.elapsedRealtime() < end && state.getString("status") != "failed")
-            Thread.sleep(200)
-        }
+    /**
+     * The room's state once it has settled -- reviewed, loaded or failed: its own signal
+     * ([ReviewRoom.settled]), set when the review ends, not a poll against a clock. [boundMs]
+     * only bounds a hang (the bounds the polls had).
+     */
+    private fun settled(room: ReviewRoom, boundMs: Long, what: String): JSONObject {
+        assertTrue("$what: never settled: ${room.state().toString().take(400)}", room.settled.await(boundMs))
+        val state = room.state()
+        assertEquals("$what: ${state.toString().take(400)}", "ready", state.getString("status"))
+        return state
+    }
+
+    /** The room's state once the AI coach's words asked for are written: [ReviewRoom.wordsDone]. */
+    private fun written(room: ReviewRoom, boundMs: Long, what: String): JSONObject {
+        assertTrue("$what: never written: ${room.state().toString().take(400)}", room.wordsDone.await(boundMs))
+        return room.state()
     }
 
     @Test
@@ -87,7 +108,10 @@ class ReviewRoomTest {
         Store(storePath).apply { addLibraryGame(row) }.close()
         val settings = SettingsStore(context)
         val model = Scripted()
-        fun room(copier: ((String) -> Unit)? = null) = ReviewRoom(files, settings, row, storePath, "fast", maker!!, model = { model to null }, copier = copier)
+        // The engines the rooms make, counted: a review opened again searches nothing.
+        val made = java.util.concurrent.atomic.AtomicInteger()
+        val counted = EngineMaker { threads, multipv -> made.incrementAndGet(); maker!!.make(threads, multipv) }
+        fun room(copier: ((String) -> Unit)? = null) = ReviewRoom(files, settings, row, storePath, "fast", counted, model = { model to null }, copier = copier)
 
         // While it is analysed, the game's positions for the board to play out as the progress goes.
         val playing = ReviewRoom.playback(row.pgn)
@@ -98,7 +122,8 @@ class ReviewRoomTest {
         val first = room()
         val opening = first.state()
         if (opening.getString("status") != "ready") assertEquals(playing.toString(), opening.getJSONArray("playback").toString())
-        var state = until(first, 180, "reviewed") { it.getString("status") == "ready" }
+        var state = settled(first, 180_000, "reviewed")
+        assertEquals("one engine reviewed it (GameReview.workersFor on this device)", GameReview.workersFor(), made.get())
         assertTrue("the review shown, the playback gone", state.isNull("playback"))
         assertEquals(8, state.getJSONObject("progress").getInt("done"))
         assertEquals(8, state.getJSONObject("progress").getInt("total"))
@@ -110,7 +135,8 @@ class ReviewRoomTest {
 
         // The words, written in the background and kept with the review.
         assertEquals(null, first.writeWords())
-        state = until(first, 60, "words") { it.getJSONObject("ai").getString("status") == "ready" }
+        state = written(first, 60_000, "words")
+        assertEquals(state.toString().take(400), "ready", state.getJSONObject("ai").getString("status"))
         assertEquals(keyMoves, model.asked.size)
         val saved = Store(storePath).let { s -> s.review(row.key, "fast").also { s.close() } }!!
         val words = JSONObject(saved.words!!)
@@ -122,7 +148,9 @@ class ReviewRoomTest {
         // Opened again: the saved review and its words at once, nothing searched.
         val copied = mutableListOf<String>()
         val second = room(copier = { copied.add(it) })
-        state = until(second, 10, "loaded") { it.getString("status") == "ready" }
+        val searched = made.get()
+        state = settled(second, 10_000, "loaded")
+        assertEquals("loaded, nothing searched", searched, made.get())
         assertEquals("ready", state.getJSONObject("ai").getString("status"))
         assertTrue(state.getJSONObject("ai").getJSONObject("words").has("links"))
         // Copy PGN: the app puts the annotated game on the clipboard (the web view's refuses) and says so.
@@ -147,11 +175,13 @@ class ReviewRoomTest {
         }.close()
         model.asked.clear()
         val third = room()
-        state = until(third, 10, "loaded part way") { it.getString("status") == "ready" }
+        state = settled(third, 10_000, "loaded part way")
         assertEquals("none", state.getJSONObject("ai").getString("status"))
         assertEquals(1, state.getJSONObject("ai").getInt("answered"))
         assertEquals(null, third.writeWords())
-        until(third, 60, "the rest of the words") { it.getJSONObject("ai").getString("status") == "ready" }
+        state = written(third, 60_000, "the rest of the words")
+        assertEquals(state.toString().take(400), "ready", state.getJSONObject("ai").getString("status"))
+        assertEquals("nothing searched", searched, made.get())
         assertFalse("the paid answer was asked again", paid in model.asked)
         assertEquals(keyMoves - 1, model.asked.size)
         third.close()
@@ -174,10 +204,7 @@ class ReviewRoomTest {
             mkdirs()
         }
         val settings = SettingsStore(context)
-        // "fast" by name, as the store keys it, at depth 8: what is checked is the pairing, the
-        // headers and clocks carried, and which positions are searched again -- not the verdicts,
-        // which two reviews of sixteen plies at depth 14 took most of the class's time to reach.
-        val fast = GameReview.STRENGTHS.getValue("fast").copy(depth = 8)
+        val fast = GameReview.STRENGTHS.getValue("fast")
 
         fun watchedAndImported(name: String, sans: List<String>): Pair<Store, LibraryRow> {
             val store = Store(File(files, "$name.sqlite"))
@@ -195,6 +222,27 @@ class ReviewRoomTest {
             return store to row
         }
 
+        // The misread game's two reviews (its watched record, then its import) on a thread of
+        // their own, side by side with the same game's: each game has its own store and its own
+        // engine of GameReview.THREADS threads, and nothing of one is the other's. What each
+        // asserts is unchanged; a failure there is raised here by `get`.
+        val beside = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val misread = beside.submit(
+            java.util.concurrent.Callable {
+                val (other, otherRow) = watchedAndImported("misread", SANS.take(6) + "d4" + SANS.drop(7))
+                try {
+                    assertEquals("nothing to carry whole", emptyList<String>(), ReviewRoom.carryTwins(other, Library.reconcile(other)))
+                    var known = -1
+                    val reviewed = ReviewRoom.reviewRow(settings, files, otherRow, other, fast, 1, maker!!, onProgress = { done, _ -> if (known < 0) known = done })
+                    assertTrue(reviewed != null)
+                    known
+                } finally {
+                    other.close()
+                }
+            },
+        )
+        beside.shutdown()
+
         val (store, row) = watchedAndImported("same", SANS)
         val twins = Library.reconcile(store)
         assertEquals(mapOf("watched:g1" to row.key), twins)
@@ -208,13 +256,9 @@ class ReviewRoomTest {
         assertEquals("carried once", emptyList<String>(), ReviewRoom.carryTwins(store, twins))
         store.close()
 
-        val (other, otherRow) = watchedAndImported("misread", SANS.take(6) + "d4" + SANS.drop(7))
-        assertEquals("nothing to carry whole", emptyList<String>(), ReviewRoom.carryTwins(other, Library.reconcile(other)))
-        var known = -1
-        val reviewed = ReviewRoom.reviewRow(settings, files, otherRow, other, fast, 1, maker!!, onProgress = { done, _ -> if (known < 0) known = done })
-        assertTrue(reviewed != null)
+        // A safety net on the misread game's reviews, not a wait the test expects to reach.
+        val known = misread.get(360, java.util.concurrent.TimeUnit.SECONDS)
         assertEquals("the seven positions before the misread move, not searched again", 7, known)
-        other.close()
     }
 
     /**
@@ -241,7 +285,10 @@ class ReviewRoomTest {
         assertNull(store.review(row.key, "deep"))
         store.close()
 
-        // A review finishing second is handed the one saved first.
+        // A review finishing second is handed the one saved first. The two run at once, as the
+        // desktop's background review and a review window did, each on an engine of its own:
+        // the second, its search done, is held as its engine closes -- the step before it
+        // saves -- until the first is saved and the player has paid for words on it.
         val maker = maker()
         assumeTrue("the engine or its network is missing", maker != null)
         val files = File(context.cacheDir, "review-first").apply {
@@ -252,12 +299,24 @@ class ReviewRoomTest {
         val fast = GameReview.STRENGTHS.getValue("fast")
         val own = Store(File(files, "profile.sqlite"))
         own.addLibraryGame(row)
+        val firstSaved = CountDownLatch(1)
+        val searched = CountDownLatch(1)
+        val heldUntilSaved = java.util.concurrent.atomic.AtomicBoolean(false)
+        val second = maker { searched.countDown(); heldUntilSaved.set(firstSaved.await(180, TimeUnit.SECONDS)) }!!
+        val beside = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val secondReview = beside.submit(java.util.concurrent.Callable { ReviewRoom.reviewRow(settings, files, row, own, fast, 1, second) })
+        beside.shutdown()
         val once = ReviewRoom.reviewRow(settings, files, row, own, fast, 1, maker!!)!!
         own.setReviewWords(row.key, "fast", "{\"texts\": {}}")
         val saved = own.review(row.key, "fast")
-        val twice = ReviewRoom.reviewRow(settings, files, row, own, fast, 1, maker)!!
+        firstSaved.countDown()
+        // A safety net on the second review, not a wait the test expects to reach.
+        val twice = secondReview.get(180, TimeUnit.SECONDS)!!
+        assertTrue("the second review's search ended before it was held", searched.count == 0L)
+        assertTrue("the second review was held until the first was saved", heldUntilSaved.get())
         assertEquals("the review saved first, and its words", saved, own.review(row.key, "fast"))
         assertEquals("handed the saved one", once.first.seconds, twice.first.seconds, 0.0)
+        assertTrue("nothing kept part way", own.progress(row.key, "fast", fast.depth, fast.multipv).isEmpty())
         own.close()
     }
 
@@ -266,11 +325,15 @@ class ReviewRoomTest {
         override val name = "held"
         val asked: MutableSet<Int> = ConcurrentHashMap.newKeySet()
 
+        /** An answer that went on without being released: the test lost a step. */
+        @Volatile var unreleased = false
+
         override fun healthcheck(): Pair<Boolean, String> = true to "held"
 
         override fun chat(system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean): Completion {
             asked.add(PLY.find(messages[0].content)?.groupValues?.get(1)?.toInt() ?: -1)
-            go.await(20, TimeUnit.SECONDS)
+            // A bound on a hang, never the expected path: the test releases it.
+            if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) unreleased = true
             return Completion(
                 text = "### why\nThis gives the opponent time.\n### lesson\nLook at what your opponent can do next.",
                 stats = mapOf("prompt_tokens" to 1000.0, "completion_tokens" to 300.0),
@@ -314,8 +377,11 @@ class ReviewRoomTest {
         assertTrue("loaded", room.settled.await(HANG_MS) && room.status == "ready")
         assertNull(room.writeWords())
         room.close()
-        // The room's own rule, asked at any moment: closed while writing, it does not end.
-        assertFalse("open while its words are written", room.closing(SystemClock.elapsedRealtime()))
+        // The room's own rule, asked at any moment: closed while writing, it does not end -- not
+        // even once it has been left idle past IDLE_CLOSE_MS (asked at the room's own times).
+        for (now in listOf(room.touched, room.touched + ReviewRoom.IDLE_CLOSE_MS + 1)) {
+            assertFalse("open while its words are written", room.closing(now))
+        }
         assertFalse(room.closed)
         assertTrue("opened again: the same room goes on", room.reopen())
         assertEquals("writing", room.state().getJSONObject("ai").getString("status"))
@@ -325,7 +391,10 @@ class ReviewRoomTest {
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
         val asked = model.asked.size
         assertEquals("asked once each", game.getJSONArray("key_plies").length(), asked)
-        assertFalse("opened again, it stays open", room.closing(SystemClock.elapsedRealtime()))
+        assertFalse("every answer waited for the test's release", model.unreleased)
+        assertFalse("opened again, it stays open", room.closing(room.touched))
+        assertFalse("... while it is used", room.closing(room.touched + ReviewRoom.IDLE_CLOSE_MS))
+        assertTrue("... and not when idle", room.closing(room.touched + ReviewRoom.IDLE_CLOSE_MS + 1))
         assertFalse(room.closed)
         room.close()
         room.join(HANG_MS)
@@ -339,11 +408,12 @@ class ReviewRoomTest {
         assertTrue("loaded again", again.settled.await(HANG_MS) && again.status == "ready")
         assertNull(again.writeWords())
         again.close()
-        assertFalse("writing: stays", again.closing(SystemClock.elapsedRealtime()) || again.closed)
+        assertFalse("writing: stays", again.closing(again.touched) || again.closed)
         go.countDown()
         again.join(HANG_MS)
         assertTrue("closed once its words are saved", again.closed)
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
+        assertFalse("every answer waited for the test's release", model.unreleased)
     }
 
     /** A game of the desktop's saved reviews (profile/reviews.json) at Fast with key moves, saved in a store of its own. */
@@ -535,7 +605,7 @@ class ReviewRoomTest {
             addProgress(row.key, "fast", fast.depth, fast.multipv, "c", "{}")
         }.close()
         val room = ReviewRoom(files, SettingsStore(context), row, storePath, "fast", EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") })
-        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        settled(room, 10_000, "loaded")
         room.close()
         room.join()
         val store = Store(storePath)
