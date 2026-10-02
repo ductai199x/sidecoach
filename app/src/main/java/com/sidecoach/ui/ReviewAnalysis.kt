@@ -35,8 +35,13 @@ object ReviewAnalysis {
     const val LINES = 3
     const val LINE_PLIES = 10
 
-    // A review's labels as PGN's move marks, and as the word its comment begins with.
-    val NAGS = mapOf("brilliant" to 3, "great" to 1, "inaccuracy" to 6, "mistake" to 2, "miss" to 2, "blunder" to 4)
+    // A review's labels as PGN's move marks, and as the word its comment begins with. A miss has
+    // no mark of its own: it takes its loss's (`severity`) -- "?" was put on every miss, one that
+    // lost nothing (a mate let go, still winning) and a blunder-sized one alike.
+    val NAGS = mapOf("brilliant" to 3, "great" to 1, "inaccuracy" to 6, "mistake" to 2, "blunder" to 4)
+
+    /** The PGN mark of a reviewed move: its label's, a miss its loss's, else none. `nag`. */
+    fun nag(label: String?, severity: String?): Int? = if (label == "miss") NAGS[severity] else NAGS[label]
     val WORDS = linkedMapOf(
         "brilliant" to "Brilliant",
         "great" to "Great move",
@@ -254,7 +259,7 @@ object ReviewAnalysis {
             val view = views[ply] ?: return
             if (!annotated) return
             val label = if (view.isNull("label")) null else view.getString("label")
-            NAGS[label]?.let { node.nags.add(it) }
+            nag(label, if (view.isNull("severity")) null else view.optString("severity"))?.let { node.nags.add(it) }
             val said = texts?.optJSONObject(ply.toString())
             val parts = arrayListOf(
                 comment(label, if (view.isNull("best_san")) null else view.getString("best_san"), view.getString("san"), view.optJSONObject("eval")),

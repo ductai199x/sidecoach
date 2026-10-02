@@ -49,6 +49,7 @@ object ReviewViews {
                     .put("label", move.assessment.label?.let { ReviewJson.labelName(it) } ?: JSONObject.NULL)
                     .put("accuracy", move.assessment.accuracy ?: JSONObject.NULL)
                     .put("loss", GameSummaries.round(move.assessment.expectedLoss, 4))
+                    .put("severity", move.assessment.severity.name.lowercase())
                     .put("best_uci", best.firstOrNull() ?: JSONObject.NULL)
                     .put("best_san", if (line.length() > 0) line.getJSONObject(0).getString("san") else JSONObject.NULL)
                     .put("best_line", line)
