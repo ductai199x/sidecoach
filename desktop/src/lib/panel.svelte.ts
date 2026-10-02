@@ -2,7 +2,7 @@
 // component through runes. What the old app.js kept in module variables lives here;
 // what it rendered by hand the components derive.
 
-import { connect, panel, put, restartSidecar, type LogLine, type Mark, type PanelState } from "./api";
+import { connect, noAnswer, panel, put, restartSidecar, type LogLine, type Mark, type PanelState } from "./api";
 
 export type TermRow = { key: string; count: number; line: LogLine; open: boolean };
 
@@ -29,8 +29,6 @@ const MAX_ROWS = 1500;
 // three games' worth of coach items, and the conversation's turns likewise.
 const MAX_COACH = 200;
 const MAX_CONVO = 400;
-// Refused polls in a row (250 ms apart) before the page says the sidecar is gone.
-const OFFLINE_AFTER = 8;
 export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "user", "puzzle"] as const;
 
 /** The sizes and switches the player set, remembered across sessions. */
@@ -88,9 +86,10 @@ export class PanelStore {
   listenMode = $state("off");
   pttDown = $state(false);
   connected = $state(false);
-  /** Why the sidecar cannot be reached, when it cannot: the page says so with a Restart. */
+  /** Why the sidecar gives no good answer, when it does not: the page says so. */
   offline = $state<string | null>(null);
-  private failures = 0;
+  /** The sidecar's process has ended (or could not start): the page offers a Restart. */
+  stopped = $state(false);
   cursor = 0;
   private lastCoachTurn: ConvoTurn | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -133,11 +132,12 @@ export class PanelStore {
     } catch (e) {
       // The shell could not start the sidecar: said plainly, with a Restart.
       this.offline = `Couldn't start: ${e instanceof Error ? e.message : String(e)}`;
+      this.stopped = true;
       return;
     }
     this.connected = true;
     this.offline = null;
-    this.failures = 0;
+    this.stopped = false;
     try {
       const first = await panel.poll(0);
       if (first.state) this.state = first.state;
@@ -153,11 +153,13 @@ export class PanelStore {
   async restart(): Promise<void> {
     this.stop();
     this.offline = "Restarting...";
+    this.stopped = false;
     this.cursor = 0;
     try {
       await restartSidecar();
     } catch (e) {
       this.offline = `Couldn't start: ${e instanceof Error ? e.message : String(e)}`;
+      this.stopped = true;
       return;
     }
     await this.start();
@@ -178,12 +180,13 @@ export class PanelStore {
       if (res.cursor !== undefined) this.cursor = Math.max(this.cursor, res.cursor);
       if (res.lines) for (const line of res.lines) this.addLine(line);
       if (res.state) this.apply(res.state);
-      this.failures = 0;
+      this.stopped = false;
       if (this.offline) this.offline = null;
-    } catch {
-      // The window closing, a blip, or the sidecar gone: two seconds of refusals say so.
-      this.failures++;
-      if (this.failures >= OFFLINE_AFTER && !this.offline) this.offline = "Sidecoach stopped";
+    } catch (e) {
+      // An error answer, a blip, or the sidecar's process gone: the shell tells them apart.
+      const why = await noAnswer(e);
+      this.stopped = !!why?.stopped;
+      this.offline = why?.text ?? null;
     }
     this.timer = setTimeout(() => this.tick(), 250);
   }

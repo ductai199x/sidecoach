@@ -105,6 +105,46 @@ async function send(path: string, init: () => RequestInit): Promise<Response> {
   }
 }
 
+/** The sidecar answered, with an error: it is running (a 500, a body that is not JSON). */
+export class ServerError extends Error {
+  readonly status: number;
+  constructor(status: number, detail: string) {
+    super(`Sidecoach answered an error (${status})${detail ? ": " + detail : ""}`);
+    this.status = status;
+  }
+}
+
+/** A GET whose error answer is told apart from no answer: a ServerError for the first, the
+ *  fetch's own failure for the second. */
+async function getChecked<T>(path: string): Promise<T> {
+  const r = await send(path, () => ({ headers: headers(false) }));
+  const text = await r.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new ServerError(r.status, text.trim().slice(0, 200));
+  }
+  if (!r.ok) {
+    const d = (body as { detail?: unknown } | null)?.detail;
+    throw new ServerError(r.status, typeof d === "string" ? d : "");
+  }
+  return body as T;
+}
+
+/** What the panel says when a poll got no good answer, or null for nothing to say.
+ *  "stopped" only when the sidecar's process has ended, which only the shell knows (it holds
+ *  the child): a live sidecar answering an error shows that error, and one the shell still
+ *  holds alive is a blip (the next poll goes on). In a browser there is no shell: a request
+ *  that reached nobody says so as it is, and the next answer clears it (Tai, 2026-10-02:
+ *  no count of failed polls decides that the sidecar stopped). */
+export async function noAnswer(e: unknown): Promise<{ text: string; stopped: boolean } | null> {
+  if (e instanceof ServerError) return { text: e.message, stopped: false };
+  if (!isTauri()) return { text: "Can't reach Sidecoach", stopped: false };
+  const status = await invoke<{ exited?: boolean }>("sidecar_status").catch(() => null);
+  return status?.exited ? { text: "Sidecoach stopped", stopped: true } : null;
+}
+
 export async function get<T = unknown>(path: string): Promise<T> {
   const r = await send(path, () => ({ headers: headers(false) }));
   return (await r.json()) as T;
@@ -147,7 +187,7 @@ export function beacon(path: string): void {
 export type Poll = { state?: PanelState; lines?: LogLine[]; cursor?: number };
 
 export const panel = {
-  poll: (since: number) => get<Poll>(`/api/poll?since=${since | 0}`),
+  poll: (since: number) => getChecked<Poll>(`/api/poll?since=${since | 0}`),
   /** The state alone, no log lines (the captions' window; the phone ignores `lines` and its
    *  page has no such window). */
   pollState: () => get<Poll>("/api/poll?lines=0"),
