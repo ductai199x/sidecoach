@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- The engine's network is fetched once, as the desktop fetches the engine. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The setup's downloads go on with the app in the background, in a service Android
+         shows a notification for while a download runs (setup/SetupService.kt). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- The captions: the coach's words in a box over other apps, allowed by the user. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
@@ -57,5 +60,10 @@
             android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection|microphone" />
+
+        <service
+            android:name=".setup.SetupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

@@ -16,7 +16,8 @@ import org.json.JSONObject
  */
 class SetupApi(private val context: Context) {
 
-    private val setup = Setup(context)
+    // Its downloads held in the foreground while they run (Tai, 2026-10-02).
+    private val setup = Setup(context).also { com.sidecoach.setup.SetupService.follow(context, it) }
 
     fun status(): JSONObject = setup.status().apply {
         // No GPU pack on a phone; the page shows the section only when it is told of one.
