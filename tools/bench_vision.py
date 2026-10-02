@@ -12,8 +12,8 @@ Run it with the installed app's interpreter to measure the shipped runtime as th
     C:/Users/Tai/AppData/Local/Sidecoach/python/python.exe tools/bench_vision.py
     ... tools/bench_vision.py --width 3840 --height 2160 --cell 120 --fps 10
 
-The installed package is imported first; the repository's root is added after it only so that
-`tests.synth` (which the app does not ship) can render the frames.
+The repository's root is put on the path only so that `tests.synth` (which the app does not
+ship) can render the frames; `sidecoach` itself comes from the interpreter running the script.
 """
 
 from __future__ import annotations
@@ -32,7 +32,9 @@ import cv2
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.append(str(REPO))
+# First, or another distribution's top-level `tests` package shadows the repository's. The root
+# holds no `sidecoach` (the package is under src/), so the interpreter's own copy is the one used.
+sys.path.insert(0, str(REPO))
 
 from sidecoach.events import Event, MovePlayed  # noqa: E402
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402

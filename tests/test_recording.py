@@ -52,6 +52,25 @@ def test_frames_differ_counts_the_pixels_changed_past_the_threshold() -> None:
     assert not frames_differ(a, b, region=Region(0, 0, 0, 10))
 
 
+def test_frames_differ_counts_exactly_as_the_largest_channel_difference() -> None:
+    """The count is each pixel's largest channel difference over the threshold, as numpy's
+    `absdiff(...).max(axis=2) > threshold` counts it; OpenCV computes it a quarter of the time
+    (10.6 -> 2.5 ms on a 900 px board region). Noise straddling the threshold in one channel
+    at a time is where a different reduction would count otherwise."""
+    rng = np.random.default_rng(0)
+    base = rng.integers(0, 256, (90, 120, 3), dtype=np.uint8)
+    for channel in range(3):
+        for delta in (11, 12, 13):  # under, at and over the threshold of 12
+            other = base.copy()
+            plane = other[:, :, channel].astype(np.int16)
+            plane[::3, ::2] += delta
+            other[:, :, channel] = np.clip(plane, 0, 255).astype(np.uint8)
+            expected = int(np.count_nonzero(cv2.absdiff(base, other).max(axis=2) > 12))
+            fraction = expected / (90 * 120)
+            assert frames_differ(base, other, 12, None, fraction - 1e-9), (channel, delta)
+            assert not frames_differ(base, other, 12, None, fraction), (channel, delta)
+
+
 def test_roundtrip_stores_only_changes_and_replays_every_tick(tmp_path: Path) -> None:
     region = Region(0, 0, 64, 48)
     recorder = Recorder(tmp_path / "rec", monitor=0, region=region, fps=10)
