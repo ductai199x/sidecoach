@@ -147,6 +147,31 @@ val COST_YOU = listOf(
 )
 
 /**
+ * One bag per severity: "that cost you something" undersold a blunder (the facts audit,
+ * 2026-10-01). A mistake keeps COST_YOU.
+ */
+val COST_BY_SEVERITY = mapOf(
+    "inaccuracy" to listOf(
+        "A small slip: {best} was a little better",
+        "Close, but {best} was more precise",
+        "That gave a little away -- {best} was better",
+    ),
+    "mistake" to COST_YOU,
+    "blunder" to listOf(
+        "That one costs a lot: {best} was the move",
+        "A serious mistake -- {best} was much better",
+        "That one hurts: {best} was the move",
+    ),
+)
+
+/** The cost bag a missed best move draws from. */
+fun costKind(severity: Severity, label: String): String = when {
+    severity == Severity.BLUNDER || label == "blunder" -> "blunder"
+    severity == Severity.INACCURACY || label == "inaccuracy" -> "inaccuracy"
+    else -> "mistake"
+}
+
+/**
  * The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
  * position. Keyed by the pattern's name as the fact sheet gives it.
  */
