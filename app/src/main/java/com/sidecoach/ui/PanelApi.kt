@@ -170,6 +170,10 @@ class PanelApi(
                 }
             )
 
+            // The desktop shell asks its sidecar to end its session and exit before a quit
+            // (desktop 18a4715); the phone's app is ended by Android, never by the page.
+            path == "/api/shutdown" -> ok(JSONObject().put("ok", false))
+
             path == "/api/clear_caches" -> {
                 // The rooms let go of the puzzle store first (a file held open cannot go), and
                 // open it again after -- rebuilt from the CSVs by the session, or at the open.
@@ -527,7 +531,7 @@ class PanelApi(
             "POST" to setOf(
                 "/api/perf", "/api/client_log", "/api/dump", "/api/start", "/api/stop", "/api/hint",
                 "/api/move", "/api/line", "/api/flip", "/api/analyze", "/api/ask", "/api/hear_test",
-                "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record",
+                "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record", "/api/shutdown",
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
                 "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/own",
