@@ -164,7 +164,9 @@ def report(result: Result, screen: Screen, fps: float) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description="The vision pipeline's per-frame cost and move-to-commit delay."
+    )
     parser.add_argument("--width", type=int, default=2560)
     parser.add_argument("--height", type=int, default=1440)
     parser.add_argument("--cell", type=int, default=100, help="square size in pixels")
