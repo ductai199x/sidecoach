@@ -589,6 +589,21 @@ def look_changed_mid_game(**look) -> list[dict]:
     return states
 
 
+def look_kept_for_a_restart() -> list[dict]:
+    """`test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start` (round 3 audit, E11):
+    the piece set changed mid-game, learned again from the game's position and cached beside
+    the start's; the app restarted (`_session`: a fresh pipeline on the same theme cache) on
+    the game in the new set, held still: read cold from the cache, and its next moves
+    followed."""
+    board = chess.Board()
+    states = [dict(_shown(board, 3), _session=True), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
+    states.append(dict(_shown(board, 10, highlight=board.peek(), style="pixel"), _changed=[True] + [False] * 9))
+    states += _moves(board, ("Nc6",), repeat=3, style="pixel")
+    states.append(dict(_shown(board, int(round(8.0 * FPS)), highlight=board.peek(), style="pixel"), _session=True))
+    states += _moves(board, ("Bb5", "a6"), repeat=3, style="pixel")
+    return states
+
+
 def set_read_one_piece_wrong(before: str, after: str, opening: str, rest: str) -> list[dict]:
     """`test_a_set_read_with_one_piece_wrong_is_learned_again` (round 3): the look-change
     sweep's set changes the old recogniser read with one piece wrong, which a frame "within a
@@ -1156,6 +1171,8 @@ SCENARIOS = {
     # Round 2, finding 2: a theme, then a piece set, changed mid-game.
     "theme-changed-mid-game": lambda: look_changed_mid_game(theme="brown"),
     "set-changed-mid-game": lambda: look_changed_mid_game(style="pixel"),
+    # Round 3 audit, E11: the set learned mid-game cached, and read cold after a restart.
+    "look-kept-for-a-restart": look_kept_for_a_restart,
     # Round 3: set changes read with one piece wrong, and a look that cannot be learned.
     "set-one-wrong-maestro-cburnett": lambda: set_read_one_piece_wrong(
         "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
@@ -1278,6 +1295,10 @@ EXPECT = {
     ),
     "set-changed-mid-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
+    ),
+    # The start's set and the one learned mid-game, both cached; the restart read cold.
+    "look-kept-for-a-restart": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"] and data["themes"] == 2
     ),
     "set-one-wrong-maestro-cburnett": lambda lines, data: (
         len(_sans(lines)) == 10 and data["bootstraps"] == 1
