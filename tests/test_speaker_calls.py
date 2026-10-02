@@ -3,6 +3,7 @@ call counted, none made twice for one answer or after the session is gone."""
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -117,3 +118,29 @@ def test_a_call_lost_after_it_was_sent_is_counted() -> None:
     with pytest.raises(httpx.ConnectError):
         provider.chat("sys", [{"role": "user", "content": "hi"}])
     assert provider.usage.calls == 0
+
+
+class Slow(ScriptedProvider):
+    """A model that takes a while a call, and says when it has started one."""
+
+    def __init__(self) -> None:
+        super().__init__(then="Fine move.")
+        self.started = threading.Event()
+
+    def chat(self, system: str, messages: Sequence[ChatMessage], **kw: Any) -> Completion:
+        self.started.set()
+        time.sleep(0.3)
+        return super().chat(system, messages)
+
+
+def test_closing_drops_what_is_queued() -> None:
+    model = Slow()
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.start()
+    for trigger in (Trigger.POST_MOVE, Trigger.USER_ASK, Trigger.USER_ASK, Trigger.USER_ASK):
+        speaker.submit(_request(trigger))
+    assert model.started.wait(5)
+    speaker.close(timeout=5)
+    time.sleep(0.5)
+    # The call in flight finishes; nothing queued behind it is asked, or paid for.
+    assert len(model.calls) == 1

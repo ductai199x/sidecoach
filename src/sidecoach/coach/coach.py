@@ -1455,6 +1455,14 @@ class Speaker:
             self._thread.start()
 
     def close(self, timeout: float = 10.0) -> None:
+        """Stop: what is queued is dropped unasked (the session is gone; nobody would hear
+        it, and each would be paid), and a call in flight is not asked again."""
+        self._closed.set()
+        while True:
+            try:
+                self._requests.get_nowait()
+            except queue.Empty:
+                break
         thread, self._thread = self._thread, None
         if thread is not None:
             self._requests.put(None)
@@ -1551,7 +1559,7 @@ class Speaker:
                 attempts=0,
                 epoch=request.epoch,
             )
-        while attempts < 2:
+        while attempts < 2 and not (attempts and self._closed.is_set()):
             attempts += 1
             stats: dict[str, Any] = {}
             reader: _FirstCandidate | None = None
@@ -1952,7 +1960,7 @@ class Speaker:
     def _run(self) -> None:
         while True:
             request = self._requests.get()
-            if request is None:
+            if request is None or self._closed.is_set():
                 return
             self._busy.set()
             try:
