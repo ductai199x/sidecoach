@@ -915,9 +915,11 @@ def facts_from_analysis(
             key, principle, question = held.said, idea_words.lesson(held.lesson, idea), held.ask
             if why is not None:
                 why = re.sub(r"the \w+ on [a-h][1-8] is loose", held.clause, why)
-            if target is not None:
-                # The defender is named now: the target no longer says nothing defends it.
-                target = re.sub(r": (after your \w+ move, )?nothing defends it$", "", target)
+            if target is not None and target == idea_words.target(idea, board):
+                # The defender is named now: the idea's target no longer says nothing defends
+                # it. Asked of the words, never cut out of them with a pattern: "after your
+                # next few moves" slipped past one (the round 3 audit, 2026-10-02).
+                target = idea_words.target(idea, board, defender_named=True)
         else:
             defended = held.said
             principle = principle or idea_words.lesson(held.lesson, idea)

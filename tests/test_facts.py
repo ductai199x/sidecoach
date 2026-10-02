@@ -8,6 +8,7 @@ from __future__ import annotations
 import chess
 import pytest
 
+from sidecoach.coach import idea_words
 from sidecoach.coach.facts import (
     describe_move,
     describe_tactic,
@@ -381,3 +382,57 @@ def test_the_target_never_says_nothing_defends_a_defended_piece() -> None:
     )
     facts = facts_from_analysis(chess.Board(fen), analysis, user=chess.WHITE)
     assert "nothing defends it" not in (facts.target or "")
+
+
+def test_a_named_defender_is_asked_of_the_target_whatever_its_wording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same position, its idea read as the rook on f8 left loose late in the line: the
+    target then says "after your next few moves, nothing defends it". With that rook named
+    as the defender with another job, the clause was cut out by a pattern that knew only
+    "after your Nth move", and stayed (the round 3 audit, 2026-10-02). The wording is the
+    real one; only the blow is set."""
+    from dataclasses import replace
+
+    from sidecoach.coach import idea as idea_of
+    from sidecoach.events import MotifTag
+
+    fen = "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2"
+    real = idea_of.read
+
+    def late_loose_rook(board: chess.Board, analysis: Analysis, **kw: object) -> idea_of.Idea:
+        read = real(board, analysis, **kw)  # type: ignore[arg-type]
+        return replace(
+            read,
+            blow=MotifTag(name="hangingPiece", squares=["f8"]),
+            blow_board=board.copy(),
+            blow_at=6,
+        )
+
+    monkeypatch.setattr(idea_of, "read", late_loose_rook)
+    # The line carried on quietly, long enough for a sixth move of the player's.
+    long_line = [
+        *("e6f7", "g8h8", "d6b8", "g5d2", "g2h1", "a7a5", "a2a3"),
+        *("a5a4", "b5b6", "c6c5", "b8a7", "c5c4", "a7a5", "c4c3"),
+    ]
+    analysis = _analysis(
+        fen,
+        lines=[
+            Line(moves=long_line, depth=18, expected_score=0.975),
+            Line(moves=["d6c7", "g5d2", "g2h1", "f7e6"], depth=18, expected_score=0.261),
+        ],
+        defences=[
+            Line(
+                moves=["e6f7", "g8h8", "d6b8", "f8b8", "f7f8q", "b8f8", "f1f8"],
+                depth=14,
+                expected_score=1.0,
+                mate=2,
+            )
+        ],
+    )
+    board = chess.Board(fen)
+    said = idea_words.target(late_loose_rook(board, analysis), board)
+    assert said is not None and said.endswith(": after your next few moves, nothing defends it")
+    facts = facts_from_analysis(board, analysis, user=chess.WHITE)
+    assert "their rook on f8 cannot take back on b8" in (facts.key or "").lower()
+    assert facts.target == said.split(":", 1)[0], facts.target

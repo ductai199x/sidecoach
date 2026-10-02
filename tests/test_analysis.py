@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import chess
 import chess.engine
@@ -367,6 +368,49 @@ def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
     black = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
     walked = _judged(black, "h7h6", lost, mates)
     assert walked.label is Label.BLUNDER, walked
+
+
+def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
+    """The settings' save forgets what was measured (`forget_measured`) from another thread,
+    and the search under way then finishes the old way. Kept, it was the depth-12 position a
+    depth-18 one is set against -- the mix the forgetting is for (the facts audit,
+    2026-10-02). It is handed to its caller, and searched again next time."""
+
+    class ChangedMidSearch(FakeEngine):
+        annotator: GameAnnotator | None = None
+
+        def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
+            lines = super().analyse(board, **kwargs)
+            if self.annotator is not None and len(self.calls) == 1:
+                self.annotator.forget_measured()  # the save, while this search ran
+            return lines
+
+    for measure in ("measure", "measure_for_verdict"):
+        fake = ChangedMidSearch({})
+        annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+        fake.annotator = annotator
+        board = chess.Board()
+        first = getattr(annotator, measure)(board)
+        assert first.lines, "the caller still gets what it asked for"
+        assert not annotator.measured(board), measure
+        assert annotator.computed.lines(board) == [], measure
+        getattr(annotator, measure)(board)
+        assert len(fake.calls) == 2, f"{measure}: searched again the new way"
+        getattr(annotator, measure)(board)
+        assert len(fake.calls) == 2, f"{measure}: and that one is kept"
+
+
+def test_the_best_move_of_a_mating_line_is_never_a_mate_let_go() -> None:
+    """The line before shows a long mate, the engine's own first move is played, and the
+    search after it does not report the mate (past its horizon, or cut by the time cap): the
+    best move let nothing go. It was labelled an inaccuracy -- `mate_missed` flagged it, and
+    a loss of nothing fell through to the lowest flag (the facts audit, 2026-10-02)."""
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    long_mate = Line(moves=["h2h3", "g8f8"], depth=6, expected_score=1.0, mate=9)
+    seen_as_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
+    best = _judged(board, "h2h3", long_mate, seen_as_won)
+    assert best.expected_loss == 0.0
+    assert best.label is Label.BEST, best
 
 
 def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:

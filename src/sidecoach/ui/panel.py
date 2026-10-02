@@ -849,8 +849,7 @@ class PanelEngine:
                 "engine.max_seconds",
             ]
             if any(c in changed for c in remeasure):
-                with contextlib.suppress(Exception):  # applied already; the cache is a cache
-                    analyser.annotator.forget_measured()
+                analyser.annotator.forget_measured()
         return sorted(set(applied))
 
     def reprovision(self, names: Sequence[str]) -> bool:

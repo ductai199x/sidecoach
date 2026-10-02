@@ -206,6 +206,9 @@ def label_move(
     # Walking into a mate from a lost position is not the move that lost: chess.com leaves
     # those unmarked (eleven of them in the six games, the best move among them).
     mate_allowed = mate_allowed and not lost and not is_best
+    # The engine's own first move lets no mate go, whatever the search after it reports (a
+    # long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
+    mate_missed = mate_missed and not is_best
     flagged = loss >= thresholds.inaccuracy or mate_missed or mate_allowed
     if in_book and loss < thresholds.mistake:
         return Label.BOOK

@@ -844,6 +844,7 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
                 "label": move.assessment.label.value if move.assessment.label else None,
                 "accuracy": move.assessment.accuracy,
                 "loss": round(move.assessment.expected_loss, 4),
+                "severity": move.assessment.severity.value,
                 "best_uci": best[0] if best else None,
                 "best_san": line[0]["san"] if line else None,
                 "best_line": line,
