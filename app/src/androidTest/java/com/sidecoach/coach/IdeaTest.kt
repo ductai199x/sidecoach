@@ -125,4 +125,28 @@ class IdeaTest {
         assertTrue(idea.sacrifices.toString(), idea.sacrifices.isEmpty())
         assertFalse("give up" in (IdeaWords.piece(idea, Board(fen)) ?: ""))
     }
+
+    /**
+     * `test_a_sound_sacrifice_in_a_worse_position_is_one`: Bxh7+ Kxh7 Ng5+ Kg8 Qh5 a little worse
+     * (0.45), nothing back in the line: the engine rates it above a bishop-for-a-pawn count, so
+     * the bishop is sacrificed (Tai, 2026-10-02: no "below 0.5 it needs two points back" gate).
+     */
+    @Test
+    fun aSoundSacrificeInAWorsePositionIsOne() {
+        val fen = "r1bq1rk1/pppn1ppp/4p3/3pP3/1b1P4/2NB1N2/PPP2PPP/R2QK2R w KQ - 0 8"
+        val idea = read(fen, "Bxh7+ Kxh7 Ng5+ Kg8 Qh5", score = 0.45)
+        assertEquals(listOf(0 to "bishop"), idea.sacrifices)
+    }
+
+    /**
+     * `test_a_piece_another_move_could_defend_is_sacrificed_not_lost_anyway`: the knight on a4 is
+     * attacked and every square it can go to is covered, but Ra1 or Rd4 would defend it: h3 Rxa4
+     * gives it, a sacrifice, not a piece lost whatever it did.
+     */
+    @Test
+    fun aPieceAnotherMoveCouldDefendIsSacrificedNotLostAnyway() {
+        val fen = "r6k/2p3pp/3p4/4b3/N7/8/5PPP/3R2K1 w - - 0 30"
+        val idea = read(fen, "h3 Rxa4", score = 0.6)
+        assertEquals(listOf(0 to "knight"), idea.sacrifices)
+    }
 }
