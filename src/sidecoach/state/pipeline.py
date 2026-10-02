@@ -535,6 +535,14 @@ class GamePipeline:
         if self.clock is not None:
             self.clock.reset()
 
+    def _forget_clock(self) -> None:
+        """The last clock observation and the reader's memory dropped: the board's sides
+        changed under them."""
+        self._last_clock = None
+        self._last_clock_ts = None
+        if self.clock is not None:
+            self.clock.reset()
+
     def _read_clock(self, frame: np.ndarray, ts: float) -> list[Event]:
         """A clock observation for this frame, or nothing.
 
@@ -807,9 +815,7 @@ class GamePipeline:
             self.cache.save(model, key=self._learned_set(model, frame, geometry, bottom))
         self._cold_since = None
         self._cold_noticed = False
-        self._last_clock = None
-        if self.clock is not None:
-            self.clock.reset()
+        self._forget_clock()
         if self.reconciler is not None:
             self.reconciler.bottom = bottom
             self.reconciler.user_side = bottom
@@ -1107,6 +1113,11 @@ class GamePipeline:
         if not events:
             return []  # the placement is not a legal position; adopt nothing
         # Only now, with a legal position begun, is the pipeline switched onto this theme.
+        if bottom != self.bottom:
+            # The clock read the other way up named the other side as running, and the
+            # side to move a cold read leaves open was settled from it on the next tick
+            # (round 2, finding 3): read afresh, as a new recogniser's clock is.
+            self._forget_clock()
         self.model = model
         self.bottom = bottom
         self._cold_since = None
