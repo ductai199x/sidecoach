@@ -17,9 +17,14 @@ import java.math.RoundingMode
  */
 object Insights {
 
-    /** A cause needs this many mistakes before it is named; a motif this many occasions. */
+    /**
+     * A cause needs this many mistakes before it is named; a motif this many occasions. A habit
+     * (a gap, a habit, a tactic missed) needs its mistakes from MIN_GAMES games: three mistakes in
+     * one game were "a habit" (the review of 2026-10-01).
+     */
     const val MIN_ERRORS = 3
     const val MIN_CHANCES = 4
+    const val MIN_GAMES = 3
 
     /** A cause whose cost sits this much in one kind of position is a gap; spread out, a habit. */
     const val GAP_SHARE = 0.6
@@ -51,24 +56,24 @@ object Insights {
             val loss = Py.sum(cells.map { it.expectedLoss })
             if (errors >= MIN_ERRORS) {
                 val over = if (games > 1) " over $games games" else ""
-                out.add("Your biggest cost$over is $cause: $errors mistakes, ${fixed(loss, 2)} expected score.")
+                out.add("Your biggest cost$over is $cause: $errors mistakes.")
                 val top = cells.maxByOrNull { it.expectedLoss }!!
-                if (loss > 0 && top.expectedLoss / loss >= GAP_SHARE && (top.motif != null || top.phase != null)) {
+                val seenIn = cells.flatMap { it.games }.toSet().size
+                if (seenIn < MIN_GAMES) {
+                    // a gap or a habit needs several games behind it, never one bad game
+                } else if (loss > 0 && top.expectedLoss / loss >= GAP_SHARE && (top.motif != null || top.phase != null)) {
                     val what = if (top.motif != null) motifWords(top.motif) else "positions"
                     val where = if (top.phase != null) " in the ${top.phase}" else ""
                     out.add("That looks like a gap: it shows up as $what$where.")
                 } else {
                     val kinds = cells.map { it.motif to it.phase }.toSet().size
-                    out.add("That looks like a habit: it shows up across $kinds kinds of position.")
+                    out.add("That looks like a habit: it shows up across $kinds kinds of position in $seenIn games.")
                 }
             }
         }
         // The motif missed most often, as a rate over the occasions it was on the board.
-        motifRates(rows).maxByOrNull { it.rate }?.let { (motif, rate, missed, seen) ->
-            out.add(
-                "You miss a ${motifWords(motif)} about ${percent(rate)} of the time one is on the board" +
-                    " ($missed of $seen).",
-            )
+        motifRates(rows).maxByOrNull { it.rate }?.let { (motif, _, missed, seen) ->
+            out.add("You missed a ${motifWords(motif)} $missed of the $seen times you had one.")
         }
         // The phase that costs most per move.
         val phaseMoves = LinkedHashMap<String, Int>()
@@ -81,8 +86,7 @@ object Insights {
         val busy = phaseMoves.keys.filter { (phaseMoves[it] ?: 0) >= 10 }
         if (busy.size >= 2) {
             val worst = busy.maxByOrNull { (phaseLoss[it] ?: 0.0) / phaseMoves[it]!! }!!
-            val perMove = (phaseLoss[worst] ?: 0.0) / phaseMoves[worst]!!
-            if (perMove > 0) out.add("The $worst costs you most per move (${fixed(perMove, 3)} expected score).")
+            if ((phaseLoss[worst] ?: 0.0) > 0) out.add("The $worst costs you most per move.")
         }
         return out
     }
@@ -90,20 +94,28 @@ object Insights {
     internal data class Rated(val motif: String, val rate: Double, val missed: Int, val seen: Int)
 
     /**
-     * Each motif missed at least twice over enough of its chances, with the rate it is missed,
-     * smoothed as (misses + 1) / (chances + 2), in the order its chances came. A cell with a
-     * cause counts misses, one without counts chances. `insights.motif_rates`.
+     * Each motif missed often enough, over enough of its chances and games, with the rate it is
+     * missed, smoothed as (misses + 1) / (chances + 2) to rank them, in the order its chances
+     * came. The cells without a cause count a motif's chances and, in their errors, the chances
+     * missed; a mistake's own motif may be a tactic it allowed, never a chance the player had.
+     * `insights.motif_rates`.
      */
     internal fun motifRates(rows: List<CellRow>): List<Rated> {
         val chances = LinkedHashMap<String, Int>()
         val misses = HashMap<String, Int>()
+        val games = HashMap<String, MutableSet<String>>()
         for (r in rows) {
             val motif = r.motif ?: continue
-            if (r.cause == null) chances[motif] = (chances[motif] ?: 0) + r.chances
-            else misses[motif] = (misses[motif] ?: 0) + r.errors
+            if (r.cause != null) continue
+            chances[motif] = (chances[motif] ?: 0) + r.chances
+            misses[motif] = (misses[motif] ?: 0) + r.errors
+            games.getOrPut(motif) { HashSet() }.addAll(r.games)
         }
         return chances.keys
-            .filter { (chances[it] ?: 0) >= MIN_CHANCES && (misses[it] ?: 0) >= 2 }
+            .filter {
+                (chances[it] ?: 0) >= MIN_CHANCES && (misses[it] ?: 0) >= MIN_ERRORS &&
+                    (games[it]?.size ?: 0) >= MIN_GAMES
+            }
             .map { m ->
                 val missed = misses[m] ?: 0
                 val seen = chances[m] ?: 0

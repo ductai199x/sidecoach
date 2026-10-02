@@ -584,18 +584,18 @@ def insight_cases() -> list[dict]:
     from sidecoach.profile.store import CellRow
 
     def cell(cause: str | None, motif: str | None, phase: str | None, errors: int = 0,
-             chances: int = 0, loss: float = 0.0) -> CellRow:
+             chances: int = 0, loss: float = 0.0, games: str = "") -> CellRow:
         return CellRow(cause=cause, motif=motif, phase=phase, errors=errors, chances=chances,
-                       expected_loss=loss)
+                       expected_loss=loss, games=frozenset(games))
 
     cases: list[tuple[list[CellRow], int]] = [
         ([cell(causes.POSITIONAL, None, "middlegame", errors=2, loss=0.3)], 1),
         (
             [
-                cell(causes.MISSED_THREAT, "fork", "middlegame", errors=3, loss=0.6),
+                cell(causes.MISSED_THREAT, "fork", "middlegame", errors=3, loss=0.6, games="abc"),
                 cell(causes.MISSED_THREAT, "pin", "endgame", errors=1, loss=0.1),
                 cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.1),
-                cell(None, "fork", "middlegame", chances=6),
+                cell(None, "fork", "middlegame", errors=3, chances=6, games="abc"),
                 cell(None, None, "middlegame", chances=30),
                 cell(None, None, "endgame", chances=12, loss=0.0),
             ],
@@ -603,17 +603,26 @@ def insight_cases() -> list[dict]:
         ),
         (
             [
-                cell(causes.POSITIONAL, None, "opening", errors=1, loss=0.2),
-                cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.2),
-                cell(causes.POSITIONAL, None, "endgame", errors=1, loss=0.2),
+                cell(causes.POSITIONAL, None, "opening", errors=1, loss=0.2, games="a"),
+                cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.2, games="b"),
+                cell(causes.POSITIONAL, None, "endgame", errors=1, loss=0.2, games="c"),
+            ],
+            3,
+        ),
+        # Three mistakes in one game: no habit (the review of 2026-10-01).
+        (
+            [
+                cell(causes.POSITIONAL, None, "opening", errors=1, loss=0.2, games="g"),
+                cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.2, games="g"),
+                cell(causes.POSITIONAL, None, "endgame", errors=1, loss=0.15, games="g"),
             ],
             1,
         ),
         # A habit, and the phase that costs most per move among two with enough moves.
         (
             [
-                cell(causes.POSITIONAL, None, "opening", errors=2, loss=0.25),
-                cell(causes.POSITIONAL, "pin", "middlegame", errors=1, loss=0.2),
+                cell(causes.POSITIONAL, None, "opening", errors=2, loss=0.25, games="ab"),
+                cell(causes.POSITIONAL, "pin", "middlegame", errors=1, loss=0.2, games="c"),
                 cell(causes.MISSED_THREAT, "fork", "endgame", errors=1, loss=0.1),
                 cell(None, "pin", "middlegame", chances=5),
                 cell(None, None, "opening", chances=14),
@@ -633,7 +642,11 @@ def insight_cases() -> list[dict]:
         ),
     ]
     return [
-        {"rows": [dict(r.__dict__) for r in rows], "games": games, "lines": insights(rows, games)}
+        {
+            "rows": [{**r.__dict__, "games": sorted(r.games)} for r in rows],
+            "games": games,
+            "lines": insights(rows, games),
+        }
         for rows, games in cases
     ]
 

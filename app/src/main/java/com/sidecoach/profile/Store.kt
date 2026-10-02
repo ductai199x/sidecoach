@@ -340,7 +340,8 @@ class Store(val path: File?) {
         val out = ArrayList<CellRow>()
         lock.withLock {
             out += rows(
-                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss" +
+                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss," +
+                    " json_group_array(DISTINCT game_id) AS games" +
                     " FROM evidence GROUP BY cause, motif, phase",
             ) { c ->
                 CellRow(
@@ -350,6 +351,7 @@ class Store(val path: File?) {
                     errors = c.getInt(c.getColumnIndexOrThrow("n")),
                     chances = 0,
                     expectedLoss = c.doubleOrNull("loss") ?: 0.0,
+                    games = ids(c.stringOrNull("games")),
                 )
             }
             out += rows(
@@ -359,16 +361,39 @@ class Store(val path: File?) {
             ) { c ->
                 CellRow(null, null, c.stringOrNull("phase"), 0, c.getInt(c.getColumnIndexOrThrow("n")), 0.0)
             }
+            // A tactic's occasions with those the player missed (a mistake that did not play it):
+            // a mistake's own motif is the tactic it allowed as often as the one it let go, and
+            // "about 100% (5 of 4)" counted the forks walked into over the forks the player had
+            // (the review of 2026-10-01).
+            val missed = "(e.move_id IS NOT NULL AND NOT EXISTS" +
+                " (SELECT 1 FROM json_each(m.tags) p WHERE p.value = t.value))"
             out += rows(
-                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n" +
-                    " FROM moves m, json_each(m.available_tags) t" +
+                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n," +
+                    " SUM($missed) AS missed," +
+                    " json_group_array(DISTINCT CASE WHEN $missed THEN m.game_id END) AS games" +
+                    " FROM moves m JOIN json_each(m.available_tags) t" +
+                    " LEFT JOIN evidence e ON e.move_id = m.move_id" +
                     " WHERE m.by_user = 1 AND m.withdrawn = 0 AND m.severity IS NOT NULL" +
                     " GROUP BY m.phase, t.value",
             ) { c ->
-                CellRow(null, c.stringOrNull("motif"), c.stringOrNull("phase"), 0, c.getInt(c.getColumnIndexOrThrow("n")), 0.0)
+                CellRow(
+                    null,
+                    c.stringOrNull("motif"),
+                    c.stringOrNull("phase"),
+                    c.intOrNull("missed") ?: 0,
+                    c.getInt(c.getColumnIndexOrThrow("n")),
+                    0.0,
+                    ids(c.stringOrNull("games")),
+                )
             }
         }
         return out.sortedBy { -it.expectedLoss }
+    }
+
+    /** A JSON array of game ids, its nulls left out (store.py `_ids`). */
+    private fun ids(value: String?): Set<String> {
+        val array = org.json.JSONArray(value ?: "[]")
+        return (0 until array.length()).filter { !array.isNull(it) }.map { array.getString(it) }.toSet()
     }
 
     // ---- sessions -------------------------------------------------------------------------------
@@ -1416,6 +1441,12 @@ data class EvidenceRow(
  * motif and phase with the expected score they cost, and the occasions ([chances]) -- moves
  * in a phase, moves with a tactic on the board -- with the cause null.
  */
+/**
+ * One cell of the error taxonomy (store.py `CellRow`): mistakes (`errors`) by cause, motif and
+ * phase with the expected score they cost, and the occasions (`chances`) with the cause null. A
+ * tactic's occasions count in `errors` those the player missed. `games`: the games its errors
+ * came from.
+ */
 data class CellRow(
     val cause: String?,
     val motif: String?,
@@ -1423,6 +1454,7 @@ data class CellRow(
     val errors: Int,
     val chances: Int,
     val expectedLoss: Double,
+    val games: Set<String> = emptySet(),
 )
 
 data class SessionRow(

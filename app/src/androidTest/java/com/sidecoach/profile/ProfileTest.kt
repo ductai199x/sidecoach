@@ -498,6 +498,7 @@ class ProfileTest {
                         errors = r.getInt("errors"),
                         chances = r.getInt("chances"),
                         expectedLoss = r.getDouble("expected_loss"),
+                        games = r.optJSONArray("games")?.let { g -> strings(g).toSet() } ?: emptySet(),
                     )
                 }
             }
@@ -508,7 +509,55 @@ class ProfileTest {
         // The lines the fixture is there for.
         assertTrue(said.toString(), said.any { it.startsWith("That looks like a habit: ") })
         assertTrue(said.toString(), said.any { it.startsWith("That looks like a gap: ") })
-        assertTrue(said.toString(), said.any { " costs you most per move (" in it })
+        assertTrue(said.toString(), said.any { " costs you most per move." in it })
+        assertTrue(said.toString(), said.none { "expected score" in it })
+    }
+
+    /**
+     * A habit needs its mistakes from several games, and a tactic missed is counted over the
+     * chances the player had, the forks walked into left out ("You miss a fork about 100% of the
+     * time (5 of 4)", the review of 2026-10-01; `test_one_bad_game_is_no_habit` and
+     * `test_a_tactic_walked_into_is_not_a_tactic_missed` in tests/test_profile.py).
+     */
+    @Test
+    fun aHabitNeedsSeveralGamesAndAMissIsAChanceTheyHad() {
+        val one = setOf("g")
+        val oneGame = listOf(
+            CellRow("positional misjudgment", null, "opening", 1, 0, 0.2, one),
+            CellRow("positional misjudgment", null, "middlegame", 1, 0, 0.2, one),
+            CellRow("positional misjudgment", null, "endgame", 1, 0, 0.15, one),
+        )
+        assertEquals(listOf("Your biggest cost is positional misjudgment: 3 mistakes."), Insights.insights(oneGame, 1))
+        val store = Store(null)
+        fun judged(game: String, ply: Int, played: List<String>, had: List<String>, cause: String?) {
+            val id = store.addMove(
+                game, 0, ply, moveNumber = ply, san = "a3", uci = "a2a3", byUser = true,
+                fenBefore = com.sidecoach.chess.STARTING_FEN, fenAfter = "x", phase = "middlegame",
+                thinkMs = null, clockMs = null, capture = false, givesCheck = false, material = 0,
+                ts = ply.toDouble(),
+            )
+            store.assessMove(
+                id, label = if (cause != null) "mistake" else "best", severity = if (cause != null) "mistake" else "none",
+                expectedLoss = if (cause != null) 0.2 else 0.0, bestUci = null, bestSan = null, accuracy = 50.0,
+                tags = played, availableTags = had, depth = 14,
+            )
+            if (cause != null) {
+                store.addEvidence(
+                    id, gameId = game, segment = 0, ply = ply, phase = "middlegame", expectedLoss = 0.2,
+                    cause = cause, motif = "fork", timePressure = false,
+                )
+            }
+        }
+        for (game in listOf("a", "b", "c", "d", "e")) {
+            judged(game, 1, emptyList(), emptyList(), "missed opponent threat") // walked into
+            judged(game, 3, listOf("fork"), listOf("fork"), null) // found
+        }
+        for (game in listOf("a", "b", "c")) judged(game, 5, emptyList(), listOf("fork"), "never considered the candidate")
+        val rows = store.cells()
+        val fork = rows.first { it.cause == null && it.motif == "fork" }
+        assertEquals(Triple(3, 8, setOf("a", "b", "c")), Triple(fork.errors, fork.chances, fork.games))
+        assertTrue(Insights.insights(rows, 5).contains("You missed a fork 3 of the 8 times you had one."))
+        store.close()
     }
 
     /**
