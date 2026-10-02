@@ -67,4 +67,46 @@ class ProviderSwitchTest {
             store.save(saved)
         }
     }
+
+    /**
+     * Tai, 2026-10-02: openai (gpt-5.6-luna) -> local -> openai came back on OpenAI's default;
+     * switching service and back restores that service's model. The desktop's
+     * `test_each_service_keeps_its_own_model`.
+     */
+    @Test
+    fun eachServiceKeepsItsOwnModel() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        fun save(llm: JSONObject) =
+            assertTrue(api.update(JSONObject().put("settings", JSONObject().put("llm", llm))).getBoolean("ok"))
+        fun llm() = store.values().getJSONObject("llm")
+        try {
+            save(JSONObject().put("provider", "openai").put("model", "gpt-5.6-luna"))
+            save(JSONObject().put("provider", "local")) // the page sends the service alone
+            assertTrue(llm().isNull("model")) // never seen: its default
+            save(JSONObject().put("model", "qwen3.8-35b"))
+            save(JSONObject().put("provider", "openai"))
+            assertEquals("gpt-5.6-luna", llm().getString("model"))
+            save(JSONObject().put("provider", "local"))
+            assertEquals("qwen3.8-35b", llm().getString("model"))
+            // A service left on its default comes back on its default.
+            save(JSONObject().put("provider", "dashscope"))
+            assertTrue(llm().isNull("model"))
+            save(JSONObject().put("provider", "local"))
+            save(JSONObject().put("provider", "dashscope"))
+            assertTrue(llm().isNull("model"))
+            val models = llm().getJSONObject("models")
+            assertEquals(setOf("openai", "local"), models.keys().asSequence().toSet())
+            assertEquals("gpt-5.6-luna", models.getString("openai"))
+            assertEquals("qwen3.8-35b", models.getString("local"))
+            // Never a field on the page.
+            val schema = api.describe().getJSONObject("schema")
+            val field = schema.getJSONObject("\$defs").getJSONObject("LLMSettings")
+                .getJSONObject("properties").getJSONObject("models")
+            assertTrue(field.getBoolean("kept"))
+        } finally {
+            store.save(saved)
+        }
+    }
 }
