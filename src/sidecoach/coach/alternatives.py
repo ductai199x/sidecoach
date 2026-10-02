@@ -15,11 +15,12 @@ from dataclasses import dataclass
 
 import chess
 
+from sidecoach.analysis.score import clearly_worse
 from sidecoach.coach.outcome import line_outcome, play_out
 from sidecoach.events import Analysis, Line
 
-# A line this far behind the best, in expected score, starts a clearly worse move.
-WORSE_MARGIN = 0.10
+# A clearly worse move is one the move labels grade a mistake or a blunder
+# (`score.clearly_worse`; Tai, 2026-10-02: the grading bands, not a margin of our own).
 # How far a line is read: the sheet's own (`conversation.LINE_PLIES`).
 READ_PLIES = 8
 # The most worse moves named in an answer.
@@ -102,7 +103,7 @@ def worse_moves(
     for line in lines[1:]:
         drop = best.expected_score - line.expected_score
         san = _san(board, line)
-        if drop < WORSE_MARGIN or san is None or san in seen:
+        if not clearly_worse(drop) or san is None or san in seen:
             continue
         seen.add(san)
         wrong = wrong_with(board, best, line, player)
@@ -130,7 +131,21 @@ def fine_said(fine: list[str], *, past: bool = False) -> str:
     `past`: of the position the player has moved from ("were all fine there")."""
     if len(fine) == 1:
         return f"{fine[0]} was the move there." if past else f"{fine[0]} is the move here."
-    names = ", ".join(fine[:-1]) + f" and {fine[-1]}"
+    names = _listed(fine)
+    every = "both" if len(fine) == 2 else "all"
     if past:
-        return f"{names} were all fine there -- about equally good."
-    return f"{names} are all fine here -- about equally good."
+        return f"{names} were {every} fine there -- about equally good."
+    return f"{names} are {every} fine here -- about equally good."
+
+
+def good_said(good: list[str], *, past: bool = False) -> str:
+    """The moves graded Good, a little behind the best: "Be7 and d6 are good too, a little
+    behind." -- "" when there are none."""
+    if not good:
+        return ""
+    verb = ("was" if len(good) == 1 else "were") if past else ("is" if len(good) == 1 else "are")
+    return f"{_listed(good)} {verb} good too, a little behind."
+
+
+def _listed(moves: list[str]) -> str:
+    return moves[0] if len(moves) == 1 else ", ".join(moves[:-1]) + f" and {moves[-1]}"

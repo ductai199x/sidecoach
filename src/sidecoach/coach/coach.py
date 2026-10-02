@@ -36,7 +36,13 @@ import chess
 from sidecoach.analysis.computed import position_key
 from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
-from sidecoach.coach.alternatives import fine_said, worse_moves, worse_said, worse_text
+from sidecoach.coach.alternatives import (
+    fine_said,
+    good_said,
+    worse_moves,
+    worse_said,
+    worse_text,
+)
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
 from sidecoach.coach.conversation import Conversation, PlyRecord, hands, harness_problem, ways
@@ -4291,6 +4297,7 @@ class Coach:
         `position` is the one the player faced before that move, their last: the moves they
         could have played instead, and how theirs compares (`_faced_alternatives`)."""
         fine = list(facts.candidates)
+        good = list(facts.good)
         analysis = position.analysis
         worse = worse_moves(position.board, analysis, self.user_colour) if analysis else []
         also = bool(_ASK_ALSO.search(said)) and not _ASK_OTHER_MOVES.search(said)
@@ -4300,8 +4307,14 @@ class Coach:
                 f"The moves about level with the best, all fine: {', '.join(fine)}. Say they are "
                 "about equally good, and name every one."
             )
+        elif good:
+            level_part = f"One move stands out: {fine[0]}."
         else:
-            level_part = f"One move stands out: {fine[0]}. Say the others are clearly worse."
+            # Weaker, not "clearly worse": an inaccuracy is not (`score.clearly_worse`).
+            level_part = f"One move stands out: {fine[0]}. Say the others are weaker."
+        if good:
+            # Graded Good, a little behind the best: good moves, said so (Tai, 2026-10-02).
+            level_part += f" Good too, a little behind: {', '.join(good)}."
         worse_part = (
             f" Clearly worse, and what goes wrong with them, true of the board: "
             f"{worse_text(worse)}. Say which, and why, in a few words."
@@ -4316,7 +4329,8 @@ class Coach:
                 "it (its sheet is above): "
                 + (
                     "whether the move they name would also have been good -- yes plainly when it "
-                    "is among the fine ones, and what it does; when it is not, that it was weaker "
+                    "is among the fine ones, and what it does; good, a little behind the best, "
+                    "when it is among the good ones; when it is neither, that it was weaker "
                     "than the best, and what goes wrong with it when the sheet says."
                     if also
                     else "the good moves there, not only the best one."
@@ -4326,7 +4340,8 @@ class Coach:
         elif also:
             ask_part = (
                 "They ask whether another move is also good: say yes plainly when the move they "
-                "name is among the fine ones, and what it does; when it is not, say it is weaker "
+                "name is among the fine ones, and what it does; that it is good, a little behind "
+                "the best, when it is among the good ones; when it is neither, say it is weaker "
                 "than the best, and what goes wrong with it when the sheet says."
             )
         else:
@@ -4335,9 +4350,11 @@ class Coach:
             f"{ask_part} {ALTERNATIVES_READ} {level_part}{worse_part} Say it in words. "
             f"{NO_FIGURES} Two or three sentences, no question."
         )
-        text = fine_said(fine, past=past)
+        text = " ".join(x for x in (fine_said(fine, past=past), good_said(good, past=past)) if x)
         bare = [f.rstrip("+#") for f in fine]
+        bare_good = [g.rstrip("+#") for g in good]
         named = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare]
+        named_good = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare_good]
         if also and named:
             if past:
                 text = (
@@ -4353,6 +4370,12 @@ class Coach:
                 )
             if len(fine) > 1:
                 text += " " + fine_said(fine, past=past)
+        elif also and named_good:
+            text = (
+                f"Yes, {named_good[0]} would have been good too, a little behind {fine[0]}."
+                if past
+                else f"Yes, {named_good[0]} is good too, a little behind {fine[0]}."
+            )
         if past:
             assert played is not None
             text += f" Yours, {played.move.san}, {self._compared(played, fine)}."
@@ -5849,6 +5872,10 @@ class Coach:
                 )
             else:
                 out += f" The moves about equally good here: {', '.join(facts.candidates)}."
+        if facts.good and not theirs:
+            # Graded Good, a little behind the best: good moves, said so when they ask (Tai,
+            # 2026-10-02: "is Be7 a good move?" a move 0.029 behind).
+            out += f" Good too, a little behind the best: {', '.join(facts.good)}."
         out += self._faced_alternatives_words(position)
         worse = (
             worse_moves(position.board, position.analysis, self.user_colour)
@@ -5920,6 +5947,8 @@ class Coach:
             f" Before {san}, the player's last move, the moves about equally good were: "
             f"{', '.join(fine)}; {san} {self._compared(own, fine)}."
         )
+        if faced.facts.good:
+            out += f" Good too there, a little behind: {', '.join(faced.facts.good)}."
         worse = worse_moves(faced.board, faced.analysis, self.user_colour)
         if worse:
             out += f" Clearly worse there, and what goes wrong with them: {worse_text(worse)}."

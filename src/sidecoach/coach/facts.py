@@ -17,10 +17,11 @@ import chess
 from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
+from sidecoach.analysis.score import about_as_good, graded_good
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words, plans, situation, story
 from sidecoach.coach.disclosure import PositionFacts
-from sidecoach.events import Analysis
+from sidecoach.events import Analysis, Line
 
 # The best move's idea, as a square-free strategic theme the coach may teach at the theme
 # level: it orients toward the plan without naming the move. Keyed by the idea's kind.
@@ -115,11 +116,11 @@ PIECE_NAMES = {
     chess.KING: "king",
 }
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
-# Candidates within this much of the best line are "the near-equal set": the moves that are
-# all fine, said so when the player asks for the best moves and never refused when they name
-# one (the claim check reads the same set). 0.02 left out a move three hundredths behind that
-# an engine's depth would swap with the best.
-CANDIDATE_MARGIN = 0.03
+# "The near-equal set", the candidates: the moves graded as the move labels grade them, Best or
+# Excellent (`score.about_as_good`) -- all fine, said so when the player asks for the best
+# moves. The moves graded Good, a little behind them, are `good`: never refused as bad when
+# the player names one (the claim check reads both). Tai, 2026-10-02: the grading bands, not
+# a margin of our own (0.02, then 0.03 to pass a move 0.029 behind).
 
 
 def standing_words(score: float, *, third_person: bool = False) -> str:
@@ -1063,15 +1064,7 @@ def facts_from_analysis(
     if why is None and move_reason and best is not None:
         why = f"{board.san(best)}: {move_reason[0].lower() + move_reason[1:]}"
 
-    candidates: list[str] = []
-    if lines:
-        top = lines[0].expected_score
-        for line in lines:
-            if not line.moves or top - line.expected_score > CANDIDATE_MARGIN:
-                continue
-            move = _to_move(line.moves[0])
-            if move is not None and move in board.legal_moves:
-                candidates.append(board.san(move))
+    candidates, good = graded_moves(board, lines)
 
     line = san_line(board, lines[0].moves, limit=8).split() if lines else []
     line = [token for token in line if not token.endswith(".") and not token.endswith("...")]
@@ -1100,6 +1093,7 @@ def facts_from_analysis(
         plan=plan,
         ideas=ideas,
         candidates=candidates,
+        good=good,
         threats=threats,
         line=line,
         stakes=stakes_text,
@@ -1109,3 +1103,28 @@ def facts_from_analysis(
         situation=situation_text,
         principle=principle_said,
     )
+
+
+def graded_moves(board: chess.Board, lines: Sequence[Line]) -> tuple[list[str], list[str]]:
+    """The first moves of the engine's lines as the move labels grade them against the best
+    line: about as good as it (Best, Excellent), and good, a little behind (Good) -- in SAN,
+    in the lines' order."""
+    fine: list[str] = []
+    good: list[str] = []
+    if not lines:
+        return fine, good
+    top = lines[0].expected_score
+    for line in lines:
+        if not line.moves:
+            continue
+        loss = top - line.expected_score
+        if not graded_good(loss):
+            continue
+        move = _to_move(line.moves[0])
+        if move is None or move not in board.legal_moves:
+            continue
+        san = board.san(move)
+        if san in fine or san in good:
+            continue
+        (fine if about_as_good(loss) else good).append(san)
+    return fine, good

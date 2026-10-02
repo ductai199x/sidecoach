@@ -147,11 +147,30 @@ def eval_loss(before: Sequence[Line], played_uci: str, after_score: float) -> fl
     return max(0.0, best.expected_score - (1.0 - after_score))
 
 
+def about_as_good(loss: float, thresholds: Thresholds | None = None) -> bool:
+    """A move this far behind the best is about as good as it: chess.com's Best or Excellent
+    band, as `label_move` grades it. The coach's "about equally good" moves are these (Tai,
+    2026-10-02: the bands, not an arbitrary margin)."""
+    return loss < (thresholds or DEFAULT_THRESHOLDS).excellent
+
+
+def graded_good(loss: float, thresholds: Thresholds | None = None) -> bool:
+    """A move this far behind the best is graded good or better -- Best, Excellent or Good --
+    and no inaccuracy (`label_move`'s flag)."""
+    return loss < (thresholds or DEFAULT_THRESHOLDS).inaccuracy
+
+
+def clearly_worse(loss: float, thresholds: Thresholds | None = None) -> bool:
+    """A move this far behind the best is clearly worse: a mistake or a blunder, as `severity`
+    grades it."""
+    return loss >= (thresholds or DEFAULT_THRESHOLDS).mistake
+
+
 def severity(loss: float, thresholds: Thresholds | None = None) -> Severity:
     thresholds = thresholds or DEFAULT_THRESHOLDS
     if loss >= thresholds.blunder:
         return Severity.BLUNDER
-    if loss >= thresholds.mistake:
+    if clearly_worse(loss, thresholds):
         return Severity.MISTAKE
     if loss >= thresholds.inaccuracy:
         return Severity.INACCURACY
@@ -209,7 +228,7 @@ def label_move(
     # The engine's own first move lets no mate go, whatever the search after it reports (a
     # long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
     mate_missed = mate_missed and not is_best
-    flagged = loss >= thresholds.inaccuracy or mate_missed or mate_allowed
+    flagged = not graded_good(loss, thresholds) or mate_missed or mate_allowed
     if in_book and loss < thresholds.mistake:
         return Label.BOOK
     if flagged and chance and not is_best:
@@ -225,7 +244,7 @@ def label_move(
                 return Label.GREAT
         if is_best:
             return Label.BEST
-        return Label.EXCELLENT if loss < thresholds.excellent else Label.GOOD
+        return Label.EXCELLENT if about_as_good(loss, thresholds) else Label.GOOD
     verdict = severity(loss, thresholds)
     if verdict is Severity.BLUNDER:
         return Label.BLUNDER

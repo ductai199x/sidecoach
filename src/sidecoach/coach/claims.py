@@ -30,7 +30,7 @@ import chess
 from sidecoach.analysis import exchange
 from sidecoach.analysis.positional import is_passed
 from sidecoach.coach.disclosure import PositionFacts
-from sidecoach.coach.facts import CANDIDATE_MARGIN, PIECE_NAMES
+from sidecoach.coach.facts import PIECE_NAMES, graded_moves
 from sidecoach.events import Line
 from sidecoach.llm.base import ChatMessage, LLMProvider
 
@@ -938,9 +938,10 @@ def _check_best(
         return "unclear", f"I cannot read '{san}' as a move."
     said = board.san(move)
 
-    candidates = _candidates(board, facts, engine, depth)
-    if candidates is None:
+    graded = _candidates(board, facts, engine, depth)
+    if graded is None:
         return "unclear", f"I have no engine view of this position yet, so I cannot rate {said}."
+    candidates, good = graded
     if not candidates:
         return (
             "unclear",
@@ -952,7 +953,19 @@ def _check_best(
             return "true", f"{said} is the engine's best move here."
         return "true", f"{said} is among the engine's best moves here ({shown})."
     preferred = _join([board.san(m) for m in candidates])
+    if move in good:
+        # Graded Good, a little behind the best: a good move, and no best one. "Is Be7 a good
+        # move?" 0.029 behind was answered "not among the engine's best moves" (Tai, 2026-10-02).
+        verdict: Result = "false" if _CALLED_BEST.search(claim.text) else "true"
+        return (
+            verdict,
+            f"{said} is a good move here, a little behind the engine's best ({preferred}).",
+        )
     return "false", f"{said} is not among the engine's best moves here; it prefers {preferred}."
+
+
+# The claim that a move is the best one, not merely good.
+_CALLED_BEST = re.compile(r"\b(?:best|strongest|top)\b", re.IGNORECASE)
 
 
 def _candidates(
@@ -960,28 +973,28 @@ def _candidates(
     facts: PositionFacts | None,
     engine: EngineLike | None,
     depth: int,
-) -> list[chess.Move] | None:
-    """The near-equal best moves, from the facts when they have them, else the engine."""
+) -> tuple[list[chess.Move], list[chess.Move]] | None:
+    """The moves about as good as the best (graded Best or Excellent) and those graded Good, a
+    little behind them, from the facts when they have them, else the engine (`graded_moves`:
+    the bands the move labels use)."""
     if facts is not None and facts.candidates:
-        moves: list[chess.Move] = []
-        for san in facts.candidates:
-            move, _ = _parse_move(board, san)
-            if move is not None:
-                moves.append(move)
+        moves = _parsed(board, facts.candidates)
         if moves:
-            return moves
+            return moves, _parsed(board, facts.good)
     if engine is None:
         return None
     lines = engine.analyse(board, depth=depth)
-    lines = [line for line in lines if line.moves]
+    lines = sorted((line for line in lines if line.moves), key=lambda x: -x.expected_score)
     if not lines:
-        return []
-    top = max(line.expected_score for line in lines)
-    moves = []
-    for line in lines:
-        if top - line.expected_score > CANDIDATE_MARGIN:
-            continue
-        move, _ = _parse_move(board, line.moves[0])
+        return [], []
+    fine, good = graded_moves(board, lines)
+    return _parsed(board, fine), _parsed(board, good)
+
+
+def _parsed(board: chess.Board, sans: Sequence[str]) -> list[chess.Move]:
+    moves: list[chess.Move] = []
+    for san in sans:
+        move, _ = _parse_move(board, san)
         if move is not None and move not in moves:
             moves.append(move)
     return moves

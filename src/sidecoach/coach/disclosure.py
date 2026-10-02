@@ -108,7 +108,11 @@ class PositionFacts(BaseModel):
     # "you are up material, so trade and convert"), in the coach's words. From the region
     # level: they describe what is on the board, not the move to find.
     ideas: list[str] = Field(default_factory=list)
+    # The moves about as good as the best (graded Best or Excellent), and those graded Good, a
+    # little behind them (`facts.graded_moves`): a good move the player names is said to be
+    # good, never refused as bad.
     candidates: list[str] = Field(default_factory=list)
+    good: list[str] = Field(default_factory=list)
     threats: list[str] = Field(default_factory=list)
     line: list[str] = Field(default_factory=list)
     # The first hint's parts (`coach/situation.py`), named on the board: what is at stake
