@@ -273,6 +273,8 @@ class OpenAICompatProvider:
         # The session's tokens over every call, shared with the provider's copies at
         # other efforts (llm.usage): one figure for the panel.
         self.usage = usage if usage is not None else Usage()
+        if self.usage.model is None:
+            self.usage.model = model
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.Client(timeout=timeout_s, headers=headers, transport=transport)
 

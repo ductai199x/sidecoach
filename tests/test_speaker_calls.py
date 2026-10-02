@@ -165,3 +165,52 @@ def test_replaced_providers_are_counted_and_closed() -> None:
     speaker.close()
     for p in (first, routine, verifier, second):
         assert p._client.is_closed, p.name
+
+
+def test_each_ledger_is_priced_as_its_own_model(tmp_path: Any) -> None:
+    from sidecoach.config import Settings
+    from sidecoach.llm.usage import KNOWN_PRICES, Usage, total
+
+    luna = Usage()
+    luna.model = "gpt-5.6-luna"
+    luna.record({"prompt_tokens": 1_000_000, "completion_tokens": 0})
+    # The coach on a local model of no known price; the verifier on luna is still priced.
+    got = total([luna, luna], Settings(data_dir=tmp_path), "local-model")
+    assert got["calls"] == 1
+    assert got["cost"] == pytest.approx(KNOWN_PRICES["gpt-5.6-luna"].prompt)
+
+
+def test_a_reopened_puzzle_keeps_the_closed_rooms_spend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from sidecoach.config import Settings
+    from sidecoach.llm.usage import Usage
+    from sidecoach.ui import puzzle_room
+
+    made: list[Any] = []
+
+    class Room:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            self.closed = self.closing = False
+            self.ledger = Usage()
+            self.ledger.record({"prompt_tokens": 10, "completion_tokens": 1})
+            made.append(self)
+
+        def usages(self) -> list[Any]:
+            return [self.ledger]
+
+    class Puzzles:
+        def get(self, puzzle_id: str) -> object:
+            return object()
+
+    monkeypatch.setattr(puzzle_room, "PuzzleRoom", Room)
+    rooms = puzzle_room.PuzzleRooms(
+        Settings(data_dir=tmp_path),
+        store_path=None,
+        puzzles=Puzzles(),  # type: ignore[arg-type]
+    )
+    rooms.open("p1")
+    made[0].closed = True
+    rooms.open("p1")
+    assert len(made) == 2
+    assert sum(u.calls for u in rooms.usages()) == 2

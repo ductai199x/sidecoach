@@ -817,6 +817,7 @@ class ReviewRooms:
         # The model as the settings name it, made once for them.
         self._model: Any | None = None
         self._model_for: tuple[Any, ...] | None = None
+        self._spent_ledgers: list[Any] = []  # the ledgers of the models replaced
 
     def model(self) -> tuple[Any | None, str | None]:
         """The model the reviews' words are asked of, and why there is none."""
@@ -830,8 +831,11 @@ class ReviewRooms:
         named = (llm.provider, llm.model, llm.base_url, llm.reasoning_effort, api_key_of(llm))
         with self._lock:
             if named != self._model_for:
+                old = getattr(self._model, "usage", None)
                 try:
                     self._model = make_provider(llm, timeout_s=AI_TIMEOUT_S)
+                    if old is not None:
+                        self._spent_ledgers.append(old)  # its calls still count
                 except (RuntimeError, ValueError) as exc:  # a key not given, a name not known
                     return None, str(exc)
                 self._model_for = named
@@ -841,7 +845,7 @@ class ReviewRooms:
         """The model calls of the reviews' words (llm.usage.Usage), for the panel's strip."""
         with self._lock:
             usage = getattr(self._model, "usage", None)
-        return [usage] if usage is not None else []
+            return [*self._spent_ledgers, *([usage] if usage is not None else [])]
 
     def row(self, key: str) -> LibraryRow | None:
         """A game of the library by its key: imported, or one Sidecoach watched."""
