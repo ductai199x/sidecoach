@@ -2411,7 +2411,7 @@ _ASK_MOVE = re.compile(
     r"what (?:should|would) i play|what would you play|"
     r"which move (?:should i (?:play|make)|is (?:best|better)|would you (?:play|make|suggest)|"
     r"do you (?:play|suggest|recommend))|"
-    r"just tell me|what'?s the move|(?:tell|show|give) me the move|"
+    r"which move\s*\?|just tell me|what'?s the move|(?:tell|show|give) me the move|"
     r"(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\b",
     re.I,
 )
