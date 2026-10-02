@@ -316,6 +316,7 @@ class PanelEngine:
     _partial_busy: threading.Lock = field(default_factory=threading.Lock, init=False)
     _utterance_gen: int = field(default=0, init=False)  # bumped when an utterance ends
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _voice_warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _provisioning: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
@@ -1228,8 +1229,21 @@ class PanelEngine:
         cfg.voice = cfg.voice.model_copy(update={"voice": voice})
         return make_tts(cfg, off=not self.voice_models)
 
+    def setup_fetched(self, ids: list[str]) -> None:
+        """Setup fetched `ids`. The voice or the recogniser among them is loaded now, and
+        listening applied as the settings say: loaded at start before their files came, they
+        stayed off until a restart -- the microphone button hidden, its test refused
+        (voice finding 4; round 3 audit, 2026-10-02)."""
+        if {"kokoro", "stt"} & set(ids):
+            threading.Thread(target=self._warm_voice, name="voice-after-setup", daemon=True).start()
+
     def _warm_voice(self) -> None:
-        """Load both voice models once, off the pipeline thread, and say where they landed."""
+        """Load both voice models once, off the pipeline thread, and say where they landed.
+        One at a time: Setup's run can end while the start's warm-up is loading them."""
+        with self._voice_warm_lock:
+            self._warm_voice_now()
+
+    def _warm_voice_now(self) -> None:
         for label, provider in (("voice", self._tts), ("speech recognition", self._stt)):
             load = getattr(provider, "load", None)
             if load is None:

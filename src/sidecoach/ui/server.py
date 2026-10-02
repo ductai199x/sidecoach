@@ -788,6 +788,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     setup = Setup(engine.settings)
     engine.settings_followers.append(lambda s: setattr(setup, "settings", s))
+    setup.on_fetched.append(engine.setup_fetched)
 
     @app.get("/api/setup/status")
     def setup_status() -> dict[str, Any]:

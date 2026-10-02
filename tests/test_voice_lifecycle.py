@@ -26,11 +26,16 @@ class FakeKokoro:
 
 
 class FakeOutputStream:
-    open_s = 0.0
+    # When set: `opening` is set as a stream begins to open, and it opens once `gate` is.
+    gate: threading.Event | None = None
+    opening: threading.Event | None = None
     instances: list[FakeOutputStream] = []
 
     def __init__(self, samplerate: int, channels: int, dtype: str, device: Any, callback: Any):
-        time.sleep(FakeOutputStream.open_s)
+        if FakeOutputStream.opening is not None:
+            FakeOutputStream.opening.set()
+        if FakeOutputStream.gate is not None:
+            assert FakeOutputStream.gate.wait(5), "the test never let the stream open"
         self.callback = callback
         self.played = 0
         self.closed = False
@@ -73,7 +78,8 @@ class FakeSD:
 @pytest.fixture
 def voice(monkeypatch: pytest.MonkeyPatch) -> KokoroTTS:
     monkeypatch.setattr(kk, "follows_system_default", lambda device, kind: False)
-    FakeOutputStream.open_s = 0.0
+    FakeOutputStream.gate = None
+    FakeOutputStream.opening = None
     FakeOutputStream.instances = []
     tts = KokoroTTS(model_dir=Path("."), output_device=1)
     tts._kokoro = FakeKokoro()
@@ -90,36 +96,57 @@ def _until(cond: Any, timeout: float = 5.0) -> bool:
     return False
 
 
-def test_a_stop_while_the_stream_opens_is_honoured(voice: KokoroTTS) -> None:
-    FakeOutputStream.open_s = 0.3
-    stopped = threading.Event()
+def test_a_stop_while_the_stream_opens_is_honoured(
+    voice: KokoroTTS, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Voice finding 13: a stop landing while the stream opened was ignored, and the line
+    played over a mute or a barge-in. The stream opens only when the test lets it, and the stop
+    lands while it opens: by that state, not by a 0.3 s open raced against a 0.05 s sleep
+    (round 3 audit, 2026-10-02)."""
+    queued: list[int] = []
+    real_queue = kk._Stream.queue
 
-    def stop_soon() -> None:
-        time.sleep(0.05)
-        voice.stop()
-        stopped.set()
+    def queue(self: Any, samples: Any) -> None:
+        queued.append(len(samples))
+        real_queue(self, samples)
 
-    started = threading.Thread(target=stop_soon)
+    monkeypatch.setattr(kk._Stream, "queue", queue)
+    FakeOutputStream.gate = threading.Event()
+    FakeOutputStream.opening = threading.Event()
     voice.on_play = None
     voice.say("Your knight on f5 is loose.")
-    _until(lambda: voice._playing)
-    started.start()
+    assert FakeOutputStream.opening.wait(5), "the stream never began to open"
+    voice.stop()
+    FakeOutputStream.gate.set()
     assert _until(lambda: not voice.busy)
-    time.sleep(0.2)
-    assert stopped.is_set()
-    assert FakeOutputStream.instances[0].played == 0
+    assert queued == [], "the line was queued after the stop"
 
 
-def test_a_dead_output_stream_is_dropped_and_reopened(voice: KokoroTTS) -> None:
+def test_a_dead_output_stream_is_dropped_and_reopened(
+    voice: KokoroTTS, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Voice finding 6: a dead stream (the HDMI monitor asleep) held each line for its length
+    and five seconds, silent, and kept the voice busy. On a clock the test moves: past the
+    dead-stream limit with no call from the device, the stream is dropped, and the next line
+    opens a new one. It asserted a wall-clock duration (round 3 audit, 2026-10-02)."""
+    now = [0.0]
+    monkeypatch.setattr(
+        kk,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: now[0], perf_counter=time.perf_counter),
+    )
     voice.say("First line.")
     assert _until(lambda: FakeOutputStream.instances and not voice.busy)
     first = FakeOutputStream.instances[0]
     first.dead = True  # the HDMI monitor went to sleep
-    begun = time.monotonic()
     voice.say("Second line.")
-    assert _until(lambda: not voice.busy, timeout=10)
-    assert time.monotonic() - begun < kk.STREAM_DEAD_S + 1.0  # not the line's length + 5 s
-    assert first.closed
+    stream = voice._stream
+    assert stream is not None
+    assert _until(lambda: bool(stream._chunks)), "the second line never reached the stream"
+    assert voice.busy
+    now[0] += kk.STREAM_DEAD_S + 0.1  # no call from the device since
+    assert _until(lambda: not voice.busy)
+    assert first.closed and voice._stream is None
     voice.say("Third line.")
     assert _until(lambda: len(FakeOutputStream.instances) == 2 and not voice.busy)
     assert FakeOutputStream.instances[1].played > 0
@@ -177,6 +204,74 @@ def test_the_recogniser_loads_once_setup_has_fetched_it(monkeypatch: pytest.Monk
     assert stt.load() is False
     assert stt._failed is not None and stt._failed.startswith("not downloaded")
     assert stt.load() is True  # Setup fetched it: no restart needed
+
+
+def test_speech_recognition_is_on_once_setup_has_fetched_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Voice finding 4, the player's path: the recogniser failed to load at start (its files not
+    there yet), so listening stayed off, the microphone button hidden and its test refused,
+    until a restart -- Setup fetched the files and nothing loaded them (round 3 audit,
+    2026-10-02). Setup's run ends, the recogniser is loaded, and listening is applied as the
+    settings say."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import sidecoach.setup as setup_module
+    from sidecoach.config import Settings
+    from sidecoach.setup import Item
+    from sidecoach.ui.panel import PanelEngine
+    from sidecoach.ui.server import build_app
+
+    monkeypatch.setenv("SIDECOACH_CONFIG", str(tmp_path / "sidecoach.toml"))
+    monkeypatch.delenv("SIDECOACH_DATA_DIR", raising=False)
+    settings = Settings(data_dir=tmp_path)
+    settings.voice.listen = "ptt"
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    files = {"there": False}
+
+    class Recogniser:
+        loaded = False
+
+        def healthcheck(self) -> tuple[bool, str]:
+            return (True, "fake") if self.loaded or files["there"] else (False, "not downloaded")
+
+        def load(self) -> bool:
+            self.loaded = files["there"]
+            return self.loaded
+
+    modes: list[str] = []
+
+    def set_mode(mode: str) -> str:
+        modes.append(mode)
+        listener.mode = mode
+        return mode
+
+    listener = SimpleNamespace(mode="off", level=0.0, set_mode=set_mode, mic=None)
+    engine._listener = listener  # type: ignore[assignment]
+    engine._hotkey = SimpleNamespace(start=lambda: True, stop=lambda: None, detail="")  # type: ignore[assignment]
+    engine._mic = SimpleNamespace(healthcheck=lambda: (True, "mic"))  # type: ignore[assignment]
+    engine._stt = Recogniser()  # type: ignore[assignment]
+    engine._tts = SimpleNamespace(healthcheck=lambda: (True, "voice"), busy=False)  # type: ignore[assignment]
+    engine._warm_voice()  # the start: no files yet
+    assert engine.poll(0)["state"]["stt_ready"] is False and listener.mode == "off"
+
+    def fetch(_progress: object) -> None:
+        files["there"] = True
+
+    item = Item("stt", "Speech recognition", 1, lambda: files["there"], fetch)
+    monkeypatch.setattr(setup_module, "items", lambda _settings: [item])
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    assert client.post("/api/setup/start", json={"ids": ["stt"]}).json()["ok"]
+    runs = [t for t in threading.enumerate() if t.name == "setup"]
+    for run in runs:
+        run.join(10)
+    for after in [t for t in threading.enumerate() if t.name == "voice-after-setup"]:
+        after.join(10)
+    state = engine.poll(0)["state"]
+    assert state["stt_ready"] is True, state["stt_detail"]
+    assert listener.mode == "ptt" and modes[-1] == "ptt"
 
 
 class _QuietGate:
