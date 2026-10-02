@@ -57,7 +57,7 @@ class PanelApi(
                 }
             )
 
-            path == "/api/poll" -> ok(PanelEngine.poll(query["since"]?.toIntOrNull() ?: 0))
+            path == "/api/poll" -> ok(PanelEngine.poll(query["since"]?.toIntOrNull() ?: 0, files))
 
             path == "/api/start" -> {
                 PanelEngine.onStart?.invoke()

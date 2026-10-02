@@ -801,7 +801,7 @@ class Store(val path: File?) {
     fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?): Boolean =
         lock.withLock {
             val (condition, value) = held(key)
-            exec(
+            val saved = exec(
                 "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
                     " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS (SELECT 1 FROM removed WHERE key = ?) AND $condition" +
                     " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version," +
@@ -809,6 +809,8 @@ class Store(val path: File?) {
                     " summary = excluded.summary, words = NULL WHERE reviews.version != excluded.version",
                 key, strength, version, reviewedAt, report, summary, key, value,
             ) > 0
+            if (saved) reviewsTouched()
+            saved
         }
 
     fun review(key: String, strength: String): ReviewRow? = lock.withLock {
@@ -837,6 +839,7 @@ class Store(val path: File?) {
     /** `set_review_summary`. */
     fun setReviewSummary(key: String, strength: String, summary: String) {
         lock.withLock { exec("UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?", summary, key, strength) }
+        reviewsTouched()
     }
 
     /** The strength of the review each game's Stats facts come from, by its key. `stat_strengths`. */
@@ -1027,6 +1030,22 @@ class Store(val path: File?) {
 
         /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
         private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
+
+        // Raised by every review saved or summed up again, by any store of this process (a review
+        // page's): what was read of the reviews is stale once it moves ([reviewsRevision]).
+        private val reviewsSaved = java.util.concurrent.atomic.AtomicInteger()
+
+        /**
+         * A count raised with every review saved, or summed up again, in this process: the panel
+         * reads the reviews again once it moves (the end-of-game card's accuracy, PanelEngine.kt).
+         * `reviews_revision`.
+         */
+        fun reviewsRevision(): Int = reviewsSaved.get()
+
+        /** A review was saved or summed up again: [reviewsRevision] moves. `reviews_touched`. */
+        fun reviewsTouched() {
+            reviewsSaved.incrementAndGet()
+        }
 
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"

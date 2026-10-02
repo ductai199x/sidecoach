@@ -9,6 +9,7 @@ import com.sidecoach.events.GameReview
 import com.sidecoach.profile.Causes
 import com.sidecoach.profile.Library
 import com.sidecoach.profile.Profiler
+import com.sidecoach.profile.Store
 import java.io.File
 import com.sidecoach.Maintenance
 import com.sidecoach.chess.Board
@@ -217,13 +218,66 @@ object PanelEngine {
             state["session_dir"] = null
             state["review"] = null
             state["profile"] = null
+            // Game Review's accuracy of each game whose end-of-game card the session showed, by
+            // its review key, once the game's review is done: the card shows the live accuracy
+            // until then (Tai, 2026-10-02). Read again when the reviews move ([followReviews]).
+            state["review_accuracy"] = emptyMap<String, Any?>()
+        }
+    }
+
+    // The end-of-game cards shown: review key -> the player's side; and the reviews' revision
+    // and the cards counted when their accuracies were last read.
+    private val cards = LinkedHashMap<String, String>()
+    private var cardsRead: Pair<Int, Int>? = null
+
+    /**
+     * Game Review's accuracy of each game the session showed an end-of-game card for, read again
+     * only when the reviews moved ([Store.reviewsRevision]: every review saved, by a review page)
+     * or a card came: the card says the live accuracy until its game's review is done, then the
+     * review's, as Game Review shows it (the review of 2026-10-01: 78.0 on the card, 78.3 in
+     * Game Review). Rides the poll the page already makes; nothing is asked of the store between
+     * changes. [files]: where the profile is when no session holds its store. `_follow_reviews`.
+     */
+    private fun followReviews(files: File?) {
+        val known: Map<String, String>
+        val stamp: Pair<Int, Int>
+        synchronized(lock) {
+            known = LinkedHashMap(cards)
+            stamp = Store.reviewsRevision() to known.size
+            if (known.isEmpty() || stamp == cardsRead) return
+        }
+        // The session's own store while it runs, else the profile's.
+        val held = profiler?.store
+        if (held == null && files == null) return
+        val found = LinkedHashMap<String, Any?>()
+        try {
+            val store = held ?: Store(File(files, "profile.sqlite"))
+            try {
+                for ((key, side) in known) {
+                    val best = store.bestReview(key)
+                    val summary = best?.summary?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
+                    val accuracy = summary?.optJSONObject(side)?.opt("accuracy")
+                    if (accuracy is Number) found[key] = accuracy.toDouble()
+                }
+            } finally {
+                if (held == null) store.close()
+            }
+        } catch (exc: Exception) { // the card keeps the live accuracy; said once
+            synchronized(lock) { cardsRead = stamp } // tried again when the reviews move
+            emit("sys", "warn", "the cards' review accuracies could not be read: ${pyRepr(exc)}")
+            return
+        }
+        synchronized(lock) {
+            cardsRead = stamp
+            state["review_accuracy"] = found
         }
     }
 
     // ---- what the page asks for --------------------------------------------------------
 
-    fun poll(since: Int): JSONObject {
+    fun poll(since: Int, files: File? = null): JSONObject {
         PanelListen.endStaleHearTest()
+        followReviews(files)
         val lines = JSONArray()
         val snapshot: JSONObject
         val at: Int
@@ -874,12 +928,15 @@ object PanelEngine {
                     val review = reviewJson(event)
                     set("review" to review)
                     val insights = snapshot?.insights ?: emptyList()
+                    val reviewKey = reviewable(profiler, event.gameId)
+                    // Its accuracy follows Game Review's once the game is reviewed.
+                    if (reviewKey != null) synchronized(lock) { cards[reviewKey] = event.userSide.name.lowercase() }
                     emit(
                         "coach",
                         "info",
                         "review: " + elide(event.lines.joinToString(" "), 80),
                         JSONObject().put("review", review).put("insights", JSONArray(insights))
-                            .put("review_key", reviewable(profiler, event.gameId) ?: JSONObject.NULL),
+                            .put("review_key", reviewKey ?: JSONObject.NULL),
                     )
                 }
                 is Recommendation -> {
@@ -966,6 +1023,7 @@ object PanelEngine {
      */
     fun resetProfile(files: File): String {
         val path = Maintenance.resetProfile(files)
+        Store.reviewsTouched() // the reviews went: the cards' accuracies are the live ones again
         val profiler = profiler
         if (profiler != null) {
             profiler.forget()
