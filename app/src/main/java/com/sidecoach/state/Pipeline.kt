@@ -197,6 +197,12 @@ class GamePipeline(
 
         /** The lock and the readings the look was last read broken with, and since when. */
         var relearnSeen: Pair<Any, Double>? = null
+
+        /**
+         * Since when the game's board has shown a look that could not be learned again, and
+         * whether the person has been told ([relearnLook]).
+         */
+        var lookLost: Pair<Double, Boolean>? = null
     }
 
     private var game = Game()
@@ -309,7 +315,7 @@ class GamePipeline(
             }
         }
         // On every verified tick, changed or not: a new look must stay a moment.
-        if (model != null && !game.startOnScreen) relearnLook(frame, geometry, ts)
+        if (model != null && !game.startOnScreen) events.addAll(relearnLook(frame, geometry, ts))
         game.startSeen = if (game.startOnScreen) game.startSeen + 1 else 0
         if (shouldBootstrap()) {
             // Decided on every verified tick, changed or not, so that a start position stored
@@ -818,6 +824,7 @@ class GamePipeline(
         built.rankLabels = Coordinates.learnRankLabels(frame, geometry, side)
         game.coldSince = null
         game.coldNoticed = false
+        game.lookLost = null
         forgetClock()
         reconciler?.let {
             it.bottom = side
@@ -837,34 +844,39 @@ class GamePipeline(
     }
 
     /**
-     * The board read cold from the theme cache: the cached recogniser for its colours, the
-     * orientation (`bottom`, or the coordinate labels), the readings and the placement they
-     * make -- or null when any of those is missing.
+     * Whether a re-fit of the lock finds the board where the lock is, to within the tracker's
+     * deadband, with the fit the tracker asks of a lock (`pipeline._on_its_board`).
      */
+    private fun onItsBoard(gray: com.sidecoach.vision.Plane, lock: BoardCandidate): Boolean {
+        val refit = BoardRefine.refine(gray, lock).board
+        val shift = maxOf(
+            kotlin.math.abs(refit.region.x - lock.region.x),
+            kotlin.math.abs(refit.region.y - lock.region.y),
+            kotlin.math.abs(refit.region.x + refit.region.w - lock.region.x - lock.region.w),
+            kotlin.math.abs(refit.region.y + refit.region.h - lock.region.y - lock.region.h),
+        )
+        return refit.fit >= tracker.minFit && shift <= tracker.refitDeadbandPx
+    }
+
     /**
-     * The cached set this start position shows again -- the same pieces on the same board,
-     * learned before -- or null for a set not seen yet. Each set cached on these board colours
-     * reads the frame; one that reads it as the start position is this set, and the new model
-     * replaces it rather than standing beside it.
+     * The recogniser learned again, mid-game, when the board's look changed under it; a
+     * [BoardUnread] ("look") when it cannot be (`pipeline._relearn_look`; round 2, finding 2,
+     * and round 3). A theme or a piece set changed mid-game left the rest of the game unread,
+     * with no event. The game's own position says what is on the board: the record's position,
+     * or one legal move on from it. Tried only when the look stays broken the same way on one
+     * lock for [RELEARN_HOLD_S] (half the board unknown on new square colours, or
+     * [RELEARN_UNEXPLAINED_FRAMES] frames no story explains), with nothing dragged and a re-fit
+     * finding the board exactly under the lock. A set cached on the new colours that reads the
+     * position on every cell is taken whole; otherwise [ThemeModel.fromPosition] learns one,
+     * validated first. The model learned is not cached.
      */
-    /**
-     * The recogniser learned again, mid-game, when the board's look changed under it
-     * (`pipeline._relearn_look`; round 2, finding 2). A theme or a piece set changed mid-game
-     * left the rest of the game unread, with no event. The game's own position says what is on
-     * the board: the record's position, or one legal move on from it. Tried only when the look
-     * stays broken the same way on one lock for [RELEARN_HOLD_S] (half the board unknown on new
-     * square colours, or [RELEARN_UNEXPLAINED_FRAMES] frames no story explains), with nothing
-     * dragged, the recogniser reading the frame as no position of the game (earlier ones
-     * included), and a re-fit finding the board exactly under the lock. A set cached on the
-     * new colours that reads the position is taken whole; otherwise [ThemeModel.fromPosition]
-     * learns one, validated first. The model learned is not cached.
-     */
-    private fun relearnLook(frame: Mat, geometry: BoardGeometry, ts: Double) {
-        val rec = reconciler ?: return
-        val current = model ?: return
-        val side = bottom ?: return
-        val readings = game.readingsValue ?: return
-        if (!rec.started || rec.finished || ThemeModel.startShapedReadings(readings)) return
+    private fun relearnLook(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
+        val none = mutableListOf<Event>()
+        val rec = reconciler ?: return none
+        val current = model ?: return none
+        val side = bottom ?: return none
+        val readings = game.readingsValue ?: return none
+        if (!rec.started || rec.finished || ThemeModel.startShapedReadings(readings)) return none
         val unknown = readings.count { it.kind == Kind.UNKNOWN }
         // Sampled only when it may matter: this runs on every still tick.
         var sampled = if (unknown >= RELEARN_UNKNOWN_CELLS) ThemeCache.samplePalette(frame, geometry) else null
@@ -873,10 +885,14 @@ class GamePipeline(
         // (the desktop's geometry sweep, seed 175).
         val newTheme = unknown >= RELEARN_UNKNOWN_CELLS && sampled != null &&
             !ThemeCache.sameTheme(sampled.first, sampled.second, current.lightBg, current.darkBg)
-        val dragging = readings.any { it.hover }
-        if (dragging || (!newTheme && rec.unexplainedFor < RELEARN_UNEXPLAINED_FRAMES)) {
+        if (!newTheme && rec.unexplainedFor < RELEARN_UNEXPLAINED_FRAMES) {
             game.relearnSeen = null
-            return
+            game.lookLost = null // the game is read again
+            return none
+        }
+        if (readings.any { it.hover }) { // a piece dragged
+            game.relearnSeen = null
+            return none
         }
         // Only a look that stays broken, read the same on one lock for RELEARN_HOLD_S: a piece
         // in flight, a premove's ghost or a lock a few pixels off for a frame pass (the
@@ -885,58 +901,54 @@ class GamePipeline(
         val since = game.relearnSeen
         if (since == null || since.first != seen) {
             game.relearnSeen = seen to ts
-            return
+            return none
         }
-        if (ts - since.second < RELEARN_HOLD_S) return
+        if (ts - since.second < RELEARN_HOLD_S) return none
         val tried = game.relearnTried
-        if (tried != null && ts - tried < RELEARN_EVERY_S) return
+        if (tried != null && ts - tried < RELEARN_EVERY_S) return none
         game.relearnTried = ts
         val whiteAtBottom = side == Side.WHITE
-        // The recogniser reads the frame as a position of this game, earlier or one move on: a
-        // move taken back or browsed, a story pending -- not a new look (the desktop's stress
-        // sweep, seeds 16, 22, 23).
-        val history = rec.board.copy()
-        val base = history.copy(withStack = false)
+        // Learned only on a lock that sits on its board to the pixel (the desktop's geometry
+        // sweep, seed 25: a board mid-nudge read as a new theme).
+        val lock = board ?: return none
+        val gray = lastGray ?: return none
+        if (!onItsBoard(gray, lock)) return none
+        // Whether this is the game's board in a new look is the reconciler's to say: none of its
+        // stories explains the frame. A frame the recogniser read within a cell of a position of
+        // the game was once left alone as "not a new look", and a set read with a single piece
+        // wrong was never learned: about one set change in six left the rest of the game unread
+        // (round 3). What guards against another board, a dialog or a piece in flight is that
+        // the frame must show pieces exactly where the game's position, or one legal move on
+        // from it, puts them, as the look-free occupancy reads them -- and then as the new
+        // look's own silhouettes read them ([ThemeModel.fromPosition]).
+        val base = rec.board.copy(withStack = false)
         val positions = mutableListOf(base)
         for (move in base.legalMoves()) {
             if (move.promotion != 0 && move.promotion != com.sidecoach.chess.QUEEN) continue
             positions.add(base.copy(withStack = false).also { it.push(move) })
         }
-        val earlier = ArrayList<Board>()
-        while (history.moveStack.isNotEmpty()) {
-            history.pop()
-            earlier.add(history.copy(withStack = false))
-        }
-        if ((positions + earlier).any { misreads(readings, it, whiteAtBottom) < 2 }) return
-        // Learned only on a lock that sits on its board to the pixel (the desktop's geometry
-        // sweep, seed 25: a board mid-nudge read as a new theme).
-        val lock = board ?: return
-        val gray = lastGray ?: return
-        val refit = BoardRefine.refine(gray, lock).board
-        val shift = maxOf(
-            kotlin.math.abs(refit.region.x - lock.region.x),
-            kotlin.math.abs(refit.region.y - lock.region.y),
-            kotlin.math.abs(refit.region.x + refit.region.w - lock.region.x - lock.region.w),
-            kotlin.math.abs(refit.region.y + refit.region.h - lock.region.y - lock.region.h),
-        )
-        if (refit.fit < 0.85 || shift > 2) return
         val occupied = ThemeModel.occupancy(frame, geometry).map { it.fraction >= Pieces.PIECE_MIN_FRACTION }
         if (sampled == null) sampled = ThemeCache.samplePalette(frame, geometry)
+        var shown = false // the frame shows one of those positions
         for (position in positions) {
             val labels = (0 until 64).map { i ->
                 position.pieceAt(Squares.squareAt(i / 8, i % 8, whiteAtBottom))?.symbol() ?: "empty"
             }
             if ((0 until 64).any { occupied[it] != (labels[it] != "empty") }) continue
-            // A set learned before on these colours, whole, that reads the position.
+            shown = true
+            // A set learned before on these colours, whole, that reads the position -- every
+            // cell of it: the recogniser this game was read with is among the cached sets, and
+            // read with one piece wrong it was taken again, and nothing changed.
             val palette = sampled
             val store = cache
             if (store != null && palette != null) {
                 for ((_, cached) in store.candidates(palette.first, palette.second)) {
                     val cachedReadings = cached.classifyFrame(frame, geometry, embedder)
-                    if (misreads(cachedReadings, position, whiteAtBottom) <= 1) {
+                    if (misreads(cachedReadings, position, whiteAtBottom) == 0) {
                         model = cached
                         game.readingsValue = cachedReadings
-                        return
+                        game.lookLost = null
+                        return none
                     }
                 }
             }
@@ -944,8 +956,18 @@ class GamePipeline(
             learned.rankLabels = Coordinates.learnRankLabels(frame, geometry, side).ifEmpty { current.rankLabels }
             model = learned
             game.readingsValue = learned.classifyFrame(frame, geometry, embedder)
-            return
+            game.lookLost = null
+            return none
         }
+        if (!(shown || newTheme)) return none // nothing says the look changed: another board, a dialog, a story
+        // The game's board in a new look that cannot be learned -- pieces the frame shows where
+        // the game has none, a kind its silhouettes do not separate -- or a new theme with moves
+        // played since: the game goes unread, and the person is told once, as of a board unread
+        // at the start (COLD_NOTICE_S), rather than left in silence.
+        val (lostSince, told) = game.lookLost ?: (ts to false)
+        game.lookLost = lostSince to (told || ts - lostSince >= COLD_NOTICE_S)
+        if (told || ts - lostSince < COLD_NOTICE_S) return none
+        return mutableListOf(BoardUnread("look"))
     }
 
     /**
@@ -967,6 +989,12 @@ class GamePipeline(
         return count
     }
 
+    /**
+     * The cached set this start position shows again -- the same pieces on the same board,
+     * learned before -- or null for a set not seen yet. Each set cached on these board colours
+     * reads the frame; one that reads it as the start position is this set, and the new model
+     * replaces it rather than standing beside it (`pipeline._learned_set`).
+     */
     private fun learnedSet(store: ThemeStore, model: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side): String? {
         for ((key, cached) in store.candidates(model.lightBg, model.darkBg)) {
             if (readsAsStart(cached.classifyFrame(frame, geometry, embedder), side)) return key
@@ -1166,6 +1194,7 @@ class GamePipeline(
         bottom = read.bottom
         game.coldSince = null
         game.coldNoticed = false
+        game.lookLost = null
         game.readingsValue = read.readings
         game.readingsKey = board?.let { it.region to Math.round(it.cellPx * 100.0) / 100.0 }
         this.reconciler = reconciler

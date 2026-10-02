@@ -568,6 +568,41 @@ def look_changed_mid_game(**look) -> list[dict]:
     return states
 
 
+def set_read_one_piece_wrong(before: str, after: str, opening: str, rest: str) -> list[dict]:
+    """`test_a_set_read_with_one_piece_wrong_is_learned_again` (round 3): the look-change
+    sweep's set changes the old recogniser read with one piece wrong, which a frame "within a
+    cell of a position of the game" left unlearned: the opening in the old set, the new set
+    held still for a second and a half, unchanged ticks after the first, then four moves in
+    it: learned again while still, every move followed, no new game."""
+    board = chess.Board()
+    states = [_shown(board, 3, style=before)]
+    for uci in opening.split():
+        move = board.push_uci(uci)
+        states.append(_shown(board, 3, highlight=move, style=before))
+    held = _shown(board, 15, highlight=board.peek(), style=after)
+    states.append(dict(held, _changed=[True] + [False] * 14))
+    for uci in rest.split():
+        move = board.push_uci(uci)
+        states.append(_shown(board, 3, highlight=move, style=after))
+    return states
+
+
+def look_unlearnable_told() -> list[dict]:
+    """`test_a_look_that_cannot_be_learned_again_is_told_once` (round 3): a new theme first
+    read with two plies already played on it, so the frame is neither the record's position
+    nor one move on and nothing can be learned; held still past COLD_NOTICE_S, the person is
+    told once ("look"); the old theme back, both plies are read."""
+    board = chess.Board()
+    states = [_shown(board, 3), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
+    board.push_san("Nc6")
+    last = board.push_san("Bb5")
+    frames = int((COLD_NOTICE_S + 3.0) * FPS)
+    held = _shown(board, frames, highlight=last, theme="brown")
+    states.append(dict(held, _changed=[True] + [False] * (frames - 1)))
+    states.append(dict(_shown(board, 8, highlight=last), _changed=[True] + [False] * 7))
+    return states
+
+
 def flipped_before_the_first_move() -> list[dict]:
     """`test_board_flipped_before_the_first_move_keeps_the_game`: the pre-game board watched as
     White, then paired as Black: the board flips before a move, and the same game goes on,
@@ -1072,6 +1107,14 @@ SCENARIOS = {
     # Round 2, finding 2: a theme, then a piece set, changed mid-game.
     "theme-changed-mid-game": lambda: look_changed_mid_game(theme="brown"),
     "set-changed-mid-game": lambda: look_changed_mid_game(style="pixel"),
+    # Round 3: set changes read with one piece wrong, and a look that cannot be learned.
+    "set-one-wrong-maestro-cburnett": lambda: set_read_one_piece_wrong(
+        "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
+    ),
+    "set-one-wrong-maestro-leipzig": lambda: set_read_one_piece_wrong(
+        "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
+    ),
+    "look-unlearnable-told": look_unlearnable_told,
     "flipped-before-a-move": flipped_before_the_first_move,
     "reset-one-tick": reset_then_one_changed_tick,
     "lock-moves": the_lock_moves,
@@ -1111,6 +1154,9 @@ READ_ONCE = {
     "new-theme-new-game",
     "theme-changed-mid-game",
     "set-changed-mid-game",
+    "set-one-wrong-maestro-cburnett",
+    "set-one-wrong-maestro-leipzig",
+    "look-unlearnable-told",
     "flipped-before-a-move",
     "reset-one-tick",
     "lock-moves",
@@ -1164,6 +1210,16 @@ EXPECT = {
     ),
     "set-changed-mid-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
+    ),
+    "set-one-wrong-maestro-cburnett": lambda lines, data: (
+        len(_sans(lines)) == 10 and data["bootstraps"] == 1
+    ),
+    "set-one-wrong-maestro-leipzig": lambda lines, data: (
+        len(_sans(lines)) == 10 and data["bootstraps"] == 1
+    ),
+    "look-unlearnable-told": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"]
+        and [line for line in lines if line.startswith("BoardUnread")] == ["BoardUnread look"]
     ),
     "new-theme-new-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "d4", "Nf6"]
