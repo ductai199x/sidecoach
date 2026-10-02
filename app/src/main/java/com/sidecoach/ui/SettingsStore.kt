@@ -6,6 +6,7 @@ import com.sidecoach.coach.PolicySettings
 import com.sidecoach.llm.LLMSettings
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 /**
  * The settings, as the panel's settings page reads and writes them.
@@ -36,7 +37,7 @@ data class EngineSettings(
     val maxSeconds: Double? = 5.0,
 )
 
-class SettingsStore(private val context: Context) {
+open class SettingsStore(private val context: Context) {
 
     private companion object {
         /** Guards [seenUnreadable], across the stores the app makes. */
@@ -139,9 +140,15 @@ class SettingsStore(private val context: Context) {
      * left its changes as the phone's settings, and the next run read them (2026-09-27). Every
      * caller is off the main thread: the settings page's server, and the caption box's own
      * thread when it turns captions off.
+     *
+     * A write that fails raises, as the desktop's `config.save_settings` raises OSError: commit()
+     * answered false and the save was said to be kept when it was not (the review of 2026-10-01).
      */
-    fun save(values: JSONObject) {
-        prefs.edit().putString("json", values.toString()).commit()
+    @Throws(IOException::class)
+    open fun save(values: JSONObject) {
+        if (!prefs.edit().putString("json", values.toString()).commit()) {
+            throw IOException("the phone's storage did not take the write")
+        }
     }
 
     fun secretNames(): List<String> {

@@ -494,8 +494,13 @@ object Captions {
         Thread({
             runCatching {
                 val off = JSONObject().put("voice", JSONObject().put("captions", false))
-                SettingsApi(SettingsStore(ctx)).update(JSONObject().put("settings", off).put("secrets", JSONObject()))
-                PanelEngine.emit("sys", "info", "captions off; the CC button at the top of the panel turns them on again")
+                val saved = SettingsApi(SettingsStore(ctx)).update(JSONObject().put("settings", off).put("secrets", JSONObject()))
+                if (saved.optBoolean("ok")) {
+                    PanelEngine.emit("sys", "info", "captions off; the CC button at the top of the panel turns them on again")
+                } else {
+                    // Not kept (the review of 2026-10-01: a failed write was said to be saved).
+                    PanelEngine.emit("sys", "warn", "captions off; ${saved.optString("error", "the setting was not kept")}")
+                }
             }
         }, "captions-off").start()
     }

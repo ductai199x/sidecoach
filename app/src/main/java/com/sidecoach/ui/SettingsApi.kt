@@ -4,6 +4,7 @@ import com.sidecoach.voice.Py
 import com.sidecoach.voice.Voices
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 /**
  * The settings over HTTP, for the panel's settings page. `sidecoach/ui/settings_api.py`.
@@ -91,7 +92,12 @@ class SettingsApi(val store: SettingsStore) {
             // The phone owns these; the page shows them and cannot move them.
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
-            store.save(wanted)
+            try {
+                store.save(wanted)
+            } catch (e: IOException) {
+                // Not kept: said to the page, never a crash (`settings_api.update`'s OSError).
+                return JSONObject().put("ok", false).put("error", "The settings could not be saved: ${e.message}")
+            }
             val after = store.values()
             val changed = changed(before, after)
 
@@ -172,10 +178,23 @@ class SettingsApi(val store: SettingsStore) {
             }
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
-            store.save(wanted)
+            try {
+                store.save(wanted)
+            } catch (e: IOException) {
+                // The switch has moved; only its keeping failed, and the log says so
+                // (`settings_api.remember`'s OSError).
+                PanelEngine.emit("sys", "warn", "${names(change)}: not kept for the next session (${e.message})")
+                return
+            }
             PanelEngine.settingsTouched()
         }
     }
+
+    /** The fields a change sets, `section.field`, as the log names them. */
+    private fun names(change: JSONObject): String = change.keys().asSequence().flatMap { key ->
+        val section = change.opt(key)
+        if (section is JSONObject) section.keys().asSequence().map { "$key.$it" } else sequenceOf(key)
+    }.joinToString(", ")
 
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }

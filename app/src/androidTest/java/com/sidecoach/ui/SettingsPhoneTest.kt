@@ -493,6 +493,36 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A write of the settings that fails is said, never silent and never a crash (the review of
+     * 2026-10-01: commit() answered false and the save was told kept). A Settings save answers
+     * ok false with the reason; a switch kept for the next session says it was not kept. The
+     * desktop's `update` and `remember` catch save_settings' OSError the same way.
+     */
+    @Test
+    fun aSaveThatCannotBeWrittenIsSaidNotRaised() {
+        val failing = object : SettingsStore(app) {
+            override fun save(values: JSONObject) = throw java.io.IOException("the storage is full")
+        }
+        val api = SettingsApi(failing)
+        val before = failing.values().toString()
+        val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", "someone-else"))))
+        assertFalse(res.toString(), res.getBoolean("ok"))
+        assertEquals("The settings could not be saved: the storage is full", res.getString("error"))
+        assertEquals("nothing changed", before, failing.values().toString())
+
+        val cursor = PanelEngine.poll(0).getInt("cursor")
+        api.remember(JSONObject().put("voice", JSONObject().put("muted", !failing.muted())))
+        val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+        assertTrue(
+            "said",
+            (0 until lines.length()).any {
+                lines.getJSONObject(it).getString("text") == "voice.muted: not kept for the next session (the storage is full)"
+            },
+        )
+        assertEquals("nothing changed", before, failing.values().toString())
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to
