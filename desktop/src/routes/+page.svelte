@@ -184,6 +184,13 @@
 
 <Header />
 
+{#if store.offline}
+  <div class="offline" role="alert">
+    <span>{store.offline}</span>
+    {#if inShell() && store.offline !== "Restarting..."}<button onclick={() => store.restart()}>Restart</button>{/if}
+  </div>
+{/if}
+
 <main bind:this={mainEl}>
   <section id="left" hidden={!panes.board}>
     <Board fen={shown.fen} bottom={store.bottom} lastMove={shown.lastMove} marks={store.marks} bind:board={boardEl} />

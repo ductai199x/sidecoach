@@ -379,6 +379,25 @@ fn sidecar_status(state: State<'_, Sidecar>) -> SidecarStatus {
     }
 }
 
+/// The page found the sidecar gone (or it never started) and the player pressed Restart:
+/// what is left of the old one goes, and a new one starts. Returns at once; the page waits
+/// through `sidecar_status` for the new port or the error.
+#[tauri::command]
+fn restart_sidecar(app: AppHandle, state: State<'_, Sidecar>) {
+    // Cleared before the answer, so the page's wait sees only the new sidecar; with no port
+    // the old one is not asked to close but killed (it is gone or not answering).
+    *state.port.lock().unwrap() = None;
+    *state.error.lock().unwrap() = None;
+    std::thread::spawn(move || {
+        let state = app.state::<Sidecar>();
+        stop_sidecar(&app, &state);
+        if let Err(err) = start_sidecar(&app, &state) {
+            eprintln!("sidecar: {err}");
+            *state.error.lock().unwrap() = Some(err);
+        }
+    });
+}
+
 /// The splash screen has shown the warm-up through (or was dismissed): the main window
 /// comes up and the splash goes away. Harmless when there is no splash.
 #[tauri::command]
@@ -691,6 +710,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             sidecar_status,
+            restart_sidecar,
             splash_done,
             sidecar_token,
             data_dir_command,

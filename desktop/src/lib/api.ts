@@ -19,17 +19,30 @@ export function connect(): Promise<void> {
       return;
     }
     for (;;) {
-      const port = await invoke<number | null>("sidecar_port").catch(() => null);
-      if (port) {
-        base = `http://127.0.0.1:${port}`;
+      const status = await invoke<{ port: number | null; error: string | null }>("sidecar_status").catch(() => null);
+      if (status?.port) {
+        base = `http://127.0.0.1:${status.port}`;
         token = await invoke<string>("sidecar_token").catch(() => "");
         reportErrors();
         return;
+      }
+      // A sidecar that failed to start never serves: say so, and let a later call try again.
+      if (status?.error) {
+        ready = null;
+        throw new Error(status.error);
       }
       await new Promise((r) => setTimeout(r, 300));
     }
   })();
   return ready;
+}
+
+/** In the shell: start the sidecar afresh (it died, or never started) and wait for it. */
+export async function restartSidecar(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("restart_sidecar");
+  ready = null;
+  await connect();
 }
 
 let reporting = false;
