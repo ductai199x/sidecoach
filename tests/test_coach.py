@@ -2090,6 +2090,52 @@ def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() ->
     assert "Qxf7" not in texts[-1], texts
 
 
+def test_a_late_lesson_asks_nothing_while_they_think() -> None:
+    """A verdict landing after the opponent's reply, with the player to move: "one question
+    that sends them to find on the board" asked what the move allowed -- the threat they face
+    now, a nudge while they think (the deep prompt review, 2026-10-01). The late lesson is
+    the better move and what theirs missed, no question."""
+    coach, provider = scripted_coach(["[p=1.0] Qxf7 was mate at once."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    board = chess.Board(SCHOLAR)
+    plays = []
+    for ply, san in ((7, "Bxf7+"), (8, "Ke7")):
+        before = board.fen()
+        move = board.parse_san(san)
+        board.push(move)
+        plays.append(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=ply == 7,
+            ),
+            10.0 + ply,
+        )
+    verdict = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci=plays[0].uci(),
+        expected_loss=0.45,
+        severity=Severity.BLUNDER,
+        best=["h5f7"],
+        label=Label.MISS,
+    )
+    coach.on_event(verdict, 20.0)
+    drain(coach)
+    directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
+    lesson = next(d for d in directives if "The player just played Bxf7+" in d)
+    assert "no question" in lesson
+    assert "one question that sends them to find" not in lesson
+    assert "missed or allowed" not in lesson
+
+
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
     """The verdict comes first, from the best line alone; the analysis of the position the
     move left about a second later, and with it what the move allowed. The app holds the

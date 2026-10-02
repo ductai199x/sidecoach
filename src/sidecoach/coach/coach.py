@@ -4141,10 +4141,22 @@ class Coach:
                 # a mating attack" and nothing more.
                 # What the move let them do, from the position it left, when that has
                 # been analysed: the grounded half of "what their move allowed".
+                # Late -- the opponent has replied and the player is thinking again -- what
+                # the move allowed is the threat on the board now, and a question that sends
+                # them to the board is a nudge while they think: "one question that sends
+                # them to find..." asked what the move allowed (the deep prompt review,
+                # 2026-10-01). The lesson is then the better move and what theirs missed.
+                now = self._current
+                facing = (
+                    now is not None
+                    and now.ply > position.ply
+                    and now.board.turn == self.user_colour
+                    and not now.board.is_game_over()
+                )
                 left = self.positions.get(played.ply)
                 allowed = (
                     idea_words.allowed(left.board, left.analysis, played.san)
-                    if left is not None and left.analysis is not None
+                    if left is not None and left.analysis is not None and not facing
                     else None
                 )
                 opener = self._bags.draw("cost", COST_YOU).format(best=best)
@@ -4175,11 +4187,21 @@ class Coach:
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     "Teach the difference so they spot it next time: why the better move works "
-                    "and what their move missed or allowed, from the sheet of the position they "
-                    "faced -- its goal, its pattern, the tactic when it names one -- as a "
-                    "pattern to remember. Three sentences at most, then, if you like, one "
-                    "question that sends them to find on the board something your reply has "
-                    f"not said. {TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
+                    + (
+                        "and what their move missed, "
+                        if facing
+                        else "and what their move missed or allowed, "
+                    )
+                    + "from the sheet of the position they faced -- its goal, its pattern, the "
+                    "tactic when it names one -- as a pattern to remember. "
+                    + (
+                        "Three sentences at most, no question: they are thinking about their "
+                        "next move now, and what the opponent threatens is theirs to find. "
+                        if facing
+                        else "Three sentences at most, then, if you like, one question that "
+                        "sends them to find on the board something your reply has not said. "
+                    )
+                    + f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
                 )
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
