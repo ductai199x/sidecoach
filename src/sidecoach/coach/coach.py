@@ -4357,6 +4357,13 @@ class Coach:
                     fallback = "It's their move. See what they do about yours, then ask again."
             else:
                 fallback = "Give me a moment; I am still reading this position."
+        # Asked about a move, square or piece, a refused reply falls back to the engine's word
+        # on it, as the offline coach says it: "is Bxf7+ good?" got the mate-in-one hint (the
+        # deep prompt review, 2026-10-01). A branch with its own answer replaces it below.
+        # Moves only: a piece named in passing is not read out (the offline coach's rule).
+        scored = [f for f in engine_words if "the expected score is" in f]
+        if scored:
+            fallback = " ".join(spoken_examination(f) for f in scored)
         # A question about a fact that is never withheld -- the material, the opening, who
         # stands better -- falls back to that fact, not to the hint for the position.
         material = (

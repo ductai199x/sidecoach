@@ -2066,6 +2066,30 @@ def test_what_to_play_on_their_turn_never_gives_their_move_as_the_players() -> N
         assert texts and texts[0].startswith("It's their move"), texts  # the empty reply's
 
 
+def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() -> None:
+    """Both drafts refused, "is Bxf7+ good?" got the mate-in-one hint, about another move
+    (the deep prompt review, 2026-10-01). The fallback is the engine's word on Bxf7+."""
+    from sidecoach.cli import _draft_check
+    from tests.coaching import _policy
+    from tests.test_engine_tools import FirstLegal
+
+    bad = "[p=0.6] Your queen on e8 is in danger here. [p=0.4] Their bishop on h5 is loose."
+    coach = Coach(
+        ScriptedProvider([bad, bad]),
+        policy=_policy(),
+        draft_check=_draft_check(),
+        engine=FirstLegal(),
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("is Bxf7+ good?", 8.0)
+    texts = [m.text for m in drain(coach) if getattr(m, "text", None)]
+    assert coach.spoken[-1].problems, "both drafts were refused"
+    assert texts and "after 4. Bxf7+" in texts[-1], texts
+    assert "Qxf7" not in texts[-1], texts
+
+
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
     """The verdict comes first, from the best line alone; the analysis of the position the
     move left about a second later, and with it what the move allowed. The app holds the
