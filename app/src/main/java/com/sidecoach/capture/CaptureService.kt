@@ -255,14 +255,27 @@ class CaptureService : Service() {
         fps = com.sidecoach.ui.SettingsStore(this).captureFps()
     }
 
-    /** The screen turned, or the captured window changed size. */
+    /**
+     * The screen turned, or the captured window changed size. The display and the reader it
+     * draws into both take the new size: the display alone resized drew the turned screen
+     * letterboxed into the old reader's buffers, and every frame after a rotation was read at
+     * the wrong shape (round 2, finding 4). A new reader replaces the old one, which is closed
+     * once the display draws into the new; both callbacks run on this one capture thread.
+     */
     private fun resize(width: Int, height: Int) {
         val w = (width / SCALE) and 1.inv()
         val h = (height / SCALE) and 1.inv()
         val display = display ?: return
+        val old = reader
+        if (old != null && old.width == w && old.height == h) return
         runCatching {
+            val fresh = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, BUFFERS)
+            fresh.setOnImageAvailableListener({ onFrame(it) }, handler)
             display.resize(w, h, resources.displayMetrics.densityDpi)
-            reader?.surface?.let { /* the reader keeps its own size; a new one follows */ }
+            display.surface = fresh.surface
+            reader = fresh
+            old?.close()
+            Log.i(TAG, "capturing ${w}x$h after a resize")
         }.onFailure { Log.w(TAG, "resize failed: $it") }
     }
 
@@ -315,13 +328,19 @@ class CaptureService : Service() {
         val height = image.height
         val full = frame?.takeIf { it.width == padded && it.height == height }
             ?: Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888).also { frame = it }
-        image.planes[0].buffer.rewind()
+        val buffer = image.planes[0].buffer
+        buffer.rewind()
+        val source = fullRows(buffer, rowStride, height, scratch)
+        if (source !== buffer) scratch = source
         synchronized(frameLock) {
             if (full.isRecycled) return  // the session ended under us
-            full.copyPixelsFromBuffer(image.planes[0].buffer)
+            full.copyPixelsFromBuffer(source)
             frameVersion++
         }
     }
+
+    /** The padded copy of a plane whose last row is short ([fullRows]), reused frame to frame. */
+    private var scratch: java.nio.ByteBuffer? = null
 
     // Which frame the display last sent, and which one the vision last read: equal, the
     // screen has not changed since, and the tick reads the last frame's pixels again rather
@@ -579,6 +598,29 @@ class CaptureService : Service() {
 
         /** Half the screen in each direction (a quarter of the pixels). */
         private const val SCALE = 2
+
+        /**
+         * The plane's bytes as a whole [rowStride] by [height] block, the size the bitmap they
+         * are copied into takes. Some devices end the plane's last row at the image's width,
+         * short of the stride, and the copy threw on every frame (round 2, finding 11): such a
+         * plane is copied into [scratch] (reused when large enough), the missing tail zero --
+         * past the image's width, beyond the board. A whole plane is returned as it is.
+         */
+        internal fun fullRows(
+            buffer: java.nio.ByteBuffer,
+            rowStride: Int,
+            height: Int,
+            scratch: java.nio.ByteBuffer?,
+        ): java.nio.ByteBuffer {
+            val needed = rowStride * height
+            if (buffer.remaining() >= needed) return buffer
+            val out = scratch?.takeIf { it.capacity() >= needed } ?: java.nio.ByteBuffer.allocateDirect(needed)
+            out.clear()
+            out.put(buffer)
+            while (out.position() < needed) out.put(0)
+            out.flip()
+            return out
+        }
 
         /**
          * The desktop's rate. Two a second missed what chess.com shows between frames: a
