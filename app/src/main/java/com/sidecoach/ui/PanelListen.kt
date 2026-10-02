@@ -482,12 +482,6 @@ object PanelListen {
     }
 
     /**
-     * Something was said: transcribe it, correct it against the board, and into the text box
-     * after whatever was said before in this dictation, sent after a second of quiet unless more
-     * comes. Runs on the listener's delivery thread (or the request's, for `/api/hear`).
-     * `_on_utterance`.
-     */
-    /**
      * The microphone test's page went away without saying so (Settings closed during the test):
      * the test ends at the panel's next poll, not only at the next utterance, which left it
      * listening in voice mode whatever the player had chosen (voice finding 10). `poll`'s check.
@@ -503,6 +497,12 @@ object PanelListen {
 
     internal val hearTestRunning: Boolean get() = hearTestOn
 
+    /**
+     * Something was said: transcribe it, correct it against the board, and into the text box
+     * after whatever was said before in this dictation, sent after a second of quiet unless more
+     * comes. Runs on the listener's delivery thread (or the request's, for `/api/hear`).
+     * `_on_utterance`.
+     */
     internal fun onUtterance(audio: FloatArray, seconds: Double) {
         utteranceGen += 1
         val holds = dictationHolds // a press or an utterance after this one began
