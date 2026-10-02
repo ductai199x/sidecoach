@@ -772,6 +772,22 @@ const val TIE_LISTED =
         "earlier moment."
 const val NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
 
+/**
+ * Asked with no game watched (the panel's Stop, or no Start yet): a note in the record, once a
+ * spell, so the AI coach knows (Tai, 2026-10-02). Nothing of a last game is built for it: what
+ * the record holds is what it has. `coach.NOT_WATCHING`.
+ */
+const val NOT_WATCHING =
+    "No game is being watched now: the player has not pressed Start, or has pressed Stop. " +
+        "The board is not being read; anything above is from before."
+
+/** A question with no position read: the task, and why there is no board. `coach.NO_BOARD_TASK`. */
+const val NO_BOARD_TASK =
+    "Answer the player's last question as their coach. There is no position to talk about: " +
+        "{why} If the question needs a game or a position, say so plainly; otherwise answer it."
+const val NO_BOARD_YET = "the board has not been read yet."
+const val NO_BOARD_UNWATCHED = "no game is being watched (Start is not pressed)."
+
 /** A line asked for once it was given: what they want is what comes after it. */
 const val LINE_GIVEN =
     "You have given them this line already, in your turns above: they want what comes after " +
@@ -1795,22 +1811,26 @@ internal fun player(facts: PositionFacts): Boolean? {
 }
 
 /**
- * A rate-limited call is asked again once after this long, when the provider's timeout,
- * counted from the first call, leaves room for it. `coach.py` RATE_BACKOFF_S.
+ * The wait before a rate-limited call is asked again when the server named none (no
+ * Retry-After): the server's own word wins whenever it gives one. `coach.py` RATE_BACKOFF_S.
  */
 @Volatile
 var RATE_BACKOFF_S = 2.0
 
 /**
  * How long to wait before asking again after a failed call, or null to give up: only a rate
- * limit (429) is worth a second call; a timeout spent the time, a refused key or a bad request
- * will fail the same way, and each would be paid or wasted twice. `coach.py` `_retry_wait`.
+ * limit (429) is worth another call; a timeout spent the time, a refused key or a bad request
+ * will fail the same way, and each would be paid or wasted twice. A rate limit waits as long
+ * as the server's Retry-After says, and is asked again as often as the provider's timeout,
+ * counted from the first call, leaves room for (Tai, 2026-10-02); a provider with no timeout
+ * is not asked again. `coach.py` `_retry_wait`.
  */
 internal fun retryWait(exc: Exception, provider: LLMProvider, elapsedS: Double): Double? {
     if (!(exc.message ?: "").startsWith("429")) return null
-    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS
-    if (budget != null && elapsedS + RATE_BACKOFF_S >= budget) return null
-    return RATE_BACKOFF_S
+    val wait = (exc as? com.sidecoach.llm.ProviderError)?.retryAfterS ?: RATE_BACKOFF_S
+    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS ?: return null
+    if (elapsedS + wait >= budget) return null
+    return wait
 }
 
 /**
@@ -2155,11 +2175,13 @@ class Speaker(
             }
             if (failed != null) {
                 // A failed call is not a draft: no complaint, no second paid call for a
-                // timeout or a refused key. A rate limit is waited out once, inside the
-                // provider's timeout counted from the first call.
+                // timeout or a refused key. A rate limit is waited out as the server asks,
+                // inside the provider's timeout counted from the first call; the call is the
+                // same one again, so it spends no attempt.
                 problems = listOf("the call failed: $lastError")
                 val wait = retryWait(failed, provider, (clockNs() - began) / 1e9) ?: break
                 if (pause(wait)) break
+                attempts -= 1
                 continue
             }
             // Declined, the stream was closed in the first candidate's first sentence: that

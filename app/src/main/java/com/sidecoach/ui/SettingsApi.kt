@@ -135,15 +135,28 @@ class SettingsApi(
             }
             val wanted = checked.values
             // One service's model is not another's: kept, OpenAI was asked for the local
-            // server's model (the API review, 2026-10-01). Empty is the new service's default.
-            // `settings_api._validated`.
+            // server's model (the API review, 2026-10-01). Each service keeps its own: the one
+            // left is remembered, and the one switched to comes back with the model last chosen
+            // for it, else empty, its default (Tai, 2026-10-02). `settings_api._validated`.
             val llmGiven = given.optJSONObject("llm")
             val llmWanted = wanted.optJSONObject("llm")
+            val llmBefore = before.optJSONObject("llm") ?: JSONObject()
+            val was = llmBefore.optString("provider")
             if (llmGiven != null && llmWanted != null && llmGiven.has("provider") &&
-                !llmGiven.has("model") &&
-                llmGiven.optString("provider") != before.optJSONObject("llm")?.optString("provider")
+                llmGiven.optString("provider") != was
             ) {
-                llmWanted.put("model", JSONObject.NULL)
+                val models = JSONObject()
+                val kept = llmBefore.optJSONObject("models") ?: JSONObject()
+                for (name in kept.keys()) {
+                    val model = kept.optString(name)
+                    if (!kept.isNull(name) && model.isNotEmpty()) models.put(name, model)
+                }
+                val current = if (llmBefore.isNull("model")) "" else llmBefore.optString("model")
+                if (current.isNotEmpty()) models.put(was, current) else models.remove(was)
+                llmWanted.put("models", models)
+                if (!llmGiven.has("model")) {
+                    llmWanted.put("model", models.opt(llmGiven.optString("provider")) ?: JSONObject.NULL)
+                }
             }
             dropHeld(wanted)
             // The phone owns these; the page shows them and cannot move them.

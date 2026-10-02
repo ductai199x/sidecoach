@@ -348,7 +348,9 @@ class PanelApi(
             }
             "poll" -> {
                 val room = rooms.get(id) ?: return ok(JSONObject().put("ok", false).put("closed", true))
-                val polled = room.poll(query["since"]?.toIntOrNull() ?: 0)
+                // `hidden: bool` as FastAPI reads a query flag.
+                val hidden = query["hidden"]?.lowercase() in setOf("1", "true", "on", "yes", "t", "y")
+                val polled = room.poll(query["since"]?.toIntOrNull() ?: 0, hidden)
                 val out = JSONObject().put("ok", true)
                 for (key in polled.keys()) out.put(key, polled.get(key))
                 ok(out)

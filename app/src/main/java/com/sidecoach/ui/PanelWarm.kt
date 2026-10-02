@@ -80,7 +80,7 @@ object PanelWarm {
     @Volatile var assessing: Assessing? = null
         private set
     @Volatile var coaching: CoachRunner? = null
-        private set
+        internal set // a test hands its own, as the desktop's sets `engine._coaching`
     private var engineStale = false
 
     /**

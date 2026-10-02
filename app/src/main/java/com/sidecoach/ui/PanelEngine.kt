@@ -311,6 +311,18 @@ object PanelEngine {
     fun command(name: String, payload: Any? = null) {
         if (!running && (name == "ask" || name == "ask_spoken")) {
             heard(payload.toString(), spoken = name == "ask_spoken")
+            val coaching = PanelWarm.coaching
+            val coach = coaching?.coach
+            if (coach != null && coach.speaker.provider !is com.sidecoach.llm.OfflineProvider) {
+                // The AI coach answers every question, a session running or not (Tai,
+                // 2026-10-02), with what it has; it is told no game is being watched.
+                val asked = payload.toString()
+                Thread({ answerUnwatched(coaching, asked) }, "sidecoach-ask-unwatched")
+                    .apply { isDaemon = true }
+                    .start()
+                return
+            }
+            // The offline coach: a plain, honest line.
             val text = "Press Start first: I can only answer about a game I am watching."
             emit(
                 "coach",
@@ -328,6 +340,32 @@ object PanelEngine {
         }
         commands.put(name to payload)
     }
+
+    /**
+     * A question with no session running, to the AI coach: asked, and its reply logged and
+     * spoken as the session's loop would ([CoachRunner.drain]). A Start meanwhile leaves the rest
+     * to its loop. The coach always answers (a failed call has its own words), so the wait ends
+     * with that reply. `panel._answer_unwatched`.
+     */
+    internal fun answerUnwatched(coaching: CoachRunner, text: String) {
+        val coach = coaching.coach ?: return
+        coach.watching = false // no session: whether it was stopped or never started
+        fun answered() = synchronized(coach.lock) { coach.spoken.count { it.message.trigger == com.sidecoach.events.Trigger.USER_ASK } }
+        val before = answered()
+        coaching.ask(text, SystemClock.elapsedRealtime() / 1000.0)
+        while (true) {
+            if (running || coaching.coach == null) return
+            coaching.drain()
+            if (answered() > before) return
+            Thread.sleep(UNWATCHED_POLL_MS)
+        }
+    }
+
+    /**
+     * How often a question asked with no session running looks for its reply: the coach's
+     * replies are drained as the session's loop drains them each tick. `UNWATCHED_POLL_S`.
+     */
+    private const val UNWATCHED_POLL_MS = 100L
 
     /** An ask, typed or [spoken]: `command("ask" | "ask_spoken")`. */
     fun ask(text: String, spoken: Boolean = false) = command(if (spoken) "ask_spoken" else "ask", text)

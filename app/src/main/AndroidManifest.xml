@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- The engine's network is fetched once, as the desktop fetches the engine. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The setup's downloads go on with the app in the background, in a service Android
+         shows a notification for while a download runs (setup/SetupService.kt). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- The captions: the coach's words in a box over other apps, allowed by the user. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
@@ -50,17 +53,17 @@
             </intent-filter>
         </activity>
 
-        <!-- Debug only: a rendered board on the screen, so the vision can be tried
-             without a chess app in front. -->
-        <activity
-            android:name=".debug.BoardActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:label="Test board" />
+        <!-- The test board (debug.BoardActivity) is the debug build's alone: its own
+             manifest, src/debug/AndroidManifest.xml. -->
 
         <service
             android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection|microphone" />
+
+        <service
+            android:name=".setup.SetupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

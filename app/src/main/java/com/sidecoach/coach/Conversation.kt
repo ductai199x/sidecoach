@@ -500,6 +500,26 @@ class Conversation {
         return sections.filter { it.isNotEmpty() }.joinToString("\n\n")
     }
 
+    /**
+     * What was said, and nothing of a board: for a question asked with no position read
+     * (`CoachSession.askWithoutPosition`), where [render] would show a board that is not the
+     * player's (the start position the coach holds before it reads one).
+     * `Conversation.render_dialogue`.
+     */
+    fun renderDialogue(): String {
+        val lines = ArrayList<String>()
+        if (summary.isNotEmpty()) lines.add("Earlier dialogue, summarised: $summary")
+        for (entry in entries) {
+            if (entry.folded) continue
+            when (entry.kind) {
+                "ask" -> lines.add("PLAYER said: ${entry.text}")
+                "coach" -> lines.add("YOU (the coach) said: \"${entry.text}\"")
+                "note", "ended" -> lines.add("EVENT: ${entry.text}")
+            }
+        }
+        return "# What was said\n" + lines.joinToString("\n")
+    }
+
     /** The nods older than the last [NOD_PLIES] plies: left out of the record. */
     private fun staleNods(): Set<Entry> {
         val plyEntries = entries.filter { it.kind == "ply" }

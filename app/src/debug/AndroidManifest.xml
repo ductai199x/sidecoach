@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- The debug build only (Tai, 2026-10-02): a rendered board on the screen, so the
+             vision can be tried without a chess app in front. Exported for adb's am start;
+             the phone build, the one he runs, has no such screen. -->
+        <activity
+            android:name=".debug.BoardActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:label="Test board" />
+    </application>
+</manifest>

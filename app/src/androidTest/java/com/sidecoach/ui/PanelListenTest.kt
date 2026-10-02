@@ -160,14 +160,76 @@ class PanelListenTest {
     @Test
     fun anAskBeforeStartIsAnsweredAtOnceNotKeptForALaterSession() {
         PanelEngine.set("running" to false)
-        val before = PanelEngine.poll(0).getInt("cursor")
-        PanelEngine.ask("what should I play")
-        assertTrue("an ask with no session was queued", asked.isEmpty())
-        val lines = PanelEngine.poll(before).getJSONArray("lines")
-        val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
-        assertTrue(texts.any { it.getString("text") == "you: what should I play" })
-        val reply = texts.first { it.getString("chan") == "coach" && "Press Start first" in it.getString("text") }
-        assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
+        // No coach yet (the offline coach's line is the same): the plain line, not the model.
+        val saved = PanelWarm.coaching
+        PanelWarm.coaching = null
+        try {
+            val before = PanelEngine.poll(0).getInt("cursor")
+            PanelEngine.ask("what should I play")
+            assertTrue("an ask with no session was queued", asked.isEmpty())
+            val lines = PanelEngine.poll(before).getJSONArray("lines")
+            val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
+            assertTrue(texts.any { it.getString("text") == "you: what should I play" })
+            val reply = texts.first { it.getString("chan") == "coach" && "Press Start first" in it.getString("text") }
+            assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
+        } finally {
+            PanelWarm.coaching = saved
+        }
+    }
+
+    /**
+     * Tai, 2026-10-02: with the AI coach on and no session running, a question was answered with
+     * the canned "Press Start first". It goes to the model now, told that no game is being
+     * watched; nothing is queued for a later Start. `test_with_the_ai_coach_on_an_ask_with_no_session_goes_to_the_model`.
+     */
+    @Test
+    fun withTheAiCoachOnAnAskWithNoSessionGoesToTheModel() {
+        PanelEngine.set("running" to false)
+        val store = com.sidecoach.ui.SettingsStore(app)
+        val settingsSaved = store.values()
+        val saved = PanelWarm.coaching
+        // Built offline (no network at its build), then given a scripted model.
+        store.save(JSONObject(settingsSaved.toString()).apply { getJSONObject("llm").put("provider", "none") })
+        val runner = com.sidecoach.coach.CoachRunner(store)
+        store.save(settingsSaved)
+        val coach = runner.coach!!
+        val prompts = java.util.Collections.synchronizedList(ArrayList<String>())
+        val model = object : com.sidecoach.llm.LLMProvider {
+            override val name = "scripted"
+            override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+            override fun chat(
+                system: String,
+                messages: List<com.sidecoach.llm.ChatMessage>,
+                maxTokens: Int,
+                temperature: Double,
+                thinking: Boolean,
+            ): com.sidecoach.llm.Completion {
+                prompts.add(messages.last().content)
+                return com.sidecoach.llm.Completion(text = "The Italian: quick development, a safe king.")
+            }
+        }
+        coach.setProviders(model, routineProvider = model)
+        coach.spawn = { work, _ -> work() } // the question's worker, run here
+        PanelWarm.coaching = runner
+        try {
+            val before = PanelEngine.poll(0).getInt("cursor")
+            PanelEngine.ask("what opening should I learn?")
+            assertTrue("an ask with no session was queued", asked.isEmpty())
+            for (thread in Thread.getAllStackTraces().keys) {
+                if (thread.name == "sidecoach-ask-unwatched") thread.join(60_000) // its end is the signal
+            }
+            assertTrue("told no game is watched", prompts.any { com.sidecoach.coach.NO_BOARD_UNWATCHED in it })
+            val lines = PanelEngine.poll(before).getJSONArray("lines")
+            val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
+            assertTrue(texts.any { it.getString("text") == "you: what opening should I learn?" })
+            val full = texts.filter { it.getString("chan") == "coach" && it.getString("level") == "info" }
+                .mapNotNull { it.optJSONObject("data")?.optString("full")?.ifEmpty { null } }
+            assertEquals(listOf("The Italian: quick development, a safe king."), full)
+            assertTrue(texts.none { "Press Start first" in it.getString("text") })
+        } finally {
+            PanelWarm.coaching = saved
+            coach.close()
+        }
     }
 
     private val app = InstrumentationRegistry.getInstrumentation().targetContext

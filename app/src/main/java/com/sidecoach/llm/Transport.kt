@@ -13,8 +13,19 @@ import java.net.URL
  * so the app carries no HTTP library of its own.
  */
 
-/** A reply: its status, its body, and the reason phrase the server sent, when the transport has it. */
-data class HttpReply(val status: Int, val text: String, val reason: String? = null)
+/**
+ * A reply: its status, its body, the reason phrase the server sent, when the transport has it,
+ * and the headers a caller reads (by lower-case name: the rate limit's `retry-after`).
+ */
+data class HttpReply(
+    val status: Int,
+    val text: String,
+    val reason: String? = null,
+    val headers: Map<String, String> = emptyMap(),
+)
+
+/** The headers of a reply the callers read, by lower-case name. */
+private val KEPT_HEADERS = listOf("retry-after", "retry-after-ms")
 
 interface Transport {
     fun get(url: String, headers: Map<String, String>, timeoutMs: Int): HttpReply
@@ -48,7 +59,7 @@ class UrlTransport : Transport {
         body: String,
         timeoutMs: Int,
     ): HttpReply = open(url, "POST", headers, body, timeoutMs).use { connection ->
-        HttpReply(connection.responseCode, readAll(connection))
+        HttpReply(connection.responseCode, readAll(connection), headers = kept(connection))
     }
 
     override fun postLines(
@@ -59,7 +70,7 @@ class UrlTransport : Transport {
         onLine: (String) -> Boolean,
     ): HttpReply = open(url, "POST", headers, body, timeoutMs).use { connection ->
         val status = connection.responseCode
-        if (status != 200) return@use HttpReply(status, readAll(connection))
+        if (status != 200) return@use HttpReply(status, readAll(connection), headers = kept(connection))
         val stream = connection.inputStream
         BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
             while (true) {
@@ -90,6 +101,9 @@ class UrlTransport : Transport {
         }
         return connection
     }
+
+    private fun kept(connection: HttpURLConnection): Map<String, String> =
+        KEPT_HEADERS.mapNotNull { name -> connection.getHeaderField(name)?.let { name to it } }.toMap()
 
     private fun readAll(connection: HttpURLConnection): String {
         val stream = if (connection.responseCode in 200..299) {
