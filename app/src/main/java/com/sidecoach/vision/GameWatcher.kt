@@ -662,7 +662,15 @@ class GameWatcher(
         try {
             val late = assessing.wait(5.0)
             coaching.events(late, SystemClock.elapsedRealtime() / 1000.0)
-            coaching.events(PanelEngine.profile(profiler, late, flush = true), SystemClock.elapsedRealtime() / 1000.0)
+            // A game whose end was never seen ends with the result its final position proves, as
+            // a replaced game's does (a repetition or fifty moves played); one whose position
+            // proves nothing stays unfinished in the record (Tai, 2026-10-02).
+            val unseen = pipeline?.endUnseen(lastTs) ?: mutableListOf()
+            for (event in unseen) {
+                note(event)
+                PanelEngine.onGameEvent(event, null)
+            }
+            coaching.events(PanelEngine.profile(profiler, late + unseen, flush = true), SystemClock.elapsedRealtime() / 1000.0)
             // The session's end is written before the wait for the coach's replies below (up
             // to 30 s): the desktop's quit gives the loop 10 s, and the session's end, last, was
             // never written when a reply was on its way (`panel._run`).

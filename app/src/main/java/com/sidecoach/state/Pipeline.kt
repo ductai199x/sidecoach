@@ -574,6 +574,15 @@ class GamePipeline(
     }
 
     /**
+     * The session's end (`end_unseen`): the game under way, its end never seen, ends with the
+     * result its final position proves ([Reconciler.endUnseen]), stamped like every other event.
+     */
+    fun endUnseen(ts: Double, frameId: Int? = null): MutableList<Event> {
+        val rec = reconciler ?: return mutableListOf()
+        return stamp(rec.endUnseen(), ts, frameId)
+    }
+
+    /**
      * Forget the game and the recogniser; the next start position bootstraps again. Every
      * field of the game returns to its default ([Game]); what the pipeline keeps, it keeps.
      */

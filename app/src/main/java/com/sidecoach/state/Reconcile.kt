@@ -2087,6 +2087,18 @@ class Reconciler(
         return endedEvent(proved.first, proved.second)
     }
 
+    /**
+     * The session ends with this game under way and its end never seen (`end_unseen`): it ends
+     * with the result its final position proves, by the rule a replaced game's is set with
+     * ([replacedEvent]). Nothing when the position proves none: the record keeps the game
+     * unfinished ("*"), as it did (Tai, 2026-10-02).
+     */
+    fun endUnseen(): MutableList<Event> {
+        if (!inProgress || finishedFlag) return mutableListOf()
+        val proved = resultOnBoard(board) ?: return mutableListOf()
+        return end(proved.first, proved.second)
+    }
+
     /** The GameEnded of this game as it stands (`ended_event`): also the pipeline's, for a game it drops. */
     fun endedEvent(result: String, reason: String): GameEnded = GameEnded(
         gameId = gameId,

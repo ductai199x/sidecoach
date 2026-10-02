@@ -155,6 +155,27 @@ def scholars_mate(theme: str, style: str) -> list[dict]:
     return states
 
 
+REPETITION = ("d4", "d5", "e3", "e6", "Bd3", "Bd6", "Nf3", "Nf6", *("Nc3", "Nc6", "Nb1", "Nb8") * 2)
+
+
+def a_repetition_played(theme: str, style: str) -> list[dict]:
+    """Sixteen plies, the last the position's third time, and nothing more: the pipeline ends
+    nothing (a threefold is not `is_game_over`); the session's end draws it
+    (`test_a_session_ended_on_a_repetition_played_records_the_draw`; PanelEngineTest closes a
+    GameWatcher on these frames)."""
+    board = chess.Board()
+    states = [dict(board_kwargs(board=board.copy(), theme=theme, style=style), _repeat=3)]
+    for san in REPETITION:
+        move = board.push_san(san)
+        states.append(
+            dict(
+                board_kwargs(board=board.copy(), theme=theme, style=style, highlight=move),
+                _repeat=2,
+            )
+        )
+    return states
+
+
 def a_game_and_a_takeback(theme: str, style: str) -> list[dict]:
     """Six plies, then two taken back and a different move played from there."""
     board = chess.Board()
@@ -1180,6 +1201,7 @@ SCENARIOS = {
     "rethemed-before-a-move": rethemed_before_the_first_move,
     "unlearned-away-and-back": unlearned_away_and_back,
     "puzzle-read-once": a_puzzle_left_still,
+    "repetition-green": lambda: a_repetition_played("green", "cburnett"),
 }
 
 # Scenarios whose last session counts the theme cache's reads (`candidates`), as the
@@ -1223,6 +1245,7 @@ READ_ONCE = {
     "rethemed-before-a-move",
     "unlearned-away-and-back",
     "puzzle-read-once",
+    "repetition-green",
 }
 
 # The rest of the still screen's replay, left to `tools/test.ps1 -All` (`shortcut_sweep`; Tai,
@@ -1247,6 +1270,9 @@ SHORTCUT_SWEEP = {
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
+    "repetition-green": lambda lines, data: (
+        _sans(lines) == list(REPETITION) and not any(ln.startswith("GameEnded") for ln in lines)
+    ),
     "theme-changed-mid-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
     ),
