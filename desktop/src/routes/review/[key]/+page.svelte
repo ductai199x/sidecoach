@@ -203,8 +203,11 @@
     if (analysisLines?.white_score != null && analysisLines.lines[0])
       analysisBar = { score: analysisLines.white_score, eval: { ...analysisLines.lines[0].eval, result: null } };
   });
-  const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : line || retry ? whiteBefore : (graph[ply] ?? 0.5));
-  const barEval = $derived(view === "analysis" ? (analysisBar?.eval ?? null) : line || retry ? null : (move?.eval ?? null));
+  // The best line and a retry start from the position before the move; the follow-up from the
+  // one after it, where the bar stayed before it (the review of 2026-10-01).
+  const fromBefore = $derived(line?.kind === "best" || !!retry);
+  const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : fromBefore ? whiteBefore : (graph[ply] ?? 0.5));
+  const barEval = $derived(view === "analysis" ? (analysisBar?.eval ?? null) : fromBefore ? null : (move?.eval ?? null));
 
   // Each side's accuracy with its retried moves' best tries in their place (chess.com's
   // "accuracy after retries"): the plain mean, as the review's own.
