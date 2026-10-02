@@ -39,8 +39,13 @@
   const EXPECT_MS = 12000;
   let expectUntil = 0;
 
+  // Each load is numbered, and a removal moves the number on: a list asked before the newest
+  // load, or before a removal, never lands (it would bring the removed rows back a moment).
+  let loadSeq = 0;
   async function load(): Promise<void> {
+    const mine = ++loadSeq;
     const res = await gamesApi.list().catch(() => null);
+    if (mine !== loadSeq) return;
     if (!res) return;
     const reviewedBefore = list.filter((g) => g.reviewed).length;
     // A username changed in Settings: what was said of the old one goes with it.
@@ -247,6 +252,7 @@
     }
     const gone = new Set(res.removed ?? keys);
     list = list.filter((g) => !gone.has(g.key));
+    void load(); // supersedes any list asked before the removal
     stopSelecting();
     undo = { keys, label: games.length === 1 ? `${games[0].white || "White"} v ${games[0].black || "Black"}` : `${games.length} games` };
     if (undoTimer) clearTimeout(undoTimer);
