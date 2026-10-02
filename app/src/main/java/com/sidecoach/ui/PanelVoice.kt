@@ -311,7 +311,10 @@ object PanelVoice {
      * coach say a template in its place.
      */
     fun streamSink(trigger: Trigger, ply: Int?, movedOn: () -> Boolean = { false }): ((String) -> Boolean)? {
-        if (muted) return null
+        // No voice yet (the warm-up has not built it): nothing to stream to, as when muted -- the
+        // reply is read whole and shown. A sink that declined here made the coach say its template
+        // in place of every AI reply until the voice was built (the round-3 parity audit).
+        if (muted || voiceOut() == null) return null
         val name = trigger.slug
         var started = false
         var silent = false // began while the push-to-talk key was held, or is not to be spoken
@@ -334,7 +337,13 @@ object PanelVoice {
                 Captions.show(sentence)
                 return@sink true
             }
-            val speaker = voiceOut() ?: return@sink false
+            val speaker = voiceOut() ?: run {
+                // The voice went away mid-reply: the rest is still the reply, only silent.
+                started = true
+                silent = true
+                Captions.show(sentence, continues)
+                return@sink true
+            }
             if (!started) {
                 hushedAt = hushed
                 val action = if (movedOn()) {

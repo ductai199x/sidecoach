@@ -294,6 +294,20 @@ class PanelVoicePolicyTest {
         assertEquals(listOf("say:Look at f7."), fake.calls.toList())
     }
 
+    /**
+     * Before the warm-up has built the voice there is nothing to stream to: no sink, as when
+     * muted, so the reply is read whole. The sink declined instead, and the coach said its
+     * template in place of every AI reply until the voice was there (the round-3 parity audit).
+     */
+    @Test
+    fun noVoiceYetMeansNoSinkNotADeclinedReply() {
+        org.junit.Assume.assumeTrue("the voice is built in this process", PanelVoice.tts == null)
+        PanelVoice.speaker = null
+        PanelVoice.voicing = null
+        PanelEngine.set("ply" to 12, "ptt" to false)
+        assertEquals(null, PanelVoice.streamSink(Trigger.USER_ASK, 12) { false })
+    }
+
     @Test
     fun aReplyThatBeganWhenThePositionMovesOnIsCutAndGoesOnSilent() {
         val fake = FakeTts()
