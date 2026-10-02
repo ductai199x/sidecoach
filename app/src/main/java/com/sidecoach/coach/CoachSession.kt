@@ -278,8 +278,8 @@ private val ASK_MOVE = Regex(
         "what (?:should|would) i play|what would you play|" +
         "which move (?:should i (?:play|make)|is (?:best|better)|would you (?:play|make|suggest)|" +
         "do you (?:play|suggest|recommend))|" +
-        "which move\\s*\\?|just tell me|what'?s the move|(?:tell|show|give) me the move|" +
-        "(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\\b",
+        "just tell me|what'?s the move|(?:tell|show|give) me the move|" +
+        "(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\\b|\\bwhich move\\s*\\?",
     RegexOption.IGNORE_CASE,
 )
 
