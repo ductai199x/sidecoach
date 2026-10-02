@@ -192,6 +192,33 @@ def test_the_stakes_in_check_say_what_the_lines_bear_out() -> None:
     assert situation.stakes_words(board, stakes, None) is None
 
 
+def test_the_plan_words_hold_on_the_board_now() -> None:
+    from sidecoach.coach.plans import LinePlan
+
+    def key(fen: str, uci: str, kind: str) -> str:
+        board = chess.Board(fen)
+        said = situation.positional_key(board, chess.Move.from_uci(uci), kind, None, "endgame")
+        assert said is not None
+        return said
+
+    # Rec2 with a rook already on c7: "none of your rooks is there yet" was false.
+    said = key("r4k2/2Rn1p2/p2r2p1/3p4/1P3P1p/3B4/P3RKPP/8 w - - 0 28", "e2c2", "takeFile")
+    assert "none of your rooks" not in said
+    # Behind their passed pawn on g7, the rook holds it back; it pushes nothing.
+    said = key("6k1/R5P1/1p6/3pK3/P2P2r1/8/8/8 b - - 0 46", "g4g1", "rookBehindPasser")
+    assert "their passed pawn on g7" in said and "pushes" not in said
+    # A king on e1 has no wing: not "the other wing from yours".
+    fen = "r1bq1rk1/ppp1npbp/3pn1p1/4p3/4P2P/2PPNN2/PPB2PP1/R1BQK2R w KQ - 1 12"
+    said = key(fen, "h4h5", "pawnStorm")
+    assert "other wing" not in said
+    storm = situation.plan_key(chess.Board(fen), LinePlan("storm", square=chess.G8))
+    assert storm is not None and "opposite wings" not in storm
+    # b6 hits c5 now: c5 is no square "no pawn of theirs can ever attack" yet.
+    board = chess.Board("4k3/8/1p6/8/3P4/1N6/8/4K3 w - - 0 1")
+    said = situation.plan_key(board, LinePlan("outpost", square=chess.C5))
+    assert said is not None and "can ever attack" not in said
+
+
 def test_their_idea_is_said_only_when_it_changes_something() -> None:
     board = chess.Board()
     assert situation.their_idea_key(board, chess.Move.from_uci("g8f6")) is None

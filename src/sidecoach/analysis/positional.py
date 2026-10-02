@@ -775,6 +775,11 @@ def _pawn_safe(board: chess.Board, square: chess.Square, us: chess.Color) -> boo
     return True
 
 
+def pawn_safe(board: chess.Board, square: chess.Square, us: chess.Color) -> bool:
+    """No pawn of the other side can ever attack `square`, from where the pawns stand now."""
+    return _pawn_safe(board, square, us)
+
+
 def _is_outpost(board: chess.Board, square: chess.Square, us: chess.Color) -> bool:
     """A square in enemy territory, defended by one of your pawns, no enemy pawn can hit."""
     rank = chess.square_rank(square)

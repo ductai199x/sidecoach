@@ -155,6 +155,15 @@ def reach_why(board: chess.Board, move: chess.Move) -> str | None:
     return f"{board.san(move)}: your {name} goes from {was} to {idea_words.in_words(later)}"
 
 
+def _kings_apart(board: chess.Board, us: chess.Color) -> bool:
+    """The kings stand on opposite wings (files a-c against f-h); a king on d or e has none."""
+    ours, theirs = board.king(us), board.king(not us)
+    if ours is None or theirs is None:
+        return False
+    sides = {_wing(ours), _wing(theirs)}
+    return sides == {"on the queenside", "on the kingside"}
+
+
 def _wing(square: chess.Square) -> str:
     file_ = chess.square_file(square)
     if file_ <= 2:
@@ -722,7 +731,11 @@ def positional_key(
             f"knight on {frm} can get there"
         )
     if kind == "takeFile":
+        on_file = chess.BB_FILES[chess.square_file(best.to_square)]
         file_ = "abcdefgh"[chess.square_file(best.to_square)]
+        if board.pieces_mask(chess.ROOK, us) & on_file:
+            # A rook already on it: "none of your rooks is there yet" was false (2026-10-01).
+            return f"The {file_}-file has no pawns of yours on it"
         return f"The {file_}-file has no pawns of yours on it, and none of your rooks is there yet"
     if kind in ("pushPasser", "passerPawnEnding") and piece.piece_type == chess.PAWN:
         rank = chess.square_rank(best.from_square)
@@ -730,6 +743,25 @@ def positional_key(
         away = f"{idea_words.in_words(to_go)} square{'s' if to_go != 1 else ''}"
         return f"Your passed pawn on {frm} is {away} from queening"
     if kind == "rookBehindPasser":
+        # Behind their passer the rook holds it back; it pushes only your own (it was said
+        # "where it pushes it on" of their pawn, 2026-10-01).
+        after = board.copy(stack=False)
+        after.push(best)
+        passers = [
+            s
+            for s in chess.SquareSet(after.pieces_mask(chess.PAWN, not us))
+            if chess.square_file(s) == chess.square_file(best.to_square)
+            and positional.is_passed(after, s)
+        ]
+        if passers and not any(
+            chess.square_file(s) == chess.square_file(best.to_square)
+            and positional.is_passed(after, s)
+            for s in chess.SquareSet(after.pieces_mask(chess.PAWN, us))
+        ):
+            return (
+                f"Your rook on {frm} belongs behind their passed pawn on {_sq(passers[0])}, "
+                "where it holds it back"
+            )
         return f"Your rook on {frm} belongs behind a passed pawn, where it pushes it on"
     if kind == "break":
         after = board.copy(stack=False)
@@ -759,10 +791,17 @@ def positional_key(
         return None
     if kind == "pawnStorm":
         king = board.king(not us)
+        if king is None:
+            return None
+        if _kings_apart(board, us):
+            return (
+                f"Their king on {_sq(king)} is on the other wing from yours: your pawns can "
+                "roll at it"
+            )
+        # A king in the centre has no wing ("the other wing from yours" of a king on e1).
         return (
-            f"Their king on {_sq(king)} is on the other wing from yours: your pawns can roll at it"
-            if king is not None
-            else None
+            f"Their king on {_sq(king)} is {_wing(king)}, and yours is not: your pawns can "
+            "roll at it"
         )
     if kind == "simplify":
         return "You are ahead in material: every trade brings the win closer"
@@ -777,18 +816,24 @@ def plan_key(board: chess.Board, plan: plans.LinePlan) -> str | None:
         who = f": {pieces} can join in" if pieces else ""
         return f"The plan is an attack on their king on {sq}{who}"
     if plan.kind == "storm" and sq:
-        return (
-            f"The plan is a pawn storm on their king on {sq}: with the kings on opposite "
-            "wings, it costs your own king nothing"
-        )
+        if _kings_apart(board, board.turn):
+            return (
+                f"The plan is a pawn storm on their king on {sq}: with the kings on opposite "
+                "wings, it costs your own king nothing"
+            )
+        return f"The plan is a pawn storm on their king on {sq}, away from your own king"
     if plan.kind == "double" and plan.where:
         return (
             f"The {plan.detail or 'open'} {plan.where}-file is the way in: two of your heavy "
             "pieces belong on it"
         )
-    if plan.kind == "outpost" and sq:
+    if plan.kind == "outpost" and sq and plan.square is not None:
         who = f"{pieces}" if pieces else "a knight"
-        return f"{sq} is a square no pawn of theirs can ever attack, and {who} can reach it"
+        if positional.pawn_safe(board, plan.square, board.turn):
+            return f"{sq} is a square no pawn of theirs can ever attack, and {who} can reach it"
+        # The line makes it one (a pawn of theirs that attacks it now is traded or passes
+        # on the way): "no pawn of theirs can ever attack" was said with b6 hitting c5.
+        return f"{sq} becomes a square no pawn of theirs can attack, and {who} can reach it"
     if plan.kind == "passer" and sq:
         return f"Your passed pawn on {sq} is the point: push it, and it ties their pieces down"
     if plan.kind == "break" and sq:
