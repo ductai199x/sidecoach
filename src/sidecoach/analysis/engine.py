@@ -43,6 +43,9 @@ EXTEND_SECONDS = 0.5
 EXTEND_TRIES = 3
 # python-chess's model for turning centipawns into win-draw-loss when an engine will not.
 WDL_MODEL = "sf"
+# How long past its time a streamed search may go before its engine is taken for wedged:
+# python-chess's own timeout for a one-shot search.
+STREAM_GRACE_S = 10.0
 DEFAULT_SCORE_MODEL = "human"
 
 
@@ -283,6 +286,29 @@ class Engine:
                     raise EngineUnavailable(f"engine died twice on {board.fen()}: {exc}") from exc
         raise AssertionError("unreachable")
 
+    @contextlib.contextmanager
+    def _watchdog(self, limit: chess.engine.Limit) -> Iterator[None]:
+        """A streamed search with a time limit that has not ended STREAM_GRACE_S past it
+        is a wedged engine: its process is killed, the search ends as a crash does, and
+        the restart answers it. Without this, the worker held the lock forever (the
+        one-shot search has python-chess's own timeout; the stream had none)."""
+        engine = self._engine
+        if limit.time is None or engine is None:
+            yield
+            return
+
+        def kill() -> None:
+            with contextlib.suppress(Exception):
+                engine.close()  # the transport closed: the process is killed
+
+        timer = threading.Timer(limit.time + STREAM_GRACE_S, kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
+
     def _streamed(
         self,
         board: chess.Board,
@@ -297,7 +323,7 @@ class Engine:
         if stoppable and self._stopped.is_set():
             raise Interrupted
         assert self._engine is not None
-        with self._engine.analysis(board, limit, multipv=multipv) as search:
+        with self._watchdog(limit), self._engine.analysis(board, limit, multipv=multipv) as search:
             self._search = search if stoppable else None
             try:
                 if stoppable and self._stopped.is_set():  # interrupted before it was in reach

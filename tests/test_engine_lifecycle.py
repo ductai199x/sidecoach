@@ -11,6 +11,7 @@ import chess
 import psutil
 import pytest
 
+from sidecoach.analysis import engine as engine_module
 from sidecoach.analysis.engine import Engine, EngineUnavailable
 from sidecoach.config import find_stockfish, load_settings
 
@@ -59,4 +60,34 @@ def test_a_closed_engine_is_not_reopened_by_a_search_under_way() -> None:
     # Opened again by its owner, it works.
     engine.open()
     assert engine.analyse(chess.Board(), depth=4, multipv=1)
+    engine.close()
+
+
+def test_a_wedged_engine_lets_go_of_its_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert STOCKFISH is not None
+    monkeypatch.setattr(engine_module, "STREAM_GRACE_S", 0.5)
+    engine = Engine(STOCKFISH, threads=1, hash_mb=16, multipv=1)
+    engine.open()
+    [process] = [p for p in _children() if p.pid == engine._engine.transport.get_pid()]  # type: ignore[union-attr]
+    got: list[object] = []
+
+    def search() -> None:
+        try:
+            got.append(engine.analyse(chess.Board(), time_s=0.5, on_depth=lambda _: None))
+        except BaseException as exc:  # noqa: BLE001
+            got.append(exc)
+
+    worker = threading.Thread(target=search)
+    worker.start()
+    time.sleep(0.1)
+    process.suspend()  # wedged: alive, saying nothing
+    try:
+        worker.join(10)
+        assert not worker.is_alive(), "the search held its lock past its time"
+    finally:
+        if process.is_running():
+            process.resume()
+    # The wedged process is replaced and the search answered by the new one.
+    assert got and isinstance(got[0], list) and got[0]
+    assert not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
     engine.close()
