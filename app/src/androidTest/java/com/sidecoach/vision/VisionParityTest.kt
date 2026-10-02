@@ -250,8 +250,14 @@ class VisionParityTest {
         val colours = run.optBoolean("colours")
         val frames = run.getJSONArray("frames")
         val states = run.getJSONArray("states")
+        // The change gate's answers (round 3 audit, E10): a still tick hands the tracker the last
+        // changed frame's grey image, as the pipeline does.
+        val changed = run.optJSONArray("changed")
+        var last: Plane? = null
         for (i in 0 until frames.length()) {
-            val board = tracker.update(gray(frames.getString(i)))
+            val still = changed != null && !changed.getBoolean(i)
+            val plane = last.takeIf { still } ?: gray(frames.getString(i)).also { last = it }
+            val board = tracker.update(plane, !still)
             val state = states.getJSONArray(i)
             var got = "locked=${tracker.locked} verified=${tracker.verified} detections=${tracker.detections} " +
                 "probes=${tracker.probes} " + (board?.let { show(it) } ?: "none")

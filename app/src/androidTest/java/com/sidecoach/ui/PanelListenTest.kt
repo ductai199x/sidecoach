@@ -204,7 +204,11 @@ class PanelListenTest {
     @Test
     fun anAskBeforeStartIsAnsweredAtOnceNotKeptForALaterSession() {
         PanelEngine.set("running" to false)
-        // No coach yet (the offline coach's line is the same): the plain line, not the model.
+        // No coach yet (the offline coach's line is the same) and no model named: the plain
+        // line. With a model named a coach is built for the question (the next test).
+        val store = SettingsStore(app)
+        val settingsSaved = store.values()
+        store.save(JSONObject(settingsSaved.toString()).apply { getJSONObject("llm").put("provider", "none") })
         val saved = PanelWarm.coaching
         PanelWarm.coaching = null
         try {
@@ -218,6 +222,88 @@ class PanelListenTest {
             assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
         } finally {
             PanelWarm.coaching = saved
+            store.save(settingsSaved)
+        }
+    }
+
+    /** A model that answers one line, and the questions it was asked. */
+    private class Scripted(val reply: String) : com.sidecoach.llm.LLMProvider {
+        val prompts: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
+        override val name = "scripted"
+        override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+        override fun chat(
+            system: String,
+            messages: List<com.sidecoach.llm.ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): com.sidecoach.llm.Completion {
+            prompts.add(messages.last().content)
+            return com.sidecoach.llm.Completion(text = reply)
+        }
+    }
+
+    /**
+     * Tai, 2026-10-02 (UI #4): in the first seconds after launch -- the warm-up has built no
+     * coach yet -- or with no Stockfish, a question with the AI coach on got "Press Start
+     * first". A coach is built for it on demand, and the question goes to the model, told no
+     * game is watched; a second question finds the same coach.
+     * `test_with_the_ai_coach_on_an_ask_before_any_coach_is_built_goes_to_the_model`.
+     */
+    @Test
+    fun withTheAiCoachOnAnAskBeforeAnyCoachIsBuiltGoesToTheModel() {
+        PanelEngine.set("running" to false)
+        PanelWarm.adopt(app)
+        val store = SettingsStore(app)
+        val settingsSaved = store.values()
+        // A model named: the AI coach on (the scripted model below stands in for it).
+        store.save(JSONObject(settingsSaved.toString()).apply { getJSONObject("llm").put("provider", "local") })
+        val reply = "The Italian: quick development, a safe king."
+        val model = Scripted(reply)
+        val saved = PanelWarm.coaching
+        val savedMaker = PanelWarm.makeAsking
+        val savedOnDemand = PanelWarm.onDemand
+        var built = 0
+        PanelWarm.coaching = null
+        PanelWarm.onDemand = null
+        PanelWarm.makeAsking = { _, settings ->
+            built += 1
+            // Built offline (no network at its build), then given the scripted model.
+            val named = settings.values()
+            settings.save(JSONObject(named.toString()).apply { getJSONObject("llm").put("provider", "none") })
+            val runner = com.sidecoach.coach.CoachRunner(settings)
+            settings.save(named)
+            val coach = runner.coach!!
+            coach.setProviders(model, routineProvider = model)
+            coach.spawn = { work, _ -> work() } // the question's worker, run here
+            runner
+        }
+        fun ask(text: String) {
+            PanelEngine.ask(text)
+            for (thread in Thread.getAllStackTraces().keys) {
+                if (thread.name == "sidecoach-ask-unwatched") thread.join(60_000) // its end is the signal
+            }
+        }
+        try {
+            val before = PanelEngine.poll(0).getInt("cursor")
+            ask("what opening should I learn?")
+            assertTrue("an ask with no session was queued", asked.isEmpty())
+            assertTrue("told no game is watched", model.prompts.any { com.sidecoach.coach.NO_BOARD_UNWATCHED in it })
+            val lines = PanelEngine.poll(before).getJSONArray("lines")
+            val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
+            assertTrue(texts.none { "Press Start first" in it.getString("text") })
+            val full = texts.filter { it.getString("chan") == "coach" && it.getString("level") == "info" }
+                .mapNotNull { it.optJSONObject("data")?.optString("full")?.ifEmpty { null } }
+            assertEquals(listOf(reply), full)
+            val first = PanelWarm.onDemand
+            ask("and against 1. d4?")
+            assertTrue("the coach built on demand is kept", PanelWarm.onDemand === first && built == 1)
+        } finally {
+            PanelWarm.onDemand?.close()
+            PanelWarm.onDemand = savedOnDemand
+            PanelWarm.makeAsking = savedMaker
+            PanelWarm.coaching = saved
+            store.save(settingsSaved)
         }
     }
 
@@ -710,6 +796,45 @@ class PanelListenTest {
             assertEquals(2, heard.size)
         } finally {
             mic.steps.free()
+            listener.setMode("off")
+        }
+    }
+
+    /**
+     * A 45 s question held on the key is handed over whole
+     * (`test_a_45_second_question_held_on_the_key_is_handed_over_whole`; E3, Tai 2026-10-02: the
+     * longest utterance is 60 s, not 20 s). The listener asks its queue for the next frame only
+     * once it has handled the last one, so an empty poll says every frame fed was handled.
+     */
+    @Test
+    fun aFortyFiveSecondQuestionHeldOnTheKeyIsHandedOverWhole() {
+        val handled = CountDownLatch(1)
+        val fed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val mic = object : FrameSource {
+            override val frames: BlockingQueue<FloatArray> = object : LinkedBlockingQueue<FloatArray>() {
+                override fun poll(timeout: Long, unit: TimeUnit): FloatArray? {
+                    if (fed.get() && isEmpty()) handled.countDown()
+                    return super.poll(timeout, unit)
+                }
+            }
+            override val detail = "fed by the test"
+            override val isOpen = true
+            override fun open() = true
+            override fun close() = Unit
+        }
+        val heard = LinkedBlockingQueue<Double>()
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ -> heard.put(audio.size / 16000.0) })
+        listener.setMode("ptt")
+        try {
+            listener.press()
+            repeat(45 * 16000 / HOP) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
+            fed.set(true)
+            assertTrue(handled.await(10, TimeUnit.SECONDS))
+            assertTrue("handed over while still held", heard.isEmpty() && listener.pressTaken)
+            listener.release()
+            val seconds = heard.poll(5, TimeUnit.SECONDS)
+            assertTrue("$seconds", seconds != null && seconds >= 45 - HOP / 16000.0)
+        } finally {
             listener.setMode("off")
         }
     }

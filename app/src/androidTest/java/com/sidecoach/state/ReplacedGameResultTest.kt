@@ -49,4 +49,23 @@ class ReplacedGameResultTest {
         val unknown = open.replacedEvent("new game started")
         assertEquals("*" to "new game started", unknown.result to unknown.reason)
     }
+
+    /**
+     * `test_a_game_whose_end_was_never_seen_ends_at_the_session_by_its_final_position`: a
+     * position that proves nothing ends nothing (the record keeps "*"); the third repetition
+     * played is a draw, once.
+     */
+    @Test
+    fun aGameWhoseEndWasNeverSeenEndsAtTheSessionByItsFinalPosition() {
+        val rec = Reconciler(bottom = com.sidecoach.vision.Pieces.Side.WHITE, userSide = com.sidecoach.vision.Pieces.Side.WHITE)
+        rec.start()
+        rec.board = played("e4", "e5", "Nf3", "Nc6", "Ng1", "Nb8")
+        assertEquals(emptyList<com.sidecoach.events.Event>(), rec.endUnseen())
+        assertEquals(false, rec.finished)
+        rec.board = played("e4", "e5", "Nf3", "Nc6", "Ng1", "Nb8", "Nf3", "Nc6", "Ng1", "Nb8")
+        val ended = rec.endUnseen().filterIsInstance<com.sidecoach.events.GameEnded>()
+        assertEquals(listOf("1/2-1/2" to "repetition"), ended.map { it.result to it.reason })
+        assertEquals("1/2-1/2", rec.result)
+        assertEquals(emptyList<com.sidecoach.events.Event>(), rec.endUnseen())
+    }
 }

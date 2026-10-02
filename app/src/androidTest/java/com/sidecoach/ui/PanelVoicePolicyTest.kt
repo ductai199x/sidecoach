@@ -44,11 +44,11 @@ class PanelVoicePolicyTest {
         val calls: MutableList<String> = Collections.synchronizedList(ArrayList())
         @Volatile override var busy = false
         override fun healthcheck() = ready to (if (ready) "fake" else "fake: no model")
-        override fun say(text: String, voice: String?) {
-            calls.add("say:" + text + (if (voice != null) " in $voice" else ""))
+        override fun say(text: String, voice: String?, owner: String) {
+            calls.add("say:" + text + (if (voice != null) " in $voice" else "") + (if (owner != "coach") " ($owner)" else ""))
         }
-        override fun stop() {
-            calls.add("stop")
+        override fun stop(owner: String?) {
+            calls.add(if (owner == null) "stop" else "stop ($owner)")
         }
     }
 
@@ -400,28 +400,31 @@ class PanelVoicePolicyTest {
 
     /**
      * A room's words (a review's card, a puzzle's coach): silent when muted, and a room's hush
-     * stops only its own words, never the live coach (`test_a_card_is_said_in_the_panels_voice_
-     * and_captioned`, voice finding 12).
+     * stops only its own lines, never the live coach's: the voice is told whose
+     * (`test_a_card_is_said_in_the_panels_voice_and_captioned`, voice finding 12; round 3
+     * audit, E5). What the voice keeps of each owner: KokoroTtsTest's owner tests.
      */
     @Test
     fun muteSilencesTheRoomsAndARoomStopsOnlyItsOwnWords() {
         val fake = FakeTts()
         PanelVoice.speaker = fake
         PanelVoice.voicing = "post_move" to 10 // the live coach speaking
-        PanelVoice.roomStop()
-        assertEquals(emptyList<String>(), fake.calls.toList())
-        PanelVoice.roomSay("Na5 is a mistake.")
-        assertEquals(listOf("say:Na5 is a mistake."), fake.calls.toList())
-        PanelVoice.roomStop()
-        assertEquals("stop", fake.calls.last())
+        PanelVoice.roomStop(PanelVoice.REVIEW_VOICE)
+        assertEquals(listOf("stop (review)"), fake.calls.toList())
+        assertTrue("nothing of the coach's stopped", "stop" !in fake.calls)
+        fake.calls.clear()
+        PanelVoice.roomSay("Na5 is a mistake.", PanelVoice.REVIEW_VOICE)
+        assertEquals(listOf("say:Na5 is a mistake. (review)"), fake.calls.toList())
+        PanelVoice.roomStop(PanelVoice.REVIEW_VOICE)
+        assertEquals("stop (review)", fake.calls.last())
         PanelVoice.setMuted(true)
         fake.calls.clear()
-        PanelVoice.roomSay("Nf3 is best.")
+        PanelVoice.roomSay("Nf3 is best.", PanelVoice.REVIEW_VOICE)
         assertTrue(fake.calls.none { it.startsWith("say:") })
         // The push-to-talk key held: the player is talking, the card is not said (round 3 audit).
         PanelVoice.setMuted(false)
         PanelEngine.set("ptt" to true)
-        PanelVoice.roomSay("Rc1 next.")
+        PanelVoice.roomSay("Rc1 next.", PanelVoice.REVIEW_VOICE)
         assertTrue(fake.calls.none { it.startsWith("say:") })
     }
 

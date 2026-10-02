@@ -225,8 +225,8 @@ class CaptionsKeepTest {
                 override val name = "speaking"
                 @Volatile override var busy = true
                 override fun healthcheck() = true to "fake"
-                override fun say(text: String, voice: String?) = Unit
-                override fun stop() = Unit
+                override fun say(text: String, voice: String?, owner: String) = Unit
+                override fun stop(owner: String?) = Unit
             }
             PanelVoice.speaker = voice
             instrumentation.runOnMainSync {

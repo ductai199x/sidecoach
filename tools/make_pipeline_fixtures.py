@@ -155,6 +155,27 @@ def scholars_mate(theme: str, style: str) -> list[dict]:
     return states
 
 
+REPETITION = ("d4", "d5", "e3", "e6", "Bd3", "Bd6", "Nf3", "Nf6", *("Nc3", "Nc6", "Nb1", "Nb8") * 2)
+
+
+def a_repetition_played(theme: str, style: str) -> list[dict]:
+    """Sixteen plies, the last the position's third time, and nothing more: the pipeline ends
+    nothing (a threefold is not `is_game_over`); the session's end draws it
+    (`test_a_session_ended_on_a_repetition_played_records_the_draw`; PanelEngineTest closes a
+    GameWatcher on these frames)."""
+    board = chess.Board()
+    states = [dict(board_kwargs(board=board.copy(), theme=theme, style=style), _repeat=3)]
+    for san in REPETITION:
+        move = board.push_san(san)
+        states.append(
+            dict(
+                board_kwargs(board=board.copy(), theme=theme, style=style, highlight=move),
+                _repeat=2,
+            )
+        )
+    return states
+
+
 def a_game_and_a_takeback(theme: str, style: str) -> list[dict]:
     """Six plies, then two taken back and a different move played from there."""
     board = chess.Board()
@@ -565,6 +586,21 @@ def look_changed_mid_game(**look) -> list[dict]:
     states = [_shown(board, 3), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
     states.append(dict(_shown(board, 10, highlight=board.peek(), **look), _changed=[True] + [False] * 9))
     states += _moves(board, ("Nc6", "Bb5"), repeat=3, **look)
+    return states
+
+
+def look_kept_for_a_restart() -> list[dict]:
+    """`test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start` (round 3 audit, E11):
+    the piece set changed mid-game, learned again from the game's position and cached beside
+    the start's; the app restarted (`_session`: a fresh pipeline on the same theme cache) on
+    the game in the new set, held still: read cold from the cache, and its next moves
+    followed."""
+    board = chess.Board()
+    states = [dict(_shown(board, 3), _session=True), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
+    states.append(dict(_shown(board, 10, highlight=board.peek(), style="pixel"), _changed=[True] + [False] * 9))
+    states += _moves(board, ("Nc6",), repeat=3, style="pixel")
+    states.append(dict(_shown(board, int(round(8.0 * FPS)), highlight=board.peek(), style="pixel"), _session=True))
+    states += _moves(board, ("Bb5", "a6"), repeat=3, style="pixel")
     return states
 
 
@@ -1135,6 +1171,8 @@ SCENARIOS = {
     # Round 2, finding 2: a theme, then a piece set, changed mid-game.
     "theme-changed-mid-game": lambda: look_changed_mid_game(theme="brown"),
     "set-changed-mid-game": lambda: look_changed_mid_game(style="pixel"),
+    # Round 3 audit, E11: the set learned mid-game cached, and read cold after a restart.
+    "look-kept-for-a-restart": look_kept_for_a_restart,
     # Round 3: set changes read with one piece wrong, and a look that cannot be learned.
     "set-one-wrong-maestro-cburnett": lambda: set_read_one_piece_wrong(
         "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
@@ -1180,6 +1218,7 @@ SCENARIOS = {
     "rethemed-before-a-move": rethemed_before_the_first_move,
     "unlearned-away-and-back": unlearned_away_and_back,
     "puzzle-read-once": a_puzzle_left_still,
+    "repetition-green": lambda: a_repetition_played("green", "cburnett"),
 }
 
 # Scenarios whose last session counts the theme cache's reads (`candidates`), as the
@@ -1223,16 +1262,24 @@ READ_ONCE = {
     "rethemed-before-a-move",
     "unlearned-away-and-back",
     "puzzle-read-once",
+    "repetition-green",
 }
 
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
+    "repetition-green": lambda lines, data: (
+        _sans(lines) == list(REPETITION) and not any(ln.startswith("GameEnded") for ln in lines)
+    ),
     "theme-changed-mid-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
     ),
     "set-changed-mid-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
+    ),
+    # The start's set and the one learned mid-game, both cached; the restart read cold.
+    "look-kept-for-a-restart": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"] and data["themes"] == 2
     ),
     "set-one-wrong-maestro-cburnett": lambda lines, data: (
         len(_sans(lines)) == 10 and data["bootstraps"] == 1

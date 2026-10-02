@@ -313,6 +313,16 @@ object PanelEngine {
             heard(payload.toString(), spoken = name == "ask_spoken")
             val coaching = PanelWarm.coaching
             val coach = coaching?.coach
+            if (coach == null && PanelWarm.aiCoachOn()) {
+                // No coach yet -- the first seconds after launch, or no Stockfish yet -- and
+                // the AI coach on: one is built for the question, on its own thread, and the
+                // question goes to the model (Tai, 2026-10-02).
+                val asked = payload.toString()
+                Thread({ answerOnDemand(asked) }, "sidecoach-ask-unwatched")
+                    .apply { isDaemon = true }
+                    .start()
+                return
+            }
             if (coach != null && coach.speaker.provider !is com.sidecoach.llm.OfflineProvider) {
                 // The AI coach answers every question, a session running or not (Tai,
                 // 2026-10-02), with what it has; it is told no game is being watched.
@@ -322,23 +332,42 @@ object PanelEngine {
                     .start()
                 return
             }
-            // The offline coach: a plain, honest line.
-            val text = "Press Start first: I can only answer about a game I am watching."
-            emit(
-                "coach",
-                "info",
-                "user_ask · not watching — $text",
-                JSONObject().apply {
-                    put("full", text)
-                    put("trigger", "user_ask")
-                    put("ply", JSONObject.NULL)
-                    put("voice", "text")
-                },
-            )
-            Captions.show(text)
+            notWatching()
             return
         }
         commands.put(name to payload)
+    }
+
+    /** The offline coach's answer to a question with no session: a plain, honest line. `_not_watching`. */
+    private fun notWatching() {
+        val text = "Press Start first: I can only answer about a game I am watching."
+        emit(
+            "coach",
+            "info",
+            "user_ask · not watching — $text",
+            JSONObject().apply {
+                put("full", text)
+                put("trigger", "user_ask")
+                put("ply", JSONObject.NULL)
+                put("voice", "text")
+            },
+        )
+        Captions.show(text)
+    }
+
+    /**
+     * A question with no session and no coach built yet, the AI coach on: the coach is built
+     * now ([PanelWarm.askingCoach]) and asked. A model that cannot be reached leaves it
+     * offline, and the offline coach's line is the answer. `_answer_on_demand`.
+     */
+    private fun answerOnDemand(text: String) {
+        val coaching = PanelWarm.askingCoach()
+        val coach = coaching?.coach
+        if (coaching == null || coach == null || coach.speaker.provider is com.sidecoach.llm.OfflineProvider) {
+            notWatching()
+            return
+        }
+        answerUnwatched(coaching, text)
     }
 
     /**

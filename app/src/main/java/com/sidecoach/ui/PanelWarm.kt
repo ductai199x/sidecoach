@@ -109,6 +109,49 @@ object PanelWarm {
         }
 
     /**
+     * The coach built on demand for a question asked while there is none -- in the first
+     * seconds after launch, or with no Stockfish yet -- and the AI coach on ([askingCoach]).
+     * Kept for the next such question. `panel._on_demand`.
+     */
+    @Volatile internal var onDemand: CoachRunner? = null
+    private val onDemandLock = Any()
+
+    /** What builds the coach on demand: `_Coaching(settings, True, None)`; a test sets its own. */
+    @Volatile internal var makeAsking: (Context, SettingsStore) -> CoachRunner = { context, store ->
+        CoachRunner(store, enabled = true, engine = Assessing.coachEngine(context, store))
+    }
+
+    /** The AI coach on: a model named in the settings (`llm.provider` not "none"). */
+    fun aiCoachOn(): Boolean =
+        ::appContext.isInitialized && SettingsStore(appContext).llm().provider != "none"
+
+    /** The app's context for what is built off a session (a test with no warm-up hands it). */
+    internal fun adopt(context: Context) {
+        synchronized(lock) { if (!::appContext.isInitialized) appContext = context.applicationContext }
+    }
+
+    /**
+     * The coach for a question with no session: the warm-up's own when it has built it
+     * meanwhile, else one built on demand -- the analyser's engine not needed (its own is
+     * started for a question that needs one, if there is one) -- and kept for the next such
+     * question. Null with no context to build from. `panel._asking_coach`.
+     */
+    fun askingCoach(): CoachRunner? = synchronized(onDemandLock) {
+        val kept = coaching
+        if (kept?.coach != null) return kept
+        if (!::appContext.isInitialized) return null
+        onDemand ?: makeAsking(appContext, SettingsStore(appContext)).also {
+            it.coach?.streamSink = { trigger, ply, movedOn -> PanelVoice.streamSink(trigger, ply, movedOn) }
+            PanelEngine.emit(
+                "sys",
+                if (it.on) "info" else "warn",
+                "coach, for a question with no session: ${it.detail}",
+            )
+            onDemand = it
+        }
+    }
+
+    /**
      * Whether a warm-up has been started in this process; the app opens it once. Internal, not
      * private, only so a test that opens the activity for something else (RecordingNoticeTest's
      * question) can say one has: the warm-up's models then load in no test that did not ask for
@@ -547,15 +590,17 @@ object PanelWarm {
      * `panel.reprovision`.
      */
     fun reprovision(store: SettingsStore, names: List<String>): Boolean = synchronized(provisioning) {
-        val runner = coaching
-        if (runner?.coach == null) return true
-        try {
-            runner.reprovision(store)
-        } catch (exc: Exception) {
-            PanelEngine.emit("sys", "warn", "${names.joinToString(", ")}: not applied (${exc.message ?: ""})")
-            return false
+        // The coach built on demand for a question with no session follows too.
+        for (runner in listOf(coaching, onDemand)) {
+            if (runner?.coach == null) continue
+            try {
+                runner.reprovision(store)
+            } catch (exc: Exception) {
+                PanelEngine.emit("sys", "warn", "${names.joinToString(", ")}: not applied (${exc.message ?: ""})")
+                return false
+            }
+            PanelEngine.emit("sys", "info", "coach: ${runner.detail}")
         }
-        PanelEngine.emit("sys", "info", "coach: ${runner.detail}")
         true
     }
 

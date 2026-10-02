@@ -422,6 +422,18 @@ def board_cases() -> dict:
         ("nothing, then a board", {}, ["noise"] * 4 + ["board"] * 2),
     ):
         runs.append(track(what, settings, sequence, frames, files))
+    # Still ticks (the gate's `changed` False), one mechanism on both (round 3 audit, E10): a
+    # verified lock stands unread but for the re-fit until one settles; anything else asks the
+    # last changed frame's pixels again, and the back-off and the misses count every tick.
+    for what, sequence, changed in (
+        ("still ticks on the lock: it stands", ["board"] * 26, [True] + [False] * 25),
+        ("nudged, then still: the re-fit on the still pixels", ["board"] + ["nudged"] * 25,
+         [True, True] + [False] * 24),
+        ("no board, still: the back-off counts every tick", ["noise"] * 31, [True] + [False] * 30),
+        ("the dialog, then still: held and dropped", ["board", "dialog"] + ["dialog"] * 6,
+         [True, True] + [False] * 6),
+    ):  # fmt: skip
+        runs.append(track(what, {}, sequence, frames, files, changed=changed))
     for run, x in ((runs[1], 121), (runs[2], 143)):
         followed = run["states"][1]
         if not (followed[1] and followed[2] == 1 and followed[3] and abs(followed[3][0] - x) <= 2):
@@ -457,15 +469,22 @@ def board_cases() -> dict:
 
 
 def track(
-    what: str, settings: dict, sequence: list[str], frames: dict, files: dict, colours: bool = False
+    what: str,
+    settings: dict,
+    sequence: list[str],
+    frames: dict,
+    files: dict,
+    colours: bool = False,
+    changed: list[bool] | None = None,
 ) -> dict:
     """The tracker's lock after each update of a run: locked, verified, its detections, the
     board, its probes -- and with `colours`, the square colours it holds (light, dark, the
-    tolerance)."""
+    tolerance). With `changed`, each update's answer of the change gate: False is a still tick,
+    the last changed frame's pixels (the phone hands the tracker that frame's grey image)."""
     tracker = BoardTracker(**settings)
     states = []
-    for name in sequence:
-        board = tracker.update(frames[name])
+    for i, name in enumerate(sequence):
+        board = tracker.update(frames[name], changed=True if changed is None else changed[i])
         state = [tracker.locked, tracker.verified, tracker.detections, candidate_of(board), tracker.probes]
         if colours:
             state.append(None if tracker.colours is None else [r6(v) for v in tracker.colours])
@@ -473,6 +492,8 @@ def track(
     run = {"what": what, "settings": settings, "frames": [files[n] for n in sequence], "states": states}
     if colours:
         run["colours"] = True
+    if changed is not None:
+        run["changed"] = changed
     return run
 
 

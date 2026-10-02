@@ -125,6 +125,46 @@ class PanelEngineTest {
     }
 
     /**
+     * The session ends with a game whose end was never seen, its final position the third
+     * repetition, which the sites draw: a draw by repetition, as a game the next one replaced
+     * is (Tai, 2026-10-02), not a game left unfinished
+     * (`test_a_session_ended_on_a_repetition_played_records_the_draw`; the frames are the
+     * pipeline fixtures' repetition-green).
+     */
+    @Test
+    fun aSessionEndedOnARepetitionPlayedRecordsTheDraw() {
+        assertTrue(OpenCVLoader.initLocal())
+        val context = InstrumentationRegistry.getInstrumentation().context
+        val run = JSONObject(context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() })
+            .getJSONArray("runs").let { runs -> (0 until runs.length()).map { runs.getJSONObject(it) } }
+            .first { it.getString("name") == "repetition-green" }
+        val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        CellEmbedder.load(app).use { net ->
+            val watcher = GameWatcher(app, null, net, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
+            val frames = run.getJSONArray("frames")
+            val bitmaps = HashMap<String, android.graphics.Bitmap>()
+            try {
+                for (f in 0 until frames.length()) {
+                    val frame = frames.getJSONObject(f)
+                    val file = frame.getString("file")
+                    val bitmap = bitmaps.getOrPut(file) {
+                        context.assets.open("pipeline/$file").use { BitmapFactory.decodeStream(it) }
+                    }
+                    watcher.read(bitmap, frame.getDouble("ts"))
+                }
+            } finally {
+                watcher.close()
+                for (bitmap in bitmaps.values) bitmap.recycle()
+            }
+        }
+        val polled = PanelEngine.poll(cursor)
+        val texts = polled.getJSONArray("lines").let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("text") } }
+        assertTrue(texts.toString(), "game over 1/2-1/2 (repetition)" in texts)
+        val review = polled.getJSONObject("state").getJSONObject("review")
+        assertEquals(review.toString(), "1/2-1/2" to "repetition", review.getString("result") to review.getString("reason"))
+    }
+
+    /**
      * The poll's keys (`test_controls_and_static_page` in tests/test_panel_server.py), its
      * records and cursor (`test_records_are_structured_and_polled_incrementally`) and the ring
      * (`test_ring_keeps_only_the_most_recent`, both in tests/test_debug_log.py).

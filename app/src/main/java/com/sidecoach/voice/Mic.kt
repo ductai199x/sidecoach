@@ -40,7 +40,9 @@ val MODES = listOf("off", "ptt", "vad")
 
 /** 320 ms kept before a detected start, so "knight" is not "ight". */
 const val PRE_ROLL_FRAMES = 10
-const val MAX_UTTERANCE_S = 20.0
+/** The longest utterance (Tai, 2026-10-02: 60 s, was 20 s -- a long question asked on the held
+ * key lost everything past 20 s). */
+const val MAX_UTTERANCE_S = 60.0
 
 /** How often a microphone whose input failed is tried again (`MIC_REOPEN_S`). */
 const val MIC_REOPEN_S = 3.0

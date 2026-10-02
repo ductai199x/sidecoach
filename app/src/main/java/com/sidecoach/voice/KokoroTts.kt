@@ -82,10 +82,17 @@ class KokoroTts(
      */
     @Volatile var onCaption: ((String, Long) -> Unit)? = null
 
+    /**
+     * A queued line's owner, and the stops it came after: everything's ([generation]) and its
+     * owner's own ([cut]). A stop since then cancels it. `kokoro._Stamp`.
+     */
+    private data class Stamp(val owner: String, val generation: Int, val cut: Int)
+
     private data class Line(
         val spoken: String,
         val given: String,
         val voice: String?,
+        val stamp: Stamp,
         val queuedAt: Long = SystemClock.elapsedRealtime(),
     )
 
@@ -98,7 +105,7 @@ class KokoroTts(
      */
     private class Chunk(
         val samples: FloatArray,
-        val mine: Int,
+        val mine: Stamp,
         val first: Line?,
         val done: CountDownLatch?,
         /** With the first piece: the line's speech, what is made and the rest's estimate. */
@@ -108,9 +115,23 @@ class KokoroTts(
     private val chunks = LinkedBlockingQueue<Chunk>()
     private var player: Thread? = null
 
-    /** Bumped on every stop, so a synthesis in flight knows its line was cancelled. */
+    /**
+     * Bumped on every stop of everything, so a synthesis in flight knows its line was
+     * cancelled; [cuts] the same, an owner's own stops (a room's), which cancel that owner's
+     * lines and no one else's. Under [lock].
+     */
     private var generation = 0
+    private val cuts = HashMap<String, Int>()
+
+    /** The line being synthesised or played (its stamp), null between lines. Under [lock]. */
+    private var current: Stamp? = null
     private val lock = Object()
+
+    /** Whether a stop since the line was queued cancelled it. Under [lock]. */
+    private fun stale(stamp: Stamp): Boolean =
+        stamp.generation != generation || stamp.cut != (cuts[stamp.owner] ?: 0)
+
+    private fun staleNow(stamp: Stamp): Boolean = synchronized(lock) { stale(stamp) }
     @Volatile private var playing = false
 
     /** When the line being made may start to play, in elapsed-realtime milliseconds. Under [lock]. */
@@ -209,24 +230,35 @@ class KokoroTts(
      * Queue a line to be spoken. Notation in it is read aloud in words. [voice] speaks this line
      * in another voice (a preview) without changing the coach's.
      */
-    override fun say(text: String, voice: String?) {
+    override fun say(text: String, voice: String?, owner: String) {
         if (failed && !filesArrived()) return
         val spoken = Py.strip(Notation.speak(text, voice = true))
         if (spoken.isEmpty()) return
         ensureWorker()
-        queue.put(Line(spoken, text, voice))
+        val stamp = synchronized(lock) { Stamp(owner, generation, cuts[owner] ?: 0) }
+        queue.put(Line(spoken, text, voice, stamp))
     }
 
     /** Whether a line is playing or waiting to play. */
     override val busy: Boolean get() = playing || queue.isNotEmpty()
 
-    /** Drop everything queued and silence anything now playing. */
-    override fun stop() {
+    /**
+     * Drop everything queued and silence anything now playing. With [owner], only that owner's
+     * lines, queued or playing: a room's stop (a review closed, the puzzles' voice off) left
+     * the coach's lines alone only when the room had given the last line, and cut them off when
+     * it had (round 3 audit, E5; Tai, 2026-10-02).
+     */
+    override fun stop(owner: String?) {
+        val cutNow: Boolean
         synchronized(lock) {
-            generation += 1
+            if (owner == null) generation += 1 else cuts[owner] = (cuts[owner] ?: 0) + 1
+            val now = current
+            cutNow = owner == null || (now != null && now.owner == owner)
             lock.notifyAll()
         }
-        queue.clear()
+        // The queue's own lock: the lines kept stay in their order.
+        if (owner == null) queue.clear() else queue.removeIf { it.stamp.owner == owner }
+        if (!cutNow) return
         while (true) chunks.poll()?.done?.countDown() ?: break
         runCatching { output?.cut() }
     }
@@ -285,9 +317,11 @@ class KokoroTts(
             // Busy from the moment a line is taken up, through synthesis, until it has been
             // handed to the output -- so a caller asking `busy` mid-synthesis gets the truth.
             playing = true
+            synchronized(lock) { current = line.stamp }
             try {
                 speakOne(line)
             } finally {
+                synchronized(lock) { current = null }
                 playing = false
             }
         }
@@ -296,7 +330,8 @@ class KokoroTts(
     private fun speakOne(line: Line) {
         if (!load()) return // degraded to silence
         val model = kokoro ?: return
-        val mine = synchronized(lock) { generation }
+        val mine = line.stamp
+        if (staleNow(mine)) return // stopped while it waited its turn
         val done = CountDownLatch(1)
         var handed = false
         val shared = using.readLock()
@@ -315,7 +350,7 @@ class KokoroTts(
             var made = 0.0
             for ((i, piece) in pieces.withIndex()) {
                 // A stop meanwhile means this line was cancelled.
-                if (synchronized(lock) { generation } != mine) return
+                if (staleNow(mine)) return
                 val from = SystemClock.elapsedRealtime()
                 val samples = try {
                     runCatching { onSynthesis?.invoke(true) }
@@ -395,7 +430,7 @@ class KokoroTts(
                 val line = chunk.first
                 if (line != null) {
                     synchronized(lock) {
-                        while (generation == chunk.mine) {
+                        while (!stale(chunk.mine)) {
                             val wait = startAt - SystemClock.elapsedRealtime()
                             if (wait <= 0) break
                             lock.wait(wait)
@@ -406,7 +441,7 @@ class KokoroTts(
                 // checked: a stop landing while the track opened, or during a piece, was ignored
                 // and the line played over a mute or a barge-in (voice finding 13).
                 val out = openOutput()
-                if (synchronized(lock) { generation } != chunk.mine) continue
+                if (staleNow(chunk.mine)) continue
                 if (line != null) {
                     underruns = out.underrunCount
                     Log.i(TAG, "line: first sound ${SystemClock.elapsedRealtime() - line.queuedAt} ms after it was queued")
@@ -417,7 +452,7 @@ class KokoroTts(
                     chunk.samples,
                     output = { PcmSink(out::write) },
                     reopen = { PcmSink(reopenOutput(out)::write) },
-                    stopped = { synchronized(lock) { generation } != chunk.mine },
+                    stopped = { staleNow(chunk.mine) },
                 )
                 if (chunk.done != null) Log.i(TAG, "line: played with ${(output ?: out).underrunCount - underruns} gaps")
             } catch (_: InterruptedException) {

@@ -231,7 +231,11 @@ class GamePipeline(
     /** The current frame's pixels when the caller already read them out of the Mat. */
     private var framePixels: FramePixels? = null
 
-    /** The last frame's grey image, for a tick that brings the same pixels again. */
+    /**
+     * The last changed frame's grey image, for a tick that brings the same pixels again: the
+     * display sent nothing, or the change gate calls them unchanged (the desktop's
+     * `tracker.gray`).
+     */
     private var lastGray: com.sidecoach.vision.Plane? = null
 
     /** What the last frame cost, by stage, for the log. */
@@ -263,8 +267,12 @@ class GamePipeline(
     ): MutableList<Event> {
         framePixels = pixels
         var began = android.os.SystemClock.elapsedRealtime()
-        val gray = lastGray.takeIf { sameFrame } ?: BoardDetect.toGray(frame).also { lastGray = it }
-        board = tracker.update(gray)
+        // A still tick (the gate's `changed` false) is read as the last changed frame's pixels:
+        // not turned grey again, and what the tracker computed on them stands (round 3 audit,
+        // E10; the desktop's tracker keeps its grey image the same way).
+        val gray = lastGray.takeIf { sameFrame || !changed }
+            ?: BoardDetect.toGray(frame).also { lastGray = it }
+        board = tracker.update(gray, changed)
         detectMs = android.os.SystemClock.elapsedRealtime() - began
         classifyMs = 0
         coldMs = 0
@@ -574,6 +582,15 @@ class GamePipeline(
     }
 
     /**
+     * The session's end (`end_unseen`): the game under way, its end never seen, ends with the
+     * result its final position proves ([Reconciler.endUnseen]), stamped like every other event.
+     */
+    fun endUnseen(ts: Double, frameId: Int? = null): MutableList<Event> {
+        val rec = reconciler ?: return mutableListOf()
+        return stamp(rec.endUnseen(), ts, frameId)
+    }
+
+    /**
      * Forget the game and the recogniser; the next start position bootstraps again. Every
      * field of the game returns to its default ([Game]); what the pipeline keeps, it keeps.
      */
@@ -787,9 +804,12 @@ class GamePipeline(
      * board must be readable at all, since a new theme reads as unknown almost everywhere
      * without contradicting anything. `internal` for the desktop's test of a stray reading.
      */
-    internal fun readsAsStart(readings: Readings, at: Side? = null): Boolean {
-        val bottomSide = checkNotNull(at ?: bottom)
-        val start = Board()
+    internal fun readsAsStart(readings: Readings, at: Side? = null): Boolean =
+        readsAs(readings, null, checkNotNull(at ?: bottom))
+
+    /** [readsAsStart]'s rule for any [position] (the start position when null). `_reads_as`. */
+    private fun readsAs(readings: Readings, position: Board?, bottomSide: Side): Boolean {
+        val start = position ?: Board()
         var contradictions = 0
         var unknown = 0
         for (r in 0 until 8) {
@@ -834,16 +854,23 @@ class GamePipeline(
             it.userSide = side
         }
         bootstraps += 1
-        // Last, and never in the way: an exception here -- a damaged set among the cached ones
-        // -- left the rebuild half done (round 2, finding 9). The theme simply goes unkept.
-        cache?.let {
-            try {
-                it.save(built, learnedSet(it, built, frame, geometry, side))
-            } catch (e: Exception) {
-                Log.w(TAG, "the learned theme was not cached", e) // as the desktop logs it
-            }
-        }
+        keepLook(built, frame, geometry, side, Board())
         return true
+    }
+
+    /**
+     * A look just learned from [frame] showing [position], cached: replacing the set it is
+     * learned again ([learnedSet]), else beside the others. Last, and never in the way: an
+     * exception here -- a damaged set among the cached ones -- left the rebuild half done
+     * (round 2, finding 9); the theme simply goes unkept. `pipeline._keep_look`.
+     */
+    private fun keepLook(learned: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side, position: Board) {
+        val store = cache ?: return
+        try {
+            store.save(learned, learnedSet(store, learned, frame, geometry, side, position))
+        } catch (e: Exception) {
+            Log.w(TAG, "the learned theme was not cached", e) // as the desktop logs it
+        }
     }
 
     /**
@@ -871,7 +898,8 @@ class GamePipeline(
      * [RELEARN_UNEXPLAINED_FRAMES] frames no story explains), with nothing dragged and a re-fit
      * finding the board exactly under the lock. A set cached on the new colours that reads the
      * position on every cell is taken whole; otherwise [ThemeModel.fromPosition] learns one,
-     * validated first. The model learned is not cached.
+     * validated first, and cached as one learned at a start position is ([keepLook]); it lacks
+     * the kinds the position has lost, so it never replaces a set that knows them.
      */
     private fun relearnLook(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
         val none = mutableListOf<Event>()
@@ -970,6 +998,11 @@ class GamePipeline(
             model = learned
             game.readingsValue = learnedReadings
             game.lookLost = null
+            // Kept as a look learned at a game's start is ([rebuildModel]), once it has read its
+            // own frame back as the position, every piece landed: unkept, an app restarted
+            // mid-game read the new look as nothing until a start position, which a puzzle never
+            // shows (round 3 audit, E11; Tai, 2026-10-02).
+            keepLook(learned, frame, geometry, side, position)
             return none
         }
         // Nothing says the look changed (another board, a dialog, a story), or the game is
@@ -1019,14 +1052,26 @@ class GamePipeline(
     }
 
     /**
-     * The cached set this start position shows again -- the same pieces on the same board,
-     * learned before -- or null for a set not seen yet. Each set cached on these board colours
-     * reads the frame; one that reads it as the start position is this set, and the new model
-     * replaces it rather than standing beside it (`pipeline._learned_set`).
+     * The cached set this frame shows again -- the same pieces on the same board, learned
+     * before -- or null for a set not seen yet. Each set cached on these board colours reads the
+     * frame; one that reads it as [position] (the start position by default) is this set, and
+     * the new model replaces it rather than standing beside it -- unless it knows a kind the new
+     * one does not: a look learned mid-game lacks the kinds its position has lost, and replacing
+     * the whole set with it left a puzzle with a queen unread (round 3 audit, E11).
+     * `pipeline._learned_set`.
      */
-    private fun learnedSet(store: ThemeStore, model: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side): String? {
+    private fun learnedSet(
+        store: ThemeStore,
+        model: ThemeModel,
+        frame: Mat,
+        geometry: BoardGeometry,
+        side: Side,
+        position: Board? = null,
+    ): String? {
+        val kinds = model.exemplarLabels.toSet()
         for ((key, cached) in store.candidates(model.lightBg, model.darkBg)) {
-            if (readsAsStart(cached.classifyFrame(frame, geometry, embedder), side)) return key
+            if (!kinds.containsAll(cached.exemplarLabels)) continue
+            if (readsAs(cached.classifyFrame(frame, geometry, embedder), position, side)) return key
         }
         return null
     }
