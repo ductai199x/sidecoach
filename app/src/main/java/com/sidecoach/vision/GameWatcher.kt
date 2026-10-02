@@ -137,6 +137,7 @@ class GameWatcher(
         // A question about the player over their games: the coach's model writes the queries
         // itself (profile/Ask), read-only over this store.
         coaching.useRecord(profileStore)
+        coaching.coach?.watching = true // until this session's Stop (`CoachSession.pause`)
         PanelEngine.set("status" to "waiting for a board", "coach_on" to coaching.on, "analysis_on" to assessing.on)
     }
 

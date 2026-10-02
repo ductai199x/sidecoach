@@ -772,6 +772,22 @@ const val TIE_LISTED =
         "earlier moment."
 const val NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
 
+/**
+ * Asked with no game watched (the panel's Stop, or no Start yet): a note in the record, once a
+ * spell, so the AI coach knows (Tai, 2026-10-02). Nothing of a last game is built for it: what
+ * the record holds is what it has. `coach.NOT_WATCHING`.
+ */
+const val NOT_WATCHING =
+    "No game is being watched now: the player has not pressed Start, or has pressed Stop. " +
+        "The board is not being read; anything above is from before."
+
+/** A question with no position read: the task, and why there is no board. `coach.NO_BOARD_TASK`. */
+const val NO_BOARD_TASK =
+    "Answer the player's last question as their coach. There is no position to talk about: " +
+        "{why} If the question needs a game or a position, say so plainly; otherwise answer it."
+const val NO_BOARD_YET = "the board has not been read yet."
+const val NO_BOARD_UNWATCHED = "no game is being watched (Start is not pressed)."
+
 /** A line asked for once it was given: what they want is what comes after it. */
 const val LINE_GIVEN =
     "You have given them this line already, in your turns above: they want what comes after " +

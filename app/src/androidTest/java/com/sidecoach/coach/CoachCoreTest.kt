@@ -1049,6 +1049,68 @@ class CoachCoreTest {
         assertEquals("prompt ${SPOKEN_PROMPTS_KEPT + 9}", kept.last())
     }
 
+    // Asked with no game watched (Tai, 2026-10-02): the AI coach answers, told so; the offline
+    // coach keeps its plain line. `test_coach_core.py`.
+
+    @Test
+    fun afterAStopTheAiCoachAnswersAndIsToldNoGameIsWatched() {
+        val (coach, provider) = coachAt("italian", listOf("Your bishop on c4 eyes f7."))
+        coach.pause(3.0) // the panel's Stop
+        assertFalse(coach.watching)
+        coach.ask("why that bishop?", 4.0)
+        assertEquals(listOf("Your bishop on c4 eyes f7."), messages(coach).map { it.text })
+        assertTrue("told no game is being watched", NOT_WATCHING in harnessOf(provider))
+        // Once a spell: a second question finds it said already, and not again.
+        provider.replies.addLast("Develop and castle.")
+        coach.ask("and then?", 5.0)
+        messages(coach)
+        assertEquals(1, harnessOf(provider).split(NOT_WATCHING).size - 1)
+    }
+
+    @Test
+    fun withNoPositionTheAiCoachAnswersAndTheOfflineOneSaysSo() {
+        val (coach, provider) = scripted(listOf("Learn the Italian: quick development."))
+        coach.spawn = { work, _ -> work() } // the question's worker, run here
+        coach.watching = false // never started
+        coach.ask("what opening should I learn?", 1.0)
+        val answer = messages(coach)
+        assertEquals(listOf("Learn the Italian: quick development."), answer.map { it.text })
+        assertEquals(Trigger.USER_ASK, answer[0].trigger)
+        assertTrue(NO_BOARD_UNWATCHED in directiveOf(provider))
+        assertTrue("\"what opening should I learn?\"" in harnessOf(provider))
+        assertFalse("no board shown", "FEN:" in harnessOf(provider))
+        // A session running, the board not read yet: the model is told that instead.
+        coach.watching = true
+        provider.replies.addLast("Wait for the board.")
+        coach.ask("what now?", 2.0)
+        assertEquals(listOf("Wait for the board."), messages(coach).map { it.text })
+        assertTrue(NO_BOARD_YET in directiveOf(provider))
+        // A failed call is answered all the same, with the coach's own words.
+        val down = object : LLMProvider {
+            override val name = "down"
+            override fun healthcheck(): Pair<Boolean, String> = false to "down"
+            override fun chat(
+                system: String,
+                messages: List<ChatMessage>,
+                maxTokens: Int,
+                temperature: Double,
+                thinking: Boolean,
+            ): Completion = throw java.io.IOException("Connection refused")
+        }
+        val failing = Coach(down, policy = policy())
+        failing.spawn = { work, _ -> work() }
+        failing.ask("still there?", 3.0)
+        assertEquals(
+            listOf("I could not work that out just now; ask me again in a moment."),
+            messages(failing).map { it.text },
+        )
+        // The offline coach: its plain line, no model.
+        val offline = offlineCoach()
+        offline.watching = false
+        offline.ask("what opening should I learn?", 1.0)
+        assertEquals(listOf("I have not seen a position to talk about yet."), messages(offline).map { it.text })
+    }
+
     companion object {
         // 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: white to move, Qxf7 mates.
         private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"

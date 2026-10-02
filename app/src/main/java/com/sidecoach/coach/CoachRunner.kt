@@ -210,7 +210,15 @@ class CoachRunner(
      * with why it spoke and what it was checked against -- spoken by the voice's rules
      * (`PanelVoice.speak`) -- each model reply's figures, and any new model failure.
      */
-    fun drain() {
+    fun drain() = synchronized(out) { drainOnce() }
+
+    /**
+     * One drain at a time: the session's loop, or a question answered with no session running
+     * (`PanelEngine.answerUnwatched`). The desktop's `panel._coach_out`.
+     */
+    private val out = Any()
+
+    private fun drainOnce() {
         val coach = coach ?: return
         val sink = sink
         if (sink != null) {

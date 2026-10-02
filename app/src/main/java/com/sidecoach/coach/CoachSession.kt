@@ -684,7 +684,16 @@ class Coach(
         releaseLesson(ts)
         current = null
         policy.pause()
+        watching = false
+        unwatchedNoted = false
     }
+
+    /**
+     * Whether a game is being watched: the panel's Stop ([pause]) ends it, its Start begins it
+     * again. Asked while nothing is watched, the AI coach is told so. `Coach.watching`.
+     */
+    @Volatile var watching = true
+    private var unwatchedNoted = false
 
     val userColour: Boolean get() = userSide.color
 
@@ -787,6 +796,12 @@ class Coach(
         // worker checks the words and the model writes (a new game starting then filed the
         // answer under the next game).
         val moment = currentMoment()
+        if (!watching && !offline && !unwatchedNoted) {
+            // Asked with no game watched (Tai, 2026-10-02): the AI coach answers, told so; what
+            // it read before, if anything, is above in the record.
+            unwatchedNoted = true
+            synchronized(lock) { conversation.note(NOT_WATCHING) }
+        }
         if (profileAsk != null && ASK_PROFILE.containsMatchIn(text)) {
             askProfile(text, ts, moment)
             return
@@ -815,6 +830,12 @@ class Coach(
         }
         if (position == null || position.facts == null) position = latestWithFacts()
         if (position == null || position.facts == null) {
+            if (!offline) {
+                // The AI coach answers every question (Tai, 2026-09-28, 2026-10-02), with what
+                // it has: here no position.
+                askWithoutPosition(text, ts, moment)
+                return
+            }
             queuePlain(
                 Trigger.USER_ASK,
                 "I have not seen a position to talk about yet.",
@@ -1028,6 +1049,32 @@ class Coach(
         } else {
             spawn({ guarded("claims check", ts, moment) { checked() }.run() }, "sidecoach-claims")
         }
+    }
+
+    /**
+     * A question with no position read (no game watched, or the board not read yet): the model
+     * answers from the record as it stands and is told there is no board, off this thread, and
+     * its reply is the coach's turn when it lands. With no board there is nothing to check its
+     * claims against. `Coach._ask_without_position`.
+     */
+    private fun askWithoutPosition(text: String, ts: Double, moment: Moment) {
+        val harness = synchronized(lock) {
+            conversation.userSaid(text)
+            conversation.renderDialogue()
+        }
+        val why = if (watching) NO_BOARD_YET else NO_BOARD_UNWATCHED
+        val messages = listOf(ChatMessage("user", "$harness\n\n# Task\n${NO_BOARD_TASK.replace("{why}", why)}"))
+        val provider = speaker.provider
+        val system = system
+
+        fun run() {
+            val reply = provider.chat(system, messages, maxTokens = VS_MAX_TOKENS, temperature = VS_TEMPERATURE)
+            val answer = reply.text.trim()
+            if (answer.isEmpty()) throw RuntimeException("an empty reply")
+            queuePlain(Trigger.USER_ASK, answer, ts, recordNow = true, moment = moment)
+        }
+
+        spawn({ guarded("question with no board", ts, moment) { run() }.run() }, "sidecoach-ask")
     }
 
     /**
