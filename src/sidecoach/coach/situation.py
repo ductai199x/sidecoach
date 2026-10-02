@@ -390,6 +390,15 @@ def _cost(board: chess.Board, stakes: Stakes) -> str:
     return "anything else gives back much of what you have"
 
 
+def _only(stakes: Stakes) -> bool:
+    """One move holds: the next best drops by `ONLY_DROP` at least, and out of a win when
+    the best one wins ("only one move keeps it that way" was said with the next at 0.93)."""
+    line = stakes.next_line
+    if stakes.good != 1 or line is None or stakes.top - line.expected_score < ONLY_DROP:
+        return False
+    return stakes.top < WON or line.expected_score < WON
+
+
 def stakes_words(board: chess.Board, stakes: Stakes, opening: str | None) -> str | None:
     """The stakes as the first hint says them."""
     kind = stakes.kind
@@ -402,7 +411,11 @@ def stakes_words(board: chess.Board, stakes: Stakes, opening: str | None) -> str
                     "You're in check, and there is only one legal move -- it does not save the game"
                 )
             return "You're in check, and there is only one legal move"
-        if stakes.good == 1 and stakes.next_line is not None:
+        if stakes.top < LOST:
+            # "More than one way out is fine" was said of a lost king, every way out within a
+            # hair of the best because all of them lose (the facts audit, 2026-10-01).
+            return "You're in check and losing; the best way out makes them work for it"
+        if _only(stakes):
             if stakes.top >= WON:
                 return (
                     "You're in check but winning, and only one way out keeps it that way: "
@@ -421,8 +434,7 @@ def stakes_words(board: chess.Board, stakes: Stakes, opening: str | None) -> str
             return f"This is opening theory{name}; the main moves here are {moves}"
         return f"This is opening theory{name}"
     if kind == "won":
-        line = stakes.next_line
-        if stakes.good == 1 and line is not None and stakes.top - line.expected_score >= ONLY_DROP:
+        if _only(stakes):
             return f"You're winning, but only one move keeps it that way: {_cost(board, stakes)}"
         return None
     if kind == "lost":

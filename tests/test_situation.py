@@ -174,6 +174,24 @@ def test_one_good_move_is_said_in_the_singular() -> None:
     assert said is not None and said.startswith("Only one move keeps the balance here")
 
 
+def test_the_stakes_in_check_say_what_the_lines_bear_out() -> None:
+    # In check and lost: every way out is "within a hair" because all of them lose.
+    board = chess.Board("4k3/8/8/8/8/8/3q4/4K3 w - - 0 1")
+    stakes = situation.Stakes("check", 3, 0.02, None, 2)
+    said = situation.stakes_words(board, stakes, None)
+    assert said is not None and "fine" not in said and "losing" in said
+    # One way out best, the next only 0.09 behind: not "only one way out holds".
+    stakes = situation.Stakes("check", 1, 0.93, _line(["e1f1"], 0.84), 2)
+    said = situation.stakes_words(board, stakes, None)
+    assert said is not None and "only one" not in said
+    stakes = situation.Stakes("check", 1, 0.6, _line(["e1f1"], 0.52), 2)
+    said = situation.stakes_words(board, stakes, None)
+    assert said is not None and "only one" not in said
+    # Winning, the next still winning: "only one move keeps it that way" is false.
+    stakes = situation.Stakes("won", 1, 0.99, _line(["e1f1"], 0.82), 20)
+    assert situation.stakes_words(board, stakes, None) is None
+
+
 def test_their_idea_is_said_only_when_it_changes_something() -> None:
     board = chess.Board()
     assert situation.their_idea_key(board, chess.Move.from_uci("g8f6")) is None
