@@ -2,7 +2,7 @@
 // component through runes. What the old app.js kept in module variables lives here;
 // what it rendered by hand the components derive.
 
-import { connect, panel, put, type LogLine, type Mark, type PanelState } from "./api";
+import { connect, panel, put, restartSidecar, type LogLine, type Mark, type PanelState } from "./api";
 
 export type TermRow = { key: string; count: number; line: LogLine; open: boolean };
 
@@ -29,6 +29,8 @@ const MAX_ROWS = 1500;
 // three games' worth of coach items, and the conversation's turns likewise.
 const MAX_COACH = 200;
 const MAX_CONVO = 400;
+// Refused polls in a row (250 ms apart) before the page says the sidecar is gone.
+const OFFLINE_AFTER = 8;
 export const CHANNELS = ["sys", "vision", "game", "engine", "coach", "voice", "user", "puzzle"] as const;
 
 /** The sizes and switches the player set, remembered across sessions. */
@@ -86,6 +88,9 @@ export class PanelStore {
   listenMode = $state("off");
   pttDown = $state(false);
   connected = $state(false);
+  /** Why the sidecar cannot be reached, when it cannot: the page says so with a Restart. */
+  offline = $state<string | null>(null);
+  private failures = 0;
   cursor = 0;
   private lastCoachTurn: ConvoTurn | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -122,13 +127,40 @@ export class PanelStore {
   }
 
   async start(): Promise<void> {
-    await connect();
+    this.stop();
+    try {
+      await connect();
+    } catch (e) {
+      // The shell could not start the sidecar: said plainly, with a Restart.
+      this.offline = `Couldn't start: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
     this.connected = true;
-    const first = await panel.poll(0);
-    if (first.state) this.state = first.state;
-    if (first.lines) for (const line of first.lines) this.addLine(line);
-    if (first.cursor !== undefined) this.cursor = first.cursor;
+    this.offline = null;
+    this.failures = 0;
+    try {
+      const first = await panel.poll(0);
+      if (first.state) this.state = first.state;
+      if (first.lines) for (const line of first.lines) this.addLine(line);
+      if (first.cursor !== undefined) this.cursor = first.cursor;
+    } catch {
+      /* the tick says so if it stays unreachable */
+    }
     this.tick();
+  }
+
+  /** The sidecar is gone or never started: the shell starts a new one, and the poll resumes. */
+  async restart(): Promise<void> {
+    this.stop();
+    this.offline = "Restarting...";
+    this.cursor = 0;
+    try {
+      await restartSidecar();
+    } catch (e) {
+      this.offline = `Couldn't start: ${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
+    await this.start();
   }
 
   stop(): void {
@@ -146,8 +178,12 @@ export class PanelStore {
       if (res.cursor !== undefined) this.cursor = Math.max(this.cursor, res.cursor);
       if (res.lines) for (const line of res.lines) this.addLine(line);
       if (res.state) this.apply(res.state);
+      this.failures = 0;
+      if (this.offline) this.offline = null;
     } catch {
-      /* the window closing, or the sidecar not ready */
+      // The window closing, a blip, or the sidecar gone: two seconds of refusals say so.
+      this.failures++;
+      if (this.failures >= OFFLINE_AFTER && !this.offline) this.offline = "Sidecoach stopped";
     }
     this.timer = setTimeout(() => this.tick(), 250);
   }
@@ -189,6 +225,8 @@ export class PanelStore {
     // the next puzzles' boards, Tai's Pixel, 2026-09-23).
     if (line.chan === "game" && ((d && d.start_fen) || line.text.startsWith("resync:"))) this.latestMarks = null;
     if (line.chan === "game" && d && d.start_fen && d.kind !== "puzzle") this.addDivider(d.kind === "game" ? "New game" : "New position");
+    // An ask with no coach to answer it (panel.py's _drain_commands): no reply is coming.
+    if (line.chan === "user" && line.text.startsWith("no coach to ask")) this.dropPending();
     if (line.chan === "coach" && d && d.full) this.addCoach(d);
     if (line.chan === "coach" && d && d.review) this.addReview(d);
     if (line.chan === "coach" && d && d.practice) this.coach.push({ kind: "practice", id: nextId++, practice: d.practice });
@@ -315,12 +353,12 @@ export class PanelStore {
     const t = text.trim();
     if (!t) return;
     this.showPending();
-    panel.ask(t);
+    panel.ask(t).catch(() => this.dropPending());
   }
 
   quick(cmd: "hint" | "move" | "line"): void {
     this.showPending();
-    panel[cmd]();
+    panel[cmd]().catch(() => this.dropPending());
   }
 
   setPtt(down: boolean): void {

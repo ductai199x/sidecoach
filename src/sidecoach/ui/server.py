@@ -277,8 +277,10 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         return {"ok": True, "path": engine.dump()}
 
     @app.get("/api/poll")
-    def poll(since: int = 0) -> dict[str, Any]:
-        return api.poll(since)
+    def poll(since: int = 0, lines: int = 1) -> dict[str, Any]:
+        # `lines=0`: the state alone (the captions' window reads no log lines, four times a
+        # second for the whole session).
+        return api.poll(since if lines else 2**62)
 
     @app.post("/api/start")
     def start() -> dict[str, bool]:
@@ -287,6 +289,17 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     @app.post("/api/stop")
     def stop() -> dict[str, bool]:
         return {"ok": api.stop()}
+
+    @app.post("/api/shutdown")
+    def shutdown() -> dict[str, bool]:
+        """The shell is quitting: stop the session and end the server, so its close (the
+        last game's review, the profile, Stockfish) runs before the process goes. The
+        shell waits a bounded time for the exit, then kills."""
+        engine.stop()
+        exit_server = getattr(app.state, "exit_server", None)
+        if exit_server is not None:
+            exit_server()
+        return {"ok": exit_server is not None}
 
     @app.post("/api/hint")
     def hint() -> dict[str, bool]:
@@ -1202,7 +1215,9 @@ def run_server(
             webbrowser.open(url)
     try:
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-        uvicorn.Server(config).run(sockets=[sock])
+        uv = uvicorn.Server(config)
+        app.state.exit_server = lambda: setattr(uv, "should_exit", True)
+        uv.run(sockets=[sock])
     finally:
         with contextlib.suppress(Exception):
             close()

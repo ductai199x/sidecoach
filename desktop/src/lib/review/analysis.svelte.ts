@@ -178,8 +178,10 @@ export class AnalysisDesk {
 
   setEngine(on: boolean): void {
     this.engineOn = on;
-    if (!on) this.lines = null;
-    else void this.read(false);
+    if (!on) {
+      this.lines = null;
+      this.thinking = false;
+    } else void this.read(false);
   }
 
   private add(parent: number, uci: string, san: string, fen: string): number {
@@ -215,9 +217,10 @@ export class AnalysisDesk {
     // The engine asked once the board stays: stepping through quickly searches only where it stops.
     this.thinking = true;
     await new Promise((r) => setTimeout(r, LINES_WAIT_MS));
-    if (!still()) return;
+    // The engine turned off meanwhile: no lines land, no arrow, no bar.
+    if (!still() || !this.engineOn) return;
     const got = await this.room(() => this.api.lines(fen)).catch(() => null);
-    if (!still()) return;
+    if (!still() || !this.engineOn) return;
     this.thinking = false;
     if (got?.ok) this.lines = got;
     else {

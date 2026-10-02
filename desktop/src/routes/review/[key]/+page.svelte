@@ -198,7 +198,8 @@
   // Analysing, the bar is the engine's on the board's position (as it was, while it thinks).
   let analysisBar = $state<{ score: number; eval: { cp: number | null; mate: number | null; result: null } } | null>(null);
   $effect(() => {
-    if (analysisLines?.white_score != null && analysisLines.lines[0])
+    if (!analysis.engineOn) analysisBar = null; // the engine off: no bar of its old verdict
+    else if (analysisLines?.white_score != null && analysisLines.lines[0])
       analysisBar = { score: analysisLines.white_score, eval: { ...analysisLines.lines[0].eval, result: null } };
   });
   const barScore = $derived(view === "analysis" ? (analysisBar?.score ?? 0.5) : line || retry ? whiteBefore : (graph[ply] ?? 0.5));
@@ -482,7 +483,9 @@
   }
 
   function onKey(e: KeyboardEvent): void {
-    if (!room || room.status !== "ready" || (e.target as HTMLElement)?.tagName === "INPUT") return;
+    // Not while typing or choosing in a field, and not a browser shortcut (Ctrl+F finds).
+    if (!room || room.status !== "ready" || ["INPUT", "TEXTAREA", "SELECT"].includes((e.target as HTMLElement)?.tagName)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (view === "analysis") {
       if (e.key === "ArrowRight") { e.preventDefault(); analysis.step(1); }
       else if (e.key === "ArrowLeft") { e.preventDefault(); analysis.step(-1); }
@@ -614,8 +617,8 @@
   }
 
   async function open(): Promise<void> {
-    await connect();
-    const opened = await api.open();
+    const opened = await connect().then(() => api.open()).catch(() => null);
+    if (!opened) { failure = "The game could not be opened."; return; }
     if (!opened.ok) { failure = opened.error || "There is no such game."; return; }
     voiceReady = !!opened.voice;
     if (opened.state) take(opened.state);
@@ -626,11 +629,12 @@
   async function reviewAt(strength: string): Promise<void> {
     if (!room || room.strength === strength) return;
     stopLine();
-    const opened = await api.open(strength);
-    if (!opened.ok || !opened.state) return;
+    const opened = await api.open(strength).catch(() => null);
+    if (!opened?.ok || !opened.state) return;
     room = null;
     view = "summary";
     ply = 0;
+    playIndex = 0; // the new analysis plays the game out from its start, not from 100 %
     take(opened.state);
     poll();
   }
@@ -651,7 +655,8 @@
 
   async function leave(): Promise<void> {
     closed = true;
-    await api.close();
+    // A close the sidecar never got still leaves: the room ends with the page's beacon anyway.
+    await api.close().catch(() => {});
     window.close();
     if (history.length > 1) history.back();
   }

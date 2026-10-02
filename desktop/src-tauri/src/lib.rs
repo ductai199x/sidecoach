@@ -295,11 +295,52 @@ fn start_sidecar(app: &AppHandle, state: &Sidecar) -> Result<u16, String> {
     Ok(port)
 }
 
+/// How long a quit waits for the sidecar to close by itself (the session's end: the last
+/// game's review and profile, Stockfish) before it is killed.
+const STOP_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Ask the sidecar to end itself: one POST to its shutdown route; true on a 200.
+fn ask_shutdown(port: u16, token: &str) -> bool {
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(mut stream) =
+        TcpStream::connect_timeout(&addr.parse().expect("address"), Duration::from_millis(500))
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let request = format!(
+        "POST /api/shutdown HTTP/1.0\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = [0u8; 64];
+    let n = stream.read(&mut head).unwrap_or(0);
+    let text = String::from_utf8_lossy(&head[..n]);
+    text.starts_with("HTTP/1.") && text.contains(" 200")
+}
+
 fn stop_sidecar(app: &AppHandle, state: &Sidecar) {
     if let Some(mut child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
+        // An orderly end first, so the sidecar's own close runs; a bounded wait; then
+        // the kill for a sidecar that hangs or never served.
+        let port = *state.port.lock().unwrap();
+        let asked = port.is_some_and(|p| ask_shutdown(p, &state.token));
+        let started = Instant::now();
+        let mut exited = false;
+        while asked && started.elapsed() < STOP_TIMEOUT {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !exited {
+            let _ = child.kill();
+        }
         let _ = child.wait();
-        // The kill skips the sidecar's own cleanup; its lock file names a dead process.
+        // A kill skips the sidecar's own cleanup; its lock file names a dead process.
+        // (The sidecar removes its own lock when it closes in order.)
         if let Some(dir) = data_dir(app).or_else(|| repo_root().map(|r| r.join("data"))) {
             let _ = std::fs::remove_file(dir.join("panel.lock"));
         }
@@ -336,6 +377,25 @@ fn sidecar_status(state: State<'_, Sidecar>) -> SidecarStatus {
         port: *state.port.lock().unwrap(),
         error: state.error.lock().unwrap().clone(),
     }
+}
+
+/// The page found the sidecar gone (or it never started) and the player pressed Restart:
+/// what is left of the old one goes, and a new one starts. Returns at once; the page waits
+/// through `sidecar_status` for the new port or the error.
+#[tauri::command]
+fn restart_sidecar(app: AppHandle, state: State<'_, Sidecar>) {
+    // Cleared before the answer, so the page's wait sees only the new sidecar; with no port
+    // the old one is not asked to close but killed (it is gone or not answering).
+    *state.port.lock().unwrap() = None;
+    *state.error.lock().unwrap() = None;
+    std::thread::spawn(move || {
+        let state = app.state::<Sidecar>();
+        stop_sidecar(&app, &state);
+        if let Err(err) = start_sidecar(&app, &state) {
+            eprintln!("sidecar: {err}");
+            *state.error.lock().unwrap() = Some(err);
+        }
+    });
 }
 
 /// The splash screen has shown the warm-up through (or was dismissed): the main window
@@ -650,6 +710,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
             sidecar_status,
+            restart_sidecar,
             splash_done,
             sidecar_token,
             data_dir_command,

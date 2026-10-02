@@ -60,7 +60,6 @@
   let movesTimer: ReturnType<typeof setTimeout> | null = null;
   let clickTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let cursor = 0;
   let alive = true;
 
   // ---- the words -------------------------------------------------------------------------
@@ -554,8 +553,8 @@
   async function pollOnce(): Promise<void> {
     if (!alive) return;
     try {
-      const r = await panel.poll(cursor);
-      cursor = r.cursor ?? cursor;
+      // The state only: the box reads no log lines, and asks four times a second all session.
+      const r = await panel.pollState();
       if (r.state) take(r.state);
     } catch { /* the sidecar restarting: asked again */ }
     pollTimer = setTimeout(pollOnce, 250);
