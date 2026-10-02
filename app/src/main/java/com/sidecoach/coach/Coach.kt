@@ -1554,6 +1554,34 @@ class Speaker(
 
     private object Stop
 
+    /**
+     * The providers replaced mid-session: their calls still count (`Speaker._retired`).
+     */
+    private val retired = ArrayList<LLMProvider>()
+
+    /** Every provider this Speaker has used, each once. */
+    private fun providers(): List<LLMProvider> =
+        (listOfNotNull(provider, routineProvider, verifier) + synchronized(retired) { retired.toList() })
+            .distinctBy { System.identityHashCode(it) }
+
+    /**
+     * A new model mid-game: the next call goes to it; the old ones are kept, for what they
+     * were paid. `Speaker.replace_providers`.
+     */
+    fun replaceProviders(provider: LLMProvider, routineProvider: LLMProvider? = null, verifier: LLMProvider? = null) {
+        synchronized(retired) { retired.addAll(providers()) }
+        this.provider = provider
+        this.routineProvider = routineProvider ?: provider
+        this.verifier = verifier
+    }
+
+    /**
+     * The model-call ledgers of every provider used, each once: the spend before a model
+     * change, and a verifier's on another endpoint, included. `Speaker.usages`.
+     */
+    fun usages(): List<com.sidecoach.llm.Usage> =
+        providers().mapNotNull { com.sidecoach.llm.usageOf(it) }.distinctBy { System.identityHashCode(it) }
+
     /** Counted down when the Speaker closes: a rate limit's wait ends with it. */
     private val closed = java.util.concurrent.CountDownLatch(1)
 

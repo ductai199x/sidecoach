@@ -251,7 +251,7 @@ class OpenAICompatProvider(
      * The session's tokens over every call, shared with the provider's copies at other
      * efforts: one figure for the panel.
      */
-    val usage: Usage = usage ?: Usage()
+    val usage: Usage = (usage ?: Usage()).also { if (it.model == null) it.model = model }
 
     private val headers: Map<String, String> =
         if (apiKey != null) mapOf("Authorization" to "Bearer $apiKey") else emptyMap()

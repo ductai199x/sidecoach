@@ -122,6 +122,31 @@ class SpeakerCallsTest {
         assertEquals(0, refused.usage.calls)
     }
 
+    /**
+     * A model changed mid-session and a verifier on its own endpoint: every ledger still counts,
+     * each priced as its own model (`test_replaced_providers_are_counted_and_closed`,
+     * `test_each_ledger_is_priced_as_its_own_model`).
+     */
+    @Test
+    fun replacedProvidersAreCountedAndEachLedgerPricedAsItsModel() {
+        fun named(model: String) = OpenAICompatProvider(
+            "x", "http://h/v1", model, transport = Scripted(mutableListOf(), okReply),
+        )
+        val first = named("local-model")
+        val verifier = named("gpt-5.6-luna")
+        val second = named("local-model")
+        val speaker = Speaker(first, verifier = verifier)
+        first.chat("s", listOf(ChatMessage("user", "hi")))
+        verifier.usage.record(mapOf("prompt_tokens" to 1_000_000, "completion_tokens" to 0))
+        speaker.replaceProviders(second)
+        second.chat("s", listOf(ChatMessage("user", "hi")))
+        assertEquals(3, speaker.usages().sumOf { it.calls })
+        // The coach's local model has no price; the verifier's luna is priced as luna.
+        val luna = com.sidecoach.llm.total(listOf(verifier.usage, verifier.usage), com.sidecoach.llm.LLMSettings(), "local-model")
+        assertEquals(1, luna["calls"])
+        assertEquals(com.sidecoach.llm.KNOWN_PRICES.getValue("gpt-5.6-luna").prompt!!, luna["cost"] as Double, 1e-9)
+    }
+
     /** A model that takes a while a call, and says when it has started one. */
     private class Slow : LLMProvider {
         override val name = "slow"

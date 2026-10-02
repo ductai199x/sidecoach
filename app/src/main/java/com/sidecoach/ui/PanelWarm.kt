@@ -12,8 +12,8 @@ import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.llm.OpenAICompatProvider
 import com.sidecoach.llm.combine
 import com.sidecoach.llm.modelOf
-import com.sidecoach.llm.pricesFor
-import com.sidecoach.llm.usageOf
+import com.sidecoach.llm.Usage
+import com.sidecoach.llm.total
 import com.sidecoach.vision.BoardDetect
 import com.sidecoach.vision.BoardTracker
 import com.sidecoach.vision.CellEmbedder
@@ -537,15 +537,15 @@ object PanelWarm {
      * there is no coach. `_health`'s `llm`, asked once a second with the rest of the strip.
      */
     fun usage(runner: CoachRunner?): Map<String, Any?>? {
-        val provider = runner?.coach?.speaker?.provider
-        val usage = usageOf(provider) ?: return null
-        val prices = pricesFor(SettingsStore(appContext).llm(), modelOf(provider))
-        val ledgers = ArrayList<Map<String, Any?>>()
-        ledgers.add(usage.summary(prices))
-        runCatching { for (room in PuzzleRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(room.summary(prices)) }
+        // Every ledger: the models replaced mid-session and a verifier on its own endpoint
+        // included, each priced as its own model (`_health`).
+        val speaker = runner?.coach?.speaker
+        val ledgers = ArrayList<Usage>(speaker?.usages().orEmpty())
+        runCatching { ledgers.addAll(PuzzleRooms.sharedOrNull()?.usages().orEmpty()) }
         // The reviews' words count in the strip with the game's (`engine.extra_usage`).
-        runCatching { for (words in ReviewRooms.sharedOrNull()?.usages().orEmpty()) ledgers.add(words.summary(prices)) }
-        return combine(ledgers)
+        runCatching { ledgers.addAll(ReviewRooms.sharedOrNull()?.usages().orEmpty()) }
+        if (ledgers.isEmpty()) return null
+        return total(ledgers, SettingsStore(appContext).llm(), modelOf(speaker?.provider))
     }
 
     /** `panel.VOICE_RELOAD`: the voice settings that need a new voice, not a changed one. */
