@@ -728,6 +728,58 @@ DRAFT = [
         "The line goes e4 e5 Nf3 Nc6 Bb5: your bishop on b5 pins nothing yet, but Nc6 is met.",
         None, (), ("Bb5:", "your bishop on b5:", ...), id="the-line-without-its-frames",
     ),
+    # Attacks, defences, pins, forks and mates said of the present were never checked: "your
+    # knight on f6 attacks their queen on d1" passed (the deep prompt review, 2026-10-01).
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "Your knight on f6 attacks their queen on d1.", B, (),
+        ("the knight on f6 does not attack d1",), id="false-attack",
+    ),
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "Your knight on f6 attacks their pawn on e4, which their knight on c3 defends.", B, (), (),
+        id="true-attack-and-defence",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Their queen on g5 forks your knight on e5 and the pawn on g2.", W, (), (),
+        id="true-fork",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Their queen on g5 forks your knight on e5 and your bishop on c4.", W, (),
+        ("the queen on g5 does not attack e5 and c4",), id="false-fork",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Your bishop on c4 pins the pawn on f7.", W, (),
+        ("the bishop on c4 does not pin f7",), id="false-pin",
+    ),
+    pytest.param(
+        "rnbqk2r/pppp1ppp/4pn2/8/1bPP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
+        "Their bishop on b4 pins your knight on c3 to the king, and your knight on c3 is "
+        "defended by the pawn on b2.", W, (), (), id="true-pin-and-defended-by",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Your knight on e5 is defended by the bishop on c4.", W, (),
+        ("the bishop on c4 does not defend e5",), id="false-defended-by",
+    ),
+    pytest.param(
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "Qxf7 is mate: there is mate in one.", W, (), (), id="true-mate",
+    ),
+    pytest.param(
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "Bxf7 is mate.", W, (), ("Bxf7 is not mate",), id="false-mate",
+    ),
+    # A plan, a condition or a line is about another moment, and left alone.
+    pytest.param(
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "Bxf7+ first would only lose time; if they slip, Bxf7 is mate later. Once your knight "
+        "on g1 comes out, your knight on g1 attacks nothing yet.", W, (), (),
+        id="not-the-present",
+    ),
 ]  # fmt: skip
 
 
