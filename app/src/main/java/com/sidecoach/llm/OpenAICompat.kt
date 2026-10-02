@@ -128,7 +128,12 @@ private fun answered(turn: ToolRound): List<Pair<ToolCall, String>> {
  * a name not found or a connect timeout.
  */
 fun lostAfterSending(exc: java.io.IOException): Boolean = when (exc) {
-    is java.net.ConnectException, is java.net.UnknownHostException -> false
+    // Never connected: refused, no route, no port, no local address -- the desktop's ConnectError,
+    // which is no `_SENT_LOST`. As SocketExceptions they were counted as billed (the round-3
+    // parity audit).
+    is java.net.ConnectException, is java.net.UnknownHostException,
+    is java.net.NoRouteToHostException, is java.net.PortUnreachableException,
+    is java.net.BindException -> false
     is java.net.SocketTimeoutException -> !(exc.message ?: "").contains("connect", ignoreCase = true)
     is java.net.SocketException, is java.io.EOFException -> true
     else -> false

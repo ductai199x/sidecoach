@@ -135,6 +135,10 @@ class SpeakerCallsTest {
         val refused = provider(Scripted(mutableListOf(ConnectException("Connection refused")), okReply))
         runCatching { refused.chat("sys", listOf(ChatMessage("user", "hi"))) }
         assertEquals(0, refused.usage.calls)
+        // Never connected either, though a SocketException: no route to the host.
+        val unrouted = provider(Scripted(mutableListOf(java.net.NoRouteToHostException("No route")), okReply))
+        runCatching { unrouted.chat("sys", listOf(ChatMessage("user", "hi"))) }
+        assertEquals(0, unrouted.usage.calls)
     }
 
     /**
