@@ -6,6 +6,7 @@ import com.sidecoach.events.Line
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,7 +57,11 @@ class AllowedTest {
         assertFalse("mixed" in text)
     }
 
-    // aQuietLineAllowsNothingToSay: coach.json's test_idea case 4k3/8/8/8/8/8/4P3/4K3 b: allowed (null) held by CoachPrimitivesTest.
+    @Test
+    fun aQuietLineAllowsNothingToSay() {
+        val fen = "4k3/8/8/8/8/8/4P3/4K3 b - - 0 1"
+        assertNull(IdeaWords.allowed(Board(fen), analysis(fen, "Kd7 Kd2 Kd6 Kd3", score = 0.5), "e2"))
+    }
 
     /** `test_the_lesson_says_what_the_move_allowed`. */
     @Test
@@ -73,8 +78,21 @@ class AllowedTest {
         assertTrue(text, "After Be3, Qxd1 wins your queen." in text)
     }
 
-    // The "a win far down the line" case of `test_a_line_is_read_as_far_as_an_ear_can_follow` in tests/test_rungs.py.
-    // aWinFarDownTheLineIsNotReadOutMoveByMove: coach.json's test_idea case rnbqkb1r/pppp4 (h4): goal, gain_ply, won and why held by CoachPrimitivesTest.
+    /** The "a win far down the line" case of `test_a_line_is_read_as_far_as_an_ear_can_follow` in tests/test_rungs.py. */
+    @Test
+    fun aWinFarDownTheLineIsNotReadOutMoveByMove() {
+        // g01, 7.Be3 for 7.h4: the knight falls on the seventh move of the line.
+        val fen = "rnbqkb1r/pppp4/4p1p1/5n2/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 7"
+        val board = Board(fen)
+        val line = "h4 d5 g4 Nxh4 Bg5 Be7 Bxh4 Bxh4 g5 Nc6 Rxh4 Rxh4 Nxh4 Qxg5"
+        val idea = IdeaReader.read(board, analysis(fen, line, score = 0.9))
+        assertEquals("win", idea.goal)
+        assertTrue(idea.gainPly > IdeaWords.LATER_READ)
+        assertEquals(
+            "h4: you win ${idea.won}, a few moves on",
+            IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)),
+        )
+    }
 
     /**
      * The g06 half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`

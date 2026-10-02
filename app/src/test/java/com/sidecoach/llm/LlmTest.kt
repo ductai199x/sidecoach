@@ -636,9 +636,29 @@ class LlmTest {
         assertNull(stopped.stats["prompt_tokens"])
     }
 
-    // `test_an_error_in_a_responses_stream_raises` (tests/test_llm_openai_compat.py) is the
-    // fixture's: its streams "error event", "cut off" and "refused" and its chat "failed" are the
-    // same replies, their exceptions held word for word by theWireAndTheLedgerMatchThePython.
+    /** `test_an_error_in_a_responses_stream_raises` in tests/test_llm_openai_compat.py. */
+    @Test
+    fun anErrorInAResponsesStreamRaises() {
+        val failing = events(
+            """{"type": "response.created", "response": {"status": "in_progress"}}""",
+            """{"type": "error", "code": "rate_limit_exceeded", "message": "slow down"}""",
+        )
+        val said = raised { responses(answering(listOf(200 to failing))).chatStream("sys", USER) { true } }
+        assertTrue(said, "rate_limit_exceeded: slow down" in said)
+        val refused = raised { responses(answering(listOf(400 to "bad tools"))).chatStream("sys", USER) { true } }
+        assertTrue(refused, refused.startsWith("400: bad tools"))
+        // Cut off before the response completed: an error, not a reply that ends mid-sentence.
+        val cut = events(
+            """{"type": "response.created", "response": {"status": "in_progress"}}""",
+            """{"type": "response.output_text.delta", "output_index": 0, "delta": "About"}""",
+        )
+        val dropped = raised { responses(answering(listOf(200 to cut))).chatStream("sys", USER) { true } }
+        assertTrue(dropped, "stream ended before the response completed" in dropped)
+        // A failed response read whole raises too, as the stream's failure does.
+        val failed = """{"status": "failed", "error": {"code": "server_error", "message": "try again"}}"""
+        val whole = raised { responses(answering(listOf(200 to failed))).chat("sys", USER) }
+        assertTrue(whole, "failed: server_error: try again" in whole)
+    }
 
     /**
      * A tool-heavy turn may open with a preamble (phase "commentary"): no part of the reply, and
@@ -742,6 +762,14 @@ class LlmTest {
             for (line in text.split("\n")) if (!onLine(line)) break
             return HttpReply(status, "")
         }
+    }
+
+    /** What [block] raised, as a provider raises (RuntimeError on the desktop); "" when nothing was. */
+    private fun raised(block: () -> Unit): String = try {
+        block()
+        ""
+    } catch (exc: RuntimeException) {
+        exc.message ?: ""
     }
 
     /** The rounds of calls as the generator recorded them (`round_json`). */

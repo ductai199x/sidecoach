@@ -10,6 +10,7 @@ import com.sidecoach.events.Analysis
 import com.sidecoach.events.Line
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -51,6 +52,8 @@ class RungsTest {
         )
     }
 
+    private val describe = IdeaWords.Describe(::describeTactic)
+
     /** `test_two_knights_are_your_knights`. */
     @Test
     fun twoKnightsAreYourKnights() {
@@ -78,8 +81,15 @@ class RungsTest {
         assertNull(facts.plan)
     }
 
-    // The first half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`.
-    // aPawnAttackedGivesWayToTheMovesOwnIdea: coach.json's test_idea case 4k3/8/8/4p3/8/8/3P4/4K3: facts.plan held by CoachPrimitivesTest.
+    /** The first half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`. */
+    @Test
+    fun aPawnAttackedGivesWayToTheMovesOwnIdea() {
+        // d4 strikes at the pawn on e5; the pawn ending's point is the passed pawn it makes.
+        val fen = "4k3/8/8/4p3/8/8/3P4/4K3 w - - 0 1"
+        val facts = factsFromAnalysis(Board(fen), analysis(fen, "d4 Kd7"))
+        assertNotEquals(Plans.THREAT_NAME.getValue("win"), facts.plan)
+        assertNotNull(facts.plan)
+    }
 
     /** The second half of `test_the_move_s_own_idea_leads_and_the_focus_rung_names_no_stray_feature`. */
     @Test
@@ -107,19 +117,65 @@ class RungsTest {
         assertNull(bestMoveIdea(board, Move.fromUci("c7c8q"), WHITE, phase = "endgame"))
     }
 
-    // The "a win a move later" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`.
-    // aWinThatComesAMoveLaterIsReadAsOne: coach.json's test_idea case r1bq1rk1/2pnbppp (g04): goal, gain_ply, why and nudge held by CoachPrimitivesTest.
+    /** The "a win a move later" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`. */
+    @Test
+    fun aWinThatComesAMoveLaterIsReadAsOne() {
+        // Tai's game g04, 12.Nxd4 for 12.O-O: castling first, and the pawn falls after it.
+        val fen = "r1bq1rk1/2pnbppp/p2p4/1p1P4/3pP3/1B3P2/PPP1N1PP/R1BQK2R w KQ - 1 12"
+        val board = Board(fen)
+        val idea = IdeaReader.read(board, analysis(fen, "O-O Nc5 Nxd4 Bd7 c3 Nxb3 axb3 a5", score = 0.67))
+        assertEquals("win", idea.goal)
+        assertEquals(2, idea.gainPly)
+        assertEquals("O-O, and after Nc5, Nxd4; you win a pawn", IdeaWords.why(idea, board, describe))
+        assertEquals("What has to happen first, before you can take it?", IdeaWords.nudge(idea))
+    }
 
-    // `test_the_right_capture_with_the_other_piece_is_taught_as_that`.
-    // theRightCaptureWithTheOtherPieceIsTaughtAsThat: coach.json's test_idea case r3k2r/p1p1bppp (g03): its lessons_played text held by CoachPrimitivesTest.
+    /** `test_the_right_capture_with_the_other_piece_is_taught_as_that`. */
+    @Test
+    fun theRightCaptureWithTheOtherPieceIsTaughtAsThat() {
+        // Tai's game g03, 13.Raxd1 for 13.Rexd1: he took the queen back, with the other rook.
+        val fen = "r3k2r/p1p1bppp/2p5/4p3/2b1P3/2N1B2P/PPP2PP1/R2qR1K1 w kq - 0 13"
+        val board = Board(fen)
+        val facts = factsFromAnalysis(board, analysis(fen, "Rexd1 Bb4 Na4 Be2", score = 0.54))
+        val text = lessonTemplate(
+            facts, "Rexd1", "That one cost you: Rexd1 was better", board = board, played = "a1d1",
+        )
+        assertEquals(
+            "That one cost you: Rexd1 was better -- take with the rook on e1, not the one on a1. " +
+                "When two pieces can take, ask which you want to keep where it is.",
+            text,
+        )
+    }
 
-    // Now `test_the_lesson_says_what_the_move_allowed` in tests/test_allowed.py.
-    // aLessonSaysItOfTheBetterMove: coach.json's test_idea case r2qk2r/...R1BQR1K1: its lessons text held by CoachPrimitivesTest.
+    /** Now `test_the_lesson_says_what_the_move_allowed` in tests/test_allowed.py. */
+    @Test
+    fun aLessonSaysItOfTheBetterMove() {
+        // Tai's game g03, 12.Be3 for 12.Qg4: "Qg4 was better -- goes after..." lacked its "it".
+        val fen = "r2qk2r/p1p1bppp/2p5/4p3/2b1P3/2N4P/PPP2PP1/R1BQR1K1 w kq - 0 12"
+        val board = Board(fen)
+        val facts = factsFromAnalysis(board, analysis(fen, "Qg4 g6 b3 Be6", score = 0.6))
+        val text = lessonTemplate(facts, "Qg4", "That one cost you: Qg4 was better")
+        assertTrue(text, text.startsWith("That one cost you: Qg4 was better -- it goes after their pawn on g7"))
+    }
 
-    // The "a long mate" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`.
-    // aLongMateIsReadAsFarAsAnEarCanFollow: coach.json's test_idea case 8/k6n/2K3NP (mate in 12): words.why held by CoachPrimitivesTest.
+    /** The "a long mate" case of `test_a_line_is_read_as_far_as_an_ear_can_follow`. */
+    @Test
+    fun aLongMateIsReadAsFarAsAnEarCanFollow() {
+        // Tai's game g02, 53.Kc5 for 53.b5: a mate in twelve, sixteen plies of it.
+        val fen = "8/k6n/2K3NP/8/1P4P1/2P5/8/8 w - - 1 53"
+        val board = Board(fen)
+        val line = "b5 Ka8 Ne5 Nf8 b6 Ne6 b7+ Ka7 b8=Q+ Kxb8 h7 Nd8+ Kb6 Nf7 Nxf7 Kc8"
+        val idea = IdeaReader.read(board, analysis(fen, line, score = 1.0, mate = 12))
+        assertEquals("b5 forces mate: b5 Ka8 Ne5 Nf8 b6, and mate follows", IdeaWords.why(idea, board, describe))
+    }
 
-    // `test_a_forcing_capture_points_at_what_it_takes`.
-    // aForcingCapturePointsAtWhatItTakes: coach.json's test_idea case r1bqk2r/2p1bppp: facts.target held by CoachPrimitivesTest.
-
+    /** `test_a_forcing_capture_points_at_what_it_takes`. */
+    @Test
+    fun aForcingCapturePointsAtWhatItTakes() {
+        // Tai's game g04, 8.d5 for 8.dxe5: the focus was "your king is still in the centre".
+        val fen = "r1bqk2r/2p1bppp/p1np1n2/1p2p3/3PP3/1BN2N2/PPP2PPP/R1BQK2R w KQkq - 0 8"
+        val board = Board(fen)
+        val facts = factsFromAnalysis(board, analysis(fen, "dxe5 dxe5 Qxd8+ Bxd8", score = 0.53))
+        assertEquals("their pawn on e5", facts.target)
+    }
 }

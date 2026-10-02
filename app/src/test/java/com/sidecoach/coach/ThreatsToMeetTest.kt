@@ -6,7 +6,9 @@ import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -90,9 +92,28 @@ class ThreatsToMeetTest {
         )
     }
 
-    // aQuietMoveThatPreparesToWinTheQueenIsAThreatToMeet: coach.json's test_idea case SHORT_TIMMAN (Nd4): goal, prepared, threatened and the words held by CoachPrimitivesTest.
+    @Test
+    fun aQuietMoveThatPreparesToWinTheQueenIsAThreatToMeet() {
+        val board = Board(SHORT_TIMMAN)
+        val idea = IdeaReader.read(board, analysis(SHORT_TIMMAN, "Nd4 Nxd4 Qxd4 Re1", listOf("f1d1")))
+        assertEquals("defend", idea.goal)
+        assertTrue(idea.prepared)
+        assertEquals("your queen", idea.threatened)
+        assertEquals("your opponent is preparing to win material: stop it before it comes", IdeaWords.goal(idea))
+        assertEquals("their rook on f1, one move from winning your queen on d8", IdeaWords.target(idea, board))
+        assertEquals(
+            "Nd4 meets their idea: Rd1, and then Rxd8",
+            IdeaWords.why(idea, board, IdeaWords.Describe(::describeTactic)),
+        )
+    }
 
-    // aBestMoveThatLetsThePreparedThreatComeIsNoDefence: coach.json's test_idea case SHORT_TIMMAN (Kh8 Rd1): idea.goal held by CoachPrimitivesTest.
+    @Test
+    fun aBestMoveThatLetsThePreparedThreatComeIsNoDefence() {
+        // Kh8 leaves Rd1 and Rxd8 as strong as before: whatever the move is for, it is not that.
+        val board = Board(SHORT_TIMMAN)
+        val idea = IdeaReader.read(board, analysis(SHORT_TIMMAN, "Kh8 Rd1", listOf("f1d1")))
+        assertNotEquals("defend", idea.goal)
+    }
 
     companion object {
         /**
