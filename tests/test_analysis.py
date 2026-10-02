@@ -1335,18 +1335,23 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
     assert all(e.ply <= 3 for e in analyses)
 
 
-class _SlowEngine(FakeEngine):
-    """A fake engine that takes a moment per search and stops when interrupted, as a real
-    one does (`Engine.interrupt`)."""
+class _HeldFullEngine(FakeEngine):
+    """A fake engine whose first full-depth search runs until `interrupt` stops it, as a real
+    one's does (`Engine.interrupt`); every other search, the early depth's included, answers at
+    once. A test acts mid-measure by this state, not by how long a search takes."""
+
+    def __init__(self, answers: dict[str, list[Line]], full: int) -> None:
+        super().__init__(answers)
+        self.full = full
+        self.held = False
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
-        end = time.monotonic() + 0.3
-        while time.monotonic() < end:
-            if self._interruptible and self._stopped.is_set():
-                raise Interrupted
-            time.sleep(0.005)
+        if self._interruptible and kwargs.get("depth") == self.full and not self.held:
+            self.held = True
+            self._stopped.wait(5)  # a safety net only: the test stops it
+            raise Interrupted
         return super().analyse(board, **kwargs)
 
 
@@ -1357,7 +1362,12 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
     on the same game at ply 0 it passed as the new position's -- the profile filed White's
     analysis for a position with Black to move (the state review, 2026-10-01). The engine
     lets go of what it is on at a reset, and the glue passes on nothing of a position the
-    game no longer stands on, nor of another game."""
+    game no longer stands on, nor of another game.
+
+    The white reading's full measure is held until something stops it (`_HeldFullEngine`):
+    the test acts mid-measure by the engine's state, not by how long a search takes (it
+    took 0.3 s a search, and a slow moment between the measure's start and the drain
+    failed it)."""
     from sidecoach.cli import _Assessing
     from sidecoach.config import Settings
     from sidecoach.events import GameStarted, Resync, Side
@@ -1365,14 +1375,15 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
     white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
     black = white.replace(" w ", " b ")
     assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
-    analyser = Analyser(GameAnnotator(engine=_SlowEngine({}), depth=18, with_threats=False))
+    engine = _HeldFullEngine({}, full=18)
+    analyser = Analyser(GameAnnotator(engine=engine, depth=18, with_threats=False))
     assessing.analyser = analyser
     analyser.start()
     try:
         assessing.submit(
             GameStarted(game_id="g", user_side=Side.WHITE, start_fen=white, kind="position")
         )
-        assert _until(lambda: analyser._looking, 5), "the full measure never began"
+        assert _until(lambda: engine.held, 5), "the full measure never began"
         before = assessing.drain()
         assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
         after = assessing.wait(timeout=10)
