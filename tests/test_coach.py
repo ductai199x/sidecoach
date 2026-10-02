@@ -2033,6 +2033,27 @@ def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None
     assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
 
 
+def test_what_to_play_on_their_turn_never_gives_their_move_as_the_players() -> None:
+    """On the opponent's move the engine's best move and line are the opponent's: "what should
+    I play?" told the model "tell them plainly it is Qxf7#", the opponent's mate given as the
+    player's move (the deep prompt review, 2026-10-01)."""
+    for said in ("what should I play?", "what is the best move?", "show me the line"):
+        coach, provider = scripted_coach(["", "", ""])
+        start_game(coach, Side.BLACK)
+        play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        for ts in range(3):  # climb to the move rung
+            coach.ask(said, 9.0 + ts)
+        out = drain(coach)
+        for i in range(len(provider.calls)):
+            directive = directive_of(sent(provider, i))
+            assert "it is the opponent's move" in directive, (said, directive)
+            assert "tell them plainly it is" not in directive
+            assert "They asked to see the line: give it" not in directive
+        texts = [m.text for m in out if getattr(m, "text", None)]
+        assert texts and texts[0].startswith("It's their move"), texts  # the empty reply's
+
+
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
     """The verdict comes first, from the best line alone; the analysis of the position the
     move left about a second later, and with it what the move allowed. The app holds the

@@ -4383,6 +4383,23 @@ class Coach:
             else:
                 directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += f" {NO_FIGURES} Do not comment on anything said earlier."
+        elif (
+            position.board.turn != self.user_colour
+            and not position.board.is_game_over()
+            and (_ASK_LINE.search(said) or _ASK_MOVE.search(said))
+        ):
+            # On the opponent's move the engine's line and best move are the OPPONENT's: "what
+            # should I play?" there told the model to give the player the opponent's best move
+            # as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
+            fallback = their_move_now(position.board, facts)
+            asked = "to see the line" if _ASK_LINE.search(said) else "what to play"
+            directive = (
+                f"They asked {asked}, and it is the opponent's move, not theirs: there is no "
+                "move of theirs to play yet. Say so, then what the opponent threatens now -- "
+                "their best move and what it does, from the engine lines (the opponent's "
+                "move) -- and what the player should be ready for once it is played. One or two "
+                f"sentences, no question. {NO_FIGURES}"
+            )
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             # The line move by move, computed: the only reasons a move of it may be given
             # (4 of the 5 false claims the bench's labellers found were in these answers).
