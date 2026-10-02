@@ -55,11 +55,11 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
             val stoodFor = HashMap<String, MutableList<String>>() // an import -> the watched games it stands for
             for ((was, imported) in twins) stoodFor.getOrPut(imported) { ArrayList() }.add(was)
             for (row in rows) {
-                val review = store.latestReview(row.key)
+                val review = store.bestReview(row.key)
                 // An import not reviewed yet whose watched game was: that review's accuracies
                 // until the import has its own (the review of 2026-10-01: pairing a record that
                 // differs from its import took the game's accuracy away). Not reviewed for that.
-                val shown = review ?: stoodFor[row.key].orEmpty().mapNotNull { store.latestReview(it) }.maxByOrNull { it.reviewedAt }
+                val shown = review ?: stoodFor[row.key].orEmpty().mapNotNull { store.bestReview(it) }.maxByOrNull { it.reviewedAt }
                 val summary = shown?.summary?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
                 games.put(
                     rowJson(row).apply {

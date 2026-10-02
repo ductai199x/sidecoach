@@ -715,8 +715,8 @@ class ReviewRoom(
         fun carryTwins(store: Store, twins: Map<String, String>): List<String> {
             val carried = ArrayList<String>()
             for ((watched, imported) in twins) {
-                if (store.latestReview(imported) != null) continue
-                val old = store.latestReview(watched)
+                if (store.bestReview(imported) != null) continue
+                val old = store.bestReview(watched)
                 val row = Library.find(store, imported)
                 if (old == null || old.version != REVIEW_VERSION || row == null) continue
                 val games = Library.gamesIn(row.pgn)
@@ -832,7 +832,20 @@ class ReviewRooms(
         }
     }
 
-    fun open(key: String, strength: String = "standard"): ReviewRoom? = synchronized(lock) {
+    /**
+     * The game's room at [strength]; with none, at the strongest review saved, else [fallback]
+     * (the phone's own, Fast). It opened at the one strength always: a game reviewed Deep was
+     * reviewed again, its Stats overwritten (the review of 2026-10-01).
+     */
+    fun open(key: String, strength: String? = null, fallback: String = "fast"): ReviewRoom? = synchronized(lock) {
+        val strength = strength ?: run {
+            val store = Store(storePath)
+            try {
+                store.bestReview(key)?.strength?.takeIf { it in GameReview.STRENGTHS }
+            } finally {
+                store.close()
+            }
+        } ?: fallback
         val room = rooms[key]
         if (room != null && room.strength.name == strength && room.reopen()) return room
         val row = row(key) ?: return null

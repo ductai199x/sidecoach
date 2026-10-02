@@ -647,9 +647,15 @@ class Store(val path: File?) {
 
     // ---- Stats: a reviewed game's facts (StatFacts.kt; store.py) ----------------------------------
 
-    /** A game's facts from its review at [strength], in place of any before. `save_stats`. */
+    /**
+     * A game's facts from its review at [strength], in place of any before from a review no
+     * stronger: Stats keeps the strongest review's facts (a Fast look after a Deep review lowered
+     * Stats, the review of 2026-10-01). `save_stats`.
+     */
     fun saveStats(strength: String, game: GameFact, moves: List<MoveFact>) {
         lock.withLock {
+            val kept = rows("SELECT $RANK AS rank FROM stat_games WHERE key = ?", game.key) { it.getInt(0) }.firstOrNull()
+            if (kept != null && kept > (STRENGTH_RANK[strength] ?: 0)) return
             db.beginTransaction()
             try {
                 exec("DELETE FROM stat_moves WHERE key = ?", game.key)
@@ -705,14 +711,16 @@ class Store(val path: File?) {
     }
 
     /**
-     * Each game's latest review whose facts are not kept yet (a watched game its import stands
-     * for needs none once the import's are kept: [statGames]). `reviews_without_stats`.
+     * Each game's strongest review ([bestReview]) whose facts are not kept yet (a watched game
+     * its import stands for needs none once the import's are kept: [statGames]).
+     * `reviews_without_stats`.
      */
     fun reviewsWithoutStats(): List<ReviewRow> = lock.withLock {
         rows(
             "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)" +
                 " AND r.key NOT IN ($STOOD_FOR)" +
-                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)",
+                " AND r.rowid = (SELECT rowid FROM reviews WHERE key = r.key" +
+                " ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1)",
         ) { reviewRow(it) }
     }
 
@@ -745,9 +753,13 @@ class Store(val path: File?) {
         rows("SELECT * FROM reviews WHERE key = ? AND strength = ?", key, strength) { reviewRow(it) }.firstOrNull()
     }
 
-    /** The game's latest review, at whatever strength. */
-    fun latestReview(key: String): ReviewRow? = lock.withLock {
-        rows("SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
+    /**
+     * The game's strongest review (deep, standard, fast), the latest of that strength: the one
+     * the review opens at, Your games shows and Stats counts. The latest was shown, and a Fast
+     * look after a Deep review lowered them all (the review of 2026-10-01). `best_review`.
+     */
+    fun bestReview(key: String): ReviewRow? = lock.withLock {
+        rows("SELECT * FROM reviews WHERE key = ? ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
     }
 
     /** The coach's words on a review's moves, as far as they are prepared. */
@@ -923,6 +935,10 @@ class Store(val path: File?) {
 
         /** A removed game's rows are kept this long, for Undo (the page offers it for seconds). */
         var UNDO_KEEP_S = 600.0
+
+        // The review strengths, weakest first: a stronger review stands for the game. `STRENGTH_RANK`.
+        val STRENGTH_RANK = mapOf("fast" to 1, "standard" to 2, "deep" to 3)
+        private val RANK = "CASE strength " + STRENGTH_RANK.entries.joinToString(" ") { "WHEN '${it.key}' THEN ${it.value}" } + " ELSE 0 END"
 
         /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
         private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"

@@ -378,9 +378,9 @@ class PanelApi(
         }
         return when (rest.substring(slash + 1)) {
             "open" -> {
-                // No strength named: the phone's own, Fast -- its engine is slower (the plan's
-                // depth 14); the desktop's is Standard.
-                val room = rooms.open(key, json.optString("strength", "fast"))
+                // No strength named: the strongest review saved, else the phone's own, Fast --
+                // its engine is slower (the plan's depth 14); the desktop's is Standard.
+                val room = rooms.open(key, json.optString("strength", "").ifEmpty { null })
                     ?: return ok(JSONObject().put("ok", false).put("error", "no game $key in the library"))
                 polled(room, 0, JSONObject().put("ok", true).put("voice", voice != null))
             }

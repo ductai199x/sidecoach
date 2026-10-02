@@ -55,6 +55,29 @@ class StatsReviewTest {
         }
     }
 
+    /**
+     * `test_the_facts_kept_for_stats_are_the_strongest_reviews`: a Fast look after a Deep review
+     * lowered Stats and Your games, and the review opened at the one strength always.
+     */
+    @Test
+    fun statsAndTheReviewKeepTheStrongest() {
+        val store = Store(null)
+        try {
+            store.saveStats("deep", game("a"), listOf(move(1)))
+            store.saveStats("fast", game("a"), listOf(move(1, label = "blunder", loss = 0.4)))
+            assertEquals(listOf("deep"), store.statGames().map { it.strength })
+            assertEquals(0.0, store.statMoves(listOf("a")).single().loss, 0.0)
+            store.saveStats("deep", game("a"), listOf(move(1, label = "inaccuracy", loss = 0.1)))
+            assertEquals("as strong: replaced", 0.1, store.statMoves(listOf("a")).single().loss, 0.0)
+            store.saveReview("b", "deep", 1, 1.0, "{}", null)
+            store.saveReview("b", "fast", 1, 2.0, "{}", null)
+            assertEquals(listOf("b" to "deep"), store.reviewsWithoutStats().map { it.key to it.strength })
+            assertEquals("deep", store.bestReview("b")!!.strength)
+        } finally {
+            store.close()
+        }
+    }
+
     /** `test_work_on_this_waits_for_several_games`. */
     @Test
     fun workOnThisWaitsForSeveralGamesAndCountsMoves() {
