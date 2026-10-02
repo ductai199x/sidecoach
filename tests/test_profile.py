@@ -509,6 +509,19 @@ def test_insights_say_the_biggest_cost_in_the_areas_of_stats() -> None:
     assert not any("biggest cost" in x for x in insights(rows, games=3)), "no area, no line"
 
 
+def test_a_mistake_with_no_cause_is_not_counted_as_a_missed_chance_twice() -> None:
+    """The audit of 2026-10-02: the tactic missed line told a chance's row from a mistake's by
+    the mistake having a cause. A mistake with none -- not classified, or its cause cleared by
+    the player's correction -- was read as a chance's row, and its fork counted as missed a
+    second time ("5 of the 6"). A chance's row is one that counts chances."""
+    rows = [
+        CellRow(None, "fork", "middlegame", 2, 0, 0.4, G3),  # two mistakes, no cause
+        CellRow(causes.MISSED_THREAT, "fork", "middlegame", 1, 0, 0.2, G3),
+        CellRow(None, "fork", "middlegame", 3, 6, 0.0, G3),  # six chances, three missed
+    ]
+    assert "You missed a fork 3 of the 6 times you had one." in insights(rows, games=3)
+
+
 def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> None:
     """One rule: the profiler's snapshot says what Stats puts first, over the same games, and
     says nothing while Stats names nothing; it follows a game's facts when they change."""
