@@ -109,6 +109,27 @@ def test_a_question_about_a_move_asked_the_model_is_not_withheld_by_the_rung() -
     assert "The line, or what happens next" in directive_of(sent(provider))
 
 
+def test_a_question_to_the_ai_charges_no_rule_its_fallback_holds() -> None:
+    """The fallback's principle ("It's a mating attack: their king runs out of squares.") was
+    counted as said for every hint asked of the AI, though the fallback is said only when the
+    reply fails: the rules of thumb were held back for the next messages all the same. Offline,
+    the template is the answer, and its principle is said."""
+    coach, _ = scripted_coach(["Their king is nearly out of squares."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("hint", 8.0)
+    assert [m.text for m in drain(coach)] == ["Their king is nearly out of squares."]
+    assert coach._rules == {} and coach._last_rule is None
+    offline = offline_coach()
+    play_to_scholar(offline)
+    offline.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(offline)
+    offline.ask("hint", 8.0)
+    [said] = drain(offline)
+    assert "their king runs out of squares" in said.text and offline._rules
+
+
 def test_the_offline_coach_keeps_its_keyword_rules() -> None:
     """Offline the words still pick the template and open the rung: the templates are the
     offline coach's. Words the rules miss get the plain hint, as before."""

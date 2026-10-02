@@ -5534,13 +5534,15 @@ class Coach:
             )
             if followup and not asks and not engine_words:
                 fallback = ""  # a nod needs no template: nothing, rather than a hint again
+        fallback, note = self._cool_hint(facts, fallback)
         if not self._offline:
             # The keyword branches above wrote the fallback only -- what is said when the
             # model's reply fails a check on the board -- and used rules of thumb as the
-            # directive's own: undone, and the model is given the guidelines instead.
+            # directive's own: undone, and the model is given the guidelines instead. The
+            # fallback's principle (`_cool_hint`) is undone too: counted here, every hint asked
+            # of the AI held the rules back for RULE_SPACING messages, said or not.
             self._rules, self._last_rule = rules_before
             directive = self._ai_directive(position, level)
-        fallback, note = self._cool_hint(facts, fallback)
         return f"{checks}{directive}{note}", fallback
 
     def _ai_directive(self, position: _Position, level: DisclosureLevel) -> str:
