@@ -78,7 +78,7 @@ object Insights {
     /**
      * Each motif missed often enough, over enough of its chances and games, with the rate it is
      * missed, smoothed as (misses + 1) / (chances + 2) to rank them, in the order its chances
-     * came. The cells without a cause count a motif's chances and, in their errors, the chances
+     * came. The cells that count chances count a motif's chances and, in their errors, the chances
      * missed; a mistake's own motif may be a tactic it allowed, never a chance the player had.
      * `insights.motif_rates`.
      */
@@ -88,7 +88,10 @@ object Insights {
         val games = HashMap<String, MutableSet<String>>()
         for (r in rows) {
             val motif = r.motif ?: continue
-            if (r.cause != null) continue
+            // A chance's row is one that counts chances: a mistake's row has none, with a cause
+            // or without (not classified, or cleared by a correction) -- told apart by the cause,
+            // a mistake with none was counted as missed a second time (the audit of 2026-10-02).
+            if (r.chances == 0) continue
             chances[motif] = (chances[motif] ?: 0) + r.chances
             misses[motif] = (misses[motif] ?: 0) + r.errors
             games.getOrPut(motif) { HashSet() }.addAll(r.games)

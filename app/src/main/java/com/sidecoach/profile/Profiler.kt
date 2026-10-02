@@ -105,7 +105,7 @@ class Profiler(
 
     // The biggest cost (Stats.biggestCost) as of the games it was made from: read again only when
     // a game's facts change, not at every snapshot. `_cost`.
-    private var cost: Pair<List<Triple<String, String, String?>>, org.json.JSONObject?>? = null
+    private var cost: Pair<Pair<String?, List<Triple<String, String, String?>>>, org.json.JSONObject?>? = null
     private var clock: Pair<Int?, Int?> = null to null
     private val reviews = ArrayList<GameReview>()
     private var attempt: Attempt? = null

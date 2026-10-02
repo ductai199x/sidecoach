@@ -688,12 +688,26 @@ class Store(val path: File?) {
                         m.spentMs, m.clockMs,
                     )
                 }
+                // Raised with every save of facts, in the same commit ([statsRevision]).
+                exec(
+                    "INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key)" +
+                        " DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+                    STATS_REVISION_KEY,
+                )
                 db.setTransactionSuccessful()
             } finally {
                 db.endTransaction()
             }
         }
     }
+
+    /**
+     * A count raised with every save of a game's Stats facts: what was read from them is stale
+     * once it moves. The games' keys, strengths and sides alone missed facts made again at the
+     * same strength -- rederive, the catch-up of a saved review -- and the coach kept a stale
+     * "biggest cost" (the audit of 2026-10-02). `stats_revision`.
+     */
+    fun statsRevision(): String? = setting(STATS_REVISION_KEY)
 
     /**
      * The reviewed games' facts, each game once: a watched game its import stands for is left
@@ -988,6 +1002,9 @@ class Store(val path: File?) {
 
         // The review strengths, weakest first: a stronger review stands for the game. `STRENGTH_RANK`.
         val STRENGTH_RANK = mapOf("fast" to 1, "standard" to 2, "deep" to 3)
+
+        // The settings' row that counts the saves of Stats facts ([statsRevision]). `STATS_REVISION_KEY`.
+        const val STATS_REVISION_KEY = "stats.revision"
         private val RANK = "CASE strength " + STRENGTH_RANK.entries.joinToString(" ") { "WHEN '${it.key}' THEN ${it.value}" } + " ELSE 0 END"
 
         /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
