@@ -415,10 +415,13 @@ def _requests(coach: Coach, *triggers: Trigger) -> list:
     ]
 
 
-def test_a_question_overtakes_a_remark_but_not_the_lesson_or_the_review() -> None:
+def test_a_question_drops_nothing_queued() -> None:
     """Any question deleted the queued lessons and the review (the noise budget was charged
-    for a lesson never said). A remark or a nudge is stale; a lesson and the review wait for
-    the answer, and go after it."""
+    for a lesson never said), and then the remark and the nudge still: never seen (Tai,
+    2026-10-02: "no need to drop any replies, the text message should come out in the same
+    correct order"). The hint said unasked keeps its place ahead of the answer -- said first,
+    counted by the ladder, and after the answer it would be a lower rung after a higher; the
+    remark, the lesson and the review wait for the answer and go after it, in their order."""
     from sidecoach.coach.coach import Speaker
     from sidecoach.llm.offline import OfflineProvider
 
@@ -435,12 +438,14 @@ def test_a_question_overtakes_a_remark_but_not_the_lesson_or_the_review() -> Non
         Trigger.USER_ASK,
     ):
         speaker.submit(request)
-    assert speaker.dropped == 2 and speaker.pending == 3
+    assert speaker.pending == 5
     speaker.run_pending()
     assert [s.message.trigger for s in speaker.poll()] == [
+        Trigger.STUCK,
         Trigger.USER_ASK,
         Trigger.POST_MISTAKE,
         Trigger.REVIEW,
+        Trigger.POST_MOVE,
     ]
 
 
@@ -494,6 +499,29 @@ def test_a_failure_on_the_claims_thread_is_counted_and_the_question_answered() -
     answer = drain(coach)
     assert [m.trigger for m in answer] == [Trigger.USER_ASK]
     assert "could not work that out" in answer[0].text
+
+
+def test_a_failed_claims_check_is_counted_and_the_question_answered_without_it() -> None:
+    """The claims check's own failure was swallowed: the question went on unchecked, with no
+    count and nothing in the log."""
+    provider = ScriptedProvider(["Yes, Qxf7 is mate."])
+
+    def broken(text: str, board: object, facts: object) -> list[str]:
+        raise RuntimeError("no reader")
+
+    coach = Coach(
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=broken
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    held: list[Callable[[], None]] = []
+    coach.spawn = lambda work, name: held.append(work)
+    coach.ask("Is Qxf7 mate?", 8.0)
+    held[0]()
+    assert coach.speaker.failures == 1
+    assert coach.speaker.last_error == "claims check: RuntimeError: no reader"
+    assert [m.text for m in drain(coach)] == ["Yes, Qxf7 is mate."], "answered all the same"
 
 
 # 12. The summary's and the named analysis' failures are counted

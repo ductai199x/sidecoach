@@ -109,6 +109,27 @@ def test_a_question_about_a_move_asked_the_model_is_not_withheld_by_the_rung() -
     assert "The line, or what happens next" in directive_of(sent(provider))
 
 
+def test_a_question_to_the_ai_charges_no_rule_its_fallback_holds() -> None:
+    """The fallback's principle ("It's a mating attack: their king runs out of squares.") was
+    counted as said for every hint asked of the AI, though the fallback is said only when the
+    reply fails: the rules of thumb were held back for the next messages all the same. Offline,
+    the template is the answer, and its principle is said."""
+    coach, _ = scripted_coach(["Their king is nearly out of squares."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("hint", 8.0)
+    assert [m.text for m in drain(coach)] == ["Their king is nearly out of squares."]
+    assert coach._rules == {} and coach._last_rule is None
+    offline = offline_coach()
+    play_to_scholar(offline)
+    offline.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(offline)
+    offline.ask("hint", 8.0)
+    [said] = drain(offline)
+    assert "their king runs out of squares" in said.text and offline._rules
+
+
 def test_the_offline_coach_keeps_its_keyword_rules() -> None:
     """Offline the words still pick the template and open the rung: the templates are the
     offline coach's. Words the rules miss get the plain hint, as before."""
@@ -178,6 +199,35 @@ def test_a_reply_after_the_player_moved_again_is_late_but_shown_in_order() -> No
     assert coach.moved_on(moment) is False
 
 
+def test_a_reply_that_lands_after_the_players_move_is_the_records_not_said_here() -> None:
+    """A reply asked for before the player moved and landing after it is shown (late), and it is
+    this game's -- but about the position they moved from. Recorded as said at the position now,
+    it was a turn "since the move": the next question was told "do not repeat the verdict or the
+    better move you told them", and the "?" it ended with made the next words its answer."""
+    reply = "Look at f7: what does their king have left?"
+    coach, provider = scripted_coach([reply, "The bishop check gave the king a square."])
+    play_to_scholar(coach)
+    coach.quiet = True  # no word on the move: the late reply is the only coach turn
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("what should I aim for?", 8.0)  # built; the model has not answered yet
+    mate_missed(coach, 9.0)  # the player moves first
+    board = chess.Board(SCHOLAR_AFTER_BISHOP_CHECK)
+    _looked(coach, board, 7, ["e8f7"], 9.5)
+    out = [m for m in drain(coach) if m.trigger is Trigger.USER_ASK]
+    assert [m.text for m in out] == [reply], "shown, in its place"
+    assert coach.spoken[0].late
+    assert coach._said_since_move() == [], "not said at the position now"
+    assert not coach._last_turn_asked() and not coach._answering_our_question("the king")
+    harness = coach.conversation.render()
+    assert reply in harness.split("# Position now", 1)[0], "in the record"
+    coach.ask("why was that bad?", 10.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "You have spoken since the last move already" not in directive
+    assert "Your last turn above ended with a question" not in directive
+
+
 def test_a_question_held_for_the_engine_is_answered_after_the_player_moves() -> None:
     """ "One moment -- still looking" was a promise: the player moving before the engine's
     look came threw the question away unanswered (Tai, 2026-10-02: no reply is dropped). It
@@ -218,6 +268,15 @@ def test_the_rung_a_reply_said_is_read_from_its_words() -> None:
     assert said_level("Look for a check.", facts) is DisclosureLevel.SILENT
     long = facts.model_copy(update={"line": ["Qxf7#", "Kd8"]})
     assert said_level("Qxf7 and then Kd8 is forced.", long) is DisclosureLevel.LINE
+    # A pawn move is named only as a whole move: "e4" is not named by "Nxe4" or "Qe4" (the phone
+    # read it as a square; the round-3 parity audit). The phone twin holds the same cases.
+    pawn = facts.model_copy(
+        update={"target": None, "piece": None, "candidates": ["e4"], "line": ["e4", "e5"]}
+    )
+    assert said_level("Nxe4 wins a pawn.", pawn) is DisclosureLevel.SILENT
+    assert said_level("Qe4 is fine.", pawn) is DisclosureLevel.SILENT
+    assert said_level("e4 grabs the centre.", pawn) is DisclosureLevel.MOVE
+    assert said_level("After e4 e5 it is level.", pawn) is DisclosureLevel.LINE
     ladder = Disclosure()
     assert ladder.said(DisclosureLevel.IDEA) is DisclosureLevel.IDEA
     assert ladder.said(DisclosureLevel.IDEA) is None
