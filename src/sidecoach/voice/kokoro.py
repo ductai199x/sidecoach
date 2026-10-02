@@ -41,6 +41,9 @@ TAIL_SILENCE_S = 0.35
 # The stream is reopened when the system's default output changes, checked this often.
 DEVICE_CHECK_S = 2.0
 VOICES_FILE = "voices-v1.0.bin"
+# A stream whose device has not asked for samples for this long is taken for dead and
+# reopened at the next line.
+STREAM_DEAD_S = 1.5
 
 
 class _Stream:
@@ -58,6 +61,10 @@ class _Stream:
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
+        # When the device last asked for samples: a stream whose device went away (an HDMI
+        # monitor asleep, a headset gone) stops calling back, and is dropped (see `play`).
+        self.last_callback = time.monotonic()
+        self.dead = False
         self._stream = sd.OutputStream(  # type: ignore[attr-defined]
             samplerate=samplerate,
             channels=1,
@@ -66,9 +73,11 @@ class _Stream:
             callback=self._callback,
         )
         self._stream.start()
+        self.last_callback = time.monotonic()
 
     def _callback(self, outdata: object, frames: int, time_info: object, status: object) -> None:
         out = outdata  # (frames, 1) float32
+        self.last_callback = time.monotonic()
         filled = 0
         with self._lock:
             while filled < frames and self._chunks:
@@ -85,13 +94,31 @@ class _Stream:
         if filled < frames:
             out[filled:, 0] = 0  # type: ignore[index]
 
-    def play(self, samples: object, timeout: float) -> None:
-        """Queue `samples` and return once they have been handed to the device."""
+    def queue(self, samples: object) -> None:
+        """Queue `samples` for the device; `wait` for them to be handed over."""
         block = self._np.asarray(samples, dtype=self._np.float32).reshape(-1)
         with self._lock:
             self._chunks.append(block)
             self._idle.clear()
-        self._idle.wait(timeout)
+
+    def wait(self, timeout: float) -> bool:
+        """Wait until what is queued has been handed to the device; False, and the stream
+        marked dead, when the device stopped asking for samples (it went away) or the
+        timeout passed. A dead stream held each line for its length and five seconds,
+        silent, and kept the voice `busy` (voice finding 6, 2026-10-01)."""
+        end = time.monotonic() + timeout
+        while not self._idle.wait(0.1):
+            now = time.monotonic()
+            if now >= end or now - self.last_callback > STREAM_DEAD_S:
+                self.dead = True
+                self.clear()
+                return False
+        return True
+
+    def play(self, samples: object, timeout: float) -> bool:
+        """Queue `samples` and return once they have been handed to the device."""
+        self.queue(samples)
+        return self.wait(timeout)
 
     def clear(self) -> None:
         with self._lock:
@@ -137,6 +164,7 @@ class KokoroTTS:
         self._kokoro: object | None = None
         self._sd: object | None = None
         self._failed = False
+        self._failed_files: tuple[tuple[int, int] | None, ...] = ()
         self._load_lock = threading.Lock()
         # Bumped on every stop so a synthesis in flight knows its line was cancelled and
         # does not play over what comes next.
@@ -225,8 +253,9 @@ class KokoroTTS:
         with self._load_lock:
             if self._kokoro is not None:
                 return True
-            if self._failed:
+            if self._failed and not self._files_arrived():
                 return False
+            self._failed = False
             try:
                 # Lazy, heavy, and optional (the `voice` extra); pyright need not resolve them.
                 import sounddevice  # type: ignore[reportMissingImports]
@@ -242,7 +271,26 @@ class KokoroTTS:
             except Exception as exc:  # noqa: BLE001 - any load failure degrades to silence
                 log.warning("Kokoro voice unavailable, going silent: %s", exc)
                 self._failed = True
+                self._failed_files = self._model_files()
                 return False
+
+    def _model_files(self) -> tuple[tuple[int, int] | None, ...]:
+        """The model files as they are now (size and time), None for a missing one."""
+        found: list[tuple[int, int] | None] = []
+        for path in (self.onnx_path, self.voices_path):
+            try:
+                st = path.stat()
+                found.append((st.st_size, st.st_mtime_ns))
+            except OSError:
+                found.append(None)
+        return tuple(found)
+
+    def _files_arrived(self) -> bool:
+        """A load that failed is tried again once the model files have changed since: the
+        first run's warm-up ran before Setup fetched them, and the voice stayed dead until
+        a restart (voice finding 4, 2026-10-01)."""
+        now = self._model_files()
+        return None not in now and now != self._failed_files
 
     def prime(self) -> float | None:
         """One short line synthesised and thrown away, so the first spoken one does not
@@ -258,7 +306,7 @@ class KokoroTTS:
     def say(self, text: str, *, voice: str | None = None) -> None:
         """Queue a line to be spoken. Notation in it is read aloud in words. `voice` speaks
         this line in another voice (a preview) without changing the coach's."""
-        if self._failed:
+        if self._failed and not self._files_arrived():
             return
         spoken = speak_notation(text, voice=True).strip()
         if not spoken:
@@ -288,10 +336,19 @@ class KokoroTTS:
                 self._sd.stop()  # type: ignore[attr-defined]
 
     def close(self) -> None:
-        """Release the output stream."""
+        """Release everything: the worker, the model's session and the output stream. A
+        voice replaced (the panel's `_reload_voice`) kept all three alive (voice finding
+        11, 2026-10-01). A line said after this loads the voice again."""
+        self.stop()
+        worker, self._worker = self._worker, None
+        if worker is not None and worker.is_alive():
+            self._queue.put(None)
         stream, self._stream = self._stream, None
+        self._stream_device_name = None
         if stream is not None:
             stream.close()
+        with self._load_lock:
+            self._kokoro = None
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -328,9 +385,6 @@ class KokoroTTS:
         with self._lock:
             if generation != self._generation:
                 return
-        if self.on_play is not None:
-            with contextlib.suppress(Exception):
-                self.on_play(given or text)
         try:
             import numpy as np
 
@@ -338,13 +392,34 @@ class KokoroTTS:
             pad = np.zeros((int(sample_rate * TAIL_SILENCE_S), *samples.shape[1:]), samples.dtype)
             samples = np.concatenate([samples, pad])
             stream = self._open_stream(int(sample_rate))
+            # The cancel check and the queueing under one lock with `stop`'s count: a stop
+            # landing while the stream opened was ignored, and the line played over a mute
+            # or a barge-in (voice finding 13, 2026-10-01).
+            with self._lock:
+                if generation != self._generation:
+                    return
+                if stream is not None:
+                    stream.queue(samples)
+                else:
+                    self._sd.play(samples, sample_rate, device=self.playback_device())  # type: ignore[attr-defined]
+            if self.on_play is not None:
+                with contextlib.suppress(Exception):
+                    self.on_play(given or text)
             if stream is not None:
-                stream.play(samples, timeout=len(samples) / sample_rate + 5.0)
+                if not stream.wait(len(samples) / sample_rate + 5.0) and stream.dead:
+                    log.warning("Kokoro output stream stopped; reopening at the next line")
+                    self._drop_stream(stream)
                 return
-            self._sd.play(samples, sample_rate, device=self.playback_device())  # type: ignore[attr-defined]
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
             log.warning("Kokoro playback failed: %s", exc)
+
+    def _drop_stream(self, stream: _Stream) -> None:
+        if self._stream is stream:
+            self._stream = None
+            self._stream_device_name = None
+        with contextlib.suppress(Exception):
+            stream.close()
 
     def _open_stream(self, sample_rate: int) -> _Stream | None:
         """The open output stream for this rate and the current output device, opened or

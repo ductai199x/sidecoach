@@ -853,8 +853,14 @@ class PanelEngine:
     def _reload_voice(self) -> None:
         """A new voice model, provider, language, folder or device: the old voice is cut
         off, the new one built and loaded off the caller's thread."""
+        old = self._tts
         with contextlib.suppress(Exception):
-            self._tts.stop()
+            old.stop()
+        # Its worker, model session and output stream are released, not left running.
+        close = getattr(old, "close", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                close()
         self._tts = self._build_tts(self.settings.voice.voice)
         self._hook_voice()
         with self._lock:

@@ -64,6 +64,7 @@ class NullSTT:
 
 
 PARAKEET_MODEL = "nemo-parakeet-tdt-0.6b-v3"
+NOT_DOWNLOADED = "not downloaded yet: open Setup from the menu"
 
 
 class ParakeetSTT:
@@ -99,8 +100,12 @@ class ParakeetSTT:
         with self._lock:
             if self._asr is not None:
                 return True
-            if self._failed:
+            # A model not downloaded yet is looked for again (a quick, offline miss): Setup
+            # fetches it after the first warm-up, and the recogniser stayed off until a
+            # restart (voice finding 4, 2026-10-01). Any other failure stands.
+            if self._failed and self._failed != NOT_DOWNLOADED:
                 return False
+            self._failed = None
             try:
                 import onnx_asr  # type: ignore[reportMissingImports]
                 import onnxruntime as ort
@@ -121,7 +126,7 @@ class ParakeetSTT:
             except Exception as exc:  # noqa: BLE001 - degrade to off, never crash the session
                 if "LocalEntryNotFound" in type(exc).__name__ or "outgoing traffic" in str(exc):
                     # The app keeps the hub offline: the model is fetched by the setup only.
-                    self._failed = "not downloaded yet: open Setup from the menu"
+                    self._failed = NOT_DOWNLOADED
                 else:
                     self._failed = f"{type(exc).__name__}: {exc}"
                 log.warning("Parakeet unavailable, speech recognition is off: %s", exc)
