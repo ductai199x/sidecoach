@@ -19,7 +19,8 @@ import org.junit.runner.RunWith
  * fades.
  *
  * The box's time is the test's ([StepClock]): the fade is checked at its shipped five seconds to
- * the millisecond -- up a millisecond before, fading at it -- and "still up long after" is eight
+ * the millisecond from the words read through -- up a millisecond before, fading at it -- and
+ * "still up long after" is eight
  * seconds of that clock, none of them waited. What is waited for is the window itself: a box put
  * up or taken down, on the main thread and in the window manager, a state with a deadline that is
  * only a safety net.
@@ -62,11 +63,21 @@ class CaptionsKeepTest {
      * [clock], fading at it, gone once the fade-out is over.
      */
     private fun fadesAtItsTime(clock: StepClock, what: String) {
+        readThrough(clock, what)
         clock.advance(Captions.HIDE_AFTER_MS - 1)
         assertNotNull("$what: gone before its time", box())
         assertEquals("$what: fading before its time", false, onMain { Captions.fading() })
         clock.advance(1)
         assertTrue("$what: did not fade at its time", waitFor { box() == null })
+    }
+
+    /**
+     * The box's words read through at the reading pace, on the box's clock: the fade's five
+     * seconds count from then (a line longer than the box is gone through first, main's reading
+     * pace of 2026-10-02). The clock stops at the step the reading ended on.
+     */
+    private fun readThrough(clock: StepClock, what: String) {
+        assertNotNull("$what: never read through", clock.advanceUntil(READ_BOUND_MS) { onMain { Captions.readThrough() } != false })
     }
 
     private fun fresh(): StepClock {
@@ -170,6 +181,7 @@ class CaptionsKeepTest {
             Captions.preview()
             assertTrue("no sample box", waitFor { box() != null })
             assertEquals("the sample's box takes touches", false, onMain { Captions.touchable() })
+            readThrough(clock, "the sample")
             clock.advance(Captions.HIDE_AFTER_MS)
             assertTrue("the kept box stayed untouchable", waitFor { onMain { Captions.touchable() } == true })
             var words: String? = onMain { Captions.wordsShown() }
@@ -186,6 +198,8 @@ class CaptionsKeepTest {
             Captions.keep(false)
             Captions.show("Your bishop is loose.")
             assertTrue(waitFor { box() != null })
+            // Read through first: a box fades only once its words have been read.
+            readThrough(clock, "the line before the fade")
             // The fade begun and a line given in one step on the main thread: by the box's
             // state, not a sleep timed into the 350 ms fade (round 3 audit, 2026-10-02).
             var fading = false
@@ -237,6 +251,9 @@ class CaptionsKeepTest {
     private companion object {
         /** Long after the fade would have come: the eight seconds this test used to wait. */
         const val KEPT_MS = 8000L
+
+        /** The box's own time a line may take to be read through: a bound, never the expected path. */
+        const val READ_BOUND_MS = 60_000L
 
         /** A state's safety net: an emulator starved by its host answered seconds late. */
         const val SAFETY_MS = 10_000L

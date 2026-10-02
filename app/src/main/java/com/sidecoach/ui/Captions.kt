@@ -589,6 +589,9 @@ object Captions {
     /** Whether a finger is moving the box now (a hold or a drag took it), for the tests. */
     internal fun moving(): Boolean = box?.moving ?: false
 
+    /** Whether the box's words are all read through at the reading pace, for the tests. */
+    internal fun readThrough(): Boolean? = box?.readThrough()
+
     /** The words the box shows, for the tests; null when it is not shown. */
     internal fun wordsShown(): String? = box?.shownText()
 

@@ -41,15 +41,35 @@ internal class StepClock(private val instrumentation: Instrumentation) : Caption
     fun advance(ms: Long) {
         instrumentation.waitForIdleSync()
         val until = synchronized(this) { now + ms }
+        while (step(until)) Unit
+        synchronized(this) { now = until }
+    }
+
+    /**
+     * Time moved on step by step, at most [ms], until [holds] does: the time it held from (now,
+     * if it holds already), the clock stopped there; null if it never did. For a moment the box
+     * decides on its own steps -- the words read through -- that a length is then counted from.
+     */
+    fun advanceUntil(ms: Long, holds: () -> Boolean): Long? {
+        instrumentation.waitForIdleSync()
+        val until = synchronized(this) { now + ms }
         while (true) {
-            val next = synchronized(this) {
-                due.filter { it.at <= until }.minWithOrNull(compareBy<Step>({ it.at }, { it.order }))?.also {
-                    due.remove(it)
-                    now = it.at
-                }
-            } ?: break
-            instrumentation.runOnMainSync { next.step.run() }
+            if (holds()) return synchronized(this) { now }
+            if (!step(until)) break
         }
         synchronized(this) { now = until }
+        return if (holds()) until else null
+    }
+
+    /** The next step due by [until] run on the main thread at its time; false if none is due. */
+    private fun step(until: Long): Boolean {
+        val next = synchronized(this) {
+            due.filter { it.at <= until }.minWithOrNull(compareBy<Step>({ it.at }, { it.order }))?.also {
+                due.remove(it)
+                now = it.at
+            }
+        } ?: return false
+        instrumentation.runOnMainSync { next.step.run() }
+        return true
     }
 }
