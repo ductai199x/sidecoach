@@ -442,6 +442,20 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         engine.settings_followers.append(lambda s: setattr(backlog, "settings", s))
     app.state.backlog = backlog  # closed with the panel (`serve`)
 
+    def rederive_saved() -> None:
+        """The saved reviews' summaries and Stats made again when their rule changed."""
+        from sidecoach.profile.store import Store
+        from sidecoach.ui.review_room import rederive
+
+        with contextlib.suppress(Exception):  # never in the way of the panel
+            store = Store(store_path)
+            try:
+                rederive(store)
+            finally:
+                store.close()
+
+    threading.Thread(target=rederive_saved, name="rederive", daemon=True).start()
+
     @app.get("/games")
     @app.get("/stats")
     @app.get("/review/{key}")

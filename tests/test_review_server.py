@@ -831,6 +831,52 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
     store.close()
 
 
+def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106
+    sides' phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review
+    of 2026-10-01). A saved review's summary and its facts for Stats are made again from its
+    report, once, no engine."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.events import GameSummary, ReviewedGame
+    from sidecoach.profile import library
+    from sidecoach.profile.game_summary import summarize
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    fast = STRENGTHS["fast"]
+    made = review_room.review_row(
+        Settings(data_dir=tmp_path),
+        row,
+        store,
+        fast,
+        workers=1,
+        make_engine=lambda **_: FakeEngine(),
+    )
+    assert made is not None
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    fresh = summarize(ReviewedGame.model_validate_json(saved.report))
+    phases = [m["phase"] for m in store.stat_moves([row.key])]
+    # As an older rule left them, the rule's version of before.
+    stale = fresh.model_copy(update={"shape": "old"})
+    store.set_review_summary(row.key, "fast", stale.model_dump_json())
+    store._db.execute("UPDATE stat_moves SET phase = 'endgame'")
+    store.set_setting(review_room.DERIVED_KEY, "1")
+    assert review_room.rederive(store) == 1
+    again = store.review(row.key, "fast")
+    assert again is not None and GameSummary.model_validate_json(again.summary or "{}") == fresh
+    assert [m["phase"] for m in store.stat_moves([row.key])] == phases
+    assert review_room.rederive(store) == 0, "once"
+    store.close()
+
+
 def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

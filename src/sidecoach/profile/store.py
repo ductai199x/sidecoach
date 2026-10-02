@@ -1240,6 +1240,26 @@ class Store:
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
 
+    def saved_reviews(self) -> list[tuple[str, str]]:
+        """Every saved review, by its game's key and its strength."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, strength FROM reviews").fetchall()
+        return [(str(r["key"]), str(r["strength"])) for r in rows]
+
+    def set_review_summary(self, key: str, strength: str, summary: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?",
+                (summary, key, strength),
+            )
+            self._db.commit()
+
+    def stat_strengths(self) -> dict[str, str]:
+        """The strength of the review each game's Stats facts come from, by its key."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, strength FROM stat_games").fetchall()
+        return {str(r["key"]): str(r["strength"]) for r in rows}
+
     def best_review(self, key: str) -> ReviewRow | None:
         """The game's strongest review (deep, standard, fast), the latest of that strength: the
         one the review opens at, Your games shows and Stats counts. The latest was shown, and a

@@ -51,6 +51,10 @@ from sidecoach.ui.review_retry import Retries, measured
 
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
+# What a review's summary and its Stats facts are made of from its report (`rederive`): raised
+# when that changes, the reviews kept. 2: the phases are Lichess's Divider's (efdd8a3).
+DERIVED = 2
+DERIVED_KEY = "reviews.derived"
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
@@ -631,6 +635,33 @@ def review_row(
     store.clear_progress(row.key, strength.name)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
+
+
+def rederive(store: Store) -> int:
+    """Every saved review's summary, and its facts for Stats, made again from its report when
+    what they are made of has changed since (DERIVED): no engine, a few hundredths of a second
+    a game. The phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106
+    sides' phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review
+    of 2026-10-01). Returns the reviews made again."""
+    if store.setting(DERIVED_KEY) == str(DERIVED):
+        return 0
+    counted = store.stat_strengths()
+    done = 0
+    for key, strength in store.saved_reviews():
+        saved = store.review(key, strength)
+        if saved is None or saved.version != REVIEW_VERSION:
+            continue
+        try:
+            reviewed = ReviewedGame.model_validate_json(saved.report)
+            store.set_review_summary(key, strength, summarize(reviewed).model_dump_json())
+            row = library.find(store, key)
+            if counted.get(key) == strength and row is not None:
+                keep_stats(store, strength, reviewed, row)
+        except Exception:  # noqa: BLE001 - a review that cannot be read is left as it is
+            continue
+        done += 1
+    store.set_setting(DERIVED_KEY, str(DERIVED))
+    return done
 
 
 def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
