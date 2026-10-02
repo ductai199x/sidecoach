@@ -587,6 +587,34 @@ def test_a_change_made_while_a_save_is_on_its_way_outlives_the_page(tmp_path: Pa
     assert run.stdout.strip() == "[false,true]"
 
 
+def test_an_older_save_of_a_page_landing_after_a_later_one_is_not_applied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: the page closing sends what changed since in a save of its own
+    beside the one on its way, and the two could land in either order: the older one, last,
+    put back what the later one changed. Each page numbers its saves; one older than the last
+    applied is answered and not applied. Another page's saves are its own."""
+    from sidecoach.config import load_settings
+
+    client, engine = _client(tmp_path, monkeypatch)
+
+    def save(page: str, seq: int, name: str) -> dict[str, Any]:
+        body = {"settings": {"profile": {"chesscom_user": name}}, "page": page, "seq": seq}
+        return client.put("/api/settings", json=body).json()
+
+    assert save("p", 2, "later")["ok"]  # the save sent as the page closed lands first
+    older = save("p", 1, "earlier")
+    assert older["ok"] and older["superseded"] and older["changed"] == []
+    assert engine.settings.profile.chesscom_user == "later"
+    assert load_settings(tmp_path / "sidecoach.toml").profile.chesscom_user == "later"
+    assert save("q", 1, "another window")["ok"], "another page counts its own"
+    assert engine.settings.profile.chesscom_user == "another window"
+    assert save("p", 3, "next")["changed"] == ["profile.chesscom_user"]
+    unnumbered = {"settings": {"profile": {"chesscom_user": "plain"}}}
+    assert client.put("/api/settings", json=unnumbered).json()["ok"], "a save with no number"
+    assert engine.settings.profile.chesscom_user == "plain"
+
+
 def test_usernames_are_kept_without_spaces_around(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

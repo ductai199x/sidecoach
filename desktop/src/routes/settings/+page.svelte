@@ -389,6 +389,10 @@
   const TYPING_MS = 600;
   let typing: ReturnType<typeof setTimeout> | null = null;
   const queue = saveQueue((keepalive) => saveOnce(keepalive));
+  // This page, and its saves counted: the sidecar applies a save of the page only when it is
+  // later than the one it kept last (the audit of 2026-10-02).
+  const PAGE = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+  let saves = 0;
 
   /** Save once the typing pauses. */
   function soon(): void {
@@ -439,27 +443,39 @@
     if (!Object.keys(body).length && !Object.keys(sec).length && !shellChanged) return;
     saving = true;
     try {
+      // The settings go before the shell's own: a window closing sends them with keepalive, and
+      // the shell's call, awaited first, held them back until the page was gone (the audit of
+      // 2026-10-02).
+      const res =
+        Object.keys(body).length || Object.keys(sec).length
+          ? // Numbered: a save sent as the page closes goes beside the one on its way, and the
+            // sidecar keeps the later one whichever lands first (settings_api `update`).
+            await put<NonNullable<typeof result>>(
+              "/api/settings",
+              { settings: body, secrets: sec, page: PAGE, seq: ++saves },
+              { keepalive },
+            )
+          : null;
       if (shellChanged) {
         const now = structuredClone($state.snapshot(shell));
         await setShellSettings(now);
         shellSaved = now;
       }
-      if (Object.keys(body).length || Object.keys(sec).length) {
-        const res = await put<NonNullable<typeof result>>("/api/settings", { settings: body, secrets: sec }, { keepalive });
-        if (!res?.ok) {
-          const refused = res?.errors ?? [];
-          for (const e of refused) {
-            const at = e.loc.filter((x) => typeof x === "string").slice(0, 2).join(".");
-            fieldErrors[at || "settings"] = e.msg;
-          }
-          // The rest of the changes go on their own -- when the refused fields are out of them,
-          // so a refusal the page cannot place is said, not sent again and again.
-          const rest = sendable(changes(sent, saved));
-          if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) queue.more();
-          // A save the sidecar could not write (the disk) says why (the audit of 2026-10-02).
-          failure = refused.length ? "" : (res?.error ?? "Not saved: Sidecoach refused the change.");
-          return;
+      if (res && !res.ok) {
+        const refused = res.errors ?? [];
+        for (const e of refused) {
+          const at = e.loc.filter((x) => typeof x === "string").slice(0, 2).join(".");
+          fieldErrors[at || "settings"] = e.msg;
         }
+        // The rest of the changes go on their own -- when the refused fields are out of them,
+        // so a refusal the page cannot place is said, not sent again and again.
+        const rest = sendable(changes(sent, saved));
+        if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) queue.more();
+        // A save the sidecar could not write (the disk) says why (the audit of 2026-10-02).
+        failure = refused.length ? "" : (res.error ?? "Not saved: Sidecoach refused the change.");
+        return;
+      }
+      if (res) {
         for (const name of Object.keys(sec)) {
           // The key as sent is in the store; one typed since is the next save's.
           if (secrets[name] === sec[name]) delete secrets[name];

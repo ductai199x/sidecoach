@@ -43,6 +43,18 @@ saving = threading.RLock()
 class SettingsUpdate(BaseModel):
     settings: dict[str, Any]
     secrets: dict[str, str | None] = {}
+    # The Settings page that sent it and its count of saves: a save of the page that lands after
+    # a later one it sent is not applied (`update`).
+    page: str | None = None
+    seq: int | None = None
+
+
+# Each Settings page's latest save applied, by its count. The page sends a save as it closes
+# beside the one on its way (keepalive: a page gone runs no next round); the two can land in
+# either order, and the older one, landing last, put back what the later one changed (the audit
+# of 2026-10-02). The later save carries every change since the last acknowledged, so the older
+# one has nothing it lacks.
+_applied: dict[str, int] = {}
 
 
 def _audio_devices() -> dict[str, list[dict[str, Any]]]:
@@ -257,6 +269,19 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
     before another saved cannot put back what that one changed (a Settings window left open
     wrote the chess.com username back to empty, Tai 2026-09-30)."""
     with saving:
+        page, seq = body.page, body.seq
+        if page is not None and seq is not None and seq <= _applied.get(page, 0):
+            # An older save of the page, landing after a later one: the later one had it all.
+            return {
+                "ok": True,
+                "path": str(engine.settings.source),
+                "changed": [],
+                "now": [],
+                "next": [],
+                "restart": [],
+                "secrets": {},
+                "superseded": True,
+            }
         try:
             new = _validated(engine, body.settings)
         except ValidationError as exc:
@@ -272,6 +297,8 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
             # only call "not reached" (the audit of 2026-10-02). The file is as it was.
             return {"ok": False, "errors": [], "error": f"The settings could not be saved: {exc}"}
         new._source = path
+        if page is not None and seq is not None:
+            _applied[page] = seq
         changed = _changed(old.model_dump(mode="json"), new.model_dump(mode="json"))
 
         stored: dict[str, bool] = {}
