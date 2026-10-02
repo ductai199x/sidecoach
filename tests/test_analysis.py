@@ -1024,7 +1024,11 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
     """An engine that hangs without dying held the analyser's thread for good: the search
     waited on it forever. A search the watchdog finds still running past its patience has its
     process ended, and is made again on a new one. The watchdog's wait is driven here: its
-    patience runs out at once on the silent engine, and never on the real one."""
+    patience runs out on the silent engine once its search is under way (as the real
+    patience, the time limit and ten seconds, only can), and never on the real one. (It ran
+    out at once: the process was then ended while the search was still being started, and
+    the start's own CancelledError was raised -- a race the real watchdog never meets, seen
+    once in a loaded run, 2026-10-02.)"""
     import sys
 
     import chess.engine
@@ -1033,13 +1037,25 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
     stub = tmp_path / "silent.py"
     stub.write_text(_SILENT_ENGINE, encoding="utf-8")
     waits: list[float] = []
+    searching = threading.Event()
 
     def wait(done: threading.Event, seconds: float) -> bool:
         waits.append(seconds)
-        return False if len(waits) == 1 else done.wait()
+        if len(waits) == 1:
+            assert searching.wait(HANG_S), "the search on the silent engine never began"
+            return False  # its patience has run out, the search under way and unanswered
+        return done.wait()
 
     running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=5.0)
     silent = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
+    start_search = silent.analysis
+
+    def analysis(*args: Any, **kwargs: Any) -> Any:
+        search = start_search(*args, **kwargs)  # `go` sent, the search under way
+        searching.set()
+        return search
+
+    silent.analysis = analysis  # type: ignore[method-assign]
     running._engine = silent
     running.watchdog_wait = wait
     try:
