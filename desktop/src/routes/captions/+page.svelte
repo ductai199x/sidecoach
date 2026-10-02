@@ -22,7 +22,8 @@
   import { connect, panel, put, type Captions, type PanelState } from "$lib/api";
   import {
     CONTROLS_MS, CROSS_LIFT, CROSS_REACH, DOUBLE_CLICK_MS, EDGE, EXPANDED_LINES, HIDE_AFTER_MS,
-    LINES, MAX_LINES, MIN_WIDTH, PREVIEW, SLOP, accent, clear, fill, joined, runs, type Rect,
+    LINES, MAX_LINES, MIN_WIDTH, PACE_TICK_MS, PREVIEW, Pace, SLOP, accent, appended, clear, fill,
+    runs, type Rect, type Rows,
   } from "$lib/captions";
 
   const shell = isTauri();
@@ -61,6 +62,11 @@
   let movesTimer: ReturnType<typeof setTimeout> | null = null;
   let clickTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let paceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Where the reader of the box is (a line longer than the box scrolls through it), and the
+   * scroll last set, -1 while the box is down. */
+  const pace = new Pace();
+  let lastTop = -1;
   let alive = true;
 
   // ---- the words -------------------------------------------------------------------------
@@ -110,6 +116,7 @@
     }
     if (sayAgain && !shown && said) {
       cancelHide();
+      pace.from(said.length, Date.now());
       void showBox();
       void scrollWords();
     }
@@ -129,13 +136,20 @@
    * to show). */
   function begin(text: string, force = false, continues = false): void {
     if (front && !force && !look.keep) {
-      if (!previewing) said = joined(said, text, !continues);
+      if (!previewing) said = appended(said, text, !continues).text;
       return;
     }
     // The sample line is no word of the coach's: the coach's first word takes its place.
     if (previewing && !force) said = "";
     previewing = force;
-    said = joined(said, text, !continues);
+    const now = Date.now();
+    // Words up already are read on from where the reader is; a box coming up starts at the
+    // new line, the words before it read.
+    if (shown && !fading) pace.advance(now, said.length);
+    const next = appended(said, text, !continues);
+    said = next.text;
+    if (shown && !fading) pace.shift(next.cut);
+    else pace.from(next.from, now);
     cancelHide();
     void showBox();
     void scrollWords();
@@ -154,6 +168,7 @@
    * in front. */
   function restore(): void {
     if (!look.keep || !look.on || shown) return;
+    pace.from(said.length, Date.now()); // back with the last words, as they were left
     void showBox();
     void scrollWords();
   }
@@ -176,7 +191,8 @@
 
   function hide(): void {
     hideTimer = null;
-    if (busy) {
+    // Words still being gone through keep the box up: it never fades on a line not yet shown.
+    if (busy || !pace.done(said.length)) {
       hideSoon();
       return;
     }
@@ -193,14 +209,60 @@
     previewing = false;
     shown = false;
     fading = false;
+    lastTop = -1;
+    if (paceTimer) clearTimeout(paceTimer);
+    paceTimer = null;
     drops++;
     void win()?.then((w) => w?.hide());
     void hideCross();
   }
 
+  /** The words in view where the reading is (`Pace`): a line longer than the box goes through
+   * it row by row, smoothly, at a reading pace, then the next line; at the end, the last rows.
+   * Looked at again every PACE_TICK_MS while words are left to read, and not otherwise. */
   async function scrollWords(): Promise<void> {
     await tick();
-    if (wordsEl) wordsEl.scrollTop = wordsEl.scrollHeight;
+    const el = wordsEl;
+    if (!el) return;
+    pace.advance(Date.now(), said.length);
+    const visible = Math.max(1, Math.round(shownHeight / lineHeight));
+    const top = pace.top(rowsOf(el), visible, said.length) * lineHeight;
+    if (top !== lastTop) {
+      // A box just up jumps to its place; one up already glides there (asked once per row, so
+      // a glide under way is never restarted).
+      el.scrollTo({ top, behavior: shown && !fading && lastTop >= 0 ? "smooth" : "instant" });
+    }
+    lastTop = top;
+    const reading = paceTimer !== null;
+    if (paceTimer) clearTimeout(paceTimer);
+    paceTimer = pace.done(said.length) ? null : setTimeout(() => void scrollWords(), PACE_TICK_MS);
+    // The last words just read: the fade, if one is due, waits its full time from now.
+    if (reading && !paceTimer && hideTimer) hideSoon();
+  }
+
+  /** The words' rows as the box lays them out: the row of a character is where its own box is
+   * on the page, by its middle. */
+  function rowsOf(el: HTMLElement): Rows {
+    const base = el.getBoundingClientRect().top - el.scrollTop;
+    return {
+      count: Math.max(1, Math.round(el.scrollHeight / lineHeight)),
+      rowOf(offset: number): number {
+        const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let left = offset;
+        for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+          const n = node.textContent?.length ?? 0;
+          if (left < n) {
+            const range = document.createRange();
+            range.setStart(node, left);
+            range.setEnd(node, left + 1);
+            const rect = range.getClientRects()[0] ?? range.getBoundingClientRect();
+            return Math.max(0, Math.floor((rect.top + rect.height / 2 - base) / lineHeight));
+          }
+          left -= n;
+        }
+        return Math.max(0, Math.round(el.scrollHeight / lineHeight) - 1);
+      },
+    };
   }
 
   // ---- the window ------------------------------------------------------------------------
@@ -598,6 +660,7 @@
   onDestroy(() => {
     alive = false;
     if (pollTimer) clearTimeout(pollTimer);
+    if (paceTimer) clearTimeout(paceTimer);
     cancelHide();
     unlisten?.();
     observer?.disconnect();

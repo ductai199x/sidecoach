@@ -29,3 +29,22 @@ def test_the_page_follows_a_restarted_sidecar() -> None:
         timeout=120,
     )
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
+
+
+def test_the_captions_box_goes_through_a_long_line_at_a_reading_pace() -> None:
+    """A line longer than the captions' box was shown by its end only (voice finding 18); now the
+    box goes through it row by row at a reading pace, then the next line (Tai, 2026-10-02).
+    desktop/tests/captions_pace.test.mjs, on src/lib/captions.ts alone (no packages needed)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    run = subprocess.run(
+        [node, "--test", "tests/captions_pace.test.mjs"],
+        cwd=DESKTOP,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]

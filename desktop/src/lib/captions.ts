@@ -77,6 +77,74 @@ export function joined(said: string, text: string, ownLine: boolean): string {
   return out;
 }
 
+/** `joined`, and where the new line starts in what it returns and how many characters the
+ * oldest were cut by: for the box's reading place (`Pace`), which counts in characters. */
+export function appended(said: string, text: string, ownLine: boolean): { text: string; from: number; cut: number } {
+  const out = joined(said, text, ownLine);
+  const line = text.trim().replaceAll(" -- ", " — ");
+  const whole = said ? said.length + 1 + line.length : line.length;
+  return { text: out, from: out.length - line.length, cut: whole - out.length };
+}
+
+/** How fast the box goes through words longer than it shows, in characters a second: about
+ * the pace the coach's voice says them (some 15 a second), so the words in view are the ones
+ * being said (Tai, 2026-10-02: a line longer than the box scrolls through it at a reading pace,
+ * never cut off). */
+export const READ_CPS = 15;
+/** How often the box looks where the reading is while there are words left to read (the
+ * scroll itself is the browser's smooth one). */
+export const PACE_TICK_MS = 100;
+
+/** The words as laid out in the box: how many rows, and the row a character is on. */
+export type Rows = { count: number; rowOf(offset: number): number };
+
+/** Where the reader of the box is, in characters, and so which rows it shows. Words longer than
+ * the box were shown by their end only: the box jumped to its foot with every line, and the
+ * start of a long one was never on screen (voice finding 18). Now the row being read is the
+ * box's first, and the reading moves on at READ_CPS; at the end of the words the box shows its
+ * last rows, as before. The time is given by the caller (ms), never read here. */
+export class Pace {
+  /** The characters read so far. */
+  read = 0;
+  private at = 0;
+  readonly cps: number;
+
+  constructor(cps: number = READ_CPS) {
+    this.cps = cps;
+  }
+
+  /** Everything before `offset` counted as read, at `now`: a box that comes up starts there. */
+  from(offset: number, now: number): void {
+    this.read = Math.max(0, offset);
+    this.at = now;
+  }
+
+  /** The time is `now`: the reading has moved on, never past the `length` of the words. A
+   * reader at the end waits there, so the next words are read from when they come. */
+  advance(now: number, length: number): void {
+    this.read = Math.min(length, this.read + (Math.max(0, now - this.at) * this.cps) / 1000);
+    this.at = now;
+  }
+
+  /** The oldest `cut` characters dropped from the words. */
+  shift(cut: number): void {
+    this.read = Math.max(0, this.read - cut);
+  }
+
+  /** Whether everything in `length` characters is read. */
+  done(length: number): boolean {
+    return this.read >= length;
+  }
+
+  /** The first row to show, `visible` rows tall: the row being read, never past the last rows. */
+  top(rows: Rows, visible: number, length: number): number {
+    const last = Math.max(0, rows.count - visible);
+    if (length <= 0) return last;
+    const row = rows.rowOf(Math.min(Math.floor(this.read), length - 1));
+    return Math.max(0, Math.min(row, last));
+  }
+}
+
 /** A move or a square as the coach writes it (SAN, castling, a bare square, or a square or a
  * pawn move a sentence starts with a capital: "G4 was a miss"), and a piece named: the words
  * a player looks for, set off in the box (Tai, 2026-09-29: "why are the pieces and their names
