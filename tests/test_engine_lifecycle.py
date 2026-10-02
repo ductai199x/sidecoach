@@ -1,17 +1,17 @@
 """The Stockfish process's life: a closed engine stays closed under a search already under
-way, and a wedged one does not hold its lock forever. Real Stockfish."""
+way. Real Stockfish. (A wedged engine's watchdog is tested with its wait driven by the test:
+tests/test_analysis.py.) No sleeps: the test waits for the search's first depth, and for the
+processes' exit, never for a time."""
 
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import chess
 import psutil
 import pytest
 
-from sidecoach.analysis import engine as engine_module
 from sidecoach.analysis.engine import Engine, EngineUnavailable
 from sidecoach.config import find_stockfish, load_settings
 
@@ -36,11 +36,18 @@ def test_a_closed_engine_is_not_reopened_by_a_search_under_way() -> None:
     engine.open()
     before = {p.pid for p in _children()}
     raised: list[BaseException] = []
+    searching = threading.Event()  # the first search has reported a depth: it is under way
 
     def request() -> None:
         # A request of several searches: the coach's, then the next position's.
         try:
-            engine.analyse(chess.Board(), depth=40, time_s=1.5, carry_best=True)
+            engine.analyse(
+                chess.Board(),
+                depth=40,
+                time_s=30.0,
+                carry_best=True,
+                on_depth=lambda _lines: searching.set(),
+            )
             board = chess.Board()
             board.push_san("e4")
             engine.analyse(board, depth=12)
@@ -49,45 +56,17 @@ def test_a_closed_engine_is_not_reopened_by_a_search_under_way() -> None:
 
     worker = threading.Thread(target=request)
     worker.start()
-    time.sleep(0.4)
-    engine.close()  # the session's teardown
-    worker.join(30)
+    assert searching.wait(60), "the search never began"  # a safety net, not a delay
+    engine.close()  # the session's teardown, under a search
+    worker.join(60)
     assert not worker.is_alive()
-    time.sleep(0.3)
     assert engine._engine is None
-    assert not ({p.pid for p in _children()} - before), "a Stockfish nobody closes"
+    # Every process the engine started is gone (waited on, not slept for).
+    started = [p for p in _children() if p.pid not in before]
+    _gone, alive = psutil.wait_procs(started, timeout=30)
+    assert not alive, "a Stockfish nobody closes"
     assert raised and isinstance(raised[0], EngineUnavailable)
     # Opened again by its owner, it works.
     engine.open()
     assert engine.analyse(chess.Board(), depth=4, multipv=1)
-    engine.close()
-
-
-def test_a_wedged_engine_lets_go_of_its_search(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert STOCKFISH is not None
-    monkeypatch.setattr(engine_module, "STREAM_GRACE_S", 0.5)
-    engine = Engine(STOCKFISH, threads=1, hash_mb=16, multipv=1)
-    engine.open()
-    [process] = [p for p in _children() if p.pid == engine._engine.transport.get_pid()]  # type: ignore[union-attr]
-    got: list[object] = []
-
-    def search() -> None:
-        try:
-            got.append(engine.analyse(chess.Board(), time_s=0.5, on_depth=lambda _: None))
-        except BaseException as exc:  # noqa: BLE001
-            got.append(exc)
-
-    worker = threading.Thread(target=search)
-    worker.start()
-    time.sleep(0.1)
-    process.suspend()  # wedged: alive, saying nothing
-    try:
-        worker.join(10)
-        assert not worker.is_alive(), "the search held its lock past its time"
-    finally:
-        if process.is_running():
-            process.resume()
-    # The wedged process is replaced and the search answered by the new one.
-    assert got and isinstance(got[0], list) and got[0]
-    assert not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
     engine.close()
