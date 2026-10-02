@@ -912,6 +912,9 @@ def facts_from_analysis(
             key, principle, question = held.said, idea_words.lesson(held.lesson, idea), held.ask
             if why is not None:
                 why = re.sub(r"the \w+ on [a-h][1-8] is loose", held.clause, why)
+            if target is not None:
+                # The defender is named now: the target no longer says nothing defends it.
+                target = re.sub(r": (after your \w+ move, )?nothing defends it$", "", target)
         else:
             defended = held.said
             principle = principle or idea_words.lesson(held.lesson, idea)
