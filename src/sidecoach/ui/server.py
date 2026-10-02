@@ -21,6 +21,7 @@ by CORS, because the bundled frontend calls the sidecar cross-origin.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import os
 import socket
@@ -282,7 +283,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             path = request.url.path
             if path.startswith("/api/") and path != "/api/health" and request.method != "OPTIONS":
                 header = request.headers.get("authorization", "")
-                if header != f"Bearer {token}":
+                if not hmac.compare_digest(header.encode(), f"Bearer {token}".encode()):
                     return JSONResponse({"ok": False, "error": "unauthorised"}, status_code=401)
             return await call_next(request)
 

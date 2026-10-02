@@ -2162,7 +2162,11 @@ def panel(
         typer.Option(help="Exit when this process is gone (the desktop shell that spawned us)"),
     ] = None,
     token: Annotated[
-        str, typer.Option(help="A bearer every /api request must carry (the shell's)")
+        str,
+        typer.Option(
+            envvar="SIDECOACH_PANEL_TOKEN",
+            help="A bearer every /api request must carry (the shell's, by the environment)",
+        ),
     ] = "",
     announce: Annotated[
         bool,

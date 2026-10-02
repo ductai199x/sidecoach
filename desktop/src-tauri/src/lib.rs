@@ -190,7 +190,8 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         "--no-record",
     ]);
     if !token.is_empty() {
-        cmd.args(["--token", token]);
+        // By the environment, not the command line any local process can read.
+        cmd.env("SIDECOACH_PANEL_TOKEN", token);
     }
     if let Some(dir) = data_dir(app) {
         let _ = std::fs::create_dir_all(&dir);
@@ -307,20 +308,10 @@ fn stop_sidecar(app: &AppHandle, state: &Sidecar) {
 }
 
 fn random_token() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let mut x = nanos as u64 ^ (std::process::id() as u64).rotate_left(32) ^ 0x9E37_79B9_7F4A_7C15;
-    let mut out = String::new();
-    for _ in 0..4 {
-        // xorshift: enough for a per-launch secret only local processes could read anyway
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        out.push_str(&format!("{x:016x}"));
-    }
-    out
+    // The OS's CSPRNG: a bearer guessable from the time and pid is none.
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("the OS random source");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ---- what the page can ask -----------------------------------------------------------------

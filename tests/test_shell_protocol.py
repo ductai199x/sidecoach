@@ -62,6 +62,23 @@ def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_p
     assert pre.headers.get("access-control-allow-origin") == "http://tauri.localhost"
 
 
+def test_the_shell_hands_the_token_by_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Not on the command line, which any local process can read.
+    from typer.testing import CliRunner
+
+    from sidecoach.cli import app
+
+    seen: dict[str, str] = {}
+    monkeypatch.setattr(server, "run_server", lambda *a, **k: seen.update(token=k["token"]))
+    monkeypatch.setenv("SIDECOACH_DATA_DIR", str(tmp_path))
+    env = {"SIDECOACH_PANEL_TOKEN": "from-env"}
+    res = CliRunner().invoke(app, ["panel", "--no-browser"], env=env)
+    assert res.exit_code == 0, res.output
+    assert seen["token"] == "from-env"
+
+
 def test_cross_site_pages_and_foreign_hosts_are_refused(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
