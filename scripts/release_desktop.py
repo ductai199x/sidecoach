@@ -65,20 +65,11 @@ def _running() -> bool:
     return "sidecoach.exe" in listed.lower()
 
 
-def _install(version: str) -> None:
-    setup = (
-        DESKTOP / "src-tauri" / "target" / "release" / "bundle" / "nsis"
-    ) / f"Sidecoach_{version}_x64-setup.exe"
-    if not setup.exists():
-        sys.exit(f"no installer at {setup}")
-    if _running():
-        sys.exit("Sidecoach is running: not installing over a live session. Close it first.")
-    print(f"install: {setup.name} /S", flush=True)
-    code = subprocess.call([str(setup), "/S"])
-    if code != 0:
-        sys.exit(f"the installer failed (exit {code})")
-    exe = Path(os.environ["LOCALAPPDATA"]) / "Sidecoach" / "sidecoach.exe"
-    installed = subprocess.run(
+def _installed_version(exe: Path) -> str:
+    """The product version of the installed exe, or "" when there is none."""
+    if not exe.exists():
+        return ""
+    return subprocess.run(
         [
             "powershell.exe",
             "-NoProfile",
@@ -89,8 +80,51 @@ def _install(version: str) -> None:
         text=True,
         check=False,
     ).stdout.strip()
+
+
+def _same_version_problem(installed: str, version: str) -> str | None:
+    """Why installing would silently do nothing, or None. The installer of a version that is
+    already installed runs the installed app and quits instead (nsis/hooks.nsh): a rebuild
+    without a bump was reported as installed while the old build stayed (and the old app
+    was started)."""
+    if installed != version:
+        return None
+    return (
+        f"Sidecoach {version} is already installed: its installer would only run the "
+        "installed app, not install this build. Bump the version (scripts/bump_version.py)."
+    )
+
+
+def _stamp(path: Path) -> tuple[int, int] | None:
+    """What tells one copy of a file from the next: its size and modification time."""
+    if not path.exists():
+        return None
+    st = path.stat()
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _install(version: str) -> None:
+    setup = (
+        DESKTOP / "src-tauri" / "target" / "release" / "bundle" / "nsis"
+    ) / f"Sidecoach_{version}_x64-setup.exe"
+    if not setup.exists():
+        sys.exit(f"no installer at {setup}")
+    if _running():
+        sys.exit("Sidecoach is running: not installing over a live session. Close it first.")
+    exe = Path(os.environ["LOCALAPPDATA"]) / "Sidecoach" / "sidecoach.exe"
+    problem = _same_version_problem(_installed_version(exe), version)
+    if problem:
+        sys.exit(problem)
+    before = _stamp(exe)
+    print(f"install: {setup.name} /S", flush=True)
+    code = subprocess.call([str(setup), "/S"])
+    if code != 0:
+        sys.exit(f"the installer failed (exit {code})")
+    installed = _installed_version(exe)
     if installed != version:
         sys.exit(f"installed {installed or 'nothing'}, expected {version}")
+    if _stamp(exe) == before:
+        sys.exit(f"the installer left {exe} as it was: nothing was installed")
     print(f"install: Sidecoach {installed} at {exe}", flush=True)
 
 
@@ -114,6 +148,12 @@ def main() -> None:
     LOGS.mkdir(parents=True, exist_ok=True)
     version = _version()
     print(f"Sidecoach {version}", flush=True)
+    if args.install:
+        # Before the build: the installer of an installed version installs nothing.
+        exe = Path(os.environ["LOCALAPPDATA"]) / "Sidecoach" / "sidecoach.exe"
+        problem = _same_version_problem(_installed_version(exe), version)
+        if problem:
+            sys.exit(problem)
 
     if not args.skip_sidecar:
         _run("sidecar", [sys.executable, str(ROOT / "scripts" / "build_sidecar.py")], ROOT)

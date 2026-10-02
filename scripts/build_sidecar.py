@@ -192,40 +192,62 @@ def build(out: Path) -> None:
     print(f"built {out} in {time.monotonic() - t0:.0f} s: {mb:.0f} MB")
 
 
-def check(out: Path) -> None:
-    python = interpreter(out)
+def check_env(data_dir: Path) -> dict[str, str]:
+    """The environment the built interpreter is checked in: no bytecode written (the check
+    left 753 .pyc files, 11 MB, in the installer), and a data directory of its own (it ran
+    on the repo's data)."""
     env = dict(os.environ)
     env.pop("VIRTUAL_ENV", None)
-    print(
-        subprocess.run(
-            [
-                str(python),
-                "-c",
-                "import sidecoach, onnxruntime, fastapi, kokoro_onnx, onnx_asr; "
-                "print('imports ok;', onnxruntime.__version__, "
-                "onnxruntime.get_available_providers())",
-            ],
-            text=True,
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["SIDECOACH_DATA_DIR"] = str(data_dir)
+    return env
+
+
+def doctor_failed(code: int, output: str) -> bool:
+    """Whether the doctor itself broke, as opposed to reporting a check this machine fails
+    (exit 1, e.g. no local model running): a crash fails the build."""
+    return code not in (0, 1) or "Traceback (most recent call last)" in output
+
+
+def check(out: Path) -> None:
+    python = interpreter(out)
+    with tempfile.TemporaryDirectory(prefix="sidecoach-check-") as scratch:
+        env = check_env(Path(scratch) / "data")
+        print(
+            subprocess.run(
+                [
+                    str(python),
+                    "-B",
+                    "-c",
+                    "import sidecoach, onnxruntime, fastapi, kokoro_onnx, onnx_asr; "
+                    "print('imports ok;', onnxruntime.__version__, "
+                    "onnxruntime.get_available_providers())",
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                cwd=scratch,
+                check=True,
+            ).stdout
+        )
+        # The doctor draws its table in box characters: read as UTF-8, whatever the
+        # console's code page (cp1252 lost the whole output, and the build with it).
+        doctor = subprocess.run(
+            [str(python), "-B", "-m", "sidecoach", "doctor"],
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             env=env,
-            check=True,
-        ).stdout
-    )
-    print(
-        # The doctor draws its table in box characters: read as UTF-8, whatever the console's
-        # code page (cp1252 lost the whole output, and the build with it).
-        (
-            subprocess.run(
-                [str(python), "-m", "sidecoach", "doctor"],
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                env={**env, "PYTHONIOENCODING": "utf-8"},
-                cwd=ROOT,
-            ).stdout
-            or ""
-        )[-1500:]
-    )
+            cwd=scratch,
+        )
+    output = (doctor.stdout or "") + (doctor.stderr or "")
+    print(output[-1500:])
+    if doctor_failed(doctor.returncode, output):
+        raise SystemExit(f"the built interpreter's doctor broke (exit {doctor.returncode})")
+    left = list(out.rglob("*.pyc"))
+    if left:
+        raise SystemExit(f"the check wrote {len(left)} .pyc files into {out}")
 
 
 def main() -> None:

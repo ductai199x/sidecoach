@@ -149,18 +149,62 @@ def _check_capture(backend: str = "auto") -> tuple[str, str]:
     )
 
 
+def _check_setup_item(settings: Settings, item_id: str) -> tuple[str, str]:
+    """A first-run setup item (the voice, speech recognition): on disk, or what fetches it."""
+    from sidecoach.setup import items
+
+    found = next((i for i in items(settings) if i.id == item_id), None)
+    if found is None:
+        return "missing", f"no {item_id} item on this machine"
+    if found.present():
+        return "ok", found.title
+    return "missing", f"{found.title}: fetched by the app's first-run setup"
+
+
+def _check_gpu(settings: Settings) -> tuple[str, str]:
+    from sidecoach.setup import gpu
+
+    found = gpu.detect_recent()
+    pack = gpu.installed(settings)
+    where = f"pack {pack.name}" if pack else "no CUDA pack"
+    if not found.get("found"):
+        return (
+            "ok",
+            f"CPU ({found.get('reason') or 'no NVIDIA GPU'}); {where}; mode {settings.gpu.mode}",
+        )
+    detail = f"{found.get('name')}, driver {found.get('driver')}; {where}; mode {settings.gpu.mode}"
+    if not found.get("eligible"):
+        detail += f"; not eligible: {found.get('reason')}"
+    return "ok", detail
+
+
+def _guarded(check: Callable[[], tuple[str, str]]) -> tuple[str, str]:
+    """A check that raised is an error row, not the end of the doctor."""
+    try:
+        return check()
+    except Exception as exc:  # noqa: BLE001
+        return "error", f"{type(exc).__name__}: {exc}"
+
+
 @app.command()
 def doctor(config: ConfigOpt = None) -> None:
-    """Check Python, vision libraries, video codec, Stockfish, the LLM, and screen capture."""
+    """Check Python, vision libraries, video codec, Stockfish, the LLM, screen capture, the
+    voice, speech recognition and the GPU."""
     settings = load_settings(config)
+    rows: list[tuple[str, Callable[[], tuple[str, str]]]] = [
+        ("Vision libs", _check_vision_libs),
+        ("Video codec", _check_video_codec),
+        ("Stockfish", lambda: _check_engine(settings)),
+        ("Openings", lambda: _check_openings(settings)),
+        ("LLM", lambda: _check_llm(settings)),
+        ("Capture", _check_capture),
+        ("Voice", lambda: _check_setup_item(settings, "kokoro")),
+        ("Speech recognition", lambda: _check_setup_item(settings, "stt")),
+        ("GPU", lambda: _check_gpu(settings)),
+    ]
     checks: list[tuple[str, str, str]] = [
         ("Python", "ok", f"{platform.python_version()} ({sys.executable})"),
-        ("Vision libs", *_check_vision_libs()),
-        ("Video codec", *_check_video_codec()),
-        ("Stockfish", *_check_engine(settings)),
-        ("Openings", *_check_openings(settings)),
-        ("LLM", *_check_llm(settings)),
-        ("Capture", *_check_capture()),
+        *((name, *_guarded(check)) for name, check in rows),
     ]
     table = Table(title=f"sidecoach {__version__} doctor")
     table.add_column("Check")
