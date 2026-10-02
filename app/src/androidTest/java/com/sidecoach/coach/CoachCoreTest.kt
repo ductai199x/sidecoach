@@ -714,7 +714,7 @@ class CoachCoreTest {
     }
 
     @Test
-    fun theSamePlanAcrossBestMovesIsOneCombination() {
+    fun theSamePlanAcrossBestMovesIsStillAnotherPosition() {
         val coach = withPlans(
             mapOf(
                 0 to "finishing your development",
@@ -722,7 +722,8 @@ class CoachCoreTest {
                 4 to "finishing your development",
             )
         )
-        assertEquals(emptyList<CoachMessage>(), stuck(coach))
+        // Tai, 2026-10-02: the opponent moved, so it is another position, and a hint comes.
+        assertEquals(listOf(DisclosureLevel.IDEA), levels(stuck(coach)))
     }
 
     @Test

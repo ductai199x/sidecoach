@@ -1456,15 +1456,14 @@ class Coach(
     /**
      * Whether [after], where the player stands again, goes on with the combination they moved on
      * from at [before] by [own]: a forcing sequence the engine's line there continues -- their
-     * move, the reply it expected, and the next move of the line the best now -- or one plan or
-     * theme the facts name at both. `Coach._same_combination`.
+     * move, the reply it expected, and the next move of the line the best now -- or one tactical
+     * theme the facts name at both. A plan is not that: it holds for several quiet moves, each
+     * another position whose stuck player gets its hints. `Coach._same_combination`.
      */
     private fun sameCombination(before: CoachPosition, own: MovePlayed, after: CoachPosition): Boolean {
         val was = before.facts ?: return false
         val now = after.facts ?: return false
-        for ((first, second) in listOf(was.theme to now.theme, was.plan to now.plan)) {
-            if (!first.isNullOrEmpty() && first == second) return true
-        }
+        if (!was.theme.isNullOrEmpty() && was.theme == now.theme) return true
         val line = was.line.map { it.trimEnd('+', '#') }
         return was.nature != null && was.nature.startsWith("forcing") &&
             line.size >= 3 &&
