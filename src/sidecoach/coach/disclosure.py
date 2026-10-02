@@ -479,7 +479,8 @@ def _names_move(text: str, move: str) -> bool:
     if not core:
         return False
     if core.startswith("O-O"):
-        return re.search(rf"(?<![-A-Za-z0-9]){re.escape(core)}(?!-O)(?![A-Za-z0-9])", text) is not None
+        castle = rf"(?<![-A-Za-z0-9]){re.escape(core)}(?!-O)(?![A-Za-z0-9])"
+        return re.search(castle, text) is not None
     return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
 
 

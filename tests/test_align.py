@@ -12,7 +12,14 @@ import pytest
 
 from sidecoach.coach.coach import NO_FIGURES, NOT_THE_MOVE, _hold_rule
 from sidecoach.events import DisclosureLevel, Label, MoveAssessment, Severity, Trigger
-from tests.coaching import SCHOLAR, mate_analysis, mate_missed, play_to_scholar, scripted_coach
+from tests.coaching import (
+    SCHOLAR,
+    mate_analysis,
+    mate_missed,
+    offline_coach,
+    play_to_scholar,
+    scripted_coach,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "eval"))
 
@@ -45,9 +52,9 @@ QUESTIONS = [
 ASK_CLASSES = sorted({cls for cls, _ in QUESTIONS})
 
 
-def _at_scholar():
+def _at_scholar(offline: bool = False):
     """The player to move after 3... Nf6, the position analysed and Nf6 judged."""
-    coach, _ = scripted_coach([])
+    coach = offline_coach() if offline else scripted_coach([])[0]
     play_to_scholar(coach)
     board = chess.Board(SCHOLAR)
     coach.on_event(
@@ -67,9 +74,9 @@ def _at_scholar():
     return coach
 
 
-def _after_the_miss():
+def _after_the_miss(offline: bool = False):
     """The player has just played 4. Bxf7+, a miss, and it is judged."""
-    coach = _at_scholar()
+    coach = _at_scholar(offline)
     mate_missed(coach)
     return coach
 
@@ -79,16 +86,47 @@ def test_every_class_has_a_marker():
 
 
 @pytest.mark.parametrize("cls", ASK_CLASSES)
-def test_every_question_reaches_the_directive_of_its_class(cls: str):
+def test_every_question_reaches_the_directive_of_its_class_offline(cls: str):
+    """The offline coach keeps its keyword branches: a question's class picks its directive
+    (the templates' and the fallback's)."""
     marker, level = MARKERS[cls]
     # One game per class, its questions asked in turn: the directive is the question's, not
     # the order it came in.
-    coach = _after_the_miss() if cls == "ask_last_move" else _at_scholar()
+    coach = _after_the_miss(True) if cls == "ask_last_move" else _at_scholar(True)
     for question in (q for c, q in QUESTIONS if c == cls):
         directive, _ = coach._instruction(
             Trigger.USER_ASK, coach.positions[6], level, question, (), None, None
         )
         assert marker in directive, (cls, question, directive[:300])
+
+
+# With the AI on no keyword picks the directive: one set of guidelines, whatever the question
+# (Tai, 2026-10-02), and each class of question finds its guidance in it.
+GUIDELINES = {
+    "ask_hint": "A hint: one rung up the ladder",
+    "ask_plan": "A hint: one rung up the ladder",
+    "ask_eval": "How they stand, the material, the opening",
+    "ask_threat": "The opponent's move or threat",
+    "ask_named_move": "A move, square or piece they name",
+    "ask_opponent_move": "The opponent's move or threat",
+    "ask_last_move": "A move they already played",
+    "ask_game_so_far": "How they did overall",
+    "ask_opening": "How they stand, the material, the opening",
+    "ask_material": "How they stand, the material, the opening",
+    "ask_move": "The move -- ",
+    "ask_line": "The line, or what happens next",
+}
+
+
+@pytest.mark.parametrize("cls", ASK_CLASSES)
+def test_every_question_reaches_the_ai_guidelines_whatever_its_words(cls: str):
+    coach = _after_the_miss() if cls == "ask_last_move" else _at_scholar()
+    for question in (q for c, q in QUESTIONS if c == cls):
+        directive, _ = coach._instruction(
+            Trigger.USER_ASK, coach.positions[6], DisclosureLevel.IDEA, question, (), None, None
+        )
+        assert GUIDELINES[cls] in directive, (cls, question, directive[:300])
+        assert "They asked" not in directive and "They ask " not in directive
 
 
 def _item(directive: str, required: list[dict], cls: str = "verdict_weaker") -> dict:
