@@ -71,22 +71,50 @@ class Store:
         self._db: sqlite3.Connection | None = None
         self.broken = False
 
+    def _create(self) -> None:
+        """The file made whole before anyone opens it: written aside (WAL, which the file
+        keeps, and its table), then linked into place, which fails when another process got
+        there first. The workers starting together each opened a new file and set it up at
+        once, and one setup could find the file locked by another (2026-10-02, 32 rows of 48
+        not kept): now no connection ever sets a file up."""
+        if self.path.exists():
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        aside = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.new")
+        db = sqlite3.connect(aside)
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS rows (key BLOB PRIMARY KEY, value BLOB NOT NULL)"
+                " WITHOUT ROWID"
+            )
+            db.commit()
+        finally:
+            db.close()
+        try:
+            os.link(aside, self.path)
+        except FileExistsError:
+            pass  # another process's file is the one: the same, made the same way
+        finally:
+            with contextlib.suppress(OSError):
+                aside.unlink()
+
     def _open(self) -> sqlite3.Connection | None:
         if self._db is None and not self.broken:
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._create()
                 db = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
-                db.execute("PRAGMA journal_mode=WAL")
                 db.execute("PRAGMA synchronous=NORMAL")
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS rows (key BLOB PRIMARY KEY, value BLOB NOT NULL)"
-                    " WITHOUT ROWID"
-                )
-                db.commit()
                 self._db = db
-            except sqlite3.Error:
+            except (OSError, sqlite3.Error):
                 self.broken = True
         return self._db
+
+    def _failed(self, exc: sqlite3.Error) -> None:
+        """A busy file (another process writing past the 30 s wait) costs this read or write
+        only; a file that is not a database ends the cache for this process."""
+        if not isinstance(exc, sqlite3.OperationalError) or "locked" not in str(exc):
+            self.broken = True
 
     def get(self, keys: list[bytes]) -> dict[bytes, bytes]:
         with self._lock:
@@ -96,8 +124,8 @@ class Store:
             try:
                 marks = ",".join("?" * len(keys))
                 return dict(db.execute(f"SELECT key, value FROM rows WHERE key IN ({marks})", keys))
-            except sqlite3.Error:
-                self.broken = True
+            except sqlite3.Error as exc:
+                self._failed(exc)
                 return {}
 
     def put(self, rows: dict[bytes, bytes]) -> None:
@@ -108,8 +136,8 @@ class Store:
             try:
                 with db:
                     db.executemany("INSERT OR REPLACE INTO rows VALUES (?, ?)", rows.items())
-            except sqlite3.Error:
-                self.broken = True
+            except sqlite3.Error as exc:
+                self._failed(exc)
 
     def close(self) -> None:
         with self._lock:

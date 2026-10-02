@@ -15,6 +15,7 @@ import pytest
 
 import tests.netcache as netcache
 import tests.synth as synth
+from tests.fakes import HANG_S
 
 # -- the renderer's frames ------------------------------------------------------------
 
@@ -213,16 +214,22 @@ def test_a_store_that_cannot_be_read_costs_speed_not_answers(tmp_path: Path) -> 
 
 
 def test_workers_share_one_store(tmp_path: Path) -> None:
-    """Several processes' connections to one file, writing and reading at once: every
-    answer right, and every row in the store afterwards."""
+    """Several processes' connections to one new file, opening it at the same moment (as the
+    workers do on a cold cache), then writing and reading at once: every answer right, no
+    connection given up on, and every row in the store afterwards. (When each connection
+    set the file up itself, a setup found it locked by another's and that worker cached
+    nothing: 32 of 48 rows run again, 2026-10-02.)"""
     cells = [_cells(8, seed) for seed in range(6)]
     errors: list[BaseException] = []
+    stores: list[netcache.Store] = []
+    together = threading.Barrier(6)
 
     def worker(i: int) -> None:
         try:
-            session = netcache.CachedSession(
-                _Net(), b"p" * 16, netcache.Store(tmp_path / "n.sqlite")
-            )
+            store = netcache.Store(tmp_path / "n.sqlite")
+            stores.append(store)
+            session = netcache.CachedSession(_Net(), b"p" * 16, store)
+            together.wait(HANG_S)
             for batch in (cells[i], cells[(i + 1) % 6], cells[i]):
                 assert np.array_equal(_run(session, batch), _Net().run(None, {"cells": batch})[0])
         except BaseException as exc:  # noqa: BLE001 - reported below
@@ -234,6 +241,7 @@ def test_workers_share_one_store(tmp_path: Path) -> None:
     for t in threads:
         t.join()
     assert not errors, errors
+    assert not any(store.broken for store in stores), "a worker gave up on the store"
     net = _Net()
     late = netcache.CachedSession(net, b"p" * 16, netcache.Store(tmp_path / "n.sqlite"))
     for batch in cells:
