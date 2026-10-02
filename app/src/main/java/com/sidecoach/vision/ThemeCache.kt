@@ -1,9 +1,12 @@
 package com.sidecoach.vision
 
+import android.util.Log
+import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -166,6 +169,10 @@ object ThemeCache {
  */
 class ThemeStore(private val directory: File) {
 
+    private companion object {
+        const val TAG = "sidecoach.themes"
+    }
+
     /**
      * Each file's palette, read once per file version (its size and time, [stamp]): a board
      * waiting to be read cold asks twice a second, and a theme file is a few hundred KB. Only
@@ -191,11 +198,14 @@ class ThemeStore(private val directory: File) {
     /**
      * Written beside and moved over the old file: written in place, a save cut short (the app
      * killed, a full disk) left half a file and lost the set it replaced (round 2, finding 9).
-     * A save that fails keeps the old file and returns null (`ThemeCache.save`).
+     * A save that fails on the disk keeps the old file, says so in the log and returns null;
+     * one that fails otherwise raises, to its caller's log. Either way the part file goes
+     * (`ThemeCache.save`, round 3).
      */
     private fun store(model: ThemeModel, key: String): String? {
         val target = path(key)
         val partial = File(directory, target.name + ".part")
+        var saved = false
         try {
             directory.mkdirs()
             val file = FileOutputStream(partial)
@@ -205,9 +215,12 @@ class ThemeStore(private val directory: File) {
                 file.fd.sync()
             }
             Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        } catch (e: Exception) {
-            partial.delete()
+            saved = true
+        } catch (e: IOException) {
+            Log.w(TAG, "theme $key not saved: $e")
             return null
+        } finally {
+            if (!saved) partial.delete()
         }
         return key
     }
@@ -229,13 +242,17 @@ class ThemeStore(private val directory: File) {
         }
         val found = ArrayList<Pair<String, ThemeModel>>()
         for ((_, file) in near.sortedBy { it.first }) {
-            // Any failure to read is a file not there: a damaged length can ask for more memory
-            // than there is, an Error, not an Exception (round 2, finding 9).
+            // Any failure to read is a file not there, said once in the log: this version of the
+            // file is not read again, as the desktop's palette, read from the whole file, is
+            // not. The file is read whole first, so every length in it is held to the bytes left
+            // ([length]) before anything is allocated by it: a damaged length asked for more
+            // memory than there is (round 2, finding 9; round 3, where an OutOfMemoryError was
+            // caught instead).
             val model = try {
-                DataInputStream(file.inputStream().buffered()).use { read(it) }
+                DataInputStream(ByteArrayInputStream(file.readBytes())).use { read(it) }
             } catch (e: Exception) {
-                null
-            } catch (e: OutOfMemoryError) {
+                Log.w(TAG, "theme file ${file.name} not read, left out: $e")
+                palettes[stamp(file)] = null
                 null
             } ?: continue
             found.add(file.name.removePrefix("theme-").removeSuffix(".bin") to model)
@@ -282,10 +299,22 @@ class ThemeStore(private val directory: File) {
                     light to dark
                 }
             } catch (e: Exception) {
+                Log.w(TAG, "theme file ${file.name} not read, left out: $e")
                 null
             }
         }
         return palettes[key]
+    }
+
+    /**
+     * A length read from a theme file, of [count] items of [bytesEach] bytes each, held to the
+     * bytes left in it: a damaged one is refused before anything is allocated by it.
+     */
+    private fun DataInputStream.length(count: Long, bytesEach: Long = 1): Int {
+        if (count < 0 || count > available() / bytesEach) {
+            throw IOException("damaged theme file: $count items of $bytesEach bytes past its end")
+        }
+        return count.toInt()
     }
 
     // The payload, written at CACHE_VERSION only. A file that does not read back, or is older
@@ -370,6 +399,8 @@ class ThemeStore(private val directory: File) {
         repeat(input.readInt()) { palette.add(DoubleArray(3) { input.readDouble() }) }
         val vectorCount = input.readInt()
         val dim = input.readInt()
+        if (dim < 0) throw IOException("damaged theme file: vectors of $dim numbers")
+        input.length(vectorCount.toLong() * dim, 2) // half precision: two bytes a number
         val vectors = Array(vectorCount) { FloatArray(dim) { halfToFloat(input.readShort()) } }
         val labels = ArrayList<String>()
         repeat(input.readInt()) { labels.add(input.readUTF()) }
@@ -384,7 +415,8 @@ class ThemeStore(private val directory: File) {
             val light = if (version >= 6) input.readBoolean() else null
             val rows = input.readInt()
             val cols = input.readInt()
-            val pixels = ByteArray(rows * cols)
+            if (rows < 0 || cols < 0) throw IOException("damaged theme file: a crop of $rows x $cols")
+            val pixels = ByteArray(input.length(rows.toLong() * cols))
             input.readFully(pixels)
             val crop = LandingCrop(rows, cols, pixels)
             if (light != null) {
@@ -431,6 +463,8 @@ class ThemeStore(private val directory: File) {
 
     private fun readBits(input: DataInputStream): BooleanArray {
         val size = input.readInt()
+        if (size < 0) throw IOException("damaged theme file: $size bits")
+        input.length((size + 7L) / 8) // eight bits a byte
         val bits = BooleanArray(size)
         var byte = 0
         for (i in 0 until size) {

@@ -32,6 +32,7 @@ import com.sidecoach.vision.Squares
 import com.sidecoach.vision.ThemeCache
 import com.sidecoach.vision.ThemeModel
 import com.sidecoach.vision.ThemeStore
+import android.util.Log
 import org.opencv.core.Mat
 
 /** What a read shows: the placement and the squares the site highlights. */
@@ -122,6 +123,8 @@ class GamePipeline(
         const val RELEARN_UNEXPLAINED_FRAMES = 2
         const val RELEARN_EVERY_S = 0.5
         const val RELEARN_HOLD_S = 0.5
+
+        private const val TAG = "sidecoach.pipeline"
     }
 
     var startFramesNeeded = 2
@@ -837,7 +840,7 @@ class GamePipeline(
             try {
                 it.save(built, learnedSet(it, built, frame, geometry, side))
             } catch (e: Exception) {
-                // not cached
+                Log.w(TAG, "the learned theme was not cached", e) // as the desktop logs it
             }
         }
         return true
