@@ -732,6 +732,16 @@ AI_GUIDELINES = (
     "conversation above and the position; all of the sheet is yours to use -- every engine "
     "line with its score, the candidate moves, the facts, the last move of each side with its "
     "verdict. Some guidelines, not rules:\n"
+    '- First, what the words refer to. Some can mean two things here: which move "that" or '
+    '"it" is (their move, the opponent\'s reply, a move withdrawn, one of several named above), '
+    "a move now or one instead of the move they just played, this position or the whole game. "
+    "Let the conversation and the position decide -- what was just said or named, whose move it "
+    "is, which move was the mistake -- and when they do, answer that reading and say in a few "
+    'words which it is. When they do not -- "that" when their move and the reply both went '
+    'wrong, "it" after several moves were named, a move legal both now and instead of the '
+    "one just played -- and the readings would get different answers, do not guess: reply with "
+    'one short question that names the readings ("Instead of Bc4, which you just played, or as '
+    'your next move?") and nothing else. Never ask when every reading gets the same answer.\n'
     "- A hint: one rung up the ladder above, said once, never lower than one already said.\n"
     '- The move -- "what should I play", "the play here", "the move": give it plainly, '
     "and why it works, from the sheet's why and pattern. Several moves about as good: say so "
@@ -743,7 +753,7 @@ AI_GUIDELINES = (
     "they could have played instead of their last move: answer from the position they faced "
     "before it -- the moves about as good there and the clearly worse ones, given below -- and "
     "say how their move compares. The opponent's best move or plan is another question, the "
-    "opponent's. When the words could mean either, say which you answer.\n"
+    "opponent's.\n"
     "- The line, or what happens next: the engine's line move by move, and the idea behind "
     "it; once given, what comes after its end.\n"
     "- A move, square or piece they name: whether it holds up and what it does or allows, from "
@@ -751,8 +761,7 @@ AI_GUIDELINES = (
     "how far behind the best, the reply, what the move does.\n"
     '- "That", "it" or "that move" may mean their own last move or the opponent\'s reply. '
     "The sheet gives both positions -- the one they faced before their move and the one after "
-    "the reply -- and says how long the reply took when that is known: read the conversation, "
-    "take the likelier, and say which move you mean when it could be either.\n"
+    "the reply -- and says how long the reply took when that is known.\n"
     "- The opponent's move or threat: from the last move and its verdict and the threats the "
     "facts list. When it is the opponent's move there is no move of theirs to find: say what "
     "they threaten and what to be ready for.\n"
@@ -779,7 +788,8 @@ AI_FOLLOW_UP = (
 AI_ANSWERING = (
     " Your last turn above ended with a question: if their words answer it, say first, plainly "
     "and from the facts, whether they have it right, and give the answer yourself in a sentence "
-    "when they do not; that closes the question, so ask nothing more."
+    "when they do not; that closes the question, so ask nothing more. If it asked which of two "
+    "things they meant, their words pick one: answer their earlier question on that reading."
 )
 # A hint asked after the move was given: the move again, with why it beats clearly worse moves
 # (Tai, 2026-09-30), as a guideline to the AI; the offline coach keeps its template
@@ -1428,6 +1438,13 @@ def _after_best(request: _Request) -> list[chess.Board]:
     if request.disclosed:
         frames += disclosed_frames(request.board, request.disclosed.splitlines())
     return frames + request.frames + (request.tools.frames if request.tools is not None else [])
+
+
+def _label_of(record: PlyRecord) -> str:
+    """A judged move's label, or its severity when it has none."""
+    verdict = record.assessment
+    assert verdict is not None
+    return verdict.label.value if verdict.label else verdict.severity.value
 
 
 def _rated(label: str) -> str:
@@ -2587,6 +2604,18 @@ _ASK_THEIR_MOVE = re.compile(
     r"play\b",
     re.I,
 )
+# Whose move "that" is, said so: the opponent's, or the player's own.
+_THEIR_WORDS = re.compile(
+    r"\b(?:they|he|she|their|theirs|his|her|the opponent'?s?|my opponent'?s?|the reply)\b", re.I
+)
+_MINE_WORDS = re.compile(r"\b(?:mine|my|i|me|myself)\b", re.I)
+# "That" asked about as a move that went wrong: the one of the last two that did is the likelier.
+_ASK_WENT_WRONG = re.compile(
+    r"\b(?:bad|wrong|mistakes?|blunder(?:ed)?|inaccura\w*|miss(?:ed)?|cost|weak|dubious)\b", re.I
+)
+_THAT = re.compile(
+    r"\b(?:that|it|this)(?: move)?\b|\b(?:my|their|his|her|the opponent'?s) (?:last )?move\b", re.I
+)
 # "I am not stuck, just thinking" is no request for a hint.
 _NOT_STUCK = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:\w+\s+)?stuck\b", re.I)
 # How the position goes on is the line: "how would this position continues?" and "ok and after
@@ -2771,6 +2800,9 @@ class Coach:
         # How many moves of the player's own were played in the session: with the epoch, the
         # moment the voice holds a reply to (`moved_on`).
         self._own_moves = 0
+        # The offline coach asked which move "that" was (`_that_move`): the question, the moment
+        # and the ply it was asked at, for the words that answer it (`_picked`).
+        self._clarifying: tuple[str, Moment, int] | None = None
 
     # Lifecycle
 
@@ -2962,6 +2994,10 @@ class Coach:
             level = DisclosureLevel.LINE
         with self._lock:
             self.conversation.user_said(text)
+        if offline:
+            # Words that answer the coach's "your move, or theirs?" are read with the question
+            # they answer; recorded as said.
+            text = self._picked(text)
         if (own := self._asked_own_move(text)) is not None:
             # About the move they already played: spoken from the position it was played
             # from, with everything shown, as the lesson after a mistake is. That position
@@ -4021,6 +4057,9 @@ class Coach:
         template alone -- what is said when a model's reply fails a check on the board."""
         if not (self._offline or rules):
             return None
+        if (that := self._that_move(text)) is not None:
+            # On their move right after the opponent's reply: whose "that" is (`_that_move`).
+            return that[1] if that[0] == "own" else None
         if _ASK_LAST_MOVE.search(text) or _ASK_COST.search(text):
             return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
         if self.finished or self.user_to_move or not self._offline:
@@ -4038,6 +4077,67 @@ class Coach:
         if any(pattern.search(text) for pattern in elsewhere):
             return None
         return self._last_own_move()
+
+    def _that_move(self, said: str) -> tuple[str, PlyRecord, PlyRecord] | None:
+        """The offline coach's (and the AI's fallback's) reading of "that" in a question about a
+        move going wrong, on the player's move right after the opponent's reply to theirs: "why
+        was that bad?" may mean either. The words decide when they say whose ("my", "their") or
+        name the move; else the one of the two that went wrong. ("own" | "theirs", their move,
+        the reply); ("ask", ...) when both went wrong -- the readings get different answers and
+        nothing settles it, so the coach asks which; ("neither", ...) when neither did -- both
+        readings get the same answer. None when the words ask no such thing, or the two moves
+        and their verdicts are not known. The AI reads this for itself (AI_GUIDELINES)."""
+        if self.finished or not self.user_to_move:
+            return None
+        with self._lock:
+            records = self.conversation.active_records()
+        if len(records) < 2:
+            return None
+        own, reply = records[-2], records[-1]
+        if (
+            not own.move.by_user
+            or reply.move.by_user
+            or own.assessment is None
+            or reply.assessment is None
+        ):
+            return None
+        words = re.sub(r"\bmy opponent'?s?\b", "their", said, flags=re.I)
+        named = {m.rstrip("+#") for m in _SAN.findall(words)}
+        mine_san, their_san = own.move.san.rstrip("+#"), reply.move.san.rstrip("+#")
+        if named:
+            if mine_san in named and their_san not in named:
+                return ("own", own, reply)
+            if their_san in named and mine_san not in named:
+                return ("theirs", own, reply)
+            return None  # another move named: not "that"
+        if not (
+            _ASK_LAST_MOVE.search(words)
+            or _ASK_COST.search(words)
+            or (_THAT.search(words) and _ASK_WENT_WRONG.search(words))
+        ):
+            return None
+        theirs_said, mine_said = bool(_THEIR_WORDS.search(words)), bool(_MINE_WORDS.search(words))
+        if theirs_said != mine_said:
+            return ("theirs" if theirs_said else "own", own, reply)
+        erred = [r for r in (own, reply) if r.assessment.severity is not Severity.NONE]  # type: ignore[union-attr]
+        if len(erred) == 1:
+            return ("own" if erred[0] is own else "theirs", own, reply)
+        return ("ask" if erred else "neither", own, reply)
+
+    def _picked(self, text: str) -> str:
+        """The words that answer the coach's question of which move "that" was (`_that_move`),
+        read with the question they answer: "why was that bad? -- mine". The words alone when
+        they answer no such question, or pick neither move."""
+        held, self._clarifying = self._clarifying, None
+        if held is None or _QUESTION_START.match(text.strip()):
+            return text  # a question of its own
+        original, moment, ply = held
+        current = self._current
+        if moment != self._moment() or current is None or current.ply != ply:
+            return text
+        combined = f"{original} -- {text}"
+        that = self._that_move(combined)
+        return combined if that is not None and that[0] in ("own", "theirs") else text
 
     def _reply_note(self) -> str:
         """When the last move on the board is the opponent's, directly after the player's own:
@@ -5212,6 +5312,8 @@ class Coach:
         # should play Nxc3" got the lesson again and "Which White piece is still at home on
         # g1?" (the AI's sessions, 2026-09-26).
         followup = self._following_up(said)
+        # Whose move "that" is, right after the opponent's reply (`_that_move`).
+        that = self._that_move(said)
         asks = bool(question_part(said))
         follow = (
             " You have already told them the verdict on it and the better move, in your turns "
@@ -5291,6 +5393,33 @@ class Coach:
             else:
                 directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += f" {NO_FIGURES} Do not comment on anything said earlier."
+        elif that is not None and that[0] in ("ask", "neither"):
+            # "Why was that bad?" right after the opponent's reply, the two moves both gone
+            # wrong or neither: which "that" is, the words and the verdicts do not settle.
+            _, own_record, reply_record = that
+            mine, theirs_san = own_record.move.san, reply_record.move.san
+            if that[0] == "ask":
+                # The readings get different answers: asked, in one short question, and the
+                # words that answer it are read with it (`_picked`).
+                fallback = f"Your {mine}, or their {theirs_san}?"
+                directive = (
+                    f"Both their {mine} and the opponent's reply {theirs_san} went wrong, and "
+                    "their words do not say which they mean: ask which, in one short question "
+                    "naming both, and nothing else."
+                )
+                if self._offline and self._current is not None:
+                    self._clarifying = (said, self._moment(), self._current.ply)
+            else:
+                # Both readings get the same answer: said for both, no question.
+                fallback = (
+                    f"Neither was a mistake: your {mine} was "
+                    f"{_rated(_label_of(own_record))}, and their {theirs_san} was "
+                    f"{_rated(_label_of(reply_record))}."
+                )
+                directive = (
+                    f"Neither their {mine} nor the opponent's reply {theirs_san} went wrong: say "
+                    "so of both, plainly, in one or two sentences, no question."
+                )
         elif (instead := self._faced_alternatives(position, said)) is not None:
             # The moves they could have played instead of their last one, from the position
             # they faced before it, and how theirs compares (Tai, 2026-10-02).
@@ -5382,7 +5511,10 @@ class Coach:
                     f"{fallback} {', '.join(rest[:-1]) + ' and ' if len(rest) > 1 else ''}"
                     f"{rest[-1]} {'are' if len(rest) > 1 else 'is'} about as good."
                 ).strip()
-        elif _ASK_OPPONENT_MOVE.search(said) and (their := self._last_opponent_move()) is not None:
+        elif (
+            (_ASK_OPPONENT_MOVE.search(said) and not (that is not None and that[0] == "own"))
+            or (that is not None and that[0] == "theirs")
+        ) and (their := self._last_opponent_move()) is not None:
             assert their.assessment is not None
             verdict = their.assessment
             san = their.move.san
@@ -5685,8 +5817,13 @@ class Coach:
         if len(facts.candidates) > 1:
             # On the opponent's move these are the opponent's: named so, or they read as the
             # player's fine moves.
-            whose = "The opponent's moves" if theirs else "The moves"
-            out += f" {whose} about equally good here: {', '.join(facts.candidates)}."
+            if theirs:
+                out += (
+                    " The opponent's own options now, about equally good (for a question about "
+                    f"their move): {', '.join(facts.candidates)}."
+                )
+            else:
+                out += f" The moves about equally good here: {', '.join(facts.candidates)}."
         out += self._faced_alternatives_words(position)
         worse = (
             worse_moves(position.board, position.analysis, self.user_colour)
