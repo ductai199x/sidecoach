@@ -374,9 +374,15 @@ def test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start(tmp_path) -> 
     assert started <= set(kept), "the whole set learned at the start is kept"
     new = [model for key, model in kept.items() if key not in started]
     assert len(new) == 1, "the look learned mid-game, cached"
-    # The app restarted: the cached set reads the game's next position, every piece.
+    # The app restarted: the cached set reads the game's next position, every piece, and the
+    # board is read cold from the cache.
     assert GamePipeline._reads_as(new[0].classify_frame(later, geometry), board, Side.WHITE)
     assert new[0].exemplar_labels == pipe.model.exemplar_labels
+    restarted = GamePipeline(cache=cache)
+    events = restarted.cold_start(later, geometry, Side.WHITE)
+    assert any(isinstance(e, GameStarted) for e in events), "read cold after a restart"
+    assert restarted.reconciler is not None
+    assert restarted.reconciler.board.board_fen() == board.board_fen()
 
 
 def _palette_of(pipe: GamePipeline, board: chess.Board) -> tuple[Any, Any]:
