@@ -47,6 +47,7 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
     fun list(): JSONObject {
         val games = JSONArray()
         withStore { store ->
+            Library.refresh(store, users().toList())
             val twins = Library.reconcile(store)
             ReviewRoom.carryTwins(store, twins) // a pair's review goes with the import that stands for it
             val watched = Library.fromWatched(store).filter { it.key !in twins }

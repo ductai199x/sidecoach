@@ -203,6 +203,10 @@ object Stats {
             out.put("peers", JSONObject().put("rating", Performance.forSite(peers.first, site(d))).put("from", peers.second))
         }
         out.put("work", work(out.getJSONObject("costs")))
+        // The reviewed games whose player's side is not known (no username of theirs in them):
+        // the page says why they are left out, rather than showing nothing (the review of
+        // 2026-10-01).
+        out.put("unsided", store.statGames().count { it.userSide != "white" && it.userSide != "black" })
         return out
     }
 

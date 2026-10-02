@@ -1,5 +1,6 @@
 package com.sidecoach.ui
 
+import com.sidecoach.profile.Library
 import com.sidecoach.profile.Puzzles
 import com.sidecoach.profile.Stats
 import com.sidecoach.profile.Store
@@ -17,7 +18,7 @@ import java.io.File
  * chess.com has none), so the numbers come without a background reviewer's progress: `backlog`
  * is null, as on a desktop panel started without one.
  */
-class StatsApi(private val files: File) {
+class StatsApi(private val files: File, private val userNames: () -> List<String> = { emptyList() }) {
 
     private fun <T> withStore(use: (Store) -> T): T {
         val store = Store(File(files, "profile.sqlite"))
@@ -43,6 +44,7 @@ class StatsApi(private val files: File) {
         val numbers = withStore { store ->
             // A review whose Stats step a kill cut short counts too (no background review here
             // to catch it up: the review of 2026-10-01).
+            Library.refresh(store, userNames())
             ReviewRoom.keepMissingStats(store)
             Stats.stats(store, filter(query), now).also { drills(it.getJSONArray("work"), files, store) }
         }

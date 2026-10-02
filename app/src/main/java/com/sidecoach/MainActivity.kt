@@ -153,7 +153,11 @@ class MainActivity : ComponentActivity() {
                 // The app's own folder on shared storage, where `adb pull` reaches a dump.
                 dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
                 games = GamesApi(filesDir, store),
-                stats = StatsApi(filesDir),
+                stats = StatsApi(filesDir) {
+                    val profile = store.section("profile")
+                    listOf(profile.optString("chesscom_user", ""), profile.optString("lichess_user", ""))
+                        .map { com.sidecoach.voice.Py.strip(it) }.filter { it.isNotEmpty() }
+                },
                 // One set of review rooms for the app, as the puzzle rooms: a review under way
                 // outlives the window being rebuilt (a turn of the phone).
                 reviews = { ReviewRooms.shared(applicationContext) },

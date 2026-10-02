@@ -419,6 +419,23 @@ class Store(val path: File?) {
 
     // ---- the review's library and its reviews (store.py) ------------------------------------------
 
+    /**
+     * The player's side in each imported game that has none, by their usernames (lower case): a
+     * game brought in before the username was set. `fill_sides`.
+     */
+    fun fillSides(names: List<String>) {
+        if (names.isEmpty()) return
+        val marks = names.joinToString(",") { "?" }
+        lock.withLock {
+            exec(
+                "UPDATE library SET user_side = CASE WHEN lower(white) IN ($marks) THEN 'white'" +
+                    " WHEN lower(black) IN ($marks) THEN 'black' END" +
+                    " WHERE user_side IS NULL AND (lower(white) IN ($marks) OR lower(black) IN ($marks))",
+                *(names + names + names + names).toTypedArray(),
+            )
+        }
+    }
+
     /** A game imported for review; the same game imported again replaces its row. */
     fun addLibraryGame(row: LibraryRow) {
         lock.withLock {
@@ -666,7 +683,16 @@ class Store(val path: File?) {
      * came in, until the import was opened and reviewed). `stat_games`.
      */
     fun statGames(): List<StatGameRow> = lock.withLock {
-        rows("SELECT * FROM stat_games WHERE key NOT IN ($STOOD_FOR) ORDER BY played_at") { statGameRow(it) }
+        // The player's side and the time class are the library's as it is now, when it has the
+        // game: a game reviewed before the username was set kept no side and never reached Stats
+        // (the review of 2026-10-01).
+        rows(
+            "SELECT s.key, s.strength, s.source, s.played_at, s.bot, s.result, s.opening," +
+                " s.termination, COALESCE(l.user_side, s.user_side) AS user_side," +
+                " COALESCE(l.time_class, s.time_class) AS time_class" +
+                " FROM stat_games s LEFT JOIN library l ON l.key = s.key" +
+                " WHERE s.key NOT IN ($STOOD_FOR) ORDER BY s.played_at",
+        ) { statGameRow(it) }
     }
 
     /** The facts of the games' moves, in order. `stat_moves`. */

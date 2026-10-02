@@ -58,14 +58,9 @@ object Library {
     ): LibraryRow {
         val headers = game.headers
         val pgn = game.toString()
-        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
         val white = headers["White"]
         val black = headers["Black"]
-        val userSide = when {
-            !white.isNullOrEmpty() && white.lowercase() in names -> "white"
-            !black.isNullOrEmpty() && black.lowercase() in names -> "black"
-            else -> null
-        }
+        val userSide = sideOf(white, black, userNames)
         val own = key ?: run {
             val movetext = game.mainlineMoves().joinToString(" ") { it.uci() }
             val text = "${white ?: "None"}|${black ?: "None"}|${headers["Date"] ?: "None"}|$movetext"
@@ -162,6 +157,26 @@ object Library {
             )
         }
         return rows
+    }
+
+    /** The player's side by their usernames, null when neither player is theirs. `side_of`. */
+    fun sideOf(white: String?, black: String?, userNames: Iterable<String>): String? {
+        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
+        return when {
+            !white.isNullOrEmpty() && white.lowercase() in names -> "white"
+            !black.isNullOrEmpty() && black.lowercase() in names -> "black"
+            else -> null
+        }
+    }
+
+    /**
+     * The imported games' fields that follow the player's settings, as they read now: a game
+     * brought in before the username was set has the player's side once it is set (the review
+     * of 2026-10-01: such a game never reached Stats, and Your games showed it sideless).
+     * `refresh`.
+     */
+    fun refresh(store: Store, userNames: Iterable<String>) {
+        store.fillSides(userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() })
     }
 
     /** A game of the library by its key: imported, or one Sidecoach watched. `find`. */

@@ -34,6 +34,27 @@ class StatsReviewTest {
         themes = "", endgame = null, spentMs = 5000, clockMs = 300_000,
     )
 
+    /** `test_a_game_reviewed_before_the_username_counts_once_it_is_set`. */
+    @Test
+    fun aGameReviewedBeforeTheUsernameCountsOnceItIsSet() {
+        val store = Store(null)
+        try {
+            store.addLibraryGame(LibraryRow(key = "pgn:1", source = "pgn", addedAt = 0.0, pgn = "1. e4 *", playedAt = now, white = "Tai"))
+            store.saveStats("standard", game("pgn:1", userSide = null), listOf(move(1)))
+            var shown = Stats.stats(store, Stats.Filter(), now)
+            assertEquals(0 to 1, shown.getJSONObject("overview").getInt("games") to shown.getInt("unsided"))
+            Library.refresh(store, listOf("tai"))
+            shown = Stats.stats(store, Stats.Filter(), now)
+            assertEquals(1 to 0, shown.getJSONObject("overview").getInt("games") to shown.getInt("unsided"))
+            // Pasted again with the username known: the import's row has the side, and Stats follows.
+            store.saveStats("standard", game("pgn:2", userSide = null), listOf(move(2, side = "black")))
+            store.addLibraryGame(LibraryRow(key = "pgn:2", source = "pgn", addedAt = 0.0, pgn = "1. e4 *", playedAt = now, black = "Tai", userSide = "black"))
+            assertEquals(2, Stats.stats(store, Stats.Filter(), now).getJSONObject("overview").getInt("games"))
+        } finally {
+            store.close()
+        }
+    }
+
     /** `test_work_on_this_waits_for_several_games`. */
     @Test
     fun workOnThisWaitsForSeveralGamesAndCountsMoves() {
