@@ -96,6 +96,10 @@ android {
     sourceSets {
         getByName("test").kotlin.srcDir("src/sharedTest/java")
         getByName("androidTest").kotlin.srcDir("src/sharedTest/java")
+        // The vision bench's game (VisionBenchTest), written by the desktop's
+        // `tools/bench_vision.py --frames app/build/bench/bench-vision`: in the test APK only
+        // when it has been written, so the suite's own runs carry nothing extra.
+        getByName("androidTest").assets.srcDir("build/bench")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
