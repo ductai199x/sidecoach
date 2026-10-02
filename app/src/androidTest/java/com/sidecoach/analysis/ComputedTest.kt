@@ -52,7 +52,7 @@ class ComputedTest {
     /** `FakeEngine`: the lines for a position's FEN, else a quiet line. */
     private open class FakeEngine(private val answers: Map<String, List<Line>> = emptyMap()) : Engine(File("fake"), null) {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (board.isGameOver(claimDraw = true)) return emptyList()
+            if (com.sidecoach.analysis.gameOver(board)) return emptyList()
             return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
         }
 

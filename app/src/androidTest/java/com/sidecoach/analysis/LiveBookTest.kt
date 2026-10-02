@@ -30,7 +30,7 @@ class LiveBookTest {
     /** Every position answered with the same quiet line, as the desktop test's FakeEngine. */
     private class QuietEngine : Engine(File("quiet"), null) {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> =
-            if (board.isGameOver(claimDraw = true)) emptyList()
+            if (com.sidecoach.analysis.gameOver(board)) emptyList()
             else listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
 
         override fun close() = Unit

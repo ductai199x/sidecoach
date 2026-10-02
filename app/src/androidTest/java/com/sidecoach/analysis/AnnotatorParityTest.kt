@@ -179,7 +179,7 @@ class AnnotatorParityTest {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             calls.add(board.fen())
             multipvs.add(multipv ?: 1)
-            if (board.isGameOver(claimDraw = true)) return emptyList()
+            if (com.sidecoach.analysis.gameOver(board)) return emptyList()
             return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
         }
 

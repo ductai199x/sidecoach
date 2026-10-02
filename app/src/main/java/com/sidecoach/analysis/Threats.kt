@@ -20,7 +20,7 @@ import com.sidecoach.events.Line
  * it), or the game is over.
  */
 fun threatLines(engine: Engine, board: Board, depth: Int, multipv: Int = 1): List<Line> {
-    if (board.isCheck() || board.isGameOver(claimDraw = true)) return emptyList()
+    if (board.isCheck() || gameOver(board)) return emptyList()
     val passed = board.copy(withStack = false)
     // python-chess's null move: the rights are cleaned, the en-passant square goes, the
     // clocks tick, and the turn changes hands.

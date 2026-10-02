@@ -10,10 +10,14 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
- * The Stockfish process's life: a closed engine stays closed under a search already under way,
- * and a wedged one does not hold its lock forever. The desktop's `tests/test_engine_lifecycle.py`.
+ * The Stockfish process's life: a closed engine stays closed under a search already under way.
+ * The desktop's `tests/test_engine_lifecycle.py`. No sleeps: the test waits for the search's
+ * first depth and for the processes' exit, never for a time. (A wedged engine's watchdog is
+ * tested with the engine's clock driven by the test.)
  */
 @RunWith(AndroidJUnit4::class)
 class EngineLifecycleTest {
@@ -33,18 +37,17 @@ class EngineLifecycleTest {
         return Watched(binary, net)
     }
 
-    private fun alive(p: Process): Boolean = runCatching { p.exitValue(); false }.getOrDefault(true)
-
     @Test
     fun aClosedEngineIsNotReopenedByASearchUnderWay() {
         val sf = engine()
         assumeTrue("the engine or its network is missing", sf != null)
         sf!!.open()
         var raised: Throwable? = null
+        val searching = CountDownLatch(1) // the first search has reported a depth: it is under way
         val request = Thread {
             try {
                 // A request of several searches: the coach's, then the next position's.
-                sf.analyse(Board(), depth = 40, timeS = 1.5, carryBest = true)
+                sf.analyse(Board(), depth = 40, timeS = 30.0, carryBest = true, onDepth = { searching.countDown() })
                 val board = Board()
                 board.push(com.sidecoach.chess.Move.fromUci("e2e4"))
                 sf.analyse(board, depth = 12)
@@ -53,42 +56,16 @@ class EngineLifecycleTest {
             }
         }
         request.start()
-        Thread.sleep(400)
-        sf.close() // the session's teardown
-        request.join(30000)
+        assertTrue("the search never began", searching.await(60, TimeUnit.SECONDS)) // a safety net
+        sf.close() // the session's teardown, under a search
+        request.join(60000)
         assertFalse(request.isAlive)
-        Thread.sleep(300)
-        assertTrue("a Stockfish nobody closes", sf.started.none { alive(it) })
+        // Every process the engine started is gone (waited on, not slept for).
+        for (p in sf.started) assertTrue("a Stockfish nobody closes", p.waitFor(30, TimeUnit.SECONDS))
         assertTrue("$raised", raised is EngineUnavailable)
         // Opened again by its owner, it works.
         sf.open()
         assertTrue(sf.analyse(Board(), depth = 4, multipv = 1).isNotEmpty())
         sf.close()
-    }
-
-    @Test
-    fun aWedgedEngineLetsGoOfItsSearch() {
-        val sf = engine()
-        assumeTrue("the engine or its network is missing", sf != null)
-        sf!!.streamGraceMs = 500
-        sf.use {
-            sf.open()
-            val pid = Engine::class.java.getDeclaredField("enginePid").apply { isAccessible = true }.get(sf) as Int
-            var lines: List<com.sidecoach.events.Line>? = null
-            val search = Thread { lines = runCatching { sf.analyse(Board(), timeS = 0.5) }.getOrNull() }
-            search.start()
-            Thread.sleep(100)
-            android.os.Process.sendSignal(pid, SIGSTOP) // wedged: alive, saying nothing
-            search.join(10000)
-            assertFalse("the search held its lock past its time", search.isAlive)
-            // The wedged process is replaced and the search answered by the new one.
-            assertEquals(2, sf.started.size)
-            assertFalse(alive(sf.started[0]))
-            assertTrue(lines?.isNotEmpty() == true)
-        }
-    }
-
-    companion object {
-        private const val SIGSTOP = 19
     }
 }

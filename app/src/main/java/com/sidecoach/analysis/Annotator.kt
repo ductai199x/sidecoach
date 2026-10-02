@@ -76,9 +76,29 @@ class Measured(
     val traps: List<Line> = emptyList(),
     val defences: List<Line> = emptyList(),
     val threatens: List<Line> = emptyList(),
+    /**
+     * What it is cached by ([cacheKey]): the FEN, and the moves since the last capture or
+     * pawn move when there are any. Empty in a record kept before it had one.
+     */
+    val key: String = "",
 ) {
     /** How deep the search actually got, which the time cap can cut short. */
     val depth: Int get() = if (lines.isEmpty()) 0 else lines[0].depth
+}
+
+/**
+ * What a position is cached by: its FEN, and the moves since the last capture or pawn move,
+ * the ones a repetition can reach back over. The engine is told the moves that led to a
+ * position and scores a repetition as the draw it is, so the same placement after different
+ * quiet moves is a different search; after a capture or a pawn move nothing before can repeat
+ * and the FEN is the whole key. `annotator.cache_key`.
+ */
+fun cacheKey(board: Board): String {
+    val fen = board.fen()
+    val count = minOf(board.halfmoveClock, board.moveStack.size)
+    if (count == 0) return fen
+    val tail = board.moveStack.subList(board.moveStack.size - count, board.moveStack.size)
+    return fen + " " + tail.joinToString(" ") { it.uci() }
 }
 
 /** Assessments for the moves of one game. Not thread-safe; [Analyser] owns one. */
@@ -150,21 +170,36 @@ class GameAnnotator(
     }
 
     /**
+     * Forget the positions measured, keeping the game's moves: the depth, the lines, the time
+     * cap, the curve or the thresholds changed, and a loss compares two positions measured the
+     * same way, so none measured before is set against one measured after.
+     */
+    fun forgetMeasured() {
+        cache.clear()
+        verdictCache.clear()
+        ahead.clear()
+        computed.clear()
+    }
+
+    /**
      * A position the game may reach, measured whole before it does, as the game's own positions
      * are, and cached with them. Inside [Engine.interruptible] a search stopped throws
      * [Interrupted], and nothing is cached.
      */
     fun lookAhead(board: Board): Measured {
-        val key = board.fen()
-        cache[key]?.let { return it }
+        cache[cacheKey(board)]?.let { return it }
         val measured = measure(board)
-        ahead.add(key)
+        ahead.add(measured.key)
         return measured
     }
 
-    /** The position measured whole, counting a position measured ahead reached. */
-    private fun cached(key: String): Measured? {
-        val measured = cache[key]
+    /**
+     * The position measured whole, counting a position measured ahead reached. A position
+     * adopted without a key ([adopt]) is found by its FEN.
+     */
+    private fun cached(board: Board): Measured? {
+        val key = cacheKey(board)
+        val measured = cache[key] ?: cache[board.fen()]
         if (measured != null && key in ahead) {
             ahead.remove(key)
             aheadHits += 1
@@ -178,17 +213,18 @@ class GameAnnotator(
      * is behind a fast game, this is all a stale ply gets.
      */
     fun measureForVerdict(board: Board): Measured {
-        val key = board.fen()
-        cached(key)?.let { return it }
+        val key = cacheKey(board)
+        cached(board)?.let { return it }
         verdictCache[key]?.let { return it }
         val lines = engine.analyse(board, depth = depth, multipv = 1)
         computed.add(board, lines, thin = true)
         val thin = Measured(
-            fen = key,
+            fen = board.fen(),
             lines = lines,
             score = positionScore(board, lines),
             decisive = false,
             onlyMove = false,
+            key = key,
         )
         verdictCache[key] = thin
         return thin
@@ -201,10 +237,9 @@ class GameAnnotator(
      * ([measureEarly]), never in place of this.
      */
     fun measure(board: Board, onDepth: ((List<Line>) -> Unit)? = null): Measured {
-        val key = board.fen()
-        cached(key)?.let { return it }
+        cached(board)?.let { return it }
         val measured = measuredAt(board, depth, onDepth = onDepth)
-        cache[key] = measured
+        cache[measured.key] = measured
         return measured
     }
 
@@ -257,6 +292,7 @@ class GameAnnotator(
             },
             // And what a quiet best move threatens: how it wins ("it threatens mate").
             threatens = if (searched) aimLines(engine, board, lines, depth = minOf(AIM_DEPTH, depth)) else emptyList(),
+            key = cacheKey(board),
         )
     }
 
@@ -333,7 +369,8 @@ class GameAnnotator(
     }
 
     /** Whether the position is measured whole already (the game's own, or ahead of it). */
-    fun measured(board: Board): Boolean = cache.containsKey(board.fen())
+    fun measured(board: Board): Boolean =
+        cache.containsKey(cacheKey(board)) || cache.containsKey(board.fen())
 
     /**
      * Positions measured whole by another annotator -- another engine, on another thread, for a
@@ -341,7 +378,7 @@ class GameAnnotator(
      * here: the walk through the game's moves then searches nothing.
      */
     fun adopt(measured: Iterable<Measured>) {
-        for (m in measured) cache[m.fen] = m
+        for (m in measured) cache[m.key.ifEmpty { m.fen }] = m
     }
 
     /** What the move cost its mover, and what the position it led to holds. */
@@ -375,7 +412,7 @@ class GameAnnotator(
             // Another game, or a move that did not lead here: the move before is unknown.
             last = null
         }
-        val opponentErred = last != null && last.loss >= thresholds.mistake
+        val erred = last?.loss ?: 0.0
         // Taking back on the square the opponent just captured on. Taking a piece that merely
         // moved there is not obvious: that is how a blunder gets punished.
         val captures = before.isCapture(move)
@@ -385,15 +422,32 @@ class GameAnnotator(
         // is taken for nothing.
         val freeGrab = captures && !Exchange.canRetake(before, move)
         val obvious = recapture || freeGrab || before.legalMoves().size == 1
+        val top = measuredBefore.lines.firstOrNull()
+        val afterTop = measuredAfter.lines.firstOrNull()
+        // A forced mate the best move had, and the move played let go; one the move walks into.
+        // The mates are the lines' own: the curve puts a thousand centipawns a fortieth of a
+        // game below a mate, and a mate in four let go read as an inaccuracy.
+        val mating = top?.mate != null && top.mate > 0
+        val mateMissed = mating && !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
+        val mateAllowed = afterTop?.mate != null && afterTop.mate > 0 && !(top?.mate != null && top.mate < 0)
+        // What the best move had to find: a mate, material won, or -- after the opponent's
+        // error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
+        // to punish the opponent").
+        val won = if (top != null) materialWon(before, top.moves) else 0
+        val chance = mating || won >= TACTIC_GAIN || (erred >= thresholds.mistake && won >= 1)
         val label = labelMove(
             loss,
             thresholds,
             isBest = best.isNotEmpty() && best[0] == move.uci(),
             inBook = inBook(after),
-            onlyMove = measuredBefore.onlyMove,
+            decisive = measuredBefore.decisive,
             sacrifice = tags.any { it.name == "sacrifice" },
             beforeScore = measuredBefore.score,
-            opponentErred = opponentErred,
+            opponentBlundered = erred >= thresholds.blunder,
+            secondScore = measuredBefore.lines.getOrNull(1)?.expectedScore,
+            chance = chance,
+            mateMissed = mateMissed,
+            mateAllowed = mateAllowed,
             obvious = obvious,
         )
         assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, captures)
@@ -561,7 +615,8 @@ class Analyser(
      * is looking ahead now (a request then interrupts it). The worker alone changes the list;
      * a new game or a takeback puts a new one in its place.
      */
-    @Volatile private var ahead: MutableList<Pair<Board, Int>> = ArrayList()
+    // Internal, as the desktop test reaches its _ahead: a test drives the look ahead a step at a time.
+    @Volatile internal var ahead: MutableList<Pair<Board, Int>> = ArrayList()
 
     /**
      * The game's positions whose full measure gave way to a newer request ([yielding]), measured
@@ -878,12 +933,12 @@ class Analyser(
      * its [lookAhead] best moves first; after the best reply to each follows as each is
      * measured ([lookAhead]).
      */
-    private fun planAhead(board: Board, lines: List<Line>) {
+    internal fun planAhead(board: Board, lines: List<Line>) {
         val ahead = ArrayList<Pair<Board, Int>>()
         for (line in lines.take(lookAhead)) {
             val move = lineMoves(line).take(1)
             if (move.isNotEmpty() && board.isLegal(move[0])) {
-                val after = board.copy(withStack = false)
+                val after = board.copy()  // with its moves: the engine reads repetitions in them
                 after.push(move[0])
                 ahead.add(after to 1)
             }
@@ -896,7 +951,7 @@ class Analyser(
      * ahead, the best reply to it goes next in [ahead], the plan it came from -- unless the game
      * has planned anew meanwhile (a new game, a takeback).
      */
-    private fun lookAhead(board: Board, moves: Int, ahead: MutableList<Pair<Board, Int>>) {
+    internal fun lookAhead(board: Board, moves: Int, ahead: MutableList<Pair<Board, Int>>) {
         val engine = annotator.engine
         looking = true
         val measured = try {
@@ -916,7 +971,7 @@ class Analyser(
         looked += 1
         val reply = if (measured.lines.isNotEmpty()) lineMoves(measured.lines[0]).take(1) else emptyList()
         if (moves == 1 && reply.isNotEmpty() && board.isLegal(reply[0]) && ahead === this.ahead) {
-            val after = board.copy(withStack = false)
+            val after = board.copy()
             after.push(reply[0])
             ahead.add(0, after to 2)
         }

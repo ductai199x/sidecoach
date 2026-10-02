@@ -2,6 +2,7 @@ package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
@@ -82,6 +83,43 @@ class EngineToolsTest {
             check("case $i frames", tools.frames.map { it.fen() }, (0 until frames.length()).map { frames.getString(it) })
         }
         assertTrue("$mismatches mismatches\n" + failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** `_Asked`: the moves each position came with and the depth asked for, one line at it. */
+    private class Asked : EngineLike {
+        val histories = ArrayList<List<String>>()
+        val depths = ArrayList<Int?>()
+
+        override fun analyse(board: Board, depth: Int?): List<Line> {
+            histories.add(board.moveStack.map { it.uci() })
+            depths.add(depth)
+            val move = board.legalMoves().minByOrNull { it.uci() }!!
+            return listOf(Line(moves = listOf(move.uci()), depth = depth ?: 0, expectedScore = 0.55))
+        }
+    }
+
+    /** `test_the_tools_search_with_the_moves_that_led_there`. */
+    @Test
+    fun theToolsSearchWithTheMovesThatLedThere() {
+        val board = Board()
+        for (san in listOf("Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6")) board.push(board.parseSan(san)!!)
+        val engine = Asked()
+        val tools = EngineTools(board, null, engine, WHITE)
+        val out = tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("Ng1"))))
+        assertEquals(board.moveStack.map { it.uci() } + "f3g1", engine.histories.last().take(7))
+        assertTrue(out, "The game is over there" !in out)
+        val over = tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("Ng1", "Ng8"))))
+        assertTrue(over, "The game is over there: a draw" in over)
+    }
+
+    /** `test_a_move_off_the_lines_is_rated_at_the_lines_depth`. */
+    @Test
+    fun aMoveOffTheLinesIsRatedAtTheLinesDepth() {
+        val engine = Asked()
+        val known = listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55))
+        val tools = EngineTools(Board(), null, engine, WHITE, knownNow = known)
+        tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("a3"))))
+        assertEquals(listOf<Int?>(14, 18), engine.depths)
     }
 
     private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->
