@@ -16,7 +16,6 @@ twelve.)
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import chess
@@ -38,70 +37,134 @@ from sidecoach.events import (
 )
 from sidecoach.state.pipeline import GamePipeline
 from tests.coaching import drain, scripted_coach
-from tests.fakes import FakeEngine
+from tests.fakes import HANG_S, FakeEngine
 from tests.synth import synthetic_board
+from tests.test_analysis import AnalyserWatch
 
 pytestmark = pytest.mark.vision
 
 WIDTH, HEIGHT = 1280, 800
 
 
-class _SlowEngine(FakeEngine):
-    """A fake engine that takes a moment per search, as a real one does, and remembers the
-    positions it began searching while `watching`."""
+class _GatedEngine(FakeEngine):
+    """A fake engine whose searches run as the test lets them, never on a clock: answered at
+    once while the gate is open; after `hold`, each search begun waits at the gate until
+    `release` -- or until it is interrupted, and then it stops, as a real one does
+    (`Engine.interrupt`): none begins once stopped, and one under way ends.
 
-    def __init__(self, seconds: float) -> None:
+    Every search begun is noted in `log`, in order with what the analyser said (`Chain`); and
+    the positions begun while `watching` in `asked`."""
+
+    def __init__(self, log: list[tuple[str, object]]) -> None:
         super().__init__({})
-        self.seconds = seconds
+        self.log = log
         # `armed` by a test, `watching` from the moment the analyser is told of a takeback
         # (`Chain`): what it searched before then was the game's to search.
         self.armed = False
         self.watching = False
         self.asked: list[str] = []
-        self._lock = threading.Lock()
+        self.ends: list[tuple[str, str]] = []  # each held search's position, and how it ended
+        self._gate = threading.Condition()
+        self._held = False
+        self.at_gate = 0  # searches waiting at the gate now
+
+    def hold(self) -> None:
+        with self._gate:
+            self._held = True
+
+    def release(self) -> None:
+        with self._gate:
+            self._held = False
+            self._gate.notify_all()
+
+    def interrupt(self) -> None:
+        super().interrupt()
+        with self._gate:
+            self._gate.notify_all()
+
+    def wait_at_gate(self) -> None:
+        """Until a search is held at the gate: the engine is busy on it."""
+        with self._gate:
+            assert self._gate.wait_for(lambda: self.at_gate > 0, HANG_S), "no search came"
+
+    def wait_ended(self, count: int) -> list[tuple[str, str]]:
+        """Until `count` held searches have ended (let go or interrupted); how they ended."""
+        with self._gate:
+            assert self._gate.wait_for(lambda: len(self.ends) >= count, HANG_S), self.ends
+            return list(self.ends)
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list:
         from sidecoach.analysis.engine import Interrupted
 
-        # Stopped as a real engine is (`Engine.interrupt`): none begins once stopped, and one
-        # under way ends within a moment. Noted as the search starts.
-        if self._interruptible and self._stopped.is_set():
+        def stopped() -> bool:
+            return self._interruptible and self._stopped.is_set()
+
+        if stopped():
             raise Interrupted
-        with self._lock:
+        with self._gate:
+            self.log.append(("search", board.board_fen()))
             if self.watching:
                 self.asked.append(board.board_fen())
-        end = time.monotonic() + self.seconds
-        while time.monotonic() < end:
-            if self._interruptible and self._stopped.is_set():
+            if self._held:
+                self.at_gate += 1
+                self._gate.notify_all()
+                try:
+                    let_go = self._gate.wait_for(lambda: not self._held or stopped(), HANG_S)
+                finally:
+                    self.at_gate -= 1
+                assert let_go, "a held search never let go"
+                self.ends.append((board.board_fen(), "interrupted" if stopped() else "answered"))
+                self._gate.notify_all()
+            if stopped():
                 raise Interrupted
-            time.sleep(0.005)
         return super().analyse(board, **kwargs)
+
+
+class _Said:
+    """The analyser's results queue, noting each word in the engine's log as it is put."""
+
+    def __init__(self, inner: object, log: list[tuple[str, object]]) -> None:
+        self._inner, self._log = inner, log
+
+    def put(self, item: object) -> None:
+        self._log.append(("said", item))
+        self._inner.put(item)  # type: ignore[attr-defined]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
 
 
 class Chain:
     """Frames in; the pipeline's events to the engine glue and the coach; the engine's
-    words drained to the coach on every frame, as the panel's loop does."""
+    words drained to the coach on every frame, as the panel's loop does. The engine keeps up
+    with the game -- each move's work settled before the next frame -- unless the test holds
+    it (`_GatedEngine.hold`): then it is behind exactly as far as the test says."""
 
-    def __init__(
-        self, tmp: Path, engine_seconds: float = 0.03, replies: tuple[str, ...] = ()
-    ) -> None:
+    def __init__(self, tmp: Path, replies: tuple[str, ...] = ()) -> None:
         self.pipe = GamePipeline()
         self.board = chess.Board()
         self.ts = 0.0
-        self.engine = _SlowEngine(engine_seconds)
+        # In order: every search begun, every word the analyser said, and each takeback the
+        # analyser was told of.
+        self.log: list[tuple[str, object]] = []
+        self.engine = _GatedEngine(self.log)
         self.assessing = _Assessing(Settings(data_dir=tmp), enabled=False)
-        self.assessing.analyser = Analyser(
-            GameAnnotator(engine=self.engine, depth=6, with_threats=False)
-        )
-        withdraw = self.assessing.analyser.withdraw
+        analyser = Analyser(GameAnnotator(engine=self.engine, depth=6, with_threats=False))
+        self.assessing.analyser = analyser
+        analyser._results = _Said(analyser._results, self.log)  # type: ignore[assignment]
+        self.watch = AnalyserWatch(analyser)
+        withdraw = analyser.withdraw
 
         def told(game_id: str, ply: int) -> None:
             withdraw(game_id, ply)
+            # After the analyser has let go: whatever begins after this is not of a withdrawn
+            # move (a search under way had begun before).
+            self.log.append(("takeback", ply))
             if self.engine.armed:
                 self.engine.watching = True
 
-        self.assessing.analyser.withdraw = told  # type: ignore[method-assign]
-        self.assessing.analyser.start()
+        analyser.withdraw = told  # type: ignore[method-assign]
+        analyser.start()
         self.coach, self.provider = scripted_coach(list(replies) or ["never used"] * 50)
         self.events: list[object] = []
         self.drained: list[object] = []
@@ -144,6 +207,8 @@ class Chain:
         for san in sans:
             move = self.board.push_san(san)
             self.feed(self.frame(highlight=move), 3)
+            if not self.engine._held:
+                self.watch.idle()  # the engine keeps up: this move's work done
 
     def take_back(self, plies: int) -> None:
         """chess.com's takeback: the board goes back, and quiet frames show it there."""
@@ -151,12 +216,10 @@ class Chain:
             self.board.pop()
         self.feed(self.frame(), 4)
 
-    def wait_for_engine(self, timeout: float = 10.0) -> None:
-        deadline = time.monotonic() + timeout
-        assert self.assessing.analyser is not None
-        while self.assessing.analyser.pending and time.monotonic() < deadline:
-            self.feed(self.frame(), 1)
-            time.sleep(0.01)
+    def wait_for_engine(self) -> None:
+        """Until everything owed is answered (a signal, not a clock), then the frames that
+        hand what the engine said to the coach."""
+        self.watch.idle()
         self.feed(self.frame(), 2)
 
     def close(self) -> None:
@@ -254,20 +317,27 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
     earlier position up for a frame or two -- the pieces caught sliding back in between --
     or lands ten plies back at once; then a different move. One takeback of ten plies, no
     resync, the plies counted alike everywhere, and the replacement's verdict prompt with
-    an engine a phone's speed behind: the rest of the search under way when the takeback
-    came, then its own, where the withdrawn plies' own searches came first (the takeback of
-    two plies on the Pixel: 0.66 s, where they made it 1.05 s); and nothing about the
-    withdrawn moves asked or said once the takeback is known
-    (test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said)."""
+    an engine behind: the search under way when the takeback came let go, then its own,
+    where the withdrawn plies' own searches came first (the takeback of two plies on the
+    Pixel: 0.66 s, where they made it 1.05 s); and nothing about the withdrawn moves asked
+    or said once the takeback is known
+    (test_a_takeback_s_withdrawn_moves_are_let_go_and_never_said).
+
+    "Prompt" is counted, not timed: the engine is held, so it is on the withdrawn moves when
+    the takebacks start, and every search it begins is logged in order with what the
+    analyser says. Between the takeback and the replacement's verdict it searches only the
+    replacement's own positions, at most the two a verdict needs."""
     c = Chain(tmp_path)
     try:
         c.feed(c.frame(), 3)
         c.play(*GAME)
         c.wait_for_engine()
-        search = 0.4
-        c.engine.seconds = search
+        c.engine.hold()
         c.play("Qb5+", "c6")  # the engine is on these when the takebacks start
+        c.engine.wait_at_gate()
+        assert c.assessing.analyser is not None and c.assessing.analyser.pending == 2
         withdrawn = c.board.board_fen()
+        old_line = _fens(c.board)
         for _step in range(6):  # 22 plies back to 20, then to 10: 2 plies a press
             for _ply in range(2):
                 move = c.board.peek()
@@ -280,14 +350,37 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
         since = len(c.drained)
         c.engine.armed = True  # recorded from when the takeback is told
         move = c.board.push_san("e5")  # 6.e5 in place of 6.cxd4
-        began = time.monotonic()
         c.feed(c.frame(highlight=move), 3)
-        while time.monotonic() - began < 10 and not any(
+        told = [i for i, (kind, _) in enumerate(c.log) if kind == "takeback"]
+        assert len(told) == 1, "the takeback told once"
+        # The search under way when the takeback came was let go, not run to its end: it was
+        # of a withdrawn position.
+        first = c.engine.wait_ended(1)[0]
+        assert first[1] == "interrupted" and first[0] in old_line.values(), first
+        c.engine.release()
+        c.wait_for_engine()
+        verdicts = [  # at ply 11 since the takeback (6.cxd4's own came long before)
+            i
+            for i, (kind, said) in enumerate(c.log)
+            if i > told[0]
+            and kind == "said"
+            and isinstance(said, MoveAssessment)
+            and said.ply == 11
+        ]
+        assert verdicts, "the replacement was never judged"
+        replacement = c.log[verdicts[0]][1]
+        assert isinstance(replacement, MoveAssessment) and replacement.uci == "e4e5"
+        assert any(
             isinstance(e, MoveAssessment) and e.ply == 11 and e.uci == "e4e5" for e in c.drained
-        ):
-            c.feed(c.frame(highlight=move), 1)
-            time.sleep(0.01)
-        waited = time.monotonic() - began
+        ), "the replacement's verdict reached the coach"
+        # Between the takeback and the replacement's verdict: the replacement's own searches
+        # alone -- the position it was played from and the one it made, at most -- and nothing
+        # of the withdrawn plies said.
+        between = c.log[told[0] + 1 : verdicts[0]]
+        searched = [fen for kind, fen in between if kind == "search"]
+        own = {_fens(c.board)[10], _fens(c.board)[11]}
+        assert 1 <= len(searched) <= 2 and set(searched) <= own, searched
+        assert not [s for kind, s in between if kind == "said"], "a word before the verdict"
         c.play("d5")
         c.wait_for_engine()
         c.engine.armed = c.engine.watching = False
@@ -295,8 +388,12 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
         took = [e.plies for e in c.events if isinstance(e, Takeback)]
         assert took == [12], took  # from ply 22 back to ply 10
         assert not any(isinstance(e, Resync) for e in c.events), "no resync"
-        assert waited < 2.2 * search, f"the replacement's verdict took {waited:.2f} s"
+        assert c.engine.asked, "the takeback was told once the test watched for it"
         assert withdrawn not in c.engine.asked
+        # Nothing withdrawn searched from the takeback on, to the end of the game.
+        gone = {fen for ply, fen in old_line.items() if ply > 10}
+        after = {fen for kind, fen in c.log[told[0] + 1 :] if kind == "search"}
+        assert not gone & after, "a withdrawn position searched after the takeback"
         _agree(c, since)
     finally:
         c.close()
@@ -331,6 +428,7 @@ def test_a_takeback_to_where_the_game_began_measures_it_again(tmp_path: Path) ->
     assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
     engine = FakeEngine({})
     assessing.analyser = Analyser(GameAnnotator(engine=engine, depth=6, with_threats=False))
+    watch = AnalyserWatch(assessing.analyser)
     assessing.analyser.start()
     try:
         start = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
@@ -352,9 +450,11 @@ def test_a_takeback_to_where_the_game_began_measures_it_again(tmp_path: Path) ->
                     by_user=ply == 1,
                 )
             )
-        assessing.wait(timeout=5.0)
+        watch.idle()  # both moves answered (signalled by the worker, not polled)
+        assessing.drain()
         assessing.submit(Takeback(game_id="g", plies=2, fen=start.fen()))
-        again = assessing.wait(timeout=5.0)
+        watch.idle()
+        again = assessing.drain()
         assert [e.fen for e in again if isinstance(e, Analysis) and e.ply == 0] == [start.fen()]
     finally:
         assessing.close()

@@ -33,8 +33,11 @@ def _children() -> list[psutil.Process]:
 def test_a_closed_engine_is_not_reopened_by_a_search_under_way() -> None:
     assert STOCKFISH is not None
     engine = Engine(STOCKFISH, threads=1, hash_mb=16, multipv=3)
-    engine.open()
+    # Taken before the engine opens, so its own process counts among the ones that must end
+    # (other tests' engines, alive in this process, are not this test's business).
     before = {p.pid for p in _children()}
+    engine.open()
+    assert [p for p in _children() if p.pid not in before], "the engine started no process"
     raised: list[BaseException] = []
     searching = threading.Event()  # the first search has reported a depth: it is under way
 

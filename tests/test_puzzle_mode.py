@@ -5,15 +5,20 @@ its own coach and log, the outcome to the profile once, the screen's engine unto
 
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import chess
+import pytest
 
 from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.puzzle import PuzzleSession
+from sidecoach.ui.puzzle_room import PuzzleRoom
 from tests.fakes import puzzle_file
 
 FORK = Puzzle(
@@ -116,28 +121,56 @@ def _csv(tmp_path: Path) -> None:
     puzzle_file(tmp_path / "puzzles" / "sample.csv", rows)
 
 
-def _logged(client, puzzle_id: str, prefix: str) -> None:  # noqa: ANN001
-    """Wait for the room's log line that starts with `prefix`: the outcome is recorded by the
-    room's loop, a tick after the answer that ended the puzzle."""
-    import time
+class _RoomSignals:
+    """What the rooms' loop threads did, as signals the test waits on rather than polling
+    the API against a clock: each outcome line a room logs (the outcome is recorded by the
+    room's loop, a tick after the answer that ended the puzzle), and each room's end."""
 
-    lines: list[str] = []
-    for _ in range(100):
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.outcomes: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.finished: dict[str, threading.Event] = {}
+        self._lock = threading.Lock()
+        real_emit = PuzzleRoom._emit
+        real_finish = PuzzleRoom._finish
+        signals = self
+
+        def emit(room: PuzzleRoom, chan: str, level: str, text: str, **data: Any) -> None:
+            real_emit(room, chan, level, text, **data)
+            if chan == "game" and text.startswith("puzzle "):
+                signals.outcomes.put((room._id, text))
+
+        def finish(room: PuzzleRoom) -> None:
+            real_finish(room)
+            signals.ended(room._id).set()
+
+        monkeypatch.setattr(PuzzleRoom, "_emit", emit)
+        monkeypatch.setattr(PuzzleRoom, "_finish", finish)
+
+    def ended(self, puzzle_id: str) -> threading.Event:
+        with self._lock:
+            return self.finished.setdefault(puzzle_id, threading.Event())
+
+    def logged(self, client, puzzle_id: str, prefix: str) -> None:  # noqa: ANN001
+        """The room's loop logs the outcome line starting with `prefix`, and the page's poll
+        shows it. The 60 s is only a safety net: the line comes at the loop's next tick."""
+        room_id, text = self.outcomes.get(timeout=HANG_S)
+        assert room_id == puzzle_id and text.startswith(prefix), (room_id, text, prefix)
         lines = [ln["text"] for ln in client.get(f"/api/puzzle/{puzzle_id}/poll").json()["lines"]]
-        if any(ln.startswith(prefix) for ln in lines):
-            return
-        time.sleep(0.05)
-    raise AssertionError(f"no line {prefix!r} in {lines}")
+        assert any(ln.startswith(prefix) for ln in lines), lines
+
+
+HANG_S = 60.0  # a safety net for a thread's signal, never the expected path
 
 
 def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
-    make_panel: Callable[..., PanelEngine], tmp_path: Path
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from fastapi.testclient import TestClient
 
     from sidecoach.profile.store import Store
     from sidecoach.ui.server import build_app
 
+    signals = _RoomSignals(monkeypatch)
     _csv(tmp_path)
     engine = make_panel()
     engine.puzzle_motifs[FORK.id] = "fork"
@@ -164,34 +197,32 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     assert right["moves"] == ["Ne2+", "Kf1"] and right["your_move"]
     done = client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "e2c3"}).json()["state"]
     assert done["status"] == "solved" and done["message"] == "Solved, after a miss."
-    _logged(client, FORK.id, f"puzzle {FORK.id} failed (fork)")
+    signals.logged(client, FORK.id, f"puzzle {FORK.id} failed (fork)")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
     assert store.setting("puzzle_level") == "1075"
     # The user's question reaches the room's coach (off here: nothing answers, no error).
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
     assert client.post(f"/api/puzzle/{FORK.id}/voice", json={"on": False}).json()["ok"]
-    # Closing ends the room; the outcome is not recorded twice.
+    # Closing ends the room; the outcome is not recorded twice, counted once the room's loop
+    # has drained the close and finished (not merely once the close was asked for).
     assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
-    import time
-
-    for _ in range(50):
-        if client.get(f"/api/puzzle/{FORK.id}/poll").json().get("closed"):
-            break
-        time.sleep(0.05)
+    assert signals.ended(FORK.id).wait(HANG_S), "the room never finished"
     assert client.get(f"/api/puzzle/{FORK.id}/poll").json()["closed"]
     assert len(store.attempts()) == 1
+    assert signals.outcomes.empty(), "an outcome logged twice"
     store.close()
     # Giving up on the next one: a fail, the solution played out, recorded once.
     assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
     gave = client.post(f"/api/puzzle/{MATE.id}/giveup").json()["state"]
     assert gave["status"] == "given_up" and gave["moves"] == ["Ra8#"]
-    _logged(client, MATE.id, f"puzzle {MATE.id} failed")
+    signals.logged(client, MATE.id, f"puzzle {MATE.id} failed")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [MATE.id, FORK.id]
     assert store.setting("puzzle_level") == "1050"
     store.close()
     client.post(f"/api/puzzle/{MATE.id}/close")
+    assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
 
 def test_puzzles_fetched_after_the_server_started_open_in_a_room(

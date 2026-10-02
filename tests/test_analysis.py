@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import chess
 import chess.engine
@@ -33,9 +33,68 @@ from sidecoach.analysis.score import (
 from sidecoach.config import CoachSettings, find_stockfish, load_settings
 from sidecoach.events import Analysis, Label, Line, MotifTag, MoveAssessment, Severity
 from tests.coaching import SCHOLAR
-from tests.fakes import FakeEngine
+from tests.fakes import HANG_S, FakeEngine
 
 STOCKFISH = find_stockfish(load_settings())
+
+
+class _Poking:
+    """The analyser's results queue, poking a watcher at every result put."""
+
+    def __init__(self, inner: Any, poke: Callable[[], None]) -> None:
+        self._inner, self._poke = inner, poke
+
+    def put(self, item: object) -> None:
+        self._inner.put(item)
+        self._poke()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class AnalyserWatch:
+    """An analyser's worker, watched without a clock: every result it puts, every request it
+    settles and every position it looks ahead at wakes `until`, which returns once its
+    condition holds. HANG_S only bounds a hang; it is never the expected path. Made before the
+    worker starts. (Shared: tests/test_takebacks.py.)"""
+
+    def __init__(self, analyser: Analyser) -> None:
+        self.analyser = analyser
+        self._cond = threading.Condition()
+        settle, look_ahead = analyser._settle, analyser._look_ahead
+
+        def settled() -> None:
+            settle()
+            self.poke()
+
+        def looked(*args: Any) -> None:
+            try:
+                look_ahead(*args)
+            finally:
+                self.poke()
+
+        analyser._settle = settled  # type: ignore[method-assign]
+        analyser._look_ahead = looked  # type: ignore[method-assign]
+        analyser._results = _Poking(analyser._results, self.poke)  # type: ignore[assignment]
+
+    def poke(self) -> None:
+        with self._cond:
+            self._cond.notify_all()
+
+    def until(self, condition: Callable[[], bool], what: str = "the condition") -> None:
+        with self._cond:
+            assert self._cond.wait_for(condition, HANG_S), f"never came: {what}"
+
+    def idle(self) -> None:
+        """Every request answered. A result is put before its request settles, so none can
+        come after `pending` is 0 (`Analyser._outstanding`); what was said stays queued for
+        whoever drains it (the engine glue's `drain`)."""
+        self.until(lambda: self.analyser.pending == 0, "the analyser settled")
+
+    def settled(self) -> list[object]:
+        """Every request answered (`idle`), and what the worker said, polled."""
+        self.idle()
+        return list(self.analyser.poll())
 
 
 def needs_engine[F: Callable[..., None]](test: F) -> F:
@@ -112,6 +171,7 @@ def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> No
     assert book is not None
     assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
     assessing.analyser = Analyser(GameAnnotator(engine=FakeEngine({}), book=book))
+    watch = AnalyserWatch(assessing.analyser)
     assessing.analyser.start()
 
     def play(board: chess.Board, san: str, ply: int) -> None:
@@ -140,15 +200,13 @@ def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> No
 
     labels: dict[int, object] = {}
     openings: dict[int, object] = {}
-    deadline = time.monotonic() + 10
-    # Ply 7 comes twice, d4 then d3: waited for until d3's own name arrives.
-    while time.monotonic() < deadline and openings.get(7) != "C50 Italian Game: Giuoco Pianissimo":
-        for event in assessing.analyser.poll():
-            if isinstance(event, MoveAssessment):
-                labels[event.ply] = event.label
-            elif isinstance(event, Analysis):
-                openings[event.ply] = event.opening
-        time.sleep(0.02)
+    # Ply 7 can come twice, d4 (measured before the takeback was told) then d3: everything
+    # is waited for, in the order it was said, so d3's own word is the last at ply 7.
+    for event in watch.settled():
+        if isinstance(event, MoveAssessment):
+            labels[event.ply] = event.label
+        elif isinstance(event, Analysis):
+            openings[event.ply] = event.opening
     assessing.analyser.close()
     assert [labels[p] for p in range(1, 7)] == [Label.BOOK] * 6, labels
     assert labels[7] == Label.BOOK, "the move after a takeback is still in the book"
@@ -668,7 +726,7 @@ class _ScriptedSearch:
         yield from self.infos
         self.started.set()
         if self.hold is not None:
-            self.hold.wait()
+            assert self.hold.wait(HANG_S), "the scripted search was never let go"
 
     stopped = False
 
@@ -748,7 +806,7 @@ def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
     running = _scripted_engine(uci)
     worker = threading.Thread(target=lambda: running.analyse(chess.Board(), depth=13))
     worker.start()
-    uci.started.wait()  # the search is under way, holding the engine
+    assert uci.started.wait(HANG_S)  # the search is under way, holding the engine
     running.reconfigure(threads=1, hash_mb=32)  # returns: the save does not wait
     assert uci.configured == [], "set during the search"
     assert running.threads == 1 and running.hash_mb == 32
@@ -822,12 +880,18 @@ def test_a_failing_analysis_does_not_end_the_session() -> None:
         def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
             raise RuntimeError("engine gone")
 
-    with Analyser(GameAnnotator(engine=Broken({}), depth=6, with_threats=False)) as analyser:
+    analyser = Analyser(GameAnnotator(engine=Broken({}), depth=6, with_threats=False))
+    watch = AnalyserWatch(analyser)
+    with analyser:
         analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e4"), 1)
-        deadline = time.monotonic() + 5.0
-        while analyser.failures == 0 and time.monotonic() < deadline:
-            time.sleep(0.01)
-    assert analyser.failures == 1
+        # The failure is counted before the request settles: settled, it is in.
+        assert watch.settled() == []
+        assert analyser.failures == 1
+        assert analyser.last_error is not None and "engine gone" in analyser.last_error
+        # The worker is still there: the next request is served (and fails alike).
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("d2d4"), 1)
+        assert watch.settled() == []
+    assert analyser.failures == 2
     assert analyser.last_error is not None and "engine gone" in analyser.last_error
 
 
@@ -860,17 +924,6 @@ def test_a_real_game_is_assessed_end_to_end(engine: Engine) -> None:
     assert analyses["Qxf7#"].lines == [] and board.is_checkmate()
 
 
-def _drain(analyser: Analyser, timeout: float = 10.0) -> list[object]:
-    deadline = time.monotonic() + timeout
-    events: list[object] = []
-    while time.monotonic() < deadline:
-        events += analyser.poll()
-        if events and analyser.pending == 0:
-            return events
-        time.sleep(0.01)
-    return events
-
-
 def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_analyses() -> None:
     """Moves arriving faster than the engine measures them: every ply still gets its
     verdict (the best line at the full depth, both positions), and the whole analysis --
@@ -880,6 +933,7 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
     fake = FakeEngine({})
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     analyser = Analyser(annotator)
+    watch = AnalyserWatch(analyser)
     board = chess.Board()
     # Five plies queued before the worker starts: it is behind from the first one.
     for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6", "Bb5"], start=1):
@@ -887,14 +941,11 @@ def test_behind_a_fast_game_the_analyser_keeps_the_verdicts_and_drops_stale_anal
         analyser.submit_move("g", board, move, ply)
         board.push(move)
     analyser.start()
-    deadline = time.monotonic() + 5
-    got: list = []
-    while time.monotonic() < deadline and len([e for e in got if isinstance(e, Analysis)]) < 5:
-        got += analyser.poll()
-        time.sleep(0.02)
-    time.sleep(0.1)
-    got += analyser.poll()
+    # Everything owed answered: nothing more can come after this (not merely five analyses
+    # seen, then a moment's grace for anything extra).
+    got = watch.settled()
     analyser.close()
+    assert analyser.poll() == [], "nothing said after the work was settled"
     assessments = [e for e in got if isinstance(e, MoveAssessment)]
     analyses = [e for e in got if isinstance(e, Analysis)]
     assert [a.ply for a in assessments] == [1, 2, 3, 4, 5], "a verdict for every ply"
@@ -912,14 +963,12 @@ class _HeldEngine(FakeEngine):
 
     def __init__(self) -> None:
         super().__init__({})
-        import threading
-
         self.searching = threading.Event()
         self.go = threading.Event()
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         self.searching.set()
-        self.go.wait(5)
+        assert self.go.wait(HANG_S), "the test never let the search go"
         return super().analyse(board, **kwargs)
 
 
@@ -930,6 +979,7 @@ def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
     whole analysis of the position after it."""
     engine = _HeldEngine()
     analyser = Analyser(GameAnnotator(engine=engine, depth=6, with_threats=False))
+    watch = AnalyserWatch(analyser)
     board = chess.Board()
     moves = []
     for ply, san in enumerate(["e4", "e5", "Nf3", "Nc6"], start=1):
@@ -938,7 +988,7 @@ def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
         board.push(move)
     analyser.submit_move("g", *moves[0])
     analyser.start()
-    assert engine.searching.wait(5), "the worker never started on ply 1"
+    assert engine.searching.wait(HANG_S), "the worker never started on ply 1"
     for before, move, ply in moves[1:]:
         analyser.submit_move("g", before, move, ply)
     # Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
@@ -950,8 +1000,7 @@ def test_a_takeback_lets_the_engine_go_of_the_withdrawn_moves() -> None:
     engine.go.set()
     # Nothing is delivered, so wait for the work to be settled, not for events: a result is
     # put before its request is settled, so none can come after `pending` is 0.
-    assert _until(lambda: analyser.pending == 0, 3), analyser.pending
-    got = analyser.poll()
+    got = watch.settled()
     analyser.close()
     assert [e for e in got if getattr(e, "ply", None) in (1, 3, 4)] == [], got
     assert analyser.pending == 0
@@ -966,13 +1015,6 @@ def _after(*sans: str) -> str:
     for san in sans:
         board.push_san(san)
     return board.fen()
-
-
-def _until(condition, timeout: float = 5.0) -> bool:  # noqa: ANN001
-    deadline = time.monotonic() + timeout
-    while not condition() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    return condition()
 
 
 def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered_at_once() -> None:
@@ -990,20 +1032,22 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
         }
     )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
-    with Analyser(annotator, look_ahead=2) as analyser:
+    analyser = Analyser(annotator, look_ahead=2)
+    watch = AnalyserWatch(analyser)
+    with analyser:
         analyser.submit_position("g", start, 0)
-        assert _until(lambda: analyser.looked == 4), analyser.looked
+        watch.until(lambda: analyser.looked == 4, "four positions looked at ahead")
         searched = set(fake.calls)
         assert {_after("e4"), _after("e4", "e5"), _after("d4"), _after("d4", "d5")} <= searched
         before = len(fake.calls)
         analyser.submit_move("g", start, chess.Move.from_uci("e2e4"), 1, by_user=True)
-        got = _drain(analyser)
+        got = watch.settled()
         assert _after("e4") not in fake.calls[before:], "the position after e4 was searched again"
         assert annotator.ahead_hits == 1
         after = chess.Board()
         after.push_san("e4")
         analyser.submit_move("g", after, chess.Move.from_uci("e7e5"), 2, by_user=False)
-        reply = _drain(analyser)
+        reply = watch.settled()
     assert _kinds(got) == ["Analysis(early)", "Analysis", "MoveAssessment", "Analysis"]
     assert _kinds(reply) == ["MoveAssessment", "Analysis"]
     assert annotator.ahead_hits == 2
@@ -1084,14 +1128,16 @@ def test_the_position_the_player_faces_is_told_early_and_then_whole() -> None:
 
     board = chess.Board()
     fake = _DepthEngine({})
-    with Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False)) as analyser:
+    analyser = Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False))
+    watch = AnalyserWatch(analyser)
+    with analyser:
         analyser.submit_position("g", board, 0)
-        started = _drain(analyser)
+        started = watch.settled()
         analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
-        own = _drain(analyser)
+        own = watch.settled()
         board.push_san("e4")
         analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
-        reply = _drain(analyser)
+        reply = watch.settled()
     assert _kinds(started) == ["Analysis(early)", "Analysis"]
     # Off the caller's thread, the verdict first: the player's own move.
     assert _kinds(own) == ["MoveAssessment", "Analysis"]
@@ -1117,14 +1163,15 @@ def test_behind_a_fast_game_the_position_faced_is_told_early_and_still_measured_
     annotator = GameAnnotator(engine=fake, depth=18)
     board = chess.Board()
     analyser = Analyser(annotator, look_ahead=2)
+    watch = AnalyserWatch(analyser)
     analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
     board.push_san("e4")
     analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
     board.push_san("e5")
     analyser.start()
     try:
-        got = _drain(analyser)
-        assert _until(lambda: analyser.looked >= 1), "nothing looked ahead at"
+        got = watch.settled()
+        watch.until(lambda: analyser.looked >= 1, "a position looked at ahead")
     finally:
         analyser.close()
     faced = [e for e in got if isinstance(e, Analysis) and e.ply == 2]
@@ -1141,6 +1188,7 @@ class _YieldOnceEngine(FakeEngine):
     def __init__(self, answers: dict[str, list[Line]]) -> None:
         super().__init__(answers)
         self.held = False
+        self.holding = threading.Event()  # the held search is under way
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
@@ -1148,7 +1196,8 @@ class _YieldOnceEngine(FakeEngine):
         several = int(kwargs.get("multipv") or 1) > 1  # type: ignore[call-overload]
         if self._interruptible and several and not self.held:
             self.held = True
-            self._stopped.wait(5)
+            self.holding.set()
+            assert self._stopped.wait(HANG_S), "the full measure was never interrupted"
             raise Interrupted
         return super().analyse(board, **kwargs)
 
@@ -1160,12 +1209,15 @@ def test_the_position_the_player_left_gives_way_to_the_one_they_face() -> None:
     after it -- still owed until it is."""
     fake = _YieldOnceEngine({})
     board = chess.Board()
-    with Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False)) as analyser:
+    analyser = Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False))
+    watch = AnalyserWatch(analyser)
+    with analyser:
         analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
-        assert _until(lambda: analyser._looking), "the full measure never started"
+        assert fake.holding.wait(HANG_S), "the full measure never started"
+        assert analyser._looking, "a full measure a request interrupts"
         board.push_san("e4")
         analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
-        got = _drain(analyser)
+        got = watch.settled()
     order = [
         (type(e).__name__, getattr(e, "ply", None), getattr(e, "provisional", False)) for e in got
     ]
@@ -1194,9 +1246,11 @@ def test_each_depth_is_delivered_as_the_search_finishes_it(
     monkeypatch.setattr(engine, "close", lambda: None)
     board = chess.Board(SCHOLAR)
     annotator = GameAnnotator(engine=engine, depth=16, multipv=3, with_threats=False)
-    with Analyser(annotator) as analyser:
+    analyser = Analyser(annotator)
+    watch = AnalyserWatch(analyser)
+    with analyser:
         analyser.submit_position("g", board, 0)
-        got = [e for e in _drain(analyser, timeout=30) if isinstance(e, Analysis)]
+        got = [e for e in watch.settled() if isinstance(e, Analysis)]
     depths = [e.lines[0].depth for e in got]
     assert [e.provisional for e in got] == [True] * (len(got) - 1) + [False]
     assert depths[0] == EARLY_DEPTH and depths[-1] == 16
@@ -1218,7 +1272,8 @@ class _StoppableEngine(FakeEngine):
 
         if self._interruptible and board.fen() in self.ahead:
             self.entered.set()
-            self._stopped.wait()  # until `interrupt`: a look ahead not let go never ends
+            # Until `interrupt`: a look ahead not let go never ends (HANG_S bounds a hang).
+            assert self._stopped.wait(HANG_S), "the look ahead was never let go"
             raise Interrupted
         return super().analyse(board, **kwargs)
 
@@ -1234,12 +1289,12 @@ def test_a_move_played_stops_the_look_ahead_at_once() -> None:
     analyser = Analyser(annotator, look_ahead=2)
     analyser.start()
     analyser.submit_position("g", chess.Board(), 0)
-    fake.entered.wait()  # the worker is searching ahead
+    assert fake.entered.wait(HANG_S), "the worker never searched ahead"
     analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
     judged = threading.Event()
     got: list[object] = []
     while not judged.is_set():
-        event = analyser._results.get()  # waits for the worker's next word
+        event = analyser._results.get(timeout=HANG_S)  # waits for the worker's next word
         got.append(event)
         if isinstance(event, MoveAssessment):
             judged.set()
@@ -1267,9 +1322,10 @@ def test_the_engine_stops_a_search_it_is_interrupted_in() -> None:
 
     worker = threading.Thread(target=search)
     worker.start()
-    uci.started.wait()
+    assert uci.started.wait(HANG_S)
     running.interrupt()
-    worker.join()
+    worker.join(HANG_S)
+    assert not worker.is_alive()
     assert uci.search is not None and uci.search.stopped
     assert raised and isinstance(raised[0], Interrupted)
     # The engine answers as before afterwards.
@@ -1320,14 +1376,12 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
         best=[],
     )
     assessing.analyser._results.put(stale)
+    watch = AnalyserWatch(assessing.analyser)
     assessing.analyser.start()
-    got: list[object] = []
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not any(
-        isinstance(e, MoveAssessment) and e.ply == 3 for e in got
-    ):
-        got += assessing.drain()
-        time.sleep(0.02)
+    # Every request answered (the stale verdict first in the queue, put before them all);
+    # then the glue holds what came against the game as it stands.
+    watch.idle()
+    got: list[object] = list(assessing.drain())
     assessing.analyser.close()
     verdicts = [e for e in got if isinstance(e, MoveAssessment)]
     assert [(e.ply, e.uci) for e in verdicts] == [(1, "e2e4"), (2, "e7e5"), (3, "f1c4")], verdicts
@@ -1335,18 +1389,26 @@ def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Pat
     assert all(e.ply <= 3 for e in analyses)
 
 
-class _SlowEngine(FakeEngine):
-    """A fake engine that takes a moment per search and stops when interrupted, as a real
-    one does (`Engine.interrupt`)."""
+class _WholeMeasureHeld(FakeEngine):
+    """A fake engine that answers at once, except the first whole measure (the full `depth`)
+    of `fen`: that search runs until it is interrupted, as a real one stops
+    (`Engine.interrupt`), so the test acts while it is under way, never on a clock."""
+
+    def __init__(self, fen: str, depth: int) -> None:
+        super().__init__({})
+        self.fen, self.depth = fen, depth
+        self.holding = threading.Event()  # the held search is under way
+        self.interrupted = threading.Event()  # and was stopped
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
-        end = time.monotonic() + 0.3
-        while time.monotonic() < end:
-            if self._interruptible and self._stopped.is_set():
-                raise Interrupted
-            time.sleep(0.005)
+        whole = kwargs.get("depth") == self.depth
+        if self._interruptible and whole and board.fen() == self.fen and not self.holding.is_set():
+            self.holding.set()
+            assert self._stopped.wait(HANG_S), "the whole measure was never let go"
+            self.interrupted.set()
+            raise Interrupted
         return super().analyse(board, **kwargs)
 
 
@@ -1365,18 +1427,29 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
     white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
     black = white.replace(" w ", " b ")
     assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
-    analyser = Analyser(GameAnnotator(engine=_SlowEngine({}), depth=18, with_threats=False))
+    engine = _WholeMeasureHeld(white, 18)
+    analyser = Analyser(GameAnnotator(engine=engine, depth=18, with_threats=False))
     assessing.analyser = analyser
+    watch = AnalyserWatch(analyser)
     analyser.start()
     try:
         assessing.submit(
             GameStarted(game_id="g", user_side=Side.WHITE, start_fen=white, kind="position")
         )
-        assert _until(lambda: analyser._looking, 5), "the full measure never began"
+        assert engine.holding.wait(HANG_S), "the full measure never began"
+        assert analyser._looking, "the whole measure, under way"
         before = assessing.drain()
         assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
-        after = assessing.wait(timeout=10)
+        assert engine.interrupted.wait(HANG_S), "the reset let go of the measure under way"
+        watch.idle()
+        after = assessing.drain()
         assert [e.fen for e in before if isinstance(e, Analysis)] == [white]
+        # The old reading's whole measure was never taken up again after the reset: its only
+        # search that ran to an answer is the early one.
+        from sidecoach.analysis.annotator import EARLY_DEPTH
+
+        white_depths = [d for f, d in zip(engine.calls, engine.depths, strict=True) if f == white]
+        assert white_depths == [EARLY_DEPTH], white_depths
         told = [e.fen for e in after if isinstance(e, Analysis)]
         assert told and set(told) == {black}, told
         # The glue's own check, whatever the engine sends: a word at ply 0 on the old

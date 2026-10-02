@@ -7,7 +7,6 @@ from __future__ import annotations
 import socket
 import sys
 import threading
-import time
 import types
 import zipfile
 from collections.abc import Callable, Iterator
@@ -156,66 +155,100 @@ def test_kokoro_is_present_only_at_its_full_size(tmp_path: Path) -> None:
     assert not kokoro.present()
 
 
-def _fake_items(fetched: list[str], delay: float = 0.3) -> Callable[[Settings], list[Any]]:
-    def items(settings: Settings) -> list[Any]:
-        time.sleep(delay)  # what detection and the disk checks cost in the real items()
+HANG_S = 60.0  # a safety net for a thread's signal, never the expected path
 
-        def fetch(progress: Any) -> None:
-            fetched.append(threading.current_thread().name)
-            time.sleep(0.3)
 
-        return [setup_mod.Item("kokoro", "voice", 10, lambda: False, fetch)]
-
-    return items
+def _run_over(s: setup_mod.Setup) -> None:
+    """Wait for the setup's run thread to end (joined, not polled against a clock)."""
+    assert s._thread is not None
+    s._thread.join(HANG_S)
+    assert not s._thread.is_alive(), "the setup run never ended"
+    assert not s.run_state()["running"]
 
 
 def test_a_double_click_runs_one_setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A second Start while the first still looks at the items (detection and the disk checks
+    take a while in the real items()), or while it fetches them, is refused: one run, one
+    fetch. Each step is held by an Event, so the second click lands exactly there."""
     fetched: list[str] = []
-    monkeypatch.setattr(setup_mod, "items", _fake_items(fetched))
+    looked: list[int] = []
+    looking, looked_enough = threading.Event(), threading.Event()
+    fetching, fetched_enough = threading.Event(), threading.Event()
+
+    def items(settings: Settings) -> list[Any]:
+        looked.append(1)
+        looking.set()
+        assert looked_enough.wait(HANG_S)
+
+        def fetch(progress: Any) -> None:
+            fetched.append(threading.current_thread().name)
+            fetching.set()
+            assert fetched_enough.wait(HANG_S)
+
+        return [setup_mod.Item("kokoro", "voice", 10, lambda: False, fetch)]
+
+    monkeypatch.setattr(setup_mod, "items", items)
     s = setup_mod.Setup(Settings(data_dir=tmp_path))
     results: list[bool] = []
     a = threading.Thread(target=lambda: results.append(s.start()))
-    b = threading.Thread(target=lambda: results.append(s.start()))
     a.start()
-    time.sleep(0.05)
-    b.start()
-    a.join()
-    b.join()
-    deadline = time.time() + 5
-    while s.run_state().get("running") and time.time() < deadline:
-        time.sleep(0.05)
+    assert looking.wait(HANG_S), "the first click never looked at the items"
+    results.append(s.start())  # the second click, while the first one looks
+    assert results == [False] and looked == [1], "refused without looking at the items again"
+    looked_enough.set()
+    a.join(HANG_S)
+    assert not a.is_alive()
     assert sorted(results) == [False, True]
-    assert len(fetched) == 1
+    assert fetching.wait(HANG_S), "the run never fetched"
+    assert s.start() is False, "a click while the item is fetched is refused too"
+    fetched_enough.set()
+    _run_over(s)
+    assert len(fetched) == 1 and fetched == ["setup"], fetched
     # And a later run is allowed once this one is over.
     assert s.start() is True
+    _run_over(s)
+    assert len(fetched) == 2
 
 
 def test_cancel_stops_the_item_under_way(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Cancel pressed while the first item is mid-way: the item stops at its next chunk (its
+    progress call raises), and the second item never begins. The fetch holds at chunk 10
+    until the Cancel is in, so the chunk it stops at is exact."""
     chunks: list[int] = []
+    begun: list[str] = []
+    midway, cancelled = threading.Event(), threading.Event()
 
     def items(settings: Settings) -> list[Any]:
-        def fetch(progress: Any) -> None:
-            for n in range(200):
-                progress(n, 200)
-                chunks.append(n)
-                time.sleep(0.01)
+        def fetcher(name: str) -> Callable[[Any], None]:
+            def fetch(progress: Any) -> None:
+                begun.append(name)
+                for n in range(200):
+                    progress(n, 200)
+                    chunks.append(n)
+                    if n == 10:
+                        midway.set()
+                        assert cancelled.wait(HANG_S)
+
+            return fetch
 
         return [
-            setup_mod.Item("a", "A", 200, lambda: False, fetch),
-            setup_mod.Item("b", "B", 200, lambda: False, fetch),
+            setup_mod.Item("a", "A", 200, lambda: False, fetcher("a")),
+            setup_mod.Item("b", "B", 200, lambda: False, fetcher("b")),
         ]
 
     monkeypatch.setattr(setup_mod, "items", items)
     s = setup_mod.Setup(Settings(data_dir=tmp_path))
     assert s.start()
-    time.sleep(0.2)
+    assert midway.wait(HANG_S), "the first item never got under way"
+    assert s.run_state()["item"] == "a" and s.run_state()["running"]
     s.cancel()
-    deadline = time.time() + 5
-    while s.run_state().get("running") and time.time() < deadline:
-        time.sleep(0.02)
+    cancelled.set()
+    _run_over(s)
     state = s.run_state()
     assert not state["running"]
     assert len(chunks) < 100  # the first item stopped mid-way, the second never began
+    assert chunks == list(range(11)), "stopped at the first chunk after the Cancel"
+    assert begun == ["a"]
     assert state["finished"] == [] and state["errors"] == {}
 
 
@@ -233,9 +266,7 @@ def test_too_little_disk_is_an_error_not_a_fetch(
     monkeypatch.setattr(setup_mod, "free_space", lambda path: 10**9)
     s = setup_mod.Setup(Settings(data_dir=tmp_path))
     assert s.start()
-    deadline = time.time() + 5
-    while s.run_state().get("running") and time.time() < deadline:
-        time.sleep(0.02)
+    _run_over(s)
     assert fetched == []
     assert "free space" in s.run_state()["errors"]["big"]
 

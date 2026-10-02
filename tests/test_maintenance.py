@@ -3,7 +3,6 @@ and over the panel's API."""
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -137,9 +136,8 @@ def test_a_review_under_way_saves_nothing_for_a_profile_reset_meanwhile(
         strength="fast",
         make_engine=lambda **_: Resetting(),
     )
-    deadline = time.monotonic() + 10
-    while room.status not in ("ready", "failed") and time.monotonic() < deadline:
-        time.sleep(0.02)
+    # Set by the room once the review is ready or failed; 60 s is only a safety net.
+    assert room.settled.wait(60), "the review never settled"
     room.close()
     room.join()
     assert room.status == "failed" and room.error and "no longer" in room.error

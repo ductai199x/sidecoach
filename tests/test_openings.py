@@ -8,7 +8,6 @@ test uses the fetched tables when they are there and is skipped when they are no
 from __future__ import annotations
 
 import shutil
-import time
 from pathlib import Path
 
 import chess
@@ -157,16 +156,26 @@ def test_unparsable_line_is_skipped(tmp_path: Path) -> None:
     not (REAL_TABLES / "a.tsv").is_file(),
     reason="run scripts/fetch_openings.py for the real tables",
 )
-def test_real_tables() -> None:
+def test_real_tables(monkeypatch: pytest.MonkeyPatch) -> None:
     book = OpeningBook.load(REAL_TABLES)
     assert book is not None
     assert len(book) > 3500
 
-    started = time.perf_counter()
-    warm = OpeningBook.load(REAL_TABLES)
-    elapsed_ms = (time.perf_counter() - started) * 1000
+    # A warm load must be quick enough for a live session start (a few milliseconds, where
+    # parsing the tables costs about a second): it is answered by the cache the first load
+    # left, without replaying a single line. Proven by making the replay impossible.
+    assert (REAL_TABLES / CACHE_FILE).is_file()
+
+    def explode(_tables: object) -> None:
+        raise AssertionError("a warm load replayed the tables instead of reading the cache")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(openings_module, "_compile", explode)
+        warm = OpeningBook.load(REAL_TABLES)
     assert warm is not None
-    assert elapsed_ms < 300, f"warm load took {elapsed_ms:.0f} ms"
+    assert len(warm) == len(book)
+    najdorf = moves("1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6")
+    assert warm.identify(najdorf) == book.identify(najdorf) is not None
 
     named = {
         "1. e4 e5 2. Nf3 Nc6 3. Bc4": ("C50", "Italian Game"),

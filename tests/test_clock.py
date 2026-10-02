@@ -11,12 +11,21 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 from sidecoach.events import Region
+from sidecoach.vision import clock as clock_module
 from sidecoach.vision.board_detect import BoardCandidate
-from sidecoach.vision.clock import ClockReader, ClockReading, GlyphTemplates, parse_clock
+from sidecoach.vision.clock import (
+    BOX_WIDTH_CELLS,
+    SEARCH_CELLS,
+    ClockReader,
+    ClockReading,
+    GlyphTemplates,
+    parse_clock,
+)
 from tests.synth import board_with_clocks, busy_background
 
 # A second theme: a cream box with brown text above, the inverse below.
@@ -236,17 +245,69 @@ def test_a_reader_without_templates_reads_nothing_rather_than_raising(tmp_path: 
     assert reader.read(frame, board, 1.0) is None
 
 
-def test_the_reader_is_cheap_enough_for_every_changed_frame() -> None:
-    from time import perf_counter
+def test_the_reader_is_cheap_enough_for_every_changed_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reader runs on every changed frame, so its budget is about 5 ms at 720p (the
+    recordings measure well under 1 ms). The cost is proven by counting the work rather than
+    by a stopwatch: per frame the reader looks at the two strips beside the board and the
+    icons in them, never the frame, and classifies each glyph once. That work is the same
+    for a frame four times the size and does not grow with the frames read before."""
+    converted: list[int] = []  # pixels of every image the reader turns grey
+    classified: list[int] = []  # one entry per glyph classification
+    boxes: list[int] = []  # one entry per box search
 
-    frame, board = board_with_clocks("16:18", "15:34", cell=43)
-    reader = ClockReader()
-    reader.read(frame, board, 0.0)
-    started = perf_counter()
+    class CountingCv2:
+        def __getattr__(self, name: str) -> object:
+            return getattr(cv2, name)
+
+        @staticmethod
+        def cvtColor(image: np.ndarray, code: int) -> np.ndarray:  # noqa: N802 - cv2's name
+            converted.append(int(image.shape[0] * image.shape[1]))
+            return cv2.cvtColor(image, code)
+
+    real_classify = GlyphTemplates.classify
+    real_find_box = clock_module.find_box
+
+    def counting_classify(self: GlyphTemplates, canvas: np.ndarray) -> tuple[str, float, float]:
+        classified.append(1)
+        return real_classify(self, canvas)
+
+    def counting_find_box(*args: object, **kwargs: object) -> object:
+        boxes.append(1)
+        return real_find_box(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(clock_module, "cv2", CountingCv2())
+    monkeypatch.setattr(GlyphTemplates, "classify", counting_classify)
+    monkeypatch.setattr(clock_module, "find_box", counting_find_box)
+
+    def work_per_frame(width: int, height: int, runs: int) -> list[tuple[int, int, int]]:
+        frame, board = board_with_clocks("16:18", "15:34", cell=43, width=width, height=height)
+        reader = ClockReader()
+        work: list[tuple[int, int, int]] = []
+        for i in range(runs):
+            converted.clear()
+            classified.clear()
+            boxes.clear()
+            reading = reader.read(frame, board, 0.1 * i)
+            assert reading is not None and reading.top_ms == 978_000, reading
+            work.append((sum(converted), len(classified), len(boxes)))
+        return work
+
     runs = 50
-    for i in range(runs):
-        reader.read(frame, board, 0.1 * i)
-    per_frame_ms = 1000 * (perf_counter() - started) / runs
-    # The budget is about 5 ms at 720p; the recordings measure well under 1 ms, so a
-    # generous bound here still catches a change that makes the reader expensive.
-    assert per_frame_ms < 5.0, per_frame_ms
+    at_720p = work_per_frame(1280, 720, runs)
+    pixels, glyphs, searches = at_720p[0]
+    # The same work on every frame: nothing accumulates as frames go by.
+    assert at_720p == [at_720p[0]] * runs, set(at_720p)
+    # Two box searches, one per clock, and each glyph of "16:18" and "15:34" classified once.
+    assert searches == 2
+    assert glyphs == len("16:18") + len("15:34")
+    # Only the strips beside the board are read: each at most the search reach high and the
+    # widest box wide, plus the two icons (smaller than a cell each). A tiny part of a frame.
+    cell = 43
+    strip = int(round(SEARCH_CELLS * cell)) * (int(BOX_WIDTH_CELLS[1] * cell) + 4)
+    assert pixels <= 2 * strip + 2 * cell * cell, pixels
+    assert pixels < 1280 * 720 // 20, pixels
+    # A frame four times the size costs exactly the same: the cost is the board's, not the
+    # screen's.
+    assert work_per_frame(2560, 1440, 3) == at_720p[:3]
