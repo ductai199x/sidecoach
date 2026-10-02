@@ -738,8 +738,8 @@ AI_GUIDELINES = (
     "Let the conversation and the position decide -- what was just said or named, whose move it "
     "is, which move was the mistake -- and when they do, answer that reading and say in a few "
     'words which it is. When they do not -- "that" when their move and the reply both went '
-    'wrong, "it" after several moves were named, a move legal both now and instead of the '
-    "one just played -- and the readings would get different answers, do not guess: reply with "
+    'wrong, "it" after several moves were named -- and the readings would get different '
+    "answers, do not guess: reply with "
     'one short question that names the readings ("Instead of Bc4, which you just played, or as '
     'your next move?") and nothing else. Never ask when every reading gets the same answer.\n'
     "- A hint: one rung up the ladder above, said once, never lower than one already said.\n"
@@ -750,10 +750,10 @@ AI_GUIDELINES = (
     "engine lines, name every move about level with the best, and say which are clearly worse "
     "and what goes wrong with them. On the opponent's move the player has just moved, so 'any "
     "other good moves?', 'is X also good?' or 'what else could I have played?' are about what "
-    "they could have played instead of their last move: answer from the position they faced "
-    "before it -- the moves about as good there and the clearly worse ones, given below -- and "
-    "say how their move compares. The opponent's best move or plan is another question, the "
-    "opponent's.\n"
+    "they could have played instead of their last move, not about the opponent's options: "
+    "answer from the position they faced before it -- the moves about as good there and the "
+    "clearly worse ones, given below -- and say how their move compares. The opponent's best "
+    "move or plan is another question, asked of the opponent.\n"
     "- The line, or what happens next: the engine's line move by move, and the idea behind "
     "it; once given, what comes after its end.\n"
     "- A move, square or piece they name: whether it holds up and what it does or allows, from "
