@@ -524,3 +524,36 @@ def test_games_that_only_look_alike_are_not_merged() -> None:
     )
     assert store.twins() == {}
     store.close()
+
+
+def test_the_same_game_played_again_another_day_is_another_game() -> None:
+    """The audit of 2026-10-02: the same moves, the same players, the same result -- a short game
+    against the same bot played again a week later -- were taken for one game pasted twice, and
+    the second left the list, the background review and Stats. A copy was played when the game
+    was: to the second when both say the time of day, else the same day or the next."""
+    for dated in (True, False):
+        store = Store(None)
+        later = GAME.replace("2026.09.29", "2026.10.06")
+        if not dated:  # a date alone, no time of day
+            later = later.replace('[UTCTime "23:30:00"]\n', "").replace(
+                '[UTCDate "2026.10.06"]\n', ""
+            )
+        site = _site(GAME, "chesscom:1")
+        (again,) = from_pgn(later, user_names=["nosegazm"])
+        for row in (site, again):
+            store.add_library_game(row)
+        reconcile(store)
+        assert _shown(store) == sorted([site.key, again.key]), "two games"
+        assert store.twins() == {}
+        # The same game's copy, a date alone on the day after its UTC date (another time zone):
+        # one game.
+        (copy,) = from_pgn(
+            GAME.replace('[UTCTime "23:30:00"]\n', "")
+            .replace('[UTCDate "2026.09.29"]\n', "")
+            .replace("2026.09.29", "2026.09.30"),
+            user_names=["nosegazm"],
+        )
+        store.add_library_game(copy)
+        reconcile(store)
+        assert store.twins() == {copy.key: site.key}
+        store.close()

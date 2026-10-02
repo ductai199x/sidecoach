@@ -338,7 +338,7 @@ def reconcile(store: Store) -> dict[str, str]:
 # `twins`), so the list, Stats, the insights and the backlog count it once. Two copies are one
 # game when at least one was pasted (a site's own ids tell its games apart: two games of one
 # site, or of two sites, are two), they play the same moves from the start to the end, their
-# results do not disagree, and the players, when both name them, are the same.
+# results do not disagree, and the players and when it was played, when both say, are the same.
 _SITES = ("chesscom", "lichess")
 _COMMENT = re.compile(r"\{[^}]*\}|;[^\n]*")
 _VARIATION = re.compile(r"\([^()]*\)")
@@ -387,6 +387,17 @@ def _same_game(best: LibraryRow, row: LibraryRow, moves: dict[str, list[str] | N
             return False
         for ours, theirs in ((best.white, row.white), (best.black, row.black)):
             if _named(ours) and _named(theirs) and _named(ours) != _named(theirs):
+                return False
+        # A copy of a game was played when the game was: two games played at two times are two,
+        # however alike -- the same short game against the same bot, played again, was taken for
+        # a copy, and one real game left the list, the background review and Stats (the audit
+        # of 2026-10-02). Both saying the time of day (UTCTime), the same time; else the same
+        # day or the next, as `_may_be` reads a date alone (a date can be another time zone's).
+        if best.played_at is not None and row.played_at is not None:
+            if _TIMED.search(best.pgn) and _TIMED.search(row.pgn):
+                if best.played_at != row.played_at:
+                    return False
+            elif abs(best.played_at - row.played_at) > DATE_WINDOW_S:
                 return False
         for each in (best, row):
             if each.key not in moves:
