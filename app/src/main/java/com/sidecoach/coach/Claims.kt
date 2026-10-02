@@ -949,7 +949,7 @@ private fun checkBest(
     }
     val said = board.san(move)
 
-    val candidates = candidates(board, facts, engine, depth)
+    val (candidates, good) = candidates(board, facts, engine, depth)
         ?: return ClaimResult.UNCLEAR to
             "I have no engine view of this position yet, so I cannot rate $said."
     if (candidates.isEmpty()) {
@@ -962,33 +962,46 @@ private fun checkBest(
         return ClaimResult.TRUE to "$said is among the engine's best moves here ($shown)."
     }
     val preferred = join(candidates.map { board.san(it) })
+    if (move in good) {
+        // Graded Good, a little behind the best: a good move, and no best one. "Is Be7 a good
+        // move?" 0.029 behind was answered "not among the engine's best moves" (Tai, 2026-10-02).
+        val verdict = if (CALLED_BEST.containsMatchIn(claim.text)) ClaimResult.FALSE else ClaimResult.TRUE
+        return verdict to "$said is a good move here, a little behind the engine's best ($preferred)."
+    }
     return ClaimResult.FALSE to
         "$said is not among the engine's best moves here; it prefers $preferred."
 }
 
-/** The near-equal best moves, from the facts when they have them, else the engine. */
+/** The claim that a move is the best one, not merely good. `claims._CALLED_BEST`. */
+private val CALLED_BEST = Regex("(?i)\\b(?:best|strongest|top)\\b")
+
+/**
+ * The moves about as good as the best (graded Best or Excellent) and those graded Good, a little
+ * behind them, from the facts when they have them, else the engine ([gradedMoves]: the bands the
+ * move labels use). `claims._candidates`.
+ */
 private fun candidates(
     board: Board,
     facts: PositionFacts?,
     engine: ClaimEngine?,
     depth: Int,
-): List<Move>? {
+): Pair<List<Move>, List<Move>>? {
     if (facts != null && facts.candidates.isNotEmpty()) {
-        val moves = ArrayList<Move>()
-        for (san in facts.candidates) {
-            val move = parseMove(board, san).first
-            if (move != null) moves.add(move)
-        }
-        if (moves.isNotEmpty()) return moves
+        val moves = parsedMoves(board, facts.candidates)
+        if (moves.isNotEmpty()) return moves to parsedMoves(board, facts.good)
     }
     if (engine == null) return null
     val lines = engine.analyse(board, depth).filter { it.moves.isNotEmpty() }
-    if (lines.isEmpty()) return emptyList()
-    val top = lines.maxOf { it.expectedScore }
+        .sortedByDescending { it.expectedScore }
+    if (lines.isEmpty()) return emptyList<Move>() to emptyList()
+    val (fine, good) = gradedMoves(board, lines)
+    return parsedMoves(board, fine) to parsedMoves(board, good)
+}
+
+private fun parsedMoves(board: Board, sans: List<String>): List<Move> {
     val moves = ArrayList<Move>()
-    for (line in lines) {
-        if (top - line.expectedScore > CANDIDATE_MARGIN) continue
-        val move = parseMove(board, line.moves[0]).first
+    for (san in sans) {
+        val move = parseMove(board, san).first
         if (move != null && move !in moves) moves.add(move)
     }
     return moves

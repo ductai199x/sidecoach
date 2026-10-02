@@ -2164,15 +2164,23 @@ class Coach(
         played: PlyRecord? = null,
     ): Pair<String, String> {
         val fine = facts.candidates
+        val good = facts.good
         val analysis = position.analysis
         val worse = if (analysis != null) worseMoves(position.board, analysis, userColour) else emptyList()
         val also = ASK_ALSO.containsMatchIn(said) && !ASK_OTHER_MOVES.containsMatchIn(said)
         val past = played != null
-        val levelPart = if (fine.size > 1) {
+        var levelPart = if (fine.size > 1) {
             "The moves about level with the best, all fine: ${fine.joinToString(", ")}. Say they " +
                 "are about equally good, and name every one."
+        } else if (good.isNotEmpty()) {
+            "One move stands out: ${fine[0]}."
         } else {
-            "One move stands out: ${fine[0]}. Say the others are clearly worse."
+            // Weaker, not "clearly worse": an inaccuracy is not ([clearlyWorse]).
+            "One move stands out: ${fine[0]}. Say the others are weaker."
+        }
+        if (good.isNotEmpty()) {
+            // Graded Good, a little behind the best: good moves, said so (Tai, 2026-10-02).
+            levelPart += " Good too, a little behind: ${good.joinToString(", ")}."
         }
         val worsePart = if (worse.isNotEmpty()) {
             " Clearly worse, and what goes wrong with them, true of the board: ${worseText(worse)}. " +
@@ -2188,7 +2196,8 @@ class Coach(
                     (
                         if (also) {
                             "whether the move they name would also have been good -- yes plainly when it " +
-                                "is among the fine ones, and what it does; when it is not, that it was weaker " +
+                                "is among the fine ones, and what it does; good, a little behind the best, " +
+                                "when it is among the good ones; when it is neither, that it was weaker " +
                                 "than the best, and what goes wrong with it when the sheet says."
                         } else {
                             "the good moves there, not only the best one."
@@ -2197,15 +2206,18 @@ class Coach(
                     " And say how ${played.move.san} compares: ${compared(played, fine)}."
             also ->
                 "They ask whether another move is also good: say yes plainly when the move they name " +
-                    "is among the fine ones, and what it does; when it is not, say it is weaker than " +
-                    "the best, and what goes wrong with it when the sheet says."
+                    "is among the fine ones, and what it does; that it is good, a little behind " +
+                    "the best, when it is among the good ones; when it is neither, say it is weaker " +
+                    "than the best, and what goes wrong with it when the sheet says."
             else -> "They ask about the good moves here, not only the best one."
         }
         val directive = "$askPart $ALTERNATIVES_READ $levelPart$worsePart Say it in words. " +
             "$NO_FIGURES Two or three sentences, no question."
-        var text = fineSaid(fine, past)
+        var text = listOf(fineSaid(fine, past), goodSaid(good, past)).filter { it.isNotEmpty() }.joinToString(" ")
         val bare = fine.map { it.trimEnd('+', '#') }
+        val bareGood = good.map { it.trimEnd('+', '#') }
         val named = SAN.findAll(said).map { it.groupValues[1] }.filter { it.trimEnd('+', '#') in bare }.toList()
+        val namedGood = SAN.findAll(said).map { it.groupValues[1] }.filter { it.trimEnd('+', '#') in bareGood }.toList()
         if (also && named.isNotEmpty()) {
             text = if (past) {
                 if (named[0].trimEnd('+', '#') == bare[0]) {
@@ -2221,6 +2233,12 @@ class Coach(
                 }
             }
             if (fine.size > 1) text += " " + fineSaid(fine, past)
+        } else if (also && namedGood.isNotEmpty()) {
+            text = if (past) {
+                "Yes, ${namedGood[0]} would have been good too, a little behind ${fine[0]}."
+            } else {
+                "Yes, ${namedGood[0]} is good too, a little behind ${fine[0]}."
+            }
         }
         if (played != null) text += " Yours, ${played.move.san}, ${compared(played, fine)}."
         return directive to "$text ${worseSaid(worse, past)}".trim()
@@ -2281,6 +2299,7 @@ class Coach(
         val san = own.move.san
         var out = " Before $san, the player's last move, the moves about equally good were: " +
             "${fine.joinToString(", ")}; $san ${compared(own, fine)}."
+        if (facts.good.isNotEmpty()) out += " Good too there, a little behind: ${facts.good.joinToString(", ")}."
         val worse = worseMoves(faced.board, analysis, userColour)
         if (worse.isNotEmpty()) {
             out += " Clearly worse there, and what goes wrong with them: ${worseText(worse)}."
@@ -2368,9 +2387,11 @@ class Coach(
         )
         takeLeads(position, fallback)
         val mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
-        if (trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
-            // Nothing the coach said since the last move is said again word for word: a
-            // student's answer to the hint got the same hint back, three times (round 5).
+        if (offline && trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove()) {
+            // Offline, where the template is the answer, nothing the coach said since the last
+            // move is said again word for word: a student's answer to the hint got the same hint
+            // back, three times (round 5). With the AI on the fallback is said only when the reply
+            // failed, and then it stands: a failed reply never ends in silence (Tai, 2026-10-02).
             fallback = ""
         }
         // A reply about a position already moved from -- the lesson on a move, an answer about it
@@ -2601,9 +2622,6 @@ class Coach(
             played = recordMoves(),
             playedSan = played?.san,
             assessment = assessment,
-            streamTo = streamSink?.invoke(trigger, position.ply) {
-                movedOn(Moment(momentEpoch, momentGame, momentOwnMoves))
-            },
             routine = routine,
             // A fast game gets the template, not a model reply; what the player asks, and the
             // review of a game that is over, always get the model.
@@ -2620,6 +2638,11 @@ class Coach(
             rungByReply = aiAsk,
             elicit = elicit,
         )
+        // Not spoken once its moment is over, nor when a question came behind it while it waited
+        // ([Speaker.submit] sets `unvoiced`): read when its first sentence comes.
+        request.streamTo = streamSink?.invoke(trigger, position.ply) {
+            request.unvoiced || movedOn(Moment(momentEpoch, momentGame, momentOwnMoves))
+        }
         speaker.submit(request)
     }
 
@@ -2975,17 +2998,18 @@ class Coach(
                 // mating attack" and nothing more.
                 // What the move let them do, from the position it left, when that has been
                 // analysed: the grounded half of "what their move allowed".
-                // Late -- the opponent has replied and the player is thinking again -- what the
-                // move allowed is the threat on the board now, and a question that sends them to
-                // the board is a nudge while they think: "one question that sends them to
-                // find..." asked what the move allowed (the deep prompt review, 2026-10-01). The
-                // lesson is then the better move and what theirs missed.
+                // Late -- the opponent has replied and the player is thinking again -- a question
+                // that sends them to the board is a nudge while they think: "one question that
+                // sends them to find..." asked what the move allowed (the deep prompt review,
+                // 2026-10-01), so the late lesson asks none. What the move allowed is still said:
+                // it has happened on the board, and nothing of the lesson is held back (Tai,
+                // 2026-10-02).
                 val now = current
                 val facing = now != null && now.ply > position.ply &&
                     now.board.turn == userColour && !now.board.isGameOver()
                 val left = positions[played.ply]
                 val leftAnalysis = left?.analysis
-                val allowed = if (left != null && leftAnalysis != null && !facing) {
+                val allowed = if (left != null && leftAnalysis != null) {
                     IdeaWords.allowed(left.board, leftAnalysis, played.san)
                 } else {
                     null
@@ -3018,13 +3042,13 @@ class Coach(
                     "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
                         "Teach the difference so they spot it next time: why the better move works " +
-                        (if (facing) "and what their move missed, " else "and what their move missed or allowed, ") +
+                        "and what their move missed or allowed, " +
                         "from the sheet of the position they faced -- its goal, its pattern, the " +
                         "tactic when it names one -- as a pattern to remember. " +
                         (
                             if (facing) {
                                 "Three sentences at most, no question: they are thinking about their " +
-                                    "next move now, and what the opponent threatens is theirs to find. "
+                                    "next move now. "
                             } else {
                                 "Three sentences at most, then, if you like, one question that " +
                                     "sends them to find on the board something your reply has not said. "
@@ -3624,8 +3648,11 @@ class Coach(
                         (if (askedCost) " Name moves bare, never with a move number in front." else " $NO_FIGURES") +
                         " $TIE_TO_THE_GAME"
             }
-            if (followup && !asks) {
-                fallback = "" // a nod needs no template: nothing, rather than the verdict again
+            if (followup && !asks && offline) {
+                // Offline a nod needs no template: nothing, rather than the verdict again. With
+                // the AI on the fallback stands for a failed reply: never silence (Tai,
+                // 2026-10-02: no pattern blanks a fallback).
+                fallback = ""
             }
         } else if (ASK_MATERIAL.containsMatchIn(said) || OPENING_FACT.containsMatchIn(said) ||
             ASK_EVAL.containsMatchIn(said)
@@ -3717,8 +3744,10 @@ class Coach(
                                 "they say is right, or put it right -- and ask nothing."
                         else -> ""
                     }
-            if (followup && !asks && engineWords.isEmpty()) {
-                fallback = "" // a nod needs no template: nothing, rather than a hint again
+            if (followup && !asks && engineWords.isEmpty() && offline) {
+                // Offline a nod needs no template: nothing, rather than a hint again (with the AI
+                // on, the fallback stands for a failed reply).
+                fallback = ""
             }
         }
         val (cooled, note) = coolHint(facts, fallback)
@@ -3794,6 +3823,11 @@ class Coach(
             } else {
                 " The moves about equally good here: ${facts.candidates.joinToString(", ")}."
             }
+        }
+        if (facts.good.isNotEmpty() && !theirs) {
+            // Graded Good, a little behind the best: good moves, said so when they ask (Tai,
+            // 2026-10-02: "is Be7 a good move?" a move 0.029 behind).
+            out += " Good too, a little behind the best: ${facts.good.joinToString(", ")}."
         }
         out += facedAlternativesWords(position)
         val analysis = position.analysis

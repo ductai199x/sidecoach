@@ -415,6 +415,7 @@ class ConversationTest {
         plan = nullable(o, "plan"),
         ideas = strings(o.getJSONArray("ideas")),
         candidates = strings(o.getJSONArray("candidates")),
+        good = o.optJSONArray("good")?.let { strings(it) } ?: emptyList(),
         threats = strings(o.getJSONArray("threats")),
         line = strings(o.getJSONArray("line")),
         // The first hint and its parts: the sheet carries the whole of it (desktop 717cc9c).

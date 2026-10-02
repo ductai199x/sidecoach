@@ -1,6 +1,11 @@
 package com.sidecoach.coach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.analysis.DEFAULT_THRESHOLDS
+import com.sidecoach.analysis.aboutAsGood
+import com.sidecoach.analysis.clearlyWorse
+import com.sidecoach.analysis.gradedGood
+import com.sidecoach.analysis.labelMove
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Move
@@ -48,6 +53,9 @@ class CoachCoreTest {
         val replies = ArrayDeque(replies)
         val prompts = ArrayList<Pair<String, List<ChatMessage>>>()
 
+        /** Raise as a server that is down does (`ScriptedProvider(fail=True)`). */
+        @Volatile var fail = false
+
         override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
 
         override fun chat(
@@ -58,6 +66,7 @@ class CoachCoreTest {
             thinking: Boolean,
         ): Completion {
             synchronized(prompts) { prompts.add(system to messages.toList()) }
+            if (fail) throw RuntimeException("server down")
             val text = synchronized(replies) { replies.removeFirstOrNull() } ?: "Keep looking."
             return Completion(text = text)
         }
@@ -380,13 +389,44 @@ class CoachCoreTest {
         return coach to provider
     }
 
+    /** The label the review gives a move this far behind the best, all else plain. */
+    private fun gradeOf(loss: Double): Label = labelMove(
+        loss, DEFAULT_THRESHOLDS, isBest = loss == 0.0, inBook = false, decisive = false,
+        sacrifice = false, beforeScore = 0.5, opponentBlundered = false,
+    )
+
+    /**
+     * "About equally good" is what the move labels grade Best or Excellent, "good" what they grade
+     * Good (Tai, 2026-10-02: the grading bands, not 0.03 of our own): Bc5 and Nf6 about as good as
+     * each other; Be7, 0.029 behind, and d6 good, a little behind; h6 an inaccuracy.
+     * `test_a_quiet_position_has_moves_about_as_good_good_ones_and_none_clearly_worse`.
+     */
     @Test
-    fun aQuietPositionHasSeveralMovesAboutAsGoodAndNoneClearlyWorse() {
+    fun aQuietPositionHasMovesAboutAsGoodGoodOnesAndNoneClearlyWorse() {
         val (board, analysis) = load("italian")
         val facts = factsFromAnalysis(board, analysis, lastMove = null, user = board.turn)
-        assertEquals(listOf("Bc5", "Nf6", "Be7"), facts.candidates)
+        assertEquals(listOf("Bc5", "Nf6"), facts.candidates)
+        assertEquals(listOf("Be7", "d6"), facts.good)
+        val top = analysis.lines[0].expectedScore
+        val labels = analysis.lines.map { gradeOf(top - it.expectedScore) }
+        assertEquals(listOf(Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD), labels.take(4))
+        assertEquals(Label.INACCURACY, labels[4])
+        for ((line, label) in analysis.lines.zip(labels)) {
+            val loss = top - line.expectedScore
+            assertEquals(label in listOf(Label.BEST, Label.EXCELLENT), aboutAsGood(loss))
+            assertEquals(label in listOf(Label.BEST, Label.EXCELLENT, Label.GOOD), gradedGood(loss))
+        }
         assertEquals(emptyList<Worse>(), worseMoves(board, analysis, board.turn))
-        assertEquals("Bc5, Nf6 and Be7 are all fine here -- about equally good.", fineSaid(facts.candidates))
+        assertEquals("Bc5 and Nf6 are both fine here -- about equally good.", fineSaid(facts.candidates))
+        assertEquals("Be7 and d6 are good too, a little behind.", goodSaid(facts.good))
+    }
+
+    /** `test_clearly_worse_is_a_mistake_or_worse_as_the_labels_grade_it`. */
+    @Test
+    fun clearlyWorseIsAMistakeOrWorseAsTheLabelsGradeIt() {
+        for (loss in listOf(0.0, 0.03, 0.05, 0.0999, 0.10, 0.2, 0.5)) {
+            assertEquals(loss.toString(), gradeOf(loss) in listOf(Label.MISTAKE, Label.BLUNDER), clearlyWorse(loss))
+        }
     }
 
     @Test
@@ -396,7 +436,7 @@ class CoachCoreTest {
         assertEquals(listOf("Qxf7#"), facts.candidates)
         val worse = worseMoves(board, analysis, board.turn)
         assertEquals(listOf("Qd1", "Qe2"), worse.map { it.san })
-        assertTrue(worse.all { it.wrong == "passes up the mate" && it.drop >= WORSE_MARGIN })
+        assertTrue(worse.all { it.wrong == "passes up the mate" && clearlyWorse(it.drop) })
         assertEquals("Qd1 passes up the mate; Qe2 passes up the mate", worseText(worse))
         assertEquals("Qxf7# is the move here.", fineSaid(facts.candidates))
     }
@@ -423,34 +463,47 @@ class CoachCoreTest {
             coach.ask(said, 2.0)
             val answer = messages(coach)
             assertEquals(said, 1, answer.size)
-            assertTrue(said, "Bc5, Nf6 and Be7 are all fine here -- about equally good." in answer[0].text)
+            assertEquals(
+                said,
+                "Bc5 and Nf6 are both fine here -- about equally good. " +
+                    "Be7 and d6 are good too, a little behind.",
+                answer[0].text,
+            )
             assertEquals(DisclosureLevel.MOVE, answer[0].level)
         }
     }
 
     @Test
     fun theModelIsToldToReadEveryLineAndToNameTheMovesThatAreFine() {
-        val (coach, provider) = coachAt("italian", listOf("Bc5, Nf6 and Be7 are all fine."))
+        val (coach, provider) = coachAt("italian", listOf("Bc5 and Nf6 are both fine."))
         coach.ask("what are the best moves?", 2.0)
         messages(coach)
         val directive = directiveOf(provider)
         // The AI's guidelines, whatever the words: every line, every move about level named, and
         // the moves about as good as the facts list them (no keyword picks this).
         assertTrue(directive, "read all of the engine lines" in directive)
-        assertTrue(directive, "The moves about equally good here: Bc5, Nf6, Be7" in directive)
+        assertTrue(directive, "The moves about equally good here: Bc5, Nf6." in directive)
+        assertTrue(directive, "Good too, a little behind the best: Be7, d6." in directive)
         assertTrue(directive, "name every move about level with the best" in directive)
         assertTrue(directive, "no percentages, scores or move numbers" in directive)
     }
 
     @Test
     fun askedWhetherAMoveIsAlsoGoodTheModelGetsTheFineMoves() {
-        val (coach, provider) = coachAt("italian", listOf("Yes, Be7 is fine too."))
+        val (coach, provider) = coachAt("italian", listOf("Yes, Be7 is good too."))
         coach.ask("is Be7 also good?", 2.0)
         messages(coach)
         val directive = directiveOf(provider)
         assertTrue(directive, "or whether another move works too" in directive)
-        assertTrue(directive, "The moves about equally good here: Bc5, Nf6, Be7" in directive)
+        assertTrue(directive, "The moves about equally good here: Bc5, Nf6." in directive)
+        assertTrue(directive, "Good too, a little behind the best: Be7, d6." in directive)
         assertTrue(directive, "read all of the engine lines" in directive)
+        // Offline, at the move level, the template says what it is: good, a little behind.
+        val (offline, _) = coachAt("italian")
+        offline.ask("what are the best moves?", 2.0)
+        messages(offline)
+        offline.ask("is Be7 also good?", 3.0)
+        assertEquals("Yes, Be7 is good too, a little behind Bc5.", messages(offline).single().text)
     }
 
     @Test
@@ -479,12 +532,12 @@ class CoachCoreTest {
         val (coach, _) = coachAt("italian")
         coach.ask("what's the best move?", 2.0)
         val text = messages(coach)[0].text
-        assertTrue(text, "Bc5" in text && "Nf6 and Be7 are about as good." in text)
+        assertTrue(text, "Bc5" in text && "Nf6 is about as good." in text && "Be7" !in text)
         val (_, provider) = coachAt("italian", listOf("Bc5.")).also { (c, _) ->
             c.ask("what's the best move?", 2.0)
             messages(c)
         }
-        assertTrue("The moves about equally good here: Bc5, Nf6, Be7" in directiveOf(provider))
+        assertTrue("The moves about equally good here: Bc5, Nf6." in directiveOf(provider))
         val (_, single) = coachAt("scholar", listOf("Qxf7 mates.")).also { (c, _) ->
             c.ask("what's the best move?", 2.0)
             messages(c)
@@ -492,11 +545,36 @@ class CoachCoreTest {
         assertFalse("about equally good here" in directiveOf(single)) // one clear best
     }
 
+    /**
+     * Be7 is 0.029 behind the best line, graded Good: "is Be7 a good move?" was refused as not among
+     * the engine's best moves. It is a good move -- and called the best, it is not (Tai, 2026-10-02).
+     * `test_the_claim_check_says_a_good_move_is_good_and_not_the_best`.
+     */
     @Test
-    fun theClaimCheckAcceptsEveryMoveAboutAsGoodAsTheBestAsSanctioned() {
+    fun theClaimCheckSaysAGoodMoveIsGoodAndNotTheBest() {
         val (board, analysis) = load("italian")
         val facts = factsFromAnalysis(board, analysis, lastMove = null, user = board.turn)
-        assertTrue("Be7" in facts.candidates)
+        fun verdict(move: String, text: String, engine: ClaimEngine? = null): Pair<ClaimResult, String> {
+            val v = verifyClaims(
+                listOf(Claim(ClaimKind.BEST, null, null, move, text)),
+                board,
+                facts = if (engine == null) facts else null,
+                engine = engine,
+            ).single()
+            return v.result to v.reason
+        }
+        assertEquals(ClaimResult.TRUE, verdict("Nf6", "Nf6 is a good move").first)
+        val good = verdict("Be7", "Be7 is a good move")
+        assertEquals(
+            ClaimResult.TRUE to "Be7 is a good move here, a little behind the engine's best (Bc5 and Nf6).",
+            good,
+        )
+        val best = verdict("Be7", "Be7 is the best move")
+        assertTrue(best.second, best.first == ClaimResult.FALSE && "is a good move here, a little behind" in best.second)
+        assertEquals(ClaimResult.TRUE, verdict("d6", "d6 is a good move").first)
+        assertEquals("an inaccuracy is no good move", ClaimResult.FALSE, verdict("h6", "h6 is a good move").first)
+        // The engine, asked when the facts are not this position's: the fixture's lines, in any order.
+        assertEquals(good, verdict("Be7", "Be7 is a good move", ClaimEngine { _, _ -> analysis.lines.reversed() }))
     }
 
     @Test
@@ -1025,6 +1103,142 @@ class CoachCoreTest {
         assertEquals(DisclosureLevel.MOVE, disclosure.said(DisclosureLevel.MOVE))
         assertEquals("never lower after higher", null, disclosure.said(DisclosureLevel.FOCUS))
         assertEquals(DisclosureLevel.MOVE, disclosure.level)
+        assertEquals(null, Disclosure().said(DisclosureLevel.SILENT))
+    }
+
+    /**
+     * Two words of six letters shared with the goal or theme read as the idea (a magic number, Tai
+     * 2026-10-02): now the reply's squares, moves, pieces, mate and promotion are read against what
+     * the idea's facts name, and words alone climb nothing.
+     * `test_the_rung_is_what_the_reply_names_never_a_count_of_shared_words`.
+     */
+    @Test
+    fun theRungIsWhatTheReplyNamesNeverACountOfSharedWords() {
+        val facts = PositionFacts(
+            fen = SCHOLAR, sideToMove = "white", phase = "opening",
+            goal = "you can mate in one move",
+            theme = "a mating attack",
+            mechanism = "a mating attack: their king runs out of squares",
+            key = "Their king on e8 has one free square, and you have three checks",
+            target = "their king on e8, whose only free square is e7; you have three checks",
+            piece = "your queen on h5",
+            candidates = listOf("Qxf7#"), line = listOf("Qxf7#"),
+        )
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Every attack needs squares.", facts))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("You are winning, and the material is level.", facts))
+        assertEquals(DisclosureLevel.IDEA, saidLevel("Their king is short of air.", facts))
+        assertEquals(DisclosureLevel.IDEA, saidLevel("There is a mate here somewhere.", facts))
+        assertEquals(DisclosureLevel.FOCUS, saidLevel("Your queen can do it.", facts))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Your knight is fine where it is.", facts))
+        val trap = facts.copy(key = null, trap = "hxg4 looks like it wins, but Qh5 mates")
+        assertEquals(DisclosureLevel.IDEA, saidLevel("Careful with hxg4.", trap))
+    }
+
+    /**
+     * "am I winning?" answered "You are winning, and the material is level." raised the ladder to
+     * the idea, and the stuck hint after it was the second hint, the idea never said (Tai,
+     * 2026-10-02: the ladder rises only when the reply hints).
+     * `test_an_answer_that_names_nothing_of_the_idea_leaves_the_ladder_where_it_was`.
+     */
+    @Test
+    fun anAnswerThatNamesNothingOfTheIdeaLeavesTheLadderWhereItWas() {
+        val (coach, provider) = scripted(
+            listOf("You are winning, and the material is level.", "Their king is nearly out of squares."),
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        val position = coach.positions[6]!! // the position the player faces
+        coach.ask("am I winning?", 8.0)
+        assertEquals(listOf("You are winning, and the material is level."), messages(coach).map { it.text })
+        assertEquals("nothing of the idea was said", DisclosureLevel.SILENT, position.disclosure.level)
+        val hint = stuck(coach).single()
+        assertTrue(hint.trigger == Trigger.STUCK && hint.level == DisclosureLevel.IDEA)
+        assertEquals(2, provider.prompts.size)
+    }
+
+    /**
+     * A failed AI reply fell back to nothing when a pattern read the player's words as a statement
+     * after the coach had spoken (Tai, 2026-10-02: something true is still said; no pattern blanks a
+     * fallback). `test_a_failed_reply_after_a_nod_is_never_silence`.
+     */
+    @Test
+    fun aFailedReplyAfterANodIsNeverSilence() {
+        val (coach, provider) = scripted(listOf("Their king on e8 has one square, e7."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("hint", 8.0)
+        assertEquals(listOf("Their king on e8 has one square, e7."), messages(coach).map { it.text })
+        provider.fail = true // the server goes down: every reply from here fails
+        coach.ask("ok I see it now", 9.0) // a nod: no question in it
+        val nod = messages(coach).single()
+        assertTrue("the template, not silence", nod.trigger == Trigger.USER_ASK && nod.text.isNotEmpty())
+    }
+
+    /**
+     * The template of a failed AI reply was blanked when the coach had said it since the move: asked
+     * twice, the second answer was nothing. `test_a_failed_reply_whose_template_repeats_is_still_said`.
+     */
+    @Test
+    fun aFailedReplyWhoseTemplateRepeatsIsStillSaid() {
+        val (coach, provider) = scripted(emptyList())
+        provider.fail = true
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("what's the material?", 10.0)
+        val first = messages(coach).single()
+        coach.ask("what's the material?", 11.0)
+        val again = messages(coach).single()
+        assertTrue("said again rather than nothing", first.text.isNotEmpty() && again.text == first.text)
+    }
+
+    /**
+     * With no template to fall back on, a failed reply to a question says honestly that no answer
+     * came, rather than nothing. `test_a_failed_reply_with_no_template_says_so`.
+     */
+    @Test
+    fun aFailedReplyWithNoTemplateSaysSo() {
+        val provider = ScriptedProvider(emptyList()).also { it.fail = true }
+        val speaker = Speaker(provider)
+        fun request(trigger: Trigger) = CoachRequest(
+            trigger = trigger, level = DisclosureLevel.IDEA, system = "",
+            messages = listOf(ChatMessage("user", "# Task\nAnswer them.")),
+            facts = PositionFacts(fen = Board().fen(), sideToMove = "white", phase = "opening"),
+            board = Board(), fallback = "", ply = 0, gameId = "g",
+        )
+        assertEquals(NOT_ANSWERED, speaker.speakNow(request(Trigger.USER_ASK)).message.text)
+        assertEquals("an unasked remark may stay unsaid", "", speaker.speakNow(request(Trigger.POST_MOVE)).message.text)
+    }
+
+    /**
+     * Tai, 2026-10-02 (T8): "the stuck hint does not need to be voiced but the order should still be
+     * preserved". The hint waiting when the question comes is shown first, in its place, and the
+     * voice goes to the answer: its sink reads it as not to be spoken, and the panel is told so
+     * ([Spoken.unvoiced]). A hint with no question behind it is spoken as ever.
+     * `test_a_stuck_hint_a_question_came_behind_is_shown_first_and_not_spoken`.
+     */
+    @Test
+    fun aStuckHintAQuestionCameBehindIsShownFirstAndNotSpoken() {
+        val (coach, _) = scripted(listOf("Look at f7.", "Qxf7 is mate."))
+        val sinks = HashMap<Trigger, () -> Boolean>()
+        coach.streamSink = { trigger, _, movedOn ->
+            sinks[trigger] = movedOn // what the voice will ask when the first sentence comes
+            null
+        }
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        val since = coach.policy.stuckFrom!!
+        coach.tick(since + coach.policy.stuckThreshold()) // the stuck hint, queued, not yet run
+        assertFalse("nothing behind it yet: spoken", sinks.getValue(Trigger.STUCK)())
+        coach.ask("what should I play?", since + coach.policy.stuckThreshold() + 1)
+        assertTrue("a question came behind it: not spoken", sinks.getValue(Trigger.STUCK)())
+        assertFalse("the answer is spoken", sinks.getValue(Trigger.USER_ASK)())
+        val out = messages(coach)
+        assertEquals("in order, none dropped", listOf(Trigger.STUCK, Trigger.USER_ASK), out.map { it.trigger })
+        val (hint, answer) = coach.spoken.takeLast(2)
+        assertTrue(hint.unvoiced && !answer.unvoiced)
     }
 
     // 10. What the log keeps is bounded
