@@ -20,9 +20,12 @@ import java.io.IOException
  * The same tables answer both questions: a move is *in book* while the game is still standing
  * on a position that some named line passes through, and the first move that leaves every
  * line is the deviation. Indexing is by position, not by move order: each line is replayed
- * and every position along it stored as an EPD, so transpositions resolve for free. A game is
- * walked only as far as its first deviation, so a game that wanders out of theory and back
- * does not silently become book again.
+ * and every position along it stored as an EPD, so transpositions resolve for free. Whether a
+ * move is in book is walked only as far as the game's first deviation, so a game that wanders
+ * out of theory and back does not silently become book again. Its name is Lichess's (scalachess
+ * `OpeningDb.search`): the last named position the game reaches in its first 40 plies, so a
+ * game that leaves theory and transposes back into a named line takes that line's name (Tai,
+ * 2026-10-02).
  *
  * EPD rather than FEN because it drops the halfmove and fullmove counters, so two move orders
  * of unequal length still match, and it names an en passant square only when the capture is
@@ -57,47 +60,56 @@ class OpeningBook(private val names: Map<String, String>, private val positions:
     val positionCount: Int get() = positions.size
 
     /**
-     * Walk [moves] from the start position until they leave the book: the deepest named line
-     * that matched, and the index of the first move that left every line (null when the
-     * game never left).
+     * Walk [moves] from the start position until they leave the book: the index of the first
+     * move that left every line, null when the game never left.
      */
-    private fun trace(moves: List<Move>): Pair<Opening?, Int?> {
+    private fun trace(moves: List<Move>): Int? {
+        val board = Board()
+        for ((index, move) in moves.withIndex()) {
+            // Not a game from the start position: moves that do not belong to this history,
+            // and it is in no book.
+            if (!board.isLegal(move)) return index
+            board.push(move)
+            if (board.epd() !in positions) return index
+        }
+        return null
+    }
+
+    /**
+     * The opening as Lichess names it (scalachess `OpeningDb.search`): the last named position
+     * the game reaches within its first [NAME_PLIES] plies, whatever it passed through on the
+     * way -- a game that leaves theory and transposes back into a named line takes that line's
+     * name (Tai, 2026-10-02). The latest is the most specific name. Null when no named position
+     * comes up in those plies, or the moves are not a game from the start.
+     */
+    override fun identify(moves: List<Move>): Opening? {
         val board = Board()
         var found: Opening? = null
-        for ((index, move) in moves.withIndex()) {
-            if (!board.isLegal(move)) {
-                // Not a game from the start position: moves that do not belong to this
-                // history, and no opening can be claimed for them.
-                return found to index
-            }
+        for ((index, move) in moves.take(NAME_PLIES).withIndex()) {
+            if (!board.isLegal(move)) return found
             board.push(move)
-            val epd = board.epd()
-            if (epd !in positions) return found to index
-            val named = names[epd]
+            val named = names[board.epd()]
             if (named != null) {
                 val (eco, name) = named.split("\t", limit = 2)
                 found = Opening(eco = eco, name = name, ply = index + 1)
             }
         }
-        return found to null
+        return found
     }
 
-    /**
-     * The longest known opening line that is a prefix of [moves]: the most specific name.
-     * Null when the game left the book before reaching any named line.
-     */
-    override fun identify(moves: List<Move>): Opening? = trace(moves).first
-
     /** Whether [moves] is a prefix of at least one known line. */
-    override fun inBook(moves: List<Move>): Boolean = trace(moves).second == null
+    override fun inBook(moves: List<Move>): Boolean = trace(moves) == null
 
     /** Index of the first move that leaves every known line, null if it never does. */
-    fun deviation(moves: List<Move>): Int? = trace(moves).second
+    fun deviation(moves: List<Move>): Int? = trace(moves)
 
     companion object {
         private const val TAG = "sidecoach.openings"
         const val CACHE_FILE = "openings.cache.json"
         const val CACHE_VERSION = 1
+
+        /** How far into a game its opening is named: Lichess's SEARCH_MAX_PLIES. */
+        const val NAME_PLIES = 40
 
         /**
          * The book, or null when the data has not been fetched. Never throws because the
