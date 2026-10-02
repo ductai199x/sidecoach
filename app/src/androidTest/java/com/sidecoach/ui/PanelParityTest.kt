@@ -99,8 +99,8 @@ class PanelParityTest {
         override val name = "fake"
         @Volatile override var busy = false
         override fun healthcheck(): Pair<Boolean, String> = true to "fake"
-        override fun say(text: String, voice: String?) = Unit
-        override fun stop() = Unit
+        override fun say(text: String, voice: String?, owner: String) = Unit
+        override fun stop(owner: String?) = Unit
     }
 
     /**

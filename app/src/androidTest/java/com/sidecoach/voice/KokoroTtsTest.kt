@@ -118,6 +118,96 @@ class KokoroTtsTest {
     }
 
     /**
+     * The voice with its first line held in synthesis until [go] is let go ([synthesising] says
+     * it began), and the lines whose audio starts, in order: the lines queued behind it wait
+     * their turn.
+     */
+    private class Held(val tts: KokoroTts) {
+        val synthesising = CountDownLatch(1)
+        val go = CountDownLatch(1)
+        private val lock = Object()
+        private val heard = ArrayList<String>()
+        val played: List<String> get() = synchronized(lock) { heard.toList() }
+
+        init {
+            tts.onSynthesis = { on ->
+                if (on && synthesising.count > 0) {
+                    synthesising.countDown()
+                    assertTrue("the test never let the line go", go.await(30, TimeUnit.SECONDS))
+                }
+            }
+            tts.onPlay = { line ->
+                synchronized(lock) {
+                    heard.add(line)
+                    lock.notifyAll()
+                }
+            }
+        }
+
+        /** Waits until [line]'s audio has started (the voice's own signal); 30 s a safety net. */
+        fun heard(line: String) {
+            val until = SystemClock.elapsedRealtime() + 30_000
+            synchronized(lock) {
+                while (line !in heard) {
+                    val left = until - SystemClock.elapsedRealtime()
+                    assertTrue("$line was never said: $heard", left > 0)
+                    lock.wait(left)
+                }
+            }
+        }
+    }
+
+    /**
+     * Round 3 audit, E5 (Tai, 2026-10-02): a card is being said, a coach line is queued after
+     * it, and the review is closed. Before, the room's stop stopped the voice only when a room had
+     * given the last line -- here the coach had, so the card played on after the review closed.
+     * Now the review's own lines stop, the one being made and a later one, and the coach's line is
+     * said. `test_a_rooms_stop_cuts_its_own_line_and_leaves_the_coachs_queued_one`.
+     */
+    @Test
+    fun aRoomsStopCutsItsOwnLineAndLeavesTheCoachsQueuedOne() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val held = Held(tts!!)
+        tts.say("Card one.", owner = "review")
+        assertTrue("the card was never made", held.synthesising.await(30, TimeUnit.SECONDS))
+        tts.say("Coach line.")
+        tts.say("Card two.", owner = "review")
+        tts.stop("review")
+        held.go.countDown()
+        held.heard("Coach line.") // after the cut card, the line queued behind it
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("Coach line."), held.played)
+    }
+
+    /**
+     * The other order: the coach is speaking and a card is queued after it, then the review is
+     * closed. Before, the card having given the last line, the stop cut the coach off; now the
+     * coach's line is said and the card never is.
+     * `test_a_rooms_stop_leaves_the_coachs_playing_line_and_drops_its_queued_card`.
+     */
+    @Test
+    fun aRoomsStopLeavesTheCoachsPlayingLineAndDropsItsQueuedCard() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val held = Held(tts!!)
+        tts.say("Coach line.")
+        assertTrue("the line was never made", held.synthesising.await(30, TimeUnit.SECONDS))
+        tts.say("Card one.", owner = "review")
+        tts.stop("review")
+        held.go.countDown()
+        held.heard("Coach line.")
+        assertTrue("the voice never went quiet", quiet(tts, 30)) // the coach's line, the last
+        assertEquals(listOf("Coach line."), held.played)
+        // A card said after the room's stop is said.
+        tts.say("Card two.", owner = "review")
+        held.heard("Card two.")
+        tts.close()
+        assertEquals(listOf("Coach line.", "Card two."), held.played)
+    }
+
+    /**
      * The first run's warm-up loads the voice before Setup has fetched it; once the files arrive
      * it is loaded again, not left dead until a restart; a closed voice never is
      * (`test_the_voice_loads_once_setup_has_fetched_its_files`, voice finding 4).
