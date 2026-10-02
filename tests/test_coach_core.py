@@ -794,3 +794,58 @@ def test_a_forcing_line_left_is_a_new_combination() -> None:
     second.plan = second.theme = None
     assert coach._ladder(coach.positions[2]) is DisclosureLevel.SILENT
     assert _levels(stuck(coach)) == [DisclosureLevel.IDEA]
+
+
+# Asked with no game watched (Tai, 2026-10-02): the AI coach answers, told so; the offline
+# coach keeps its plain line.
+
+
+def test_after_a_stop_the_ai_coach_answers_and_is_told_no_game_is_watched() -> None:
+    from sidecoach.coach.coach import NOT_WATCHING
+
+    coach, provider = _coach_at("italian", ["Your bishop on c4 eyes f7."])
+    coach.pause(3.0)  # the panel's Stop
+    assert not coach.watching
+    coach.ask("why that bishop?", 4.0)
+    answer = drain(coach)
+    assert [m.text for m in answer] == ["Your bishop on c4 eyes f7."]
+    assert NOT_WATCHING in harness_of(sent(provider)), "told no game is being watched"
+    # Once a spell: a second question finds it said already, and not again.
+    provider.replies.append("Develop and castle.")
+    coach.ask("and then?", 5.0)
+    drain(coach)
+    assert harness_of(sent(provider)).count(NOT_WATCHING) == 1
+
+
+def test_with_no_position_the_ai_coach_answers_and_the_offline_one_says_so() -> None:
+    from sidecoach.coach.coach import NO_BOARD_UNWATCHED, NO_BOARD_YET
+
+    provider = ScriptedProvider(["Learn the Italian: quick development."])
+    coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+    coach.spawn = lambda work, _name: work()  # the question's worker, run here
+    coach.watching = False  # never started
+    coach.ask("what opening should I learn?", 1.0)
+    answer = drain(coach)
+    assert [m.text for m in answer] == ["Learn the Italian: quick development."]
+    assert answer[0].trigger is Trigger.USER_ASK
+    task = directive_of(sent(provider))
+    assert NO_BOARD_UNWATCHED in task and '"what opening should I learn?"' in harness_of(
+        sent(provider)
+    )
+    # A session running, the board not read yet: the model is told that instead.
+    coach.watching = True
+    provider.replies.append("Wait for the board.")
+    coach.ask("what now?", 2.0)
+    assert [m.text for m in drain(coach)] == ["Wait for the board."]
+    assert NO_BOARD_YET in directive_of(sent(provider))
+    # A failed call is answered all the same, with the coach's own words.
+    provider.fail = True
+    coach.ask("still there?", 3.0)
+    assert [m.text for m in drain(coach)] == [
+        "I could not work that out just now; ask me again in a moment."
+    ]
+    # The offline coach: its plain line, no model.
+    offline = offline_coach()
+    offline.watching = False
+    offline.ask("what opening should I learn?", 1.0)
+    assert [m.text for m in drain(offline)] == ["I have not seen a position to talk about yet."]

@@ -691,6 +691,21 @@ TIE_LISTED = (
     "earlier moment."
 )
 NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
+
+# Asked with no game watched (the panel's Stop, or no Start yet): a note in the record, once
+# a spell, so the AI coach knows (Tai, 2026-10-02). Nothing of a last game is built for it:
+# what the record holds is what it has.
+NOT_WATCHING = (
+    "No game is being watched now: the player has not pressed Start, or has pressed Stop. "
+    "The board is not being read; anything above is from before."
+)
+# A question with no position read: the task, and why there is no board.
+NO_BOARD_TASK = (
+    "Answer the player's last question as their coach. There is no position to talk about: "
+    "{why} If the question needs a game or a position, say so plainly; otherwise answer it."
+)
+NO_BOARD_YET = "the board has not been read yet."
+NO_BOARD_UNWATCHED = "no game is being watched (Start is not pressed)."
 # A line asked for once it was given: what they want is what comes after it.
 LINE_GIVEN = (
     "You have given them this line already, in your turns above: they want what comes after "
@@ -2743,6 +2758,10 @@ class Coach:
         # after the move; in evaluation it folds before the next moment, so runs repeat.
         self.sync_summaries = False
         self.game_id: str | None = None
+        # Whether a game is being watched: the panel's Stop (`pause`) ends it, its Start
+        # begins it again. Asked while nothing is watched, the AI coach is told so.
+        self.watching = True
+        self._unwatched_noted = False
         self.user_side: Side = Side.WHITE
         self.finished = False  # the game is over: everything may be said
         self.board = chess.Board()
@@ -2826,10 +2845,13 @@ class Coach:
         unasked until the board is read again -- the next Start's new game or re-read. Kept
         on the position it last read, the coach gave stuck hints about the last session's
         board on the next Start's first ticks (the game-state review, 2026-10-01). Asked before
-        then, it answers from the last position it read."""
+        then, it answers from the last position it read, and the AI coach is told that no
+        game is being watched (`watching`)."""
         self._release_lesson(ts)
         self._current = None
         self.policy.pause()
+        self.watching = False
+        self._unwatched_noted = False
 
     @property
     def user_colour(self) -> chess.Color:
@@ -2944,6 +2966,12 @@ class Coach:
         # while a worker checks the words and the model writes (a new game starting then
         # filed the answer under the next game).
         moment = self._moment()
+        if not self.watching and not self._offline and not self._unwatched_noted:
+            # Asked with no game watched (Tai, 2026-10-02): the AI coach answers, told so;
+            # what it read before, if anything, is above in the record.
+            self._unwatched_noted = True
+            with self._lock:
+                self.conversation.note(NOT_WATCHING)
         if self.profile_ask is not None and _ASK_PROFILE.search(text):
             self._ask_profile(text, ts, moment)
             return
@@ -2973,6 +3001,11 @@ class Coach:
         if position is None or position.facts is None:
             position = self._latest_with_facts()
         if position is None or position.facts is None:
+            if not self._offline:
+                # The AI coach answers every question (Tai, 2026-09-28, 2026-10-02), with
+                # what it has: here no position.
+                self._ask_without_position(text, ts, moment)
+                return
             self._queue_plain(
                 Trigger.USER_ASK,
                 "I have not seen a position to talk about yet.",
@@ -3207,6 +3240,32 @@ class Coach:
             self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True, moment=moment)
 
         self.spawn(self._guarded(run, "record question", ts, moment), "profile-ask")
+
+    def _ask_without_position(self, text: str, ts: float, moment: Moment) -> None:
+        """A question with no position read (no game watched, or the board not read yet):
+        the model answers from the record as it stands and is told there is no board, off
+        this thread, and its reply is the coach's turn when it lands. With no board there is
+        nothing to check its claims against."""
+        with self._lock:
+            self.conversation.user_said(text)
+            harness = self.conversation.render_dialogue()
+        why = NO_BOARD_YET if self.watching else NO_BOARD_UNWATCHED
+        messages: list[ChatMessage] = [
+            {"role": "user", "content": f"{harness}\n\n# Task\n{NO_BOARD_TASK.format(why=why)}"}
+        ]
+        provider = self.speaker.provider
+        system = self.system
+
+        def run() -> None:
+            reply = provider.chat(
+                system, messages, max_tokens=VS_MAX_TOKENS, temperature=VS_TEMPERATURE
+            )
+            answer = reply.text.strip()
+            if not answer:
+                raise RuntimeError("an empty reply")
+            self._queue_plain(Trigger.USER_ASK, answer, ts, record_now=True, moment=moment)
+
+        self.spawn(self._guarded(run, "question with no board", ts, moment), "sidecoach-ask")
 
     def _guarded(
         self, work: Callable[[], None], what: str, ts: float, moment: Moment

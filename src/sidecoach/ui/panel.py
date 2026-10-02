@@ -155,6 +155,9 @@ HEALTH_EVERY_S = 1.0
 # went: the capture, the recorder, the vision, or the rest (engine, profile, coach). A
 # live game froze for 323 s once (2026-09-19) with nothing in the log to say which.
 STALL_WARN_S = 2.0
+# How often a question asked with no session running looks for its reply: the coach's replies
+# are drained as the session's loop drains them each tick (`_answer_unwatched`).
+UNWATCHED_POLL_S = 0.1
 
 
 class FrameRing:
@@ -430,6 +433,10 @@ class PanelEngine:
         # Start makes a new coach with new lists, and a count kept from the last one skipped
         # the new one's first entries.
         self._logged: dict[str, tuple[list[Any], int]] = {}
+        # One drain of the coach's replies at a time: the session's loop, or a question
+        # answered with no session running (`_answer_unwatched`).
+        self._coach_out = threading.Lock()
+        self._unwatched_tick = threading.Event()  # never set: the wait between looks
         self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
         if self.settings.unreadable:
@@ -671,6 +678,19 @@ class PanelEngine:
             running = bool(self._state.get("running"))
         if not running and name in ("ask", "ask_spoken"):
             self._emit("user", "info", f"you: {payload}", spoken=name == "ask_spoken")
+            coaching = self._coaching
+            coach = getattr(coaching, "coach", None)
+            if coach is not None and not coach._offline:
+                # The AI coach answers every question, a session running or not (Tai,
+                # 2026-10-02), with what it has; it is told no game is being watched.
+                threading.Thread(
+                    target=self._answer_unwatched,
+                    args=(coaching, str(payload)),
+                    name="sidecoach-ask-unwatched",
+                    daemon=True,
+                ).start()
+                return
+            # The offline coach: a plain, honest line.
             text = "Press Start first: I can only answer about a game I am watching."
             self._emit(
                 "coach",
@@ -684,6 +704,33 @@ class PanelEngine:
             self.caption(text)
             return
         self._commands.put((name, payload))
+
+    def _answer_unwatched(self, coaching: Any, text: str) -> None:
+        """A question with no session running, to the AI coach: asked, and its reply logged
+        and spoken as the session's loop would (`_coach_meta`). A Start meanwhile leaves the
+        rest to its loop. The coach always answers (a failed call has its own words), so the
+        wait ends with that reply."""
+        coach = coaching.coach
+        if coach is not None:
+            coach.watching = False  # no session: whether it was stopped or never started
+        before = sum(
+            1 for s in getattr(coach, "spoken", []) if s.message.trigger.value == "user_ask"
+        )
+        coaching.ask(text, time.monotonic())
+        while True:
+            with self._lock:
+                running = bool(self._state.get("running"))
+            if running or coaching.coach is None:
+                return
+            with self._coach_out:
+                coaching.drain()
+                self._coach_meta(coaching)
+            answered = sum(
+                1 for s in coaching.coach.spoken if s.message.trigger.value == "user_ask"
+            )
+            if answered > before:
+                return
+            self._unwatched_tick.wait(UNWATCHED_POLL_S)
 
     def set_voice(self, voice: str) -> None:
         """Change the speaking voice. A style vector on the loaded model: nothing reloads."""
@@ -1899,6 +1946,7 @@ class PanelEngine:
         self._set(profile=self._profile_state(first_snapshot))
         coaching.events([first_snapshot], time.monotonic())
         if coaching.coach is not None:
+            coaching.coach.watching = True  # until this session's Stop (`Coach.pause`)
             # A question about the player over their games: the coach's model writes the
             # queries itself (profile/ask.py), read-only over this store.
             from sidecoach.profile import ask as profile_ask
@@ -2043,8 +2091,9 @@ class PanelEngine:
                 coaching.events(engine_events, ts)
                 coaching.events(profile_events, ts)
                 coaching.tick(ts)
-                coaching.drain()
-                self._coach_meta(coaching)
+                with self._coach_out:
+                    coaching.drain()
+                    self._coach_meta(coaching)
                 self._say_held_word(coaching, ts)
                 silence = self._coach_silence(coaching, silence)
                 self._refresh_state(pipe)
@@ -2092,8 +2141,9 @@ class PanelEngine:
                 # outlives the session, and the first ticks after Start gave stuck hints about
                 # this one's last position (the game-state review, 2026-10-01).
                 coaching.coach.pause(time.monotonic())
-            coaching.wait()
-            self._coach_meta(coaching)
+            with self._coach_out:
+                coaching.wait()
+                self._coach_meta(coaching)
             # The strip once more, with the replies that came after the last tick.
             with contextlib.suppress(Exception):
                 self._health(pipe, coaching, recorder, ticks, pipeline_ms, 1.0, ts, live)
@@ -2101,6 +2151,10 @@ class PanelEngine:
             # the coach begins afresh with the next game's GameStarted.
             assessing.reset()
             self._profiler = None
+            if coaching.coach is not None:
+                # The record's store closes with the session: a question about the player
+                # asked after the Stop goes the way of any other, not to a closed store.
+                coaching.coach.profile_ask = None
             store.close()
             if recorder is not None:
                 recorder.close()
