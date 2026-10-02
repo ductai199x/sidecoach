@@ -3156,6 +3156,9 @@ class Coach:
         if position is None:
             position = _Position(ply=ply, board=self.board.copy())
             self.positions[ply] = position
+        # The move played from here is gone, and with it the line its playing opened: the
+        # position is the player's again at the hints it had had, stuck hints and all.
+        position.disclosure.withdraw_move()
         self._current = position
         self.policy.withdraw(ply)
         self.policy.new_position(ply, ts, user_to_move=self.user_to_move)
@@ -3219,19 +3222,51 @@ class Coach:
 
     def _ladder(self, position: _Position) -> DisclosureLevel:
         """The highest hint the combination this position continues has had: back through
-        the player's positions while the move they played there was the engine's best, the
-        levels said before they moved (Tai, 2026-09-29: "Each level can only be said once
-        and if the level higher was said then the lower one can't be said"). A move off the
-        best line starts a new one; a puzzle's wrong moves are taken back."""
+        the player's positions while the move they played there was the engine's best and
+        the position goes on with it (`_same_combination`), the levels said before they
+        moved (Tai, 2026-09-29: "Each level can only be said once and if the level higher
+        was said then the lower one can't be said"). A move off the best line starts a new
+        one; a puzzle's wrong moves are taken back. Any run of best moves is not one
+        combination: the hint said at the game's first move kept the next fifty from a
+        player who was stuck."""
         level = DisclosureLevel.SILENT
-        ply = position.ply
+        current = position
         while True:
+            ply = current.ply
             own = self.moves.get(ply - 1)
             before = self.positions.get(ply - 2)
-            if own is None or not own.by_user or before is None or not self._was_best(before, own):
+            if (
+                own is None
+                or not own.by_user
+                or before is None
+                or not self._was_best(before, own)
+                or not self._same_combination(before, own, current)
+            ):
                 return level
             level = max(level, before.disclosure.hinted)
-            ply -= 2
+            current = before
+
+    def _same_combination(self, before: _Position, own: MovePlayed, after: _Position) -> bool:
+        """Whether `after`, where the player stands again, goes on with the combination they
+        moved on from at `before` by `own`: a forcing sequence the engine's line there
+        continues -- their move, the reply it expected, and the next move of the line the
+        best now -- or one plan or theme the facts name at both."""
+        was, now = before.facts, after.facts
+        if was is None or now is None:
+            return False
+        for first, second in ((was.theme, now.theme), (was.plan, now.plan)):
+            if first and first == second:
+                return True
+        line = [san.rstrip("+#") for san in was.line]
+        return (
+            was.nature is not None
+            and was.nature.startswith("forcing")
+            and len(line) >= 3
+            and line[0] == own.san.rstrip("+#")
+            and (after.last_move or "").rstrip("+#") == line[1]
+            and bool(now.candidates)
+            and now.candidates[0].rstrip("+#") == line[2]
+        )
 
     @staticmethod
     def _was_best(position: _Position, move: MovePlayed) -> bool:

@@ -175,6 +175,8 @@ class Disclosure:
 
     level: DisclosureLevel = DisclosureLevel.SILENT
     history: list[tuple[Unlock, DisclosureLevel]] = field(default_factory=list)
+    # What the combination had said before the player came here (`carry`).
+    carried: DisclosureLevel = DisclosureLevel.SILENT
 
     def apply(self, unlock: Unlock) -> DisclosureLevel | None:
         """Apply an unlock. Returns the new level, or None when nothing changed."""
@@ -211,8 +213,17 @@ class Disclosure:
         (`Coach._ladder`): each level is said once, and none below the highest (Tai,
         2026-09-29: the stuck hint's idea at a puzzle's start came again as the question
         after the move was found and the reply left the engine's line)."""
+        self.carried = max(self.carried, level)
         if level > self.level:
             self.level = level
+
+    def withdraw_move(self) -> None:
+        """The move played from here is taken back: the position is the player's to move
+        again, at the level of the hints it had had. The line the move opened (`MOVE_PLAYED`)
+        belonged to the move withdrawn; what was said before it stays said, and nothing lower
+        is said after it (Tai, 2026-09-29)."""
+        self.history = [(u, lvl) for u, lvl in self.history if u is not Unlock.MOVE_PLAYED]
+        self.level = max(self.hinted, self.carried)
 
 
 # Where a piece word is never a hint at the piece to move: an opening's name, the material
