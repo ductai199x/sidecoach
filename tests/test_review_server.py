@@ -901,6 +901,75 @@ def test_no_ai_words_are_paid_for_on_a_game_removed(
     store.close()
 
 
+def test_words_that_fail_with_the_store_failing_too_still_end_and_the_room_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: the words' failure asked the store whether the game went,
+    unguarded; a store failing there too ended the thread with the words "writing" for good,
+    and the room, which stays open while words are written, never closed. The failure is said
+    and the room closes as any other."""
+    import sqlite3
+
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> Any:
+        raise RuntimeError("the model is down")
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
+    asked: list[str] = []
+
+    def in_record(key: str) -> bool:
+        asked.append(key)
+        if len(asked) > 1:  # the words' own check passed; then the store fails too
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return True
+
+    monkeypatch.setattr(room.store, "in_record", in_record)
+    assert room.write_words() is None
+    assert room.words_done.wait(HANG_S)
+    assert room.words_status == "failed" and "the model is down" in (room.words_error or "")
+    room.close()
+    assert room.closing(time.monotonic()), "nothing being written: it closes"
+    room.join(HANG_S)
+    assert room.closed
+    store.close()
+
+
+def test_a_saved_review_that_cannot_be_summed_up_again_is_said(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The audit of 2026-10-02: a saved review rederive could not read was skipped in silence."""
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    store = Store(tmp_path / "profile.sqlite")
+    store.save_review("pgn:1", "fast", review_room.REVIEW_VERSION, 1.0, "not a report", None)
+    store.set_setting(review_room.DERIVED_KEY, "1")
+    assert review_room.rederive(store) == 0
+    assert "the saved review of pgn:1 (fast) could not be summed up again" in caplog.text
+    store.close()
+
+
 def test_the_review_saved_first_stays_with_the_words_paid_for(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
