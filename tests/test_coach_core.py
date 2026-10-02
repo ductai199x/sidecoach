@@ -688,9 +688,11 @@ def test_a_best_move_on_another_plan_is_a_new_combination_and_gets_its_stuck_hin
     assert _levels(stuck(coach)) == [DisclosureLevel.IDEA]
 
 
-def test_the_same_plan_across_best_moves_is_one_combination() -> None:
-    """One plan the facts name, kept across best moves: said at its first move, not again at
-    the next -- each level once per combination."""
+def test_the_same_plan_across_best_moves_is_still_another_position() -> None:
+    """A plan that holds for several quiet moves is no combination: the opponent moved, the
+    position is another, and a player stuck in it gets a hint (Tai, 2026-10-02: "whatever
+    the hint is should be dependent on the position ... you just won't be able to get any
+    hint is ridiculous")."""
     coach = _two_hints_at_the_start_then_the_next_positions(
         {
             0: "finishing your development",
@@ -698,8 +700,8 @@ def test_the_same_plan_across_best_moves_is_one_combination() -> None:
             4: "finishing your development",
         }
     )
-    assert coach._ladder(coach.positions[4]) is DisclosureLevel.FOCUS
-    assert stuck(coach) == []
+    assert coach._ladder(coach.positions[4]) is DisclosureLevel.SILENT
+    assert _levels(stuck(coach)) == [DisclosureLevel.IDEA]
 
 
 def test_a_forcing_line_followed_is_one_combination() -> None:

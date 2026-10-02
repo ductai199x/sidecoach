@@ -3435,13 +3435,15 @@ class Coach:
         """Whether `after`, where the player stands again, goes on with the combination they
         moved on from at `before` by `own`: a forcing sequence the engine's line there
         continues -- their move, the reply it expected, and the next move of the line the
-        best now -- or one plan or theme the facts name at both."""
+        best now -- or one tactical theme the facts name at both (a pin still on the board).
+        A plan is not that: "finishing your development" holds for several quiet moves, and
+        each is another position after the opponent's move, whose stuck player gets its hints
+        (Tai, 2026-10-02: "whatever the hint is should be dependent on the position")."""
         was, now = before.facts, after.facts
         if was is None or now is None:
             return False
-        for first, second in ((was.theme, now.theme), (was.plan, now.plan)):
-            if first and first == second:
-                return True
+        if was.theme and was.theme == now.theme:
+            return True
         line = [san.rstrip("+#") for san in was.line]
         return (
             was.nature is not None
