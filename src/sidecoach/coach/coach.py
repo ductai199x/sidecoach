@@ -3204,11 +3204,16 @@ class Coach:
             # A turn of the conversation only in the moment it was asked for: a reply about
             # the game before, or about a move taken back, is shown but never part of the
             # history of the game now (what the model reads of it, the follow-up it makes of
-            # the player's next words).
+            # the player's next words). One asked before the player's last move is this game's,
+            # but about the position they moved from: written in the record, not under what was
+            # said at the position now -- there it was a turn since the move ("do not repeat the
+            # verdict"), and a question it ended with made their next words its answer.
             if not spoken.recorded and spoken.epoch == self._epoch:
                 with self._lock:
                     self.conversation.coach_said(
-                        spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
+                        spoken.message.text,
+                        nod=spoken.message.trigger is Trigger.POST_MOVE,
+                        past=spoken.late,
                     )
             self._climb(spoken)
             self._messages += 1
@@ -3924,7 +3929,7 @@ class Coach:
         for entry in reversed(entries):
             if entry.kind in ("ply", "takeback", "resync"):
                 break
-            if entry.kind == "coach":
+            if entry.kind == "coach" and not entry.past:  # a late reply is the record's
                 out.append(entry.text)
         return out
 
@@ -3945,6 +3950,8 @@ class Coach:
         if entries and entries[-1].kind == "ask":
             entries = entries[:-1]
         for entry in reversed(entries):
+            if entry.past:
+                continue  # about a position left: no turn of the one now
             if entry.kind == "coach":
                 return entry.text.rstrip().endswith("?")
             if entry.kind != "note":
@@ -5608,6 +5615,8 @@ class Coach:
         if entries and entries[-1].kind == "ask":
             entries = entries[:-1]  # their words themselves, when ask() has recorded them
         for entry in reversed(entries):
+            if entry.past:
+                continue  # about a position left: no turn of the one now
             if entry.kind == "coach":
                 return entry.text.rstrip().endswith("?")
             if entry.kind != "note":

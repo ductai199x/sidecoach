@@ -178,6 +178,35 @@ def test_a_reply_after_the_player_moved_again_is_late_but_shown_in_order() -> No
     assert coach.moved_on(moment) is False
 
 
+def test_a_reply_that_lands_after_the_players_move_is_the_records_not_said_here() -> None:
+    """A reply asked for before the player moved and landing after it is shown (late), and it is
+    this game's -- but about the position they moved from. Recorded as said at the position now,
+    it was a turn "since the move": the next question was told "do not repeat the verdict or the
+    better move you told them", and the "?" it ended with made the next words its answer."""
+    reply = "Look at f7: what does their king have left?"
+    coach, provider = scripted_coach([reply, "The bishop check gave the king a square."])
+    play_to_scholar(coach)
+    coach.quiet = True  # no word on the move: the late reply is the only coach turn
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("what should I aim for?", 8.0)  # built; the model has not answered yet
+    mate_missed(coach, 9.0)  # the player moves first
+    board = chess.Board(SCHOLAR_AFTER_BISHOP_CHECK)
+    _looked(coach, board, 7, ["e8f7"], 9.5)
+    out = [m for m in drain(coach) if m.trigger is Trigger.USER_ASK]
+    assert [m.text for m in out] == [reply], "shown, in its place"
+    assert coach.spoken[0].late
+    assert coach._said_since_move() == [], "not said at the position now"
+    assert not coach._last_turn_asked() and not coach._answering_our_question("the king")
+    harness = coach.conversation.render()
+    assert reply in harness.split("# Position now", 1)[0], "in the record"
+    coach.ask("why was that bad?", 10.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "You have spoken since the last move already" not in directive
+    assert "Your last turn above ended with a question" not in directive
+
+
 def test_a_question_held_for_the_engine_is_answered_after_the_player_moves() -> None:
     """ "One moment -- still looking" was a promise: the player moving before the engine's
     look came threw the question away unanswered (Tai, 2026-10-02: no reply is dropped). It
