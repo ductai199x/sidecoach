@@ -3,7 +3,7 @@ from typing import Any
 import chess
 import pytest
 
-from sidecoach.events import GameEnded, GameStarted, Side
+from sidecoach.events import BoardUnread, GameEnded, GameStarted, Side
 from sidecoach.state.pipeline import GamePipeline
 from tests.games import sans_of
 from tests.synth import synthetic_board
@@ -356,3 +356,145 @@ def test_another_position_in_a_new_look_is_not_learned_as_the_game() -> None:
         ts += 0.1
     assert pipe.model is model
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+
+
+# The look-change sweep's set changes that stalled (round 3): the opening played in the old
+# set, the moves played in the new one.
+_SET_CHANGES = {
+    "maestro to cburnett": (
+        "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
+    ),
+    "maestro to leipzig": (
+        "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
+    ),
+    # Read as the right pieces, unsettled: the still board explained, the next moves pending.
+    "cburnett to chess7": (
+        "cburnett", "chess7",
+        "e2e3 a7a6 d1e2 h7h6 e2d3 g8f6 d3f5 f6g8 f5e4 c7c5 e4c4 h6h5 c4e6 b7b6 g2g3 a6a5 f1d3"
+        " d7d6 f2f3 c8d7 g1e2 g8h6 b1c3 a8a6",
+        "e6e7 d8e7 h1f1 f7f5",
+    ),
+    "cburnett to leipzig": (
+        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4", "g3g4 h7h5 c2c4 f8h6"
+    ),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", list(_SET_CHANGES))
+def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
+    """The old set's recogniser read the new set with one piece wrong, and a frame within a
+    cell of a position of the game was taken for "not a new look": the look was never
+    learned, and the rest of the game went unread (round 3; about one set change in six of
+    the look-change sweep). No story explains the frame, so the look is learned from the
+    game's position while the board stands still, and the game is read on."""
+    before, after, opening, rest = _SET_CHANGES[case]
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    for _ in range(3):
+        pipe.process(synthetic_board(board=board, style=before), ts)
+        ts += 0.1
+    for uci in opening.split():
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, style=before), ts)
+            ts += 0.1
+    model = pipe.model
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+    changed = synthetic_board(board=board, highlight=board.peek(), style=after)
+    for i in range(15):  # a second and a half, the board still
+        pipe.process(changed, ts, changed=i == 0)
+        ts += 0.1
+    assert pipe.model is not model
+    for uci in rest.split():
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, style=after), ts)
+            ts += 0.1
+    assert pipe.reconciler.board.fen() == board.fen()
+
+
+_OVERLAYS: dict[str, dict[str, Any]] = {
+    "arrows on both rooks": {"arrows": (chess.Move.from_uci("a1b1"), chess.Move.from_uci("h1g1"))},
+    "arrow from piece to piece": {"arrows": (chess.Move.from_uci("d1d2"),)},
+    "red marks on the pawns": {
+        "red_marks": tuple(chess.parse_square(f + "2") for f in "abcfgh") + (chess.E4, chess.D3)
+    },
+    "a selected knight": {"selected": chess.F3},
+}
+
+
+@pytest.mark.parametrize("overlay", list(_OVERLAYS))
+def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(overlay: str) -> None:
+    """The look is learned again on a still board when a kind of which two or more pieces
+    stand reads every one of them off its square (round 3): what a new set does, and what
+    something drawn over the board does not. Held three seconds, an overlay does not even set
+    a learning off (the overlay sweep: 192 of 192, six sets, two themes, sixteen overlays),
+    and the game is read on after it."""
+    from sidecoach.vision.pieces import ThemeModel
+
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    look: dict[str, Any] = {"style": "staunty", "theme": "green"}
+    for _ in range(3):
+        pipe.process(synthetic_board(board=board, **look), ts)
+        ts += 0.1
+    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5"):
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            ts += 0.1
+    model = pipe.model
+    learned: list[object] = []
+    real = ThemeModel.from_position
+
+    def counted(*args: Any) -> Any:
+        learned.append(args)
+        return real(*args)
+
+    held = synthetic_board(board=board, highlight=board.peek(), **look, **_OVERLAYS[overlay])
+    import unittest.mock
+
+    with unittest.mock.patch.object(ThemeModel, "from_position", counted):
+        for i in range(30):
+            pipe.process(held, ts, changed=i == 0)
+            ts += 0.1
+    assert pipe.model is model and learned == []
+    for uci in ("c2c3", "d7d6"):
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            ts += 0.1
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+
+
+def test_a_look_that_cannot_be_learned_again_is_told_once() -> None:
+    """A new theme first read with two plies already played on it: the frame is neither the
+    game's position nor one move on, so nothing can be learned from it, and the game went
+    unread in silence (round 3). The person is told once, after the wait a board unread at the
+    start gets (COLD_NOTICE_S), and not again while it stays; with the old theme back, the
+    game is read on, both plies with it."""
+    from sidecoach.state.pipeline import COLD_NOTICE_S
+
+    pipe = GamePipeline()
+    board, ts = _midgame(pipe, {"theme": "green"}, 0.0)
+    recorded = board.fen()
+    board.push_uci("b8c6")
+    last = board.push_uci("f1b5")
+    changed = synthetic_board(board=board, highlight=last, theme="brown")
+    told: list[tuple[float, BoardUnread]] = []
+    start = ts
+    for i in range(int((COLD_NOTICE_S + 3.0) / 0.1)):
+        events = pipe.process(changed, ts, changed=i == 0)
+        told += [(ts, e) for e in events if isinstance(e, BoardUnread)]
+        ts += 0.1
+    assert [e.reason for _, e in told] == ["look"], told
+    assert told[0][0] - start >= COLD_NOTICE_S
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == recorded
+    back = synthetic_board(board=board, highlight=last, theme="green")
+    for i in range(8):
+        pipe.process(back, ts, changed=i == 0)
+        ts += 0.1
+    assert pipe.reconciler.board.fen() == board.fen()
+    assert pipe._look_lost is None

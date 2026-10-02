@@ -25,13 +25,13 @@ from sidecoach.vision.board_detect import (
     MIN_CELL_PX,
     BoardCandidate,
     Colours,
+    GrayBuffer,
     board_occupancy,
     detect_boards_gray,
     fit_score,
     readable_cells,
     refine,
     square_colours,
-    to_gray,
 )
 
 
@@ -84,7 +84,6 @@ class BoardTracker:
         probe_backoff: int = 10,
         probe_backoff_max: int = 80,
         reject: Callable[[np.ndarray, Region, float], bool] | None = None,
-        lost_moves_cells: int = 8,
     ) -> None:
         self.min_fit = min_fit
         self.min_contrast = min_contrast
@@ -119,10 +118,6 @@ class BoardTracker:
         # cell size; True means "not a board we want" (the panel's own board, see
         # vision.ownboard). Vetoed candidates are dropped before one is adopted.
         self.reject = reject
-        # How many cells' occupancy a board found at the old size may differ by from the
-        # lost board and still be it: a couple of moves (a castling changes four), plus a
-        # cell or two of marks.
-        self.lost_moves_cells = lost_moves_cells
         self.rejected = 0
         self.board: BoardCandidate | None = None
         self.colours: Colours | None = None
@@ -133,11 +128,23 @@ class BoardTracker:
         self.probes = 0
         self.full_searches = 0  # detections that ran the full multi-scale search
         self._readable = 0  # the most cells this lock has read as square colours
-        # The last frame that validated the lock, kept by reference (no copy), and the
-        # occupied cells of the board read there once the lock is lost: a board the near
-        # search finds at the old size is the lost one only when it shows those pieces.
+        # The board's own pixels on the last frame that validated the lock (a copy of its
+        # region, not the frame: a whole grey frame pinned for the life of a lock was 15 MB
+        # at 1440p, 33 at 4K -- round 3), and the occupied cells read there once the lock is
+        # lost: of the boards found then, the one whose pieces are nearest those is taken.
         self._seen: tuple[np.ndarray, BoardCandidate] | None = None
         self._lost: np.ndarray | None = None
+        # The grey image of the last frame read, written over by the next (`GrayBuffer`).
+        self._gray = GrayBuffer()
+        # Whether a re-fit ran on the pixels of the last changed frame and left the lock
+        # where it is: a still tick then needs none.
+        self._refit_settled = False
+
+    @property
+    def gray(self) -> np.ndarray | None:
+        """The grey image of the last frame the tracker read -- on a still tick, the pixels
+        that are still there -- until the next frame is read; None before the first."""
+        return self._gray.image
 
     @property
     def locked(self) -> bool:
@@ -159,12 +166,19 @@ class BoardTracker:
         finding 7) -- but for the periodic re-fit, which still comes every `refine_every`
         ticks: a board that slid a few pixels as it came to rest validates where the lock
         is, and only the re-fit finds it (skipped on still ticks, the lock stayed off for
-        good: the gated geometry sweep, seeds 15, 17, 35 and more)."""
-        if not changed and self.verified and self._frames_since_refine + 1 < self.refine_every:
+        good: the gated geometry sweep, seeds 15, 17, 35 and more). A re-fit that already ran
+        on these pixels and left the lock where it was would do so again: it is not run again
+        until they change (round 3: a still 4K board re-fitted every tenth tick for nothing,
+        30 ms each)."""
+        if not changed and self.verified:
             assert self.board is not None
-            self._frames_since_refine += 1
-            return self.board
-        gray = to_gray(frame_bgr)
+            due = self._frames_since_refine + 1 >= self.refine_every
+            if not due or self._refit_settled:
+                self._frames_since_refine = 0 if due else self._frames_since_refine + 1
+                return self.board
+        if changed:
+            self._refit_settled = False
+        gray = self._gray.convert(frame_bgr)
         if self.board is None:
             # Without a board on screen, searching every frame would stall capture. The
             # search near the last cell size is cheap and runs every few frames, so a
@@ -185,7 +199,8 @@ class BoardTracker:
             self.board = None
             self.colours = None
             if self._seen is not None:
-                seen_gray, seen = self._seen
+                seen_levels, seen = self._seen
+                seen_gray = seen_levels.astype(np.float32)  # the grey image's own values
                 self._lost = board_occupancy(seen_gray, seen.region, seen.cell_px)
                 self._seen = None
             return self._search(gray, frame_bgr, True)
@@ -201,9 +216,20 @@ class BoardTracker:
         self.misses = 0
         self._readable = max(self._readable, readable)
         self.board = replace(candidate, fit=fit, contrast=contrast)
-        self._seen = (gray, self.board)
+        self._keep_seen(gray, self.board)
         self.last_cell_px = self.board.cell_px
         return self.board
+
+    def _keep_seen(self, gray: np.ndarray, board: BoardCandidate) -> None:
+        """The board's region of this frame, copied as whole grey levels (a quarter of the
+        float image's bytes, the same values), with the board placed in it."""
+        x0, y0 = max(0, board.region.x), max(0, board.region.y)
+        x1 = min(gray.shape[1], board.region.x + board.region.w)
+        y1 = min(gray.shape[0], board.region.y + board.region.h)
+        region = board.region._replace(x=board.region.x - x0, y=board.region.y - y0)
+        levels = self._gray.bytes if self._gray.image is gray else None
+        source = gray if levels is None else levels
+        self._seen = (source[y0:y1, x0:x1].astype(np.uint8), replace(board, region=region))
 
     def _check(self, gray: np.ndarray) -> tuple[BoardCandidate, float, float]:
         """The lock on this frame: its geometry, fit and contrast. Re-fitted when due, and
@@ -232,10 +258,13 @@ class BoardTracker:
             # never costs the lock; the region and the fit it measured itself stand.
             refined = refit.board
             moved = _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
-            if self._passes(refined.fit, refined.contrast) and (
+            adopted = self._passes(refined.fit, refined.contrast) and (
                 not self._passes(fit, contrast)
                 or (moved and refit.strength > self.refit_gain * refit.reference)
-            ):
+            )
+            # On these pixels, at this lock, a re-fit changes nothing: until they change.
+            self._refit_settled = not adopted and self._passes(fit, contrast)
+            if adopted:
                 if moved:
                     # The board is moving: it is re-fitted the next frame too, until a
                     # re-fit finds it where the lock is. Fitted once mid-slide and left, the
@@ -267,6 +296,7 @@ class BoardTracker:
 
     def _search(self, gray: np.ndarray, frame_bgr: np.ndarray, full: bool) -> BoardCandidate | None:
         """Detection with the lock gone; a board found is locked, and a miss backs off."""
+        searched = self.full_searches
         boards = self._detect(gray, frame_bgr, full=full, lost=self._lost)
         board = boards[0] if boards else None
         self._lock(
@@ -277,7 +307,7 @@ class BoardTracker:
             self._near.reset()
         else:
             self._near.missed()
-            if full:
+            if self.full_searches != searched:
                 self._full.missed()
         return self.board
 
@@ -287,11 +317,12 @@ class BoardTracker:
         """A lock taken (or none): what it reads is its measure, and the probe starts fresh."""
         self.misses = 0
         self._frames_since_refine = 0
+        self._refit_settled = False
         self.board = board
         self.colours = colours
         if board is not None:
             self.last_cell_px = board.cell_px
-            self._seen = (gray, board)
+            self._keep_seen(gray, board)
             self._lost = None
         self._readable = (
             readable_cells(gray, board.region, board.cell_px, colours)
@@ -355,13 +386,18 @@ class BoardTracker:
 
         A window that was moved keeps its cell size, so a narrow scale search around it
         re-locks in a fraction of the full multi-scale search. Only on failure, and only
-        when `full` allows it, does the full range run. With `lost` (the occupied cells of
-        the board a lock lost), a board found near the old size counts only when it shows
-        the same pieces, give or take a move or two: the game board resized past the near
-        range with another board at the old size beside it -- a thumbnail of another game,
-        the panel's own board -- locked that board for good, or nothing, since the veto came
-        after the near search had stopped there (round 2, finding 1). The full search's
-        boards that show those pieces come first.
+        when `full` allows it, does the full range run.
+
+        With `lost` (the occupied cells of the board a lock lost), the boards found are
+        ranked by how many cells their occupancy differs from it, nearest first: the game
+        board resized past the near range, with another board at the old size beside it --
+        a thumbnail of another game, the panel's own board -- had the near search stop at
+        that board, and the lock stayed on it for good (round 2, finding 1); a cut-off of a
+        few cells still took the thumbnail once a few moves were played while the board was
+        lost (round 3). The near search alone sees only the boards near the old size, so it
+        settles the matter by itself only for a board that shows exactly the lost pieces --
+        the board moved, nothing played; any other board found calls the full search, where
+        every board on the screen is ranked.
         """
         if count:
             self.detections += 1
@@ -376,8 +412,14 @@ class BoardTracker:
                     max_cell=int(self.last_cell_px * 1.25) + 1,
                 ),
             )
-            if lost is not None:
-                near = [b for b in near if self._shows(gray, b, lost)]
+            if lost is not None and near:
+                exact = [board for board, apart in _nearest_first(gray, near, lost) if apart == 0]
+                # Boards found but none of them the lost one to the cell: only the full
+                # search can say which board on the screen is nearest, so it runs now,
+                # whatever its wait (a board uncovered after two plies under a window waited
+                # two seconds for it, with the board in plain view).
+                full = full or not exact
+                near = exact
             if near:
                 return near
         if not full:
@@ -387,11 +429,19 @@ class BoardTracker:
             frame_bgr,
             detect_boards_gray(gray, min_fit=self.min_fit, min_contrast=self.min_contrast),
         )
-        if lost is not None:
-            boards.sort(key=lambda b: not self._shows(gray, b, lost))
-        return boards
+        if lost is None:
+            return boards
+        return [board for board, _apart in _nearest_first(gray, boards, lost)]
 
-    def _shows(self, gray: np.ndarray, board: BoardCandidate, lost: np.ndarray) -> bool:
-        """Whether `board` shows the pieces of the lost board, but for `lost_moves_cells`."""
+
+def _nearest_first(
+    gray: np.ndarray, boards: list[BoardCandidate], lost: np.ndarray
+) -> list[tuple[BoardCandidate, int]]:
+    """`boards` with how many cells their occupancy differs from the lost board's by (all
+    64 for a board the frame does not show whole), nearest first, the detector's order
+    kept among equals."""
+    apart = []
+    for board in boards:
         grid = board_occupancy(gray, board.region, board.cell_px)
-        return grid is not None and int((grid != lost).sum()) <= self.lost_moves_cells
+        apart.append((board, 64 if grid is None else int((grid != lost).sum())))
+    return sorted(apart, key=lambda pair: pair[1])
