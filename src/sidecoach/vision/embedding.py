@@ -27,6 +27,7 @@ CPU, the changed cells of a frame in one batch. The model file ships in the pack
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -36,6 +37,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 MODEL_PATH = Path(__file__).with_name("models") / "yolo26n-embed.onnx"
 # Where the net runs: "auto" takes the GPU when onnxruntime's CUDA provider initialises,
@@ -52,6 +55,9 @@ MIN_SIMILARITY = 0.55
 # The lead the nearest exemplar's kind needs over the nearest of another kind.
 MIN_MARGIN = 0.03
 EMBED_DIM = 1280
+# The one batch size the net runs at on the GPU (`CellEmbedder._batched`): a move's few new
+# cells in one run of about 3 ms on a 3090, a start position's 64 in four.
+GPU_BATCH = 16
 # Embeddings kept by the crop's content (5 kB each): a few boards' worth of pieces.
 CACHED = 2048
 
@@ -93,11 +99,51 @@ class CellEmbedder:
         )
 
     def prime(self) -> float:
-        """One start-position-sized batch through the net, so the first real one does not
+        """One batch through the net at the size it runs at, so the first real one does not
         pay the runtime's warm-up (a second on CUDA). Returns the seconds it took."""
         begun = time.perf_counter()
-        self.embed([np.zeros((EMBED_INPUT, EMBED_INPUT, 3), dtype=np.uint8)] * 64)
+        size = GPU_BATCH if self.device.name != "cpu" else 64
+        self._run(np.zeros((size, 3, EMBED_INPUT, EMBED_INPUT), dtype=np.float32))
         return time.perf_counter() - begun
+
+    def _batched(self, batch: np.ndarray) -> np.ndarray:
+        """The net over a batch of any size. On the GPU every change of batch size cost 30
+        to 70 ms, at whatever point in a session, whatever cuDNN's search was set to, against
+        2 to 8 ms for a run at the size before; and with the crop cache a frame's batch is
+        whatever count of cells is new (round 2, finding 8). There the net runs only at
+        GPU_BATCH: in pieces of it, the last padded. The CPU runs the batch as it is."""
+        if self.device.name == "cpu":
+            return self._run(batch)
+        out: list[np.ndarray] = []
+        for start in range(0, len(batch), GPU_BATCH):
+            piece = batch[start : start + GPU_BATCH]
+            n = len(piece)
+            if n < GPU_BATCH:
+                pad = np.zeros((GPU_BATCH - n, *piece.shape[1:]), dtype=piece.dtype)
+                piece = np.concatenate([piece, pad])
+            out.append(self._run(piece)[:n])
+        return np.concatenate(out)
+
+    def _run(self, batch: np.ndarray) -> np.ndarray:
+        """The net over a batch. A run that fails off the CPU -- CUDA out of memory, a
+        driver reset -- loads the net again on the CPU, for good, and runs there: the GPU
+        session was kept failing every frame, and "pipeline error" filled the log (round 2,
+        finding 5). A failure on the CPU is raised."""
+        try:
+            run = self.session.run(None, {"cells": batch})
+        except Exception:
+            if self.device.name == "cpu":
+                raise
+            log.warning(
+                "the embedding net failed on %s; on the CPU from now on",
+                self.device.name,
+                exc_info=True,
+            )
+            from sidecoach.voice.runtime import session
+
+            self.session, self.device = session(self.path, "cpu", intra_op_num_threads=2)
+            run = self.session.run(None, {"cells": batch})
+        return np.asarray(run[0], dtype=np.float32)
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         """Unit embeddings (n, EMBED_DIM), float32, one per crop; a crop seen before is not
@@ -122,8 +168,7 @@ class CellEmbedder:
                     out[i] = hit
         if todo:
             batch = np.stack([self.prepare(crops[i]) for i in todo]).transpose(0, 3, 1, 2)
-            run = self.session.run(None, {"cells": np.ascontiguousarray(batch, dtype=np.float32)})
-            fresh = np.asarray(run[0], dtype=np.float32)
+            fresh = self._batched(np.ascontiguousarray(batch, dtype=np.float32))
             with self._seen_lock:
                 for j, i in enumerate(todo):
                     out[i] = fresh[j]

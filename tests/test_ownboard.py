@@ -56,3 +56,34 @@ def test_the_tracker_vetoes_the_panels_board_and_keeps_a_real_one() -> None:
     assert any(vetoing.update(real) is not None for _ in range(30)), "a real board was refused"
     plain = BoardTracker()
     assert plain.update(board_image(signed=True)) is not None  # without the veto it locks
+
+
+def test_the_panels_board_near_the_old_size_does_not_hide_a_resized_game() -> None:
+    """The game board resized out of the near search's range with the panel's board at the
+    old size: the near search found only the panel's board, the veto dropped it after the
+    search had stopped there, and the full search never ran (round 2 finding 1)."""
+    import chess
+
+    from tests.synth import PIECE_STYLES, busy_background, render_board
+
+    def frame(game_cell: int) -> np.ndarray:
+        out = busy_background(1600, 900, 3)
+        render_board(out, 40, 40, game_cell, chess.Board(), style=PIECE_STYLES["cburnett"])
+        x0, y0, cell = 900, 100, 72
+        render_board(
+            out, x0, y0, cell, chess.Board(None), light=(200, 220, 230), dark=(90, 140, 120)
+        )
+        for r in range(1, 8, 2):  # the signature: odd display rows a few units bluer
+            rows = slice(y0 + r * cell, y0 + (r + 1) * cell)
+            band = out[rows, x0 : x0 + 8 * cell, 0].astype(np.int16)
+            out[rows, x0 : x0 + 8 * cell, 0] = np.clip(band + SHADE_STEP, 0, 255)
+        return out
+
+    tracker = BoardTracker(reject=is_own_board)
+    for _ in range(3):
+        tracker.update(frame(80))
+    board = None
+    for _ in range(60):
+        board = tracker.update(frame(50))
+    assert board is not None and tracker.verified, board
+    assert abs(board.region.x - 40) <= 2 and abs(board.cell_px - 50) <= 1.5, board

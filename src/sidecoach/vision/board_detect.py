@@ -32,6 +32,7 @@ cells of evidence, so they lower the scores a little and do not move the result.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
@@ -388,27 +389,37 @@ def _ring_indices(
                 continue
             ys, xs = np.mgrid[cy0:cy1, cx0:cx1]
             on_ring = (ys < y0 + band) | (ys >= y1 - band) | (xs < x0 + band) | (xs >= x1 - band)
-            flat = (ys * width + xs)[on_ring]
+            flat = (ys * width + xs)[on_ring].astype(np.int32)  # a 4K frame has 8.3M pixels
             cells, rows = groups.setdefault(flat.size, ([], []))
             cells.append(r * side + c)
             rows.append(flat)
     return [(cells, np.stack(rows)) for cells, rows in groups.values()]
 
 
-_RING_CACHE: dict[
+# The rings by geometry, newest used last, within RING_CACHE_BYTES: a detection fits many
+# geometries, and at 64 of them the cache held 71 MB at 1440p and 103 MB at 4K of int64
+# indices (round 2, finding 10); the lock's own geometry is used every frame and stays.
+RING_CACHE_BYTES = 24_000_000
+_RING_CACHE: OrderedDict[
     tuple[tuple[int, ...], Region, float, int], list[tuple[list[int], np.ndarray]]
-] = {}
+] = OrderedDict()
+_ring_cache_bytes = 0
 
 
 def _cells(gray: np.ndarray, region: Region, cell: float, pad: int = 1) -> np.ndarray:
     """The border-ring medians of a board's cells and of `pad` rings of cells around it, an
     (8 + 2 pad)-square grid; NaN where the frame shows less than half a cell."""
+    global _ring_cache_bytes
     key = (gray.shape, region, cell, pad)
     groups = _RING_CACHE.get(key)
     if groups is None:
-        if len(_RING_CACHE) > 64:
-            _RING_CACHE.clear()
         groups = _RING_CACHE[key] = _ring_indices(gray.shape, region, cell, pad)
+        _ring_cache_bytes += sum(indices.nbytes for _, indices in groups)
+        while _ring_cache_bytes > RING_CACHE_BYTES and len(_RING_CACHE) > 1:
+            _, dropped = _RING_CACHE.popitem(last=False)
+            _ring_cache_bytes -= sum(indices.nbytes for _, indices in dropped)
+    else:
+        _RING_CACHE.move_to_end(key)
     side = 8 + 2 * pad
     medians = np.full(side * side, np.nan)
     flat = gray.reshape(-1)
@@ -585,6 +596,25 @@ def square_colours(gray: np.ndarray, region: Region, cell: float) -> Colours | N
     return palette(_cells(gray, region, cell, pad=0))
 
 
+def occupied_grid(
+    gray: np.ndarray, region: Region, cell: float, medians: np.ndarray, colours: Colours
+) -> np.ndarray:
+    """Which cells, as an 8x8 bool grid, are readable and have an interior mean that differs
+    from their ring median by over the tolerance: the cells pieces and marks sit on."""
+    band = _ring_band(cell)
+    readable = readable_against(medians, colours)
+    grid = np.zeros((8, 8), dtype=bool)
+    for r in range(8):
+        for c in range(8):
+            if not readable[r, c]:
+                continue
+            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
+            inner = gray[y0 + band : y1 - band, x0 + band : x1 - band]
+            if inner.size and abs(float(inner.mean()) - medians[r, c]) > colours[2]:
+                grid[r, c] = True
+    return grid
+
+
 def occupied_cells(
     gray: np.ndarray, region: Region, cell: float, medians: np.ndarray, colours: Colours
 ) -> int:
@@ -596,18 +626,17 @@ def occupied_cells(
     ties: among boards of one size and fit the detector puts a game board before an empty
     one.
     """
-    band = _ring_band(cell)
-    readable = readable_against(medians, colours)
-    count = 0
-    for r in range(8):
-        for c in range(8):
-            if not readable[r, c]:
-                continue
-            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
-            inner = gray[y0 + band : y1 - band, x0 + band : x1 - band]
-            if inner.size and abs(float(inner.mean()) - medians[r, c]) > colours[2]:
-                count += 1
-    return count
+    return int(occupied_grid(gray, region, cell, medians, colours).sum())
+
+
+def board_occupancy(gray: np.ndarray, region: Region, cell: float) -> np.ndarray | None:
+    """The occupied cells of the board at `region`, read in its own colours; None when the
+    frame does not show it whole. Two boards of one size tell apart by it: a board moved
+    keeps its pieces, another game's board does not."""
+    colours = square_colours(gray, region, cell)
+    if colours is None:
+        return None
+    return occupied_grid(gray, region, cell, _cells(gray, region, cell, pad=0), colours)
 
 
 def _boundary_weight(

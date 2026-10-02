@@ -11,6 +11,7 @@ from sidecoach.vision.tracker import BoardTracker
 from tests.synth import (
     DARK,
     LIGHT,
+    PIECE_STYLES,
     bulky_start,
     busy_background,
     render_board,
@@ -347,3 +348,74 @@ def test_a_board_resized_to_near_the_frame_s_bottom_is_locked_where_it_is() -> N
         locked = tracker.update(resized)
     assert locked is not None and tracker.verified
     assert abs(locked.region.x - 583) <= 2 and abs(locked.region.y - 110) <= 2, locked
+
+
+_GAME = chess.Board("r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8")
+_OTHER = chess.Board("rnbqkb1r/pp2pppp/3p1n2/8/3NP3/8/PPP2PPP/RNBQKB1R w KQkq - 1 5")
+
+
+def _game_and_thumbnail(game_cell: int, thumbnail: bool, same_theme: bool) -> np.ndarray:
+    frame = busy_background(1600, 1000, 4)
+    render_board(frame, 40, 40, game_cell, _GAME, style=PIECE_STYLES["cburnett"])
+    if thumbnail:
+        theme: dict[str, Any] = (
+            {} if same_theme else {"light": (200, 220, 235), "dark": (110, 150, 180)}
+        )
+        render_board(frame, 1200, 60, 40, _OTHER, style=PIECE_STYLES["cburnett"], **theme)
+    return frame
+
+
+@pytest.mark.parametrize("same_theme", [False, True], ids=["other theme", "same theme"])
+def test_a_board_resized_past_the_near_range_is_found_not_a_board_of_the_old_size(
+    same_theme: bool,
+) -> None:
+    """The game board enlarged from 40 px cells to 100 with another game's thumbnail at 40
+    px beside it: the near-size search found the thumbnail first and the lock stayed on it
+    for good (round 2 finding 1). A board found near the old size is taken at once only when
+    it shows the lost board's pieces; otherwise the full search decides."""
+    tracker = BoardTracker()
+    for _ in range(3):
+        tracker.update(_game_and_thumbnail(40, False, same_theme))
+    board = None
+    for _ in range(60):
+        board = tracker.update(_game_and_thumbnail(100, True, same_theme))
+    assert board is not None and abs(board.region.x - 40) <= 2, board
+    assert abs(board.cell_px - 100) <= 1.5, board
+
+
+def test_a_still_tick_on_a_verified_lock_reads_nothing(monkeypatch) -> None:
+    """A tick whose board pixels are the last changed frame's (`changed` False) turned the
+    whole frame grey and validated the lock again, nearly all of a still tick's cost: 10 ms
+    at 1440p (round 2 finding 7). A verified lock stands unread; a lock in doubt is still
+    checked."""
+    from sidecoach.vision import tracker as tracker_module
+
+    tracker = BoardTracker()
+    frame = synthetic_board()
+    locked = tracker.update(frame)
+    assert locked is not None and tracker.verified
+    calls = []
+    real = tracker_module.to_gray
+    monkeypatch.setattr(tracker_module, "to_gray", lambda f: calls.append(1) or real(f))
+    for _ in range(5):
+        assert tracker.update(frame, changed=False) is locked
+    assert calls == []
+    tracker.misses = 1  # in doubt: read even on a still tick
+    tracker.update(frame, changed=False)
+    assert calls == [1]
+
+
+def test_a_board_moved_at_its_size_is_relocked_by_the_near_search() -> None:
+    """The cheap path stays: the game board moved, same size, same pieces, is re-locked by
+    the near-size search without the full one."""
+    tracker = BoardTracker(max_misses=2)
+    frame = busy_background(1600, 1000, 4)
+    render_board(frame, 40, 40, 60, _GAME, style=PIECE_STYLES["cburnett"])
+    tracker.update(frame)
+    moved = busy_background(1600, 1000, 4)
+    render_board(moved, 700, 300, 60, _GAME, style=PIECE_STYLES["cburnett"])
+    board = None
+    for _ in range(4):
+        board = tracker.update(moved)
+    assert board is not None and abs(board.region.x - 700) <= 2, board
+    assert tracker.full_searches == 1  # the first lock only

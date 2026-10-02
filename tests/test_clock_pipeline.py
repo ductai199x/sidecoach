@@ -140,3 +140,25 @@ def test_a_reset_forgets_the_last_games_clock() -> None:
     pipe.bottom = Side.WHITE
     pipe.board = BOARD
     assert len(pipe._read_clock(FRAME, 5.0)) == 1
+
+
+def test_a_board_turned_round_forgets_the_clock_read_the_other_way_up() -> None:
+    """A game adopted upside down read the running bottom clock as White's; the Flip re-read
+    the board with Black at the bottom and left the side to move open, and the next tick
+    with no new pixels settled it from that stale observation: White to move, Black's clock
+    running (round 2 finding 3). Turned round, the board's clock is read afresh."""
+    import chess
+
+    from sidecoach.vision.pieces import CellReading, ThemeModel
+
+    reader = _StubReader(_reading(192_000, 295_000, running="bottom"))
+    pipe = _oriented(reader, Side.WHITE)
+    assert pipe._read_clock(FRAME, 1.0)
+    assert pipe._last_clock is not None and pipe._last_clock[2] is Side.WHITE
+    empty = CellReading("empty", None, None, 1.0, 0.0, 0.0)
+    readings = [[empty] * 8 for _ in range(8)]
+    position = chess.Board("r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 b - - 5 8")
+    assert pipe._adopt_cold(ThemeModel(), Side.BLACK, readings, position.copy(), ts=1.05)
+    assert pipe._last_clock is None and pipe._last_clock_ts is None
+    assert reader.resets == 1
+    assert pipe._turn_from_clock(1.1) == []

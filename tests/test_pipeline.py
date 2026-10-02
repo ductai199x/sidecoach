@@ -261,3 +261,98 @@ def test_browsing_back_with_a_stray_reading_is_not_a_new_game() -> None:
     readings[3][3] = CellReading("piece", None, Side.WHITE, 0.5, 0.4, 240.0, settled=False)
     readings[0][4] = CellReading("piece", "k", Side.BLACK, 0.9, 0.4, 60.0, settled=False)
     assert pipe._reads_as_start(readings)
+
+
+def _midgame(pipe: GamePipeline, look: dict[str, Any], ts: float) -> tuple[chess.Board, float]:
+    board = chess.Board()
+    for _ in range(3):
+        pipe.process(synthetic_board(board=board, **look), ts)
+        ts += 0.1
+    for uci in ("e2e4", "e7e5", "g1f3"):
+        move = chess.Move.from_uci(uci)
+        board.push(move)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            ts += 0.1
+    return board, ts
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "first_move_at_once"),
+    [
+        ({"theme": "green"}, {"theme": "brown"}, False),
+        ({"theme": "brown"}, {"theme": "green"}, True),
+        ({"style": "cburnett"}, {"style": "pixel"}, False),
+        ({"style": "staunty"}, {"style": "papercut"}, True),
+        ({"style": "cburnett"}, {"style": "kosal"}, False),
+    ],
+    ids=["green to brown", "brown to green, a move", "pixel set", "papercut, a move", "kosal"],
+)
+def test_a_look_changed_mid_game_is_learned_from_the_game_s_own_position(
+    before: dict[str, Any], after: dict[str, Any], first_move_at_once: bool
+) -> None:
+    """The board's theme or the piece set changed mid-game: the recogniser read the new look
+    as unknown (a theme) or as other pieces (a set), and the rest of the game went unread,
+    with no event (round 2 finding 2). The look is learned again from the position the game
+    is in -- or a legal move from it, played before the new look was read -- once the
+    pieces on the frame are where that position puts them and its cells read back as their
+    own labels."""
+    pipe = GamePipeline()
+    board, ts = _midgame(pipe, before, 0.0)
+    assert pipe.reconciler is not None and pipe.reconciler.board.board_fen() == board.board_fen()
+    plies = ["b8c6", "f1b5", "a7a6"]
+    if first_move_at_once:
+        move = chess.Move.from_uci(plies.pop(0))
+        board.push(move)
+    # The new look stays on a still board for a second (unchanged ticks after the first).
+    changed = synthetic_board(board=board, highlight=board.peek(), **after)
+    for i in range(10):
+        pipe.process(changed, ts, changed=i == 0)
+        ts += 0.1
+    for uci in plies:
+        move = chess.Move.from_uci(uci)
+        board.push(move)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **after), ts)
+            ts += 0.1
+    assert pipe.reconciler.board.fen() == board.fen()
+    assert pipe.bootstraps == 1
+
+
+def test_a_theme_changed_mid_game_to_a_cached_one_takes_the_cached_set(tmp_path) -> None:
+    """The new theme learned before, whole, in the cache: the cached set that reads the
+    game's position is taken, not a partial one learned from the frame."""
+    from sidecoach.vision.theme_cache import ThemeCache
+
+    cache = ThemeCache(tmp_path)
+    learner = GamePipeline(cache=cache)
+    _start_frames(learner, 0.0, frames=3, theme="brown")
+    assert learner.model is not None
+    pipe = GamePipeline(cache=cache)
+    board, ts = _midgame(pipe, {"theme": "green"}, 0.0)
+    changed = synthetic_board(board=board, highlight=board.peek(), theme="brown")
+    for i in range(10):
+        pipe.process(changed, ts, changed=i == 0)
+        ts += 0.1
+    for uci in ("b8c6", "f1b5"):
+        move = chess.Move.from_uci(uci)
+        board.push(move)
+        for _ in range(4):
+            pipe.process(synthetic_board(board=board, highlight=move, theme="brown"), ts)
+            ts += 0.1
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+    assert pipe.model is not None and pipe.model.exemplar_labels == learner.model.exemplar_labels
+
+
+def test_another_position_in_a_new_look_is_not_learned_as_the_game() -> None:
+    """A board in a new theme showing another game's position: no legal move from the game
+    puts its pieces there, so nothing is learned from it and the record stands."""
+    pipe = GamePipeline()
+    board, ts = _midgame(pipe, {"theme": "green"}, 0.0)
+    model = pipe.model
+    other = chess.Board("r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8")
+    for _ in range(12):
+        pipe.process(synthetic_board(board=other, theme="brown"), ts)
+        ts += 0.1
+    assert pipe.model is model
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
