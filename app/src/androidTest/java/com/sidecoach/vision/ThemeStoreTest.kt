@@ -113,8 +113,10 @@ class ThemeStoreTest {
             // Cut short or with a byte flipped anywhere, a file reads as a set or as nothing.
             val damaged = File(context.cacheDir, "themes-store-damaged")
             val random = java.util.Random(1)
-            val cases = (1 until bytes.size step maxOf(1, bytes.size / 200)).map { bytes.copyOf(it) } +
-                (0 until 200).map { bytes.copyOf().also { b -> val at = random.nextInt(b.size); b[at] = (b[at].toInt() xor 0xFF).toByte() } }
+            // Made one at a time, the same cases in the same order: the four hundred copies made
+            // up front were 150 MB of the test process's 192 MB heap, and ran it out.
+            val cases = (1 until bytes.size step maxOf(1, bytes.size / 200)).asSequence().map { bytes.copyOf(it) } +
+                (0 until 200).asSequence().map { bytes.copyOf().also { b -> val at = random.nextInt(b.size); b[at] = (b[at].toInt() xor 0xFF).toByte() } }
             for (case in cases) {
                 damaged.deleteRecursively()
                 damaged.mkdirs()

@@ -48,9 +48,13 @@ class ProviderSwitchTest {
         val api = SettingsApi(store)
         val saved = store.values()
         try {
+            // A server address that answers at once (nothing listens on the loopback's port 9):
+            // each save rebuilds the kept coach's model, which asks the server whether it
+            // answers, and a LAN address that is not there held each save until the attempt gave
+            // up -- 21 s of this test on the emulator, for an answer it does not look at.
             val custom = JSONObject()
                 .put("provider", "custom")
-                .put("base_url", "http://192.168.1.20:1234/v1")
+                .put("base_url", SERVER)
                 .put("model", "qwen3")
             assertTrue(api.update(JSONObject().put("settings", JSONObject().put("llm", custom))).getBoolean("ok"))
             // The page sends what changed: the service alone.
@@ -62,9 +66,13 @@ class ProviderSwitchTest {
             assertTrue(api.update(JSONObject().put("settings", local)).getBoolean("ok"))
             val llm = store.values().getJSONObject("llm")
             assertEquals("mine", llm.getString("model"))
-            assertEquals("http://192.168.1.20:1234/v1", llm.getString("base_url"))
+            assertEquals(SERVER, llm.getString("base_url"))
         } finally {
             store.save(saved)
         }
+    }
+
+    private companion object {
+        const val SERVER = "http://127.0.0.1:9/v1"
     }
 }

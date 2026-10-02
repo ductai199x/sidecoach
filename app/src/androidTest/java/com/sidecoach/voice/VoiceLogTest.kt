@@ -63,10 +63,13 @@ class VoiceLogTest {
         assertFalse(gate.load())
         val texts = linesSince(before).filter { it.getString("chan") == "voice" && it.getString("level") == "warn" }
             .map { it.getString("text") }.filter { it.startsWith("Parakeet") || it.startsWith("Silero") }
-        // Once each: a model that failed is not tried again.
-        assertEquals(texts.toString(), 2, texts.size)
+        // A recogniser not downloaded yet is looked for again at each use, as the desktop's is
+        // (`ParakeetSTT.load`, voice finding 4: Setup fetches it after the first warm-up), so the
+        // load and the transcription each say so; the gate, tried once, says so once.
+        assertEquals(texts.toString(), 3, texts.size)
         assertEquals("Parakeet unavailable, speech recognition is off: not downloaded yet (Setup, in the menu)", texts[0])
-        assertTrue(texts[1], texts[1].startsWith("Silero VAD unavailable: "))
+        assertEquals(texts[0], texts[1])
+        assertTrue(texts[2], texts[2].startsWith("Silero VAD unavailable: "))
     }
 
     /** A microphone whose frames the test puts in. */
