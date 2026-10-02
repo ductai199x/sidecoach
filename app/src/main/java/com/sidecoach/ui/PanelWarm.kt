@@ -510,7 +510,7 @@ object PanelWarm {
             val remeasure = changed.filter { it in THRESHOLD_FIELDS } +
                 listOf("engine.depth", "engine.multipv", "engine.score_model", "engine.max_seconds")
             if (changed.any { it in remeasure }) {
-                runCatching { analyser.annotator.forgetMeasured() }  // applied already; the cache is a cache
+                analyser.annotator.forgetMeasured()
             }
         }
         return applied.toSortedSet().toList()
