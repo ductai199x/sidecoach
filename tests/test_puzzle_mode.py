@@ -168,8 +168,12 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
     assert store.setting("puzzle_level") == "1075"
-    # The user's question reaches the room's coach (off here: nothing answers, no error).
+    # The user's question reaches the room. Its coach is off here: the room says so, as the
+    # panel does, or the page's typing dots waited for an answer for good.
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
+    _logged(client, FORK.id, "no coach to ask: hint")
+    texts = [ln["text"] for ln in client.get(f"/api/puzzle/{FORK.id}/poll").json()["lines"]]
+    assert "you: hint" not in texts, "no turn of a conversation nobody answers"
     assert client.post(f"/api/puzzle/{FORK.id}/voice", json={"on": False}).json()["ok"]
     # Closing ends the room; the outcome is not recorded twice.
     assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
