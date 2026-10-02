@@ -552,6 +552,13 @@ class GamePipeline(
         clock?.reset()
     }
 
+    /** The last clock observation and the reader's memory dropped: the board's sides changed under them. */
+    private fun forgetClock() {
+        lastClock = null
+        lastClockTs = null
+        clock?.reset()
+    }
+
     /**
      * A position resync checked against the coordinate labels. A resync keeps the orientation
      * the game had; a puzzle page shows each puzzle from the solver's side, so the next puzzle
@@ -791,8 +798,7 @@ class GamePipeline(
         cache?.let { it.save(built, learnedSet(it, built, frame, geometry, side)) }
         game.coldSince = null
         game.coldNoticed = false
-        lastClock = null
-        clock?.reset()
+        forgetClock()
         reconciler?.let {
             it.bottom = side
             it.userSide = side
@@ -915,7 +921,7 @@ class GamePipeline(
         return "unlearned"
     }
 
-    private class ColdRead(
+    internal class ColdRead(
         val model: ThemeModel,
         val bottom: Side,
         val readings: Readings,
@@ -992,7 +998,8 @@ class GamePipeline(
         return adoptCold(read, ts)
     }
 
-    private fun adoptCold(read: ColdRead, ts: Double?): MutableList<Event> {
+    /** `internal` for the test that a board turned round forgets the clock. */
+    internal fun adoptCold(read: ColdRead, ts: Double?): MutableList<Event> {
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
         // The site's last-move highlight, for what a cold read cannot know: a pawn that has
         // just advanced two squares, and whose move it is ([lastMoveSeen]).
@@ -1000,6 +1007,12 @@ class GamePipeline(
         val events = reconciler.startFrom(read.placement, ts, highlighted)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
+        if (read.bottom != bottom) {
+            // The clock read the other way up named the other side as running, and the side to
+            // move a cold read leaves open was settled from it on the next tick (round 2,
+            // finding 3): read afresh, as a new recogniser's clock is.
+            forgetClock()
+        }
         model = read.model
         bottom = read.bottom
         game.coldSince = null

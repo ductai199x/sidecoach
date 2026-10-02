@@ -143,6 +143,35 @@ class PipelinePartsTest {
     }
 
     @Test
+    fun aBoardTurnedRoundForgetsTheClockReadTheOtherWayUp() {
+        // Round 2, finding 3 (desktop `test_a_board_turned_round_forgets_the_clock_read_the_other_way_up`):
+        // a game adopted upside down read the running bottom clock as White's; the Flip re-read
+        // the board with Black at the bottom and left the side to move open, and the next tick
+        // settled it from that stale observation.
+        val reader = StubReader(reading(192_000, 295_000, Which.BOTTOM))
+        val pipe = oriented(reader)
+        val start = load("mate-green/000.png")
+        try {
+            assertTrue("no recogniser learned", pipe.rebuildModel(start, startGeometry))
+        } finally {
+            start.release()
+        }
+        pipe.board = board
+        val learned = checkNotNull(pipe.bottom)
+        assertEquals(1, pipe.readClock(frame, 1.0).size)
+        assertEquals("the running bottom clock is the bottom side's", learned, pipe.lastClock?.third)
+        val resets = reader.resets
+        val empty = MutableList(64) { CellReading(Kind.EMPTY, confidence = 1.0) }
+        val position = Board("r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 b - - 5 8")
+        val model = checkNotNull(pipe.model)
+        assertTrue(pipe.adoptCold(GamePipeline.ColdRead(model, learned.other, empty, position), 1.05).isNotEmpty())
+        assertEquals(learned.other, pipe.bottom)
+        assertNull(pipe.lastClock)
+        assertNull(pipe.lastClockTs)
+        assertEquals(resets + 1, reader.resets)
+    }
+
+    @Test
     fun theReasonTheGameEndedComesFromTheBoardAndTheClock() {
         val pipe = GamePipeline(net)
         val mate = Board("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
