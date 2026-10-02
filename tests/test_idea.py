@@ -120,12 +120,23 @@ def test_a_piece_given_for_nothing_is_no_sacrifice() -> None:
 
 
 def test_a_sound_sacrifice_in_a_worse_position_is_one() -> None:
-    """Bxh7+ Kxh7 Ng5+ Kg8 Qh5 a little worse (0.45), nothing back in the line: the engine
-    rates it above a bishop-for-a-pawn count, so the bishop is sacrificed (Tai, 2026-10-02:
-    no "below 0.5 it needs two points back" gate)."""
+    """Bxh7+ Kxh7 Ng5+ Kg8 Qh5 a little worse (0.47), nothing back in the line: giving the
+    bishop costs less than an inaccuracy against the even material the player had, a Good
+    move's loss, so the bishop is sacrificed (Tai, 2026-10-02: no "below 0.5 it needs two
+    points back" gate; a sacrifice keeps at least the Good label)."""
     fen = "r1bq1rk1/pppn1ppp/4p3/3pP3/1b1P4/2NB1N2/PPP2PPP/R2QK2R w KQ - 0 8"
-    idea = read(fen, "Bxh7+ Kxh7 Ng5+ Kg8 Qh5", score=0.45)
+    idea = read(fen, "Bxh7+ Kxh7 Ng5+ Kg8 Qh5", score=0.47)
     assert idea.sacrifices == ((0, "bishop"),)
+
+
+def test_a_bishop_given_in_a_lost_position_for_nothing_is_no_sacrifice() -> None:
+    """Six points down, ...Bg4 gives the bishop and the line is worth what nine points down is
+    (-8.99): the gift costs more than an inaccuracy against the six-down count, below a Good
+    move -- given up, not sacrificed ("your bishop on c8 -- the piece you give up", a bot game
+    of 2026-09-25; the strict comparison of d32239a passed it by a centipawn)."""
+    fen = "r1b3k1/ppp3pp/5r2/n7/8/5B2/PPP1NbPP/R2Q1R1K b - - 1 15"
+    idea = read(fen, "Bg4 Bxg4 Kh8 Bh3 Nc6 a3 Bb6 Rxf6 gxf6 Qf1 f5 Qxf5", score=0.0352)
+    assert idea.sacrifices == ()
 
 
 def test_a_piece_another_move_could_defend_is_sacrificed_not_lost_anyway() -> None:
