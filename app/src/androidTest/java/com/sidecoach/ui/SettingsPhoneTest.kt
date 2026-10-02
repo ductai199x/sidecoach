@@ -523,6 +523,29 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A number that is not finite in a field with no bound ("inf" for a price) is refused as
+     * that field's error, and every other setting stays as it was: a JSON document cannot hold
+     * it, and the save threw, a 500 (the review of 2026-10-01).
+     */
+    @Test
+    fun aNumberThatIsNotFiniteIsAFieldErrorNeverA500() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val before = store.values().toString()
+        for (text in listOf("inf", "-Infinity", "nan")) {
+            val llm = JSONObject().put("price_prompt_per_m", text).put("timeout_s", 90)
+            val res = api.update(JSONObject().put("settings", JSONObject().put("llm", llm)))
+            assertFalse(res.toString(), res.getBoolean("ok"))
+            val errors = res.getJSONArray("errors")
+            assertEquals(res.toString(), 1, errors.length())
+            assertEquals("[\"llm\",\"price_prompt_per_m\"]", errors.getJSONObject(0).getJSONArray("loc").toString())
+            assertEquals("finite_number", errors.getJSONObject(0).getString("type"))
+            assertEquals(text, errors.getJSONObject(0).getString("input"))
+            assertEquals("nothing was saved", before, store.values().toString())
+        }
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to

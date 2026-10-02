@@ -393,7 +393,13 @@ object SettingsCheck {
         }
         if (coerced.error != null) return coerced
         val number = coerced.value as? Number ?: return coerced
-        return bounds(inner, number, value, loc) ?: coerced
+        bounds(inner, number, value, loc)?.let { return it }
+        // A JSON document cannot hold a number that is not finite: "inf" in a field with no
+        // bound made the save throw, a 500 (the review of 2026-10-01). Refused as a field,
+        // in pydantic's words for it.
+        val x = number.toDouble()
+        if (x.isNaN() || x.isInfinite()) return Checked(null, error("finite_number", loc, "Input should be a finite number", value))
+        return coerced
     }
 
     /** pydantic-core's order: at most, below, at least, above. */
