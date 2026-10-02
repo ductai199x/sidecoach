@@ -267,18 +267,31 @@ fun mayCarryClaims(text: String): Boolean {
     return CLAIM_WORDS.containsMatchIn(text)
 }
 
+/**
+ * The move asked for, in words that ask for it: "which move" and "the answer" said of a move
+ * already played -- "which move did they just play?", "what was the answer to their last
+ * threat?" -- opened the move level, and the answer was given (the coach review, 2026-10-01).
+ * `coach._ASK_MOVE`.
+ */
 private val ASK_MOVE = Regex(
-    "\\b(best move|what (should|do|would) i (play|do)|what would you play|which move|" +
-        "just tell me|what'?s the move|tell me the move|the answer)\\b",
+    "\\b((?<!\\bwas the )(?<!\\bwas that the )(?<!\\bwas it the )best move|" +
+        "what (should|do|would) i (play|do)|what would you play|" +
+        "which move(?! (?:did|was|were|had|has|have|do|does) (?:they|he|she|i|it|that|the opponent|" +
+        "my opponent)\\b)|" +
+        "just tell me|what'?s the move|tell me the move|(?<!\\bwas )(?<!\\bwere )the answer)\\b",
     RegexOption.IGNORE_CASE,
 )
 /**
  * How the position goes on is the line: "how would this position continues?" and "ok and after
  * that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
  * only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
+ * A line asked for as one -- "the line", "some lines", "the main variation" -- not the word: "are
+ * there any open lines for my rooks?" opened the line (the coach review, 2026-10-01).
  */
 private val ASK_LINE = Regex(
-    "\\b(?:the line|a line|lines|variation|continuation|what happens (?:after|next)|" +
+    "\\b(?:the|a|some|main|best|engine'?s?)\\s+(?:(?:main|best|whole|full|engine'?s?|critical|" +
+        "forcing|winning)\\s+)?(?:lines?|variations?|continuations?)\\b" +
+        "|\\b(?:what happens (?:after|next)|" +
         "and then what|what follows|what(?:'s| is| comes) next|then what)\\b" +
         "|\\bafter that\\s*\\?" +
         "|\\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|" +
@@ -521,11 +534,36 @@ class Coach(
      */
     private var pendingAsk: Pair<String, Double>? = null
 
+    /**
+     * The moment of the game: a new game, a takeback and a re-read each start another. A reply
+     * asked for in an earlier one and landing in this one is not a turn of this one: recorded
+     * where it landed, the lesson on a withdrawn move stood under "Said here" of the position
+     * taken back to, and a reply about the last puzzle under the next one's, where they made the
+     * player's next words a follow-up or the answer to their question (the coach review,
+     * 2026-10-01). `Coach._epoch`.
+     */
+    internal var epoch = 0
+        private set
+
     // Lifecycle
 
     fun start() = speaker.start()
 
     fun close() = speaker.close()
+
+    /**
+     * The screen is no longer read (the panel's Stop; the coach outlives it): a lesson held for
+     * its analysis is said now, as at a game's end, and nothing more is said unasked until the
+     * board is read again -- the next Start's new game or re-read. Kept on the position it last
+     * read, the coach gave stuck hints about the last session's board on the next Start's first
+     * ticks (the game-state review, 2026-10-01). Asked before then, it answers from the last
+     * position it read. `Coach.pause`.
+     */
+    fun pause(ts: Double) {
+        releaseLesson(ts)
+        current = null
+        policy.pause()
+    }
 
     val userColour: Boolean get() = userSide.color
 
@@ -553,6 +591,13 @@ class Coach(
                 current = null
                 finished = true
                 conversation.ended(event)
+                val pending = pendingAsk
+                if (pending != null) {
+                    // The question held for the engine's look, answered now: nothing is withheld
+                    // from a game that is over, and left waiting it was never answered.
+                    pendingAsk = null
+                    ask(pending.first, ts)
+                }
             }
 
             is Recommendation -> onRecommendation(event, ts)
@@ -621,13 +666,21 @@ class Coach(
         val elicitAt = elicitAsked
         if (elicitAt != null && ts - elicitAt <= ELICIT_ANSWER_S) elicitAnswered = true
         var position = current
-        if (position != null && position.facts == null && userToMove && !finished) {
+        if (position != null && position.facts == null &&
+            (userToMove || waitsForTheBoard(text)) && !finished &&
+            !position.board.isGameOver() // a finished board has nothing to read
+        ) {
             // The engine is still looking at the position on the board: said so, and answered
             // the moment its analysis lands -- never from an older position's (Tai, 2026-09-24:
             // a hint pressed as a puzzle appeared got "I have not seen enough of this game yet
             // to say. Give me a move or two.").
             if (pendingAsk == null) {
-                queuePlain(Trigger.USER_ASK, "One moment -- still looking at this position.", ts)
+                queuePlain(
+                    Trigger.USER_ASK,
+                    "One moment -- still looking at this position.",
+                    ts,
+                    turn = false,
+                )
             }
             pendingAsk = text to ts
             return
@@ -642,9 +695,16 @@ class Coach(
             return
         }
         val unlock = unlockFor(text, position.board, position.facts!!.candidates)
-        // A hint asked for climbs from what the combination has had already.
-        position.disclosure.carry(ladder(position))
-        if (unlock != null) position.disclosure.apply(unlock)
+        if (position === current) {
+            // A hint asked for climbs from what the combination has had already -- in the
+            // position the player faces only: climbed in the one they had moved from, a hint
+            // asked before the new one was read made the combination's next hint skip a rung
+            // (the coach review, 2026-10-01).
+            position.disclosure.carry(ladder(position))
+            if (unlock != null) position.disclosure.apply(unlock)
+            // Answered here, the stuck spell starts again ([InterjectionPolicy.asked]).
+            policy.asked(ts)
+        }
         var level = maxOf(position.disclosure.level, DisclosureLevel.IDEA)
         if (finished || position.board.isGameOver()) {
             // Nothing is withheld from a game that is over.
@@ -848,6 +908,35 @@ class Coach(
 
     fun hint(ts: Double) = ask("hint", ts)
 
+    /**
+     * On the opponent's move, the position on the board not yet read: whether the words wait for
+     * it. Their threat is read from it: answered from the position before the player's move,
+     * "they threaten Qxf2#" was said of the threat the move had just stopped. So is anything but
+     * the player's last move once its verdict is in and the position it was played from is read:
+     * answered from an older position, the coach said "Give me a moment; I am still reading this
+     * position." with nothing waiting (the coach review, 2026-10-01).
+     * `Coach._waits_for_the_board`.
+     */
+    private fun waitsForTheBoard(text: String): Boolean {
+        if (ASK_THREAT.containsMatchIn(text)) return true
+        val own = lastOwnMove() ?: return true
+        val faced = positions[own.move.ply - 1]
+        return faced?.facts == null
+    }
+
+    /**
+     * The question held for the engine's look, answered at the position the player faces now
+     * once the coach has read it: wherever the board went meanwhile -- a takeback, a re-read, the
+     * next game -- "One moment" was a promise (the coach review, 2026-10-01).
+     * `Coach._answer_pending`.
+     */
+    private fun answerPending(ts: Double) {
+        val pending = pendingAsk ?: return
+        if (current?.facts == null) return
+        pendingAsk = null
+        ask(pending.first, ts)
+    }
+
     fun poll(): List<CoachMessage> {
         val out = ArrayList<CoachMessage>()
         for (one in speaker.poll()) {
@@ -857,7 +946,7 @@ class Coach(
                 // calls say why), said to no one.
                 continue
             }
-            if (!one.recorded) {
+            if (!one.recorded && one.epoch == epoch) {
                 synchronized(lock) {
                     conversation.coachSaid(
                         one.message.text,
@@ -888,6 +977,10 @@ class Coach(
     }
 
     private fun newGame(event: GameStarted, ts: Double) {
+        epoch += 1
+        // A lesson held for its analysis is the last game's: kept, the next tick said it in this
+        // one, over this one's first position (the coach review, 2026-10-01).
+        heldLesson = null
         gameId = event.gameId
         userSide = event.userSide
         kind = event.kind
@@ -902,7 +995,8 @@ class Coach(
         reviewLines = emptyList()
         elicitAsked = null
         elicitAnswered = false
-        pendingAsk = null
+        // A question held for the engine's look stays: it is answered at this game's first
+        // position once read ([answerPending]), as a hint pressed as the next puzzle appears.
         finished = false
         current = positions[0]
         policy.restart()
@@ -1126,6 +1220,7 @@ class Coach(
      * board is back at; the replacement moves arrive as ordinary moves.
      */
     private fun onTakeback(event: Takeback, ts: Double) {
+        epoch += 1
         conversation.takeback(event)
         board = boardBack(board, event.fen)
         val active = conversation.activeRecords()
@@ -1139,17 +1234,25 @@ class Coach(
             positions[ply] = position
         }
         current = position
+        policy.withdraw(ply)
         policy.newPosition(ply, ts, userToMove = userToMove)
+        // A question held for the engine's look is answered here, read already or once read.
+        answerPending(ts)
     }
 
     /** The board was re-read: the position jumped; the move numbering restarts. */
     private fun onResync(event: Resync, ts: Double) {
+        epoch += 1
         board = Board(event.fen)
         conversation.resync(event, board)
         positions = linkedMapOf(0 to CoachPosition(ply = 0, board = board.copy()))
         moves = LinkedHashMap()
         current = positions[0]
-        pendingAsk = null
+        // The pace is the position's play, as a game's own: the next puzzle in the same
+        // orientation comes as a re-read, and the last one's quick finish made its first find
+        // "fast", only shown (the game-state review, 2026-10-01; [FAST_PACE_S]).
+        thinkS.clear()
+        // A question held for the engine's look stays, answered once this position is read.
         policy.restart()
         policy.newPosition(0, ts, userToMove = userToMove)
     }
@@ -1172,26 +1275,19 @@ class Coach(
             position.board, event, lastMove = position.lastMove, user = userColour, pick = peek
         )
         position.leads = leads
+        // The record shows what the coach answers from, the early depth until the full one
+        // replaces it: kept back until the full depth, a question answered from the early one
+        // was asked of the model with "Engine lines: not in yet." and no facts (the coach review,
+        // 2026-10-01).
+        conversation.analysed(event, position.facts!!)
         if (event.provisional) {
             // Measured early, the full depth to follow: what the player asks is answered from it
-            // now; the coach's own words -- a lesson -- and the conversation's record wait for
-            // the full depth.
-            val asked = pendingAsk
-            if (position === current && asked != null) {
-                val (text, _) = asked
-                pendingAsk = null
-                ask(text, ts)
-            }
+            // now; the coach's own words -- a lesson -- wait for the full depth.
+            if (position === current) answerPending(ts)
             return
         }
-        conversation.analysed(event, position.facts!!)
         if (heldLesson?.played?.ply == event.ply) releaseLesson(ts) // what the move allowed is known now
-        val pending = pendingAsk
-        if (position === current && pending != null) {
-            val (text, _) = pending
-            pendingAsk = null
-            ask(text, ts)
-        }
+        if (position === current) answerPending(ts)
         // Nothing is said of its own at a decisive moment: while the player thinks, the first
         // word unasked is the stuck hint (Tai, 2026-10-01: nothing "until the user is stuck or
         // actively request a hint or after they have made a move").
@@ -1794,7 +1890,12 @@ class Coach(
         // The player faces a position again only once it is their turn: on the opponent's, what
         // the move allowed is the lesson, and "nothing about the position" forbade it.
         val facing = past && now != null && now.board.turn == userColour
-        val line = levelLine(level, position, if (facing) renderLevel else null, past = past)
+        // Asked on the opponent's move, there is no move of the player's to keep back.
+        val theirs = trigger == Trigger.USER_ASK && !past && !finished &&
+            position.board.turn != userColour
+        val line = levelLine(
+            level, position, if (facing) renderLevel else null, past = past, theirs = theirs,
+        )
         // A question is answered as asked: its words head the Task. Found only under "Said here",
         // far above, "whose bishop? ... he will just move away to the right, no?" got the line
         // again (Tai's puzzle, 2026-09-28).
@@ -1924,7 +2025,16 @@ class Coach(
             conversation.level = renderLevel
             val harness = conversation.render()
             messages = listOf(ChatMessage("user", "$harness$faced$earlier\n\n# Task\n$directive"))
-            problem = harnessProblem(harness, this.board, userSide)
+            // What the coach holds for the position on the board, which the position now must
+            // show (the early depth was answered from but never shown: the coach review).
+            val held = current?.takeIf { it.board.fen() == this.board.fen() }
+            problem = harnessProblem(
+                harness,
+                this.board,
+                userSide,
+                lines = held?.analysis?.lines?.isNotEmpty() == true,
+                facts = held?.facts != null,
+            )
         }
         if (problem != null) harnessProblems.add("${trigger.slug} at ply ${position.ply}: $problem")
         var unlisted: Set<String>? = null
@@ -1979,6 +2089,7 @@ class Coach(
             record = numberedMoves(),
             unlisted = unlisted,
             tools = tools,
+            epoch = epoch,
         )
         speaker.submit(request)
     }
@@ -2166,15 +2277,22 @@ class Coach(
      * place it is stated; with [nowLevel], the reply is about a position already moved from, and
      * the one on the board has its own level. Below the move, why the model sees the answer all
      * the same: said as "never" in five places, it gave the vague hint Tai ranks below one that
-     * says a little too much (the prompt audit, 2026-09-28).
+     * says a little too much (the prompt audit, 2026-09-28). [theirs]: the position is the
+     * opponent's to move, and told to keep back "the player's move" there the model gave the
+     * player's hint on the opponent's position (the coach review, 2026-10-01).
      */
     private fun levelLine(
         level: DisclosureLevel,
         position: CoachPosition,
         nowLevel: DisclosureLevel? = null,
         past: Boolean = false,
+        theirs: Boolean = false,
     ): String {
         if (position.board.isGameOver()) return ""
+        if (theirs) {
+            return "It is the opponent's move: what they threaten -- their best move and what it " +
+                "does -- may be said.\n\n"
+        }
         fun words(of: DisclosureLevel): String = when (of) {
             DisclosureLevel.SILENT -> "nothing about the position"
             DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
@@ -2201,7 +2319,10 @@ class Coach(
     /**
      * A message that needs no model; it queues behind whatever the model is writing, unless
      * [now], when it goes out at once. With [recordNow] it is a turn of the conversation from
-     * this moment, so a request built next already shows it.
+     * this moment, so a request built next already shows it. Without [turn] it is never one:
+     * "One moment -- still looking at this position." recorded as the coach's turn made the
+     * question it held, answered when the analysis landed, a follow-up -- "You have already told
+     * them the verdict ... do not repeat either" (the coach review, 2026-10-01).
      */
     private fun queuePlain(
         trigger: Trigger,
@@ -2213,6 +2334,7 @@ class Coach(
         fen: String? = null,
         now: Boolean = false,
         recordNow: Boolean = false,
+        turn: Boolean = true,
     ) {
         val message = CoachMessage(
             text = text,
@@ -2230,7 +2352,8 @@ class Coach(
                 level = level,
                 problems = emptyList(),
                 attempts = 0,
-                recorded = recordNow,
+                recorded = recordNow || !turn,
+                epoch = epoch,
             ),
             now = now,
         )
@@ -2444,8 +2567,14 @@ class Coach(
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
                         "lesson, no question. $NOT_THE_MOVE $NO_FIGURES"
             } else {
-                // The better move and what it does, when the sheet has it, is the lesson.
-                val opener = bags.draw("fine", FINE_TIGHTER).replace("{best}", best)
+                // The better move and what it does, when the sheet has it, is the lesson. An
+                // inaccuracy cost something, and is said so: given a sound move's word, one was
+                // "Fine, but Qxf7# was a little tighter", the model told "an inaccuracy: sound, a
+                // little behind" (the coach review, 2026-10-01).
+                val slip = assessment.severity == Severity.INACCURACY || label == "inaccuracy"
+                val opener = (
+                    if (slip) bags.draw("cost", COST_YOU) else bags.draw("fine", FINE_TIGHTER)
+                    ).replace("{best}", best)
                 val (lessonText, held) = freshLesson(
                     opener,
                     null, // a fine move: the better move and what it does, no rule of thumb
@@ -2463,11 +2592,16 @@ class Coach(
                 fallback = lessonText
                 // How it rated goes in passing: asked for first, it opened half these replies
                 // with "Fine", "Playable" or "That works, though" (the prompt audit, 2026-09-28).
+                val ratedAs = if (slip) {
+                    "it cost a little, and $best ($betterWords) was better"
+                } else {
+                    "sound, a little behind $best ($betterWords)"
+                }
                 instructionText =
-                    "The player just played ${played.san}, which was ${rated(label)}: sound, a " +
-                        "little behind $best ($betterWords). One or two sentences: the better " +
-                        "move, what it does, and the idea behind it as a lesson to keep, with how " +
-                        "theirs rated in passing. No lecture, no question. " +
+                    "The player just played ${played.san}, which was ${rated(label)}: $ratedAs. " +
+                        "One or two sentences: the better move, what it does, and the idea behind it " +
+                        "as a lesson to keep, with how theirs rated in passing. No lecture, no " +
+                        "question. " +
                         "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES" +
                         lessonData(position.board, best, played.uci, null)
                 if (held) instructionText = holdRule(instructionText)
@@ -2603,6 +2737,17 @@ class Coach(
             var aim = if (ASK_HINT.matchesAt(said, 0)) "" else "They asked what to aim for: answer with "
             aim += if (aim.isNotEmpty()) "the hint at this rung. " else ""
             directive = when {
+                // On the opponent's move there is no move of the player's to find: asked for
+                // "the first hint" there, the model gave the player's hint on the opponent's
+                // position (the coach review, 2026-10-01). Their threat is the hint, as
+                // [theirMoveNow] says it without a model.
+                position.board.turn != userColour && !position.board.isGameOver() ->
+                    "They asked ${if (ASK_HINT.matchesAt(said, 0)) "for a hint" else "what to aim for"}" +
+                        ", and it is the opponent's move, not theirs: there is no move of theirs to " +
+                        "find yet. Say what the opponent threatens now -- their best move and what " +
+                        "it does, from the engine lines (the opponent's move) -- and what the " +
+                        "player should be ready for once it is played. One or two sentences, no " +
+                        "question."
                 level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
                 level.value >= DisclosureLevel.FOCUS.value ->
                     aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE

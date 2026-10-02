@@ -109,6 +109,29 @@ class InterjectionPolicy(
         saidTs = null
     }
 
+    /**
+     * The screen is no longer read (Stop): no position is being thought in until the board is
+     * read again, and no stuck spell runs. Kept, the next Start's first ticks gave stuck hints
+     * about the last session's board (the game-state review, 2026-10-01).
+     * `InterjectionPolicy.pause`.
+     */
+    fun pause() {
+        plyValue = null
+        since = null
+        saidTs = null
+        userToMoveValue = false
+    }
+
+    /**
+     * The moves after [ply] were taken back: what was said unasked at the plies past it was
+     * said of positions that are gone. Kept by ply, both hints said after 1.e4 left 1.d4, played
+     * in its place, with no stuck hint (the coach review, 2026-10-01).
+     * `InterjectionPolicy.withdraw`.
+     */
+    fun withdraw(ply: Int) {
+        spoken.keys.removeAll { it > ply }
+    }
+
     /** The user's clock, when the screen shows one. */
     fun setRemaining(remaining: Int?) {
         remainingMs = remaining
@@ -183,6 +206,17 @@ class InterjectionPolicy(
     fun said(ply: Int, ts: Double? = null) {
         spoken[ply] = (spoken[ply] ?: 0) + 1
         if (ply == plyValue && ts != null) saidTs = ts
+    }
+
+    /**
+     * The player asked, and was answered, in the position they are thinking in: the next hint
+     * unasked waits a full stuck spell from here, as from one said unasked. A hint asked at 15 s
+     * was followed by the focus unasked at 16 s (the coach review, 2026-10-01).
+     * `InterjectionPolicy.asked`.
+     */
+    fun asked(ts: Double) {
+        val said = saidTs
+        saidTs = if (said == null) ts else maxOf(said, ts)
     }
 
     /**

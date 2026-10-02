@@ -126,15 +126,33 @@ private val NOW_FEN = Regex("# Position now\n## Board\nFEN: (\\S+ [wb])")
  * that position must be the game's as it stands ([board]) with its side to move, and the setting
  * must name the player's colour. Checked before every request and logged when it fails, so a gap
  * like the puzzle start's -- no position now at all, and the model named the player's own Qxf2+
- * as the opponent's threat (2026-10-01) -- shows the first time it happens.
- * `conversation.harness_problem`.
+ * as the opponent's threat (2026-10-01) -- shows the first time it happens. [lines] and
+ * [facts]: the coach has the engine's lines and the facts for that position, so the position now
+ * must show them -- a question answered from the early depth was asked with "Engine lines: not
+ * in yet." and no facts (the coach review, 2026-10-01). `conversation.harness_problem`.
  */
-fun harnessProblem(harness: String, board: Board, userSide: Pieces.Side): String? {
+fun harnessProblem(
+    harness: String,
+    board: Board,
+    userSide: Pieces.Side,
+    lines: Boolean = false,
+    facts: Boolean = false,
+): String? {
     val side = if (userSide == Pieces.Side.WHITE) "White" else "Black"
     if ("You coach $side." !in harness) return "the setting does not say the player is $side"
     val found = NOW_FEN.find(harness) ?: return "no position now (# Position now with its board)"
     val now = board.fen().split(" ").take(2).joinToString(" ")
     if (found.groupValues[1] != now) return "the position now is ${found.groupValues[1]}, the game's is $now"
+    val shown = harness.substring(found.range.first).split("\n\n## Said here\n", limit = 2)[0]
+    if (lines) {
+        val body = shown.split("\n## Engine lines", limit = 2).last().split("\n", limit = 3)
+        if ("\n## Engine lines" !in shown || body.size < 2 || body[1].trim() == "not in yet.") {
+            return "the position now has no engine lines, though the coach has them"
+        }
+    }
+    if (facts && !board.isGameOver() && "\n## Facts (" !in shown) {
+        return "the position now has no facts, though the coach has them"
+    }
     return null
 }
 
@@ -203,6 +221,11 @@ class Entry(
     val record: PlyRecord? = null,
     /** A routine word after a sound move (the POST_MOVE nod). */
     val nod: Boolean = false,
+    /**
+     * About a position already left (a late engine note): written in the record, never under
+     * what was said at the position now.
+     */
+    val past: Boolean = false,
 ) {
     var frozen: String? = null
 
@@ -261,19 +284,25 @@ class Conversation {
         var text = "You coach $side. They see the board from $side's side, their own pieces at the " +
             "bottom: ${hands(event.userSide)}."
         if (control.isNotEmpty()) text += " Time control: $control."
+        // The board the record starts from, without its legal moves: the position the player
+        // faces is "# Position now", the one board with them. Shown here as "the position as it
+        // stands", after a re-read -- the next puzzle -- the model had two current boards (the
+        // coach review, 2026-10-01).
+        val startText = positionText(Board(event.startFen), legal = false)
         if (event.kind == "puzzle") {
             text += "\nThis is a puzzle the player is solving on the panel's board, $side to " +
                 "move and to find the best line. Say nothing unasked; when they ask for a " +
                 "hint, give one at the level allowed -- the move itself only at the third hint " +
-                "or when asked for it:\n" + positionText(Board(event.startFen))
+                "or when asked for it. The record starts from this position:\n" + startText
         } else if (event.kind != "game") {
             text += "\nThis is a position, not a game from the start: a puzzle, an analysis " +
                 "board, or a game joined from the middle. There is no earlier history to " +
                 "speak of. The player is the side at the bottom and, on a puzzle, to move; " +
-                "coach the position as it stands:\n" + positionText(Board(event.startFen))
+                "coach the position they face, the position now. The record starts from this " +
+                "position:\n" + startText
         } else if (event.startFen != STARTING_FEN) {
-            text += "\nThe game is joined in progress; the position is:\n" +
-                positionText(Board(event.startFen))
+            text += "\nThe game is joined in progress; the record starts from this position:\n"
+            text += startText
         }
         if (profile.isNotEmpty()) {
             text += "\nWhat earlier games say about this player (computed, not opinion): " +
@@ -299,7 +328,9 @@ class Conversation {
 
     /**
      * The engine's word on a position: the move's that led to it, or the start's (ply 0) --
-     * kept by the start record, as no move led there.
+     * kept by the start record, as no move led there. The early depth stands until the full one
+     * replaces it; only the full depth, landing after the model has seen the move's line, gets a
+     * note of its own.
      */
     fun analysed(event: Analysis, facts: PositionFacts): PlyRecord? {
         val same = event.fen.split(" ").take(3)
@@ -312,7 +343,7 @@ class Conversation {
         if (record == null || record.move.fenAfter.split(" ").take(3) != same) return null
         record.analysis = event
         record.facts = facts
-        noteIfFrozen(record, "analysis")
+        if (!event.provisional) noteIfFrozen(record, "analysis")
         return record
     }
 
@@ -335,8 +366,9 @@ class Conversation {
         for (record in withdrawn) record.withdrawn = true
         val board = Board(event.fen)
         val names = withdrawn.joinToString(", ") { numbered(it.move) }.ifEmpty { "the last move" }
+        // The board without its legal moves, as the record's: the position now has them.
         val text = "Takeback: $names withdrawn. The game is back at the position after " +
-            "${lastActiveName()}, ${turnText(board)}:\n${positionText(board)}\n" +
+            "${lastActiveName()}, ${turnText(board)}:\n${positionText(board, legal = false)}\n" +
             "Play continues from here; the next message is the replacement move."
         entries.add(Entry("user", "takeback", text))
     }
@@ -345,7 +377,7 @@ class Conversation {
     fun resync(event: Resync, board: Board) {
         for (record in records) record.superseded = true // the move list restarts here
         val text = "The board was re-read (${event.reason}). Moves may have gone unseen. The " +
-            "position is now, ${turnText(board)}:\n${positionText(board)}\n" +
+            "position is now, ${turnText(board)}:\n${positionText(board, legal = false)}\n" +
             "The move numbering restarts from this position."
         entries.add(Entry("user", "resync", text))
         start = StartRecord(board.fen())
@@ -423,7 +455,7 @@ class Conversation {
         val staleNods = if (compactRecord) staleNods() else emptySet()
         for ((i, entry) in entries.withIndex()) {
             if (entry.kind == "game" || entry.folded || entry in staleNods) continue
-            val sink = if (i > reached) said else game
+            val sink = if (i > reached && !entry.past) said else game
             if (entry.kind == "ply") {
                 val record = entry.record!!
                 if (i == reached) continue // the position now, in full below
@@ -1233,8 +1265,17 @@ class Conversation {
         return null
     }
 
-    /** A fact that lands after its ply message went out goes in a note of its own. */
+    /**
+     * A fact that lands after its ply message went out goes in a note of its own, in the record:
+     * it is about a position already left. Appended as any note, the late analysis of the
+     * position a move left went under "Said here" of the position the player faces now, its
+     * standing beside the one now's, and its lines were dropped: their title had grown a tail
+     * ("Engine lines (the opponent's move; ...)", the coach review, 2026-10-01). The position now
+     * needs none: it is shown in full. `Conversation._note_if_frozen`.
+     */
     private fun noteIfFrozen(record: PlyRecord, what: String) {
+        val active = activeRecords()
+        if (active.isNotEmpty() && active.last() === record) return
         for (entry in entries) {
             if (entry.record === record && entry.frozen != null) {
                 val boardBefore = Board(record.move.fenBefore)
@@ -1245,11 +1286,11 @@ class Conversation {
                 } else {
                     val after = Board(record.move.fenAfter)
                     val shown = positionSections(record, after, colour, DisclosureLevel.LINE)
-                        .filter { it.first == "Standing" || it.first == "Engine lines" }
+                        .filter { it.first == "Standing" || it.first.startsWith("Engine lines") }
                         .joinToString("\n") { (title, body) -> "$title: $body" }
                     "Engine note on the position after $name:\n$shown"
                 }
-                entries.add(Entry("user", "note", text))
+                entries.add(Entry("user", "note", text, past = true))
                 return
             }
         }

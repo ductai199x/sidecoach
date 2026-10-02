@@ -662,6 +662,10 @@ class GameWatcher(
             val late = assessing.wait(5.0)
             coaching.events(late, SystemClock.elapsedRealtime() / 1000.0)
             coaching.events(PanelEngine.profile(profiler, late, flush = true), SystemClock.elapsedRealtime() / 1000.0)
+            // Nothing unasked until the next Start reads the board again: the coach outlives
+            // the session, and the first ticks after Start gave stuck hints about this one's last
+            // position (the game-state review, 2026-10-01).
+            coaching.coach?.pause(SystemClock.elapsedRealtime() / 1000.0)
             coaching.wait()
             // The strip once more, with the replies that came after the last tick.
             pipeline?.let { one -> runCatching { PanelEngine.health(one, coaching, ticks, pipelineMs, 1.0, lastTs) } }

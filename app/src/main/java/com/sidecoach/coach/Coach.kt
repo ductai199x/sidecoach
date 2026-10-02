@@ -1115,6 +1115,11 @@ class Spoken(
      */
     val leaks: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
+    /**
+     * The moment of the game it was asked for ([Coach.epoch]): one that lands after a new game,
+     * a takeback or a re-read is no turn of the moment now.
+     */
+    val epoch: Int = 0,
 )
 
 class CoachPosition(
@@ -1268,6 +1273,8 @@ class CoachRequest(
      * coach has an engine and the model takes tools.
      */
     val tools: EngineTools? = null,
+    /** The moment of the game the request was built in ([Coach.epoch]). */
+    val epoch: Int = 0,
 )
 
 /**
@@ -1637,6 +1644,7 @@ class Speaker(
                 level = request.level,
                 problems = emptyList(),
                 attempts = 0,
+                epoch = request.epoch,
             )
         }
         while (attempts < 2) {
@@ -1760,6 +1768,7 @@ class Speaker(
             streamed = streamed,
             leaks = leaks,
             notes = notes,
+            epoch = request.epoch,
         )
     }
 
