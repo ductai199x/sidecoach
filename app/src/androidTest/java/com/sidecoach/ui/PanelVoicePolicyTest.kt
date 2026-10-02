@@ -222,6 +222,94 @@ class PanelVoicePolicyTest {
     }
 
     /**
+     * The position moves on: the voice about the old one stops, and a reply that lands after is
+     * shown but not spoken (Tai, 2026-10-02: "There is no need to drop any replies, the text
+     * message should come out in the same correct order. The only thing that might be good is to
+     * interrupt the tts so it stops its long rant"). `tests/test_voice_moved_on.py`: logic on
+     * events and on the moved-on flag, never on timing.
+     */
+    @Test
+    fun thePlayersMoveATakebackAReReadAndANewGameStopTheVoice() {
+        val board = Board()
+        val move = board.parseSan("e4")!!
+        val before = board.fen()
+        board.push(move)
+        val events = listOf(
+            "move" to MovePlayed("g", 13, "e4", move.uci(), before, board.fen(), byUser = true),
+            "takeback" to com.sidecoach.events.Takeback("g", 1, Board().fen()),
+            "re-read" to com.sidecoach.events.Resync("g", Board().fen(), "re-read"),
+            "new game" to GameStarted("h", Pieces.Side.WHITE, Board().fen()),
+        )
+        for ((name, event) in events) {
+            val fake = FakeTts()
+            PanelVoice.speaker = fake
+            PanelVoice.voicing = null
+            PanelEngine.set("ply" to 12, "ptt" to false)
+            assertEquals(name, "speak", PanelVoice.speak("stuck", long, 12))
+            fake.busy = true
+            val hushed = PanelVoice.hushed
+            PanelEngine.onGameEvent(event)
+            assertEquals(name, "stop", fake.calls.last())
+            assertEquals(name, hushed + 1, PanelVoice.hushed)
+        }
+    }
+
+    /** Tai: the opponent's move alone must not stop the voice mid-sentence. */
+    @Test
+    fun theOpponentsMoveAloneDoesNotStopTheVoice() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = null
+        PanelEngine.set("ply" to 12, "ptt" to false)
+        assertEquals("speak", PanelVoice.speak("stuck", long, 12))
+        fake.busy = true
+        val board = Board()
+        val move = board.parseSan("e4")!!
+        val before = board.fen()
+        board.push(move)
+        PanelEngine.onGameEvent(MovePlayed("g", 13, "e4", move.uci(), before, board.fen(), byUser = false))
+        assertEquals(listOf("say:$long"), fake.calls.toList())
+    }
+
+    @Test
+    fun aReplyAskedForAMomentThatIsOverIsShownNotSpoken() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = null
+        PanelEngine.set("ply" to 12, "ptt" to false)
+        var over = true
+        var sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { over }!!
+        // Taken, every sentence, so the reply is whole in the record: declined, the coach said a
+        // template in its place. Not spoken.
+        assertTrue(sink("The knight is loose."))
+        assertTrue(sink("What defends it?"))
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        // The moment still holds: spoken as ever.
+        over = false
+        sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { over }!!
+        assertTrue(sink("Look at f7."))
+        assertEquals(listOf("say:Look at f7."), fake.calls.toList())
+        // Not streamed: a reply that is late for the voice is said to be stale.
+        assertEquals("stale", PanelVoice.speak("user_ask", "Late word.", 12, movedOn = true))
+        assertEquals(listOf("say:Look at f7."), fake.calls.toList())
+    }
+
+    @Test
+    fun aReplyThatBeganWhenThePositionMovesOnIsCutAndGoesOnSilent() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = null
+        PanelEngine.set("ply" to 12, "ptt" to false)
+        val sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { false }!!
+        assertTrue(sink("First, the idea."))
+        assertEquals(listOf("say:First, the idea."), fake.calls.toList())
+        fake.busy = true
+        PanelVoice.positionMovedOn("the player moved") // the rest is only text
+        assertTrue(sink("Then the second sentence."))
+        assertEquals(listOf("say:First, the idea.", "stop"), fake.calls.toList())
+    }
+
+    /**
      * A room's words (a review's card, a puzzle's coach): silent when muted, and a room's hush
      * stops only its own words, never the live coach (`test_a_card_is_said_in_the_panels_voice_
      * and_captioned`, voice finding 12).

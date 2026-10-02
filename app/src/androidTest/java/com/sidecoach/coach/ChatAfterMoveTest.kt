@@ -201,8 +201,10 @@ class ChatAfterMoveTest {
             assertEquals(null, coach.askedOwnMove("what are they threatening?"))
             assertEquals(null, coach.askedOwnMove("how did I do this game?"))
             assertEquals(null, coach.askedOwnMove("how would this position continue?"))
-            // About the move in so many words.
-            assertEquals(7, coach.askedOwnMove("why was my last move bad?")?.move?.ply)
+            // About the move in so many words: offline only. With a model no keyword decides
+            // which move a question is about (Tai, 2026-10-02): the model reads it from the sheet
+            // of both positions, which `speak` gives it.
+            assertEquals(if (withModel) null else 7, coach.askedOwnMove("why was my last move bad?")?.move?.ply)
         }
     }
 
@@ -213,8 +215,9 @@ class ChatAfterMoveTest {
             played(coach, listOf("e2e4", "e7e5", "g1f3", "b8c6"), mistakeAt = 3)
             assertTrue(coach.userToMove)
             assertEquals(null, coach.askedOwnMove("I didn't even notice they were aiming for my rook"))
-            // Asked in so many words, it is still about the player's move.
-            assertTrue(coach.askedOwnMove("why was my last move bad?") != null)
+            // Asked in so many words, it is still about the player's move (offline: with a model
+            // the model reads it).
+            assertEquals(!withModel, coach.askedOwnMove("why was my last move bad?") != null)
         }
     }
 
@@ -244,11 +247,9 @@ class ChatAfterMoveTest {
         coach.ask("I wanted to attack f7 with the knight.", 8.0)
         messages(coach)
         val directive = directive(provider)
-        assertTrue(directive, "They are answering the question you just asked" in directive)
-        // No question offered on top of the answer: "Ask nothing more", and not the generic
-        // answer's "-- with a question, if that serves" (the parity audit, 2026-09-29).
-        assertTrue(directive, "Ask nothing more" in directive)
-        assertTrue(directive, "with a question, if that serves" !in directive)
+        // The conversation says it, not a keyword: the coach's last turn ended with a question.
+        assertTrue(directive, "Your last turn above ended with a question" in directive)
+        assertTrue(directive, "that closes the question, so ask nothing more" in directive)
         // Once answered, the thread is closed: words after the coach's reply answer nothing.
         assertTrue(!coach.answeringOurQuestion("ok"))
     }

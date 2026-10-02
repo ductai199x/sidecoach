@@ -1846,7 +1846,7 @@ class Coach(
      * What the coach has said since the position now was reached: the last move, or a takeback or
      * a re-read of the board (what was said of a withdrawn move is not). `_said_since_move`.
      */
-    private fun saidSinceMove(): List<String> {
+    internal fun saidSinceMove(): List<String> {
         val entries = synchronized(lock) { conversation.entries.toList() }
         val out = ArrayList<String>()
         for (entry in entries.asReversed()) {

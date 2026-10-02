@@ -187,8 +187,10 @@ class CoachCoreTest {
         )
     }
 
-    private fun directiveOf(provider: ScriptedProvider): String {
-        val last = synchronized(provider.prompts) { provider.prompts.last().second }
+    private fun directiveOf(provider: ScriptedProvider, index: Int = -1): String {
+        val last = synchronized(provider.prompts) {
+            provider.prompts[if (index < 0) provider.prompts.size + index else index].second
+        }
         assertEquals(1, last.size)
         return last[0].content.substringAfterLast("# Task\n")
     }
@@ -322,19 +324,28 @@ class CoachCoreTest {
         return coach to provider
     }
 
+    /**
+     * `test_what_that_means_after_a_reply_is_the_models_to_decide_from_both_positions`. Not
+     * decided by a threshold of two seconds in code any more (Tai, 2026-10-02: "why does instant
+     * mean 2 seconds"): the model gets the sheet of the position the player faced and the one
+     * after the reply, and how long the reply took, in the guidelines, fast or slow.
+     */
     @Test
-    fun thatMoveAfterAnInstantReplyIsThePlayersOwnLastMove() {
-        val (_, provider) = askedAfterTheReply(10.5)
-        assertTrue("The position they faced, before Bxf7+" in harnessOf(provider))
-        val directive = directiveOf(provider)
-        assertTrue(directive, "They ask about the move they already played, Bxf7+" in directive)
-        assertTrue(directive, "By \"that\" they mean Bxf7+" in directive && "Kxf7" in directive)
-    }
-
-    @Test
-    fun thatMoveAfterASlowReplyStaysWithTheModel() {
-        val (_, provider) = askedAfterTheReply(40.0)
-        assertFalse("They ask about the move they already played" in directiveOf(provider))
+    fun whatThatMeansAfterAReplyIsTheModelsToDecideFromBothPositions() {
+        for ((replyTs, took) in listOf(10.5 to "0.5 seconds", 40.0 to "30.0 seconds")) {
+            val (coach, provider) = askedAfterTheReply(replyTs)
+            val harness = harnessOf(provider)
+            assertTrue("$replyTs", "The position they faced, before Bxf7+" in harness)
+            assertTrue("# Position now" in harness)
+            val directive = directiveOf(provider)
+            assertTrue(
+                "$replyTs: $directive",
+                "The opponent's last move, Kxf7, came $took after the player's Bxf7+" in directive,
+            )
+            assertTrue("\"That\", \"it\" or \"that move\" may mean their own last move" in directive)
+            assertFalse("They ask about the move they already played" in directive)
+            assertTrue(coach.userToMove)
+        }
     }
 
     // The best moves, and a hint asked once the move was given
@@ -423,9 +434,12 @@ class CoachCoreTest {
         coach.ask("what are the best moves?", 2.0)
         messages(coach)
         val directive = directiveOf(provider)
-        assertTrue(directive, "all of them and not only line 1" in directive)
-        assertTrue(directive, "all fine: Bc5, Nf6, Be7" in directive)
-        assertTrue(directive, "name every one" in directive && "No figures" in directive)
+        // The AI's guidelines, whatever the words: every line, every move about level named, and
+        // the moves about as good as the facts list them (no keyword picks this).
+        assertTrue(directive, "read all of the engine lines" in directive)
+        assertTrue(directive, "The moves about equally good here: Bc5, Nf6, Be7" in directive)
+        assertTrue(directive, "name every move about level with the best" in directive)
+        assertTrue(directive, "no percentages, scores or move numbers" in directive)
     }
 
     @Test
@@ -434,8 +448,9 @@ class CoachCoreTest {
         coach.ask("is Be7 also good?", 2.0)
         messages(coach)
         val directive = directiveOf(provider)
-        assertTrue(directive, "whether another move is also good" in directive)
-        assertTrue(directive, "all fine: Bc5, Nf6, Be7" in directive)
+        assertTrue(directive, "or whether another move works too" in directive)
+        assertTrue(directive, "The moves about equally good here: Bc5, Nf6, Be7" in directive)
+        assertTrue(directive, "read all of the engine lines" in directive)
     }
 
     @Test
@@ -451,8 +466,12 @@ class CoachCoreTest {
         again.ask("what are the best moves?", 2.0)
         messages(again)
         val directive = directiveOf(provider)
-        assertTrue(directive, "One move stands out: Qxf7#" in directive)
-        assertTrue(directive, "Qd1 passes up the mate; Qe2 passes up the mate" in directive)
+        assertFalse(directive, "The moves about equally good here" in directive) // one clear best
+        assertTrue(
+            directive,
+            "Clearly worse here, and what goes wrong with them: Qd1 passes up the mate" in directive,
+        )
+        assertTrue(directive, "Qe2 passes up the mate" in directive)
     }
 
     @Test
@@ -465,12 +484,12 @@ class CoachCoreTest {
             c.ask("what's the best move?", 2.0)
             messages(c)
         }
-        assertTrue("3 moves are about equally good here (Bc5, Nf6, Be7)" in directiveOf(provider))
+        assertTrue("The moves about equally good here: Bc5, Nf6, Be7" in directiveOf(provider))
         val (_, single) = coachAt("scholar", listOf("Qxf7 mates.")).also { (c, _) ->
             c.ask("what's the best move?", 2.0)
             messages(c)
         }
-        assertFalse("about equally good" in directiveOf(single))
+        assertFalse("about equally good here" in directiveOf(single)) // one clear best
     }
 
     @Test
@@ -494,34 +513,55 @@ class CoachCoreTest {
         )
         assertTrue("Qxf7" in said[2].text && "clearly worse" !in said[2].text)
         assertTrue(said[3].text, "Qd1 is clearly worse: it passes up the mate." in said[3].text)
-        val (again, provider) = coachAt("scholar", listOf("a", "b", "c", "Qxf7 is mate; Qd1 passes it up."))
+        // And to the model, as a guideline: said by what the reply gave (the third names the move).
+        val (again, provider) = coachAt(
+            "scholar",
+            listOf("a", "b", "Qxf7 is mate.", "Qxf7 is mate; Qd1 passes it up."),
+        )
         for (n in 0 until 4) {
             again.ask("hint", 2.0 + n)
             messages(again)
         }
         val directive = directiveOf(provider)
-        assertTrue(directive, "has been given already: it is Qxf7#" in directive)
-        assertTrue(directive, "Clearly worse here, and what goes wrong: Qd1 passes up the mate" in directive)
+        assertTrue(directive, "has been given already, in your turns above: it is Qxf7#" in directive)
+        assertTrue(
+            directive,
+            "Clearly worse here, and what goes wrong with them: Qd1 passes up the mate" in directive,
+        )
         assertTrue(directive, "instead of something that looks as good but is clearly worse" in directive)
+        assertFalse("has been given already" in directiveOf(provider, 2))
     }
 
-    // 5, 13. A lesson on a withdrawn move is dropped, and its question was never asked
+    // 5, 13. A lesson on a withdrawn move is shown all the same, and is no turn of the game now
 
+    /**
+     * `test_a_lesson_on_a_withdrawn_move_is_shown_in_its_place_not_recorded_not_spoken`. The deep
+     * coach.py review (2026-10-01) dropped the lesson on the move taken back. Tai, 2026-10-02:
+     * "There is no need to drop any replies, the text message should come out in the same correct
+     * order. The only thing that might be good is to interrupt the tts": it is shown, marked late
+     * (the voice does not say it), and is no turn of the game now.
+     */
     @Test
-    fun aLessonOnAWithdrawnMoveIsNeitherShownNorSpoken() {
+    fun aLessonOnAWithdrawnMoveIsShownInItsPlaceNotRecordedNotSpoken() {
         val coach = offlineCoach()
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
         messages(coach)
         mateMissed(coach, 10.0) // the lesson is queued
         coach.onEvent(Takeback(gameId = "g", plies = 1, fen = SCHOLAR), 12.0)
-        assertEquals(emptyList<CoachMessage>(), messages(coach))
-        assertTrue(coach.spoken.isEmpty() && coach.withdrawn.size == 1)
-        assertTrue(coach.policy.lastReason!!.contains("no longer has"))
+        val shown = messages(coach)
+        assertTrue(shown.size == 1 && shown[0].trigger == Trigger.POST_MISTAKE)
+        assertTrue("for the voice: not spoken", coach.spoken.last().late)
+        assertEquals("no turn of the moment now", emptyList<String>(), coach.saidSinceMove())
     }
 
+    /**
+     * `test_a_late_lesson_that_ends_with_a_question_has_asked_it`: "What did you expect?" is marked
+     * asked when its lesson is queued. The lesson, shown late after a takeback, still asks it: the
+     * player reads it, so it was asked (no reply is dropped, Tai, 2026-10-02).
+     */
     @Test
-    fun aQuestionThatEndsADroppedLessonIsAskedAgainNotMarkedAsked() {
+    fun aLateLessonThatEndsWithAQuestionHasAskedIt() {
         val coach = offlineCoach()
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 7.0)
@@ -529,9 +569,10 @@ class CoachCoreTest {
         coach.mistakes = ELICIT_EVERY - 1
         mateMissed(coach, 10.0)
         coach.onEvent(Takeback(gameId = "g", plies = 1, fen = SCHOLAR), 12.0)
-        messages(coach)
+        val shown = messages(coach)
+        assertTrue(shown.isNotEmpty() && shown[0].text.endsWith("?"))
         coach.mistakes = ELICIT_EVERY
-        assertTrue("the lesson was never said: nor was the question", coach.elicitDue(100.0))
+        assertFalse("the lesson was shown: so was the question", coach.elicitDue(100.0))
     }
 
     // 6. A question does not delete the lesson on a mistake or the review
@@ -752,6 +793,144 @@ class CoachCoreTest {
                 assertEquals(listOf(DisclosureLevel.IDEA), levels(stuck(coach)))
             }
         }
+    }
+
+    // With the AI coach on, the model reads the question: no keyword picks its directive, forces
+    // or removes its reply, or sets the rung (Tai, 2026-10-02). The keyword rules are the offline
+    // coach's. `tests/test_ai_reads_the_question.py`.
+
+    /** `test_a_question_the_keywords_would_miss_reaches_the_model_with_the_whole_sheet`. */
+    @Test
+    fun aQuestionTheKeywordsWouldMissReachesTheModelWithTheWholeSheet() {
+        for (said in listOf("whats the play here lol", "ok so what now", "gimme the good stuff", "thoughts?", "idk man")) {
+            val reply = "Qxf7 is mate: their king has no square. Bxf7+ looks as good and passes it up."
+            val (coach, provider) = scripted(listOf(reply))
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+            assertEquals("nothing unasked in a quiet position", emptyList<CoachMessage>(), messages(coach))
+            coach.ask(said, 8.0)
+            val out = messages(coach)
+            // Nothing refuses or blanks it: the model's own words, once, whatever they asked.
+            assertEquals(said, listOf(reply), out.map { it.text })
+            assertTrue(said, coach.spoken.last().problems.isEmpty() && coach.speaker.fallbacks == 0)
+            assertEquals(said, 1, provider.prompts.size)
+            val harness = harnessOf(provider)
+            // The whole sheet, whatever the rung: every engine line, the facts, the answer among
+            // them.
+            val lines = harness.substringAfter("## Engine lines").substringBefore("\n\n")
+            assertTrue(said, "Qxf7#" in lines && "Bxf7+" in lines)
+            assertTrue(said, "goal: the player can mate in one move" in harness)
+            assertTrue(said, "PLAYER said: \"$said\"" in harness)
+            val directive = directiveOf(provider)
+            // The guidelines, whatever the words, and the ladder as it stands -- never a branch
+            // chosen by a keyword.
+            assertTrue(said, AI_GUIDELINES in directive)
+            assertTrue(said, "nothing yet" in directive)
+            assertTrue(said, "They ask" !in directive && "They asked" !in directive)
+        }
+    }
+
+    /** `test_the_ladder_follows_what_the_reply_said_not_what_the_question_was_guessed_to_mean`. */
+    @Test
+    fun theLadderFollowsWhatTheReplySaidNotWhatTheQuestionWasGuessedToMean() {
+        val (coach, provider) = scripted(
+            listOf(
+                "Their king is nearly boxed in: look for a check that ends it.",
+                "Qxf7# is mate.",
+                "It is still Qxf7#, taking the pawn that guards their king.",
+            ),
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        val position = coach.positions[6]!!
+        coach.ask("what should I play?", 8.0)
+        var out = messages(coach)
+        assertEquals("the reply gave no move", DisclosureLevel.IDEA, out[0].level)
+        assertEquals(DisclosureLevel.IDEA, position.disclosure.level)
+        coach.ask("hint", 9.0)
+        out = messages(coach)
+        assertTrue("the idea was said", "nothing yet" !in directiveOf(provider, 1))
+        assertEquals(DisclosureLevel.MOVE, out[0].level)
+        assertEquals(DisclosureLevel.MOVE, position.disclosure.level)
+        // Said, it stays said: the ladder never falls, and the move is given again with why.
+        coach.ask("another hint", 10.0)
+        messages(coach)
+        assertTrue(
+            "The move has been given already, in your turns above: it is Qxf7#" in directiveOf(provider, 2),
+        )
+        assertEquals(DisclosureLevel.MOVE, position.disclosure.level)
+    }
+
+    /** `test_a_question_about_a_move_asked_the_model_is_not_withheld_by_the_rung`. */
+    @Test
+    fun aQuestionAboutAMoveAskedTheModelIsNotWithheldByTheRung() {
+        val (coach, provider) = scripted(listOf("Qxf7# ends it at once; nothing follows."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("show me the line", 8.0)
+        val out = messages(coach)
+        assertTrue(out.isNotEmpty() && out[0].text.startsWith("Qxf7#"))
+        assertTrue(coach.spoken.last().problems.isEmpty())
+        assertTrue("The line, or what happens next" in directiveOf(provider))
+    }
+
+    /** `test_the_offline_coach_keeps_its_keyword_rules`. */
+    @Test
+    fun theOfflineCoachKeepsItsKeywordRules() {
+        val coach = offlineCoach()
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("whats the play here lol", 8.0)
+        val plain = messages(coach).single()
+        assertTrue(plain.level == DisclosureLevel.IDEA && "Qxf7" !in plain.text)
+        coach.ask("what should I play?", 9.0)
+        val move = messages(coach).single()
+        assertTrue(move.level == DisclosureLevel.MOVE && "Qxf7" in move.text)
+    }
+
+    /** `test_a_reply_after_the_player_moved_again_is_late_but_shown_in_order`. */
+    @Test
+    fun aReplyAfterThePlayerMovedAgainIsLateButShownInOrder() {
+        val (coach, _) = scripted(listOf("Qxf7# is mate at once."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("what should I play?", 8.0) // the request is built; the model has not answered
+        assertFalse(coach.movedOn(coach.currentMoment()))
+        judgedAtScholar(coach, "Qxf7#", 0.0, Severity.NONE, Label.BEST, 9.0) // the player moves
+        val out = messages(coach).filter { it.trigger == Trigger.USER_ASK }
+        assertEquals("shown, in its place", listOf("Qxf7# is mate at once."), out.map { it.text })
+        val asked = coach.spoken.first { it.message.trigger == Trigger.USER_ASK }
+        assertTrue("for the voice: not spoken", asked.late)
+        // The opponent's reply alone is no new moment.
+        val moment = coach.currentMoment()
+        val board = Board(coach.board.fen())
+        played(coach, board, 8, "e8e7", false, 11.0)
+        assertFalse(coach.movedOn(moment))
+    }
+
+    /** `said_level`: what a reply said, from its words. */
+    @Test
+    fun theRungAReplySaidIsReadFromItsWords() {
+        val facts = PositionFacts(
+            fen = SCHOLAR, sideToMove = "white", phase = "opening",
+            target = "the opponent's king on e8", piece = "the player's queen on h5",
+            goal = "the player can mate in one move", candidates = listOf("Qxf7#"), line = listOf("Qxf7#"),
+        )
+        assertEquals(DisclosureLevel.MOVE, saidLevel("Qxf7 is mate.", facts))
+        assertEquals(DisclosureLevel.FOCUS, saidLevel("Their king on e8 has no square left.", facts))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Look for a check.", facts))
+        val long = facts.copy(line = listOf("Qxf7#", "Kd8"))
+        assertEquals(DisclosureLevel.LINE, saidLevel("Qxf7 and then Kd8 is forced.", long))
+        val disclosure = Disclosure()
+        assertEquals(DisclosureLevel.IDEA, disclosure.said(DisclosureLevel.IDEA))
+        assertEquals(null, disclosure.said(DisclosureLevel.IDEA))
+        assertEquals(DisclosureLevel.MOVE, disclosure.said(DisclosureLevel.MOVE))
+        assertEquals("never lower after higher", null, disclosure.said(DisclosureLevel.FOCUS))
+        assertEquals(DisclosureLevel.MOVE, disclosure.level)
     }
 
     // 10. What the log keeps is bounded
