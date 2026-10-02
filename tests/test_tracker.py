@@ -419,3 +419,61 @@ def test_a_board_moved_at_its_size_is_relocked_by_the_near_search() -> None:
         board = tracker.update(moved)
     assert board is not None and abs(board.region.x - 700) <= 2, board
     assert tracker.full_searches == 1  # the first lock only
+
+
+# Six plies played while the board was lost: d4 Kh8 g4 d5 exd5 Be6.
+_PLAYED_WHILE_LOST = ("d2d4", "g8h8", "g2g4", "d7d5", "e4d5", "c8e6")
+
+
+@pytest.mark.parametrize("plies", [0, 6], ids=["nothing played", "six plies played"])
+@pytest.mark.parametrize("same_theme", [True, False], ids=["same theme", "other theme"])
+@pytest.mark.parametrize(
+    "new_cell", [30, 37, 80], ids=["shrunk 0.6", "shrunk 0.75", "enlarged 1.6"]
+)
+def test_a_resized_board_is_found_beside_another_board_of_its_old_size(
+    new_cell: int, same_theme: bool, plies: int
+) -> None:
+    """A compact lost-board sweep: the game board at 50 px cells resized past the near
+    range, another game's board on the screen at the old size, the game played on while the
+    board was lost. With six plies played, a board found counted as the lost one only within
+    eight cells of its occupancy; the shrunk game board was not, the detector put the bigger
+    board first, and the other game was locked for good (round 3, finding 1's residual). Of
+    the boards found, the nearest in occupancy is taken."""
+    game = _GAME.copy()
+    for uci in _PLAYED_WHILE_LOST[:plies]:
+        game.push_uci(uci)
+    theme: dict[str, Any] = (
+        {} if same_theme else {"light": (200, 220, 235), "dark": (110, 150, 180)}
+    )
+    before = busy_background(1600, 1000, 4)
+    render_board(before, 40, 40, 50, _GAME, style=PIECE_STYLES["cburnett"])
+    after = busy_background(1600, 1000, 4)
+    render_board(after, 40, 40, new_cell, game, style=PIECE_STYLES["cburnett"])
+    render_board(after, 1100, 60, 50, _OTHER, style=PIECE_STYLES["cburnett"], **theme)
+    tracker = BoardTracker()
+    for _ in range(3):
+        tracker.update(before)
+    board = None
+    for _ in range(30):
+        board = tracker.update(after)
+    assert board is not None and tracker.verified, board
+    assert abs(board.region.x - 40) <= 2 and abs(board.cell_px - new_cell) <= 1.5, board
+
+
+def test_a_lock_keeps_its_board_s_pixels_not_the_frame() -> None:
+    """The last frame that validated the lock was kept whole, for the lost board's pieces: a
+    grey frame of 15 MB at 1440p, 33 at 4K, for the life of the lock (round 3). Only the
+    board's region is kept, and it reads the same pieces."""
+    from sidecoach.vision.board_detect import board_occupancy
+
+    frame = busy_background(1600, 1000, 4)
+    render_board(frame, 40, 40, 50, _GAME, style=PIECE_STYLES["cburnett"])
+    tracker = BoardTracker()
+    board = tracker.update(frame)
+    assert board is not None and tracker._seen is not None
+    pixels, placed = tracker._seen
+    assert pixels.shape == (board.region.h, board.region.w)
+    whole = board_occupancy(to_gray(frame), board.region, board.cell_px)
+    kept = board_occupancy(pixels, placed.region, placed.cell_px)
+    assert whole is not None and kept is not None and whole.any()
+    assert np.array_equal(whole, kept)
