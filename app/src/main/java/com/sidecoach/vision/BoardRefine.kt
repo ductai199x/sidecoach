@@ -284,10 +284,32 @@ object BoardRefine {
         cell: Double,
         medians: DoubleArray,
         colours: Colours,
-    ): Int {
+    ): Int = occupiedGrid(gray, region, cell, medians, colours).count { it }
+
+    /**
+     * The occupied cells of the board at [region], read in its own colours, row by row; null
+     * when the frame does not show it whole (`board_detect.board_occupancy`). Two boards of one
+     * size tell apart by it: a board moved keeps its pieces, another game's board does not.
+     */
+    fun boardOccupancy(gray: Plane, region: Region, cell: Double): BooleanArray? {
+        val colours = squareColours(gray, region, cell) ?: return null
+        return occupiedGrid(gray, region, cell, cells(gray, region, cell, pad = 0), colours)
+    }
+
+    /**
+     * Which of the 64 cells, row by row, are readable and have an interior mean that differs
+     * from their ring median by over the tolerance (`board_detect.occupied_grid`).
+     */
+    fun occupiedGrid(
+        gray: Plane,
+        region: Region,
+        cell: Double,
+        medians: DoubleArray,
+        colours: Colours,
+    ): BooleanArray {
         val band = ringBand(cell)
         val readable = readableAgainst(medians, colours)
-        var count = 0
+        val grid = BooleanArray(64)
         for (r in 0 until 8) {
             for (c in 0 until 8) {
                 if (!readable[r * 8 + c]) continue
@@ -305,10 +327,10 @@ object BoardRefine {
                 // grey levels is exact there, the division is float32's.
                 val n = (rows.last - rows.first + 1) * (cols.last - cols.first + 1)
                 val mean = (sum.toFloat() / n.toFloat()).toDouble()
-                if (abs(mean - medians[r * 8 + c]) > colours.tolerance) count++
+                if (abs(mean - medians[r * 8 + c]) > colours.tolerance) grid[r * 8 + c] = true
             }
         }
-        return count
+        return grid
     }
 
     /**
