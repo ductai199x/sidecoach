@@ -56,3 +56,10 @@ def test_stats_filter_every_time_class_your_games_does() -> None:
     assert speeds is not None
     for speed in re.findall(r'"(\w+)"', speeds.group(1)):
         assert f'["{speed}", ' in stats, speed
+
+
+def test_a_sparkline_never_blows_a_small_change_up() -> None:
+    """Each sparkline scaled to its own range: 81.0 to 81.6 filled the height as a big climb."""
+    spark = (DESKTOP / "lib" / "stats" / "Sparkline.svelte").read_text(encoding="utf-8")
+    assert "Math.max(most - least, span)" in spark
+    assert "(hi - lo)" not in spark
