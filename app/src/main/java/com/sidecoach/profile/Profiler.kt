@@ -102,6 +102,10 @@ class Profiler(
     }
 
     private var game: Game? = null
+
+    // The biggest cost (Stats.biggestCost) as of the games it was made from: read again only when
+    // a game's facts change, not at every snapshot. `_cost`.
+    private var cost: Pair<List<Triple<String, String, String?>>, org.json.JSONObject?>? = null
     private var clock: Pair<Int?, Int?> = null to null
     private val reviews = ArrayList<GameReview>()
     private var attempt: Attempt? = null
@@ -622,6 +626,14 @@ class Profiler(
         fullmoves = Board(game.lastFen).fullmoveNumber,
     )
 
+    /** What costs the player most, by the rule of Stats' "Work on this". `_biggest_cost`. */
+    private fun biggestCost(): org.json.JSONObject? {
+        val stamp = Stats.costStamp(store)
+        val kept = cost
+        if (kept != null && kept.first == stamp) return kept.second
+        return Stats.biggestCost(store).also { cost = stamp to it }
+    }
+
     fun snapshot(): ProfileSnapshot {
         val rows = store.cells()
         val games = store.gamesCount()
@@ -629,7 +641,7 @@ class Profiler(
         return ProfileSnapshot(
             games = games,
             cells = Insights.asCells(rows),
-            insights = Insights.insights(rows, games),
+            insights = Insights.insights(rows, games, biggestCost()),
             lastSession = last?.summary,
         )
     }

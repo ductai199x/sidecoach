@@ -502,32 +502,63 @@ class ProfileTest {
                     )
                 }
             }
-            val lines = Insights.insights(rows, case.getInt("games"))
+            val cost = case.optJSONObject("cost")
+            val lines = Insights.insights(rows, case.getInt("games"), cost)
             assertEquals("insights #$i", strings(case.getJSONArray("lines")), lines)
             said.addAll(lines)
         }
         // The lines the fixture is there for.
-        assertTrue(said.toString(), said.any { it.startsWith("That looks like a habit: ") })
-        assertTrue(said.toString(), said.any { it.startsWith("That looks like a gap: ") })
+        assertTrue(said.toString(), said.any { it.startsWith("Your biggest cost over 4 games is forks you missed: 5 moves.") })
         assertTrue(said.toString(), said.any { " costs you most per move." in it })
-        assertTrue(said.toString(), said.none { "expected score" in it })
+        assertTrue(said.toString(), said.none { "expected score" in it || "looks like a" in it })
     }
 
     /**
-     * A habit needs its mistakes from several games, and a tactic missed is counted over the
-     * chances the player had, the forks walked into left out ("You miss a fork about 100% of the
-     * time (5 of 4)", the review of 2026-10-01; `test_one_bad_game_is_no_habit` and
+     * The coach's biggest cost is the area Stats' "Work on this" puts first, the one rule, in
+     * the page's words, and the profiler's snapshot follows the games' facts
+     * (`test_the_coachs_biggest_cost_is_the_first_of_work_on_this` in tests/test_profile.py).
+     */
+    @Test
+    fun theBiggestCostIsTheFirstOfWorkOnThis() {
+        val store = Store(null)
+        val profiler = Profiler(store, sessionId = "s")
+        assertEquals(emptyList<String>(), profiler.snapshot().insights)
+        fun game(key: String) = GameFact(
+            key = key, source = "chesscom", timeClass = "rapid", playedAt = 1000.0, userSide = "white",
+            bot = false, result = "1-0", opening = null, termination = null,
+        )
+        fun move(ply: Int, phase: String, label: String, loss: Double, chance: String? = null, found: Boolean = false) = MoveFact(
+            ply = ply, side = "white", fen = com.sidecoach.chess.STARTING_FEN, uci = "e2e4", san = "e4",
+            phase = phase, loss = loss, label = label, accuracy = 50.0, score = 0.5, chance = chance,
+            found = found, allowed = null, structure = "", themes = "", endgame = null, spentMs = null, clockMs = null,
+        )
+        for (key in listOf("a", "b", "c")) {
+            store.saveStats("standard", game(key), listOf(move(3, "opening", "blunder", 0.5), move(21, "middlegame", "miss", 0.3, chance = "fork")))
+        }
+        val first = Stats.stats(store, Stats.Filter()).getJSONArray("work").getJSONObject(0)
+        assertEquals("opening", first.getString("area"))
+        assertEquals("opening", Stats.biggestCost(store)!!.getString("area"))
+        assertEquals(
+            listOf("Your biggest cost over 3 games is mistakes in the opening: 3 moves."),
+            profiler.snapshot().insights,
+        )
+        for (key in listOf("a", "b", "c")) {
+            store.saveStats("deep", game(key), listOf(move(21, "middlegame", "miss", 0.9, chance = "fork")))
+        }
+        assertEquals(
+            listOf("Your biggest cost over 3 games is forks you missed: 3 moves."),
+            profiler.snapshot().insights,
+        )
+        store.close()
+    }
+
+    /**
+     * A tactic missed is counted over the chances the player had, the forks walked into left out
+     * ("You miss a fork about 100% of the time (5 of 4)", the review of 2026-10-01;
      * `test_a_tactic_walked_into_is_not_a_tactic_missed` in tests/test_profile.py).
      */
     @Test
-    fun aHabitNeedsSeveralGamesAndAMissIsAChanceTheyHad() {
-        val one = setOf("g")
-        val oneGame = listOf(
-            CellRow("positional misjudgment", null, "opening", 1, 0, 0.2, one),
-            CellRow("positional misjudgment", null, "middlegame", 1, 0, 0.2, one),
-            CellRow("positional misjudgment", null, "endgame", 1, 0, 0.15, one),
-        )
-        assertEquals(listOf("Your biggest cost is positional misjudgment: 3 mistakes."), Insights.insights(oneGame, 1))
+    fun aMissIsAChanceTheyHad() {
         val store = Store(null)
         fun judged(game: String, ply: Int, played: List<String>, had: List<String>, cause: String?) {
             val id = store.addMove(

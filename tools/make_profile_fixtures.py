@@ -577,9 +577,9 @@ def causes_tables() -> dict:
 
 def insight_cases() -> list[dict]:
     """`insights` over cells as the store keeps them: tests/test_profile.py's (nothing while the
-    counts are small; the biggest cost a gap, the motif missed most often and the phase that
-    costs most per move; a cost spread across kinds of position a habit) and a few beside them
-    -- lines no game of the fixture adds up to (the parity audit, 2026-09-29)."""
+    counts are small; the biggest cost from the area Stats names, the motif missed most often and
+    the phase that costs most per move) and a few beside them -- lines no game of the fixture
+    adds up to (the parity audit, 2026-09-29)."""
     from sidecoach.profile.insights import insights
     from sidecoach.profile.store import CellRow
 
@@ -641,13 +641,22 @@ def insight_cases() -> list[dict]:
             4,
         ),
     ]
+    # The area Stats' "Work on this" puts first (`stats.biggest_cost`), given to the cases that
+    # have one: the coach's biggest cost is said from it (Tai, 2026-10-02: one taxonomy); the
+    # others have none, and say no biggest cost.
+    costs: dict[int, dict] = {
+        1: {"area": "missed.fork", "cost": 0.3, "games": 4, "moves": 5},
+        3: {"area": "opening", "cost": 0.2, "games": 12, "moves": 9},
+        4: {"area": "endgame.rook", "cost": 0.1, "games": 3, "moves": 3},
+    }
     return [
         {
             "rows": [{**r.__dict__, "games": sorted(r.games)} for r in rows],
             "games": games,
-            "lines": insights(rows, games),
+            "cost": costs.get(i),
+            "lines": insights(rows, games, costs.get(i)),
         }
-        for rows, games in cases
+        for i, (rows, games) in enumerate(cases)
     ]
 
 

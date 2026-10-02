@@ -345,6 +345,58 @@ object Stats {
         return out
     }
 
+    /**
+     * Each area as the player hears it (the Stats page's names, in lower case where a sentence
+     * takes them): the coach's "biggest cost" says the area Work on this puts first, in these
+     * words. `AREA_NAMES`.
+     */
+    val AREA_NAMES = mapOf(
+        "missed.checkmate" to "mates you missed",
+        "missed.fork" to "forks you missed",
+        "missed.pin" to "pins you missed",
+        "missed.discovery" to "discovered attacks you missed",
+        "missed.trapped piece" to "trapped pieces you missed",
+        "missed.removing the defender" to "defenders you could have removed",
+        "missed.free piece" to "free pieces you left on the board",
+        "missed.sacrifice" to "sacrifices you missed",
+        "missed.other" to "other tactics you missed",
+        "allowed.checkmate" to "mates you walked into",
+        "allowed.fork" to "forks you allowed",
+        "allowed.pin" to "pins you walked into",
+        "allowed.discovery" to "discovered attacks you allowed",
+        "allowed.trapped piece" to "pieces you let be trapped",
+        "allowed.removing the defender" to "defenders you let be removed",
+        "allowed.free piece" to "pieces you left hanging",
+        "allowed.sacrifice" to "sacrifices you allowed",
+        "allowed.other" to "other tactics you allowed",
+        "opening" to "mistakes in the opening",
+        "endgame.pawn" to "king and pawn endings",
+        "endgame.rook" to "rook endings",
+        "endgame.queen" to "queen endings",
+        "endgame.other" to "other endings",
+        "quiet" to "mistakes in quiet positions",
+    )
+
+    /**
+     * The area that cost the player most over all their reviewed games: the first of Stats' "Work
+     * on this" ([work], the one rule for what costs most -- the coach's "biggest cost" is this,
+     * Tai, 2026-10-02: one taxonomy, not the live causes beside the page's areas), or null while
+     * there are too few games or moves behind any. `biggest_cost`.
+     */
+    fun biggestCost(store: Store): JSONObject? {
+        val games = games(store, Filter(), clock())
+        val d = Data(games, store.statMoves(games.map { it.key }))
+        return work(costs(d)).let { if (it.length() > 0) it.getJSONObject(0) else null }
+    }
+
+    /**
+     * What [biggestCost] is made of, in a cheap stamp: the games it counts, each by its key, the
+     * review its facts are from, and the player's side. It changes when a game's facts do.
+     * `cost_stamp`.
+     */
+    fun costStamp(store: Store): List<Triple<String, String, String?>> =
+        games(store, Filter(), clock()).map { Triple(it.key, it.strength, it.userSide) }
+
     // ---- the ratings and the peers -----------------------------------------------------------------
 
     /**

@@ -2,13 +2,12 @@ package com.sidecoach.profile
 
 import com.sidecoach.events.ProfileCell
 import com.sidecoach.events.insightWords
-import com.sidecoach.voice.Py
 import java.math.BigDecimal
 import java.math.RoundingMode
 
 /**
- * What the cells add up to, in words (DESIGN section 5.6): the biggest cost, whether it is a
- * gap or a habit, the motif missed most often, the phase that costs most.
+ * What the player's record adds up to, in words (DESIGN section 5.6): the biggest cost (the area
+ * Stats' "Work on this" puts first), the motif missed most often, the phase that costs most.
  * `sidecoach/profile/insights.py`.
  *
  * Everything is computed from counts and the expected score they cost, and an insight needs a
@@ -26,9 +25,6 @@ object Insights {
     const val MIN_CHANCES = 4
     const val MIN_GAMES = 3
 
-    /** A cause whose cost sits this much in one kind of position is a gap; spread out, a habit. */
-    const val GAP_SHARE = 0.6
-
     /** A tagger name in words: hangingPiece -> hanging piece, mateIn2 -> mate in 2. */
     fun motifWords(name: String?): String = insightWords(name)
 
@@ -43,33 +39,20 @@ object Insights {
         )
     }
 
-    /** The player model in a few sentences, or nothing while the counts are small. */
-    fun insights(rows: List<CellRow>, games: Int): List<String> {
+    /**
+     * The player model in a few sentences, or nothing while the counts are small. [cost] is the
+     * area that costs the player most ([Stats.biggestCost]): the one rule Stats' "Work on this"
+     * uses, so the coach and the page name the same thing. The cells' causes (a mistake's why)
+     * were a second taxonomy beside Stats' areas and no longer name the biggest cost; the
+     * sentences that said a gap or a habit were about that cause and go with it (Tai,
+     * 2026-10-02: one taxonomy). `insights`.
+     */
+    fun insights(rows: List<CellRow>, games: Int, cost: org.json.JSONObject? = null): List<String> {
         val out = ArrayList<String>()
-        val byCause = LinkedHashMap<String, MutableList<CellRow>>()
-        for (r in rows) {
-            if (r.cause != null && r.errors > 0) byCause.getOrPut(r.cause) { ArrayList() }.add(r)
-        }
-        if (byCause.isNotEmpty()) {
-            val (cause, cells) = byCause.entries.maxByOrNull { e -> Py.sum(e.value.map { it.expectedLoss }) }!!.toPair()
-            val errors = cells.sumOf { it.errors }
-            val loss = Py.sum(cells.map { it.expectedLoss })
-            if (errors >= MIN_ERRORS) {
-                val over = if (games > 1) " over $games games" else ""
-                out.add("Your biggest cost$over is $cause: $errors mistakes.")
-                val top = cells.maxByOrNull { it.expectedLoss }!!
-                val seenIn = cells.flatMap { it.games }.toSet().size
-                if (seenIn < MIN_GAMES) {
-                    // a gap or a habit needs several games behind it, never one bad game
-                } else if (loss > 0 && top.expectedLoss / loss >= GAP_SHARE && (top.motif != null || top.phase != null)) {
-                    val what = if (top.motif != null) motifWords(top.motif) else "positions"
-                    val where = if (top.phase != null) " in the ${top.phase}" else ""
-                    out.add("That looks like a gap: it shows up as $what$where.")
-                } else {
-                    val kinds = cells.map { it.motif to it.phase }.toSet().size
-                    out.add("That looks like a habit: it shows up across $kinds kinds of position in $seenIn games.")
-                }
-            }
+        if (cost != null) {
+            val area = cost.getString("area")
+            val name = Stats.AREA_NAMES[area] ?: area
+            out.add("Your biggest cost over ${cost.getInt("games")} games is $name: ${cost.getInt("moves")} moves.")
         }
         // The motif missed most often, as a rate over the occasions it was on the board.
         motifRates(rows).maxByOrNull { it.rate }?.let { (motif, _, missed, seen) ->
