@@ -1444,6 +1444,46 @@ class Speaker:
         self._thread: threading.Thread | None = None
         self._busy = threading.Event()
         self._closed = threading.Event()
+        # The providers replaced mid-session: their calls still count, and their
+        # connections are closed with the Speaker's (a call in flight may be on one).
+        self._retired: list[object] = []
+
+    def _providers(self) -> list[object]:
+        """Every provider this Speaker has used, each once."""
+        seen: dict[int, object] = {}
+        for p in (
+            self.provider,
+            self.routine_provider,
+            self.verifier,
+            self.claim_reader,
+            *self._retired,
+        ):
+            if p is not None:
+                seen.setdefault(id(p), p)
+        return list(seen.values())
+
+    def replace_providers(
+        self,
+        provider: LLMProvider,
+        routine_provider: LLMProvider | None = None,
+        verifier: LLMProvider | None = None,
+    ) -> None:
+        """A new model mid-game: the next call goes to it; the old ones are kept, for what
+        they were paid and to be closed at the end."""
+        self._retired.extend(self._providers())
+        self.provider = provider
+        self.routine_provider = routine_provider or provider
+        self.verifier = verifier
+
+    def usages(self) -> list[Any]:
+        """The model-call ledgers (llm.usage.Usage) of every provider used, each once: the
+        spend before a model change, and a verifier's on another endpoint, included."""
+        seen: dict[int, Any] = {}
+        for p in self._providers():
+            usage = getattr(p, "usage", None)
+            if usage is not None:
+                seen.setdefault(id(usage), usage)
+        return list(seen.values())
 
     @property
     def pending(self) -> int:
@@ -1467,6 +1507,10 @@ class Speaker:
         if thread is not None:
             self._requests.put(None)
             thread.join(timeout)
+        # Their connections with them: a replaced or closed provider's client stayed open.
+        for p in self._providers():
+            with contextlib.suppress(Exception):
+                getattr(p, "close", lambda: None)()
 
     def submit(self, request: _Request) -> None:
         """Queue a request. An ask goes ahead of any unprompted request still waiting: the
@@ -3208,9 +3252,7 @@ class Coach:
         """A new model mid-game (the settings saved): the next call goes to it; a call in
         flight finishes on the old one. The conversation is untouched."""
         with self._lock:
-            self.speaker.provider = provider
-            self.speaker.routine_provider = routine_provider or provider
-            self.speaker.verifier = verifier
+            self.speaker.replace_providers(provider, routine_provider, verifier)
             self.summariser = summariser or provider
             self.claims = claims
 

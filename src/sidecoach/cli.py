@@ -1068,6 +1068,9 @@ class _Coaching:
         # No model (llm.provider none): nothing that would call one -- no claim extraction
         # from the user's words, no verifier; the templates and the board carry the coach.
         offline = bool(getattr(provider, "offline", False))
+        # One routine provider for the replies and the claims: one connection, closed with
+        # the coach.
+        routine = _routine_provider(settings, provider)
         self._engine = _named_engine(settings, computed)
         self.coach = Coach(
             provider,
@@ -1076,12 +1079,12 @@ class _Coaching:
             # The claims in their words are parsed at the routine effort: thinking=False is
             # ignored where the effort is the provider's, and at medium every ask with a claim
             # waited on a second full model call first (the runtime audit, 2026-09-25).
-            claims=None if offline else _claims_check(_routine_provider(settings, provider)),
+            claims=None if offline else _claims_check(routine),
             verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
             engine=self._engine,
             summarise_every=settings.coach.summarise_every,
             compact_record=settings.coach.compact_record,
-            routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
+            routine_provider=routine,  # type: ignore[arg-type]
             verbalized_sampling=settings.coach.verbalized_sampling,
             local_verdicts=settings.coach.local_verdicts,
             lesson_wait_s=LESSON_WAIT_S,
@@ -1120,11 +1123,12 @@ class _Coaching:
             _, detail = provider.healthcheck()
             detail = f"{detail}; {why}"
         offline = bool(getattr(provider, "offline", False))
+        routine = _routine_provider(settings, provider)
         self.coach.set_providers(
             provider,
-            routine_provider=_routine_provider(settings, provider),  # type: ignore[arg-type]
+            routine_provider=routine,  # type: ignore[arg-type]
             verifier=None if offline else _verifier(settings, provider),  # type: ignore[arg-type]
-            claims=None if offline else _claims_check(_routine_provider(settings, provider)),
+            claims=None if offline else _claims_check(routine),
         )
         self.detail = f"{provider.name} ({detail})"
 

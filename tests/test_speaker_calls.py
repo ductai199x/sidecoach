@@ -144,3 +144,24 @@ def test_closing_drops_what_is_queued() -> None:
     time.sleep(0.5)
     # The call in flight finishes; nothing queued behind it is asked, or paid for.
     assert len(model.calls) == 1
+
+
+def _openai(name: str) -> OpenAICompatProvider:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Fine."}}]})
+
+    return OpenAICompatProvider(name, "http://h/v1", "m", transport=httpx.MockTransport(handler))
+
+
+def test_replaced_providers_are_counted_and_closed() -> None:
+    first, routine, verifier, second = (_openai(n) for n in ("a", "b", "c", "d"))
+    speaker = Speaker(first, routine_provider=routine, verifier=verifier)
+    first.chat("s", [{"role": "user", "content": "hi"}])
+    verifier.chat("s", [{"role": "user", "content": "hi"}])
+    speaker.replace_providers(second)
+    second.chat("s", [{"role": "user", "content": "hi"}])
+    # Every ledger, the replaced model's and the verifier's on its own endpoint, still counts.
+    assert sum(u.calls for u in speaker.usages()) == 3
+    speaker.close()
+    for p in (first, routine, verifier, second):
+        assert p._client.is_closed, p.name
