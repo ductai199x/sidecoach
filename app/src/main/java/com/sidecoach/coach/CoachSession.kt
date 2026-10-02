@@ -1338,7 +1338,8 @@ class Coach(
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
         }
         if (event.byUser) {
-            pendingAsks = ArrayList() // they played on: the questions are answered by the move
+            // A question held for the engine's look stays held: it is answered once the position
+            // they face now is read, like one asked across a takeback (no reply is dropped).
             ownMoves += 1
         }
         board = boardAfter(board, event)

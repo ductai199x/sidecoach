@@ -912,6 +912,27 @@ class CoachCoreTest {
         assertFalse(coach.movedOn(moment))
     }
 
+    /**
+     * `test_a_question_held_for_the_engine_is_answered_after_the_player_moves`: "One moment" was a
+     * promise, and the player moving before the engine's look threw the question away (Tai,
+     * 2026-10-02: no reply is dropped).
+     */
+    @Test
+    fun aQuestionHeldForTheEngineIsAnsweredAfterThePlayerMoves() {
+        val (coach, provider) = scripted(listOf("Develop the knight and keep the centre."))
+        playToScholar(coach)
+        coach.ask("what's the plan here?", 7.0) // no analysis yet: held
+        assertTrue(messages(coach).single().text.startsWith("One moment"))
+        val board = Board(coach.board.fen())
+        played(coach, board, 7, "b1c3", true, 8.0)
+        played(coach, board, 8, "a7a6", false, 9.0)
+        assertTrue("nothing answered before the position is read", synchronized(provider.prompts) { provider.prompts.isEmpty() })
+        looked(coach, board, 8, listOf("d2d3"), 10.0)
+        val out = messages(coach).filter { it.trigger == Trigger.USER_ASK }
+        assertEquals(listOf("Develop the knight and keep the centre."), out.map { it.text })
+        assertTrue("PLAYER said: \"what's the plan here?\"" in harnessOf(provider))
+    }
+
     /** `said_level`: what a reply said, from its words. */
     @Test
     fun theRungAReplySaidIsReadFromItsWords() {

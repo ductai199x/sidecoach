@@ -1031,12 +1031,8 @@ class CoachTest {
         for (said in listOf("What is he threatening?", "what are they up to", "whats the threat")) {
             assertTrue(said, ASK_THREAT.containsMatchIn(said) && !mayCarryClaims(said))
         }
-        val (coach, provider) = coach(listOf("Nothing is threatened right now."))
-        playToScholar(coach)
-        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        coach.ask("what is their threat?", 8.0)
-        messages(coach)
-        assertTrue("They ask what the opponent threatens" in directiveOf(given(provider, 0)))
+        // Asked of the AI coach, no keyword picks the directive: the model reads the question
+        // (Tai, 2026-10-02); these patterns are the offline coach's.
     }
 
     /**
@@ -1198,8 +1194,7 @@ class CoachTest {
         }
         coach.ask("how much did that cost me?", 12.0)
         val out = messages(coach)
-        val directive = directive(provider)
-        assertTrue(directive, "it cost 45% of the game: they asked" in directive)
+        // The model reads the question (no keyword directive); the fallback has the figure.
         assertTrue(out.isNotEmpty())
         assertTrue(out.last().text, out.last().text.startsWith("It cost you 45% of the game. Qxf7# was better"))
     }
