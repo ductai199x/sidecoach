@@ -2,9 +2,10 @@
 
 Three things keep it honest. The model sees everything -- the engine lines, the legal
 moves, the facts past the current level -- so its hints can be precise and true, and the
-disclosure level says what it may say (Tai, 2026-09-26). The level only ever moves through
-the deterministic unlocks in `disclosure.py`, driven by what the user did or asked, never
-by the model's own judgement. And every draft is checked before it is shown for claims
+disclosure level says what it may say (Tai, 2026-09-26). Offline the level moves through the
+deterministic unlocks in `disclosure.py`, driven by what the user did or asked; with the AI on,
+the model reads what they ask from guidelines and the ladder follows what its reply said
+(`disclosure.said_level`; Tai, 2026-10-02). And every draft is checked before it is shown for claims
 about the board that the board contradicts, a verdict against the record, and the form
 the task asks for; a draft that fails is regenerated once with the problem named, and then
 replaced by a template, so the user never sees a false claim and never sees nothing. What
@@ -2363,8 +2364,8 @@ class Speaker:
                 self._busy.clear()
 
 
-# What the user's words mean for disclosure. Deterministic on purpose: the model never
-# decides how much may be said.
+# What the user's words mean for disclosure, for the offline coach (and the AI's fallback): with
+# the AI on, the model reads the words and the ladder follows its reply (Tai, 2026-10-02).
 # A hint, or a question about the plan ("what should I be aiming for?", "what's the idea
 # here?"): both earn the next level, where the theme and the plan may be named. Answered at
 # the question level, a question about the plan got a question back.
