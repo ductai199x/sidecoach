@@ -544,6 +544,25 @@ def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
 
 
 @needs_engine
+def test_a_search_cut_short_gives_lines_of_one_depth(engine: Engine) -> None:
+    """Cut by the time cap mid-depth, Stockfish's best line is a depth further than the
+    rest, and the gap between them (the only-move and decisive-moment calls) set a deeper
+    search against a shallower one. The lines are those of the last depth finished whole."""
+    slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
+    quiet = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
+    engine.max_seconds = 0.15
+    try:
+        cuts = [
+            engine.analyse(board, depth=40, multipv=4) for board in (slow, quiet) for _ in range(4)
+        ]
+    finally:
+        engine.max_seconds = 5.0
+    for lines in cuts:
+        assert len(lines) == 4
+        assert len({line.depth for line in lines}) == 1, [line.depth for line in lines]
+
+
+@needs_engine
 def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
     """Threads or hash saved while a search runs used to reach Stockfish at once: the
     `setoption` stopped the search, and the cut one was kept as if whole (0.6 s and depth 14

@@ -280,9 +280,9 @@ class Engine:
             self.open()
             assert self._engine is not None
             try:
-                if self._interruptible or on_depth is not None:
-                    return self._streamed(board, limit, multipv, on_depth)
-                return list(self._engine.analyse(board, limit, multipv=multipv))
+                # Read as it goes, always: a search the time cap cuts is answered with the
+                # last depth finished whole (`_streamed`).
+                return self._streamed(board, limit, multipv, on_depth)
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
                 self.close()
                 if attempt == 2:
@@ -298,7 +298,9 @@ class Engine:
     ) -> list[chess.engine.InfoDict]:
         """`analyse`'s search, read as it goes: each depth handed to `on_depth` once its
         last line is in (Stockfish reports a depth's lines best first), and, inside
-        `interruptible`, stopped by `interrupt`."""
+        `interruptible`, stopped by `interrupt`. A search cut mid-depth (the time cap) has
+        its first lines a depth further than the rest, and the gap between them set two
+        depths against each other: it is answered with the last depth finished whole."""
         stoppable = self._interruptible
         if stoppable and self._stopped.is_set():
             raise Interrupted
@@ -310,15 +312,20 @@ class Engine:
                     search.stop()
                 latest: dict[int, chess.engine.InfoDict] = {}
                 done = 0
+                whole: list[chess.engine.InfoDict] | None = None
                 for info in search:
                     rank, depth = info.get("multipv", 1), info.get("depth")
                     if depth is None or not info.get("pv"):
                         continue
                     latest[rank] = info
-                    if on_depth is not None and rank == multipv and depth > done:
+                    if rank == multipv and depth > done:
                         done = depth
-                        on_depth([latest[k] for k in sorted(latest)])
+                        whole = [latest[k] for k in sorted(latest)]
+                        if on_depth is not None:
+                            on_depth(whole)
                 infos = list(search.multipv)
+                if whole is not None and len({i.get("depth") for i in infos}) > 1:
+                    infos = whole
             finally:
                 self._search = None
         if stoppable and self._stopped.is_set():
