@@ -3,6 +3,7 @@ package com.sidecoach.coach
 import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.Motifs
 import com.sidecoach.analysis.humanExpectedScore
+import com.sidecoach.analysis.severityOf
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BISHOP
@@ -21,6 +22,7 @@ import com.sidecoach.chess.squareRank
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
+import com.sidecoach.events.Severity
 import kotlin.math.abs
 
 /**
@@ -334,13 +336,14 @@ object IdeaReader {
         val top = analysis.lines[0]
         val mated = top.mate != null && top.mate > 0
         val winning = mated || top.expectedScore >= WON
-        // A sacrifice is material given up in a line the engine rates as sound: the line is worth
-        // more than the material it leaves. Given for nothing -- a queen thrown in front of a mate
-        // ("Use your queen on d1 -- the piece you give up", 2026-10-01) -- the engine's line is
-        // worth no more than the bare count, and the piece was given up, not sacrificed (Tai,
-        // 2026-10-02: no score or points-back gate, the engine's rating decides).
+        // A sacrifice is material given up in a line the engine rates as sound: giving it keeps at
+        // least a Good move's label ([sound]). Given for nothing -- a queen thrown in front of a
+        // mate ("Use your queen on d1 -- the piece you give up", 2026-10-01) -- the line is worth
+        // far less than the material given, and the piece was given up, not sacrificed (Tai,
+        // 2026-10-02: no score or points-back gate and no margin of its own; the label bands
+        // decide).
         val given = sacrifices(boards, pv, upto).filter {
-            sound(top, balance(boards[it.first + 2], board.turn))
+            sound(top, balance(boards[it.first], board.turn))
         }
         return idea.copy(
             pinnedGuard = pinnedGuard(idea, boards, pv),
@@ -852,12 +855,17 @@ object IdeaReader {
     }
 
     /**
-     * The engine rates the line as sound for what it gives: its best line is worth more than
-     * the material it leaves ([left], in pawns, the player's count after the sacrifice) would
-     * be on the same curve. A line that mates is; one that gets mated is not. `idea._sound`.
+     * The engine rates the line as sound for what it gives: judged as a move is, giving the
+     * material keeps at least the Good label -- what the line is worth falls short of what the
+     * material the player had before the gift ([had], in pawns) is worth on the same curve by
+     * less than an inaccuracy ([severityOf], the labels' own bands; the default thresholds, the
+     * idea reader has no settings). A line that mates is; one that gets mated is not.
+     * `idea._sound`.
      */
-    private fun sound(top: Line, left: Int): Boolean =
-        top.expectedScore > humanExpectedScore(100 * left, null)
+    private fun sound(top: Line, had: Int): Boolean {
+        val lost = maxOf(0.0, humanExpectedScore(100 * had, null) - top.expectedScore)
+        return severityOf(lost) == Severity.NONE
+    }
 
     /**
      * The plies of the line before the player takes a piece the opponent just put where it
