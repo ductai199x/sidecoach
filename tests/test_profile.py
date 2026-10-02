@@ -486,32 +486,112 @@ def test_insights_need_evidence_before_they_speak() -> None:
     assert insights([_cell(causes.POSITIONAL, None, "middlegame", errors=2, loss=0.3)], 1) == []
 
 
+G3 = frozenset({"a", "b", "c"})
+
+
 def test_insights_name_the_biggest_cost_and_whether_it_is_a_gap() -> None:
     rows = [
-        _cell(causes.MISSED_THREAT, "fork", "middlegame", errors=3, loss=0.6),
+        CellRow(causes.MISSED_THREAT, "fork", "middlegame", 3, 0, 0.6, G3),
         _cell(causes.MISSED_THREAT, "pin", "endgame", errors=1, loss=0.1),
         _cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.1),
-        _cell(None, "fork", "middlegame", chances=6),
+        CellRow(None, "fork", "middlegame", 3, 6, 0.0, G3),
         _cell(None, None, "middlegame", chances=30),
         _cell(None, None, "endgame", chances=12, loss=0.0),
     ]
     lines = insights(rows, games=3)
-    assert lines[0] == (
-        "Your biggest cost over 3 games is missed opponent threat: 4 mistakes, 0.70 expected score."
-    )
+    assert lines[0] == "Your biggest cost over 3 games is missed opponent threat: 4 mistakes."
     assert lines[1] == "That looks like a gap: it shows up as fork in the middlegame."
-    assert any(x.startswith("You miss a fork about") and "(3 of 6)" in x for x in lines)
-    assert any(x.startswith("The middlegame costs you most per move") for x in lines)
+    assert "You missed a fork 3 of the 6 times you had one." in lines
+    assert "The middlegame costs you most per move." in lines
+    assert not any("expected score" in x for x in lines)
 
 
 def test_a_cost_spread_across_positions_is_a_habit() -> None:
     rows = [
-        _cell(causes.POSITIONAL, None, "opening", errors=1, loss=0.2),
-        _cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.2),
-        _cell(causes.POSITIONAL, None, "endgame", errors=1, loss=0.2),
+        CellRow(causes.POSITIONAL, None, "opening", 1, 0, 0.2, frozenset({"a"})),
+        CellRow(causes.POSITIONAL, None, "middlegame", 1, 0, 0.2, frozenset({"b"})),
+        CellRow(causes.POSITIONAL, None, "endgame", 1, 0, 0.2, frozenset({"c"})),
+    ]
+    lines = insights(rows, games=3)
+    assert lines[1] == "That looks like a habit: it shows up across 3 kinds of position in 3 games."
+
+
+def test_one_bad_game_is_no_habit() -> None:
+    """Three mistakes in one game were "That looks like a habit" (the review of 2026-10-01): a
+    gap or a habit needs its mistakes from several games."""
+    one = frozenset({"g"})
+    rows = [
+        CellRow(causes.POSITIONAL, None, "opening", 1, 0, 0.2, one),
+        CellRow(causes.POSITIONAL, None, "middlegame", 1, 0, 0.2, one),
+        CellRow(causes.POSITIONAL, None, "endgame", 1, 0, 0.15, one),
     ]
     lines = insights(rows, games=1)
-    assert lines[1] == "That looks like a habit: it shows up across 3 kinds of position."
+    assert lines == ["Your biggest cost is positional misjudgment: 3 mistakes."]
+
+
+def _judged(
+    store: Store, game: str, ply: int, *, played: list[str], had: list[str], cause: str | None
+) -> None:
+    move_id = store.add_move(
+        game,
+        0,
+        ply,
+        move_number=ply,
+        san="a3",
+        uci="a2a3",
+        by_user=True,
+        fen_before=chess.STARTING_FEN,
+        fen_after="x",
+        phase="middlegame",
+        think_ms=None,
+        clock_ms=None,
+        capture=False,
+        gives_check=False,
+        material=0,
+        ts=float(ply),
+    )
+    store.assess_move(
+        move_id,
+        label="mistake" if cause else "best",
+        severity="mistake" if cause else "none",
+        expected_loss=0.2 if cause else 0.0,
+        best_uci=None,
+        best_san=None,
+        accuracy=50.0,
+        tags=played,
+        available_tags=had,
+        depth=14,
+    )
+    if cause is not None:
+        store.add_evidence(
+            move_id,
+            game_id=game,
+            segment=0,
+            ply=ply,
+            phase="middlegame",
+            expected_loss=0.2,
+            cause=cause,
+            motif="fork",
+            time_pressure=False,
+        )
+
+
+def test_a_tactic_walked_into_is_not_a_tactic_missed() -> None:
+    """ "You miss a fork about 100% of the time one is on the board (5 of 4)": the misses were
+    the mistakes whose motif was a fork, the forks the player walked into among them, over the
+    forks the player had (the review of 2026-10-01). A miss is a fork on the board for the
+    player, not played, in a mistake; the line gives the plain count."""
+    store = Store(None)
+    for game in "abcde":
+        _judged(store, game, 1, played=[], had=[], cause=causes.MISSED_THREAT)  # walked into
+        _judged(store, game, 3, played=["fork"], had=["fork"], cause=None)  # found
+    for game in "abc":
+        _judged(store, game, 5, played=[], had=["fork"], cause=causes.NOT_CONSIDERED)  # missed
+    rows = store.cells()
+    fork = next(c for c in rows if c.cause is None and c.motif == "fork")
+    assert (fork.errors, fork.chances, fork.games) == (3, 8, frozenset("abc"))
+    lines = insights(rows, games=5)
+    assert "You missed a fork 3 of the 8 times you had one." in lines
 
 
 # ---- the profiler ----------------------------------------------------------------------

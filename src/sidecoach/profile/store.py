@@ -326,7 +326,8 @@ class CellRow:
     """One cell of the error taxonomy, computed from the record: mistakes (`errors`) by
     cause, motif and phase with the expected score they cost, and the occasions
     (`chances`) -- moves in a phase, moves with a tactic on the board -- with the cause
-    None."""
+    None. A tactic's occasions count in `errors` those the player missed: a mistake that
+    did not play the tactic on the board. `games`: the games its errors came from."""
 
     cause: str | None
     motif: str | None
@@ -334,6 +335,7 @@ class CellRow:
     errors: int
     chances: int
     expected_loss: float
+    games: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -393,6 +395,11 @@ class SessionRow:
 
 def _tags(value: str | None) -> list[str]:
     return json.loads(value) if value else []
+
+
+def _ids(value: str | None) -> frozenset[str]:
+    """A JSON array of game ids, its nulls left out."""
+    return frozenset(g for g in json.loads(value or "[]") if g is not None)
 
 
 def _move_row(row: sqlite3.Row) -> MoveRow:
@@ -763,11 +770,16 @@ class Store:
         """The error taxonomy as counts: mistakes by (cause, motif, phase) with the score
         they cost; the occasions with cause None -- every judged move of the player's in
         its phase (motif None), and every such move with a tactic on the board, per
-        tactic. Computed from the record, so a correction or a takeback needs no
-        bookkeeping."""
+        tactic, with those of its occasions the player missed (a mistake that did not
+        play it). The motif of a mistake is the tactic it allowed as often as the one it
+        let go, so the mistakes alone never say how often a tactic on the board was missed:
+        "about 100% (5 of 4)" counted the forks walked into over the forks the player had
+        (the review of 2026-10-01). Computed from the record, so a correction or a takeback
+        needs no bookkeeping."""
         with self._lock:
             errors = self._db.execute(
-                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss"
+                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss,"
+                " json_group_array(DISTINCT game_id) AS games"
                 " FROM evidence GROUP BY cause, motif, phase"
             ).fetchall()
             phases = self._db.execute(
@@ -775,9 +787,16 @@ class Store:
                 " WHERE by_user = 1 AND withdrawn = 0 AND severity IS NOT NULL"
                 " AND phase IS NOT NULL GROUP BY phase"
             ).fetchall()
+            missed = (
+                "(e.move_id IS NOT NULL AND NOT EXISTS"
+                " (SELECT 1 FROM json_each(m.tags) p WHERE p.value = t.value))"
+            )
             motifs = self._db.execute(
-                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n"
-                " FROM moves m, json_each(m.available_tags) t"
+                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n,"
+                f" SUM({missed}) AS missed,"
+                f" json_group_array(DISTINCT CASE WHEN {missed} THEN m.game_id END) AS games"
+                " FROM moves m JOIN json_each(m.available_tags) t"
+                " LEFT JOIN evidence e ON e.move_id = m.move_id"
                 " WHERE m.by_user = 1 AND m.withdrawn = 0 AND m.severity IS NOT NULL"
                 " GROUP BY m.phase, t.value"
             ).fetchall()
@@ -789,6 +808,7 @@ class Store:
                 errors=int(r["n"]),
                 chances=0,
                 expected_loss=float(r["loss"] or 0.0),
+                games=_ids(r["games"]),
             )
             for r in errors
         ]
@@ -808,9 +828,10 @@ class Store:
                 cause=None,
                 motif=r["motif"],
                 phase=r["phase"],
-                errors=0,
+                errors=int(r["missed"] or 0),
                 chances=int(r["n"]),
                 expected_loss=0.0,
+                games=_ids(r["games"]),
             )
             for r in motifs
         ]
