@@ -57,7 +57,7 @@ annotation class Lane(val value: Kind) {
 /**
  * The suite's classes in lanes side by side: [Lane.Kind.APP]'s one at a time on one thread, in
  * the order AndroidJUnitRunner gives them, as the whole suite ran before; [Lane.Kind.VISION] and
- * [Lane.Kind.VOICE] together on [MODEL_THREADS] threads, and [Lane.Kind.FREE] on [FREE_THREADS],
+ * [Lane.Kind.VOICE] together on [modelThreads] threads, and [Lane.Kind.FREE] on [freeThreads],
  * each pool taking its classes longest first (the seconds each took last, from
  * `lanes/seconds.tsv` in the test assets, which `tools/lane_seconds.py` writes from a run's
  * `timings.tsv`; a class it does not know goes first). The device's four cores were a quarter used:
@@ -76,22 +76,31 @@ annotation class Lane(val value: Kind) {
 object Lanes {
     private const val TAG = "sidecoach.lanes"
 
-    /**
-     * The threads of the pool [Lane.Kind.VISION] and [Lane.Kind.VOICE] share: two classes that
-     * hold a model at most, side by side -- PipelineTest's two embedders and one more model, about
-     * 1.2 GB, where the emulator has some 2.7 GB to give.
-     */
-    private const val MODEL_THREADS = 2
+    /** The device's cores, as the tests' own pools count them ([Parallel.cores]). */
+    private val cores = Runtime.getRuntime().availableProcessors()
+
+    /** The test process's heap limit, in MB: the classes side by side all draw on it. */
+    internal val heapMb = Runtime.getRuntime().maxMemory() / (1024 * 1024)
 
     /**
-     * The [Lane.Kind.FREE] pool's threads. With the app lane and the models' pool, five on four
-     * cores: the app lane spends much of its time waiting on a window, a voice or an engine.
+     * The threads of the pool [Lane.Kind.VISION] and [Lane.Kind.VOICE] share: one class that
+     * holds a model per 192 MB of heap. A model class's start-position read alone takes most of an
+     * ordinary app's 192 MB (an embedder's 38 MB input buffer is on the heap, PipelineTest holds
+     * two), and two side by side on the emulator's 4 GB took it into swap and ran a lane's other
+     * class out of heap (2026-10-02, measured).
      */
-    private const val FREE_THREADS = 2
+    private val modelThreads = (heapMb / 192).toInt().coerceIn(1, maxOf(1, cores / 2))
+
+    /**
+     * The [Lane.Kind.FREE] pool's threads: half the cores, two at least. With the app lane and the
+     * models' pool, more threads than cores: the app lane spends much of its time waiting on a
+     * window, a voice or an engine.
+     */
+    private val freeThreads = maxOf(2, cores / 2)
 
     @JvmStatic
     fun request(request: Request, args: Bundle): Request {
-        Log.i(TAG, "the heap's limit: ${Runtime.getRuntime().maxMemory() / (1024 * 1024)} MB, ${Runtime.getRuntime().availableProcessors()} cores")
+        Log.i(TAG, "the heap's limit: $heapMb MB, $cores cores: $modelThreads model and $freeThreads free threads")
         val top = request.runner
         val children = (top as? ParentRunner<*>)?.let { childrenOf(it) } ?: return request
         if (children.isEmpty()) return request
@@ -229,8 +238,8 @@ object Lanes {
                         }
                     }
                 }
-                pool("models", MODEL_THREADS, listOf(Lane.Kind.VISION, Lane.Kind.VOICE))
-                pool("free", FREE_THREADS, listOf(Lane.Kind.FREE))
+                pool("models", modelThreads, listOf(Lane.Kind.VISION, Lane.Kind.VOICE))
+                pool("free", freeThreads, listOf(Lane.Kind.FREE))
             }
             threads.forEach { it.join() }
             val wall = (System.nanoTime() - began) / 1e9

@@ -82,12 +82,16 @@ class PipelineTest {
         // shortcut is held to the others (`READ_ONCE` in the generator).
         val runs = (0 until all.length()).map { all.getJSONObject(it) }
             .filter { !(sameFrameShortcut && it.optBoolean("read_once")) }
+            // The longest first, so the threads finish together: a long scenario taken last ran
+            // on alone.
+            .sortedByDescending { it.getJSONArray("frames").length() }
         val failures = java.util.Collections.synchronizedList(ArrayList<String>())
         // The scenarios side by side: each its own pipeline, and each thread its own net, one
-        // thread to a net. Two at a time: a scenario holds its frames' pixels and planes and,
-        // while it learns a start position, its net's 38 MB input buffer (a direct buffer is on
-        // the Java heap here); three or four of them ran the 192 MB heap out, and three were no
-        // faster than two.
+        // thread to a net. One per 128 MB of the heap, two at least: a scenario holds its frames'
+        // pixels and planes and, while it learns a start position, its net's 38 MB input buffer
+        // (a direct buffer is on the Java heap here); three or four of them ran an ordinary app's
+        // 192 MB heap out, and three were no faster than two on four cores.
+        val threads = (com.sidecoach.Lanes.heapMb / 128).toInt().coerceIn(2, maxOf(2, Parallel.cores))
         // OpenCV's own threads kept to one meanwhile: the replays are the parallelism, and its
         // pool's idle workers waited by reading the clock, a trap to the host on the emulator,
         // a fifth of the CPU. Its answers do not depend on how many threads it uses.
@@ -95,7 +99,7 @@ class PipelineTest {
         val openCvThreads = Core.getNumThreads()
         Core.setNumThreads(1)
         try {
-            Parallel.forEach(runs, threads = 2, resource = { CellEmbedder.load(target, threads = 2) }) { run, net ->
+            Parallel.forEach(runs, threads = threads, resource = { CellEmbedder.load(target, threads = 2) }) { run, net ->
                 if (failures.size < 8) replay(run, net, sameFrameShortcut, failures)
             }
         } finally {
