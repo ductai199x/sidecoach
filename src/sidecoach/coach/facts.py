@@ -115,8 +115,11 @@ PIECE_NAMES = {
     chess.KING: "king",
 }
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
-# Candidates within this much of the best line are "the near-equal set".
-CANDIDATE_MARGIN = 0.02
+# Candidates within this much of the best line are "the near-equal set": the moves that are
+# all fine, said so when the player asks for the best moves and never refused when they name
+# one (the claim check reads the same set). 0.02 left out a move three hundredths behind that
+# an engine's depth would swap with the best.
+CANDIDATE_MARGIN = 0.03
 
 
 def standing_words(score: float, *, third_person: bool = False) -> str:

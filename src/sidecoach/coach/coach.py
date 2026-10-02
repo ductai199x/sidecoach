@@ -35,6 +35,7 @@ import chess
 from sidecoach.analysis.computed import position_key
 from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
+from sidecoach.coach.alternatives import fine_said, worse_moves, worse_said, worse_text
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
 from sidecoach.coach.conversation import Conversation, PlyRecord, hands, harness_problem, ways
@@ -693,6 +694,24 @@ MOVE_GIVEN = (
     "They asked for another hint, and the move has been given already: it is {move}. Say so "
     "plainly, with what it does from the fact sheet's why, in other words than before. One or "
     "two sentences, no question."
+)
+# Asked again once the move was given, the answer is the move once more with its reason against
+# the others: why it is the move to play instead of something clearly worse, from what the
+# board says of those (`alternatives`); said in words, true of the board, nothing invented.
+MOVE_GIVEN_WHY = (
+    "They asked for another hint, and the move has been given already: it is {move}. Say so "
+    "plainly, with what it does from the fact sheet's why, in other words than before -- and "
+    "why it is the move to play instead of something that looks as good but is clearly worse: "
+    "name one or two of the moves below and what goes wrong with them, as the board says it, "
+    "and nothing more of them. Clearly worse here, and what goes wrong: {worse}. Two or three "
+    "sentences, no question."
+)
+# The moves besides the best one, asked for: all that are about as good, named, and the clearly
+# worse ones with what goes wrong with them. The engine's lines list them all; line 1 is only
+# the first.
+ALTERNATIVES_READ = (
+    "Read the engine lines above, all of them and not only line 1: each line's first move is a "
+    "candidate, with its score, and the weaker lines say how far behind the best they are."
 )
 FOCUS_KING = (
     "Here the move is castling: the piece is the king, and what it goes after is its own "
@@ -2339,6 +2358,25 @@ _ASK_MOVE = re.compile(
     r"(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\b",
     re.I,
 )
+# The moves besides the best one asked for as such: "any other good moves?", "what else works?",
+# "which moves are fine here?" -- the player asks for moves, and gets all that are fine, named
+# (`alternatives`). The singular "best move" above is answered with the near-equal ones too.
+_ASK_OTHER_MOVES = re.compile(
+    r"\bwhat else (?:works|is good|is fine|is playable|can i play|could i play|do i have)\b"
+    r"|\bwhich moves (?:are|would be|work|hold)\b"
+    r"|\b(?:other|another|more|alternative) (?:good |decent |fine |playable |strong |"
+    r"reasonable )?(?:moves?|options?|candidates?|alternatives?)\b"
+    r"|\b(?:best|good|fine|decent|playable|candidate|top) moves\b|\balternatives?\b",
+    re.I,
+)
+# Another move asked about as good as the one they have in mind or the one named: "is Nf3 also
+# good?", "does d4 work too?" -- answered from the engine's lines, the near-equal moves among
+# them. Opens nothing by itself: naming a move that is among the best does (`unlock_for`).
+_ASK_ALSO = re.compile(
+    r"\b(?:also|as well|too)\b[^.?!]{0,25}\b(?:good|fine|ok|okay|playable|works?|strong)\b"
+    r"|\b(?:good|fine|ok|okay|playable|works?)\b[^.?!]{0,15}\b(?:also|as well|too)\b",
+    re.I,
+)
 # "I am not stuck, just thinking" is no request for a hint.
 _NOT_STUCK = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:\w+\s+)?stuck\b", re.I)
 # How the position goes on is the line: "how would this position continues?" and "ok and after
@@ -2369,7 +2407,7 @@ def unlock_for(text: str, board: chess.Board, candidates: Sequence[str]) -> Unlo
     """The unlock the user's words earn, if any."""
     if _ASK_LINE.search(text):
         return Unlock.ASK_LINE
-    if _ASK_MOVE.search(text):
+    if _ASK_MOVE.search(text) or _ASK_OTHER_MOVES.search(text):
         return Unlock.ASK_MOVE
     if _HINT.search(_NOT_STUCK.sub(" ", text)):
         return Unlock.HINT
@@ -3784,6 +3822,54 @@ class Coach:
                 return self.positions[ply]
         return None
 
+    def _alternatives_answer(
+        self, position: _Position, facts: PositionFacts, said: str
+    ) -> tuple[str, str]:
+        """The directive and the template for a question about the moves besides the best:
+        every move about level with it, named, and the clearly worse ones with what goes wrong
+        with them, from the engine's lines (`alternatives`). Asked whether a move is also good,
+        the answer is the same set and the move they name among it or not."""
+        fine = list(facts.candidates)
+        analysis = position.analysis
+        worse = worse_moves(position.board, analysis, self.user_colour) if analysis else []
+        also = bool(_ASK_ALSO.search(said)) and not _ASK_OTHER_MOVES.search(said)
+        if len(fine) > 1:
+            level_part = (
+                f"The moves about level with the best, all fine: {', '.join(fine)}. Say they are "
+                "about equally good, and name every one."
+            )
+        else:
+            level_part = f"One move stands out: {fine[0]}. Say the others are clearly worse."
+        worse_part = (
+            f" Clearly worse, and what goes wrong with them, true of the board: "
+            f"{worse_text(worse)}. Say which, and why, in a few words."
+            if worse
+            else ""
+        )
+        ask_part = (
+            "They ask whether another move is also good: say yes plainly when the move they "
+            "name is among the fine ones, and what it does; when it is not, say it is weaker "
+            "than the best, and what goes wrong with it when the sheet says."
+            if also
+            else "They ask about the good moves here, not only the best one."
+        )
+        directive = (
+            f"{ask_part} {ALTERNATIVES_READ} {level_part}{worse_part} Say it in words. "
+            f"{NO_FIGURES} Two or three sentences, no question."
+        )
+        text = fine_said(fine)
+        bare = [f.rstrip("+#") for f in fine]
+        named = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare]
+        if also and named:
+            text = (
+                f"{named[0]} is the engine's top choice."
+                if named[0].rstrip("+#") == bare[0]
+                else f"Yes, {named[0]} is fine too -- about as good as {fine[0]}."
+            )
+            if len(fine) > 1:
+                text += " " + fine_said(fine)
+        return directive, f"{text} {worse_said(worse)}".strip()
+
     def _speak(
         self,
         trigger: Trigger,
@@ -4711,6 +4797,14 @@ class Coach:
                 # Asked again once the move was given, "The next hint is the answer" said
                 # it was still to come (the deep prompt review, 2026-10-01).
                 directive = aim + (MOVE_GIVEN.format(move=best_san) if given else MOVE_DIRECTIVE)
+                if given and position.analysis is not None:
+                    # Said again, with why it beats what is clearly worse: not a restatement.
+                    worse = worse_moves(position.board, position.analysis, self.user_colour)
+                    if worse:
+                        directive = aim + MOVE_GIVEN_WHY.format(
+                            move=best_san, worse=worse_text(worse)
+                        )
+                        fallback = f"{fallback} {worse_said(worse)}".strip()
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
                 best_san = facts.candidates[0] if facts.candidates else ""
@@ -4724,7 +4818,7 @@ class Coach:
         elif (
             position.board.turn != self.user_colour
             and not position.board.is_game_over()
-            and (_ASK_LINE.search(said) or _ASK_MOVE.search(said))
+            and (_ASK_LINE.search(said) or _ASK_MOVE.search(said) or _ASK_OTHER_MOVES.search(said))
         ):
             # On the opponent's move the engine's line and best move are the OPPONENT's: "what
             # should I play?" there told the model to give the player the opponent's best move
@@ -4760,12 +4854,37 @@ class Coach:
                 # after that?" got the same line back (Tai's puzzle, 2026-09-28). The engine's
                 # word on its end is put before the model (`_speak`).
                 directive += f" {LINE_GIVEN}"
+        elif (
+            level >= DisclosureLevel.MOVE
+            and facts.candidates
+            and (
+                _ASK_OTHER_MOVES.search(said)
+                or (_ASK_ALSO.search(said) and not _ASK_LAST_MOVE.search(said))
+            )
+        ):
+            # The moves besides the best: all that are about as good, named, and the clearly
+            # worse ones with what goes wrong (`alternatives`).
+            directive, alternatives = self._alternatives_answer(position, facts, said)
+            if not scored:  # a move they name, rated by the engine, is that word's to say
+                fallback = alternatives
         elif level >= DisclosureLevel.MOVE and _ASK_MOVE.search(said) and facts.candidates:
             directive = (
                 f"They asked what to play: tell them plainly it is {facts.candidates[0]}, then why "
                 "it works, from the fact sheet's why and pattern, correctly. Do not answer with a "
                 "question this time."
             )
+            if len(facts.candidates) > 1:
+                # Not only line 1: others are as good, and the best is not one move.
+                directive += (
+                    f" {len(facts.candidates)} moves are about equally good here "
+                    f"({', '.join(facts.candidates)}): say so, and name them, rather than naming "
+                    "only the first."
+                )
+                rest = facts.candidates[1:]
+                fallback = (
+                    f"{fallback} {', '.join(rest[:-1]) + ' and ' if len(rest) > 1 else ''}"
+                    f"{rest[-1]} {'are' if len(rest) > 1 else 'is'} about as good."
+                ).strip()
         elif _ASK_OPPONENT_MOVE.search(said) and (their := self._last_opponent_move()) is not None:
             assert their.assessment is not None
             verdict = their.assessment

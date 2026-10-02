@@ -34,6 +34,7 @@ from tests.coaching import (
     stuck,
 )
 from tests.fakes import ScriptedProvider
+from tests.test_alternatives import load
 from tests.test_coach import _judged, _looked, _played
 
 
@@ -204,6 +205,140 @@ def test_that_move_after_a_slow_reply_stays_with_the_model() -> None:
     between, and what "that" is is the model's to read from the record."""
     _, provider = _asked_after_the_reply(40.0)
     assert "They ask about the move they already played" not in directive_of(sent(provider))
+
+
+# The best moves, and a hint asked once the move was given: real engine analyses
+# (tests/fixtures/alternatives)
+
+
+def _coach_at(name: str, replies: list[str] | None = None) -> tuple[Coach, ScriptedProvider]:
+    """The player to move in the fixture's position, the engine's look at it in."""
+    board, analysis = load(name)
+    provider = ScriptedProvider(replies or [])
+    coach = (
+        Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+        if replies is not None
+        else offline_coach()
+    )
+    side = Side.WHITE if board.turn == chess.WHITE else Side.BLACK
+    coach.on_event(
+        GameStarted(game_id="g", user_side=side, start_fen=board.fen(), kind="position"), 0.0
+    )
+    coach.on_event(analysis, 1.0)
+    return coach, provider
+
+
+def test_asked_for_the_best_moves_every_move_about_as_good_is_named() -> None:
+    """Three moves are within a few hundredths of the best line (Bc5, Nf6, Be7): "what are the
+    best moves?", "any other good moves?", "what else works?" and "which moves are fine here?"
+    were answered with line 1, or with a hint (Tai, 2026-10-01)."""
+    for said in (
+        "what are the best moves?",
+        "any other good moves?",
+        "what else works?",
+        "which moves are fine here?",
+    ):
+        assert unlock_for(said, chess.Board(load("italian")[1].fen), []) is Unlock.ASK_MOVE, said
+        coach, _ = _coach_at("italian")
+        coach.ask(said, 2.0)
+        answer = drain(coach)
+        assert len(answer) == 1, said
+        assert "Bc5, Nf6 and Be7 are all fine here -- about equally good." in answer[0].text, said
+        assert answer[0].level is DisclosureLevel.MOVE
+
+
+def test_the_model_is_told_to_read_every_line_and_to_name_the_moves_that_are_fine() -> None:
+    coach, provider = _coach_at("italian", ["Bc5, Nf6 and Be7 are all fine."])
+    coach.ask("what are the best moves?", 2.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "all of them and not only line 1" in directive
+    assert "all fine: Bc5, Nf6, Be7" in directive
+    assert "name every one" in directive and "No figures" in directive
+    harness = harness_of(sent(provider))
+    for san in ("Bc5", "Nf6", "Be7"):
+        assert san in harness.split("## Engine lines", 1)[1].split("\n\n", 1)[0]
+
+
+def test_asked_whether_a_move_is_also_good_the_model_gets_the_fine_moves() -> None:
+    coach, provider = _coach_at("italian", ["Yes, Be7 is fine too."])
+    coach.ask("is Be7 also good?", 2.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "whether another move is also good" in directive
+    assert "all fine: Bc5, Nf6, Be7" in directive
+    assert "all of them and not only line 1" in directive
+
+
+def test_the_claim_check_accepts_every_move_about_as_good_as_sanctioned() -> None:
+    """Be7 is 0.029 behind the best line: "is Be7 a good move?" was refused as not among the
+    engine's best moves while the same coach was asked to name it."""
+    from sidecoach.coach.claims import Claim, ClaimKind, verify_claims
+    from sidecoach.coach.facts import facts_from_analysis
+
+    board, analysis = load("italian")
+    facts = facts_from_analysis(board, analysis, last_move=None, user=board.turn)
+    claim = Claim(ClaimKind.BEST, None, None, "Be7", "Be7 is a good move")
+    assert [v.result for v in verify_claims([claim], board, facts=facts)] == ["true"]
+
+
+def test_one_clear_best_move_is_named_with_what_goes_wrong_with_the_others() -> None:
+    coach, _ = _coach_at("scholar")
+    coach.ask("what are the best moves?", 2.0)
+    answer = drain(coach)
+    assert answer[0].text == (
+        "Qxf7# is the move here. Qd1 is clearly worse: it passes up the mate. "
+        "Qe2 is clearly worse: it passes up the mate."
+    )
+    coach, provider = _coach_at("scholar", ["Qxf7 is mate; the others pass it up."])
+    coach.ask("what are the best moves?", 2.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "One move stands out: Qxf7#" in directive
+    assert "Qd1 passes up the mate; Qe2 passes up the mate" in directive
+
+
+def test_the_best_move_asked_in_the_singular_names_the_near_equal_ones_too() -> None:
+    coach, _ = _coach_at("italian")
+    coach.ask("what's the best move?", 2.0)
+    text = drain(coach)[0].text
+    assert "Bc5" in text and "Nf6 and Be7 are about as good." in text
+    coach, provider = _coach_at("italian", ["Bc5."])
+    coach.ask("what's the best move?", 2.0)
+    drain(coach)
+    assert "3 moves are about equally good here (Bc5, Nf6, Be7)" in directive_of(sent(provider))
+    coach, provider = _coach_at("scholar", ["Qxf7 mates."])
+    coach.ask("what's the best move?", 2.0)
+    drain(coach)
+    assert "about equally good" not in directive_of(sent(provider)), "one clear best: not said"
+
+
+def test_a_hint_asked_after_the_move_was_given_says_why_it_beats_what_is_worse() -> None:
+    """The fourth hint, with the move given by the third, was "the move again": it is now the
+    move with why it is the one to play instead of the moves that are clearly worse, as the
+    board says it (Tai, 2026-10-01)."""
+    coach, _ = _coach_at("scholar")
+    said = []
+    for n in range(4):
+        coach.ask("hint", 2.0 + n)
+        said.append(drain(coach)[0])
+    assert [m.level for m in said] == [
+        DisclosureLevel.IDEA,
+        DisclosureLevel.FOCUS,
+        DisclosureLevel.MOVE,
+        DisclosureLevel.MOVE,
+    ]
+    assert "Qxf7" in said[2].text and "clearly worse" not in said[2].text
+    assert "Qd1 is clearly worse: it passes up the mate." in said[3].text
+    # And to the model.
+    coach, provider = _coach_at("scholar", ["a", "b", "c", "Qxf7 is mate; Qd1 passes it up."])
+    for n in range(4):
+        coach.ask("hint", 2.0 + n)
+        drain(coach)
+    directive = directive_of(sent(provider))
+    assert "has been given already: it is Qxf7#" in directive
+    assert "Clearly worse here, and what goes wrong: Qd1 passes up the mate" in directive
+    assert "instead of something that looks as good but is clearly worse" in directive
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves
