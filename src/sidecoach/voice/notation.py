@@ -44,15 +44,16 @@ _RANK = {
 # mate mark. Castling and game results are handled separately. Word-bounded so it matches a
 # token, not a fragment of a longer word.
 _MOVE = re.compile(
-    r"\b([KQRBNP])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=[QRBN])?([+#])?(?![A-Za-z0-9])"
+    r"\b([KQRBNP])?([a-h])?([1-8])?(x)?([a-h])([1-8])(=?[QRBN])?([+#])?(?![A-Za-z0-9])"
 )
 # A square or a pawn move with a capital file letter, as a sentence's first word has it: "G4",
 # "Dxe5", "Exd8=Q+". A capital B before a capture is a bishop's ("Bxc6" is SAN); straight before
 # a rank it is the square. The whole token is checked, so an opening's code ("A40") is not one.
-_CAPITAL = re.compile(r"\b([A-H])(?=(x[a-h])?[1-8](?:=[QRBN])?[+#]?(?![A-Za-z0-9]))")
+_CAPITAL = re.compile(r"\b([A-H])(?=(x[a-h])?[1-8](?:=?[QRBN])?[+#]?(?![A-Za-z0-9]))")
 # The file letter a as the voice reads it (see the module's note).
 _VOICED = {"a": "eh"}
-_CASTLE = re.compile(r"\b(O-O-O|O-O)([+#])?(?![A-Za-z0-9])")
+# Castling with the letter O, or with zeros as many write it ("0-0" was read "zero dash zero").
+_CASTLE = re.compile(r"\b(O-O-O|O-O|0-0-0|0-0)([+#])?(?![A-Za-z0-9-])")
 _RESULT = re.compile(r"\b(1-0|0-1|1/2-1/2|½-½)\b")
 
 
@@ -78,7 +79,7 @@ def _mark(mark: str | None) -> str:
 
 
 def _castle(match: re.Match[str]) -> str:
-    side = "queenside" if match.group(1) == "O-O-O" else "kingside"
+    side = "queenside" if len(match.group(1)) == 5 else "kingside"
     return f"castles {side}{_mark(match.group(2))}"
 
 
@@ -98,7 +99,7 @@ def _move(match: re.Match[str], voice: bool) -> str:
     words.append(_square(to_file, to_rank, voice))
     text = " ".join(words)
     if promo:
-        text += f" promotes to {_PIECE[promo[1]]}"
+        text += f" promotes to {_PIECE[promo[-1]]}"
     return text + _mark(mark)
 
 

@@ -81,7 +81,7 @@ export function joined(said: string, text: string, ownLine: boolean): string {
  * pawn move a sentence starts with a capital: "G4 was a miss"), and a piece named: the words
  * a player looks for, set off in the box (Tai, 2026-09-29: "why are the pieces and their names
  * and square names and SAN annotations not highlighted"). */
-const MOVE = String.raw`(?:O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?`;
+const MOVE = String.raw`(?:O-O(?:-O)?|0-0(?:-0)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=?[QRBN])?|[A-H](?:x[a-h])?[1-8])[+#]?`;
 const PIECE = String.raw`(?:[Kk]ing|[Qq]ueen|[Rr]ook|[Bb]ishop|[Kk]night|[Pp]awn)s?`;
 const TOKENS = new RegExp(String.raw`(?<![A-Za-z0-9])(?:(${MOVE})|(${PIECE}))(?![A-Za-z0-9])`, "g");
 
