@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.HANG_MS
 import com.sidecoach.analysis.Computed
 import com.sidecoach.analysis.Engine
 import com.sidecoach.chess.Board
@@ -399,6 +400,21 @@ class SettingsPhoneTest {
      * whole read-merge-save: while the settings are held, a mute and a save both wait, and then
      * both changes stay.
      */
+    /**
+     * Where [thread] got to: held at a lock it waits for (BLOCKED), or done (TERMINATED) --
+     * its own state, not a delay hoped long enough for it to get there (the desktop's
+     * `_WatchedLock` tells the same: the other write waits on the lock, or landed).
+     */
+    private fun heldOrDone(thread: Thread): Thread.State {
+        val bound = android.os.SystemClock.uptimeMillis() + HANG_MS // a safety net only
+        while (true) {
+            val state = thread.state
+            if (state == Thread.State.BLOCKED || state == Thread.State.TERMINATED) return state
+            check(android.os.SystemClock.uptimeMillis() < bound) { "${thread.name} neither waited nor finished: $state" }
+            Thread.yield()
+        }
+    }
+
     @Test
     fun twoWritesAtOnceKeepBothChanges() {
         val store = SettingsStore(app)
@@ -415,14 +431,13 @@ class SettingsPhoneTest {
             val save = Thread { api.update(user) }
             synchronized(SettingsApi.SAVING) {
                 mute.start()
-                mute.join(200)
-                assertTrue("the mute waits for the settings", mute.isAlive)
+                assertEquals("the mute waits for the settings", Thread.State.BLOCKED, heldOrDone(mute))
                 save.start()
-                save.join(200)
-                assertTrue("so does a save", save.isAlive)
+                assertEquals("so does a save", Thread.State.BLOCKED, heldOrDone(save))
             }
-            mute.join(5000)
-            save.join(5000)
+            mute.join(HANG_MS)
+            save.join(HANG_MS)
+            assertFalse(mute.isAlive || save.isAlive)
             val now = store.values()
             assertTrue("the mute is kept", now.getJSONObject("voice").getBoolean("muted"))
             assertEquals("nosegazm", now.getJSONObject("profile").getString("chesscom_user"))

@@ -7,6 +7,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.MainActivity
+import com.sidecoach.ui.PanelWarm
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -36,14 +37,14 @@ class RecordingNoticeTest {
 
     @After fun after() = clear()
 
-    // What is asserted, waited for: a fixed sleep was outrun by a busy emulator in the full run.
-    private fun waitFor(ms: Long = 5000, what: () -> Boolean): Boolean {
-        val until = android.os.SystemClock.uptimeMillis() + ms
-        while (android.os.SystemClock.uptimeMillis() < until) {
-            if (what()) return true
-            Thread.sleep(50)
-        }
-        return what()
+    /**
+     * A button of [dialog] clicked, and its listener run: the dialog hands a click to its
+     * listener as a message on the main thread's queue, so a step queued after the click runs
+     * once the listener has (one queue, in order).
+     */
+    private fun click(dialog: AlertDialog, which: Int) {
+        instrumentation.runOnMainSync { dialog.getButton(which).performClick() }
+        instrumentation.runOnMainSync {}
     }
 
     private fun showing(dialog: AlertDialog): Boolean {
@@ -116,18 +117,44 @@ class RecordingNoticeTest {
         assertNull("not installed here", real.find("com.example.nothing.here"))
     }
 
+    /**
+     * The question over the panel, Cancel and Continue. Every step is on the main thread:
+     * `show()` has put the dialog's window up when the call that asked returns, and a button's
+     * listener has run once a step queued after its click has ([click]) -- so each is asserted
+     * at once, never polled for.
+     *
+     * The panel is opened for the question alone: its warm-up (the voice, the recogniser, the
+     * piece net, the vision, the engines) is said to have begun already ([PanelWarm.started]).
+     * It took seconds of the device's cores that the question has no need of, it ran on into
+     * the classes after this one, changing the app's shared state under them (it muted the
+     * voice of PanelVoicePolicyTest), and its models' memory is what could have the WebView's
+     * renderer killed and the window rebuilt under the question. What the launch costs now is
+     * the WebView drawing the page (its in-process GPU thread and the RenderThread).
+     */
     @Test
     fun theQuestionContinuesOnlyOnContinue() {
+        val warming = PanelWarm.started
+        PanelWarm.started = true
+        try {
+            question()
+        } finally {
+            PanelWarm.started = warming
+        }
+    }
+
+    private fun question() {
         val watchers = listOf(RecordingNotice.Watcher("com.chess", "Chess.com", 7L))
         var proceeded = 0
         var cancelled = 0
         var dialog: AlertDialog? = null
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            var host: android.app.Activity? = null
             scenario.onActivity {
+                host = it
                 dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
             }
             val shown = dialog!!
-            assertTrue("the question did not come up", waitFor { showing(shown) })
+            assertTrue("the question did not come up", showing(shown))
             var message = ""
             instrumentation.runOnMainSync { message = shown.findViewById<TextView>(android.R.id.message).text.toString() }
             assertEquals(RecordingNotice.words(watchers).second, message)
@@ -136,8 +163,7 @@ class RecordingNoticeTest {
                 File(shots, "question.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
             // Cancel: nothing shared, nothing remembered.
-            instrumentation.runOnMainSync { shown.getButton(AlertDialog.BUTTON_NEGATIVE).performClick() }
-            waitFor { cancelled == 1 }
+            click(shown, AlertDialog.BUTTON_NEGATIVE)
             assertEquals(0, proceeded)
             assertEquals(1, cancelled)
             val lookup = RecordingNotice.Lookup { pkg -> if (pkg == "com.chess") listOf(RecordingNotice.PERMISSION) to 7L else null }
@@ -146,12 +172,13 @@ class RecordingNoticeTest {
             scenario.onActivity {
                 dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
             }
-            assertTrue("the question did not come up again", waitFor { showing(dialog!!) })
-            instrumentation.runOnMainSync { dialog!!.getButton(AlertDialog.BUTTON_POSITIVE).performClick() }
-            waitFor { proceeded == 1 }
+            assertTrue("the question did not come up again", showing(dialog!!))
+            click(dialog!!, AlertDialog.BUTTON_POSITIVE)
             assertEquals(1, proceeded)
             assertEquals(1, cancelled)
             assertTrue(RecordingNotice.unanswered(app, lookup).isEmpty())
+            // Both questions were asked over the one window the test opened.
+            scenario.onActivity { assertTrue("the window was rebuilt under the question", it === host) }
         }
     }
 }

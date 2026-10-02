@@ -168,8 +168,8 @@ class GamesApiTest {
         val other = dir("stats-catch-up-room")
         savedWithoutStats(other)
         val room = ReviewRoom(other, SettingsStore(context), row, File(other, "profile.sqlite"), game.getString("strength"), EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") })
-        val end = android.os.SystemClock.elapsedRealtime() + 10_000
-        while (room.status != "ready" && android.os.SystemClock.elapsedRealtime() < end) Thread.sleep(50)
+        // The room's own signal that it has loaded (or failed); the bound is only a safety net.
+        assertTrue("the room never settled", room.settled.await(10_000))
         room.close()
         room.join()
         assertEquals("ready", room.status)

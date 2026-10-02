@@ -79,6 +79,14 @@ object PanelVoice {
     private data class Held(val trigger: String, val text: String, val ply: Int?, val since: Double)
     @Volatile private var heldWord: Held? = null
 
+    /**
+     * The panel's clock, in seconds (`panel.time.monotonic`): the device's uptime clock. A test
+     * gives one it moves (the desktop's tests give the panel a ManualClock), and the latency is
+     * then exactly the time that passed; nothing else changes.
+     */
+    internal val REAL_CLOCK: () -> Double = { SystemClock.elapsedRealtime() / 1000.0 }
+    @Volatile internal var clock: () -> Double = REAL_CLOCK
+
     private val lock = Any()
     private val moveAt = HashMap<Int, Double>()
     private val awaitingAudio = HashMap<String, Double>()
@@ -289,7 +297,7 @@ object PanelVoice {
             speaker.say(text)
             PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(text, 60)}")
         } else if (action == "text") {
-            heldWord = Held(trigger, text, ply, SystemClock.elapsedRealtime() / 1000.0)
+            heldWord = Held(trigger, text, ply, clock())
             Captions.show(text)
         } else {
             Captions.show(text) // "skip", "stale": not said, and shown all the same
@@ -395,7 +403,7 @@ object PanelVoice {
         // Thinking in this position for PACE_RESUME_S -- counted from when the position
         // appeared, not from when the word arrived.
         val began = coach.policy.positionSince
-        val thinking = if (began != null) ts - began else SystemClock.elapsedRealtime() / 1000.0 - held.since
+        val thinking = if (began != null) ts - began else clock() - held.since
         val speaker = voiceOut() ?: return
         if (thinking < PACE_RESUME_S || speaker.busy) return
         heldWord = null
@@ -411,7 +419,7 @@ object PanelVoice {
     /** A move was committed now (the panel's clock, not the frame's). `_note_move`. */
     fun noteMove(ply: Int) {
         synchronized(lock) {
-            moveAt[ply] = SystemClock.elapsedRealtime() / 1000.0
+            moveAt[ply] = clock()
             // Only the last few matter; a move nobody spoke about is forgotten.
             moveAt.keys.filter { it < ply - 4 }.forEach { moveAt.remove(it) }
         }
@@ -432,7 +440,7 @@ object PanelVoice {
 
     /** The voice's thread: a line's audio is playing now. `_on_audio_starts`. */
     internal fun onAudioStarts(line: String) {
-        val now = SystemClock.elapsedRealtime() / 1000.0
+        val now = clock()
         synchronized(lock) {
             val moved = awaitingAudio.remove(line) ?: return
             val seconds = now - moved
