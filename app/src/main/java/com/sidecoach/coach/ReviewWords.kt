@@ -134,7 +134,15 @@ object ReviewWords {
         val model: String = "",
         var cost: Double? = null,
         val calls: MutableList<Map<String, Any?>> = ArrayList(),
+        // The plies whose call failed: not done, to ask again (Try again), never dropped for good.
+        val failed: LinkedHashSet<Int> = LinkedHashSet(),
     )
+
+    /**
+     * The calls asked at once: every key move at once set a provider's rate limit off, and the
+     * moves whose calls failed were left without words (the review of 2026-10-01). `PARALLEL`.
+     */
+    @Volatile var PARALLEL = 4
 
     /**
      * The plies of the game's key moves, in order: [MOST] of them at most, the dearest kinds
@@ -733,8 +741,8 @@ object ReviewWords {
     /**
      * The model's review of the game's key moves, checked: a call a move, all at once. Without
      * thinking unless asked: a small model reasons worse about chess, not better (Tai,
-     * 2026-09-30). A call that fails drops its move; when every one fails (and none was answered
-     * before), the first failure is thrown. [answered]: the answers already paid for (words the
+     * 2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
+     * fails (and none was answered before), the first failure is thrown. [answered]: the answers already paid for (words the
      * app was closed in the middle of), not asked again; [onAnswer] (ply, text, stats) is handed
      * each new answer the moment it arrives, to keep it. The cost is of the new calls. `write`.
      */
@@ -781,7 +789,7 @@ object ReviewWords {
         val replies = LinkedHashMap<Int, Any>()
         if (todo.isNotEmpty()) {
             // `as_completed`: each answer handled here, on the caller's thread, as it comes.
-            val pool = Executors.newFixedThreadPool(todo.size) { task ->
+            val pool = Executors.newFixedThreadPool(minOf(PARALLEL, todo.size)) { task ->
                 Thread(task, "sidecoach-words").apply { isDaemon = true }
             }
             try {
@@ -808,6 +816,7 @@ object ReviewWords {
             val reply = replies[ply]
             if (reply is Exception) {
                 words.dropped[ply] = "the call failed: ${reply.message ?: ""}"
+                words.failed.add(ply)
                 continue
             }
             val text = if (reply is Completion) {

@@ -252,6 +252,20 @@ class ReviewRoom(
                 answered = before,
                 onAnswer = ::keep,
             )
+            if (written.failed.isNotEmpty()) {
+                // Some calls failed: the answers paid for are kept ([keep]), and Try again asks
+                // the rest. They were saved as done, the failed moves without words for good and
+                // nothing offered to finish them (the review of 2026-10-01).
+                val total = ReviewWords.keyPlies(reviewed).size
+                val first = written.dropped[written.failed.sorted().first()]
+                val error = "Written on ${total - written.failed.size} of $total key moves; the rest failed ($first)."
+                synchronized(lock) {
+                    wordsStatus = "failed"
+                    wordsError = error
+                }
+                emit("sys", "error", "the AI coach's words: $error")
+                return
+            }
             val cost = written.cost?.let { it + spentBefore }
             saved = JSONObject()
                 .put("model", written.model)
