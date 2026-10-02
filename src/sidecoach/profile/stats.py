@@ -239,6 +239,8 @@ MOTIFS = {
     "endgame.other": "endgame",
 }
 WORK = 3  # the areas Work on this names
+WORK_GAMES = 3  # the games before it names any
+WORK_MOVES = 3  # the moves an area needs before it is named
 
 
 def area(m: dict[str, Any]) -> str | None:
@@ -257,12 +259,17 @@ def area(m: dict[str, Any]) -> str | None:
 
 
 def _costs(d: _Data) -> dict[str, Any]:
-    """Each area's cost: the expected score its moves lost, a game (`n`, the games)."""
+    """Each area's cost: the expected score its moves lost, a game (`n`, the games), and how
+    many moves it counts (`moves`). The cost ranks the areas and meets the peers'; it is no
+    count of points: a position lost can swing back, and the losses add up past the games
+    lost ("11.1 points" for one area when 9 were lost in all, the review of 2026-10-01)."""
     lost: dict[str, float] = defaultdict(float)
+    count: dict[str, int] = defaultdict(int)
     for m in d.moves:
         where = area(m)
         if where is not None:
             lost[where] += m["loss"]
+            count[where] += 1
     games = len(d.games)
     names = [
         *(f"missed.{k}" for k in KINDS),
@@ -273,7 +280,11 @@ def _costs(d: _Data) -> dict[str, Any]:
     ]
     out: dict[str, Any] = {}
     for name in names:
-        figure = {"value": round(lost[name] / games, 4) if games else None, "n": games}
+        figure = {
+            "value": round(lost[name] / games, 4) if games else None,
+            "n": games,
+            "moves": count[name],
+        }
         head, _, kind = name.partition(".")
         if kind:
             out.setdefault(head, {})[kind] = figure
@@ -284,10 +295,15 @@ def _costs(d: _Data) -> dict[str, Any]:
 
 def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
     """The areas that cost the player most (WORK of them), dearest first: each with its cost a
-    game and its peers' (when known), and its puzzles' motif; its positions are `positions`'
-    "area" selector's."""
+    game and its peers' (when known), the moves it counts, and its puzzles' motif; its
+    positions are `positions`' "area" selector's. Nothing over fewer than WORK_GAMES games, and
+    no area of fewer than WORK_MOVES moves: one game's blunder is no area to work on."""
     ranked = sorted(
-        ((path, figure) for path, figure in walk(costs) if figure["value"]),
+        (
+            (path, figure)
+            for path, figure in walk(costs)
+            if figure["value"] and figure["n"] >= WORK_GAMES and figure["moves"] >= WORK_MOVES
+        ),
         key=lambda pf: -pf[1]["value"],
     )
     out = []
@@ -297,6 +313,7 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
                 "area": path,
                 "cost": figure["value"],
                 "games": figure["n"],
+                "moves": figure["moves"],
                 "peers": figure.get("peers"),
                 "grade": figure.get("grade"),
                 "motif": MOTIFS.get(path),

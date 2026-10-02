@@ -245,11 +245,8 @@
     "endgame.other": "With few pieces left, the king is a fighter: bring it in, and count before each pawn push.",
     quiet: "With no tactic on the board, a plan wins: improve your worst piece, and aim at their weak squares.",
   };
-  const costWords = (w: WorkArea) => {
-    const total = (w.cost * w.games).toFixed(1);
-    const peers = w.peers != null ? `; players of your rating ${w.peers.toFixed(2)}` : "";
-    return `${total} points over your ${plural(w.games, "game")} · ${w.cost.toFixed(2)} a game${peers}`;
-  };
+  // A count, never the summed loss: positions swing back, and the losses add up past the games.
+  const costWords = (w: WorkArea) => `${plural(w.moves, "move")} in your ${plural(w.games, "game")}`;
 
   // What each figure means (ours: chess.com publishes none), shown when the row opens.
   const DEF: Record<string, string> = {

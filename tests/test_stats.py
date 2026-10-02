@@ -219,27 +219,48 @@ def test_work_on_this_names_what_cost_most(tmp_path: Path) -> None:
     """Each costly move counts in one area (a missed tactic first, then one handed over, then the
     phase's), the dearest areas first, each with its puzzles' motif and its own positions."""
     store = Store(tmp_path / "profile.sqlite")
-    store.save_stats(
-        "standard",
-        _game("a"),
-        [
-            _move(3, "white", phase="opening", label="blunder", loss=0.5),
-            _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
-            _move(23, "white", allowed="free piece", label="mistake", loss=0.2),
-            _move(25, "white", phase="endgame", endgame="rook", label="mistake", loss=0.1),
-            _move(27, "white", label="inaccuracy", loss=0.05),  # no area: not a mistake
-            _move(29, "white", chance="pin", found=True, loss=0.0),  # found: costs nothing
-        ],
-    )
+    for key in "abc":
+        store.save_stats(
+            "standard",
+            _game(key),
+            [
+                _move(3, "white", phase="opening", label="blunder", loss=0.5),
+                _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
+                _move(23, "white", allowed="free piece", label="mistake", loss=0.2),
+                _move(25, "white", phase="endgame", endgame="rook", label="mistake", loss=0.1),
+                _move(27, "white", label="inaccuracy", loss=0.05),  # no area: not a mistake
+                _move(29, "white", chance="pin", found=True, loss=0.0),  # found: costs nothing
+            ],
+        )
     everything = stats(store, Filter())
     assert everything["costs"]["opening"]["value"] == 0.5
+    assert everything["costs"]["opening"]["moves"] == 3
     assert everything["costs"]["missed"]["pin"]["value"] == 0.0
     work = everything["work"]
     assert [w["area"] for w in work] == ["opening", "missed.fork", "allowed.free piece"]
     assert [w["motif"] for w in work] == ["opening", "fork", "hangingPiece"]
+    assert [(w["moves"], w["games"]) for w in work] == [(3, 3)] * 3
     behind = positions(store, Filter(), "area", "missed.fork")
-    assert [p["ply"] for p in behind] == [21]
+    assert [p["ply"] for p in behind] == [21, 21, 21]
     assert area(_move(1, "white", label="best")) is None
+
+
+def test_work_on_this_waits_for_several_games(tmp_path: Path) -> None:
+    """One game's blunders were "Work on this", and the cost read as points: 11.1 for one area
+    when 9 were lost in all (the review of 2026-10-01). Nothing is named over fewer than three
+    games, nor an area of fewer than three moves; each area says how many moves it counts."""
+    store = Store(tmp_path / "profile.sqlite")
+    moves = [
+        _move(3 + 2 * i, "white", phase="opening", label="blunder", loss=0.5) for i in range(4)
+    ]
+    store.save_stats("standard", _game("a"), moves)
+    assert stats(store, Filter())["work"] == []
+    store.save_stats("standard", _game("b"), [_move(21, "white", label="best")])
+    store.save_stats(
+        "standard", _game("c"), [_move(21, "white", allowed="fork", label="mistake", loss=0.4)]
+    )
+    work = stats(store, Filter())["work"]
+    assert [(w["area"], w["moves"], w["games"]) for w in work] == [("opening", 4, 3)]
 
 
 def test_chesscom_and_lichess_ratings_convert_both_ways() -> None:

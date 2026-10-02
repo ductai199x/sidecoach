@@ -422,6 +422,8 @@ export type WorkArea = {
   area: string;
   cost: number;
   games: number;
+  /** The moves it counts. */
+  moves: number;
   peers?: number | null;
   grade?: string | null;
   motif: string | null;
