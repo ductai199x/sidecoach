@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import android.content.res.AssetManager
+import java.io.InputStream
 
 /**
  * The system message: who the coach is, how the game reaches it, the rules, and C.
@@ -173,9 +174,15 @@ object Corrections {
     @Volatile
     private var loaded: String? = null
 
-    fun load(assets: AssetManager): String {
+    fun load(assets: AssetManager): String = load { name -> assets.open(name) }
+
+    /**
+     * [load] from whatever opens an asset by its name: the app's AssetManager, or the source
+     * tree for the host's unit tests, which have no AssetManager.
+     */
+    fun load(open: (String) -> InputStream): String {
         val text = try {
-            assets.open(ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            open(ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
                 // `Path.read_text` translates newlines; the asset is CRLF on a Windows
                 // checkout, and C would reach the model with a blank line between lessons.
                 .replace("\r\n", "\n").replace("\r", "\n").trim()
