@@ -107,6 +107,28 @@ object Lanes {
         return Request.runner(LaneRunner(top, children, serial = args.getString("lanes") == "off"))
     }
 
+    /**
+     * AndroidJUnitRunner's ActivityFinisherRunListener taken off [notifier] (JUnit keeps each
+     * listener wrapped in a SynchronizedRunListener), to be told of the app lane's tests only;
+     * null when the runner has none.
+     */
+    private fun takeActivityFinisher(notifier: RunNotifier): RunListener? = try {
+        val field = RunNotifier::class.java.getDeclaredField("listeners").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val listeners = (field.get(notifier) as List<RunListener>).map { held ->
+            if (held.javaClass.simpleName == "SynchronizedRunListener") {
+                held.javaClass.getDeclaredField("listener").apply { isAccessible = true }.get(held) as RunListener
+            } else {
+                held
+            }
+        }
+        listeners.firstOrNull { it.javaClass.name == "androidx.test.internal.runner.listener.ActivityFinisherRunListener" }
+            ?.also { notifier.removeListener(it) }
+    } catch (exc: ReflectiveOperationException) {
+        Log.w(TAG, "the activity finisher stays with every lane: $exc")
+        null
+    }
+
     /** The runners the request kept (its filters applied): ParentRunner's own list. */
     @Suppress("UNCHECKED_CAST")
     private fun childrenOf(parent: ParentRunner<*>): List<Runner>? {
@@ -169,24 +191,65 @@ object Lanes {
     fun laneOf(runner: Runner): Lane.Kind =
         runner.description.testClass?.getAnnotation(Lane::class.java)?.value ?: Lane.Kind.APP
 
-    /**
-     * [classes] longest first, by the seconds each took last time; a class not measured yet goes
-     * first of all, its length unknown.
-     */
-    private fun longestFirst(classes: List<Runner>, known: Map<String, Double>): ConcurrentLinkedQueue<Runner> =
-        ConcurrentLinkedQueue(classes.sortedByDescending { known[it.description.className] ?: Double.MAX_VALUE })
+    /** What a class cost last time, alone: its seconds and the most Java heap it held. */
+    private class Cost(val seconds: Double, val heapMb: Int)
 
-    /** The seconds each class took last time, for dealing a pool's classes longest first. */
-    private fun seconds(): Map<String, Double> = try {
+    /**
+     * What each class cost when it ran alone (`lanes/seconds.tsv`, `tools/lane_seconds.py`): the
+     * pools deal their classes longest first, and the heap-hungry ones wait for a heap slot. A
+     * class the table does not know is taken as the longest and as hungry: first, and careful.
+     */
+    private fun costs(): Map<String, Cost> = try {
         InstrumentationRegistry.getInstrumentation().context.assets.open("lanes/seconds.tsv")
             .bufferedReader().useLines { lines ->
                 lines.mapNotNull { line ->
                     val parts = line.split('\t')
-                    if (parts.size == 2) parts[0] to (parts[1].toDoubleOrNull() ?: return@mapNotNull null) else null
+                    val seconds = parts.getOrNull(1)?.toDoubleOrNull() ?: return@mapNotNull null
+                    parts[0] to Cost(seconds, parts.getOrNull(2)?.toIntOrNull() ?: Int.MAX_VALUE)
                 }.toMap()
             }
     } catch (_: java.io.IOException) {
         emptyMap()
+    }
+
+    /**
+     * A class that held this much Java heap or more alone runs only in one of [heapSlots]: the
+     * classes side by side share the process's one heap, and with four or five of these at once
+     * it was full and the collector ran without end -- BoardTrackerLostBoardTest took 45 s where
+     * it takes 4 alone, beside PipelineTest, VisionParityTest and StatsParityTest (2026-10-02).
+     */
+    private const val HUNGRY_HEAP_MB = 100
+
+    /** Whether [runner]'s class held [HUNGRY_HEAP_MB] of the heap or more alone (or is not known). */
+    private fun hungry(runner: Runner, costs: Map<String, Cost>): Boolean =
+        (costs[runner.description.className]?.heapMb ?: Int.MAX_VALUE) >= HUNGRY_HEAP_MB
+
+    /** Hungry classes side by side: one per 96 MB of the heap's limit (two on 192 MB). */
+    private val heapSlots = java.util.concurrent.Semaphore((heapMb / 96).toInt().coerceAtLeast(1), true)
+
+    /**
+     * A pool's classes, longest first, each handed to the first of the pool's threads to ask for
+     * one; a hungry class only with a heap slot, and while none is free a thread takes the next
+     * class that is not hungry, or waits for a slot if only hungry ones are left.
+     */
+    private class Picker(classes: List<Runner>, private val costs: Map<String, Cost>) {
+        private val left = ArrayList(classes.sortedByDescending { costs[it.description.className]?.seconds ?: Double.MAX_VALUE })
+
+        /** The next class, and whether a heap slot was taken for it; null when none is left. */
+        fun next(): Pair<Runner, Boolean>? {
+            while (true) {
+                synchronized(this) {
+                    if (left.isEmpty()) return null
+                    val light = left.firstOrNull { !hungry(it, costs) }
+                    if (light != null && !hungry(left.first(), costs)) return left.removeAt(0) to false
+                    if (heapSlots.tryAcquire()) return left.removeAt(left.indexOfFirst { hungry(it, costs) }) to true
+                    if (light != null) return left.removeAt(left.indexOf(light)) to false
+                }
+                // Only hungry classes are left, and every slot is taken: wait for one.
+                heapSlots.acquire()
+                heapSlots.release()
+            }
+        }
     }
 
     private class LaneRunner(
@@ -199,11 +262,12 @@ object Lanes {
         override fun run(notifier: RunNotifier) {
             val handOn = Any()
             val began = System.nanoTime()
+            val cpuBegan = android.os.Process.getElapsedCpuTime()
             val times = ConcurrentLinkedQueue<String>()
             val byLane = children.groupBy { laneOf(it) }
-            val known = seconds()
-            fun runOne(child: Runner, lane: String) {
-                val relay = Relay(notifier, handOn, lane, began, times)
+            val known = costs()
+            fun runOne(child: Runner, lane: String, finisher: RunListener? = null) {
+                val relay = Relay(notifier, handOn, lane, began, times, finisher)
                 val local = RunNotifier().apply { addListener(relay) }
                 try {
                     child.run(local)
@@ -225,15 +289,39 @@ object Lanes {
             if (serial) {
                 lane("serial") { children.forEach { runOne(it, "serial") } }
             } else {
+                // AndroidJUnitRunner finishes every activity as each test starts and ends: told of
+                // a test in another lane, it finished the panel a test in the app lane had open
+                // (RecordingNoticeTest's question, 2026-10-02: "not attached to window manager",
+                // and the run ended). Activities are the app lane's alone (the screen is the app's
+                // shared state), so the finishing goes with the app lane's tests, at their real
+                // start and end, and with no other lane's.
+                val finisher = takeActivityFinisher(notifier)
                 val app = byLane[Lane.Kind.APP].orEmpty()
-                if (app.isNotEmpty()) lane("app") { app.forEach { runOne(it, "app") } }
+                if (app.isNotEmpty()) {
+                    lane("app") {
+                        for (child in app) {
+                            // In AndroidJUnitRunner's order; a hungry one waits for its heap slot.
+                            val holds = hungry(child, known)
+                            if (holds) heapSlots.acquire()
+                            try {
+                                runOne(child, "app", finisher)
+                            } finally {
+                                if (holds) heapSlots.release()
+                            }
+                        }
+                    }
+                }
                 fun pool(name: String, threads: Int, kinds: List<Lane.Kind>) {
-                    val queue = longestFirst(kinds.flatMap { byLane[it].orEmpty() }, known)
-                    repeat(minOf(threads, queue.size)) { i ->
+                    val picker = Picker(kinds.flatMap { byLane[it].orEmpty() }, known)
+                    repeat(minOf(threads, kinds.sumOf { byLane[it].orEmpty().size })) { i ->
                         lane("$name$i") {
                             while (true) {
-                                val next = queue.poll() ?: break
-                                runOne(next, laneOf(next).name.lowercase())
+                                val (next, slot) = picker.next() ?: break
+                                try {
+                                    runOne(next, laneOf(next).name.lowercase())
+                                } finally {
+                                    if (slot) heapSlots.release()
+                                }
                             }
                         }
                     }
@@ -243,7 +331,8 @@ object Lanes {
             }
             threads.forEach { it.join() }
             val wall = (System.nanoTime() - began) / 1e9
-            Log.i(TAG, "lanes: ${byLane.mapValues { it.value.size }}, ${"%.1f".format(java.util.Locale.ROOT, wall)} s")
+            val cpu = (android.os.Process.getElapsedCpuTime() - cpuBegan) / 1e3
+            Log.i(TAG, "lanes: ${byLane.mapValues { it.value.size }}, %.1f s, the process's CPU %.1f s".format(java.util.Locale.ROOT, wall, cpu))
             write(times)
         }
 
@@ -271,6 +360,8 @@ object Lanes {
         private val lane: String,
         private val began: Long,
         private val times: MutableCollection<String>,
+        /** The runner's activity finisher, told of this lane's tests as they start and end. */
+        private val finisher: RunListener? = null,
     ) : RunListener() {
         private val held = ArrayList<(RunNotifier) -> Unit>()
         private var inTest = false
@@ -289,6 +380,7 @@ object Lanes {
         override fun testSuiteFinished(description: Description) = handOn(listOf { it.fireTestSuiteFinished(description) })
 
         override fun testStarted(description: Description) {
+            finisher?.testStarted(description)
             held.clear()
             inTest = true
             started.set(System.nanoTime())
@@ -308,6 +400,7 @@ object Lanes {
         override fun testIgnored(description: Description) = handOn(listOf { it.fireTestIgnored(description) })
 
         override fun testFinished(description: Description) {
+            finisher?.testFinished(description)
             held += { it.fireTestFinished(description) }
             inTest = false
             val end = now()
