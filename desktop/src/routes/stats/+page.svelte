@@ -64,10 +64,22 @@
     }
   }
 
+  // Each load is numbered: a slower answer for an older filter never lands over a newer one,
+  // and neither do the positions asked under it.
+  let seq = 0;
+  let openedFrom: [string, string] | null = null;
+
   async function load(): Promise<void> {
     prefs.setStr("statsFilter", JSON.stringify(filter));
+    const mine = ++seq;
     const got = await statsApi.get(filter).catch((e) => ({ ok: false as const, error: String(e) }));
-    if (!got.ok || !("stats" in got)) { failure = "error" in got ? got.error : "Stats could not be read."; return; }
+    if (mine !== seq) return;
+    if (!got.ok || !("stats" in got)) {
+      // Said once; the page keeps what it had, and a later load that works clears it.
+      failure = "error" in got ? got.error : "Stats could not be read.";
+      return;
+    }
+    failure = "";
     numbers = got.stats;
     backlog = got.backlog;
     // The openings open on the side the player has games with.
@@ -76,6 +88,8 @@
     behind = {};
     for (const w of numbers.work) void positions("area", w.area);
     if (section === "moves") void positions("gallery", gallery);
+    // A figure left open is asked again, or it would wait on "…" for good.
+    if (opened && openedFrom) void positions(...openedFrom);
   }
 
   function setFilter(change: Partial<StatsFilter>): void {
@@ -93,13 +107,16 @@
   async function positions(what: string, arg: string): Promise<void> {
     const id = `${what}:${arg}`;
     if (behind[id]) return;
-    const got = await statsApi.positions(what, arg, filter);
-    behind = { ...behind, [id]: got.ok ? got.positions : [] };
+    const mine = seq;
+    const got = await statsApi.positions(what, arg, filter).catch(() => null);
+    if (mine !== seq) return;
+    behind = { ...behind, [id]: got?.ok ? got.positions : [] };
   }
 
   function toggle(id: string, what: string, arg: string): void {
     opened = opened === id ? null : id;
-    if (opened && what) void positions(what, arg);
+    openedFrom = opened && what ? [what, arg] : null;
+    if (openedFrom) void positions(...openedFrom);
   }
 
   function openReview(p: StatPosition, e: MouseEvent): void {
@@ -417,8 +434,9 @@
 
     {#if failure}
       <div class="rv-failed">{failure}</div>
-    {:else if !numbers}
-      <div class="rv-progress">Adding up your games…</div>
+    {/if}
+    {#if !numbers}
+      {#if !failure}<div class="rv-progress">Adding up your games…</div>{/if}
     {:else if !numbers.overview.games}
       <div class="st-empty">No reviewed games {filter.time_class || filter.days || filter.opponents !== "all" ? "for these filters" : "yet"}. {#if backlog}Games you bring in, and games Sidecoach watches, are reviewed in the background{backlog.waiting ? ` — ${backlog.waiting} waiting` : ""}.{:else}Every game you review in Your games counts here.{/if}</div>
     {:else if section === "overview"}
