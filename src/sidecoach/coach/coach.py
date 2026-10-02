@@ -2328,12 +2328,15 @@ def may_carry_claims(text: str) -> bool:
 # threat?" -- opened the move level, and the answer was given (the coach review, 2026-10-01).
 _ASK_MOVE = re.compile(
     r"\b((?<!\bwas the )(?<!\bwas that the )(?<!\bwas it the )best move|"
-    r"what (should|do|would) i (play|do)|what would you play|"
-    r"which move(?! (?:did|was|were|had|has|have|do|does) (?:they|he|she|i|it|that|the opponent|"
-    r"my opponent)\b)|"
-    r"just tell me|what'?s the move|tell me the move|(?<!\bwas )(?<!\bwere )the answer)\b",
+    r"what (?:should|would) i play|what would you play|"
+    r"which move (?:should i (?:play|make)|is (?:best|better)|would you (?:play|make|suggest)|"
+    r"do you (?:play|suggest|recommend))|"
+    r"just tell me|what'?s the move|(?:tell|show|give) me the move|"
+    r"(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\b",
     re.I,
 )
+# "I am not stuck, just thinking" is no request for a hint.
+_NOT_STUCK = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:\w+\s+)?stuck\b", re.I)
 # How the position goes on is the line: "how would this position continues?" and "ok and after
 # that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
 # only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
@@ -2342,8 +2345,8 @@ _ASK_MOVE = re.compile(
 _ASK_LINE = re.compile(
     r"\b(?:the|a|some|main|best|engine'?s?)\s+(?:(?:main|best|whole|full|engine'?s?|critical|"
     r"forcing|winning)\s+)?(?:lines?|variations?|continuations?)\b"
-    r"|\b(?:what happens (?:after|next)|"
-    r"and then what|what follows|what(?:'s| is| comes) next|then what)\b"
+    r"|\b(?:what happens (?:after|next)|what follows)\b"
+    r"|\b(?:and )?then what\W*$|\bwhat(?:'s| is| comes) next\W*$"
     r"|\bafter that\s*\?"
     r"|\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|"
     r"things) (?:continue|continues|go on|goes on|play out|proceed)\b",
@@ -2364,7 +2367,7 @@ def unlock_for(text: str, board: chess.Board, candidates: Sequence[str]) -> Unlo
         return Unlock.ASK_LINE
     if _ASK_MOVE.search(text):
         return Unlock.ASK_MOVE
-    if _HINT.search(text):
+    if _HINT.search(_NOT_STUCK.sub(" ", text)):
         return Unlock.HINT
     for token in _SAN.findall(text):
         try:

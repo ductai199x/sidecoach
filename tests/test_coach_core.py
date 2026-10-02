@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import chess
 
-from sidecoach.coach.coach import Coach
+from sidecoach.coach.coach import Coach, unlock_for
+from sidecoach.coach.disclosure import Unlock
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
@@ -83,6 +84,41 @@ def test_a_takeback_keeps_what_the_player_asked_for_before_the_move() -> None:
     drain(coach)
     coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 30.0)
     assert coach.positions[6].disclosure.level is DisclosureLevel.MOVE
+
+
+# 2. Ordinary words open nothing: the move and the line only on an explicit ask
+
+
+def test_ordinary_words_open_neither_the_move_nor_the_line_nor_a_hint() -> None:
+    """ "Which move should I avoid?", "the answer is Nf3, right?" and "what do I do about
+    that?" gave the move; "what's next for me after castling" the line; "I'm not stuck, just
+    thinking" climbed a rung. Only explicit asks unlock; the rest goes to the model at the
+    level in force (the deep coach.py review, 2026-10-01)."""
+    board = chess.Board(SCHOLAR)
+    for said in (
+        "which move should I avoid?",
+        "which move is the opponent threatening?",
+        "the answer is Nf3, right?",
+        "what do I do about their threat?",
+        "what should I do about the bishop?",
+        "what's next for me after castling?",
+        "what comes next in the plan after I castle?",
+        "I'm not stuck, just thinking",
+        "I am not really stuck, I am looking at the queen",
+        "I don't feel stuck",
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is None, said
+    for said, unlock in (
+        ("show me the move", Unlock.ASK_MOVE),
+        ("tell me the move", Unlock.ASK_MOVE),
+        ("what's the best move?", Unlock.ASK_MOVE),
+        ("what should I play?", Unlock.ASK_MOVE),
+        ("what's the line?", Unlock.ASK_LINE),
+        ("what comes next?", Unlock.ASK_LINE),
+        ("I'm stuck", Unlock.HINT),
+        ("give me a hint", Unlock.HINT),
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is unlock, said
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves
