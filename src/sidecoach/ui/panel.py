@@ -1165,6 +1165,11 @@ class PanelEngine:
     def poll(self, since: int = 0) -> dict[str, Any]:
         """A snapshot for the page: the current state and every log record after `since`;
         and whether the voice is speaking now, for the captions to fade once it stops."""
+        if self._hear_test_on and time.monotonic() - self._hear_test_seen > HEAR_TEST_TIMEOUT_S:
+            # The Settings window closed during the microphone test without saying so: the
+            # test ended only with the next utterance, listening on meanwhile in voice mode
+            # whatever the player had chosen (voice finding 10, 2026-10-01).
+            self.set_hear_test(False)
         with self._lock:
             state = dict(self._state)
         state["speaking"] = bool(self._tts.busy)

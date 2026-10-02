@@ -332,7 +332,9 @@
     // phone's app switcher) or closes (its ✕, the app quitting): sent so as to outlive the page.
     const onBlur = () => void flush();
     const onHidden = () => { if (document.visibilityState === "hidden") void flush(true); };
-    const onLeave = () => void flush(true);
+    // The microphone test ends with the window: onDestroy does not run when it is closed, and
+    // the test listened on (the server also ends one its page stopped polling).
+    const onLeave = () => { void flush(true); if (hearOn) void stopHearing(); };
     window.addEventListener("focus", onFocus);
     window.addEventListener("hashchange", onHash);
     window.addEventListener("blur", onBlur);
