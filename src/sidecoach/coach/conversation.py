@@ -1132,7 +1132,14 @@ class Conversation:
                 # The king's free squares as it stands: taken as what a move left them ("Qb4
                 # leaves only e4 and e5" where Qb4 took e4 away: the test audit, 2026-09-26).
                 said = third_person(str(value), side=side)
-                out.append(f"{name}: {said} (as it stands, before any move)")
+                # Of a past position, "as it stands" read as the board now, whose free squares
+                # are not those (the deep prompt review, 2026-10-01).
+                when = (
+                    "in that position, before the move the player made there"
+                    if past
+                    else "as it stands, before any move"
+                )
+                out.append(f"{name}: {said} ({when})")
             else:
                 out.append(f"{name}: {third_person(str(value), side=side)}")
         return out

@@ -31,6 +31,20 @@ def test_the_system_message_is_persona_contract_and_rules_in_order() -> None:
     assert "Lessons from earlier games" not in text, "no C without it"
 
 
+def test_the_words_on_whose_pieces_and_which_lists_agree() -> None:
+    """The deep prompt review (2026-10-01): the first hint's level line said "every piece ...
+    of theirs" (the opponent's) and "which of their pieces makes it" (the player's) in one
+    breath; rule 2 kept back the piece that the second hint names; and the lists were said
+    complete where the position they faced has none."""
+    from sidecoach.coach.coach import IDEA_LEVEL_WORDS
+
+    assert "of the opponent's the sheet names" in IDEA_LEVEL_WORDS
+    assert "which of the player's pieces makes it" in IDEA_LEVEL_WORDS
+    assert "until the Task says the piece may be named" in prompt.RULES
+    assert "complete for the position now" in prompt.CONTRACT
+    assert "the position they faced -- says only what its facts state" in prompt.CONTRACT
+
+
 def test_no_persona_or_an_unknown_one_is_the_default_and_the_rating_sets_the_pitch() -> None:
     """A persona left empty or named wrong (a settings file from another version) is the
     default one, warm and direct; every persona keeps the aim, and with a rating band says

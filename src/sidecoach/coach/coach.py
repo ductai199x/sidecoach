@@ -602,10 +602,10 @@ def _lesson_data(board: chess.Board | None, best: str, played: str | None, rule:
 # the board (Tai, 2026-09-24), and only the answer is kept back (Tai, 2026-09-26: a vague
 # coach is worse than one that says a little too much).
 IDEA_LEVEL_WORDS = (
-    "the idea: what is at stake and the key fact, with every piece, square and move of "
-    "theirs the sheet names, the target's square included. Keep back only the answer: the "
-    "player's move, the square it goes to (unless the target stands there), and which of "
-    "their pieces makes it"
+    "the idea: what is at stake and the key fact, with every piece, square and move of the "
+    "opponent's the sheet names, the target's square included. Keep back only the answer: "
+    "the player's move, the square it goes to (unless the target stands there), and which of "
+    "the player's pieces makes it"
 )
 SEE_ALL_WORDS = (
     "You see the answer so that the hint can be precise and true; a hint that gives a little "

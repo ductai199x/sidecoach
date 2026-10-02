@@ -496,3 +496,16 @@ def test_the_prompt_check_names_what_is_wrong() -> None:
     )
     with_facts = read.replace("\n\n## On the board", "\n\n## Facts (the player to move)\nphase: x")
     assert harness_problem(with_facts, board, Side.BLACK, lines=True, facts=True) is None
+
+
+def test_a_past_positions_free_squares_are_said_of_that_position() -> None:
+    """The sheet of the position they faced said the king's free squares "(as it stands,
+    before any move)": read as the board now, where they are no longer free (the deep prompt
+    review, 2026-10-01)."""
+    convo = _conversation()
+    board = chess.Board()
+    target = "their king on e8, with one free square: d8"
+    now = convo._fact_lines({"target": target}, board, "player")
+    past = convo._fact_lines({"target": target}, board, "player", past=True)
+    assert now[0].endswith("(as it stands, before any move)"), now
+    assert past[0].endswith("(in that position, before the move the player made there)"), past
