@@ -2044,7 +2044,7 @@ class CoachTest {
         provider.replies.addAll(listOf("", ""))
         coach.ask("what do I keep missing?", 10.0)
         assertEquals(
-            "1 of your 3 moves were best or excellent. You lost the most ground at 2. Qh5 (inaccuracy).",
+            "1 of your 3 moves were best. You lost the most ground at 2. Qh5 (inaccuracy).",
             messages(coach).last().text,
         )
     }
@@ -2704,9 +2704,12 @@ class CoachTest {
                 else -> start(coach)
             }
             val out = messages(coach) // the reply lands now
-            assertEquals(change, listOf(Trigger.POST_MISTAKE), out.map { it.trigger })
+            // A lesson on a move the board no longer has is neither shown nor spoken, and no turn
+            // of the moment now (the deep coach.py review, 2026-10-01).
+            assertEquals(change, emptyList<CoachMessage>(), out)
+            assertEquals(change, 1, coach.withdrawn.size)
             assertTrue(change, coach.conversation.entries.none { it.kind == "coach" })
-            assertFalse(change, out[0].text in coach.conversation.render())
+            assertFalse(change, coach.withdrawn.first().message.text in coach.conversation.render())
         }
         val coach = Coach(
             ScriptedProvider(emptyList()),

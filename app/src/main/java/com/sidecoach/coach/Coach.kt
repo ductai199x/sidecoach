@@ -681,6 +681,37 @@ const val MOVE_DIRECTIVE =
         "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two " +
         "sentences, no question."
 
+/**
+ * Asked for another hint once the move was given: it is said again, in other words. `MOVE_GIVEN`.
+ */
+const val MOVE_GIVEN =
+    "They asked for another hint, and the move has been given already: it is %s. Say so " +
+        "plainly, with what it does from the fact sheet's why, in other words than before. One or " +
+        "two sentences, no question."
+
+/**
+ * Asked again once the move was given, the answer is the move once more with its reason against
+ * the others: why it is the move to play instead of something clearly worse, from what the board
+ * says of those ([worseMoves]); said in words, true of the board, nothing invented.
+ * `MOVE_GIVEN_WHY`: `%1$s` the move, `%2$s` the worse moves with what goes wrong.
+ */
+const val MOVE_GIVEN_WHY =
+    "They asked for another hint, and the move has been given already: it is %1\$s. Say so " +
+        "plainly, with what it does from the fact sheet's why, in other words than before -- and " +
+        "why it is the move to play instead of something that looks as good but is clearly worse: " +
+        "name one or two of the moves below and what goes wrong with them, as the board says it, " +
+        "and nothing more of them. Clearly worse here, and what goes wrong: %2\$s. Two or three " +
+        "sentences, no question."
+
+/**
+ * The moves besides the best one, asked for: all that are about as good, named, and the clearly
+ * worse ones with what goes wrong with them. The engine's lines list them all; line 1 is only
+ * the first. `ALTERNATIVES_READ`.
+ */
+const val ALTERNATIVES_READ =
+    "Read the engine lines above, all of them and not only line 1: each line's first move is a " +
+        "candidate, with its score, and the weaker lines say how far behind the best they are."
+
 fun vsDirective(candidates: Int = VS_CANDIDATES): String {
     val count = NUMBER_WORDS[candidates] ?: candidates.toString()
     return "\n\nInstead of one reply, give $count different ways you could say this, varied in " +
@@ -1145,7 +1176,22 @@ class Spoken(
      * a takeback or a re-read is no turn of the moment now.
      */
     val epoch: Int = 0,
-)
+    /**
+     * The lesson ends by asking what the player saw ([CoachSession.elicitDue]): when it is dropped
+     * unsaid, the question was never asked.
+     */
+    val elicit: Boolean = false,
+) {
+    /** This reply as the log keeps it once it is old: its words and checks, not the prompts. */
+    fun withoutPrompts(): Spoken {
+        if (calls.all { it.prompt.isEmpty() }) return this
+        return Spoken(
+            message, level, problems, attempts,
+            calls.map { ModelCall(it.raw, it.stats, it.candidates, it.passed, "") },
+            recorded, streamed, verified, repaired, leaks, notes, epoch, elicit,
+        )
+    }
+}
 
 class CoachPosition(
     val ply: Int,
@@ -1204,8 +1250,25 @@ fun boardBack(board: Board, fen: String): Board {
 const val FAST_PACE_S = 6.0
 const val PACE_MOVES = 4
 
+/** What a player's question makes stale while it waits unstarted: a word on a move, a nudge. */
+internal val STALE_BY_AN_ASK = setOf(Trigger.POST_MOVE, Trigger.STUCK, Trigger.DECISIVE_QUESTION)
+
 /** How many plies back the coach keeps a position and its facts. */
 const val POSITIONS_KEPT = 40
+
+/**
+ * An opponent's move that follows the player's within this many seconds came straight away (a
+ * bot): the player never faced the position in between, and "that move" they ask about is their
+ * own ([CoachSession.repliedAtOnce]). `INSTANT_REPLY_S`.
+ */
+const val INSTANT_REPLY_S = 2.0
+
+/**
+ * The replies the log keeps the prompts of ([CoachSession.lighten]), and the claim readings the
+ * speaker keeps. `SPOKEN_PROMPTS_KEPT`, `CLAIMS_KEPT`.
+ */
+const val SPOKEN_PROMPTS_KEPT = 20
+const val CLAIMS_KEPT = 200
 
 /**
  * How long the lesson on a mistake waits for the analysis of the position the move left: the
@@ -1300,6 +1363,7 @@ class CoachRequest(
     val tools: EngineTools? = null,
     /** The moment of the game the request was built in ([Coach.epoch]). */
     val epoch: Int = 0,
+    val elicit: Boolean = false,
 )
 
 /**
@@ -1648,24 +1712,42 @@ class Speaker(
     }
 
     /**
+     * Something the coach does for the model's sake failed (a summary, the engine on a move they
+     * named, the work of a question): counted and kept for the log, as a failed call is -- a bare
+     * `lastError` was never read until the next failure. `Speaker.note_failure`.
+     */
+    fun noteFailure(what: String, exc: Exception) {
+        failures += 1
+        lastError = "$what: ${exc::class.java.simpleName}: ${exc.message}"
+    }
+
+    /**
      * Queue a request. An ask goes ahead of any unprompted request still waiting: the player
      * is waiting for this one, and a post-move remark or a nudge that has not started yet
-     * would only be stale by the time the answer came out.
+     * would only be stale by the time the answer came out. A lesson on a mistake and the review
+     * are no remark: the player's question does not make them stale, and dropped, the rule they
+     * were charged against and the question they were to end with ([CoachSession.elicitDue])
+     * went unsaid -- they wait for the answer instead.
      */
     fun submit(request: CoachRequest) {
-        if (request.trigger == Trigger.USER_ASK) {
-            val kept = ArrayList<Any>()
-            while (true) {
-                val item = requests.poll() ?: break
-                if (item is CoachRequest && item.trigger != Trigger.USER_ASK) {
-                    dropped += 1
-                    continue
-                }
-                kept.add(item)
-            }
-            for (item in kept) requests.put(item)
+        if (request.trigger != Trigger.USER_ASK) {
+            requests.put(request)
+            return
         }
-        requests.put(request)
+        val waiting = ArrayList<Any>()
+        while (true) waiting.add(requests.poll() ?: break)
+        val ahead = ArrayList<Any>() // said already, and the asks before this one
+        val behind = ArrayList<Any>()
+        for (item in waiting) {
+            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK) {
+                ahead.add(item)
+            } else if (item.trigger in STALE_BY_AN_ASK) {
+                dropped += 1
+            } else {
+                behind.add(item)
+            }
+        }
+        for (item in ahead + request + behind) requests.put(item)
     }
 
     /**
@@ -1683,9 +1765,39 @@ class Speaker(
             val request = requests.poll() ?: return
             when (request) {
                 is Spoken -> results.add(request)
-                is CoachRequest -> results.add(speakNow(request))
+                is CoachRequest -> results.add(answer(request))
                 else -> return
             }
+        }
+    }
+
+    /**
+     * [speakNow], and when it breaks -- not the model's call, which [speakNow] handles, but
+     * anything else in building the reply -- the failure counted and the request's template said
+     * instead: the player's question was left with no answer at all, and the failure with no
+     * mark. `Speaker.answer`.
+     */
+    fun answer(request: CoachRequest): Spoken {
+        try {
+            return speakNow(request)
+        } catch (exc: Exception) {
+            noteFailure("reply", exc)
+            return Spoken(
+                message = CoachMessage(
+                    text = request.fallback,
+                    level = request.level,
+                    trigger = request.trigger,
+                    gameId = request.gameId,
+                    ply = request.ply,
+                    fen = request.board.fen(),
+                    annotations = request.annotations,
+                ),
+                level = request.level,
+                problems = listOf("the reply failed: ${exc::class.java.simpleName}: ${exc.message}"),
+                attempts = 0,
+                epoch = request.epoch,
+                elicit = request.elicit,
+            )
         }
     }
 
@@ -1738,6 +1850,7 @@ class Speaker(
                 problems = emptyList(),
                 attempts = 0,
                 epoch = request.epoch,
+                elicit = request.elicit,
             )
         }
         while (attempts < 2 && !(attempts > 0 && closed.count == 0L)) {
@@ -1873,6 +1986,7 @@ class Speaker(
             leaks = leaks,
             notes = notes,
             epoch = request.epoch,
+            elicit = request.elicit,
         )
     }
 
@@ -2168,11 +2282,10 @@ class Speaker(
             try {
                 when (request) {
                     is Spoken -> results.add(request)
-                    is CoachRequest -> results.add(speakNow(request))
+                    is CoachRequest -> results.add(answer(request))
                 }
             } catch (exc: Exception) {
-                failures += 1
-                lastError = "${exc::class.java.simpleName}: ${exc.message}"
+                noteFailure("worker", exc)
             } finally {
                 busy = false
             }

@@ -1,0 +1,183 @@
+{
+ "ts": 826390.265,
+ "source_frame_id": null,
+ "game_id": "g",
+ "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+ "ply": 0,
+ "lines": [
+  {
+   "moves": [
+    "h5f7"
+   ],
+   "depth": 16,
+   "expected_score": 1.0,
+   "score_cp": null,
+   "mate": 1,
+   "wdl": [
+    1000,
+    0,
+    0
+   ]
+  },
+  {
+   "moves": [
+    "h5d1",
+    "f6e4",
+    "d2d3",
+    "e4f6",
+    "c4b3",
+    "d7d5",
+    "g1f3",
+    "a7a5",
+    "b1c3",
+    "f8b4",
+    "a2a3",
+    "b4c3"
+   ],
+   "depth": 16,
+   "expected_score": 0.2788895198861058,
+   "score_cp": -258,
+   "mate": null,
+   "wdl": [
+    0,
+    2,
+    998
+   ]
+  },
+  {
+   "moves": [
+    "h5e2",
+    "c6d4",
+    "e2d1",
+    "f6e4",
+    "d2d3",
+    "e4c5",
+    "c2c3",
+    "d4f5",
+    "d3d4",
+    "d7d5",
+    "c4e2",
+    "e5d4"
+   ],
+   "depth": 16,
+   "expected_score": 0.24613144130277942,
+   "score_cp": -304,
+   "mate": null,
+   "wdl": [
+    0,
+    0,
+    1000
+   ]
+  },
+  {
+   "moves": [
+    "h5f3",
+    "c6d4",
+    "f3d1",
+    "f6e4",
+    "g1f3",
+    "e4f2",
+    "e1f2",
+    "d4f3",
+    "c4f7",
+    "e8f7",
+    "d1f3",
+    "d8f6"
+   ],
+   "depth": 16,
+   "expected_score": 0.23010432245165907,
+   "score_cp": -328,
+   "mate": null,
+   "wdl": [
+    0,
+    0,
+    1000
+   ]
+  },
+  {
+   "moves": [
+    "h5h4",
+    "g7g5",
+    "h4g3",
+    "f6e4",
+    "g3d3",
+    "e4f6",
+    "d3e2",
+    "d8e7",
+    "b1c3",
+    "c6d4",
+    "e2d1",
+    "c7c6"
+   ],
+   "depth": 16,
+   "expected_score": 0.21358389864815974,
+   "score_cp": -354,
+   "mate": null,
+   "wdl": [
+    0,
+    0,
+    1000
+   ]
+  },
+  {
+   "moves": [
+    "h5g5",
+    "h7h6",
+    "g5e3",
+    "c6d4",
+    "c4b3",
+    "d7d5",
+    "g1e2",
+    "d5e4",
+    "d2d3",
+    "d4f5",
+    "e3d2",
+    "e4d3"
+   ],
+   "depth": 16,
+   "expected_score": 0.20147549095983824,
+   "score_cp": -374,
+   "mate": null,
+   "wdl": [
+    0,
+    0,
+    1000
+   ]
+  }
+ ],
+ "decisive": true,
+ "only_move": true,
+ "threats": [
+  "f6h5"
+ ],
+ "traps": [
+  {
+   "moves": [
+    "c4f7",
+    "e8e7",
+    "h5e2",
+    "e7f7",
+    "f2f4",
+    "c6d4",
+    "e2d1",
+    "e5f4",
+    "g1f3",
+    "d4f3",
+    "d1f3",
+    "d7d6",
+    "f3f4"
+   ],
+   "depth": 14,
+   "expected_score": 0.09664924125145602,
+   "score_cp": null,
+   "mate": null,
+   "wdl": null
+  }
+ ],
+ "defences": [],
+ "threatens": [],
+ "tags": [],
+ "opening": null,
+ "in_book": false,
+ "provisional": false
+}

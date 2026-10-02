@@ -256,7 +256,23 @@ class Disclosure(var level: DisclosureLevel = DisclosureLevel.SILENT) {
      * the move was found and the reply left the engine's line). `Disclosure.carry`.
      */
     fun carry(carried: DisclosureLevel) {
+        if (carried.value > this.carried.value) this.carried = carried
         if (carried.value > level.value) level = carried
+    }
+
+    /** What the combination had said before the player came here ([carry]). */
+    var carried: DisclosureLevel = DisclosureLevel.SILENT
+        private set
+
+    /**
+     * The move played from here is taken back: the position is the player's to move again, at the
+     * level of the hints it had had. The line the move opened ([Unlock.MOVE_PLAYED]) belonged to
+     * the move withdrawn; what was said before it stays said, and nothing lower is said after it
+     * (Tai, 2026-09-29). `Disclosure.withdraw_move`.
+     */
+    fun withdrawMove() {
+        history.removeAll { it.first == Unlock.MOVE_PLAYED }
+        level = DisclosureLevel.of(maxOf(hinted.value, carried.value))
     }
 }
 
