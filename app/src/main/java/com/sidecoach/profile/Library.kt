@@ -279,6 +279,7 @@ object Library {
      * latest 200 (the review of 2026-10-01), each against the imports played near it. `reconcile`.
      */
     fun reconcile(store: Store): Map<String, String> {
+        pairCopies(store)
         val twins = store.twins().toMutableMap()
         val found = pairs(store.games(null), store.library(), twins) { store.moves(it.gameId) }
         for ((watched, imported) in found) {
@@ -286,6 +287,101 @@ object Library {
             twins[watched] = imported
         }
         return twins
+    }
+
+    // One game kept twice in the library -- pasted as a PGN and brought in from the site, or pasted
+    // twice with other headers -- is one game (Tai, 2026-10-02: "that's obvious"): its copies
+    // stand aside for the best of them, as a watched game does for its import ([reconcile]: the
+    // same `twins`), so the list, Stats, the insights and the backlog count it once. Two copies
+    // are one game when at least one was pasted (a site's own ids tell its games apart: two games
+    // of one site, or of two sites, are two), they play the same moves from the start to the end,
+    // their results do not disagree, and the players, when both name them, are the same.
+    private val SITES = setOf("chesscom", "lichess")
+    private val COMMENT = Regex("\\{[^}]*\\}|;[^\\n]*")
+    private val VARIATION = Regex("\\([^()]*\\)")
+    private val MOVE_NOISE = Regex("\\$\\d+|\\d+\\.+")
+    private val SPACE = Regex("\\s+")
+    private val RESULTS = setOf("1-0", "0-1", "1/2-1/2", "*")
+
+    /**
+     * A PGN's moves as bare words, read off its text with no board (cheap enough for every game
+     * of the library at each look): what two copies of one game share, the candidates
+     * [pairCopies] then confirms by playing the moves. `_signature`.
+     */
+    internal fun signature(pgn: String): List<String> {
+        var text = pgn.lines().filter { !it.startsWith("[") }.joinToString("\n")
+        text = COMMENT.replace(text, " ")
+        while (true) {
+            val bare = VARIATION.replace(text, " ")
+            if (bare == text) break
+            text = bare
+        }
+        return MOVE_NOISE.replace(text, " ").split(SPACE)
+            .filter { it.isNotEmpty() && it !in RESULTS }
+            .map { it.trimEnd('+', '#', '!', '?') }
+    }
+
+    /**
+     * Which copy stands for the game, best first: the site's own record (its headers, clocks,
+     * ratings) over a pasted one, then the one that says when in the day it started and which
+     * side was the player's, then the one brought in first. `_standing`.
+     */
+    private val STANDING = compareBy<LibraryRow>(
+        { it.source !in SITES },
+        { !TIMED.containsMatchIn(it.pgn) },
+        { it.userSide == null },
+        { it.addedAt },
+        { it.key },
+    )
+
+    private fun named(name: String?): String? = name?.trim()?.takeIf { it != "" && it != "?" }?.lowercase()
+
+    /** Whether [row] is a copy of [best] (see the rule above). `_same_game`. */
+    private fun sameGame(best: LibraryRow, row: LibraryRow, moves: MutableMap<String, List<String>?>): Boolean {
+        if (best.source != "pgn" && row.source != "pgn") return false
+        val ours = best.result
+        val theirs = row.result
+        if (!ours.isNullOrEmpty() && !theirs.isNullOrEmpty() && ours != "*" && theirs != "*" && ours != theirs) return false
+        for ((a, b) in listOf(best.white to row.white, best.black to row.black)) {
+            val x = named(a)
+            val y = named(b)
+            if (x != null && y != null && x != y) return false
+        }
+        for (each in listOf(best, row)) {
+            if (each.key !in moves) moves[each.key] = sans(each.pgn)
+        }
+        return moves[best.key] != null && moves[best.key] == moves[row.key]
+    }
+
+    /**
+     * Each game the library keeps in more than one copy, the copies that stand aside -> the copy
+     * that stands for the game (`twins`, kept in the store). Returns every copy paired. A better
+     * copy that comes later (the site's, after a paste) takes over the ones that stood aside for
+     * the one before it, the watched games' pairs among them. `pair_copies`.
+     */
+    fun pairCopies(store: Store): Map<String, String> {
+        val groups = LinkedHashMap<List<String>, MutableList<LibraryRow>>()
+        for (row in store.library()) {
+            val words = signature(row.pgn)
+            if (words.isNotEmpty()) groups.getOrPut(words) { ArrayList() }.add(row)
+        }
+        val found = LinkedHashMap<String, String>()
+        val moves = HashMap<String, List<String>?>()
+        for (group in groups.values) {
+            if (group.size < 2) continue
+            val stands = ArrayList<LibraryRow>() // the games of this group, each by its best copy
+            for (row in group.sortedWith(STANDING)) {
+                val home = stands.firstOrNull { sameGame(it, row, moves) }
+                if (home == null) {
+                    stands.add(row)
+                    continue
+                }
+                store.addTwin(row.key, home.key)
+                store.retargetTwins(row.key, home.key)
+                found[row.key] = home.key
+            }
+        }
+        return found
     }
 
     /** The new pairs among watched records and imports, the known ones left as they are ([reconcile]). */

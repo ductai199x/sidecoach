@@ -456,10 +456,14 @@ class Store(val path: File?) {
     /**
      * Every imported game, the latest played first. Every one: the Games window listed 500 while
      * Stats counted all (the review of 2026-10-01), and the games past it could not be seen,
-     * opened or removed. `library`.
+     * opened or removed. A game that is a copy of another (pasted and imported: [addTwin],
+     * `Library.pairCopies`) is that other's: once. `library`.
      */
     fun library(): List<LibraryRow> = lock.withLock {
-        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
+        rows(
+            "SELECT * FROM library WHERE key NOT IN (SELECT watched FROM twins)" +
+                " ORDER BY COALESCE(played_at, added_at) DESC",
+        ) { libraryRow(it) }
     }
 
     fun libraryGame(key: String): LibraryRow? = lock.withLock {
@@ -644,6 +648,11 @@ class Store(val path: File?) {
         }
     }
 
+    /** Every game that stood aside for [was] stands aside for [now] (a better copy came). `retarget_twins`. */
+    fun retargetTwins(was: String, now: String) {
+        lock.withLock { exec("UPDATE twins SET imported = ? WHERE imported = ?", now, was) }
+    }
+
     /** The watched games that were imported too: watched key -> imported key. */
     fun twins(): Map<String, String> = lock.withLock {
         rows("SELECT watched, imported FROM twins") { it.getString(0) to it.getString(1) }.toMap(LinkedHashMap())
@@ -744,7 +753,10 @@ class Store(val path: File?) {
 
     /** The library's imported games no review covers yet, the latest played first. */
     fun unreviewed(): List<LibraryRow> = lock.withLock {
-        rows("SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews) ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
+        rows(
+            "SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews)" +
+                " AND key NOT IN (SELECT watched FROM twins) ORDER BY COALESCE(played_at, added_at) DESC",
+        ) { libraryRow(it) }
     }
 
     /**
@@ -778,6 +790,11 @@ class Store(val path: File?) {
      */
     fun bestReview(key: String): ReviewRow? = lock.withLock {
         rows("SELECT * FROM reviews WHERE key = ? ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
+    }
+
+    /** Every review of the game, the strongest first. `reviews_of`. */
+    fun reviewsOf(key: String): List<ReviewRow> = lock.withLock {
+        rows("SELECT * FROM reviews WHERE key = ? ORDER BY $RANK DESC, reviewed_at DESC", key) { reviewRow(it) }
     }
 
     /** Every saved review, by its game's key and its strength. `saved_reviews`. */

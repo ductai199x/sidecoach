@@ -120,7 +120,7 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
             return failed("Could not bring the games in: ${exc.message ?: exc}")
         }
         // A site's games leave out the ones the player removed; a game pasted by hand comes back.
-        val (kept, out, added) = withStore { store ->
+        val done = withStore { store ->
             val out = if (source == "pgn") {
                 store.unremove(rows.map { it.key })
                 emptySet()
@@ -130,16 +130,22 @@ class GamesApi(private val files: File, private val settings: SettingsStore) {
             val kept = rows.filter { it.key !in out }
             val new = kept.filter { store.libraryGame(it.key) == null }
             for (row in kept) store.addLibraryGame(row)
-            Library.reconcile(store) // a game Sidecoach watched, now imported: one game
-            Triple(kept, out, new.size)
+            // A game Sidecoach watched, now imported, or kept already in another copy (a pasted
+            // game, now brought in from the site): one game. A copy is not new; the keys are the
+            // games' that stand for them.
+            val twins = Library.reconcile(store)
+            Imported(kept.map { twins[it.key] ?: it.key }, kept.size, out.size, new.count { it.key !in twins })
         }
         return JSONObject()
             .put("ok", true)
-            .put("added", added)
-            .put("already", kept.size - added)
-            .put("left_out", out.size)
-            .put("keys", JSONArray(kept.map { it.key }))
+            .put("added", done.added)
+            .put("already", done.kept - done.added)
+            .put("left_out", done.leftOut)
+            .put("keys", JSONArray(done.keys))
     }
+
+    /** What an import brought in: the keys of the games that stand for it, how many, how many left out, how many new. */
+    private class Imported(val keys: List<String>, val kept: Int, val leftOut: Int, val added: Int)
 
     /**
      * Games out of the player's record, the ones selected in Your games, each with the game it

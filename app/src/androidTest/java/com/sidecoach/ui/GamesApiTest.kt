@@ -176,6 +176,105 @@ class GamesApiTest {
         }.close()
     }
 
+    private fun site(text: String, key: String) =
+        Library.rowFor(Library.gamesIn(text).first(), source = "chesscom", key = key, userNames = listOf("nosegazm"), timeClass = "rapid")
+
+    private fun shown(store: Store) = store.library().map { it.key }.sorted()
+
+    /**
+     * A game both pasted and imported is one game, whichever came first (the desktop's
+     * test_a_game_both_pasted_and_imported_is_one_game_whichever_came_first): the site's record
+     * stands for it in the list, Stats and the backlog; removing it takes its copy; Undo puts both back.
+     */
+    @Test
+    fun aGameBothPastedAndImportedIsOneGameWhicheverCameFirst() {
+        for (pastedFirst in listOf(true, false)) {
+            val store = Store(null)
+            val pasted = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+            val site = site(LONGER, "chesscom:1")
+            for (row in if (pastedFirst) listOf(pasted, site) else listOf(site, pasted)) {
+                store.addLibraryGame(row)
+                Library.reconcile(store)
+            }
+            assertEquals(listOf(site.key), shown(store))
+            assertEquals(mapOf(pasted.key to site.key), store.twins())
+            assertEquals(listOf(site.key), store.unreviewed().map { it.key })
+            store.saveStats("standard", fact(pasted.key), emptyList())
+            assertEquals(listOf(pasted.key), store.statGames().map { it.key })
+            store.saveStats("standard", fact(site.key), emptyList())
+            assertEquals("once, as the site's", listOf(site.key), store.statGames().map { it.key })
+            assertEquals(mapOf(pasted.key to site.key), Library.reconcile(store))
+            assertEquals(setOf(site.key, pasted.key), store.removeGame(site.key).toSet())
+            assertEquals(emptyList<String>(), shown(store))
+            assertEquals(setOf(site.key, pasted.key), store.restoreGame(site.key).toSet())
+            assertEquals(listOf(site.key), shown(store))
+            store.close()
+        }
+    }
+
+    /** Three copies are one, a better copy takes over the pairs of the one before, and what only looks alike is not merged. */
+    @Test
+    fun threeCopiesAreOneAndGamesThatOnlyLookAlikeAreNot() {
+        val store = Store(null)
+        val first = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val again = Library.fromPgn(LONGER.replace("2026.09.29", "2026.09.30"), listOf("nosegazm")).single()
+        assertTrue(again.key != first.key)
+        store.addLibraryGame(first)
+        val watched = watch(store, "g1", SANS, first.playedAt!! + 60)
+        assertEquals(mapOf(watched to first.key), Library.reconcile(store))
+        store.addLibraryGame(again)
+        Library.reconcile(store)
+        assertEquals(listOf(first.key), shown(store))
+        val best = site(LONGER, "chesscom:7")
+        store.addLibraryGame(best)
+        assertEquals(
+            mapOf(first.key to best.key, again.key to best.key, watched to best.key),
+            Library.reconcile(store),
+        )
+        assertEquals(listOf(best.key), shown(store))
+        store.close()
+
+        val other = Store(null)
+        val a = site(LONGER, "chesscom:1")
+        val b = site(LONGER, "chesscom:2") // a second game of the site with the same moves
+        val lateB = LONGER.replace("8. axb3 c6", "8. axb3 d5")
+        val pastedLate = Library.fromPgn(lateB, listOf("nosegazm")).single() // the last move differs
+        val stranger = Library.fromPgn(LONGER.replace("Anakin_737", "Magnus"), listOf("nosegazm")).single() // other players
+        val opening = Library.fromPgn(LONGER.replace("5. Nc3 d6", "5. c3 d6"), listOf("nosegazm")).single() // same opening
+        for (row in listOf(a, b, pastedLate, opening)) other.addLibraryGame(row)
+        Library.reconcile(other)
+        assertEquals(listOf(a.key, b.key, pastedLate.key, opening.key).sorted(), shown(other))
+        assertEquals(emptyMap<String, String>(), other.twins())
+        // The same moves pasted with other players' names: a game of other players, two.
+        other.addLibraryGame(stranger)
+        Library.reconcile(other)
+        assertEquals((listOf(a.key, b.key, pastedLate.key, opening.key, stranger.key)).sorted(), shown(other))
+        assertEquals(emptyMap<String, String>(), other.twins())
+        other.close()
+    }
+
+    /** Nothing paid for is lost: the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
+    @Test
+    fun aCopysReviewAndPaidWordsGoToTheSurvivor() {
+        val store = Store(null)
+        val pasted = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val site = site(LONGER, "chesscom:9")
+        store.addLibraryGame(pasted)
+        val summary = JSONObject().put("white", JSONObject().put("accuracy", 71.5)).put("black", JSONObject().put("accuracy", 83.25))
+        store.addLibraryGame(site)
+        val twins = Library.reconcile(store)
+        assertEquals(mapOf(pasted.key to site.key), twins)
+        // Words the survivor lacks go to its review of the same strength; a review it lacks is carried only when
+        // it can be read, so here the rows are bare: the words move, the unreadable report does not.
+        assertTrue(store.saveReview(pasted.key, "deep", ReviewRoom.REVIEW_VERSION, 1.0, "{}", summary.toString()))
+        store.setReviewWords(pasted.key, "deep", "{\"texts\":{\"4\":{\"why\":\"Paid for.\"}}}")
+        assertTrue(store.saveReview(site.key, "deep", ReviewRoom.REVIEW_VERSION, 2.0, "{}", summary.toString()))
+        ReviewRoom.carryTwins(store, twins)
+        assertEquals("{\"texts\":{\"4\":{\"why\":\"Paid for.\"}}}", store.review(site.key, "deep")!!.words)
+        assertTrue("the copy's own rows stay", store.review(pasted.key, "deep") != null)
+        store.close()
+    }
+
     companion object {
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
         private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +

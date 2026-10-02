@@ -29,6 +29,7 @@ import com.sidecoach.profile.GameSummaries
 import com.sidecoach.profile.Library
 import com.sidecoach.profile.LibraryRow
 import com.sidecoach.profile.Puzzles
+import com.sidecoach.profile.ReviewRow
 import com.sidecoach.profile.StatFacts
 import com.sidecoach.profile.Store
 import org.json.JSONArray
@@ -764,51 +765,81 @@ class ReviewRoom(
          * with its facts for Stats at once, no engine -- pairing left the game with no accuracy
          * until it was reviewed again (Tai, 2026-09-30). A record that differs is reviewed as
          * the import, from the positions the watched review measured ([reviewRow]). Returns the
-         * imports given a review. `carry_twins`.
+         * imports given a review.
+         *
+         * The same for a copy of a game that stands aside for another ([Library.pairCopies]: a
+         * game pasted and imported), which is the same game move for move, with one more rule:
+         * nothing the player has of either is lost -- a review the survivor lacks is carried when
+         * it is stronger or has the AI coach's words (paid for), and words one has that the other
+         * has not go to the survivor (Tai, 2026-10-02). `carry_twins`.
          */
         fun carryTwins(store: Store, twins: Map<String, String>): List<String> {
             val carried = ArrayList<String>()
             for ((watched, imported) in twins) {
-                if (store.bestReview(imported) != null) continue
-                val old = store.bestReview(watched)
-                val row = Library.find(store, imported)
-                if (old == null || old.version != REVIEW_VERSION || row == null) continue
-                val games = Library.gamesIn(row.pgn)
-                // The report as saved (the desktop's JSON): the import's key, headers and clocks
-                // put in, then read back.
-                val was = runCatching { JSONObject(old.report) }.getOrNull() ?: continue
-                val moves = was.optJSONArray("moves")
-                if (games.isEmpty() || moves == null || moves.length() == 0) continue
-                val game = games[0]
-                val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
-                    moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
-                if (seen != GameReview.positions(game).map { it.fen() }) continue
-                val times = GameReview.clocks(game)
-                for (i in 0 until moves.length()) {
-                    val move = moves.getJSONObject(i)
-                    move.getJSONObject("assessment").put("game_id", imported)
-                    move.getJSONObject("after").put("game_id", imported)
-                    move.put("clock_ms", times[i].first ?: JSONObject.NULL)
-                    move.put("spent_ms", times[i].second ?: JSONObject.NULL)
+                val copy = !watched.startsWith(Store.WATCHED)
+                var best = store.bestReview(imported)
+                if (best != null && !copy) continue
+                val row = Library.find(store, imported) ?: continue
+                val mine = store.reviewsOf(watched)
+                for (old in if (copy) mine else mine.take(1)) {
+                    if (old.version != REVIEW_VERSION) continue
+                    val kept = if (copy) store.review(imported, old.strength) else null
+                    if (kept != null) {
+                        if (!old.words.isNullOrEmpty() && kept.words.isNullOrEmpty() && kept.version == old.version) {
+                            store.setReviewWords(imported, old.strength, old.words)
+                        }
+                        continue
+                    }
+                    if (best != null && old.words.isNullOrEmpty() &&
+                        (Store.STRENGTH_RANK[old.strength] ?: 0) <= (Store.STRENGTH_RANK[best.strength] ?: 0)
+                    ) {
+                        continue
+                    }
+                    if (carryOne(store, old, imported, row)) {
+                        carried.add(imported)
+                        best = store.bestReview(imported)
+                    }
                 }
-                was.getJSONObject("start").put("game_id", imported)
-                was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
-                val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: continue
-                val saved = store.saveReview(
-                    imported,
-                    old.strength,
-                    REVIEW_VERSION,
-                    System.currentTimeMillis() / 1000.0,
-                    ReviewJson.reviewed(reviewed).toString(),
-                    ReviewJson.summary(GameSummaries.summarize(reviewed)).toString(),
-                )
-                if (!saved) continue // reviewed meanwhile (that review stays, with its words), or removed
-                old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
-                store.clearProgress(imported, old.strength)
-                StatFacts.keepStats(store, old.strength, reviewed, row)
-                carried.add(imported)
             }
             return carried
+        }
+
+        /** One review of a game carried to the game that stands for it ([carryTwins]); whether it was. `_carry_one`. */
+        private fun carryOne(store: Store, old: ReviewRow, imported: String, row: LibraryRow): Boolean {
+            val games = Library.gamesIn(row.pgn)
+            // The report as saved (the desktop's JSON): the import's key, headers and clocks
+            // put in, then read back.
+            val was = runCatching { JSONObject(old.report) }.getOrNull() ?: return false
+            val moves = was.optJSONArray("moves")
+            if (games.isEmpty() || moves == null || moves.length() == 0) return false
+            val game = games[0]
+            val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
+                moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
+            if (seen != GameReview.positions(game).map { it.fen() }) return false
+            val times = GameReview.clocks(game)
+            for (i in 0 until moves.length()) {
+                val move = moves.getJSONObject(i)
+                move.getJSONObject("assessment").put("game_id", imported)
+                move.getJSONObject("after").put("game_id", imported)
+                move.put("clock_ms", times[i].first ?: JSONObject.NULL)
+                move.put("spent_ms", times[i].second ?: JSONObject.NULL)
+            }
+            was.getJSONObject("start").put("game_id", imported)
+            was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
+            val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: return false
+            val saved = store.saveReview(
+                imported,
+                old.strength,
+                REVIEW_VERSION,
+                System.currentTimeMillis() / 1000.0,
+                ReviewJson.reviewed(reviewed).toString(),
+                ReviewJson.summary(GameSummaries.summarize(reviewed)).toString(),
+            )
+            if (!saved) return false // reviewed meanwhile (that review stays, with its words), or removed
+            old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
+            store.clearProgress(imported, old.strength)
+            StatFacts.keepStats(store, old.strength, reviewed, row)
+            return true
         }
 
         /**
