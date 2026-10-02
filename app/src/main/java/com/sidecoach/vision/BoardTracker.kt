@@ -16,7 +16,7 @@ package com.sidecoach.vision
  * fails validation is re-fitted at once, before anything else is tried.
  */
 class BoardTracker(
-    private val minFit: Double = 0.85,
+    val minFit: Double = 0.85,
     private val minContrast: Double = 6.0,
     private val maxMisses: Int = 3,
     private val refineEvery: Int = 10,
@@ -28,7 +28,7 @@ class BoardTracker(
      * under it was read again -- a second on the phone (Tai's puzzles on the Pixel,
      * 2026-09-23). Sub-cell drift that small costs the reading nothing.
      */
-    private val refitDeadbandPx: Int = 2,
+    val refitDeadbandPx: Int = 2,
     /**
      * The full search that finds nothing waits before it runs again, since it costs a second
      * at 1440p: [redetectFirst] frames the first time, twice that the next, up to
@@ -53,12 +53,6 @@ class BoardTracker(
     private val probeLostCells: Int = 8,
     probeBackoff: Int = 10,
     probeBackoffMax: Int = 80,
-    /**
-     * How many cells' occupancy a board found at the old size may differ by from the lost
-     * board and still be it: a couple of moves (a castling changes four), plus a cell or two
-     * of marks.
-     */
-    private val lostMovesCells: Int = 8,
 ) {
 
     /**
@@ -113,11 +107,14 @@ class BoardTracker(
     private var framesSinceRefine = 0
 
     /**
-     * The last frame that validated the lock, kept by reference, and the occupied cells of the
-     * board read there once the lock is lost: a board the near search finds at the old size is
-     * the lost one only when it shows those pieces (`tracker._seen`, `_lost`).
+     * The board's own pixels on the last frame that validated the lock (a copy of its region,
+     * not the frame: a whole grey frame pinned for the life of a lock was 15 MB at 1440p on
+     * the desktop -- round 3), and the occupied cells read there once the lock is lost: of the
+     * boards found then, the one whose pieces are nearest those is taken (`tracker._seen`,
+     * `_lost`).
      */
-    private var seen: Pair<Plane, BoardCandidate>? = null
+    internal var seen: Pair<Plane, BoardCandidate>? = null // internal: read by the tests
+        private set
     private var lost: BooleanArray? = null
 
     /** The most cells this lock has read as square colours. */
@@ -199,9 +196,20 @@ class BoardTracker(
         readable = maxOf(readable, cells)
         val validated = candidate.copy(fit = fit, contrast = contrast)
         board = validated
+        keepSeen(gray, validated)
         lastCellPx = validated.cellPx
-        seen = gray to validated
         return board
+    }
+
+    /** The board's region of this frame, copied, with the board placed in it (`_keep_seen`). */
+    private fun keepSeen(gray: Plane, at: BoardCandidate) {
+        val x0 = maxOf(0, at.region.x)
+        val y0 = maxOf(0, at.region.y)
+        val w = maxOf(0, minOf(gray.width, at.region.x + at.region.w) - x0)
+        val h = maxOf(0, minOf(gray.height, at.region.y + at.region.h) - y0)
+        val pixels = FloatArray(w * h)
+        for (y in 0 until h) System.arraycopy(gray.data, (y0 + y) * gray.width + x0, pixels, y * w, w)
+        seen = Plane(w, h, pixels) to at.copy(region = at.region.copy(x = at.region.x - x0, y = at.region.y - y0))
     }
 
     /**
@@ -276,6 +284,7 @@ class BoardTracker(
 
     /** Detection with the lock gone; a board found is locked, and a miss backs off (`_search`). */
     private fun search(gray: Plane, full: Boolean): BoardCandidate? {
+        val searched = fullSearches
         val found = detect(gray, full = full, lostGrid = lost).firstOrNull()
         lock(gray, found, if (found != null) squareColours(gray, found.region, found.cellPx) else null)
         if (board != null) {
@@ -283,7 +292,7 @@ class BoardTracker(
             nearWait.reset()
         } else {
             nearWait.missed()
-            if (full) fullWait.missed()
+            if (fullSearches != searched) fullWait.missed()
         }
         return board
     }
@@ -299,7 +308,7 @@ class BoardTracker(
         colours = lockColours
         if (found != null) {
             lastCellPx = found.cellPx
-            seen = gray to found
+            keepSeen(gray, found)
             lost = null
         }
         readable = if (found != null && lockColours != null) {
@@ -350,12 +359,17 @@ class BoardTracker(
     /**
      * Detection, trying the last known cell size first: a window that was moved keeps its
      * cell size, so a narrow scale search around it re-locks in a fraction of the full one.
-     * A probe's search ([count] false) is not counted among the detections. With [lostGrid]
-     * (the occupied cells of the board a lock lost), a board found near the old size counts
-     * only when it shows the same pieces, give or take a move or two: the game board resized
-     * past the near range with another game's board at the old size beside it locked that
-     * board for good (round 2, finding 1). The full search's boards that show those pieces
-     * come first (`tracker._detect`).
+     * A probe's search ([count] false) is not counted among the detections.
+     *
+     * With [lostGrid] (the occupied cells of the board a lock lost), the boards found are
+     * ranked by how many cells their occupancy differs from it, nearest first: the game board
+     * resized past the near range, with another board at the old size beside it, had the near
+     * search stop at that board, and the lock stayed on it for good (round 2, finding 1); a
+     * cut-off of a few cells still took the other board once a few moves were played while
+     * the board was lost (round 3). The near search alone sees only the boards near the old
+     * size, so it settles the matter by itself only for a board that shows exactly the lost
+     * pieces -- the board moved, nothing played; any other board found calls the full search,
+     * where every board on the screen is ranked (`tracker._detect`).
      */
     private fun detect(
         gray: Plane,
@@ -364,6 +378,7 @@ class BoardTracker(
         lostGrid: BooleanArray? = null,
     ): List<BoardCandidate> {
         if (count) detections++
+        var fullNow = full
         val last = lastCellPx
         if (last != null) {
             val minCell = maxOf(BoardDetect.MIN_CELL_PX, (last * 0.8).toInt())
@@ -371,21 +386,37 @@ class BoardTracker(
             var near = once(gray, listOf("detect", minCell, maxCell)) {
                 BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast, minCell = minCell, maxCell = maxCell)
             }
-            if (lostGrid != null) near = near.filter { shows(gray, it, lostGrid) }
+            if (lostGrid != null && near.isNotEmpty()) {
+                val exact = nearestFirst(gray, near, lostGrid).filter { it.second == 0 }.map { it.first }
+                // Boards found but none of them the lost one to the cell: only the full search
+                // can say which board on the screen is nearest, so it runs now, whatever its
+                // wait (a board uncovered after two plies under a window waited two seconds for
+                // it, with the board in plain view).
+                fullNow = full || exact.isEmpty()
+                near = exact
+            }
             if (near.isNotEmpty()) return near
         }
-        if (!full) return emptyList()
+        if (!fullNow) return emptyList()
         fullSearches++
         val boards = once(gray, listOf("detect")) { BoardDetect.detect(gray, minFit = minFit, minContrast = minContrast) }
         if (lostGrid == null) return boards
-        return boards.sortedBy { !shows(gray, it, lostGrid) } // stable: the detector's order otherwise
+        return nearestFirst(gray, boards, lostGrid).map { it.first }
     }
 
-    /** Whether [found] shows the pieces of the lost board, but for [lostMovesCells] (`_shows`). */
-    private fun shows(gray: Plane, found: BoardCandidate, lostGrid: BooleanArray): Boolean {
-        val grid = BoardRefine.boardOccupancy(gray, found.region, found.cellPx) ?: return false
-        return grid.indices.count { grid[it] != lostGrid[it] } <= lostMovesCells
-    }
+    /**
+     * [boards] with how many cells their occupancy differs from the lost board's by (all 64 for
+     * a board the frame does not show whole), nearest first, the detector's order kept among
+     * equals (`_nearest_first`).
+     */
+    private fun nearestFirst(
+        gray: Plane,
+        boards: List<BoardCandidate>,
+        lostGrid: BooleanArray,
+    ): List<Pair<BoardCandidate, Int>> = boards.map { found ->
+        val grid = BoardRefine.boardOccupancy(gray, found.region, found.cellPx)
+        found to (if (grid == null) 64 else grid.indices.count { grid[it] != lostGrid[it] })
+    }.sortedBy { it.second } // stable: the detector's order among equals
 }
 
 /** The most any edge of region [a] moves to become region [b], in pixels. */
