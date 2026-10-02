@@ -77,6 +77,17 @@ class SettingsApi(val store: SettingsStore) {
                 return JSONObject().put("ok", false).put("errors", checked.errors)
             }
             val wanted = checked.values
+            // One service's model is not another's: kept, OpenAI was asked for the local
+            // server's model (the API review, 2026-10-01). Empty is the new service's default.
+            // `settings_api._validated`.
+            val llmGiven = given.optJSONObject("llm")
+            val llmWanted = wanted.optJSONObject("llm")
+            if (llmGiven != null && llmWanted != null && llmGiven.has("provider") &&
+                !llmGiven.has("model") &&
+                llmGiven.optString("provider") != before.optJSONObject("llm")?.optString("provider")
+            ) {
+                llmWanted.put("model", JSONObject.NULL)
+            }
             // The phone owns these; the page shows them and cannot move them.
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
