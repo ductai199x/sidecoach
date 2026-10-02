@@ -676,9 +676,11 @@ object IdeaWords {
 
     /**
      * The target on the board, grounded: the focus rung. Squares of their pieces and their
-     * king; the player's piece is said separately ([piece]).
+     * king; the player's piece is said separately ([piece]). `defenderNamed`: the loose
+     * piece's defender is named beside it (`Story.defence`, a defender with another job), so
+     * the target does not also say nothing defends it.
      */
-    fun target(idea: Idea, board: Board): String? {
+    fun target(idea: Idea, board: Board, defenderNamed: Boolean = false): String? {
         if ((idea.goal == "mate" || idea.goal == "attack") && idea.target != null) {
             val free = idea.flight.map { squareName(it) }
             val room = when {
@@ -776,6 +778,7 @@ object IdeaWords {
                 // The tag reads the board after the blow itself: nothing defends the piece once
                 // the player's blowAt-th move is on the board, not now ("nothing defends it" of
                 // a piece the first move cuts off, 2026-10-01).
+                if (defenderNamed && blow.name == "hangingPiece") return "their ${now(idea, board, theirs[0])}"
                 val state = if (blow.name == "trappedPiece") "it has no safe square" else "nothing defends it"
                 return "their ${now(idea, board, theirs[0])}: after your ${afterMove(idea.blowAt)}, $state"
             }

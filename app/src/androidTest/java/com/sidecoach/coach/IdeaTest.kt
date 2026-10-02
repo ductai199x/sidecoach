@@ -92,6 +92,29 @@ class IdeaTest {
     }
 
     /**
+     * The desktop's test_a_named_defender_is_asked_of_the_target_whatever_its_wording, at the
+     * words: with the defender named beside it, the loose piece is said plainly whenever the
+     * blow comes -- Facts cut "nothing defends it" out with a pattern that missed "after your
+     * next few moves" (the round 3 audit, 2026-10-02). Facts asks for these words.
+     */
+    @Test
+    fun aNamedDefenderIsAskedOfTheTargetWhateverItsWording() {
+        val fen = "8/2p5/1p2B3/p7/5r2/P4p2/1PP1N2k/1K4R1 b - - 2 59"
+        // The line carried on quietly, long enough for a seventh move of the player's.
+        val read = read(fen, "fxe2 Re1 Rf1 Kc1 Rxe1+ Kd2 a4 b3 b5 b4 c5 c3 c4 Kc2")
+        assertEquals(
+            "their rook on g1: after your next few moves, nothing defends it",
+            IdeaWords.target(read.copy(blowAt = 6), Board(fen)),
+        )
+        for (blowAt in 1..7) {
+            val idea = read.copy(blowAt = blowAt)
+            val said = IdeaWords.target(idea, Board(fen))
+            assertTrue(said, said != null && said.endsWith(", nothing defends it"))
+            assertEquals("their rook on g1", IdeaWords.target(idea, Board(fen), defenderNamed = true))
+        }
+    }
+
+    /**
      * `test_a_piece_given_for_nothing_is_no_sacrifice`: in check and lost, Qxf6 Qxf6 gives the
      * queen for a knight and nothing comes back (Fischer-Benko).
      */
