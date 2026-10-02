@@ -398,7 +398,7 @@ object Plans {
     val PLAN_REASON: Map<String, String> = linkedMapOf(
         "attack" to "an attack breaks through when more of your pieces bear on their king than they " +
             "can bring to defend it",
-        "storm" to "with the kings on opposite wings, your pawns can roll at theirs without " +
+        "storm" to "with your own king off that wing, your pawns can roll at theirs without " +
             "exposing your own, and they pry open lines for your pieces",
         "double" to "two heavy pieces on the same file hit twice as hard and break into their position",
         "outpost" to "a knight on a square no pawn of theirs can ever attack stays there for good",

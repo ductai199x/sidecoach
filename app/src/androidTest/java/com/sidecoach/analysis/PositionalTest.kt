@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
+import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.squareName
 import org.json.JSONArray
 import org.json.JSONObject
@@ -174,5 +175,18 @@ class PositionalTest {
 
     companion object {
         private const val TAG = "sidecoach.analysis"
+    }
+
+    /**
+     * `test_a_wing_pawn_majority_is_named_as_the_side_to_play_on` ("the d-pawn counts") and
+     * `test_a_passive_king_in_the_endgame_is_named` (the facts audit, 2026-10-01).
+     */
+    @Test
+    fun aMajorityCountsTheCentrePawnsAndNoKingWalkWithTheirQueenOn() {
+        // Three against two on a-c, but their d-pawn makes it three all on the queenside half.
+        assertTrue(pawnMajority(Board("4k3/pp1p4/8/8/8/8/PPP5/4K3 w - - 0 1"), WHITE).isEmpty())
+        assertTrue(pawnMajority(Board("4k3/pp6/8/8/8/8/PPP5/4K3 w - - 0 1"), WHITE).isNotEmpty())
+        assertTrue(kingActivity(Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1"), WHITE, phase = "endgame").isNotEmpty())
+        assertTrue(kingActivity(Board("6k1/5q2/8/8/8/8/5Q2/6K1 w - - 0 1"), WHITE, phase = "endgame").isEmpty())
     }
 }

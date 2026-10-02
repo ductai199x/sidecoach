@@ -401,9 +401,11 @@ fun spacePlan(board: Board, us: Boolean): List<PositionalFact> {
     return emptyList()
 }
 
-// Wings for a pawn majority: the flanks, where a majority makes an outside passed pawn.
-private val QUEENSIDE = intArrayOf(0, 1, 2)
-private val KINGSIDE = intArrayOf(5, 6, 7)
+// Wings for a pawn majority: the halves of the board, a-d and e-h. Counted on the flanks
+// alone (a-c, f-h), a "queenside majority" of three pawns to two was said with their d-pawn
+// making it three all (270 of 878 claims, the facts audit, 2026-10-01).
+private val QUEENSIDE = intArrayOf(0, 1, 2, 3)
+private val KINGSIDE = intArrayOf(4, 5, 6, 7)
 
 /** A wing where you outnumber the opponent's pawns and can make a passed pawn. */
 fun pawnMajority(board: Board, us: Boolean): List<PositionalFact> {
@@ -702,7 +704,7 @@ fun openFiles(board: Board, us: Boolean): List<PositionalFact> {
 }
 
 /** No enemy pawn can ever advance to attack `square` (the outpost pawn-safety test). */
-private fun pawnSafe(board: Board, sq: Int, us: Boolean): Boolean {
+fun pawnSafe(board: Board, sq: Int, us: Boolean): Boolean {
     val enemy = !us
     val step = forward(us)
     val file = squareFile(sq)
@@ -923,9 +925,14 @@ private fun centerDistance(sq: Int): Int {
     return max(min(abs(file - 3), abs(file - 4)), min(abs(rank - 3), abs(rank - 4)))
 }
 
-/** In the endgame, a King left on the rim: it should be marching toward the centre. */
+/**
+ * In the endgame, a King left on the rim: it should be marching toward the centre -- not
+ * while their queen is on the board, where the walk walks into checks and mates ("bring it
+ * toward the centre" was said with queens on in 1,097 of 1,802 claims, the facts audit,
+ * 2026-10-01).
+ */
 fun kingActivity(board: Board, us: Boolean, phase: String = "middlegame"): List<PositionalFact> {
-    if (phase != "endgame") return emptyList()
+    if (phase != "endgame" || board.piecesMask(QUEEN, !us) != com.sidecoach.chess.BB_EMPTY) return emptyList()
     val king = board.king(us) ?: return emptyList()
     if (centerDistance(king) < 3) return emptyList()
     return listOf(
