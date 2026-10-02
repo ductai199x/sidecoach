@@ -118,14 +118,19 @@ def worse_text(worse: list[Worse]) -> str:
     return "; ".join(f"{w.san} {w.wrong}" for w in worse)
 
 
-def worse_said(worse: list[Worse]) -> str:
-    """The same as the coach says it to the player, for the template: a sentence per move."""
-    return " ".join(f"{w.san} is clearly worse: it {w.wrong}." for w in worse)
+def worse_said(worse: list[Worse], *, past: bool = False) -> str:
+    """The same as the coach says it to the player, for the template: a sentence per move.
+    `past`: of the position the player has moved from ("was clearly worse there")."""
+    verb = "was clearly worse there" if past else "is clearly worse"
+    return " ".join(f"{w.san} {verb}: it {w.wrong}." for w in worse)
 
 
-def fine_said(fine: list[str]) -> str:
-    """ "Nf6, Bc5 and Be7 are all fine here -- about equally good.", or the one move that is."""
+def fine_said(fine: list[str], *, past: bool = False) -> str:
+    """ "Nf6, Bc5 and Be7 are all fine here -- about equally good.", or the one move that is.
+    `past`: of the position the player has moved from ("were all fine there")."""
     if len(fine) == 1:
-        return f"{fine[0]} is the move here."
+        return f"{fine[0]} was the move there." if past else f"{fine[0]} is the move here."
     names = ", ".join(fine[:-1]) + f" and {fine[-1]}"
+    if past:
+        return f"{names} were all fine there -- about equally good."
     return f"{names} are all fine here -- about equally good."
