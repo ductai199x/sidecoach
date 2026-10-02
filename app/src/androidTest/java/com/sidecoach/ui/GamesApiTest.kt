@@ -138,6 +138,44 @@ class GamesApiTest {
         store.close()
     }
 
+    /**
+     * The review of 2026-10-01: a review saved whose Stats facts a kill cut short never reached
+     * Stats on the phone -- the desktop's background review catches those up, and the phone has
+     * none. Stats, and the review opened, catch it up. No engine: the review is the desktop's
+     * (profile/reviews.json).
+     */
+    @Test
+    fun aReviewWhoseStatsStepWasCutShortReachesStats() {
+        val fixture = JSONObject(InstrumentationRegistry.getInstrumentation().context.assets.open("profile/reviews.json").bufferedReader().use { it.readText() })
+        val game = fixture.getJSONArray("games").getJSONObject(0)
+        val row = Library.fromPgn(game.getString("pgn"), listOf("nosegazm")).single()
+
+        fun savedWithoutStats(files: File) = Store(File(files, "profile.sqlite")).apply {
+            addLibraryGame(row)
+            assertTrue(saveReview(row.key, game.getString("strength"), ReviewRoom.REVIEW_VERSION, 1.0, game.getJSONObject("reviewed").toString(), game.getJSONObject("summary").toString()))
+            assertEquals(emptyList<String>(), statGames().map { it.key })
+        }.close()
+
+        val files = dir("stats-catch-up")
+        savedWithoutStats(files)
+        assertTrue(StatsApi(files).stats(emptyMap()).getBoolean("ok"))
+        Store(File(files, "profile.sqlite")).apply {
+            assertEquals("Stats opened", listOf(row.key), statGames().map { it.key })
+        }.close()
+
+        val other = dir("stats-catch-up-room")
+        savedWithoutStats(other)
+        val room = ReviewRoom(other, SettingsStore(context), row, File(other, "profile.sqlite"), game.getString("strength"), EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") })
+        val end = android.os.SystemClock.elapsedRealtime() + 10_000
+        while (room.status != "ready" && android.os.SystemClock.elapsedRealtime() < end) Thread.sleep(50)
+        room.close()
+        room.join()
+        assertEquals("ready", room.status)
+        Store(File(other, "profile.sqlite")).apply {
+            assertEquals("the review opened", listOf(row.key), statGames().map { it.key })
+        }.close()
+    }
+
     companion object {
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
         private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +

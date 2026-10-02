@@ -442,6 +442,7 @@ class ReviewRoom(
         if (saved.version != REVIEW_VERSION) return false
         val reviewed = ReviewJson.reviewed(saved.report)
         runCatching { store.clearProgress(key, strength.name) } // a kill between the save and the clearing
+        runCatching { keepMissingStats(store, key) } // and between the save and its Stats facts
         // Its words ready with it: the page stops asking once the review is. Words the app was
         // closed in the middle of writing are the answers paid for so far, kept to go on from.
         val kept = saved.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
@@ -684,6 +685,21 @@ class ReviewRoom(
             store.clearProgress(row.key, strength.name)
             StatFacts.keepStats(store, strength.name, reviewed, row)
             return reviewed to summary
+        }
+
+        /**
+         * Each saved review whose Stats facts are missing -- a kill between saving it and keeping
+         * them -- has them kept now. The desktop's background review catches these up
+         * (`backlog._keep_saved`); the phone has none, so such a game never reached Stats (the
+         * review of 2026-10-01): Stats and a review opened catch it up instead. A review that
+         * no longer reads is left as it is.
+         */
+        fun keepMissingStats(store: Store, key: String? = null) {
+            for (review in store.reviewsWithoutStats()) {
+                if (key != null && review.key != key) continue
+                val row = Library.find(store, review.key) ?: continue
+                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row) }
+            }
         }
 
         /**
