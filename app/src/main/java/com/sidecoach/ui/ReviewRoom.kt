@@ -118,7 +118,12 @@ class ReviewRoom(
     @Volatile var closed = false
         private set
 
-    private val thread = Thread({ run() }, "review-$key").apply { isDaemon = true }
+    // Set once the review is ready or failed, and while no words are being written: what a
+    // caller waits on rather than polling the state against a clock.
+    val settled = Flag()
+    val wordsDone = Flag(true)
+
+    private val thread =Thread({ run() }, "review-$key").apply { isDaemon = true }
 
     init {
         thread.start()
@@ -211,9 +216,16 @@ class ReviewRoom(
             if (!store.inRecord(key)) return GONE
             wordsStatus = "writing"
             wordsError = null
+            wordsDone.clear()
             reviewed = r
         }
-        Thread({ writeWords(reviewed, provider!!) }, "words-$key").apply { isDaemon = true }.start()
+        Thread({
+            try {
+                writeWords(reviewed, provider!!)
+            } finally {
+                wordsDone.set()
+            }
+        }, "words-$key").apply { isDaemon = true }.start()
         return null
     }
 
@@ -415,6 +427,18 @@ class ReviewRoom(
         }
     }
 
+    /**
+     * Whether the room ends at [nowMs] (`SystemClock.elapsedRealtime`): closed, or idle, and no
+     * words being written. Closed or idle while the AI coach's words are written, it stays open
+     * until they are saved: its store closed under them lost every answer that came after, each
+     * one paid for (the review of 2026-10-01). `closing`.
+     */
+    fun closing(nowMs: Long): Boolean = synchronized(lock) {
+        val writing = wordsStatus == "writing"
+        val idle = nowMs - touched > IDLE_CLOSE_MS
+        !writing && (stop.get() || idle)
+    }
+
     fun join(timeoutMs: Long = 5000) = thread.join(timeoutMs)
 
     // ---- the review ---------------------------------------------------------------------------
@@ -431,16 +455,12 @@ class ReviewRoom(
                 }
                 emit("sys", "error", "review failed: $exc")
             }
+            settled.set()
             var halted = false
             while (true) {
                 val waitOn = synchronized(lock) {
-                    // Closed, or idle, while the AI coach's words are written: open until they are
-                    // saved. Its store closed under them lost every answer that came after, each
-                    // one paid for (the review of 2026-10-01).
-                    val writing = wordsStatus == "writing"
                     halted = stop.get()
-                    val idle = SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS
-                    if (!writing && (halted || idle)) {
+                    if (closing(SystemClock.elapsedRealtime())) {
                         closed = true
                         null
                     } else {
@@ -868,6 +888,36 @@ class ReviewRoom(
                 maxSeconds = config.maxSeconds,
             )
         }
+    }
+}
+
+/**
+ * `threading.Event`, which the desktop's room waits on: set, cleared and set again, and waited
+ * on until it is set -- where a CountDownLatch counts down once.
+ */
+class Flag(initially: Boolean = false) {
+    private val lock = Object()
+
+    @Volatile private var on = initially
+
+    fun set() = synchronized(lock) {
+        on = true
+        lock.notifyAll()
+    }
+
+    fun clear() = synchronized(lock) { on = false }
+
+    fun isSet(): Boolean = on
+
+    /** Waits until it is set, at most [timeoutMs]; whether it is. */
+    fun await(timeoutMs: Long): Boolean = synchronized(lock) {
+        val end = System.nanoTime() + timeoutMs * 1_000_000
+        while (!on) {
+            val left = (end - System.nanoTime()) / 1_000_000
+            if (left <= 0) return false
+            lock.wait(left)
+        }
+        true
     }
 }
 

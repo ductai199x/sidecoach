@@ -311,23 +311,24 @@ class ReviewRoomTest {
         var go = CountDownLatch(1)
         var model = Held(go)
         val room = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
-        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        assertTrue("loaded", room.settled.await(HANG_MS) && room.status == "ready")
         assertNull(room.writeWords())
         room.close()
-        Thread.sleep(1000)
-        assertFalse("open while its words are written", room.closed)
+        // The room's own rule, asked at any moment: closed while writing, it does not end.
+        assertFalse("open while its words are written", room.closing(SystemClock.elapsedRealtime()))
+        assertFalse(room.closed)
         assertTrue("opened again: the same room goes on", room.reopen())
         assertEquals("writing", room.state().getJSONObject("ai").getString("status"))
         go.countDown()
-        until(room, 20, "words") { it.getJSONObject("ai").getString("status") == "ready" }
+        assertTrue("words", room.wordsDone.await(HANG_MS))
+        assertEquals("ready", room.state().getJSONObject("ai").getString("status"))
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
         val asked = model.asked.size
         assertEquals("asked once each", game.getJSONArray("key_plies").length(), asked)
-        Thread.sleep(1000)
-        assertFalse("opened again, it stays open", room.closed)
+        assertFalse("opened again, it stays open", room.closing(SystemClock.elapsedRealtime()))
+        assertFalse(room.closed)
         room.close()
-        val end = SystemClock.elapsedRealtime() + 5000
-        while (!room.closed && SystemClock.elapsedRealtime() < end) Thread.sleep(50)
+        room.join(HANG_MS)
         assertTrue("nothing being written: closed at once", room.closed)
 
         // Closed while writing, not opened again: open until the words are saved, then closed.
@@ -335,14 +336,12 @@ class ReviewRoomTest {
         go = CountDownLatch(1)
         model = Held(go)
         val again = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
-        until(again, 10, "loaded again") { it.getString("status") == "ready" }
+        assertTrue("loaded again", again.settled.await(HANG_MS) && again.status == "ready")
         assertNull(again.writeWords())
         again.close()
-        Thread.sleep(1000)
-        assertFalse(again.closed)
+        assertFalse("writing: stays", again.closing(SystemClock.elapsedRealtime()) || again.closed)
         go.countDown()
-        val done = SystemClock.elapsedRealtime() + 20_000
-        while (!again.closed && SystemClock.elapsedRealtime() < done) Thread.sleep(50)
+        again.join(HANG_MS)
         assertTrue("closed once its words are saved", again.closed)
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
     }
@@ -391,6 +390,9 @@ class ReviewRoomTest {
     }
 
     companion object {
+        // How long a wait on the room may take before the test fails: a bound, never a pause.
+        private const val HANG_MS = 20_000L
+
         private val PLY = Regex("\"key move\": \\{\"ply\": (\\d+)")
 
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
