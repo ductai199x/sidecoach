@@ -501,6 +501,29 @@ def test_a_failure_on_the_claims_thread_is_counted_and_the_question_answered() -
     assert "could not work that out" in answer[0].text
 
 
+def test_a_failed_claims_check_is_counted_and_the_question_answered_without_it() -> None:
+    """The claims check's own failure was swallowed: the question went on unchecked, with no
+    count and nothing in the log."""
+    provider = ScriptedProvider(["Yes, Qxf7 is mate."])
+
+    def broken(text: str, board: object, facts: object) -> list[str]:
+        raise RuntimeError("no reader")
+
+    coach = Coach(
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=broken
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    held: list[Callable[[], None]] = []
+    coach.spawn = lambda work, name: held.append(work)
+    coach.ask("Is Qxf7 mate?", 8.0)
+    held[0]()
+    assert coach.speaker.failures == 1
+    assert coach.speaker.last_error == "claims check: RuntimeError: no reader"
+    assert [m.text for m in drain(coach)] == ["Yes, Qxf7 is mate."], "answered all the same"
+
+
 # 12. The summary's and the named analysis' failures are counted
 
 

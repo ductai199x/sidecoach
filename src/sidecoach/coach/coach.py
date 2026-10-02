@@ -3084,7 +3084,10 @@ class Coach:
         def checked() -> None:
             try:
                 verdicts = self.claims(text, position.board, position.facts)  # type: ignore[misc]
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # The question is still answered, without the check; the failure is counted and
+                # kept for the log, as every other failure of a question's work is.
+                self.speaker.note_failure("claims check", exc)
                 verdicts = []
             found = examined()
             if shown_examination:
