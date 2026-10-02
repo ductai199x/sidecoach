@@ -2080,6 +2080,7 @@ def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() ->
         draft_check=_draft_check(),
         engine=FirstLegal(),
     )
+    coach.sync_claims = True
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     drain(coach)

@@ -316,6 +316,7 @@ def test_a_tool_rounds_preamble_is_not_said_and_the_answer_is_read_from_its_star
         "Let me ask the engine about Qxf7. ",
     ):
         coach = _Coach(StreamingToolModel(preamble, answer), policy=_policy(), engine=FirstLegal())
+        coach.sync_claims = True
         heard: list[str] = []
 
         def sink(sentence: str, heard: list[str] = heard) -> bool:

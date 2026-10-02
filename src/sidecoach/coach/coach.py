@@ -2657,11 +2657,21 @@ class Coach:
         # can play next" (Tai's puzzle, 2026-09-28).
         tools = self.engine is not None and not offline
         if self.claims is None or tools or not may_carry_claims(text):
-            verdicts = examined() if may_carry_claims(text) else []
-            if not shown_examination:  # offline, the engine's word on it was the answer
-                self._speak(
-                    Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
-                )
+
+            def answered() -> None:
+                verdicts = examined() if may_carry_claims(text) else []
+                if not shown_examination:  # offline, the engine's word on it was the answer
+                    self._speak(
+                        Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
+                    )
+
+            if tools and not self.sync_claims:
+                # The engine's searches -- the moves named, the line's end -- take up to
+                # seconds each: on the caller's thread (the panel's loop) they stalled the
+                # vision (the deep prompt review, 2026-10-01).
+                threading.Thread(target=answered, name="sidecoach-ask", daemon=True).start()
+            else:
+                answered()
             return
 
         def checked() -> None:

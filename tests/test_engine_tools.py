@@ -116,6 +116,7 @@ class ToolModel:
 def _at_scholar(model: Any) -> Coach:
     """The coach with `model` and the engine, the player to move at SCHOLAR, analysed."""
     coach = Coach(model, policy=_policy(), engine=FirstLegal())
+    coach.sync_claims = True  # the request exists when ask() returns
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     drain(coach)
@@ -207,3 +208,34 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
 # A provider that takes no tools (no `tools_ok`) is never sent them: tests/test_coach.py's
 # test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach asks a question with
 # the engine there of a ScriptedProvider, whose `chat` takes no `tools`.
+
+
+def test_a_question_s_engine_searches_run_off_the_callers_thread() -> None:
+    """The engine's searches for a question -- the move named, the line's end -- ran inside
+    ask(), on the panel's loop: up to seconds each, and the vision stalled (the deep prompt
+    review, 2026-10-01). ask() returns at once; the searches run on a worker."""
+    import threading
+
+    class Recording(FirstLegal):
+        def __init__(self) -> None:
+            super().__init__()
+            self.threads: list[str] = []
+            self.release = threading.Event()
+
+        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+            self.threads.append(threading.current_thread().name)
+            self.release.wait(5.0)
+            return super().analyse(board, depth=depth)
+
+    engine = Recording()
+    coach = Coach(ToolModel([], "Bxf7+ gives a pawn for little."), policy=_policy(), engine=engine)
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("is Bxf7+ good?", 8.0)  # returns while the search is held
+    engine.release.set()
+    for thread in threading.enumerate():
+        if thread.name == "sidecoach-ask":
+            thread.join(5.0)
+    assert engine.threads, "the move named was examined"
+    assert threading.current_thread().name not in engine.threads, engine.threads
