@@ -123,3 +123,47 @@ def test_a_second_launch_attaches_through_the_lock_file(tmp_path: Path) -> None:
     lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
     assert server._attached_port(settings, "127.0.0.1") == port
     listener.close()
+
+
+def test_a_relaunch_never_attaches_to_a_sidecar_of_another_token(tmp_path: Path) -> None:
+    """Setup finding 7: a shell relaunched soon after its predecessor died attached to the
+    dying sidecar, which wants the old token: every call was 401. Only a sidecar that takes
+    this launch's token is attached to; the lock keeps a digest of it, never the token."""
+    import os
+
+    settings = Settings(data_dir=tmp_path)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    port = listener.getsockname()[1]
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            conn.recv(256)
+            conn.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    lock = tmp_path / server.LOCK_FILE
+    lock.write_text(
+        json.dumps({"port": port, "pid": os.getpid(), "token": server._token_digest("old")}),
+        encoding="utf-8",
+    )
+    try:
+        assert server._attached_port(settings, "127.0.0.1", "new") is None
+        assert server._attached_port(settings, "127.0.0.1", "old") == port
+        assert "old" not in lock.read_text(encoding="utf-8").replace(
+            server._token_digest("old"), ""
+        )
+        # A lock of before the digest (no token) is not attached to with one.
+        lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+        assert server._attached_port(settings, "127.0.0.1", "new") is None
+    finally:
+        listener.close()
+    # The wait for a dying sidecar ends when it is gone, and gives up on a live one.
+    assert server._wait_for_exit(2**22 + 12345, 1.0)
+    assert not server._wait_for_exit(os.getpid(), 0.3)
