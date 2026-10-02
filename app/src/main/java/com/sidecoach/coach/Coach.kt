@@ -1522,10 +1522,10 @@ var RATE_BACKOFF_S = 2.0
  * limit (429) is worth a second call; a timeout spent the time, a refused key or a bad request
  * will fail the same way, and each would be paid or wasted twice. `coach.py` `_retry_wait`.
  */
-internal fun retryWait(exc: Exception, provider: LLMProvider, beganNs: Long): Double? {
+internal fun retryWait(exc: Exception, provider: LLMProvider, elapsedS: Double): Double? {
     if (!(exc.message ?: "").startsWith("429")) return null
     val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS
-    if (budget != null && (System.nanoTime() - beganNs) / 1e9 + RATE_BACKOFF_S >= budget) return null
+    if (budget != null && elapsedS + RATE_BACKOFF_S >= budget) return null
     return RATE_BACKOFF_S
 }
 
@@ -1609,6 +1609,17 @@ class Speaker(
 
     /** Counted down when the Speaker closes: a rate limit's wait ends with it. */
     private val closed = java.util.concurrent.CountDownLatch(1)
+
+    /** Time, for the wait before a rate-limited call is asked again: a test drives both. */
+    var clockNs: () -> Long = System::nanoTime
+
+    /** Waits [seconds]; true when the Speaker was closed meanwhile. */
+    var pause: (Double) -> Boolean = { seconds ->
+        closed.await((seconds * 1000).toLong(), TimeUnit.MILLISECONDS)
+    }
+
+    /** Returns once the Speaker is closing (for a test to know `close` has begun). */
+    internal fun awaitClosing() = closed.await()
 
     val pending: Int get() = requests.size + (if (busy) 1 else 0)
 
@@ -1696,7 +1707,7 @@ class Speaker(
      * needed.
      */
     fun speakNow(request: CoachRequest): Spoken {
-        val began = System.nanoTime()
+        val began = clockNs()
         var messages = vsWrap(request.messages, request.candidates)
         var problems: List<String> = emptyList()
         var text = ""
@@ -1778,8 +1789,8 @@ class Speaker(
                 // timeout or a refused key. A rate limit is waited out once, inside the
                 // provider's timeout counted from the first call.
                 problems = listOf("the call failed: $lastError")
-                val wait = retryWait(failed, provider, began) ?: break
-                if (closed.await((wait * 1000).toLong(), TimeUnit.MILLISECONDS)) break
+                val wait = retryWait(failed, provider, (clockNs() - began) / 1e9) ?: break
+                if (pause(wait)) break
                 continue
             }
             val scored = parseCandidates(raw).map { (prob, candidate) ->
