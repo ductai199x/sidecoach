@@ -4,7 +4,7 @@ engine"): the tools' answers, and the Speaker's rounds of calls."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import chess
@@ -213,32 +213,22 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
 def test_a_question_s_engine_searches_run_off_the_callers_thread() -> None:
     """The engine's searches for a question -- the move named, the line's end -- ran inside
     ask(), on the panel's loop: up to seconds each, and the vision stalled (the deep prompt
-    review, 2026-10-01). ask() returns at once; the searches run on a worker."""
-    import threading
-
-    class Recording(FirstLegal):
-        def __init__(self) -> None:
-            super().__init__()
-            self.threads: list[str] = []
-            self.release = threading.Event()
-
-        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
-            self.threads.append(threading.current_thread().name)
-            self.release.wait(5.0)
-            return super().analyse(board, depth=depth)
-
-    engine = Recording()
+    review, 2026-10-01). ask() hands that work to the coach's spawner and returns; here the
+    spawner keeps it, and the test runs it after."""
+    engine = FirstLegal()
     coach = Coach(ToolModel([], "Bxf7+ gives a pawn for little."), policy=_policy(), engine=engine)
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     drain(coach)
-    coach.ask("is Bxf7+ good?", 8.0)  # returns while the search is held
-    engine.release.set()
-    for thread in threading.enumerate():
-        if thread.name == "sidecoach-ask":
-            thread.join(5.0)
-    assert engine.threads, "the move named was examined"
-    assert threading.current_thread().name not in engine.threads, engine.threads
+    engine.seen.clear()
+    coach.ask("is Bxf7+ good?", 8.0)
+    assert engine.seen == [], "no search on the caller's thread"
+    assert [name for _, name in spawned] == ["sidecoach-ask"]
+    spawned[0][0]()
+    assert engine.seen, "the move named was examined by the work handed off"
+    assert [m.text for m in drain(coach)] == ["Bxf7+ gives a pawn for little."]
 
 
 def test_a_call_the_tools_cannot_read_is_told_so_never_analysed_as_now() -> None:

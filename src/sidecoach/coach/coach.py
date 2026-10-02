@@ -924,6 +924,11 @@ def _json_object(text: str) -> object:
         return None
 
 
+def _spawn_daemon(work: Callable[[], None], name: str) -> None:
+    """`work` on a daemon thread of its own, named `name`."""
+    threading.Thread(target=work, name=name, daemon=True).start()
+
+
 def _sample_reply(passed: list[tuple[float, str]]) -> str:
     """Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance."""
     weights = [max(prob, 0.01) for prob, _ in passed]
@@ -2325,6 +2330,9 @@ class Coach:
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
+        # How a question's work is started off the caller's thread: a daemon thread, named.
+        # A test hands its own, and runs the work when it chooses.
+        self.spawn: Callable[[Callable[[], None], str], None] = _spawn_daemon
         # The same for the dialogue summary: live it folds in the background, a few seconds
         # after the move; in evaluation it folds before the next moment, so runs repeat.
         self.sync_summaries = False
@@ -2684,7 +2692,7 @@ class Coach:
                 # The engine's searches -- the moves named, the line's end -- take up to
                 # seconds each: on the caller's thread (the panel's loop) they stalled the
                 # vision (the deep prompt review, 2026-10-01).
-                threading.Thread(target=answered, name="sidecoach-ask", daemon=True).start()
+                self.spawn(answered, "sidecoach-ask")
             else:
                 answered()
             return
@@ -2709,7 +2717,7 @@ class Coach:
         if self.sync_claims:
             checked()  # replay and evaluation: the request must exist when ask() returns
         else:
-            threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
+            self.spawn(checked, "sidecoach-claims")
 
     def _ask_profile(self, text: str, ts: float) -> None:
         """A question about the player over their games: answered from the record by the
