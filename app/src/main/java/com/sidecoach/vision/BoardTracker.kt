@@ -158,7 +158,31 @@ class BoardTracker(
     private fun readableCells(gray: Plane, region: Region, cell: Double, colours: Colours): Int =
         once(gray, listOf("readable", region, cell, colours)) { BoardRefine.readableCells(gray, region, cell, colours) }
 
-    fun update(gray: Plane): BoardCandidate? {
+    /**
+     * Whether a re-fit ran on the pixels of the last changed frame and left the lock where it
+     * is: a still tick then needs none (`_refit_settled`).
+     */
+    private var refitSettled = false
+
+    /**
+     * The lock on this frame. [changed] false says the board's pixels (the caller's change gate
+     * around the lock) are those of the last changed frame, and [gray] is that frame's grey
+     * image: a verified lock then stands as it is, unread, but for the periodic re-fit, which
+     * still comes every [refineEvery] ticks until one runs on these pixels and leaves the lock
+     * where it is; anything else -- no board (the searches' back-off), a lock in doubt -- asks
+     * that image again what was asked of it, and gets the memoised answer ([once]). One
+     * mechanism for both platforms, each still tick the cheaper of the two, measured on the
+     * same frames (round 3 audit, E10). `tracker.update`.
+     */
+    fun update(gray: Plane, changed: Boolean = true): BoardCandidate? {
+        if (!changed && verified) {
+            val due = framesSinceRefine + 1 >= refineEvery
+            if (!due || refitSettled) {
+                framesSinceRefine = if (due) 0 else framesSinceRefine + 1
+                return board
+            }
+        }
+        if (changed) refitSettled = false
         val held = board
         if (held == null) {
             // Without a board on screen, searching every frame would stall the capture. The
@@ -242,9 +266,11 @@ class BoardTracker(
             // the lock; the region and the fit it measured itself stand.
             val refined = refit.board
             val moved = edgeShift(atLock.region, refined.region) > refitDeadbandPx
-            if (passes(refined.fit, refined.contrast) &&
+            val adopted = passes(refined.fit, refined.contrast) &&
                 (!passes(fit, contrast) || (moved && refit.strength > refitGain * refit.reference))
-            ) {
+            // On these pixels, at this lock, a re-fit changes nothing: until they change.
+            refitSettled = !adopted && passes(fit, contrast)
+            if (adopted) {
                 if (moved) {
                     // The board is moving: it is re-fitted the next frame too, until a re-fit
                     // finds it where the lock is. Fitted once mid-slide and left, the lock
@@ -304,6 +330,7 @@ class BoardTracker(
     private fun lock(gray: Plane, found: BoardCandidate?, lockColours: Colours?) {
         misses = 0
         framesSinceRefine = 0
+        refitSettled = false
         board = found
         colours = lockColours
         if (found != null) {
