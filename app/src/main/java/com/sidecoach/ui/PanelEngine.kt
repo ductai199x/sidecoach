@@ -74,6 +74,9 @@ private val BOARD_UNREAD = mapOf(
     "orientation" to "I can see the pieces, but not which side is at the bottom: the board's " +
         "coordinates seem to be off. Turn them on in the site's board settings, or press " +
         "Flip to tell me.",
+    "look" to "The board or the pieces changed in the middle of this game, and I can't read the " +
+        "new ones. Switch back to the ones you had to go on with this game; a new game " +
+        "started with these teaches them to me.",
 )
 
 object PanelEngine {
