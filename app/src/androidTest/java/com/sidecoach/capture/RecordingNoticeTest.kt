@@ -87,7 +87,8 @@ class RecordingNoticeTest {
         val first = RecordingNotice.unanswered(app, v1)
         assertEquals(1, first.size)
         RecordingNotice.agree(app, first)
-        Thread.sleep(100)
+        // No wait: `apply` puts the answer in the process's preferences before it returns (only
+        // the write to disk is later), and every read here is of those.
         assertTrue("asked again at the same version", RecordingNotice.unanswered(app, v1).isEmpty())
         val v2 = lookup(Triple("com.chess", listOf(RecordingNotice.PERMISSION), 2L))
         assertEquals("not asked again after an update", 1, RecordingNotice.unanswered(app, v2).size)

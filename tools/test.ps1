@@ -1,9 +1,12 @@
-# Run the parity suite on a device, with the engine's network in place.
+# Run the whole suite: the device's tests (app/src/androidTest) on a device, with the engine's
+# network in place, and beside them the host's (app/src/test: the tests that need no Android,
+# on the JVM, Gradle's testPhoneUnitTest). The exit code is 0 only if every test of both passed.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1 -Class com.sidecoach.analysis.EngineTest
 #
-# The default run is the whole suite: every case of every test (Tai, 2026-10-02).
+# The default run is the whole suite: every case of every test (Tai, 2026-10-02). `-Class` runs
+# that device class alone; a host class runs with `gradlew :app:testPhoneUnitTest --tests <class>`.
 #
 # The tests run against the `phone` build type, the build the phone runs: not debuggable, so
 # the code runs as fast as it does there (app/build.gradle.kts). Gradle's
@@ -24,11 +27,27 @@ param(
 $ErrorActionPreference = "Stop"
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $root = Split-Path -Parent $PSScriptRoot
+$gradle = Join-Path $root "gradlew.bat"
 
 if (-not $SkipBuild) {
     Write-Host "building..."
-    & (Join-Path $root "gradlew.bat") -p $root :app:assemblePhone :app:assemblePhoneAndroidTest | Out-Null
+    # The two APKs and the host tests' classes, on at most eight of the host's workers.
+    & $gradle -p $root --max-workers=8 :app:assemblePhone :app:assemblePhoneAndroidTest :app:compilePhoneUnitTestSources | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the build failed" }
+}
+
+# The host's tests, started now and run while the device runs its own: Gradle's daemon is free
+# once the build is done, and the tests' two JVMs take a quarter of the host at most
+# (app/build.gradle.kts). Their results are Gradle's XML, read at the end.
+$hostRun = $null
+$hostLog = Join-Path $root "app/build/test-host.log"
+$hostResults = Join-Path $root "app/build/test-results/testPhoneUnitTest"
+if (-not $Class) {
+    if (Test-Path $hostResults) { Get-ChildItem $hostResults -Filter "*.xml" | Remove-Item }
+    $hostRun = Start-Process -FilePath $gradle -NoNewWindow -PassThru `
+        -ArgumentList @("-p", $root, "--max-workers=4", "-q", ":app:testPhoneUnitTest") `
+        -RedirectStandardOutput $hostLog -RedirectStandardError "$hostLog.err"
+    $null = $hostRun.Handle # held now, or PowerShell has no exit code to give at the end
 }
 
 $app = Join-Path $root "app/build/outputs/apk/phone/app-phone.apk"
@@ -128,7 +147,8 @@ if ($Class) { $args += @("-e", "class", $Class) }
 if ($OneAtATime) { $args += @("-e", "lanes", "off") }
 $args += "com.sidecoach.test/androidx.test.runner.SidecoachRunner"
 Write-Host "running..."
-& $adb -s $Serial shell am instrument @args
+$deviceOut = @(& $adb -s $Serial shell am instrument @args | ForEach-Object { Write-Host $_; $_ })
+$devicePassed = [bool]($deviceOut | Where-Object { $_ -match "^OK \(\d+ tests?\)" })
 
 Write-Host ""
 Write-Host "--- what the tests logged ---"
@@ -136,3 +156,23 @@ Write-Host "--- what the tests logged ---"
 
 # Each test's lane and times (com.sidecoach.Lanes), for a look at where the time goes.
 & $adb -s $Serial pull "$outside/timings.tsv" (Join-Path $root "app/build/test-timings.tsv") | Out-Null
+
+$hostPassed = $true
+if ($hostRun) {
+    $hostRun.WaitForExit()
+    $tests = 0; $failed = 0; $skipped = 0
+    foreach ($xml in Get-ChildItem $hostResults -Filter "*.xml" -ErrorAction SilentlyContinue) {
+        $suite = ([xml](Get-Content $xml.FullName -Raw)).testsuite
+        $tests += [int]$suite.tests; $failed += [int]$suite.failures + [int]$suite.errors; $skipped += [int]$suite.skipped
+    }
+    $hostPassed = ($hostRun.ExitCode -eq 0) -and ($failed -eq 0) -and ($tests -gt 0)
+    Write-Host ""
+    Write-Host "--- the host's tests ---"
+    Write-Host "$tests tests, $failed failed, $skipped skipped (gradle exit $($hostRun.ExitCode); app/build/test-host.log)"
+    if (-not $hostPassed) { Get-Content $hostLog, "$hostLog.err" -ErrorAction SilentlyContinue | Select-Object -Last 60 }
+}
+if (-not ($devicePassed -and $hostPassed)) {
+    Write-Host "FAILED: device $(if ($devicePassed) { 'passed' } else { 'failed' }), host $(if ($hostPassed) { 'passed' } else { 'failed' })"
+    exit 1
+}
+Write-Host "PASSED: device and host"
