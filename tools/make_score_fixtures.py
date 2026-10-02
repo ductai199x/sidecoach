@@ -132,7 +132,6 @@ def main() -> None:
             "opponent_blundered": rng.random() < 0.25,
             "second_score": rng.uniform(0.0, 1.0) if rng.random() < 0.7 else None,
             "chance": rng.random() < 0.3,
-            "mate_missed": rng.random() < 0.1,
             "mate_allowed": rng.random() < 0.1,
             "obvious": rng.random() < 0.2,
         }
@@ -150,7 +149,6 @@ def main() -> None:
                     opponent_blundered=args["opponent_blundered"],
                     second_score=args["second_score"],
                     chance=args["chance"],
-                    mate_missed=args["mate_missed"],
                     mate_allowed=args["mate_allowed"],
                     obvious=args["obvious"],
                 ).value,

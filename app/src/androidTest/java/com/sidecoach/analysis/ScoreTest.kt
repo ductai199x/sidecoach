@@ -64,7 +64,6 @@ class ScoreTest {
                 opponentBlundered = o.getBoolean("opponent_blundered"),
                 secondScore = if (o.isNull("second_score")) null else o.getDouble("second_score"),
                 chance = o.getBoolean("chance"),
-                mateMissed = o.getBoolean("mate_missed"),
                 mateAllowed = o.getBoolean("mate_allowed"),
                 obvious = o.getBoolean("obvious"),
             )
