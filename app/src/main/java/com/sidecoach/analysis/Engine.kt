@@ -54,6 +54,14 @@ open class Engine(
     var maxSeconds: Double? = 5.0,
 ) : AutoCloseable {
 
+    /**
+     * How long at most each search that carries the best line on may take ([EXTEND_SECONDS]);
+     * null, by its depth alone. The app never changes it: a test of the carrying itself sets it
+     * null, so that what the line comes to is the engine's at that depth and not the emulator's
+     * speed that moment (EngineTest; a busy emulator stopped the carry at 14 plies of 16).
+     */
+    @Volatile var extendSeconds: Double? = EXTEND_SECONDS
+
     private var process: Process? = null
 
     /** The engine process's id while it runs, read once when it starts ([processId]). */
@@ -410,7 +418,7 @@ open class Engine(
             if (moves.size >= plies || gameOver(end)) return line.copy(moves = moves)
             val infos = lock.withLock {
                 if (optionsOwed) configureNow()
-                analyseWithRestart(end, EXTEND_DEPTH, EXTEND_SECONDS, 1)
+                analyseWithRestart(end, EXTEND_DEPTH, extendSeconds, 1)
             }
             val more = infos.firstOrNull()?.pv ?: emptyList()
             if (more.isEmpty()) return line.copy(moves = moves)

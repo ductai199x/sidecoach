@@ -83,16 +83,24 @@ class EngineTest {
 
         /**
          * Until the process stands still ([pause] sends SIGSTOP, which the kernel carries out as
-         * the process is next scheduled): the process's own state, read until it says so, no
-         * clock -- [HANG_MS] bounds a hang.
+         * each of its threads is next scheduled): every thread's own state, read until each says
+         * so, no clock -- [HANG_MS] bounds a hang. The process's own line is its main thread's: it
+         * read 'T' while a search thread still ran its last tick, and the CPU read after it moved
+         * by 10 ms on a busy emulator (2026-10-02).
          */
         fun untilStopped() {
             val deadline = System.nanoTime() + HANG_MS * 1_000_000
-            while (state() != 'T') {
-                assertTrue("the paused engine never stood still: ${state()}", System.nanoTime() < deadline)
+            while (threadStates().any { it != 'T' }) {
+                assertTrue("the paused engine never stood still: ${threadStates()}", System.nanoTime() < deadline)
                 Thread.yield()
             }
         }
+
+        /** Each of the engine's threads' states (`/proc/<pid>/task/<tid>/stat`). */
+        private fun threadStates(): List<Char> =
+            File("/proc/${pidOf(started.last())}/task").listFiles().orEmpty().mapNotNull { task ->
+                runCatching { File(task, "stat").readText() }.getOrNull()?.let { it[it.lastIndexOf(')') + 2] }
+            }
 
         fun indexOf(entry: String): Int = synchronized(log) { log.indexOfFirst { it == entry || it.startsWith("$entry ") } }
 
@@ -494,8 +502,18 @@ class EngineTest {
             // Stockfish's own stops short; the other lines cut as always; a verdict's search
             // (no `carry_best`) cut like the rest.
             val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
-            val carried = sf.analyse(board, depth = 10, pvPlies = 4, carryBest = true)
-            val plain = sf.analyse(board, depth = 10, pvPlies = 4)
+            // By depth alone, every search: what the line comes to is the engine's at those
+            // depths, not the emulator's speed that moment -- the carry's half-second cap stopped
+            // it at 14 plies of 16 on a busy emulator (2026-10-02).
+            val (cap, extend) = sf.maxSeconds to sf.extendSeconds
+            sf.maxSeconds = null
+            sf.extendSeconds = null
+            val (carried, plain) = try {
+                sf.analyse(board, depth = 10, pvPlies = 4, carryBest = true) to sf.analyse(board, depth = 10, pvPlies = 4)
+            } finally {
+                sf.maxSeconds = cap
+                sf.extendSeconds = extend
+            }
             assertTrue("no lines", carried.isNotEmpty() && plain.isNotEmpty())
             val best = carried[0].moves
             Log.i(TAG, "carried best line: ${sanLine(board, best)} (${best.size} plies); plain ${plain[0].moves.size}")
