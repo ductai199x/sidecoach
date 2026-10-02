@@ -2522,3 +2522,51 @@ def test_an_inaccuracy_is_never_called_sound() -> None:
         if provider is not None:
             directive = directive_of(sent(provider, 0))
             assert "which was an inaccuracy" in directive and "sound" not in directive
+
+
+def test_a_hint_after_the_move_was_given_does_not_promise_it_again() -> None:
+    """A fourth "hint" was told "The next hint is the answer" after the move had been given
+    (the deep prompt review, 2026-10-01)."""
+    coach, provider = scripted_coach(
+        ["[p=1.0] Look at f7.", "[p=1.0] Your queen and f7.", "[p=1.0] Qxf7# is mate.", ""]
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    for ts in range(4):
+        coach.ask("hint", 8.0 + ts)
+        drain(coach)
+    directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
+    assert "The next hint is the answer" in directives[2], directives[2]
+    assert "The next hint is the answer" not in directives[3], directives[3]
+    assert "the move has been given already: it is Qxf7#" in directives[3]
+
+
+def test_the_second_hint_for_castling_says_what_the_king_goes_after() -> None:
+    """The second hint's "the piece to use and what it goes after", the piece being the king
+    and the answer O-O, invited "your king goes after their queen" (the deep prompt review)."""
+    from sidecoach.events import Analysis, Line
+
+    coach, provider = scripted_coach(["[p=1.0] One.", "[p=1.0] Two."])
+    start_game(coach)
+    board = play(coach, ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"])
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=6,
+            lines=[Line(moves=["e1g1", "g8f6"], depth=12, expected_score=0.55)],
+            decisive=False,
+            only_move=False,
+            tags=[],
+        ),
+        7.0,
+    )
+    drain(coach)
+    coach.ask("hint", 8.0)
+    drain(coach)
+    coach.ask("hint", 9.0)
+    drain(coach)
+    directive = directive_of(sent(provider, len(provider.calls) - 1))
+    assert "Name the piece to use" in directive, directive
+    assert "Here the move is castling" in directive

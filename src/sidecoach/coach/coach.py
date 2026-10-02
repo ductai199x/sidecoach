@@ -662,6 +662,16 @@ MOVE_DIRECTIVE = (
     "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two "
     "sentences, no question."
 )
+MOVE_GIVEN = (
+    "They asked for another hint, and the move has been given already: it is {move}. Say so "
+    "plainly, with what it does from the fact sheet's why, in other words than before. One or "
+    "two sentences, no question."
+)
+FOCUS_KING = (
+    "Here the move is castling: the piece is the king, and what it goes after is its own "
+    "safety and the rook's way into the game, as the sheet gives them -- never a piece of "
+    "theirs."
+)
 
 
 def vs_directive(candidates: int = VS_CANDIDATES) -> str:
@@ -4484,9 +4494,20 @@ class Coach:
                     "question."
                 )
             elif level >= DisclosureLevel.MOVE:
-                directive = aim + MOVE_DIRECTIVE
+                best_san = facts.candidates[0] if facts.candidates else ""
+                given = bool(best_san) and any(
+                    best_san.rstrip("+#") in s for s in self._said_since_move()
+                )
+                # Asked again once the move was given, "The next hint is the answer" said
+                # it was still to come (the deep prompt review, 2026-10-01).
+                directive = aim + (MOVE_GIVEN.format(move=best_san) if given else MOVE_DIRECTIVE)
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
+                best_san = facts.candidates[0] if facts.candidates else ""
+                if best_san.startswith("O-O"):
+                    # "The piece to use and what it goes after", the piece being the king,
+                    # invited "your king goes after their queen" (the deep prompt review).
+                    directive += f" {FOCUS_KING}"
             else:
                 directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += f" {NO_FIGURES} Do not comment on anything said earlier."
