@@ -436,6 +436,10 @@ class Store(val path: File?) {
         }
     }
 
+    fun setTimeClass(key: String, timeClass: String?) {
+        lock.withLock { exec("UPDATE library SET time_class = ? WHERE key = ?", timeClass, key) }
+    }
+
     /** A game imported for review; the same game imported again replaces its row. */
     fun addLibraryGame(row: LibraryRow) {
         lock.withLock {

@@ -78,6 +78,35 @@ class StatsReviewTest {
         }
     }
 
+    /**
+     * `test_time_classes_by_the_expected_length_of_a_game` and
+     * `test_games_kept_by_the_old_lines_are_classed_again`, test_library.py: Lichess's own lines.
+     */
+    @Test
+    fun lichessGamesTakeLichesssTimeClasses() {
+        assertEquals(
+            listOf("bullet", "bullet", "rapid", "blitz", "rapid", "classical", "daily"),
+            listOf("15", "60", "480", "180+2", "1200", "1500", "-").map { Library.timeClassOf(it, lichess = true) },
+        )
+        assertEquals("blitz" to null, Library.timeClassOf("480") to Library.timeClassOf("-"))
+        val store = Store(null)
+        try {
+            store.addLibraryGame(LibraryRow("lichess:abc", "lichess", 0.0, "[Site \"https://lichess.org/abc\"]\n[TimeControl \"480\"]\n\n1. e4 *", timeClass = "blitz"))
+            store.addLibraryGame(LibraryRow("pgn:xyz", "pgn", 0.0, "[Site \"https://lichess.org/xyz\"]\n[TimeControl \"-\"]\n\n1. e4 *"))
+            store.addLibraryGame(LibraryRow("chesscom:1", "chesscom", 0.0, "[TimeControl \"480\"]\n\n1. e4 *", timeClass = "blitz"))
+            Library.refresh(store, emptyList())
+            assertEquals(
+                mapOf("lichess:abc" to "rapid", "pgn:xyz" to "daily", "chesscom:1" to "blitz"),
+                store.library().associate { it.key to it.timeClass },
+            )
+            store.setTimeClass("lichess:abc", "blitz")
+            Library.refresh(store, emptyList())
+            assertEquals("once", "blitz", store.libraryGame("lichess:abc")!!.timeClass)
+        } finally {
+            store.close()
+        }
+    }
+
     /** `test_work_on_this_waits_for_several_games`. */
     @Test
     fun workOnThisWaitsForSeveralGamesAndCountsMoves() {
