@@ -214,3 +214,45 @@ def test_a_reopened_puzzle_keeps_the_closed_rooms_spend(
     rooms.open("p1")
     assert len(made) == 2
     assert sum(u.calls for u in rooms.usages()) == 2
+
+
+def test_opening_a_puzzle_does_not_hold_up_the_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from sidecoach.config import Settings
+    from sidecoach.ui import puzzle_room
+
+    made: list[Any] = []
+
+    class SlowRoom:
+        # A room whose making asks a model that takes its time to answer.
+        def __init__(self, *a: Any, **k: Any) -> None:
+            time.sleep(0.8)
+            self.closed = self.closing = False
+            made.append(self)
+
+        def usages(self) -> list[Any]:
+            return []
+
+    class Puzzles:
+        def get(self, puzzle_id: str) -> object:
+            return object()
+
+    monkeypatch.setattr(puzzle_room, "PuzzleRoom", SlowRoom)
+    rooms = puzzle_room.PuzzleRooms(
+        Settings(data_dir=tmp_path),
+        store_path=None,
+        puzzles=Puzzles(),  # type: ignore[arg-type]
+    )
+    got: list[Any] = []
+    openers = [threading.Thread(target=lambda: got.append(rooms.open("p1"))) for _ in range(2)]
+    for t in openers:
+        t.start()
+    time.sleep(0.2)
+    began = time.monotonic()
+    rooms.usages()  # what the session loop reads every tick
+    assert time.monotonic() - began < 0.3
+    for t in openers:
+        t.join(5)
+    # Two opens at once, one room.
+    assert len(made) == 1 and got[0] is got[1] is made[0]
