@@ -1570,6 +1570,12 @@ class PanelEngine:
                 self.caption(sentence, continues=True)
                 with self._lock:
                     word = held[0]
+                    cut = self.muted or self._hushed != hushed_at[0]
+                    if cut and word is not None and self._held_word is word:
+                        # Cut off while held (a takeback, a new game, a hush, a mute): the
+                        # rest is shown and nothing of it is said later.
+                        self._held_word = held[0] = None
+                        return True
                     if word is not None and self._held_word is word:
                         held[0] = (word[0], f"{word[1]} {sentence}", word[2], word[3])
                         self._held_word = held[0]
