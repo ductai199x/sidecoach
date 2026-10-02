@@ -56,7 +56,26 @@ class PanelVoicePolicyTest {
         PanelVoice.speaker = null
         PanelVoice.voicing = null
         PanelVoice.coach = null
-        PanelEngine.set("ply" to 0)
+        PanelEngine.set("ply" to 0, "ptt" to false)
+    }
+
+    /**
+     * While the push-to-talk key is held the coach is silent, a reply that began under the key
+     * stays silent after it, and the key up, the next line is spoken (`test_voice_ptt_quiet.py`).
+     */
+    @Test
+    fun theCoachIsSilentWhileThePushToTalkKeyIsHeld() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelEngine.set("ply" to 12, "ptt" to true)
+        assertEquals("muted", PanelVoice.speak("stuck", long, 12))
+        val sink = PanelVoice.streamSink(Trigger.USER_ASK, 12)!!
+        assertEquals(true, sink("The knight is loose."))
+        PanelEngine.set("ptt" to false)
+        assertEquals("the reply stays whole and silent", true, sink("What defends it?"))
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        assertEquals("speak", PanelVoice.speak("stuck", long, 12))
+        assertEquals(listOf("say:$long"), fake.calls.toList())
     }
 
     private fun act(

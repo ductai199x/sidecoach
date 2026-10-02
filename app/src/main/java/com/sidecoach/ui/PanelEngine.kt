@@ -793,6 +793,9 @@ object PanelEngine {
     /** The ply the board is on, as the voice reads it (`self._state.get("ply")`). */
     fun plyNow(): Int = synchronized(lock) { (state["ply"] as? Number)?.toInt() ?: 0 }
 
+    /** The push-to-talk key is down in push-to-talk mode: the voice stays silent. `_ptt_held`. */
+    fun pttHeld(): Boolean = synchronized(lock) { state["ptt"] == true }
+
     // ---- the dump ----------------------------------------------------------------------------
 
     /**

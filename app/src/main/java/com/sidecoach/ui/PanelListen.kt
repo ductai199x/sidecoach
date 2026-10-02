@@ -257,12 +257,14 @@ object PanelListen {
     fun ptt(down: Boolean) {
         val ear = listener ?: return
         if (down) {
-            if (ear.mode == "ptt") dictationHold()
+            val held = ear.mode == "ptt"
+            PanelEngine.set("ptt" to held) // first: nothing is said from here on
+            if (held) dictationHold()
             ear.press()
         } else {
             ear.release()
+            PanelEngine.set("ptt" to false)
         }
-        PanelEngine.set("ptt" to (down && ear.mode == "ptt"))
     }
 
     /** Treat a float32 16 kHz clip as something the user said (the test and dev path). `hear`. */

@@ -255,8 +255,10 @@ object PanelVoice {
 
     /** Apply [voiceAction] and speak accordingly; what was done, for the log. `_speak`. */
     fun speak(trigger: String, text: String, ply: Int?): String {
-        // A line the voice will not say is still captioned, whole.
-        if (muted) return "muted".also { Captions.show(text) }
+        // The captions show every line whatever the voice does with it -- muted, skipped as
+        // short, stale, held back for pace (Tai, 2026-10-01). While the push-to-talk key is held
+        // the voice says nothing: the player is talking.
+        if (muted || PanelEngine.pttHeld()) return "muted".also { Captions.show(text) }
         val speaker = voiceOut() ?: return "muted".also { Captions.show(text) }
         val action = voiceAction(trigger, text, ply, plyNow(), speaker.busy, voicing, coachFast())
         if (action == "supersede") speaker.stop()
@@ -269,6 +271,8 @@ object PanelVoice {
         } else if (action == "text") {
             heldWord = Held(trigger, text, ply, SystemClock.elapsedRealtime() / 1000.0)
             Captions.show(text)
+        } else {
+            Captions.show(text) // "skip", "stale": not said, and shown all the same
         }
         return action
     }
@@ -284,10 +288,11 @@ object PanelVoice {
         if (muted) return null
         val name = trigger.slug
         var started = false
+        var silent = false // began while the push-to-talk key was held: never spoken
         var hushedAt = hushed
         return sink@{ sentence ->
             val continues = started
-            if (started && (muted || hushed != hushedAt)) {
+            if (started && (muted || hushed != hushedAt || silent)) {
                 // Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is still
                 // the reply -- in the chat, the record and the captions -- only silent.
                 // Declining here cut the reply's text at what had been said.
@@ -295,6 +300,14 @@ object PanelVoice {
                 return@sink true
             }
             if (muted) return@sink false
+            if (!started && PanelEngine.pttHeld()) {
+                // A reply that begins while the player holds the key to talk is never spoken,
+                // however long the key is held: captioned, in the chat, silent.
+                started = true
+                silent = true
+                Captions.show(sentence)
+                return@sink true
+            }
             val speaker = voiceOut() ?: return@sink false
             if (!started) {
                 hushedAt = hushed
@@ -321,7 +334,7 @@ object PanelVoice {
      */
     fun sayHeldWord(coach: Coach?, ts: Double) {
         val held = heldWord ?: return
-        if (muted) return
+        if (muted || PanelEngine.pttHeld()) return
         val plyNow = plyNow()
         if (held.ply != null && plyNow - held.ply > (STALE_AFTER[held.trigger] ?: (STALE_PLIES - 1))) {
             heldWord = null
