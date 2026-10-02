@@ -33,7 +33,8 @@ def _extra(**kw: Any) -> dict[str, Any]:
     and choice_labels, kind (path, input_device, output_device, voice, persona, color, pieces,
     board_theme, hotkey), label (as a person reads it), section (the heading a field sits under
     on its tab), only_for (the AI Coach page: the providers a field is shown for), advanced
-    (shown when asked), dev (never shown in the app)."""
+    (shown when asked), dev (never shown in the app), kept (what the app remembers for the
+    player, never a field on the page: llm.models)."""
     return dict(kw)
 
 
@@ -213,6 +214,12 @@ class LLMSettings(_Settings):
             only_for=["openai", "dashscope", "local", "custom"],
             section="Which model",
         ),
+    )
+    models: dict[str, str] = Field(
+        default_factory=dict,
+        description="The model chosen for each service, by service: switching to another "
+        "service and back brings that service's model back.",
+        json_schema_extra=_extra(group="general", applies="now", label="Models", kept=True),
     )
     base_url: str | None = Field(
         default=None,

@@ -14,7 +14,7 @@
   import { saveQueue } from "$lib/savequeue";
   import "$lib/styles/review.css";
 
-  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; minimum?: number; maximum?: number; title?: string };
+  type Prop = { type?: string; anyOf?: { type: string }[]; description?: string; default?: unknown; choices?: string[]; choice_labels?: Record<string, string>; applies?: string; kind?: string; label?: string; section?: string; only_for?: string[]; advanced?: boolean; dev?: boolean; kept?: boolean; minimum?: number; maximum?: number; title?: string };
   type Described = {
     settings: Record<string, any>;
     schema: { properties: Record<string, any>; $defs: Record<string, { properties: Record<string, Prop>; description?: string }> };
@@ -192,9 +192,10 @@
     const ref = data.schema.properties[name]?.$ref;
     if (!ref) return [];
     const model = data.schema.$defs[ref.split("/").pop()!];
-    // A development field never shows in the app, and in the browser only under advanced.
+    // A development field never shows in the app, and in the browser only under advanced;
+    // what the app keeps for the player (llm.models) is never a field.
     return Object.entries(model?.properties ?? {}).filter(([, p]) =>
-      (advanced || !p.advanced) && !(p.dev && (inShell() || !advanced)) && (!p.only_for || p.only_for.includes(providerNow)));
+      !p.kept && (advanced || !p.advanced) && !(p.dev && (inShell() || !advanced)) && (!p.only_for || p.only_for.includes(providerNow)));
   }
   // The headings on each tab, in the order they read; a field's section comes from the
   // schema. A heading with nothing under it (advanced off) is not shown.

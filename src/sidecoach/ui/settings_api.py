@@ -202,14 +202,20 @@ def _validated(engine: Any, change: dict[str, Any]) -> Settings:
     llm_change: dict[str, Any] = change.get("llm") or {}
     if not isinstance(llm_change, dict):
         llm_change = {}
-    if (
-        "provider" in llm_change
-        and llm_change["provider"] != engine.settings.llm.provider
-        and "model" not in llm_change
-    ):
+    was = engine.settings.llm.provider
+    if "provider" in llm_change and llm_change["provider"] != was:
         # One service's model is not another's: kept, OpenAI was asked for the local
-        # server's model (the API review, 2026-10-01). Empty is the new service's default.
-        data["llm"]["model"] = None
+        # server's model (the API review, 2026-10-01). Each service keeps its own: the one
+        # left is remembered, and the one switched to comes back with the model last chosen
+        # for it, else empty, its default (Tai, 2026-10-02).
+        models = {k: v for k, v in (engine.settings.llm.models or {}).items() if v}
+        if engine.settings.llm.model:
+            models[was] = engine.settings.llm.model
+        else:
+            models.pop(was, None)
+        data["llm"]["models"] = models
+        if "model" not in llm_change:
+            data["llm"]["model"] = models.get(str(llm_change["provider"]))
     for _ in range(len(data) + 1):  # each round takes at least one field out
         try:
             new = Settings.model_validate(data)
