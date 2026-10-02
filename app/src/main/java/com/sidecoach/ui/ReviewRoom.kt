@@ -623,7 +623,7 @@ class ReviewRoom(
                     val reviewed = ReviewJson.reviewed(saved.report)
                     store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
                     val row = Library.find(store, key)
-                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row, held = true)
                 }.onFailure {
                     // Said: skipped in silence, nothing told why a review kept its old summary
                     // (the audit of 2026-10-02).
@@ -762,7 +762,7 @@ class ReviewRoom(
             }
             // What this strength's review kept part way goes; another strength's stays, to go on from.
             store.clearProgress(row.key, strength.name)
-            StatFacts.keepStats(store, strength.name, reviewed, row)
+            StatFacts.keepStats(store, strength.name, reviewed, row, held = true)
             return reviewed to summary
         }
 
@@ -777,7 +777,7 @@ class ReviewRoom(
             for (review in store.reviewsWithoutStats()) {
                 if (key != null && review.key != key) continue
                 val row = Library.find(store, review.key) ?: continue
-                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row) }
+                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row, held = true) }
             }
         }
 
@@ -866,7 +866,7 @@ class ReviewRoom(
             if (!saved) return false // reviewed meanwhile (that review stays, with its words), or removed
             old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
             store.clearProgress(imported, old.strength)
-            StatFacts.keepStats(store, old.strength, reviewed, row)
+            StatFacts.keepStats(store, old.strength, reviewed, row, held = true)
             return true
         }
 
