@@ -20,6 +20,14 @@ from tests.fakes import HANG_S
 # -- the renderer's frames ------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _own_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test here its own empty frame caches: what the process's other tests drew is
+    not this test's hit (a cold run failed on a frame another test had kept, 2026-10-02)."""
+    monkeypatch.setattr(synth, "_BOARDS", synth.Kept(16))
+    monkeypatch.setattr(synth, "_BACKGROUNDS", synth.Kept(8))
+
+
 def _fresh(**kw: Any) -> np.ndarray:
     enabled = synth.Kept.enabled
     synth.Kept.enabled = False
@@ -72,9 +80,10 @@ def test_whatever_changes_the_pixels_is_a_new_frame() -> None:
         ({"board": to_move, "check": True}, {"board": other_side, "check": True}),
     ]
     for one, other in changes:
+        a = synth.synthetic_board(**one)
         misses = synth._BOARDS.misses
-        a, b = synth.synthetic_board(**one), synth.synthetic_board(**other)
-        assert synth._BOARDS.misses >= misses + 1, (one, other)
+        b = synth.synthetic_board(**other)  # never drawn before in this test: drawn now
+        assert synth._BOARDS.misses == misses + 1, (one, other)
         assert not np.array_equal(a, b), (one, other)
         assert np.array_equal(b, _fresh(**other)), other
 
