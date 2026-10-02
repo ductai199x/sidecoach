@@ -15,7 +15,7 @@ from sidecoach.coach import coach as coach_module
 from sidecoach.coach.coach import Speaker, _Request
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.events import DisclosureLevel, Trigger
-from sidecoach.llm.base import ChatMessage, Completion
+from sidecoach.llm.base import ChatMessage, Completion, ProviderError
 from sidecoach.llm.openai_compat import OpenAICompatProvider
 from tests.fakes import ScriptedProvider
 
@@ -76,8 +76,10 @@ def test_a_failed_call_is_not_a_draft_asked_again(error: Exception) -> None:
     assert spoken.problems and "empty reply" not in spoken.problems
 
 
-def test_a_rate_limit_is_waited_out_once_within_the_timeout() -> None:
-    # Time is the test's: a clock it moves and a wait it records, no real delay.
+def test_a_rate_limit_waits_as_the_server_asks_within_the_timeout() -> None:
+    # Tai, 2026-10-02: a 429 waits as long as the server's Retry-After says, asked again
+    # until the call's timeout, not a fixed 2 s once. Time is the test's: a clock it moves
+    # and a wait it records, no real delay.
     now = [100.0]
     waits: list[float] = []
 
@@ -86,14 +88,30 @@ def test_a_rate_limit_is_waited_out_once_within_the_timeout() -> None:
         now[0] += seconds
         return False  # not closed meanwhile
 
-    model = Failing([RuntimeError("429: Rate limit reached")])
+    busy = ProviderError(429, "Rate limit reached", retry_after_s=20.0)
+    model = Failing([busy, busy], timeout_s=60.0)
     speaker = Speaker(model)  # type: ignore[arg-type]
     speaker.clock, speaker.pause = lambda: now[0], pause
     spoken = speaker.speak_now(_request())
-    assert waits == [coach_module.RATE_BACKOFF_S] and len(model.calls) == 2
-    # The same request again, not a complaint about the failure.
-    assert model.calls[1]["messages"] == model.calls[0]["messages"]
+    assert waits == [20.0, 20.0] and len(model.calls) == 3
+    # The same request again each time, not a complaint about the failure.
+    assert model.calls[2]["messages"] == model.calls[1]["messages"] == model.calls[0]["messages"]
     assert spoken.message.text == "Develop the knight to f3." and not spoken.problems
+    # A third wait of 20 s would end at the timeout (60 s from the first call): given up there.
+    waits.clear()
+    model = Failing([busy, busy, busy], timeout_s=60.0)
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.clock, speaker.pause = lambda: now[0], pause
+    spoken = speaker.speak_now(_request())
+    assert waits == [20.0, 20.0] and len(model.calls) == 3 and spoken.message.text == "TEMPLATE"
+    # The server named no time: the default wait, as often as the timeout leaves room.
+    waits.clear()
+    model = Failing([RuntimeError("429: Rate limit reached")] * 2)
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.clock, speaker.pause = lambda: now[0], pause
+    spoken = speaker.speak_now(_request())
+    assert waits == [coach_module.RATE_BACKOFF_S] * 2 and len(model.calls) == 3
+    assert spoken.message.text == "Develop the knight to f3."
     # No room left in the provider's timeout for the wait: the template, after one call.
     waits.clear()
     model = Failing(

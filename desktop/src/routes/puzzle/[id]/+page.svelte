@@ -237,7 +237,7 @@
   async function poll() {
     if (closed) return;
     try {
-      const res = await api.poll(cursor);
+      const res = await api.poll(cursor, document.hidden);
       if (res.closed && !res.state) { message = "closed"; return; }
       if (res.cursor !== undefined) cursor = Math.max(cursor, res.cursor);
       for (const line of res.lines || []) {
@@ -303,8 +303,14 @@
       fitBoard();
     }) : null;
     if (barRo && bar) barRo.observe(bar);
+    // The room closes when this page goes, and only then (Tai, 2026-10-02): told as the page
+    // unloads, and as it is left inside the app (a phone's back), where nothing unloads.
     const onUnload = () => beacon(api.closePath);
     window.addEventListener("beforeunload", onUnload);
+    // Out of view, the page's polls slow or stop: the room is told at once, so it never takes
+    // that quiet for a page that vanished.
+    const onVisibility = () => { if (document.hidden && !closed) void api.poll(cursor, true).catch(() => {}); };
+    document.addEventListener("visibilitychange", onVisibility);
     (async () => {
       await connect();
       const opened = await api.open();
@@ -318,6 +324,8 @@
       document.body.classList.remove("puzzle-page");
       window.removeEventListener("resize", fitBoard);
       window.removeEventListener("beforeunload", onUnload);
+      document.removeEventListener("visibilitychange", onVisibility);
+      onUnload();
       barRo?.disconnect();
     };
   });

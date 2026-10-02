@@ -187,7 +187,7 @@
 {#if store.offline}
   <div class="offline" role="alert">
     <span>{store.offline}</span>
-    {#if inShell() && store.offline !== "Restarting..."}<button onclick={() => store.restart()}>Restart</button>{/if}
+    {#if inShell() && store.stopped}<button onclick={() => store.restart()}>Restart</button>{/if}
   </div>
 {/if}
 

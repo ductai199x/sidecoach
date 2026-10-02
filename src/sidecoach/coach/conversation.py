@@ -524,6 +524,22 @@ class Conversation:
         )
         return "\n\n".join(x for x in sections if x)
 
+    def render_dialogue(self) -> str:
+        """What was said, and nothing of a board: for a question asked with no position read
+        (`Coach._ask_without_position`), where `render` would show a board that is not the
+        player's (the start position the coach holds before it reads one)."""
+        lines = [f"Earlier dialogue, summarised: {self.summary}"] if self.summary else []
+        for entry in self.entries:
+            if entry.folded:
+                continue
+            if entry.kind == "ask":
+                lines.append(f"PLAYER said: {entry.text}")
+            elif entry.kind == "coach":
+                lines.append(f'YOU (the coach) said: "{entry.text}"')
+            elif entry.kind in ("note", "ended"):
+                lines.append(f"EVENT: {entry.text}")
+        return "# What was said\n" + "\n".join(lines)
+
     def _stale_nods(self) -> set[int]:
         """The nods older than the last NOD_PLIES plies, by id: left out of the record."""
         ply_entries = [e for e in self.entries if e.kind == "ply"]

@@ -47,6 +47,9 @@ struct Sidecar {
 struct SidecarStatus {
     port: Option<u16>,
     error: Option<String>,
+    /// The sidecar's process has ended: the page's "Sidecoach stopped" rests on this alone,
+    /// never on polls that failed (a live sidecar answering errors is not stopped).
+    exited: bool,
 }
 
 /// The shell's own settings, kept apart from the sidecar's TOML because the shell needs
@@ -399,7 +402,16 @@ fn sidecar_status(state: State<'_, Sidecar>) -> SidecarStatus {
     SidecarStatus {
         port: *state.port.lock().unwrap(),
         error: state.error.lock().unwrap().clone(),
+        exited: child_exited(&mut state.child.lock().unwrap()),
     }
+}
+
+/// Whether the child the shell holds has ended. None held (not started yet, or a Restart
+/// taking the old one away) is not an exit.
+fn child_exited(child: &mut Option<Child>) -> bool {
+    child
+        .as_mut()
+        .is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))))
 }
 
 /// The page found the sidecar gone (or it never started) and the player pressed Restart:
@@ -873,7 +885,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::keep_previous_log;
+    use super::{child_exited, keep_previous_log};
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn stopped_means_the_process_ended() {
+        // Nothing held: not an exit.
+        assert!(!child_exited(&mut None));
+        // A process that is alive (it waits on its stdin) is not stopped, however long.
+        let mut alive = Command::new("cmd")
+            .args(["/c", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut held = Some(alive);
+        assert!(!child_exited(&mut held));
+        alive = held.take().unwrap();
+        alive.kill().unwrap();
+        alive.wait().unwrap();
+        // Once ended, it says so, and goes on saying so.
+        let mut held = Some(alive);
+        assert!(child_exited(&mut held));
+        assert!(child_exited(&mut held));
+    }
 
     #[test]
     fn the_previous_launch_log_is_kept() {

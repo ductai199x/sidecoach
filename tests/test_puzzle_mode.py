@@ -257,3 +257,58 @@ def test_puzzles_fetched_after_the_server_started_open_in_a_room(
     opened = client.post(f"/api/puzzle/{FORK.id}/open").json()
     assert opened["ok"] and opened["state"]["id"] == FORK.id
     client.post(f"/api/puzzle/{FORK.id}/close")
+
+
+def test_a_room_closes_with_its_page_never_for_being_left_alone(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-10-02: a puzzle left open over lunch was gone after 20 idle minutes. A room
+    closes when its page says it goes; the one safety net is a page that said it was in view
+    and then went quiet (its process died). The room's own clock is the test's; its loop's
+    checks are signals the test waits on."""
+    from fastapi.testclient import TestClient
+
+    from sidecoach.ui import puzzle_room
+    from sidecoach.ui.server import build_app
+
+    signals = _RoomSignals(monkeypatch)
+    now = [1000.0]
+    checks: queue.Queue[tuple[float, bool]] = queue.Queue()
+    real_vanished = PuzzleRoom.vanished
+
+    def vanished(room: PuzzleRoom) -> bool:
+        room.clock = lambda: now[0]
+        gone = real_vanished(room)
+        checks.put((now[0], gone))
+        return gone
+
+    def checked_at(t: float) -> bool:
+        """The loop's verdict at the clock's `t`, the checks before it passed over."""
+        while True:
+            at, gone = checks.get(timeout=HANG_S)
+            if at == t:
+                return gone
+
+    monkeypatch.setattr(PuzzleRoom, "vanished", vanished)
+    _csv(tmp_path)
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(make_panel()))
+    assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"]
+    # Out of view, as the page says when it is hidden: hours of quiet close nothing.
+    assert client.get(f"/api/puzzle/{FORK.id}/poll?hidden=1").json()["ok"]
+    now[0] += 3 * 3600
+    assert checked_at(now[0]) is False and checked_at(now[0]) is False
+    # Back in view: polled, then the same hours with the page in view and not a poll.
+    poll = client.get(f"/api/puzzle/{FORK.id}/poll").json()
+    assert poll["ok"] and not poll["state"]["closed"]
+    now[0] += puzzle_room.VANISHED_S
+    assert checked_at(now[0]) is False  # not past it
+    now[0] += 1.0
+    assert checked_at(now[0]) is True
+    assert signals.ended(FORK.id).wait(HANG_S), "the vanished page's room never finished"
+    said = [line for room_id, line in list(signals.lines.queue) if room_id == FORK.id]
+    assert "the page is gone without closing; closing" in said
+    assert client.get(f"/api/puzzle/{FORK.id}/poll").json() == {"ok": False, "closed": True}
+    # A page that says it goes closes its room at once (its close, or its beacon).
+    assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"]
+    assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
+    assert client.get(f"/api/puzzle/{FORK.id}/poll").json()["closed"]

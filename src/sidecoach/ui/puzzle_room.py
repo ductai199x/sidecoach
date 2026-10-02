@@ -33,9 +33,15 @@ def _plain(text: str) -> str:
     return _MARKUP.sub("", text)
 
 
-# The loop's pace, and how long an untouched room lives.
+# The loop's pace.
 TICK_S = 0.25
-IDLE_CLOSE_S = 20 * 60.0
+# A room closes when its page says it goes (its close, its beacon as it unloads or leaves)
+# and with the app; never for being left alone (Tai, 2026-10-02: a puzzle left open over
+# lunch was gone after 20 idle minutes). The one safety net is for a page that vanished
+# without a word (its process died): a page in view polls four times a second, so one that
+# last said it was in view and has not polled for this long is gone. A page out of view
+# (its timers slowed or stopped) is never closed by it.
+VANISHED_S = 60.0
 
 
 class PuzzleRoom:
@@ -70,7 +76,11 @@ class PuzzleRoom:
         self._speak = speak
         self._stop_speaking = stop_speaking
         self.voice = speak is not None
-        self.touched = time.monotonic()
+        # When the page was last heard from, and whether it last said it was out of view: a
+        # test moves the clock.
+        self.clock: Callable[[], float] = time.monotonic
+        self.seen = self.clock()
+        self.hidden = False
         self.closed = False
         self.closing = False  # told to close; the loop thread finishes it within a tick
         # The engine and the coach of this room alone; the coach is told the position as
@@ -99,11 +109,18 @@ class PuzzleRoom:
 
     # ---- the page's side --------------------------------------------------------------------
 
-    def poll(self, since: int = 0) -> dict[str, Any]:
+    def poll(self, since: int = 0, *, hidden: bool = False) -> dict[str, Any]:
+        """The page's poll; `hidden`: the page is out of view (it says so as it goes)."""
+        self.hidden = hidden
         return {"state": self.state(), "lines": self._log.since(since), "cursor": self._log.cursor}
 
+    def vanished(self) -> bool:
+        """The page said it was in view and has not been heard from since: gone without a
+        word (VANISHED_S)."""
+        return not self.hidden and self.clock() - self.seen > VANISHED_S
+
     def state(self) -> dict[str, Any]:
-        self.touched = time.monotonic()
+        self.seen = self.clock()
         with self._lock:
             state = self.session.state()
         state["voice"] = self.voice
@@ -141,7 +158,7 @@ class PuzzleRoom:
 
     def command(self, name: str, payload: Any = None) -> None:
         """A command for the loop thread: ask <text> | voice <bool> | close."""
-        self.touched = time.monotonic()
+        self.seen = self.clock()
         if name == "close":
             # Said at once, so a page reloading (its old tab's close, then its open)
             # gets a fresh room rather than this one on its way out.
@@ -160,8 +177,8 @@ class PuzzleRoom:
                 self._coaching.events(engine_events, ts)
                 self._coaching.tick(ts)
                 self._coaching.drain()
-                if time.monotonic() - self.touched > IDLE_CLOSE_S:
-                    self._emit("sys", "info", "room idle; closing")
+                if self.vanished():
+                    self._emit("sys", "info", "the page is gone without closing; closing")
                     break
                 self._stop.wait(TICK_S)
         finally:

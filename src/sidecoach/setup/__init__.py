@@ -2,8 +2,8 @@
 
 The installer carries the code and nothing else (docs/app-plan.md, section 6, step 4).
 At first run the sidecar fetches, with one progress bar for the lot: the Kokoro voice
-(two files), Parakeet and the Silero gate (through onnx-asr's own hub downloads,
-into a Hugging Face cache under the data directory), Stockfish (the latest release), the
+(two files), Parakeet and the Silero gate (file by file, into a Hugging Face cache under
+the data directory, where onnx-asr finds them), Stockfish (the latest release), the
 openings tables, and a sample of the Lichess puzzles. Each item knows whether it is
 present, how big it is, and how to fetch itself; `Setup` runs the missing ones on a
 thread and reports through `/api/setup/status`. The CUDA pack is an item too, offered
@@ -20,7 +20,6 @@ import os
 import platform
 import shutil
 import threading
-import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -127,6 +126,52 @@ def install_stockfish(
     return [dest / f.relative_to(unpacked) for f in found]
 
 
+# The speech models (Parakeet, and the Silero gate), each file at the commit the hub fetched
+# them from (2026-09-21), with its size and sha256 (the hub's LFS hash; the small files' read
+# from that fetch, checked against their git blob ids). Fetched with `download` into the hub
+# cache's layout, where onnx-asr finds them offline.
+HF_BASE = "https://huggingface.co"
+STT_REPOS: dict[str, tuple[str, dict[str, tuple[int, str]]]] = {
+    "istupakov/parakeet-tdt-0.6b-v3-onnx": (
+        "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+        {
+            "config.json": (
+                97,
+                "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
+            ),
+            "vocab.txt": (
+                93_939,
+                "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+            ),
+            "decoder_joint-model.onnx": (
+                72_520_893,
+                "e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1",
+            ),
+            "encoder-model.onnx": (
+                41_770_866,
+                "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1",
+            ),
+            "encoder-model.onnx.data": (
+                2_435_420_160,
+                "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36",
+            ),
+        },
+    ),
+    "istupakov/silero-vad-onnx": (
+        "b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6",
+        {
+            "config.json": (
+                30,
+                "1094039d370c82889582ba739a3d1caac5754c8b3a17a66a534200c9f72086e2",
+            ),
+            "silero_vad.onnx": (
+                2_327_524,
+                "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+            ),
+        },
+    ),
+}
+
 OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 OPENINGS_VOLUMES = ("a", "b", "c", "d", "e")
 PUZZLES_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
@@ -168,22 +213,6 @@ def apply_hf_home(settings: Settings) -> None:
         for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
             os.environ.pop(name, None)
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
-
-@contextlib.contextmanager
-def hub_online() -> Any:
-    """The hub allowed to download, for the setup's fetch only."""
-    try:
-        from huggingface_hub import constants  # type: ignore[import-not-found]
-    except ImportError:
-        yield
-        return
-    before = constants.HF_HUB_OFFLINE
-    constants.HF_HUB_OFFLINE = False
-    try:
-        yield
-    finally:
-        constants.HF_HUB_OFFLINE = before
 
 
 class Cancelled(Exception):
@@ -284,8 +313,18 @@ class Item:
     detail: str = ""
 
 
-def _size_of(paths: list[Path]) -> int:
-    return sum(p.stat().st_size for p in paths if p.exists())
+def _stt_whole(home: Path, repo: str, commit: str, name: str, size: int) -> bool:
+    """One speech-model file in the hub cache's layout, at its full size."""
+    path = home / f"models--{repo.replace('/', '--')}" / "snapshots" / commit / name
+    return path.is_file() and path.stat().st_size == size
+
+
+def _stt_named(home: Path, repo: str, commit: str) -> bool:
+    """The repo's branch names the snapshot (written once it is whole): how onnx-asr finds it."""
+    ref = home / f"models--{repo.replace('/', '--')}" / "refs" / "main"
+    with contextlib.suppress(OSError):
+        return ref.read_text(encoding="utf-8").strip() == commit
+    return False
 
 
 def items(settings: Settings) -> list[Item]:
@@ -358,44 +397,41 @@ def items(settings: Settings) -> list[Item]:
 
     def stt_present() -> bool:
         home = hf_home(settings) / "hub"
-        return any(
-            home.glob(
-                "models--istupakov--parakeet-tdt-0.6b-v3-onnx/snapshots/*/encoder-model*.onnx"
-            )
-        ) and any(home.glob("models--istupakov--silero-vad-onnx/snapshots/*/*.onnx"))
+        return all(
+            _stt_named(home, repo, commit)
+            and all(_stt_whole(home, repo, commit, n, size) for n, (size, _) in files.items())
+            for repo, (commit, files) in STT_REPOS.items()
+        )
 
     def stt_fetch(progress: Progress) -> None:
-        # onnx-asr downloads through the hub itself; the progress is the cache growing.
+        # File by file with `download`, as every other item: resumable, verified, and a
+        # Cancel stops it at its next chunk (Tai, 2026-10-02). The hub's own fetch could not
+        # be stopped from inside: some 600 MB went on downloading after Cancel.
         apply_hf_home(settings)
-        home = hf_home(settings)
-        stop = threading.Event()
-
-        def watch() -> None:
-            while not stop.is_set():
-                # A Cancel raised here ends only the meter; the hub's fetch runs its course.
-                with contextlib.suppress(Exception):
-                    progress(_size_of([p for p in home.rglob("*") if p.is_file()]), None)
-                time.sleep(1.0)
-
-        threading.Thread(target=watch, daemon=True).start()
-        try:
-            from onnx_asr.loader import (  # type: ignore[import-not-found]
-                create_asr_resolver,
-                create_vad_resolver,
-            )
-
-            # The files only: loading the 0.6B model to get them took ~2.5 GB of memory.
-            with hub_online():
-                create_asr_resolver("nemo-parakeet-tdt-0.6b-v3").resolve_model()
-                create_vad_resolver("silero").resolve_model()
-        finally:
-            stop.set()
+        home = hf_home(settings) / "hub"
+        base = 0
+        for repo, (commit, files) in STT_REPOS.items():
+            folder = home / f"models--{repo.replace('/', '--')}"
+            for name, (size, sha256) in files.items():
+                if not _stt_whole(home, repo, commit, name, size):
+                    download(
+                        f"{HF_BASE}/{repo}/resolve/{commit}/{name}",
+                        folder / "snapshots" / commit / name,
+                        lambda d, t, b=base: progress(b + d, None),
+                        expect_sha256=sha256,
+                        expect_size=size,
+                    )
+                base += size
+            # The branch named once its snapshot is whole: onnx-asr finds the files through it,
+            # offline, as the hub left them.
+            (folder / "refs").mkdir(parents=True, exist_ok=True)
+            (folder / "refs" / "main").write_text(commit, encoding="utf-8")
 
     out.append(
         Item(
             "stt",
             "Speech recognition, to talk to the coach",
-            2_450_000_000,
+            sum(size for _, files in STT_REPOS.values() for size, _ in files.values()),
             stt_present,
             stt_fetch,
         )

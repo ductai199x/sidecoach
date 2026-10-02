@@ -62,6 +62,40 @@ def test_a_new_service_does_not_take_the_old_ones_model(
     assert engine.settings.llm.base_url == "http://192.168.1.20:1234/v1"
 
 
+def test_each_service_keeps_its_own_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tai, 2026-10-02: openai (gpt-5.6-luna) -> local -> openai came back on OpenAI's
+    default; switching service and back restores that service's model."""
+    client, engine = _client(tmp_path, monkeypatch)
+
+    def save(llm: dict[str, object]) -> None:
+        assert client.put("/api/settings", json={"settings": {"llm": llm}}).json()["ok"]
+
+    save({"provider": "openai", "model": "gpt-5.6-luna"})
+    save({"provider": "local"})  # the page sends the service alone
+    assert engine.settings.llm.model is None  # never seen: its default
+    save({"model": "qwen3.8-35b"})
+    save({"provider": "openai"})
+    assert engine.settings.llm.model == "gpt-5.6-luna"
+    save({"provider": "local"})
+    assert engine.settings.llm.model == "qwen3.8-35b"
+    # A service left on its default comes back on its default.
+    save({"provider": "dashscope"})
+    assert engine.settings.llm.model is None
+    save({"provider": "local"})
+    save({"provider": "dashscope"})
+    assert engine.settings.llm.model is None
+    # Remembered in the file, so a restart keeps them.
+    assert tomllib.loads((tmp_path / "sidecoach.toml").read_text(encoding="utf-8"))["llm"][
+        "models"
+    ] == {
+        "openai": "gpt-5.6-luna",
+        "local": "qwen3.8-35b",
+    }
+    # Never a field on the page.
+    schema = client.get("/api/settings").json()["schema"]
+    assert schema["$defs"]["LLMSettings"]["properties"]["models"]["kept"] is True
+
+
 def test_a_save_writes_the_file_and_says_what_applies_when(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

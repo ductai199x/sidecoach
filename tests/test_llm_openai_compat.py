@@ -1,9 +1,10 @@
 import json
+from unittest.mock import patch
 
 import httpx
 import pytest
 
-from sidecoach.llm.base import ChatMessage, Completion, ToolCall, ToolRound
+from sidecoach.llm.base import ChatMessage, Completion, ProviderError, ToolCall, ToolRound
 from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider
 
 USER: list[ChatMessage] = [{"role": "user", "content": "hi"}]
@@ -94,6 +95,36 @@ def test_an_error_keeps_its_status_for_the_callers_backoff() -> None:
     failing = OpenAICompatProvider("x", "http://h/v1", "m", transport=slow)
     with pytest.raises(RuntimeError, match="429"):
         failing.complete("sys", "hi")
+
+
+@pytest.mark.parametrize(
+    ("headers", "wait"),
+    [
+        ({"Retry-After": "20"}, 20.0),
+        ({"retry-after-ms": "1500", "Retry-After": "2"}, 1.5),
+        ({"Retry-After": "Wed, 21 Oct 2015 07:28:30 GMT"}, 30.0),
+        ({"Retry-After": "soon"}, None),
+        ({}, None),
+    ],
+)
+def test_a_rate_limit_carries_the_servers_retry_after(
+    headers: dict[str, str], wait: float | None
+) -> None:
+    """The wait the server asks for reaches the caller's backoff, on every wire."""
+    busy = httpx.MockTransport(
+        lambda request: httpx.Response(429, text="slow down", headers=headers)
+    )
+    now = 1445412480.0  # 07:28:00 GMT that day: the date form is 30 s ahead
+    with patch("sidecoach.llm.base.time.time", return_value=now):
+        for wire in ("chat", "responses"):
+            failing = OpenAICompatProvider("x", "http://h/v1", "m", transport=busy, wire=wire)
+            with pytest.raises(ProviderError, match="^429") as plain:
+                failing.complete("sys", "hi")
+            with pytest.raises(ProviderError, match="^429") as streamed:
+                failing.chat_stream(
+                    "sys", [{"role": "user", "content": "hi"}], on_delta=lambda _: True
+                )
+            assert plain.value.retry_after_s == wait == streamed.value.retry_after_s
 
 
 TOOL = {"type": "function", "function": {"name": "analyse", "parameters": {"type": "object"}}}

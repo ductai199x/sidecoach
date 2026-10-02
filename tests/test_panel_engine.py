@@ -651,6 +651,52 @@ def test_an_ask_before_start_is_answered_at_once_not_kept_for_a_later_session(
     assert polled["state"]["caption_lines"][-1][1] == reply["data"]["full"]
 
 
+def test_with_the_ai_coach_on_an_ask_with_no_session_goes_to_the_model(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """Tai, 2026-10-02: with the AI coach on and no session running, a question was answered
+    with the canned "Press Start first". It goes to the model now, told that no game is being
+    watched; nothing is queued for a later Start. The offline coach keeps its plain line (the
+    test above)."""
+    import threading
+
+    from sidecoach.coach.coach import NO_BOARD_UNWATCHED, Coach
+    from tests.coaching import directive_of, sent
+    from tests.fakes import ScriptedProvider
+
+    provider = ScriptedProvider(["The Italian: quick development, a safe king."])
+    coach = Coach(provider)
+    coach.spawn = lambda work, _name: work()  # the question's worker, run here
+
+    class Coaching:  # the panel's coach stage, its replies drained as `_Coaching.drain`
+        def __init__(self) -> None:
+            self.coach: Coach | None = coach
+            self.on = True
+
+        def ask(self, text: str, ts: float) -> None:
+            coach.ask(text, ts)
+
+        def drain(self) -> None:
+            coach.speaker.run_pending()
+            coach.poll()
+
+    engine = make_panel(record=False)
+    engine._coaching = Coaching()
+    PanelApi(engine).ask("what opening should I learn?")
+    assert engine._commands.empty()
+    for thread in threading.enumerate():
+        if thread.name == "sidecoach-ask-unwatched":
+            thread.join(timeout=60)  # its end is the signal; the 60 s only a safety net
+    assert NO_BOARD_UNWATCHED in directive_of(sent(provider)), "told no game is watched"
+    lines = engine.poll(0)["lines"]
+    assert any(ln["text"] == "you: what opening should I learn?" for ln in lines)
+    coach_lines = [ln for ln in lines if ln["chan"] == "coach" and ln["level"] == "info"]
+    assert [ln["data"].get("full") for ln in coach_lines if ln["data"].get("full")] == [
+        "The Italian: quick development, a safe king."
+    ]
+    assert not any("Press Start first" in ln["text"] for ln in lines)
+
+
 def test_the_move_list_badges_follow_takebacks_and_resyncs(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
