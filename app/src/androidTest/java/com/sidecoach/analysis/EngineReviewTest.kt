@@ -215,6 +215,34 @@ class EngineReviewTest {
         assertFalse(annotator.measured(board))
     }
 
+    /** The desktop's test_a_search_under_way_when_the_settings_change_is_not_kept. */
+    @Test
+    fun aSearchUnderWayWhenTheSettingsChangeIsNotKept() {
+        class ChangedMidSearch : FakeEngine() {
+            var annotator: GameAnnotator? = null
+
+            override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+                val lines = super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+                if (calls.size == 1) annotator?.forgetMeasured()  // the save, while this search ran
+                return lines
+            }
+        }
+        for (verdict in listOf(false, true)) {
+            val fake = ChangedMidSearch()
+            val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+            fake.annotator = annotator
+            val board = Board()
+            val measure = { if (verdict) annotator.measureForVerdict(board) else annotator.measure(board) }
+            assertTrue("the caller still gets what it asked for", measure().lines.isNotEmpty())
+            assertFalse("verdict=$verdict", annotator.measured(board))
+            assertTrue("verdict=$verdict", annotator.computed.lines(board).isEmpty())
+            measure()
+            assertEquals("verdict=$verdict: searched again the new way", 2, fake.calls.size)
+            measure()
+            assertEquals("verdict=$verdict: and that one is kept", 2, fake.calls.size)
+        }
+    }
+
     private fun judged(before: Board, move: String, beforeLine: Line, afterLine: Line): MoveAssessment {
         val after = before.copy()
         after.push(Move.fromUci(move))
@@ -233,6 +261,17 @@ class EngineReviewTest {
         val mates = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
         val black = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
         assertEquals(Label.BLUNDER, judged(black, "h7h6", worse, mates).label)
+    }
+
+    /** The desktop's test_the_best_move_of_a_mating_line_is_never_a_mate_let_go. */
+    @Test
+    fun theBestMoveOfAMatingLineIsNeverAMateLetGo() {
+        val board = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+        val longMate = Line(moves = listOf("h2h3", "g8f8"), depth = 6, expectedScore = 1.0, mate = 9)
+        val seenAsWon = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.03, scoreCp = -1000)
+        val best = judged(board, "h2h3", longMate, seenAsWon)
+        assertEquals(0.0, best.expectedLoss, 0.0)
+        assertEquals(Label.BEST, best.label)
     }
 
     // ---- the engine ------------------------------------------------------------------------

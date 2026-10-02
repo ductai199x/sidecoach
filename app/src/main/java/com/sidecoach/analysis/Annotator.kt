@@ -160,6 +160,12 @@ class GameAnnotator(
      */
     val computed = Computed()
 
+    /**
+     * How many times [forgetMeasured] has run: a search that began before it (another thread
+     * changed the settings mid-search) was made the old way, and is not kept. `_era`.
+     */
+    @Volatile private var era = 0
+
     /** Forget the cache; a new game shares no positions with the last one. */
     fun reset() {
         cache.clear()
@@ -172,9 +178,12 @@ class GameAnnotator(
     /**
      * Forget the positions measured, keeping the game's moves: the depth, the lines, the time
      * cap, the curve or the thresholds changed, and a loss compares two positions measured the
-     * same way, so none measured before is set against one measured after.
+     * same way, so none measured before is set against one measured after. Called from another
+     * thread (the settings' save): a search under way now finishes, and is handed to its
+     * caller, but is not kept.
      */
     fun forgetMeasured() {
+        era += 1
         cache.clear()
         verdictCache.clear()
         ahead.clear()
@@ -189,7 +198,7 @@ class GameAnnotator(
     fun lookAhead(board: Board): Measured {
         cache[cacheKey(board)]?.let { return it }
         val measured = measure(board)
-        ahead.add(measured.key)
+        if (cache.containsKey(measured.key)) ahead.add(measured.key)
         return measured
     }
 
@@ -216,8 +225,8 @@ class GameAnnotator(
         val key = cacheKey(board)
         cached(board)?.let { return it }
         verdictCache[key]?.let { return it }
+        val began = era
         val lines = engine.analyse(board, depth = depth, multipv = 1)
-        computed.add(board, lines, thin = true)
         val thin = Measured(
             fen = board.fen(),
             lines = lines,
@@ -226,7 +235,10 @@ class GameAnnotator(
             onlyMove = false,
             key = key,
         )
-        verdictCache[key] = thin
+        if (began == era) {  // not searched the old way ([forgetMeasured])
+            computed.add(board, lines, thin = true)
+            verdictCache[key] = thin
+        }
         return thin
     }
 
@@ -238,8 +250,9 @@ class GameAnnotator(
      */
     fun measure(board: Board, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         cached(board)?.let { return it }
+        val began = era
         val measured = measuredAt(board, depth, onDepth = onDepth)
-        cache[measured.key] = measured
+        if (began == era) cache[measured.key] = measured  // not searched the old way
         return measured
     }
 
@@ -257,9 +270,10 @@ class GameAnnotator(
         onDepth: ((List<Line>) -> Unit)? = null,
     ): Measured {
         val usable = minOf(EARLY_DEPTH, depth)
+        val began = era
         // A depth done: kept from the first usable one, and handed on.
         val finished: (List<Line>) -> Unit = { found ->
-            if (found.isNotEmpty() && found[0].depth >= usable) computed.add(board, found)
+            if (found.isNotEmpty() && found[0].depth >= usable && began == era) computed.add(board, found)
             onDepth?.invoke(found)
         }
         val lines = engine.analyse(
@@ -271,7 +285,7 @@ class GameAnnotator(
             onDepth = finished,
         )
         // Before the side searches: the lines are the news, and a reader has them now.
-        computed.add(board, lines)
+        if (began == era) computed.add(board, lines)
         val searched = withThreats
         return Measured(
             fen = board.fen(),

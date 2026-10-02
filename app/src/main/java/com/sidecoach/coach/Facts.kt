@@ -937,8 +937,12 @@ fun factsFromAnalysis(
             principle = IdeaWords.lesson(held.lesson, idea)
             question = held.ask
             why = why?.let { Regex("the \\w+ on [a-h][1-8] is loose").replace(it) { held.clause } }
-            // The defender is named now: the target no longer says nothing defends it.
-            target = target?.let { Regex(": (after your \\w+ move, )?nothing defends it$").replace(it, "") }
+            // The defender is named now: the idea's target no longer says nothing defends it.
+            // Asked of the words, never cut out of them with a pattern: "after your next few
+            // moves" slipped past one (the round 3 audit, 2026-10-02).
+            if (target != null && target == IdeaWords.target(idea, board)) {
+                target = IdeaWords.target(idea, board, defenderNamed = true)
+            }
         } else {
             defended = held.said
             principle = if (!principle.isNullOrEmpty()) principle else IdeaWords.lesson(held.lesson, idea)
