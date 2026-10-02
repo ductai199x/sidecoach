@@ -1237,6 +1237,272 @@ private fun tacticProblem(board: Board, squareName: String, rawState: String): S
  * for the opponent after a pass (a coach may name a threat), or legal further along the
  * line the coach was given. Bare squares are never flagged; a coach may point at one.
  */
+// A relation said of a piece in the present: "your knight on f6 attacks their queen on d1", "the
+// queen on g5 forks your knight on e5 and the pawn on g2", "the bishop on c4 pins the pawn on f7".
+// Never checked before: the deep prompt review (2026-10-01) let these through. `claims._RELATION`.
+private val RELATION = Regex(
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?$PIECE_ADJECTIVES(?:[a-h]-)?(?<piece>$PIECE_WORD)" +
+        "\\s+(?:on|at)\\s+(?<square>[a-h][1-8])\\s+(?:(?:now|already|also|still|directly)\\s+)?" +
+        "(?:is\\s+(?:now\\s+|already\\s+|also\\s+|still\\s+)?(?<ing>attacking|hitting|defending|" +
+        "protecting|guarding|pinning|forking)|(?<verb>attacks|hits|defends|protects|guards|" +
+        "covers|pins|forks))\\s+(?<objects>[^.;:!?]*)",
+    RegexOption.IGNORE_CASE,
+)
+
+// The same said the other way round: "your knight on e5 is defended by the pawn on d4".
+private val RELATION_BY = Regex(
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?$PIECE_ADJECTIVES(?:[a-h]-)?(?<piece>$PIECE_WORD)" +
+        "\\s+(?:on|at)\\s+(?<square>[a-h][1-8])\\s+(?:is|was)\\s+(?:now\\s+|already\\s+|also\\s+|still\\s+)?" +
+        "(?<verb>attacked|defended|protected|guarded|pinned|forked)\\s+by\\s+" +
+        "(?:(?:the|a|an|(?<bycolour>$COLOUR_WORDS))\\s+)?$PIECE_ADJECTIVES(?:[a-h]-)?" +
+        "(?<bypiece>$PIECE_WORD)\\s+(?:on|at)\\s+(?<bysquare>[a-h][1-8])\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val RELATION_OBJECT = Regex(
+    "(?:(?:the|a|an|(?<colour>$COLOUR_WORDS))\\s+)?$PIECE_ADJECTIVES(?:[a-h]-)?" +
+        "(?<piece>$PIECE_WORD)s?\\s+(?:on|at)\\s+(?<square>[a-h][1-8])\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// Where the objects of a relation end: the next clause is about something else.
+private val CLAUSE_END = Regex(
+    ",(?!\\s*(?:and\\s+)?(?:the|a|an|your|their|white's|black's|white|black)\\s)|\\s(?:so|which|" +
+        "while|but|because|since|if|when|after|before|until|then|that|who|where|whereas)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// What makes a sentence about a moment that is not on the board, or about a line: a plan, a hope,
+// a condition, a future ("once", "after", "would", "will"), an x-ray ("through").
+private val NOT_PRESENT = Regex(
+    "\\b(?:would|could|might|may|will|shall|should|can|cannot|can't|won't|wouldn't|if|once|" +
+        "after|when|whenever|until|unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|" +
+        "trying|soon|later|eventually|next|then|imagine|suppose|once|through|x-ray|x-rays|behind|" +
+        "line|lines|afterwards|ready|about to|going to|set to)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// A move said to mate now: "Qxf7 is mate", "Qxf7 mates", "Qxf7 gives checkmate".
+private val MATE_SAID = Regex(
+    "(?<![\\w=])(?<san>$DRAFT_SAN)(?![\\w=])\\s+(?:is|gives|delivers)\\s+(?:check)?mate\\b" +
+        "|(?<![\\w=])(?<san2>$DRAFT_SAN)(?![\\w=])\\s+(?:checkmates|mates)\\b",
+)
+
+// A mate in one said to be on the board: "there is mate in one", "you have a mate in one".
+private val MATE_IN_ONE = Regex(
+    "\\b(?:there(?:'s|\\s+is)|you\\s+have|they\\s+have|(?:white|black)\\s+has)\\s+(?:a\\s+)?" +
+        "mate\\s+in\\s+(?:one|1)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// What else puts a mate at another moment than now: what a move stops, allows or prepares.
+private val NOT_NOW = Regex(
+    "\\b(?:otherwise|unless|else|allow\\w*|stop\\w*|prevent\\w*|avoid\\w*|threat\\w*|prepar\\w*|" +
+        "follow\\w*|before|instead|missed|was|were|had)\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val RELATION_SENTENCE = Regex("(?<=[.!?;])\\s+")
+private val JOIN_OBJECTS = Regex("\\s*(?:,\\s*(?:and\\s+)?|and\\s+|as\\s+well\\s+as\\s+)", RegexOption.IGNORE_CASE)
+private val PIN_TO = Regex("\\bto\\b")
+private val BARE_DEFENDED = Regex("^\\s*(?:the\\s+)?([a-h][1-8])\\b(?!\\s*-)")
+
+private data class Said(val colour: String?, val piece: String, val square: String)
+
+private fun on(frame: Board, colour: String?, piece: String, square: String, us: Boolean): Boolean =
+    placementProblem(frame, colour, piece, square, us) == null
+
+/**
+ * Whether the slider on `attacker` pins the piece on `front`, by [pinLine]'s rule: the piece
+ * behind, on the same line, is its side's and worth more, and would be won. `_pins_it`.
+ */
+private fun pinsIt(board: Board, attacker: Int, front: Int): Boolean {
+    if (board.pieceTypeAt(attacker) !in SLIDERS || front !in board.attacks(attacker)) return false
+    val piece = board.pieceAt(front) ?: return false
+    val behind = beyond(board, attacker, front) ?: return false
+    val occupant = board.pieceAt(behind) ?: return false
+    return occupant.colour == piece.colour &&
+        piece.colour != board.colourAt(attacker) &&
+        VALUE[occupant.pieceType] > VALUE[piece.pieceType] &&
+        wins(board, attacker, behind, without = front)
+}
+
+private fun relationHolds(board: Board, kind: String, subject: Int, objects: List<Int>): Boolean {
+    if (kind == "pin") return objects.all { pinsIt(board, subject, it) }
+    // Attack and defence as python-chess has them: the squares the piece bears on, a pinned
+    // piece's included (a coach says a pinned knight still defends).
+    val attacked = board.attacks(subject)
+    return objects.all { it in attacked }
+}
+
+private fun verbKind(verb: String): String {
+    val word = verb.lowercase()
+    for ((stem, kind) in listOf(
+        "attack" to "attack", "hit" to "attack", "defend" to "defend", "protect" to "defend",
+        "guard" to "defend", "cover" to "defend", "pin" to "pin", "fork" to "attack",
+    )) {
+        if (word.startsWith(stem)) return kind
+    }
+    return "attack"
+}
+
+/**
+ * The pieces named right after the verb, one after another ("your knight on e5 and the pawn on
+ * g2"): "attacks it and left the queen on c2 active" names no object of the verb. `_objects_first`.
+ */
+private fun objectsFirst(given: String): List<Said> {
+    val found = ArrayList<Said>()
+    val rest = given.trimStart()
+    var pos = 0
+    while (true) {
+        val match = RELATION_OBJECT.matchAt(rest, pos) ?: break
+        found.add(Said(match.groups["colour"]?.value, match.groups["piece"]!!.value, match.groups["square"]!!.value))
+        val join = JOIN_OBJECTS.matchAt(rest, match.range.last + 1) ?: break
+        pos = join.range.last + 1
+    }
+    return found
+}
+
+/**
+ * Relations said of pieces in the present that no frame bears out: an attack, a defence, a pin
+ * or a fork. Only a sentence about the present is read (no plan, condition, future, line or
+ * x-ray), only pieces named with their squares, and only where some frame has every named piece
+ * on its square: elsewhere the placement check speaks. `_relation_problems`.
+ */
+private fun relationProblems(text: String, frames: List<Board>, us: Boolean): List<Pair<String, String>> {
+    val problems = ArrayList<Pair<String, String>>()
+    for (sentence in RELATION_SENTENCE.split(text)) {
+        // (phrase, kind, the subject, the objects)
+        val relations = ArrayList<Triple<String, String, Pair<Said, List<Said>>>>()
+        for (match in RELATION.findAll(sentence)) {
+            val objectsGroup = match.groups["objects"]!!
+            if (NOT_PRESENT.containsMatchIn(sentence.substring(0, match.range.first)) ||
+                NOT_PRESENT.containsMatchIn(sentence.substring(match.range.first, objectsGroup.range.first))
+            ) {
+                continue
+            }
+            val verb = match.groups["ing"]?.value ?: match.groups["verb"]!!.value
+            var rest = objectsGroup.value
+            val cut = CLAUSE_END.find(rest)
+            if (cut != null) rest = rest.substring(0, cut.range.first)
+            val kind = verbKind(verb)
+            // "pins the knight on f6 to the queen on d8": the pinned piece is the first.
+            if (kind == "pin") rest = rest.split(PIN_TO, limit = 2)[0]
+            if (NOT_PRESENT.containsMatchIn(rest)) continue
+            var objects: List<Said> = objectsFirst(rest)
+            if (objects.isEmpty() && kind == "defend") {
+                val bare = BARE_DEFENDED.find(rest)
+                if (bare != null) objects = listOf(Said(null, "", bare.groupValues[1]))
+            }
+            if (objects.isEmpty()) continue
+            val subject = Said(match.groups["colour"]?.value, match.groups["piece"]!!.value, match.groups["square"]!!.value)
+            relations.add(Triple(match.value.trim(), kind, subject to objects))
+        }
+        for (match in RELATION_BY.findAll(sentence)) {
+            if (NOT_PRESENT.containsMatchIn(sentence.substring(0, match.range.first))) continue
+            val kind = verbKind(match.groups["verb"]!!.value)
+            val subject = Said(match.groups["bycolour"]?.value, match.groups["bypiece"]!!.value, match.groups["bysquare"]!!.value)
+            val target = Said(match.groups["colour"]?.value, match.groups["piece"]!!.value, match.groups["square"]!!.value)
+            relations.add(Triple(match.value.trim(), kind, subject to listOf(target)))
+        }
+        for ((phrase, kind, said) in relations) {
+            val (subject, objects) = said
+            val placed = frames.filter { frame ->
+                on(frame, subject.colour, subject.piece, subject.square, us) &&
+                    objects.all { it.piece.isEmpty() || on(frame, it.colour, it.piece, it.square, us) }
+            }
+            if (placed.isEmpty()) continue
+            val from = parseSquare(subject.square.lowercase())
+            val targets = objects.map { parseSquare(it.square.lowercase()) }
+            if (placed.any { relationHolds(it, kind, from, targets) }) continue
+            val names = objects.joinToString(" and ") { it.square.lowercase() }
+            problems.add(phrase to "the ${subject.piece.lowercase()} on ${subject.square.lowercase()} does not $kind $names")
+        }
+    }
+    return problems
+}
+
+/**
+ * The frame, and the frame with the other side to move when it is not in check (a threat is a
+ * move after a pass). `_both_sides`.
+ */
+private fun bothSides(frame: Board): List<Board> {
+    if (frame.isCheck()) return listOf(frame)
+    val passed = frame.copy(withStack = false)
+    passed.push(Move.NULL)
+    return listOf(frame, passed)
+}
+
+private fun hasMateInOne(board: Board): Boolean {
+    for (move in board.legalMoves()) {
+        val after = board.copy(withStack = false)
+        after.push(move)
+        if (after.isCheckmate()) return true
+    }
+    return false
+}
+
+/**
+ * A move said to be mate that mates on no frame where it can be played, and "mate in one" where
+ * no frame has one for either side. Only a sentence about the present: a mate named in a line, a
+ * threat or a plan ("stops Qxg2#", "after Kf7, Ra7 is mate") is about a later moment. A mate on
+ * a "#" token is not checked: in the stored replies it was always a later moment.
+ * `_mate_problems`.
+ */
+private fun mateProblems(text: String, frames: List<Board>): List<Pair<String, String>> {
+    val problems = ArrayList<Pair<String, String>>()
+    for (sentence in RELATION_SENTENCE.split(text)) {
+        if (NOT_PRESENT.containsMatchIn(sentence) || NOT_NOW.containsMatchIn(sentence)) continue
+        for (match in MATE_SAID.findAll(sentence)) {
+            val san = match.groups["san"]?.value ?: match.groups["san2"]!!.value
+            val core = TRAILING_MARKS.replace(san, "")
+            var played = false
+            var mates = false
+            for (frame in frames) {
+                for (sideBoard in bothSides(frame)) {
+                    val move = parseMove(sideBoard, core).first ?: continue
+                    played = true
+                    val after = sideBoard.copy(withStack = false)
+                    after.push(move)
+                    mates = mates || after.isCheckmate()
+                }
+            }
+            if (played && !mates) problems.add(match.value to "$core is not mate")
+        }
+        val said = MATE_IN_ONE.find(sentence)
+        if (said != null && frames.none { f -> bothSides(f).any { hasMateInOne(it) } }) {
+            problems.add(said.value to "no mate in one is on the board")
+        }
+    }
+    return problems
+}
+
+// A piece placed at another moment than now: a plan ("aim to get a rook on c8"), a wish ("a
+// knight on d5 would be a monster"), a future ("your king on g8 will be safe after castling",
+// "castle, and the king on g1 covers g2"). Refused as false placements (the deep prompt review,
+// 2026-10-01). `claims._ELSEWHERE`.
+private val ELSEWHERE = Regex(
+    "\\b(?:would|could|might|will|shall|if|aim|aims|aiming|(?<!at\\s)once|after|belongs?|one\\s+day|" +
+        "eventually|later|someday|dream|ideal|imagine|suppose|wants?\\s+to|get\\s+(?:a|an|your)|" +
+        "bring|reroute|heading)\\b" +
+        "|\\b(?:a|an)\\s+(?:king|queen|rook|bishop|knight|pawn)\\s+(?:on|at)\\s+[a-h][1-8]\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// Castling said: the king and rook it puts on their squares are there afterwards.
+private val CASTLING_SAID = Regex("\\bcastl\\w*|O-O", RegexOption.IGNORE_CASE)
+
+/**
+ * Whether the sentence holding position `at` of `text` is about another moment (for a king or
+ * rook, castling's). `_elsewhere`.
+ */
+private fun elsewhere(text: String, at: Int, piece: String = ""): Boolean {
+    val stops = listOf(". ", "! ", "? ", "; ")
+    val start = stops.maxOf { text.lastIndexOf(it, at - 1).let { i -> if (at == 0) -1 else i } } + 1
+    val ends = stops.map { text.indexOf(it, at) }.filter { it >= 0 }
+    val sentence = text.substring(start, ends.minOrNull() ?: text.length)
+    if (piece.lowercase() in setOf("king", "rook") && CASTLING_SAID.containsMatchIn(sentence)) return true
+    return ELSEWHERE.containsMatchIn(sentence)
+}
+
 fun checkDraft(
     text: String,
     board: Board,
@@ -1268,7 +1534,11 @@ fun checkDraft(
                     us,
                 )
             }
-            if (reasons.all { it != null }) add(match.value, reasons[0] ?: "")
+            if (reasons.all { it != null } &&
+                !elsewhere(text, match.range.first, match.groups["piece"]!!.value)
+            ) {
+                add(match.value, reasons[0] ?: "")
+            }
         }
     }
 
@@ -1300,6 +1570,8 @@ fun checkDraft(
     }
     for ((phrase, reason) in strategicProblems(text, board, us)) add(phrase, reason)
     for ((phrase, reason) in lineProblems(text, frames, us)) add(phrase, reason)
+    for ((phrase, reason) in relationProblems(text, frames, us)) add(phrase, reason)
+    for ((phrase, reason) in mateProblems(text, frames)) add(phrase, reason)
     return problems
 }
 

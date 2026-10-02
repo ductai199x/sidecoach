@@ -369,7 +369,7 @@ class Conversation {
         // The board without its legal moves, as the record's: the position now has them.
         val text = "Takeback: $names withdrawn. The game is back at the position after " +
             "${lastActiveName()}, ${turnText(board)}:\n${positionText(board, legal = false)}\n" +
-            "Play continues from here; the next message is the replacement move."
+            "Play continues from here; the next move in the record replaces it."
         entries.add(Entry("user", "takeback", text))
     }
 
@@ -453,9 +453,20 @@ class Conversation {
         val said = ArrayList<String>()
         if (summary.isNotEmpty()) game.add("Earlier dialogue, summarised: $summary")
         val staleNods = if (compactRecord) staleNods() else emptySet()
+        var moved = false // a move, takeback or re-read seen yet
+        var headed = false
         for ((i, entry) in entries.withIndex()) {
             if (entry.kind == "game" || entry.folded || entry in staleNods) continue
             val sink = if (i > reached && !entry.past) said else game
+            if (entry.kind == "ply" || entry.kind == "takeback" || entry.kind == "resync") {
+                moved = true
+            } else if (sink === game && !moved && !headed) {
+                // What was said before any move hung under "Game so far" with no position:
+                // read as said after a move that was never made (the deep prompt review,
+                // 2026-10-01). It belongs to the start position, given in the Setting.
+                headed = true
+                game.add("At the start position, before any move:")
+            }
             if (entry.kind == "ply") {
                 val record = entry.record!!
                 if (i == reached) continue // the position now, in full below
@@ -1085,7 +1096,14 @@ class Conversation {
                 // The king's free squares as it stands: taken as what a move left them ("Qb4
                 // leaves only e4 and e5" where Qb4 took e4 away: the test audit, 2026-09-26).
                 val said = Person.thirdPerson(value.toString(), side = side)
-                out.add("$name: $said (as it stands, before any move)")
+                // Of a past position, "as it stands" read as the board now, whose free squares
+                // are not those (the deep prompt review, 2026-10-01).
+                val whenSaid = if (past) {
+                    "in that position, before the move the player made there"
+                } else {
+                    "as it stands, before any move"
+                }
+                out.add("$name: $said ($whenSaid)")
             } else {
                 out.add("$name: " + Person.thirdPerson(value.toString(), side = side))
             }

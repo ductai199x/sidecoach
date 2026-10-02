@@ -39,7 +39,7 @@ const val TOOL_ROUNDS = 3
 const val TOOL_WORDS =
     "You can ask the engine yourself, with the tools: the position after any moves you give " +
         "it (who stands better, its best lines, what each move does) and what attacks a square. " +
-        "Ask it for what the messages above do not show -- what comes after the end of a line, " +
+        "Ask it for what the sections above do not show -- what comes after the end of a line, " +
         "a move they propose, whose piece a move takes, whether a square is safe -- before you " +
         "answer, and say only what it returns."
 
@@ -157,8 +157,20 @@ class EngineTools(
         // is Python's -- {"square": null} was 'null', and {"moves": false} a move
         // (the parity audit, 2026-09-29).
         val args = pyJsonOr(arguments.toString(), null) as? Map<*, *> ?: emptyMap<String, Any?>()
-        val moves = tokens(args["moves"].takeIf { pyTruthy(it) } ?: emptyList<Any?>())
+        if (args.containsKey("_raw")) {
+            // Arguments that were no JSON object were analysed silently as the board now, and
+            // the model never knew (the deep prompt review, 2026-10-01).
+            log.add("$name(unreadable arguments)")
+            return "The arguments were not a JSON object (${pyRepr(pyStr(args["_raw"]).take(80))}), so " +
+                "nothing was analysed: call again with e.g. {\"moves\": [\"Nf3\"], \"start\": \"now\"}."
+        }
         val start = pyStr(args["start"].takeIf { pyTruthy(it) } ?: "now")
+        if (start != "now" && start != "before_last_move") {
+            log.add("$name(unknown start ${pyRepr(start)})")
+            return "No start named ${pyRepr(start)}, so nothing was analysed: start is \"now\" or " +
+                "\"before_last_move\"."
+        }
+        val moves = tokens(args["moves"].takeIf { pyTruthy(it) } ?: emptyList<Any?>())
         val target = pyStr(args["square"].takeIf { pyTruthy(it) } ?: "")
         log.add(
             "$name(${moves.joinToString(" ")}" + (if (start != "now") "; $start" else "") +

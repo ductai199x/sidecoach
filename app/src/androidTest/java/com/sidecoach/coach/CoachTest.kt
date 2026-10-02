@@ -760,6 +760,19 @@ class CoachTest {
         )
         assertTrue(verdictProblems("O-O was the best move here, though Ba4 was close.", good).isNotEmpty())
         assertEquals(emptyList<String>(), verdictProblems("Fine, but Ba4 was the best move here.", good))
+        // A clause opening with "it" or "that" is about the move only where the verdict word is
+        // said of it: these true sentences were refused (the deep prompt review, 2026-10-01).
+        for (said in listOf(
+            "It avoids the mistake of locking your bishop in.",
+            "That keeps you clear of the classic blunder of moving the f-pawn.",
+            "It was not a blunder, but Ba4 was a touch better.",
+            "It is best to develop a piece before you push pawns.",
+            "This is a position where the best move is quiet.",
+        )) {
+            assertEquals(said, emptyList<String>(), verdictProblems(said, good))
+        }
+        assertTrue(verdictProblems("It was a clear mistake; Ba4 was better.", good).isNotEmpty())
+        assertTrue(verdictProblems("That is the best move here.", good).isNotEmpty())
     }
 
     /**
@@ -1509,6 +1522,7 @@ class CoachTest {
         }
         val (coach, provider) = coach(listOf("[p=1.0] Fine."))
         coach.engine = engine
+        coach.syncClaims = true // a question with the engine runs on a worker otherwise
         italian(coach)
         coach.ask("I'll play Bc4 and aim at f7.", 6.0)
         assertEquals(listOf("Fine."), messages(coach).map { it.text })
@@ -2346,6 +2360,7 @@ class CoachTest {
     fun theLineAskedForAgainBringsTheEngineOnItsEnd() {
         val (coach, provider) = coach(listOf("Qxf7# -- it is mate at once.", "Qxf7# -- it is mate at once."))
         coach.engine = firstLegal
+        coach.syncClaims = true // a question with the engine runs on a worker otherwise
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         messages(coach)
@@ -2402,6 +2417,7 @@ class CoachTest {
             val provider = Refusing(error)
             val coach = Coach(provider, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
             coach.engine = firstLegal
+            coach.syncClaims = true // a question with the engine runs on a worker otherwise
             playToScholar(coach)
             coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
             messages(coach)
@@ -2463,6 +2479,7 @@ class CoachTest {
     private fun atScholar(model: LLMProvider): Coach {
         val coach = Coach(model, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         coach.engine = firstLegal
+        coach.syncClaims = true // a question with the engine runs on a worker otherwise
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         messages(coach)
@@ -2946,6 +2963,291 @@ class CoachTest {
         val note = record.substringAfter("Engine note on the position after 3. Qh5")
         assertTrue(note, "Engine lines (the opponent's move" in note && "Standing:" in note)
         assertFalse(now, "Engine note" in now)
+    }
+
+    // --- the deep prompt review (desktop, 2026-10-01): one test a finding, as the desktop's ---
+
+    /** The scholar's board with the player Black: the opponent to move, Qxf7# on the board. */
+    private fun scholarAsBlackAt(replies: List<String>): Pair<Coach, ScriptedProvider> {
+        val (coach, provider) = coach(replies)
+        start(coach, Pieces.Side.BLACK)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(
+                MovePlayed(
+                    gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before,
+                    fenAfter = board.fen(), byUser = ply % 2 == 0,
+                ),
+                ply.toDouble(),
+            )
+        }
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        return coach to provider
+    }
+
+    /**
+     * On the opponent's move the engine's best move and line are the opponent's: "what should I
+     * play?" told the model "tell them plainly it is Qxf7#" (finding 1;
+     * `test_what_to_play_on_their_turn_never_gives_their_move_as_the_players`).
+     */
+    @Test
+    fun whatToPlayOnTheirTurnNeverGivesTheirMoveAsThePlayers() {
+        for (said in listOf("what should I play?", "what is the best move?", "show me the line")) {
+            val (coach, provider) = scholarAsBlackAt(listOf("", "", ""))
+            for (ts in 0 until 3) coach.ask(said, 9.0 + ts) // climb to the move rung
+            val texts = messages(coach).map { it.text }
+            for (i in provider.prompts.indices) {
+                val task = directiveOf(given(provider, i))
+                assertTrue("$said: $task", "it is the opponent's move" in task)
+                assertTrue(task, "tell them plainly it is" !in task)
+                assertTrue(task, "They asked to see the line: give it" !in task)
+            }
+            assertTrue(texts.toString(), texts.isNotEmpty() && texts[0].startsWith("It's their move"))
+        }
+    }
+
+    /**
+     * A mistake's verdict landing after the opponent's reply, with the player to move: no question
+     * that sends them to the board, and not what the move allowed (finding 7;
+     * `test_a_late_lesson_asks_nothing_while_they_think`).
+     */
+    @Test
+    fun aLateLessonAsksNothingWhileTheyThink() {
+        val (coach, provider) = coach(listOf("[p=1.0] Qxf7 was mate at once."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        messages(coach)
+        val board = Board(SCHOLAR)
+        val plays = ArrayList<Move>()
+        for ((ply, san) in listOf(7 to "Bxf7+", 8 to "Ke7")) {
+            val before = board.fen()
+            val move = board.parseSan(san)!!
+            board.push(move)
+            plays.add(move)
+            coach.onEvent(
+                MovePlayed(
+                    gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before,
+                    fenAfter = board.fen(), byUser = ply == 7,
+                ),
+                10.0 + ply,
+            )
+        }
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g", ply = 7, uci = plays[0].uci(), expectedLoss = 0.45,
+                severity = Severity.BLUNDER, best = listOf("h5f7"), label = Label.MISS,
+            ),
+            20.0,
+        )
+        messages(coach)
+        val lesson = provider.prompts.indices.map { directiveOf(given(provider, it)) }
+            .first { "The player just played Bxf7+" in it }
+        assertTrue(lesson, "no question" in lesson)
+        assertTrue(lesson, "one question that sends them to find" !in lesson)
+        assertTrue(lesson, "missed or allowed" !in lesson)
+    }
+
+    /**
+     * A fourth "hint" was told "The next hint is the answer" after the move was given; castling's
+     * second hint says what the king goes after (findings 15 and 9).
+     */
+    @Test
+    fun aHintAfterTheMoveDoesNotPromiseItAndCastlingsSecondHintIsTheKingsSafety() {
+        val (coach, provider) = coach(
+            listOf("[p=1.0] Look at f7.", "[p=1.0] Your queen and f7.", "[p=1.0] Qxf7# is mate.", ""),
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        for (ts in 0 until 4) {
+            coach.ask("hint", 8.0 + ts)
+            messages(coach)
+        }
+        val tasks = provider.prompts.indices.map { directiveOf(given(provider, it)) }
+        assertTrue(tasks[2], "The next hint is the answer" in tasks[2])
+        assertTrue(tasks[3], "The next hint is the answer" !in tasks[3])
+        assertTrue(tasks[3], "the move has been given already: it is Qxf7#" in tasks[3])
+
+        val (castling, model) = coach(listOf("[p=1.0] One.", "[p=1.0] Two."))
+        start(castling)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            castling.onEvent(
+                MovePlayed(
+                    gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before,
+                    fenAfter = board.fen(), byUser = ply % 2 == 1,
+                ),
+                ply.toDouble(),
+            )
+        }
+        castling.onEvent(
+            Analysis(
+                gameId = "g", fen = board.fen(), ply = 6,
+                lines = listOf(Line(moves = listOf("e1g1", "g8f6"), depth = 12, expectedScore = 0.55)),
+                decisive = false, onlyMove = false,
+            ),
+            7.0,
+        )
+        messages(castling)
+        castling.ask("hint", 8.0)
+        messages(castling)
+        castling.ask("hint", 9.0)
+        messages(castling)
+        val task = directive(model)
+        assertTrue(task, "Name the piece to use" in task)
+        assertTrue(task, "Here the move is castling" in task)
+    }
+
+    /**
+     * On the opponent's move a named move is never examined: the directive does not say "when the
+     * engine does not rate their move, say it is not the strongest" (finding 19).
+     */
+    @Test
+    fun aMoveNamedOnTheirTurnIsNotCalledUnrated() {
+        val (coach, provider) = scholarAsBlackAt(listOf("[p=1.0] Fine.", "[p=1.0] Fine."))
+        coach.ask("what about Qxf7?", 8.0)
+        messages(coach)
+        val task = directive(provider)
+        assertTrue(task, "say it is not the strongest" !in task)
+        assertTrue(task, "rate one only from the engine's word on it" in task)
+    }
+
+    /**
+     * Both drafts refused, "is Bxf7+ good?" got the mate-in-one hint; the fallback is the engine's
+     * word on Bxf7+ (finding 6). The question's engine work is handed to the coach's spawner, and
+     * runs when the test runs it: none of it on the caller's thread (finding 13).
+     */
+    @Test
+    fun aRefusedAnswerAboutAMoveFallsBackToTheEnginesWordOnItOffTheCallersThread() {
+        val bad = "[p=0.6] Your queen on e8 is in danger here. [p=0.4] Their bishop on h5 is loose."
+        val provider = ScriptedProvider(listOf(bad, bad))
+        val coach = Coach(
+            provider,
+            policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+            draftCheck = DraftCheck { text, board, after, us ->
+                checkDraft(text, board, after, us).map { "${it.text}: ${it.reason}" }
+            },
+        )
+        val searched = ArrayList<String>()
+        coach.engine = EngineLike { board, depth ->
+            searched.add(board.fen())
+            firstLegal.analyse(board, depth)
+        }
+        val spawned = ArrayList<Pair<() -> Unit, String>>()
+        coach.spawn = { work, name -> spawned.add(work to name) }
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        searched.clear()
+        coach.ask("is Bxf7+ good?", 8.0)
+        assertTrue("no search on the caller's thread", searched.isEmpty())
+        assertEquals(listOf("sidecoach-ask"), spawned.map { it.second })
+        spawned.removeAt(0).first()
+        assertTrue("the move named was examined", searched.isNotEmpty())
+        val texts = messages(coach).map { it.text }
+        assertTrue(texts.toString(), texts.isNotEmpty() && "after 4. Bxf7+" in texts.last())
+        assertTrue(texts.toString(), "Qxf7" !in texts.last())
+    }
+
+    /**
+     * A model calling the engine writes a preamble in that round; the reader sliced the answer
+     * round with its spoken length ("ith the queen is mate"). The preamble is not said, and the
+     * answer is said from its first word (finding 2).
+     */
+    @Test
+    fun aToolRoundsPreambleIsNotSaidAndTheAnswerIsReadFromItsStart() {
+        class StreamingToolModel(private val preamble: String, private val answer: String) :
+            ToolsProvider, com.sidecoach.llm.StreamingProvider {
+            override val name = "stream-tools"
+            private var round = 0
+            override fun healthcheck(): Pair<Boolean, String> = true to "x"
+            override fun chat(
+                system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean,
+            ): Completion = Completion(text = answer)
+            override fun chatStream(
+                system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double,
+                thinking: Boolean, onDelta: StreamCallback,
+            ): Completion = go(onDelta, false)
+            override fun chatTools(
+                system: String, messages: List<ChatMessage>, tools: JSONArray, turns: List<ToolRound>,
+                maxTokens: Int, temperature: Double, toolChoice: String?, onDelta: StreamCallback?,
+            ): Completion = go(onDelta, true)
+            private fun go(onDelta: StreamCallback?, tools: Boolean): Completion {
+                round += 1
+                val calls = if (round == 1 && tools) {
+                    listOf(ToolCall(id = "c1", name = "analyse", arguments = JSONObject().put("moves", JSONArray(listOf("Qxf7#")))))
+                } else {
+                    emptyList()
+                }
+                var text = if (calls.isNotEmpty()) preamble else answer
+                if (onDelta != null) {
+                    val sent = StringBuilder()
+                    var i = 0
+                    while (i < text.length) {
+                        val piece = text.substring(i, minOf(text.length, i + 7))
+                        sent.append(piece)
+                        if (!onDelta(piece)) break
+                        i += 7
+                    }
+                    text = sent.toString()
+                }
+                return Completion(text = text, toolCalls = calls)
+            }
+        }
+        val answer = "[p=0.6] Taking on f7 with the queen is mate: the king has no square left. " +
+            "[p=0.4] The queen takes on f7 and it is mate at once."
+        for (preamble in listOf("Good question. Let me check that with the engine first. ", "Let me ask the engine about Qxf7. ")) {
+            val coach = Coach(StreamingToolModel(preamble, answer), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+            coach.engine = firstLegal
+            coach.syncClaims = true
+            val heard = ArrayList<String>()
+            coach.streamSink = { _, _ -> { s -> heard.add(s); true } }
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+            messages(coach)
+            heard.clear()
+            coach.ask("what happens if I take on f7 with the queen?", 8.0)
+            val texts = messages(coach).map { it.text }
+            assertTrue(heard.toString(), heard.isNotEmpty() && heard[0].startsWith("Taking on f7"))
+            assertTrue(heard.toString(), heard.none { "engine" in it })
+            assertTrue(texts.toString(), texts.isNotEmpty() && texts.last().startsWith("Taking on f7"))
+        }
+    }
+
+    /**
+     * Before any move, what was said hung under "Game so far" with no position; the past
+     * position's free squares are said of that position; "you" as an object takes no verb; the
+     * verdict-word check reads an unnamed clause as the move's only where it calls it so; an
+     * engine-tool call it cannot read is told so (findings 18, 12, 14, 5, 16).
+     */
+    @Test
+    fun theSmallerWordingFixesHoldAsOnTheDesktop() {
+        assertEquals(
+            "it gives the player a pawn instead; it hits the player twice",
+            Person.thirdPerson("it gives you a pawn instead; it hits you twice"),
+        )
+        assertEquals(
+            "the player answers the opponent instead of playing the player's own moves",
+            Person.thirdPerson("they answer you instead of playing their own moves", side = "opponent"),
+        )
+        assertTrue(MOVE_GIVEN.contains("{move}") && FOCUS_KING.startsWith("Here the move is castling"))
+        assertTrue("of the opponent's the sheet names" in IDEA_LEVEL_WORDS)
+        assertTrue("which of the player's pieces makes it" in IDEA_LEVEL_WORDS)
+
+        val tools = EngineTools(Board(SCHOLAR), null, firstLegal, true)
+        val unread = tools.run("analyse", JSONObject().put("_raw", "moves: Kg2"))
+        assertTrue(unread, unread.startsWith("The arguments were not a JSON object ('moves: Kg2')"))
+        val start = tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("Bxf7+"))).put("start", "before"))
+        assertTrue(start, start.startsWith("No start named 'before'"))
     }
 
     companion object {

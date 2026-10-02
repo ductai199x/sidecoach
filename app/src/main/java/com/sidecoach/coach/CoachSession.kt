@@ -431,6 +431,14 @@ class Coach(
     var syncClaims = false
 
     /**
+     * How a question's work is started off the caller's thread: a daemon thread, named. A test
+     * hands its own, and runs the work when it chooses. `Coach.spawn`.
+     */
+    var spawn: (work: () -> Unit, name: String) -> Unit = { work, name ->
+        Thread({ work() }, name).apply { isDaemon = true }.start()
+    }
+
+    /**
      * The same for the dialogue summary: live it folds in the background, a few seconds
      * after the move; in evaluation it folds before the next moment, so runs repeat.
      */
@@ -837,9 +845,19 @@ class Coach(
         // play next" (Tai's puzzle, 2026-09-28).
         val tools = engine != null && !offline
         if (checker == null || tools || !mayCarryClaims(text)) {
-            val verdicts = if (mayCarryClaims(text)) examined() else emptyList()
-            if (!shownExamination) { // offline, the engine's word on it was the answer
-                speak(Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts)
+            fun answered() {
+                val verdicts = if (mayCarryClaims(text)) examined() else emptyList()
+                if (!shownExamination) { // offline, the engine's word on it was the answer
+                    speak(Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts)
+                }
+            }
+            if (tools && !syncClaims) {
+                // The engine's searches -- the moves named, the line's end -- take up to seconds
+                // each: on the caller's thread they stalled the pipeline (the deep prompt review,
+                // 2026-10-01).
+                spawn({ answered() }, "sidecoach-ask")
+            } else {
+                answered()
             }
             return
         }
@@ -865,7 +883,7 @@ class Coach(
         if (syncClaims) {
             checked() // replay and evaluation: the request must exist when ask() returns
         } else {
-            Thread({ checked() }, "sidecoach-claims").apply { isDaemon = true }.start()
+            spawn({ checked() }, "sidecoach-claims")
         }
     }
 
@@ -903,7 +921,7 @@ class Coach(
             queuePlain(Trigger.USER_ASK, answer.text, ts, recordNow = true)
         }
 
-        Thread({ run() }, "profile-ask").apply { isDaemon = true }.start()
+        spawn({ run() }, "profile-ask")
     }
 
     fun hint(ts: Double) = ask("hint", ts)
@@ -2375,7 +2393,7 @@ class Coach(
 
         if (trigger == Trigger.REVIEW) {
             return (
-                "The game is over. Sum it up from the review in the last message and the " +
+                "The game is over. Sum it up from the review in the record above and the " +
                     "verdicts on the moves above, and from nothing else: the result, what went " +
                     "well, and the one thing to work on. When the review says what they kept " +
                     "missing, that is the thing: the pattern in plain words and the habit that " +
@@ -2433,9 +2451,17 @@ class Coach(
                 // mating attack" and nothing more.
                 // What the move let them do, from the position it left, when that has been
                 // analysed: the grounded half of "what their move allowed".
+                // Late -- the opponent has replied and the player is thinking again -- what the
+                // move allowed is the threat on the board now, and a question that sends them to
+                // the board is a nudge while they think: "one question that sends them to
+                // find..." asked what the move allowed (the deep prompt review, 2026-10-01). The
+                // lesson is then the better move and what theirs missed.
+                val now = current
+                val facing = now != null && now.ply > position.ply &&
+                    now.board.turn == userColour && !now.board.isGameOver()
                 val left = positions[played.ply]
                 val leftAnalysis = left?.analysis
-                val allowed = if (left != null && leftAnalysis != null) {
+                val allowed = if (left != null && leftAnalysis != null && !facing) {
                     IdeaWords.allowed(left.board, leftAnalysis, played.san)
                 } else {
                     null
@@ -2468,11 +2494,19 @@ class Coach(
                     "The player just played ${played.san}, which was ${rated(label)}: it cost " +
                         "${percent(loss)} of the game. The better move was $best ($betterWords). " +
                         "Teach the difference so they spot it next time: why the better move works " +
-                        "and what their move missed or allowed, from the sheet of the position they " +
-                        "faced -- its goal, its pattern, the tactic when it names one -- as a " +
-                        "pattern to remember. Three sentences at most, then, if you like, one " +
-                        "question that sends them to find on the board something your reply has " +
-                        "not said. $TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES$data"
+                        (if (facing) "and what their move missed, " else "and what their move missed or allowed, ") +
+                        "from the sheet of the position they faced -- its goal, its pattern, the " +
+                        "tactic when it names one -- as a pattern to remember. " +
+                        (
+                            if (facing) {
+                                "Three sentences at most, no question: they are thinking about their " +
+                                    "next move now, and what the opponent threatens is theirs to find. "
+                            } else {
+                                "Three sentences at most, then, if you like, one question that " +
+                                    "sends them to find on the board something your reply has not said. "
+                            }
+                            ) +
+                        "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES$data"
                 if (elicit) {
                     // Sparingly: what they saw at that moment, for the profile's record
                     // (causes.from_words reads "I thought it would..." as a line misjudged,
@@ -2527,7 +2561,7 @@ class Coach(
                 instructionText =
                     "The player just played ${played.san}: $label -- $meaning. Show some " +
                         "delight, in your own voice, in one or two sentences: name what makes it " +
-                        "the move -- $reason, and the idea it serves -- from the messages above, " +
+                        "the move -- $reason, and the idea it serves -- from the sections above, " +
                         "nothing invented. No question, no advice, and not the same words as your " +
                         "last such sentence. " +
                         "$NOT_THE_MOVE $NO_FIGURES"
@@ -2666,6 +2700,12 @@ class Coach(
                 fallback = "Give me a moment; I am still reading this position."
             }
         }
+        // Asked about a move, square or piece, a refused reply falls back to the engine's word on
+        // it, as the offline coach says it: "is Bxf7+ good?" got the mate-in-one hint (the deep
+        // prompt review, 2026-10-01). A branch with its own answer replaces it below. Moves only:
+        // a piece named in passing is not read out (the offline coach's rule).
+        val scored = engineWords.filter { "the expected score is" in it }
+        if (scored.isNotEmpty()) fallback = scored.joinToString(" ") { spoken(it) }
         // A question about a fact that is never withheld -- the material, the opening, who
         // stands better -- falls back to that fact, not to the hint for the position.
         val material = if (ASK_MATERIAL.containsMatchIn(said) || ASK_EVAL.containsMatchIn(said)) {
@@ -2720,8 +2760,8 @@ class Coach(
             // they had been a queen down.
             directive =
                 "They asked how they did overall. Answer from the engine's verdicts on their " +
-                    "moves in the messages above -- the labels, the tally in their last move's " +
-                    "message, where they lost ground, how the material went -- and from nothing " +
+                    "moves in the record above -- the labels, the tally under their last move, " +
+                    "where they lost ground, how the material went -- and from nothing " +
                     "else: do not infer the course of the game from the position on the board. " +
                     "Two or three sentences: what went well -- how many of their moves were strong, " +
                     "and their slips by kind, in the tally's numbers -- and the one thing to work " +
@@ -2753,11 +2793,37 @@ class Coach(
                         "it does, from the engine lines (the opponent's move) -- and what the " +
                         "player should be ready for once it is played. One or two sentences, no " +
                         "question."
-                level.value >= DisclosureLevel.MOVE.value -> aim + MOVE_DIRECTIVE
-                level.value >= DisclosureLevel.FOCUS.value ->
-                    aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE
+                level.value >= DisclosureLevel.MOVE.value -> {
+                    val bestSan = facts.candidates.firstOrNull() ?: ""
+                    val given = bestSan.isNotEmpty() &&
+                        saidSinceMove().any { bestSan.trimEnd('+', '#') in it }
+                    // Asked again once the move was given, "The next hint is the answer" said it
+                    // was still to come (the deep prompt review, 2026-10-01).
+                    aim + if (given) MOVE_GIVEN.replace("{move}", bestSan) else MOVE_DIRECTIVE
+                }
+                level.value >= DisclosureLevel.FOCUS.value -> {
+                    val bestSan = facts.candidates.firstOrNull() ?: ""
+                    // "The piece to use and what it goes after", the piece being the king, invited
+                    // "your king goes after their queen" (the deep prompt review).
+                    aim.ifEmpty { "They asked for another hint. " } + FOCUS_DIRECTIVE +
+                        if (bestSan.startsWith("O-O")) " $FOCUS_KING" else ""
+                }
                 else -> aim.ifEmpty { "They asked for a hint. " } + IDEA_DIRECTIVE
             } + " $NO_FIGURES Do not comment on anything said earlier."
+        } else if (position.board.turn != userColour && !position.board.isGameOver() &&
+            (ASK_LINE.containsMatchIn(said) || ASK_MOVE.containsMatchIn(said))
+        ) {
+            // On the opponent's move the engine's line and best move are the OPPONENT's: "what
+            // should I play?" there told the model to give the player the opponent's best move
+            // as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
+            fallback = theirMoveNow(position.board, facts)
+            val asked = if (ASK_LINE.containsMatchIn(said)) "to see the line" else "what to play"
+            directive =
+                "They asked $asked, and it is the opponent's move, not theirs: there is no " +
+                    "move of theirs to play yet. Say so, then what the opponent threatens now -- " +
+                    "their best move and what it does, from the engine lines (the opponent's " +
+                    "move) -- and what the player should be ready for once it is played. One or two " +
+                    "sentences, no question. $NO_FIGURES"
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {
@@ -3018,8 +3084,20 @@ class Coach(
                     "propose a move, or name a square or piece, say plainly whether it holds up and what it " +
                     "does or allows, from the engine's word on it where given above -- theirs to " +
                     "hear in full: the score after it, how far behind the best, the reply, what the " +
-                    "move does; when the engine does not rate their move, say it is not the " +
-                    "strongest and, in general terms, why. Of the position they face, keep back only " +
+                    "move does; " +
+                    (
+                        if (position.board.turn == userColour) {
+                            "when the engine does not rate their move, say it is not the strongest and, " +
+                                "in general terms, why. "
+                        } else {
+                            // On the opponent's move a move they name is not examined
+                            // ([analyseNamed]): "not rated" there means nothing (the deep prompt
+                            // review, 2026-10-01).
+                            "on the opponent's move no move they name is rated here: rate one only " +
+                                "from the engine's word on it. "
+                        }
+                        ) +
+                    "Of the position they face, keep back only " +
                     "what the level line does, and point them toward the right idea" +
                     (if (answering || (followup && !asks)) " in words." else " -- with a question, if that serves.") +
                     " What you already said in this position is under 'Said here': do not say " +

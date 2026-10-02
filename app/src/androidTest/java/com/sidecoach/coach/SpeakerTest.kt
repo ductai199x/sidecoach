@@ -177,6 +177,23 @@ class SpeakerTest {
     }
 
     /**
+     * The voice declined the first sentence, the stream was closed there, and the cut-off
+     * candidate still went out as the text (the deep prompt review, 2026-10-01). Only candidates
+     * the stream finished are read; with none, the template stands
+     * (`test_a_voice_that_declines_the_first_sentence_leaves_no_cut_off_text`).
+     */
+    @Test
+    fun aVoiceThatDeclinesTheFirstSentenceLeavesNoCutOffText() {
+        val reply = "[p=0.6] Taking on f7 wins. It also opens the king for the rook.\n[p=0.4] Other."
+        val provider = Streaming(reply, pieces = 30)
+        val speaker = Speaker(provider)
+        val spoken = speaker.speakNow(request({ false }))
+        assertFalse(spoken.streamed)
+        assertEquals("Fine.", spoken.message.text)
+        assertEquals("no second call about a moment the voice declined", 1, provider.calls)
+    }
+
+    /**
      * The stream reader: deltas that split a marker, a stop at the buffer's end ("costing 0." is
      * the start of "0.03"), and a bare move number waiting for its sentence. `test_streaming.py`.
      */

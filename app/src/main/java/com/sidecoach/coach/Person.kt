@@ -39,7 +39,30 @@ object Person {
     private val NOT_VERBS = setOf(
         "the", "a", "an", "it", "them", "him", "her", "and", "or", "but", "to", "of", "on",
         "in", "at", "by", "for", "with", "from", "up", "down", "back", "both", "each", "all",
+        // Words after "you" that are never its verb: "it gives you a pawn instead", "costs you
+        // twice" became "the player insteads", "the player twices" (the deep prompt review,
+        // 2026-10-01).
+        "instead", "twice", "better", "worse", "more", "less", "too", "again", "first", "here",
+        "there", "nothing", "something", "enough", "time", "tempo", "material", "trouble",
+        "much", "little", "plenty", "room", "options", "chances", "any", "some", "no", "one",
+        "two", "three", "extra", "free", "away", "out", "over", "into", "onto", "off",
     )
+
+    /**
+     * The word before "you" that makes it an object: a preposition, or a verb taking one --
+     * "it attacks you twice", "this leaves you a pawn down".
+     */
+    private val OBJECT_AFTER = setOf(
+        "to", "for", "with", "against", "than", "from", "at", "on", "by", "of", "into",
+        "onto", "toward", "towards", "behind", "past", "around", "near", "beside", "like",
+        "give", "gives", "leave", "leaves", "let", "lets", "cost", "costs", "get", "gets",
+        "make", "makes", "offer", "offers", "hand", "hands", "show", "shows", "tell", "tells",
+        "ask", "asks", "attack", "attacks", "hit", "hits", "check", "checks", "pin", "pins",
+        "fork", "forks", "threaten", "threatens", "help", "helps", "allow", "allows",
+        "force", "forces", "beat", "beats", "hurt", "hurts", "trap", "traps", "keep", "keeps",
+        "put", "puts", "send", "sends", "stop", "stops", "deny", "denies", "answer", "answers",
+    )
+    private val WORD_BEFORE = Regex("([A-Za-z']+)[^A-Za-z']*$")
 
     /** Verbs ending in -ed that are present tense, not past. */
     private val PRESENT_ED = setOf("need", "succeed", "proceed", "exceed", "feed", "bleed", "speed", "shed")
@@ -90,8 +113,11 @@ object Person {
             val verb = match.groups["verb"]?.value
             val built = StringBuilder(subject)
             if (!adverb.isNullOrEmpty()) built.append(" ").append(adverb)
+            val before = WORD_BEFORE.find(text.substring(0, match.range.first))
+            val isObject = before != null && before.groupValues[1].lowercase() in OBJECT_AFTER
             if (!verb.isNullOrEmpty()) {
-                built.append(" ").append(if (verb.lowercase() in NOT_VERBS) verb else conjugate(verb))
+                val kept = verb.lowercase() in NOT_VERBS || isObject
+                built.append(" ").append(if (kept) verb else conjugate(verb))
             }
             built.toString()
         }
