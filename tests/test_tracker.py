@@ -387,7 +387,9 @@ def test_a_still_tick_on_a_verified_lock_reads_nothing(monkeypatch) -> None:
     """A tick whose board pixels are the last changed frame's (`changed` False) turned the
     whole frame grey and validated the lock again, nearly all of a still tick's cost: 10 ms
     at 1440p (round 2 finding 7). A verified lock stands unread; a lock in doubt is still
-    checked."""
+    checked -- on the last changed frame's grey image, not this frame turned grey again (round
+    3 audit, E10: before, it was converted again)."""
+    from sidecoach.vision import tracker as tracker_module
     from sidecoach.vision.board_detect import GrayBuffer
 
     tracker = BoardTracker()
@@ -397,12 +399,51 @@ def test_a_still_tick_on_a_verified_lock_reads_nothing(monkeypatch) -> None:
     calls = []
     real = GrayBuffer.convert
     monkeypatch.setattr(GrayBuffer, "convert", lambda s, f: calls.append(1) or real(s, f))
+    fits = []
+    fit = tracker_module.fit_score
+    monkeypatch.setattr(tracker_module, "fit_score", lambda *a, **k: fits.append(1) or fit(*a, **k))
     for _ in range(5):
         assert tracker.update(frame, changed=False) is locked
-    assert calls == []
+    assert calls == [] and fits == []
     tracker.misses = 1  # in doubt: read even on a still tick
     tracker.update(frame, changed=False)
-    assert calls == [1]
+    assert fits == [1] and tracker.verified, "checked again"
+    assert calls == [], "on the last changed frame's grey image"
+
+
+def test_a_still_screen_with_no_board_is_not_searched_again(monkeypatch) -> None:
+    """Round 3 audit, E10 (Tai, 2026-10-02: one mechanism for still ticks, each tick the
+    cheaper one, measured on the same frames). With no board on the screen the searches' back-
+    off ran the near and full searches on still ticks too, on pixels already searched: 8 ms a
+    tick on average at 1440p, 22 at 4K, against nothing for the phone, which keeps what it
+    computed on the grey image it read last. A still tick now asks the same image and gets the
+    same answer for nothing; the back-off still counts every tick, and a changed frame is
+    searched."""
+    from sidecoach.vision import tracker as tracker_module
+    from sidecoach.vision.board_detect import GrayBuffer
+
+    searches = []
+    detect = tracker_module.detect_boards_gray
+    monkeypatch.setattr(
+        tracker_module, "detect_boards_gray", lambda *a, **k: searches.append(1) or detect(*a, **k)
+    )
+    converted = []
+    real = GrayBuffer.convert
+    monkeypatch.setattr(GrayBuffer, "convert", lambda s, f: converted.append(1) or real(s, f))
+    tracker = BoardTracker()
+    blank = busy_background(640, 400, 4)
+    assert tracker.update(blank) is None
+    assert searches == [1] and converted == [1]
+    for _ in range(60):  # six seconds of a still screen: the full search came due four times
+        assert tracker.update(blank, changed=False) is None
+    assert searches == [1] and converted == [1], "nothing searched again on the same pixels"
+    assert tracker.full_searches == 5, "the back-off counts every tick, as before"
+    # A board appears: the changed frame is read, and locked.
+    for _ in range(25):
+        tracker.update(synthetic_board(), changed=True)
+        if tracker.verified:
+            break
+    assert tracker.verified
 
 
 def test_a_still_board_is_not_refitted_again_on_the_same_pixels(monkeypatch) -> None:

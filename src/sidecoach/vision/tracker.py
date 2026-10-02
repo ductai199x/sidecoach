@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -33,6 +34,8 @@ from sidecoach.vision.board_detect import (
     refine,
     square_colours,
 )
+
+_T = TypeVar("_T")
 
 
 def _edge_shift(a: Region, b: Region) -> int:
@@ -139,6 +142,38 @@ class BoardTracker:
         # Whether a re-fit ran on the pixels of the last changed frame and left the lock
         # where it is: a still tick then needs none.
         self._refit_settled = False
+        # What was computed on the grey image read last -- a fit at a geometry, the square
+        # colours, a re-fit, a search, each a pure function of the image and its arguments --
+        # by the arguments; forgotten when the next frame is read (`_once`).
+        self._memo: dict[tuple[Any, ...], Any] = {}
+
+    def _once(self, key: tuple[Any, ...], compute: Callable[[], _T]) -> _T:
+        """`compute()` on the grey image read last, once: a still tick asks again what was
+        asked on these pixels and gets the same answer for nothing. The tracker's own
+        bookkeeping -- the ticks since a re-fit, the misses, the back-off -- still runs every
+        tick, so its decisions are the same. `BoardTracker.kt`'s `once`."""
+        if key in self._memo:
+            return self._memo[key]
+        value = self._memo[key] = compute()
+        return value
+
+    def _fit(
+        self, gray: np.ndarray, region: Region, cell: float, colours: Colours | None = None
+    ) -> tuple[float, float]:
+        return self._once(
+            ("fit", region, cell, colours), lambda: fit_score(gray, region, cell, colours)
+        )
+
+    def _colours(self, gray: np.ndarray, region: Region, cell: float) -> Colours | None:
+        return self._once(("colours", region, cell), lambda: square_colours(gray, region, cell))
+
+    def _readable_cells(
+        self, gray: np.ndarray, region: Region, cell: float, colours: Colours
+    ) -> int:
+        return self._once(
+            ("readable", region, cell, colours),
+            lambda: readable_cells(gray, region, cell, colours),
+        )
 
     @property
     def gray(self) -> np.ndarray | None:
@@ -169,7 +204,15 @@ class BoardTracker:
         good: the gated geometry sweep, seeds 15, 17, 35 and more). A re-fit that already ran
         on these pixels and left the lock where it was would do so again: it is not run again
         until they change (round 3: a still 4K board re-fitted every tenth tick for nothing,
-        30 ms each)."""
+        30 ms each).
+
+        Anything else on a still tick -- no board (the searches' back-off), a lock in doubt, a
+        re-fit due -- runs on the grey image of the last changed frame, not this frame turned
+        grey again, and what was computed on that image is not computed again (`_once`): a
+        still screen with no board searched it every few ticks for what it had not found
+        before, 8 ms a tick on average at 1440p, 22 at 4K. The phone's way, made the one for
+        both (round 3 audit, E10: each tick takes the cheaper of the two, measured on the same
+        frames)."""
         if not changed and self.verified:
             assert self.board is not None
             due = self._frames_since_refine + 1 >= self.refine_every
@@ -178,7 +221,10 @@ class BoardTracker:
                 return self.board
         if changed:
             self._refit_settled = False
-        gray = self._gray.convert(frame_bgr)
+        gray = self._gray.image
+        if changed or gray is None:
+            gray = self._gray.convert(frame_bgr)
+            self._memo.clear()  # a new image: nothing computed on it yet
         if self.board is None:
             # Without a board on screen, searching every frame would stall capture. The
             # search near the last cell size is cheap and runs every few frames, so a
@@ -205,7 +251,7 @@ class BoardTracker:
                 self._seen = None
             return self._search(gray, frame_bgr, True)
         readable = (
-            readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
+            self._readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
             if self.colours is not None
             else 0
         )
@@ -237,7 +283,7 @@ class BoardTracker:
         assert self.board is not None
         self._frames_since_refine += 1
         candidate = self.board
-        fit, contrast = fit_score(gray, candidate.region, candidate.cell_px, self.colours)
+        fit, contrast = self._fit(gray, candidate.region, candidate.cell_px, self.colours)
         # A frame that fails is re-fitted at once, the first of a run of failures, with the
         # lock's own colours: a board that moved a fraction of a cell is likelier than a new
         # theme, and read where the lock is, its squares' colours come out mixed. Read afresh
@@ -247,8 +293,12 @@ class BoardTracker:
         failed_first = not self._passes(fit, contrast) and self.misses == 0
         if self._frames_since_refine >= self.refine_every or failed_first:
             self._frames_since_refine = 0
-            refit = refine(
-                gray, candidate, offset_cells=self.refine_offset_cells, colours=self.colours
+            at_lock, colours = candidate, self.colours
+            refit = self._once(
+                ("refine", at_lock, self.refine_offset_cells, colours),
+                lambda: refine(
+                    gray, at_lock, offset_cells=self.refine_offset_cells, colours=colours
+                ),
             )
             # A re-fit is adopted only when it validates on its own, and then only when this
             # frame failed at the lock's geometry or the re-fit moved it and its boundary comb
@@ -282,8 +332,8 @@ class BoardTracker:
             # squares the lighter ones: a palette whose light and dark swap places is the
             # board read a cell off (moved 0.8 of a cell up, the lock re-read its colours
             # inverted and stayed where the board was: the parity audit's sweep, 2026-09-26).
-            fresh_fit, fresh_contrast = fit_score(gray, candidate.region, candidate.cell_px)
-            fresh = square_colours(gray, candidate.region, candidate.cell_px)
+            fresh_fit, fresh_contrast = self._fit(gray, candidate.region, candidate.cell_px)
+            fresh = self._colours(gray, candidate.region, candidate.cell_px)
             if (
                 self._passes(fresh_fit, fresh_contrast)
                 and fresh is not None
@@ -299,9 +349,7 @@ class BoardTracker:
         searched = self.full_searches
         boards = self._detect(gray, frame_bgr, full=full, lost=self._lost)
         board = boards[0] if boards else None
-        self._lock(
-            gray, board, square_colours(gray, board.region, board.cell_px) if board else None
-        )
+        self._lock(gray, board, self._colours(gray, board.region, board.cell_px) if board else None)
         if self.board:
             self._full.reset()
             self._near.reset()
@@ -325,7 +373,7 @@ class BoardTracker:
             self._keep_seen(gray, board)
             self._lost = None
         self._readable = (
-            readable_cells(gray, board.region, board.cell_px, colours)
+            self._readable_cells(gray, board.region, board.cell_px, colours)
             if board is not None and colours is not None
             else 0
         )
@@ -362,11 +410,11 @@ class BoardTracker:
         for board in self._detect(gray, frame_bgr, full=False, count=False):
             if _edge_shift(board.region, lock.region) <= self.refit_deadband_px:
                 continue
-            colours = square_colours(gray, board.region, board.cell_px)
+            colours = self._colours(gray, board.region, board.cell_px)
             if colours is None:
                 continue
-            fit, contrast = fit_score(gray, board.region, board.cell_px, colours)
-            cells = readable_cells(gray, board.region, board.cell_px, colours)
+            fit, contrast = self._fit(gray, board.region, board.cell_px, colours)
+            cells = self._readable_cells(gray, board.region, board.cell_px, colours)
             if self._passes(fit, contrast) and cells > self._readable - self.probe_lost_cells:
                 self._lock(gray, replace(board, fit=fit, contrast=contrast), colours)
                 self.detections += 1
@@ -402,14 +450,19 @@ class BoardTracker:
         if count:
             self.detections += 1
         if self.last_cell_px is not None:
+            min_cell = max(MIN_CELL_PX, int(self.last_cell_px * 0.8))
+            max_cell = int(self.last_cell_px * 1.25) + 1
             near = self._kept(
                 frame_bgr,
-                detect_boards_gray(
-                    gray,
-                    min_fit=self.min_fit,
-                    min_contrast=self.min_contrast,
-                    min_cell=max(MIN_CELL_PX, int(self.last_cell_px * 0.8)),
-                    max_cell=int(self.last_cell_px * 1.25) + 1,
+                self._once(
+                    ("detect", min_cell, max_cell),
+                    lambda: detect_boards_gray(
+                        gray,
+                        min_fit=self.min_fit,
+                        min_contrast=self.min_contrast,
+                        min_cell=min_cell,
+                        max_cell=max_cell,
+                    ),
                 ),
             )
             if lost is not None and near:
@@ -427,7 +480,12 @@ class BoardTracker:
         self.full_searches += 1
         boards = self._kept(
             frame_bgr,
-            detect_boards_gray(gray, min_fit=self.min_fit, min_contrast=self.min_contrast),
+            self._once(
+                ("detect",),
+                lambda: detect_boards_gray(
+                    gray, min_fit=self.min_fit, min_contrast=self.min_contrast
+                ),
+            ),
         )
         if lost is None:
             return boards

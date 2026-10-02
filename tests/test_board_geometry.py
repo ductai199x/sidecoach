@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from sidecoach.events import GameEnded, GameStarted, MovePlayed, Resync, Side, Unexplained
+from sidecoach.replay.recording import ChangeGate, board_gate
 from sidecoach.state.pipeline import GamePipeline
 from tests.games import drag_path, scenario
 from tests.synth import synthetic_board
@@ -84,10 +85,15 @@ class Outcome:
     log: list[str]
 
 
-def play(seed: int) -> Outcome:
+def play(seed: int, gated: bool = False) -> Outcome:
+    """The seed's game and geometry events. `gated`: each frame through the panel's change gate
+    around the lock (`ChangeGate`, `board_gate`), as live: a frame like the last changed one is
+    a still tick (`changed` False), which the tracker reads as the last changed frame's
+    pixels (round 3 audit, E10)."""
     sc = scenario(seed)
     rng = random.Random(seed * 7919 + 1)
     pipe = GamePipeline()
+    gate = ChangeGate(keyframe_interval_s=1.0)
     board = chess.Board()
     ts = 0.0
     got: list[str] = []
@@ -133,7 +139,11 @@ def play(seed: int) -> Outcome:
         nonlocal ts
         for _ in range(frames):
             frame = frame_for(g or geo, cover=cover, highlight=highlight, **kw)
-            for event in pipe.process(frame, ts):
+            changed = True
+            if gated:
+                gate.region = board_gate(pipe.board, W, H)
+                changed = gate.changed(frame, ts)
+            for event in pipe.process(frame, ts, changed=changed):
                 if isinstance(event, MovePlayed):
                     got.append(event.san)
                     log.append(event.san)
@@ -359,12 +369,17 @@ def play(seed: int) -> Outcome:
 SEEDS = (154, 287, 34, 175, 2, 3)
 
 
-def test_a_game_survives_the_board_moved_resized_covered_and_scrolled(seed: int) -> None:
+@pytest.mark.parametrize("gated", [False, True], ids=["every-frame", "gated"])
+def test_a_game_survives_the_board_moved_resized_covered_and_scrolled(
+    seed: int, gated: bool
+) -> None:
     """Every move committed, none invented, the game's position at the end, and the lock on
     the board where it is. Two moves that commute may commit in either order when frames
-    between them were held (as in the stress sweep)."""
+    between them were held (as in the stress sweep). Gated, each frame goes through the
+    panel's change gate first, as live, so the still ticks take the tracker's still path (no
+    sweep drove it: round 3 audit, E10)."""
     sc = scenario(seed)
-    out = play(seed)
+    out = play(seed, gated)
     assert sorted(out.got) == sorted(out.played) and out.same_board and out.locked_right, (
         f"{sc.where}: committed {out.got}, played {out.played}, same board {out.same_board}, "
         f"locked right {out.locked_right}; geometry {out.log}"
