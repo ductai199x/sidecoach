@@ -345,4 +345,97 @@ class PanelListenTest {
         assertTrue(heard.isEmpty())
         listener.setMode("off")
     }
+
+    /**
+     * The key pressed again while the first half was being recognised: that recognition ended
+     * after the press and armed the second of quiet, and the first half went alone while the
+     * player held the key (`test_a_press_while_the_last_words_are_recognised_keeps_one_question`,
+     * voice finding 5).
+     */
+    @Test
+    fun aPressWhileTheLastWordsAreRecognisedKeepsOneQuestion() {
+        val slow = CountDownLatch(1)
+        recogniser.gate = slow
+        recogniser.held = 16000
+        PanelListen.dictationHold() // the key down
+        val first = Thread { PanelListen.onUtterance(silence(1.0), 1.0) } // up: recognising ...
+        first.start()
+        Thread.sleep(50)
+        PanelListen.dictationHold() // ... and down again
+        slow.countDown()
+        first.join(2000)
+        assertTrue(dictation().isNull("sends_at"))
+        Thread.sleep(600) // past the second of quiet (0.3 s here), the key still held
+        assertTrue(asked.isEmpty())
+        PanelListen.onUtterance(silence(0.5), 0.5) // up
+        assertEquals("ask_spoken" to "hello hello hello", asked.poll(2, TimeUnit.SECONDS))
+    }
+
+    /**
+     * Push-to-talk ends at the longest utterance, and a mode switch with the key down lets go of
+     * it (`test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go`, voice
+     * finding 7).
+     */
+    @Test
+    fun pushToTalkStopsAtTheLongestUtteranceAndAModeSwitchLetsGo() {
+        val heard = java.util.concurrent.CopyOnWriteArrayList<Double>()
+        val mic = FedMic()
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ -> heard.add(audio.size / 16000.0) })
+        listener.setMode("ptt")
+        try {
+            listener.press()
+            repeat(((com.sidecoach.voice.MAX_UTTERANCE_S + 5) * 16000 / HOP).toInt()) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
+            val deadline = System.currentTimeMillis() + 5000
+            while ((heard.isEmpty() || mic.frames.isNotEmpty()) && System.currentTimeMillis() < deadline) Thread.sleep(10)
+            assertEquals(1, heard.size)
+            assertTrue("${heard[0]}", heard[0] <= com.sidecoach.voice.MAX_UTTERANCE_S + 0.1)
+            listener.release()
+            listener.press()
+            listener.setMode("vad")
+            listener.setMode("ptt")
+            // The fresh press is taken: a second's speech and a release make an utterance.
+            listener.press()
+            repeat(16000 / HOP) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
+            val until = System.currentTimeMillis() + 3000
+            while (mic.frames.isNotEmpty() && System.currentTimeMillis() < until) Thread.sleep(10)
+            Thread.sleep(100)
+            listener.release()
+            val end = System.currentTimeMillis() + 3000
+            while (heard.size < 2 && System.currentTimeMillis() < end) Thread.sleep(10)
+            assertEquals(2, heard.size)
+        } finally {
+            listener.setMode("off")
+        }
+    }
+
+    /** A microphone whose input failed is reopened (`test_a_microphone_whose_stream_died_is_reopened`,
+     * voice finding 17). */
+    @Test
+    fun aMicrophoneWhoseInputFailedIsReopened() {
+        val mic = object : FrameSource {
+            override val frames: BlockingQueue<FloatArray> = LinkedBlockingQueue()
+            override val detail = "fed by the test"
+            override val isOpen = true
+            @Volatile var opens = 0
+            @Volatile var dead = false
+            override fun open(): Boolean {
+                opens += 1
+                dead = false
+                return true
+            }
+            override fun close() = Unit
+            override fun stalled() = dead
+        }
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { _, _ -> })
+        listener.setMode("ptt")
+        try {
+            assertEquals(1, mic.opens)
+            mic.dead = true // the input failed
+            val deadline = System.currentTimeMillis() + (com.sidecoach.voice.MIC_REOPEN_S * 1000).toLong() + 3000
+            while (mic.opens < 2 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+            assertEquals(2, mic.opens)
+        } finally {
+            listener.setMode("off")
+        }
+    }
 }

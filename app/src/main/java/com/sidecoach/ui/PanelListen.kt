@@ -82,6 +82,9 @@ object PanelListen {
     /** Bumped when an utterance ends, so a partial of it that finishes late is dropped. */
     @Volatile private var utteranceGen = 0
 
+    /** Counts the presses and utterances begun (`_dictation_holds`, see [dictationSettle]). */
+    @Volatile private var dictationHolds = 0
+
     // The settings page's live test: while on, it listens (voice activity) and what it hears
     // goes to `heardTest`, not to the coach; the mode it interrupted is restored after.
     @Volatile private var hearTestOn = false
@@ -395,10 +398,18 @@ object PanelListen {
     }
 
     /**
-     * An utterance that came to nothing: earlier words (if any) go on to send, else the box
-     * stops saying it is listening. `_dictation_settle`.
+     * An utterance ended (with words or with none): the words (if any) go on to send after the
+     * second of quiet, else the box stops saying it is listening. [holds]: the count of presses
+     * and utterances when this one ended its recording; one more came while it was being
+     * recognised, and the box waits for that one, which settles it in turn: the second of quiet
+     * ran from the first, and the question went in two halves (voice finding 5).
+     * `_dictation_settle`.
      */
-    private fun dictationSettle() {
+    private fun dictationSettle(holds: Int? = null) {
+        if (holds != null && holds != dictationHolds) {
+            synchronized(lock) { PanelEngine.set("dictation" to dictation(dictationText, live = true, sendsAt = null)) }
+            return
+        }
         val pending = synchronized(lock) { dictationText.isNotEmpty() }
         if (pending) {
             dictationArm()
@@ -410,6 +421,7 @@ object PanelListen {
     /** A new press or a new utterance: whatever was about to send waits for the rest. */
     internal fun dictationHold() {
         synchronized(lock) {
+            dictationHolds += 1
             dictationTimer?.cancel(false)
             dictationTimer = null
             PanelEngine.set("dictation" to dictation(dictationText, live = true, sendsAt = null))
@@ -472,6 +484,7 @@ object PanelListen {
      */
     internal fun onUtterance(audio: FloatArray, seconds: Double) {
         utteranceGen += 1
+        val holds = dictationHolds // a press or an utterance after this one began
         val began = System.nanoTime()
         val raw = stt?.transcribe(audio) ?: ""
         val ms = (System.nanoTime() - began) / 1e6
@@ -487,13 +500,13 @@ object PanelListen {
                 "heard nothing in ${format1(seconds)}s of audio",
                 JSONObject().put("stt_ms", roundInt(ms)),
             )
-            dictationSettle()
+            dictationSettle(holds)
             return
         }
         val fixed = Correct.correct(raw, boardOnScreen())
         val text = fixed.text
         if (text.isEmpty()) {
-            dictationSettle()
+            dictationSettle(holds)
             return
         }
         synchronized(lock) { dictationText = Py.strip("$dictationText $text") }
@@ -508,7 +521,7 @@ object PanelListen {
                 .put("seconds", round(seconds, 2))
                 .put("stt_ms", roundInt(ms)),
         )
-        dictationArm()
+        dictationSettle(holds)
     }
 
     // ---- the phone's health strip -------------------------------------------------------------
