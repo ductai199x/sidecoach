@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,6 +23,7 @@ import kotlin.math.abs
  * difflib's ratio, exactly; Silero's probabilities within a tolerance and the endpointer's events
  * exactly; Parakeet int8's transcript and tokens for speech clips.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class SttParityTest {
 

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.events.Label
 import com.sidecoach.events.ReviewJson
 import com.sidecoach.profile.Library
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * first did not, and the review is whole. Skipped without the engine's network
  * (tools/push_net.ps1).
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class GameReviewLiveTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext

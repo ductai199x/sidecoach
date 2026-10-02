@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.analysis.GameReviewParityTest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -18,6 +19,7 @@ import java.util.Base64
  * taken in, sets made, added to, renamed, deleted, put back and gone past their Undo -- all
  * replayed here in a folder of the test's own.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LooksParityTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()

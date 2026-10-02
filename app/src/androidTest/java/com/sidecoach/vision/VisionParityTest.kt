@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.Parallel
 import com.sidecoach.chess.Board
 import org.json.JSONArray
@@ -23,6 +24,7 @@ import kotlin.math.abs
  * desktop 17c45a6's scenario test moves it: the cells readable at the old lock and the new
  * place, and the tracker's probe finding it again.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class VisionParityTest {
 

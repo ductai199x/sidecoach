@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Line
@@ -30,6 +31,7 @@ import java.io.File
  * to be ready once the options are set (the network loads then), and it keeps a search's time
  * itself (`go` without `movetime`), so that the voice's pause does not count against it.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class EngineParityTest {
 

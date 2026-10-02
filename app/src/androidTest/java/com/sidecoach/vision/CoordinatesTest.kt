@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -22,6 +23,7 @@ import org.opencv.imgproc.Imgproc
  * 8..1 down for White at the bottom, 1..8 for Black, as chess.com draws them -- with OpenCV's
  * own Hershey font, as the desktop's test draws it.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class CoordinatesTest {
 

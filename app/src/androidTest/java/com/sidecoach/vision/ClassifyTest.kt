@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -16,6 +17,7 @@ import org.opencv.android.OpenCVLoader
  * records what `classify_frame` made of every cell of every board of that theme. The
  * Kotlin bootstraps the same way from the same frame and must name the same squares.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class ClassifyTest {
 

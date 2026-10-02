@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -29,6 +30,7 @@ import kotlin.math.abs
  * centres (sums in another order), the net's similarities (another onnxruntime), the phase
  * correlation (another OpenCV).
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class CellsParityTest {
 

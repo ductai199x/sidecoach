@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.state.clockObservation
 import org.json.JSONArray
 import org.json.JSONObject
@@ -29,6 +30,7 @@ import org.opencv.imgproc.Imgproc
  * glyph with its correlation and margin, the icon's rectangle -- so a failure says which
  * step of the reading drifted, not merely that the time came out wrong.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ClockTest {
 

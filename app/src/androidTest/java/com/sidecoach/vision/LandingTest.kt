@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -26,6 +27,7 @@ import kotlin.math.abs
  * must agree on every kind, symbol and settled flag, and on every piece's shift to 1e-3 of a
  * cell (its OpenCV is another build than the desktop's).
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class LandingTest {
 

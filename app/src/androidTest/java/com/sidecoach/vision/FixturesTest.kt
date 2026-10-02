@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -21,6 +22,7 @@ import org.opencv.core.CvType
  * This test proves the harness: OpenCV loads, the assets are there, and a board becomes
  * a Mat of the size the index says.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class FixturesTest {
 

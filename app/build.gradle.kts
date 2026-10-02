@@ -17,7 +17,8 @@ android {
         targetSdk = 37
         versionCode = 157
         versionName = "0.1.57"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // AndroidJUnitRunner with the classes in lanes side by side (androidTest Lanes.kt).
+        testInstrumentationRunner = "androidx.test.runner.SidecoachRunner"
         ndk {
             // OpenCV and onnxruntime each ship four ABIs and the APK came to 323 MB. The
             // phone is arm64 and the emulator x86_64; a release build splits per ABI.

@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.events.Analysis
@@ -24,6 +25,7 @@ import java.io.File
  * Game submitted the way the watcher submits it -- a takeback in the middle -- is book to its
  * last move and named as the whole line names it, not as its first move does.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LiveBookTest {
 

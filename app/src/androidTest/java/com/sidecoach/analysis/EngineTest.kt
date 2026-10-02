@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -24,6 +25,7 @@ import java.io.File
  * It needs the network: `tools/fetch_stockfish.py --net` then `tools/push_net.ps1`. Without
  * one the test says so and skips, rather than failing for the wrong reason.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class EngineTest {
 

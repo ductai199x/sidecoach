@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
@@ -30,6 +31,7 @@ import java.io.File
  * (`tools/make_annotator_fixtures.py`). The engine is scripted from the desktop's recording
  * of the real Stockfish, so what is compared is the annotator itself.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class AnnotatorParityTest {
 

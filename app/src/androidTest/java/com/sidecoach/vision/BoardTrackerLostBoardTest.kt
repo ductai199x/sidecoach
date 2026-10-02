@@ -1,6 +1,7 @@
 package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -16,6 +17,7 @@ import kotlin.math.abs
  * A board found near the old size is taken at once only when it shows the lost board's pieces.
  * The pages are grey planes drawn here: two checkerboards, pieces as dark squares inside cells.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class BoardTrackerLostBoardTest {
 

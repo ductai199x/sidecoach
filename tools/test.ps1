@@ -15,7 +15,10 @@
 param(
     [string]$Serial = "emulator-5556",
     [string]$Class = "",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # Every class one after another, as before the lanes (androidTest Lanes.kt): to tell a
+    # lane's fault from a test's, and for each test's own CPU in app/build/test-timings.tsv.
+    [switch]$OneAtATime
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,12 +122,17 @@ for ($i = 0; $i -lt $files.Count; $i++) {
 }
 
 & $adb -s $Serial logcat -c
+& $adb -s $Serial shell "rm -f $outside/timings.tsv"
 $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener,com.sidecoach.FilesIn")
 if ($Class) { $args += @("-e", "class", $Class) }
-$args += "com.sidecoach.test/androidx.test.runner.AndroidJUnitRunner"
+if ($OneAtATime) { $args += @("-e", "lanes", "off") }
+$args += "com.sidecoach.test/androidx.test.runner.SidecoachRunner"
 Write-Host "running..."
 & $adb -s $Serial shell am instrument @args
 
 Write-Host ""
 Write-Host "--- what the tests logged ---"
-& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "*:S"
+& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "sidecoach.lanes:I" "*:S"
+
+# Each test's lane and times (com.sidecoach.Lanes), for a look at where the time goes.
+& $adb -s $Serial pull "$outside/timings.tsv" (Join-Path $root "app/build/test-timings.tsv") | Out-Null

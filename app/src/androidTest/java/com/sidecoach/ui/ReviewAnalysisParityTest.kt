@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.analysis.GameReviewParityTest
 import com.sidecoach.chess.Board
 import com.sidecoach.events.ReviewJson
@@ -19,6 +20,7 @@ import java.time.ZoneOffset
  * answered), the explorer of the games, each game's PGN with side lines grafted on (annotated
  * with the review and the AI coach's words, and plain), the file names, the move comments.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ReviewAnalysisParityTest {
     private val fixture: JSONObject by lazy {

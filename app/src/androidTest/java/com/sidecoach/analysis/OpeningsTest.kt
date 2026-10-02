@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.Parallel
 import com.sidecoach.chess.Move
 import org.json.JSONObject
@@ -20,6 +21,7 @@ import java.io.File
  * (`tools/make_openings_fixtures.py`). Once compiled from the tables, once from the cache the
  * first load wrote.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class OpeningsTest {
 

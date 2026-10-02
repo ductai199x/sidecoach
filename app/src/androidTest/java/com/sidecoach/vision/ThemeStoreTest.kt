@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -21,6 +22,7 @@ import java.io.File
  * resolution -- is ignored and the set learned again. The versions still read, 4 on, are
  * `ThemeMigrationTest`'s.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class ThemeStoreTest {
 

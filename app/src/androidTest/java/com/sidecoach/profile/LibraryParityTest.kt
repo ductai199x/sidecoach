@@ -2,6 +2,7 @@ package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.llm.HttpReply
 import com.sidecoach.llm.Transport
 import org.json.JSONArray
@@ -20,6 +21,7 @@ import java.time.ZoneOffset
  * difflib's matching blocks, chess.com's and Lichess's answers, and stores of watched records
  * and imports (`from_watched`'s rows, `reconcile`'s pairs).
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LibraryParityTest {
 

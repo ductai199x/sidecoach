@@ -3,6 +3,7 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.Parallel
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
@@ -56,6 +57,7 @@ import org.opencv.imgproc.Imgproc
  * how often its last session read the theme cache (`reads`), as
  * `test_a_puzzle_left_still_is_read_once` counts it.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
 

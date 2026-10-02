@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Label
@@ -23,6 +24,7 @@ import java.io.File
  * claimed played on, positions cached with the moves that led there, settings saved
  * mid-search, a cut search's lines of one depth, and an engine that stops answering replaced.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class EngineReviewTest {
 

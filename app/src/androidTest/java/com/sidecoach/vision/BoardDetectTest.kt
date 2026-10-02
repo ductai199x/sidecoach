@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -14,6 +15,7 @@ import kotlin.math.abs
  * board region and cell, and the detector must find it to within a pixel or two, as the
  * desktop's suite demands of the Python.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class BoardDetectTest {
 

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
  * before plays, the engine paused around every piece and never left paused, the line's start
  * told once, and a stop that ends a line part-way.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class KokoroTtsTest {
 

@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.PgnReader
 import com.sidecoach.events.Line
@@ -25,6 +26,7 @@ import java.io.File
  * summary, the moves as the page draws them and the tactics the mistakes passed up are held to
  * the desktop's. A field the clock sets (`ts`) and the review's own time (`seconds`) are left out.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class GameReviewParityTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()

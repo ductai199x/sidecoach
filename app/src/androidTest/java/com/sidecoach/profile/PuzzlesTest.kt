@@ -2,6 +2,7 @@ package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.GameStarted
@@ -25,6 +26,7 @@ import java.io.File
  * decided once, a failed puzzle on the screen stepping the level back. And the CSV read as
  * Python's `csv` module reads it (parity pv-06), from the profile fixture.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class PuzzlesTest {
 

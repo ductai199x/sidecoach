@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.events.ReviewJson
 import com.sidecoach.profile.GameSummaries
 import com.sidecoach.profile.Library
@@ -16,6 +17,7 @@ import org.junit.runner.RunWith
  * Game Review's fixes of the review of 2026-10-01 that need no engine, each as its desktop test
  * in tests/test_review_server.py says it, on the real reviews of profile/reviews.json.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ReviewFixesTest {
     private val fixture: JSONObject by lazy {

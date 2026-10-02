@@ -4,6 +4,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.CoachMessage
@@ -48,6 +49,7 @@ import java.io.File
  * cells; and on the ask side the system message, the SQL found in replies, the nine worked
  * queries run and rendered, the queries refused, and two conversations with a scripted model.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ProfileTest {
 

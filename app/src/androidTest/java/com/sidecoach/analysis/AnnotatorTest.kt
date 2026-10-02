@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
@@ -26,6 +27,7 @@ import java.io.File
  *
  * It needs the engine's network: `tools/test.ps1` puts one there.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class AnnotatorTest {
 

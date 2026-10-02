@@ -2,6 +2,7 @@ package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.events.MotifTag
 import com.sidecoach.events.ReviewJson
@@ -26,6 +27,7 @@ import java.io.File
  * numbers by value and objects in the desktop's key order. The puzzles an area to work on gets
  * are a random draw on both, so they are held to the area's pool instead.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class StatsParityTest {
 
