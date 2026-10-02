@@ -742,7 +742,8 @@ AI_GUIDELINES = (
     "- The line, or what happens next: the engine's line move by move, and the idea behind "
     "it; once given, what comes after its end.\n"
     "- A move, square or piece they name: whether it holds up and what it does or allows, from "
-    "the engine's word on it where given above.\n"
+    "the engine's word on it where given above -- theirs to hear in full: the score after it, "
+    "how far behind the best, the reply, what the move does.\n"
     "- \"That\", \"it\" or \"that move\" may mean their own last move or the opponent's reply. "
     "The sheet gives both positions -- the one they faced before their move and the one after "
     "the reply -- and says how long the reply took when that is known: read the conversation, "
@@ -751,11 +752,16 @@ AI_GUIDELINES = (
     "facts list. When it is the opponent's move there is no move of theirs to find: say what "
     "they threaten and what to be ready for.\n"
     "- How they stand, the material, the opening: from the Standing, the material and the "
-    "record, never counted or guessed yourself. How they did overall: from the verdicts and "
+    "record -- the opening by the name the record gives it -- never counted or guessed "
+    "yourself. How they did overall: from the verdicts and "
     "the tally in the record, nothing inferred from the position on the board.\n"
     "- A move they already played: its verdict is in the record and all of it may be said -- "
     "what it missed or allowed, and the better move -- from the sheet of the position they "
     "faced, inventing no fault in a sound move.\n"
+    "- What they state or take for granted: take it as they meant it, say what in it is right "
+    "as plainly as what is wrong, and credit them with nothing they did not say -- a question "
+    "states nothing to agree with. What you already said in this position is under 'Said "
+    "here': do not say it again in other words; give them something it did not.\n"
     "Say it in words: no percentages, scores or move numbers unless they ask for the number. "
     "Name moves bare. Two or three sentences, then, if you like, one question."
 )
@@ -1831,10 +1837,14 @@ class Speaker:
         marks = [*request.annotations, *mentions_in(text, request.board)]
         if not request.rung_by_reply:
             return request.level, None, marks
-        rung = said_level(text, request.facts) if text else DisclosureLevel.SILENT
-        level = max(rung, DisclosureLevel.IDEA)
+        # An answer says at least the idea of the position, as a first hint does -- a quiet one
+        # names no square the words could be matched on -- so the ladder never offers the idea
+        # again after an answer was given.
+        level = max(said_level(text, request.facts), DisclosureLevel.IDEA)
+        if request.level >= DisclosureLevel.LINE:
+            level = request.level  # a game that is over withholds nothing
         base = annotations_for(request.facts, level, request.board, trigger=request.trigger)
-        return level, rung, [*base, *mentions_in(text, request.board)]
+        return level, level, [*base, *mentions_in(text, request.board)]
 
     def poll(self) -> list[Spoken]:
         out: list[Spoken] = []
@@ -3205,7 +3215,11 @@ class Coach:
             return
         ply = spoken.message.ply
         position = self.positions.get(ply) if ply is not None else None
-        if position is not None and position is self._current:
+        if (
+            position is not None
+            and position is self._current
+            and position.board.turn == self.user_colour  # the ladder is the player's to climb
+        ):
             position.disclosure.said(spoken.rung)
 
     # Internals
@@ -3936,7 +3950,7 @@ class Coach:
                 return records[-1]
         return None
 
-    def _asked_own_move(self, text: str) -> PlyRecord | None:
+    def _asked_own_move(self, text: str, *, rules: bool = False) -> PlyRecord | None:
         """The player's move a question is about, when it asks about their own last move:
         against a bot the reply comes at once, and "what should I have played?" then found
         the opponent's move last and got a hint for the next one (the runtime audit).
@@ -3954,12 +3968,13 @@ class Coach:
         Only the offline coach reads this from the words. With the AI on the model decides what
         "that" is -- its own move or the opponent's reply -- from the sheet of both positions
         and how long the reply took (`_reply_note`), not from a threshold in code (Tai,
-        2026-10-02)."""
-        if not self._offline:
+        2026-10-02). `rules` asks for the keyword reading all the same, for the fallback's
+        template alone -- what is said when a model's reply fails a check on the board."""
+        if not (self._offline or rules):
             return None
         if _ASK_LAST_MOVE.search(text) or _ASK_COST.search(text):
             return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
-        if self.finished or self.user_to_move:
+        if self.finished or self.user_to_move or not self._offline:
             return None
         elsewhere = (
             _ASK_THREAT,
@@ -5237,7 +5252,7 @@ class Coach:
                 "three sentences; then, if you like, one question about what it asks of them. "
                 f"Never answer about the player's own move instead. {NO_FIGURES}"
             )
-        elif (record := self._asked_own_move(said)) is not None:
+        elif (record := self._asked_own_move(said, rules=True)) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it
             # may be said outright. Without this the model took "the better move is withheld"
@@ -5395,13 +5410,6 @@ class Coach:
                     )
                     + f" {TIE_TO_THE_GAME}"
                 )
-            reply = self.moves.get(record.move.ply + 1)
-            if reply is not None and not reply.by_user and self._replied_at_once():
-                # The opponent's move is last on the board; theirs is the one they ask about.
-                directive += (
-                    f' By "that" they mean {san}, their own move: {reply.san}, which the '
-                    "opponent played straight after it, is not what they ask about."
-                )
             if followup and not asks:
                 fallback = ""  # a nod needs no template: nothing, rather than the verdict again
         elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
@@ -5540,10 +5548,20 @@ class Coach:
             out += f" Clearly worse here, and what goes wrong with them: {worse_text(worse)}."
         if best and any(best.rstrip("+#") in s for s in spoken):
             out += AI_MOVE_GIVEN.format(move=best)
+        if best.startswith("O-O"):
+            out += f" {FOCUS_KING}"
         if facts.line:
             given = [m.rstrip("+#") for m in facts.line[:3]]
             if any(all(m in s for m in given) for s in spoken):
                 out += f" {LINE_GIVEN}"
+        out += (
+            " When the engine does not rate a move they name, say it is not the strongest and, "
+            "in general terms, why."
+            if position.board.turn == self.user_colour
+            # On the opponent's move a move they name is not examined (`analyse_named`).
+            else " On the opponent's move no move they name is rated here: rate one only from "
+            "the engine's word on it."
+        )
         reply = self._reply_note()
         if reply:
             out += f" {reply}"
