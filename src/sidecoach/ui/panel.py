@@ -839,6 +839,18 @@ class PanelEngine:
                 ["engine.threads", "engine.hash_mb"],
                 lambda: engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb),
             )
+            # What was measured before is not set against what is measured now: a loss
+            # compares two searches made the same way (the engine review, 2026-10-01).
+            remeasure = [
+                *(c for c in changed if c in THRESHOLD_FIELDS),
+                "engine.depth",
+                "engine.multipv",
+                "engine.score_model",
+                "engine.max_seconds",
+            ]
+            if any(c in changed for c in remeasure):
+                with contextlib.suppress(Exception):  # applied already; the cache is a cache
+                    analyser.annotator.forget_measured()
         return sorted(set(applied))
 
     def reprovision(self, names: Sequence[str]) -> bool:

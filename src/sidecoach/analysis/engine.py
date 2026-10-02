@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -24,7 +25,7 @@ from typing import Any
 import chess
 import chess.engine
 
-from sidecoach.analysis.score import expected_score
+from sidecoach.analysis.score import expected_score, game_over
 from sidecoach.events import Line
 
 # A principal variation can run thirty plies; nobody reads that far and events stay small.
@@ -86,6 +87,14 @@ class Engine:
     # Work the player is not waiting on (the background review of imported games) yields
     # the processor to everything else: the process runs below normal priority.
     low_priority: bool = False
+    # A search still running this long past its time limit is an engine that stopped
+    # answering without dying: its process is ended and the search made again (`_watched`).
+    watchdog_s: float = 10.0
+    # How the watchdog waits: until the search is done (True) or the patience has run (False).
+    # A test drives it without waiting on the clock.
+    watchdog_wait: Callable[[threading.Event, float], bool] = field(
+        default=lambda done, seconds: done.wait(seconds), repr=False
+    )
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -96,6 +105,8 @@ class Engine:
     # Closed by its owner: a search under way (a request's next one, a crash's restart)
     # does not start another process nobody would close. `open` opens it again.
     _closed: bool = field(default=False, init=False, repr=False)
+    # Threads or hash saved while a search ran: set on the process before the next search.
+    _options_owed: bool = field(default=False, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -144,11 +155,25 @@ class Engine:
         self._engine = engine
 
     def reconfigure(self, *, threads: int | None = None, hash_mb: int | None = None) -> None:
-        """Threads and hash on the running engine (the settings saved mid-session)."""
+        """Threads and hash on the running engine (the settings saved mid-session). Never
+        during a search: a `setoption` stops the search under way, which was then kept as if
+        it had finished (0.6 s and depth 14 of a 4 s search). With a search running they are
+        set before the next one, and the save does not wait for it."""
         if threads is not None:
             self.threads = threads
         if hash_mb is not None:
             self.hash_mb = hash_mb
+        if not self._lock.acquire(blocking=False):
+            self._options_owed = True
+            return
+        try:
+            self._configure()
+        finally:
+            self._lock.release()
+
+    def _configure(self) -> None:
+        """Threads and hash set on the process; under the lock, between searches."""
+        self._options_owed = False
         if self._engine is None:
             return
         options: dict[str, str | int | bool | None] = {}
@@ -190,7 +215,7 @@ class Engine:
         A finished position has no lines: there is nothing to play. Callers read its value
         from the result instead, with `sidecoach.analysis.score.terminal_expected_score`.
         """
-        if board.is_game_over(claim_draw=True):
+        if game_over(board):
             return []
         if depth is None and time_s is None:
             raise ValueError("analyse needs a depth or a time limit")
@@ -216,7 +241,10 @@ class Engine:
 
         depths = None if on_depth is None else (lambda infos: on_depth(as_lines(infos, False)))
         with self._lock:
-            infos = self._analyse_with_restart(board, limit, wanted, depths)
+            if self._options_owed:
+                self._configure()
+            with self._watched(limit):
+                infos = self._analyse_with_restart(board, limit, wanted, depths)
         lines = as_lines(infos, carry_best)
         if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
             lines[0] = self._carried_on(board, lines[0], MIN_BEST_PLIES)
@@ -226,15 +254,18 @@ class Engine:
         """`line` carried on by searches from its end until it is `plies` long or the game
         is over there; its score and depth stay the first search's."""
         moves = list(line.moves)
-        end = board.copy(stack=False)
+        end = board.copy()  # with its moves: a repetition on the way ends the line
         for uci in moves:
             end.push(chess.Move.from_uci(uci))
         for _ in range(EXTEND_TRIES):
-            if len(moves) >= plies or end.is_game_over(claim_draw=True):
+            if len(moves) >= plies or game_over(end):
                 break
             limit = chess.engine.Limit(depth=EXTEND_DEPTH, time=EXTEND_SECONDS)
             with self._lock:
-                infos = self._analyse_with_restart(end, limit, 1)
+                if self._options_owed:
+                    self._configure()
+                with self._watched(limit):
+                    infos = self._analyse_with_restart(end, limit, 1)
             more = (infos[0].get("pv") or []) if infos else []
             if not more:
                 break
@@ -242,6 +273,38 @@ class Engine:
                 moves.append(move.uci())
                 end.push(move)
         return line.model_copy(update={"moves": moves})
+
+    @contextlib.contextmanager
+    def _watched(self, limit: chess.engine.Limit) -> Iterator[None]:
+        """A search with a time limit, watched: still running `watchdog_s` past it, the
+        engine has stopped answering without dying -- the search would wait on it for good,
+        and the analyser's thread with it -- so its process is ended, and the search is
+        made again on a new one (`_analyse_with_restart`), watched the same way."""
+        if limit.time is None:
+            yield
+            return
+        done = threading.Event()
+        patience = limit.time + self.watchdog_s
+
+        def watch() -> None:
+            while not self.watchdog_wait(done, patience):
+                self._end_process()
+
+        watcher = threading.Thread(target=watch, name="sidecoach-engine-watchdog", daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            done.set()
+
+    def _end_process(self) -> None:
+        """The engine's process ended from outside, the way a crash ends it."""
+        engine = self._engine
+        if engine is None:
+            return
+        with contextlib.suppress(Exception):  # gone already
+            kill = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+            os.kill(engine.transport.get_pid(), kill)
 
     @contextlib.contextmanager
     def interruptible(self) -> Iterator[None]:
@@ -277,9 +340,9 @@ class Engine:
             self._start()
             assert self._engine is not None
             try:
-                if self._interruptible or on_depth is not None:
-                    return self._streamed(board, limit, multipv, on_depth)
-                return list(self._engine.analyse(board, limit, multipv=multipv))
+                # Read as it goes, always: a search the time cap cuts is answered with the
+                # last depth finished whole (`_streamed`).
+                return self._streamed(board, limit, multipv, on_depth)
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
                 self._drop()
                 if attempt == 2:
@@ -318,7 +381,9 @@ class Engine:
     ) -> list[chess.engine.InfoDict]:
         """`analyse`'s search, read as it goes: each depth handed to `on_depth` once its
         last line is in (Stockfish reports a depth's lines best first), and, inside
-        `interruptible`, stopped by `interrupt`."""
+        `interruptible`, stopped by `interrupt`. A search cut mid-depth (the time cap) has
+        its first lines a depth further than the rest, and the gap between them set two
+        depths against each other: it is answered with the last depth finished whole."""
         stoppable = self._interruptible
         if stoppable and self._stopped.is_set():
             raise Interrupted
@@ -330,15 +395,20 @@ class Engine:
                     search.stop()
                 latest: dict[int, chess.engine.InfoDict] = {}
                 done = 0
+                whole: list[chess.engine.InfoDict] | None = None
                 for info in search:
                     rank, depth = info.get("multipv", 1), info.get("depth")
                     if depth is None or not info.get("pv"):
                         continue
                     latest[rank] = info
-                    if on_depth is not None and rank == multipv and depth > done:
+                    if rank == multipv and depth > done:
                         done = depth
-                        on_depth([latest[k] for k in sorted(latest)])
+                        whole = [latest[k] for k in sorted(latest)]
+                        if on_depth is not None:
+                            on_depth(whole)
                 infos = list(search.multipv)
+                if whole is not None and len({i.get("depth") for i in infos}) > 1:
+                    infos = whole
             finally:
                 self._search = None
         if stoppable and self._stopped.is_set():

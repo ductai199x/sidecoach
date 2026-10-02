@@ -27,11 +27,13 @@ from sidecoach.analysis.computed import Computed
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines
 from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import (
+    TACTIC_GAIN,
     Thresholds,
     eval_loss,
     is_decisive,
     is_only_move,
     label_move,
+    material_won,
     move_accuracy,
     position_score,
     severity,
@@ -103,11 +105,27 @@ class Measured:
     traps: list[Line] = field(default_factory=list)
     defences: list[Line] = field(default_factory=list)
     threatens: list[Line] = field(default_factory=list)
+    # What it is cached by (`cache_key`): the FEN, and the moves since the last capture
+    # or pawn move when there are any. Empty in a record kept before it had one.
+    key: str = ""
 
     @property
     def depth(self) -> int:
         """How deep the search actually got, which the time cap can cut short."""
         return self.lines[0].depth if self.lines else 0
+
+
+def cache_key(board: chess.Board) -> str:
+    """What a position is cached by: its FEN, and the moves since the last capture or pawn
+    move, the ones a repetition can reach back over. The engine is told the moves that led to
+    a position and scores a repetition as the draw it is, so the same placement after
+    different quiet moves is a different search; after a capture or a pawn move nothing
+    before can repeat and the FEN is the whole key."""
+    fen = board.fen()
+    count = min(board.halfmove_clock, len(board.move_stack))
+    if count == 0:
+        return fen
+    return fen + " " + " ".join(move.uci() for move in board.move_stack[-count:])
 
 
 @dataclass
@@ -151,20 +169,33 @@ class GameAnnotator:
         self.computed.clear()
         self._assessed.clear()
 
+    def forget_measured(self) -> None:
+        """Forget the positions measured, keeping the game's moves: the depth, the lines, the
+        time cap, the curve or the thresholds changed, and a loss compares two positions
+        measured the same way, so none measured before is set against one measured after."""
+        self._cache.clear()
+        self._verdict_cache.clear()
+        self._ahead.clear()
+        self.computed.clear()
+
     def look_ahead(self, board: chess.Board) -> Measured:
         """A position the game may reach, measured whole before it does, as the game's own
         positions are, and cached with them. Inside `Engine.interruptible` a search stopped
         raises `Interrupted`, and nothing is cached."""
-        key = board.fen()
-        if key in self._cache:
-            return self._cache[key]
+        cached = self._cache.get(cache_key(board))
+        if cached is not None:
+            return cached
         measured = self.measure(board)
-        self._ahead.add(key)
+        self._ahead.add(measured.key)
         return measured
 
-    def _cached(self, key: str) -> Measured | None:
-        """The position measured whole, counting a position measured ahead reached."""
+    def _cached(self, board: chess.Board) -> Measured | None:
+        """The position measured whole, counting a position measured ahead reached. A
+        position adopted without a key (`adopt`) is found by its FEN."""
+        key = cache_key(board)
         measured = self._cache.get(key)
+        if measured is None:
+            measured = self._cache.get(board.fen())
         if measured is not None and key in self._ahead:
             self._ahead.discard(key)
             self.ahead_hits += 1
@@ -176,8 +207,8 @@ class GameAnnotator:
         cost. When the engine is behind a fast game, this is all a stale ply gets
         (2026-09-22: a queen ending played at two seconds a move ran the analyser forty
         plies behind, and every word on a move came after the board had moved on)."""
-        key = board.fen()
-        whole = self._cached(key)
+        key = cache_key(board)
+        whole = self._cached(board)
         if whole is not None:
             return whole
         thin = self._verdict_cache.get(key)
@@ -186,11 +217,12 @@ class GameAnnotator:
         lines = self.engine.analyse(board, depth=self.depth, multipv=1)
         self.computed.add(board, lines, thin=True)
         thin = Measured(
-            fen=key,
+            fen=board.fen(),
             lines=lines,
             score=position_score(board, lines),
             decisive=False,
             only_move=False,
+            key=key,
         )
         self._verdict_cache[key] = thin
         return thin
@@ -205,12 +237,11 @@ class GameAnnotator:
         decisive-moment and only-move calls. `on_depth`: handed the candidates of each
         depth the search finishes on its way. A position the player is not to wait for is
         measured early first (`measure_early`), never in place of this."""
-        key = board.fen()
-        cached = self._cached(key)
+        cached = self._cached(board)
         if cached is not None:
             return cached
         measured = self._measured(board, self.depth, on_depth=on_depth)
-        self._cache[key] = measured
+        self._cache[measured.key] = measured
         return measured
 
     def measure_early(self, board: chess.Board) -> Measured:
@@ -273,6 +304,7 @@ class GameAnnotator:
                 if searched
                 else []
             ),
+            key=cache_key(board),
         )
 
     def analysis_event(
@@ -335,14 +367,18 @@ class GameAnnotator:
 
     def measured(self, board: chess.Board) -> bool:
         """Whether the position is measured whole already (the game's own, or ahead of it)."""
-        return board.fen() in self._cache
+        return self._cached_quietly(board) is not None
 
     def adopt(self, measured: Iterable[Measured]) -> None:
         """Positions measured whole by another annotator -- another engine, on another thread,
         for a review measuring a game's positions side by side (`game_review`) -- kept as if
         measured here: the walk through the game's moves then searches nothing."""
         for m in measured:
-            self._cache[m.fen] = m
+            self._cache[m.key or m.fen] = m
+
+    def _cached_quietly(self, board: chess.Board) -> Measured | None:
+        """`_cached` without counting a position measured ahead as reached."""
+        return self._cache.get(cache_key(board)) or self._cache.get(board.fen())
 
     def assess(
         self, game_id: str, before: chess.Board, move: chess.Move, ply: int
@@ -376,7 +412,7 @@ class GameAnnotator:
         if previous is not None and (previous[0] != game_id or previous[1] != before.epd()):
             # Another game, or a move that did not lead here: the move before is unknown.
             previous = None
-        opponent_erred = previous is not None and previous[2] >= self.thresholds.mistake
+        erred = previous[2] if previous is not None else 0.0
         # Taking back on the square the opponent just captured on. Taking a piece that
         # merely moved there is not obvious: that is how a blunder gets punished.
         recapture = (
@@ -390,15 +426,43 @@ class GameAnnotator:
         # is taken for nothing.
         free_grab = before.is_capture(move) and not exchange.can_retake(before, move)
         obvious = recapture or free_grab or before.legal_moves.count() == 1
+        top = measured_before.lines[0] if measured_before.lines else None
+        after_top = measured_after.lines[0] if measured_after.lines else None
+        # A forced mate the best move had, and the move played let go; one the move walks
+        # into. The mates are the lines' own: the curve puts a thousand centipawns a fortieth
+        # of a game below a mate, and a mate in four let go read as an inaccuracy.
+        mating = top is not None and top.mate is not None and top.mate > 0
+        mate_missed = (
+            mating
+            and not after.is_checkmate()
+            and not (after_top is not None and after_top.mate is not None and after_top.mate < 0)
+        )
+        mate_allowed = (
+            after_top is not None
+            and after_top.mate is not None
+            and after_top.mate > 0
+            and not (top is not None and top.mate is not None and top.mate < 0)
+        )
+        # What the best move had to find: a mate, material won, or -- after the opponent's
+        # error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
+        # to punish the opponent").
+        won = material_won(before, top.moves) if top is not None else 0
+        chance = mating or won >= TACTIC_GAIN or (erred >= self.thresholds.mistake and won >= 1)
         label = label_move(
             loss,
             self.thresholds,
             is_best=bool(best) and best[0] == move.uci(),
             in_book=self._in_book(after),
-            only_move=measured_before.only_move,
+            decisive=measured_before.decisive,
             sacrifice=any(tag.name == "sacrifice" for tag in tags),
             before_score=measured_before.score,
-            opponent_erred=opponent_erred,
+            second_score=(
+                measured_before.lines[1].expected_score if len(measured_before.lines) > 1 else None
+            ),
+            opponent_blundered=erred >= self.thresholds.blunder,
+            chance=chance,
+            mate_missed=mate_missed,
+            mate_allowed=mate_allowed,
             obvious=obvious,
         )
         self._assessed[ply] = (
@@ -887,7 +951,7 @@ class Analyser:
         for line in lines[: self.look_ahead]:
             move = _moves(line)[:1]
             if move and move[0] in board.legal_moves:
-                after = board.copy(stack=False)
+                after = board.copy()  # with its moves: the engine reads repetitions in them
                 after.push(move[0])
                 ahead.append((after, 1))
         self._ahead = ahead
@@ -917,7 +981,7 @@ class Analyser:
         self.looked += 1
         reply = _moves(measured.lines[0])[:1] if measured.lines else []
         if moves == 1 and reply and reply[0] in board.legal_moves and ahead is self._ahead:
-            after = board.copy(stack=False)
+            after = board.copy()
             after.push(reply[0])
             ahead.insert(0, (after, 2))
 

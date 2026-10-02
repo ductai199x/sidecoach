@@ -11,6 +11,7 @@ from __future__ import annotations
 import chess
 
 from sidecoach.analysis.engine import Engine
+from sidecoach.analysis.score import game_over
 from sidecoach.events import Line
 
 
@@ -20,7 +21,7 @@ def threat_lines(engine: Engine, board: chess.Board, *, depth: int, multipv: int
     Empty when passing is not a question that can be asked: the side to move is in check
     (they cannot pass out of it), or the game is over.
     """
-    if board.is_check() or board.is_game_over(claim_draw=True):
+    if board.is_check() or game_over(board):
         return []
     passed = board.copy(stack=False)
     passed.push(chess.Move.null())

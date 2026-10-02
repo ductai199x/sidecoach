@@ -160,8 +160,13 @@ def test_a_save_reaches_the_running_coach_and_engine(
     client, engine = _client(tmp_path, monkeypatch)
     coach = Coach(OfflineProvider())
     engine._coaching = SimpleNamespace(coach=coach, detail="offline", reprovision=lambda s: None)
+    forgotten: list[int] = []
     annotator = SimpleNamespace(
-        depth=18, multipv=6, thresholds=Thresholds(), engine=SimpleNamespace(multipv=6)
+        depth=18,
+        multipv=6,
+        thresholds=Thresholds(),
+        engine=SimpleNamespace(multipv=6),
+        forget_measured=lambda: forgotten.append(1),
     )
     engine._assessing = SimpleNamespace(analyser=SimpleNamespace(annotator=annotator))
     values = client.get("/api/settings").json()["settings"]
@@ -187,6 +192,9 @@ def test_a_save_reaches_the_running_coach_and_engine(
     assert coach.policy.settings.stuck_seconds == 30
     assert annotator.thresholds.blunder == 0.4
     assert annotator.depth == 12 and annotator.multipv == 3 and annotator.engine.multipv == 3
+    # Positions measured at the old depth, lines or thresholds are not judged against new
+    # ones: a loss compares two searches of the same depth (the engine review, 2026-10-01).
+    assert forgotten, "the measured positions were kept across the change"
 
 
 def test_same_as_above_survives_a_restart(tmp_path: Path) -> None:

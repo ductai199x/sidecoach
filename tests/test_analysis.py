@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import chess
+import chess.engine
 import pytest
 
 from sidecoach.analysis.annotator import Analyser, GameAnnotator, _mate_in
@@ -22,6 +24,7 @@ from sidecoach.analysis.score import (
     is_decisive,
     is_only_move,
     label_move,
+    material_won,
     move_accuracy,
     position_score,
     severity,
@@ -168,6 +171,42 @@ def test_a_finished_position_scores_its_result_from_the_side_to_move() -> None:
     assert position_score(chess.Board(), []) == 0.5
 
 
+def _shuffled(*sans: str) -> chess.Board:
+    """White a queen up, the kings shuffling: K+Q against K, black to move first."""
+    board = chess.Board("4k3/8/8/8/8/8/8/Q3K3 b - - 0 1")
+    for san in sans:
+        board.push_san(san)
+    return board
+
+
+# White, a queen up, to move, and Ke1 would repeat the position a third time.
+CLAIMABLE = ("Kd8", "Ke2", "Ke8", "Ke1", "Kd8", "Ke2", "Ke8")
+
+
+def test_a_draw_that_could_be_claimed_is_not_a_finished_game() -> None:
+    """A repetition the side to move could claim is not one played: the sites end the game
+    on the third occurrence itself, so until then the position is played on, and a queen up
+    is a queen up (it was 0.5, "no lines", and the repeating move "excellent")."""
+    claimable = _shuffled(*CLAIMABLE)
+    assert claimable.can_claim_threefold_repetition() and not claimable.is_repetition(3)
+    assert terminal_expected_score(claimable) is None
+    # The third occurrence, played, is the end of the game.
+    repeated = _shuffled(*CLAIMABLE, "Ke1")
+    assert repeated.is_repetition(3) and terminal_expected_score(repeated) == 0.5
+    # Fifty moves without a capture or a pawn move, played, is the end too.
+    fifty = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 100 80")
+    assert terminal_expected_score(fifty) == 0.5
+    near = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 99 80")
+    assert near.can_claim_fifty_moves() and terminal_expected_score(near) is None
+
+
+@needs_engine
+def test_a_claimable_draw_is_searched_like_any_position(engine: Engine) -> None:
+    lines = engine.analyse(_shuffled(*CLAIMABLE), depth=DEPTH)
+    assert lines, "the side to move has moves to play"
+    assert lines[0].expected_score > 0.8, "a queen up, white plays on"
+
+
 def test_severity_names_the_thresholds() -> None:
     t = Thresholds(inaccuracy=0.05, mistake=0.10, blunder=0.20)
     assert severity(0.0, t) is Severity.NONE
@@ -185,10 +224,14 @@ def _label(
     *,
     is_best: bool = False,
     in_book: bool = False,
-    only_move: bool = False,
+    decisive: bool = False,
     sacrifice: bool = False,
     before_score: float = 0.5,
-    opponent_erred: bool = False,
+    second_score: float | None = None,
+    opponent_blundered: bool = False,
+    chance: bool = False,
+    mate_missed: bool = False,
+    mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
     return label_move(
@@ -196,51 +239,134 @@ def _label(
         Thresholds(),
         is_best=is_best,
         in_book=in_book,
-        only_move=only_move,
+        decisive=decisive,
         sacrifice=sacrifice,
         before_score=before_score,
-        opponent_erred=opponent_erred,
+        second_score=second_score,
+        opponent_blundered=opponent_blundered,
+        chance=chance,
+        mate_missed=mate_missed,
+        mate_allowed=mate_allowed,
         obvious=obvious,
     )
 
 
-def test_labels_follow_the_review_vocabulary() -> None:
-    assert _label(0.0, in_book=True) is Label.BOOK
-    assert _label(0.14, in_book=True) is Label.MISTAKE, "a gambit in the tables still loses"
+def test_labels_follow_chess_coms_definitions() -> None:
+    """Chess.com's review, as its help pages define each word (2026-10-01): best, "the
+    engine's top choice"; excellent, "almost as good as the best move"; good, "a decent move
+    but not the best"; book, "a conventional opening move"; inaccuracy, mistake and blunder
+    by what the move lost; great, "a move that altered the course of the game"; brilliant,
+    "the best move -- and tricky to find too", a sound sacrifice; miss, "a move that missed
+    a tactical opportunity or a chance to punish the opponent"."""
     assert _label(0.0, is_best=True) is Label.BEST
     assert _label(0.01) is Label.EXCELLENT
+    assert _label(0.0) is Label.EXCELLENT, "as good as the top choice is not the top choice"
     assert _label(0.03) is Label.GOOD
     assert _label(0.06) is Label.INACCURACY
     assert _label(0.12) is Label.MISTAKE
     assert _label(0.30) is Label.BLUNDER
-    # The opponent handed over a chance: taking it with the best move is great, letting it
-    # go is a miss however large the loss, and a decent move that is neither is just good.
-    assert _label(0.0, opponent_erred=True, is_best=True) is Label.GREAT
-    assert _label(0.0, opponent_erred=True, only_move=True) is Label.GREAT
-    assert _label(0.03, opponent_erred=True) is Label.GOOD
-    assert _label(0.06, opponent_erred=True) is Label.MISS
-    assert _label(0.90, opponent_erred=True) is Label.MISS
-    # A sound sacrifice is brilliant, unless the position was already decided either way.
-    assert _label(0.0, sacrifice=True) is Label.BRILLIANT
-    assert _label(0.0, sacrifice=True, before_score=0.97, is_best=True) is Label.BEST
-    assert _label(0.0, sacrifice=True, before_score=0.05, is_best=True) is Label.BEST
-    # The only move is great whether or not it was the engine's first choice, unless it is
-    # obvious (a recapture, the only legal move) or the game was already decided.
-    assert _label(0.0, only_move=True) is Label.GREAT
-    assert _label(0.0, only_move=True, obvious=True) is Label.EXCELLENT
-    assert _label(0.0, only_move=True, obvious=True, is_best=True) is Label.BEST
-    assert _label(0.0, opponent_erred=True, is_best=True, obvious=True) is Label.BEST
-    # A great move in a won position is still great; only brilliant needs a live game.
-    assert _label(0.0, only_move=True, before_score=0.95) is Label.GREAT
-    assert _label(0.0, opponent_erred=True, is_best=True, before_score=0.98) is Label.GREAT
-    # In a lost position the best move changes nothing: neither great nor brilliant.
-    assert _label(0.0, only_move=True, before_score=0.02, is_best=True) is Label.BEST
-    assert _label(0.0, sacrifice=True, before_score=0.02) is Label.EXCELLENT
-    # A move as good as the engine's choice but not that choice is excellent, not best:
-    # measured against chess.com's tallies, "best" is the engine's first choice only.
-    assert _label(0.0) is Label.EXCELLENT
-    # An unsound sacrifice is judged by its loss like any move.
+    # Book: the tables' move is never flagged for a little ground; a move that loses a
+    # tenth of the game is no conventional move, whatever a table holds (1. e4 f5).
+    assert _label(0.0, in_book=True) is Label.BOOK
+    assert _label(0.06, in_book=True) is Label.BOOK
+    assert _label(0.14, in_book=True) is Label.MISTAKE
+
+
+def test_great_is_the_move_that_altered_the_course_of_the_game() -> None:
+    # The only good move: the best, every other move losing ground (a decisive moment).
+    assert _label(0.0, is_best=True, decisive=True) is Label.GREAT
+    assert _label(0.0, is_best=True, decisive=True, before_score=0.95) is Label.GREAT
+    # The opponent's blunder cashed in with the best move.
+    assert _label(0.0, is_best=True, opponent_blundered=True) is Label.GREAT
+    # Not merely the best move after any error, nor a move that is not the best.
+    assert _label(0.0, is_best=True) is Label.BEST
+    assert _label(0.0, decisive=True) is Label.EXCELLENT
+    # Never an obvious move (a recapture, a free capture, the only legal move), nor in a
+    # lost position, where the best move changes nothing.
+    assert _label(0.0, is_best=True, decisive=True, obvious=True) is Label.BEST
+    assert _label(0.0, is_best=True, opponent_blundered=True, obvious=True) is Label.BEST
+    assert _label(0.0, is_best=True, decisive=True, before_score=0.02) is Label.BEST
+
+
+def test_brilliant_is_a_sound_sacrifice_that_was_needed() -> None:
+    assert _label(0.0, is_best=True, sacrifice=True) is Label.BRILLIANT
+    assert _label(0.01, sacrifice=True) is Label.BRILLIANT, "as good as the best"
+    # Not a sacrifice that gives ground: chess.com's brilliant is the best move.
+    assert _label(0.03, sacrifice=True) is Label.GOOD
     assert _label(0.3, sacrifice=True) is Label.BLUNDER
+    # Not when the game was won without it -- read from the second-best line, since the
+    # best is the one the sacrifice makes. The only win is brilliant however won it leaves.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.97, second_score=0.95) is (
+        Label.BEST
+    )
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=1.0, second_score=0.3) is (
+        Label.BRILLIANT
+    )
+    # With no second line known, the position before is what is known.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.97) is Label.BEST
+    # Nor in a lost position.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.05) is Label.BEST
+
+
+def test_a_miss_is_a_tactic_or_a_mate_let_go() -> None:
+    # The best move won material or mated, and the move played let it go: a miss, whatever
+    # the size of the loss, from an inaccuracy to a blunder.
+    assert _label(0.06, chance=True) is Label.MISS
+    assert _label(0.15, chance=True) is Label.MISS
+    assert _label(0.90, chance=True) is Label.MISS
+    # A small slip with the chance still there is no miss; nor a loss with no chance.
+    assert _label(0.01, chance=True) is Label.EXCELLENT
+    assert _label(0.15) is Label.MISTAKE
+    # A forced mate let go is a miss even when the move played still wins easily.
+    assert _label(0.02, chance=True, mate_missed=True) is Label.MISS
+    # A move that walks into a forced mate loses the game: a blunder whatever the curve
+    # says it cost -- unless the game was lost already, or every move allows it.
+    assert _label(0.02, mate_allowed=True, before_score=0.3) is Label.BLUNDER
+    assert _label(0.02, mate_allowed=True, before_score=0.03) is Label.GOOD
+    assert _label(0.0, mate_allowed=True, before_score=0.3, is_best=True) is Label.BEST
+
+
+def test_what_a_line_wins_is_counted_after_the_replies() -> None:
+    # 1. e4 d5: exd5 Qxd5 is a pawn each, nothing won.
+    board = chess.Board()
+    for san in ("e4", "d5"):
+        board.push_san(san)
+    assert material_won(board, ["e4d5", "d8d5"]) == 0
+    # A knight left en prise and taken, the reply something else: three pawns.
+    hanging = chess.Board("4k3/8/8/3n4/8/8/8/3QK3 w - - 0 1")
+    assert material_won(hanging, ["d1d5", "e8f8"]) == 3
+    # Taking back what was just taken is a trade, not a win.
+    traded = chess.Board("4k3/8/8/3n4/8/2N5/8/4K3 b - - 0 1")
+    traded.push_san("Nxc3")
+    assert traded.turn == chess.WHITE and material_won(traded, ["e1d2", "c3d5"]) == 0
+    # A line that mates wins everything.
+    mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
+    assert material_won(mate, ["a1a8"]) == 99
+
+
+def _judged(before: chess.Board, move: str, before_line: Line, after_line: Line) -> MoveAssessment:
+    after = before.copy()
+    after.push_uci(move)
+    fake = FakeEngine({before.fen(): [before_line], after.fen(): [after_line]})
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    return annotator.assess_move("g", before, chess.Move.from_uci(move), 1)
+
+
+def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
+    """A mate is 1.0 on the curve and a thousand centipawns 0.975: a mate in four let go for
+    a won ending read as an inaccuracy at most, and a move into a forced mate in a lost
+    position as good (the engine review, 2026-10-01)."""
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    mating = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    still_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
+    missed = _judged(board, "h2h3", mating, still_won)
+    assert missed.label is Label.MISS, missed
+    # The other side: worse but holding, and the move lets a mate in.
+    lost = Line(moves=["g8f8"], depth=6, expected_score=0.2, score_cp=-400)
+    mates = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    black = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
+    walked = _judged(black, "h7h6", lost, mates)
+    assert walked.label is Label.BLUNDER, walked
 
 
 def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:
@@ -492,18 +618,197 @@ def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
     assert label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1") is Label.GREAT
 
 
+def test_no_single_position_may_hold_up_a_game() -> None:
+    """A knight endgame that takes minutes to reach depth 14 with four lines is cut short:
+    every search asked for a depth carries the time cap too, and a search the cap ended
+    reports the depth it reached."""
+    uci = _ScriptedUci([*_D13], [*_D13])
+    running = _scripted_engine(uci)
+    running.max_seconds = 0.1
+    lines = running.analyse(chess.Board(), depth=40, multipv=4)
+    assert uci.limits[-1].depth == 40 and uci.limits[-1].time == 0.1
+    assert lines[0].depth == 13, "the depth asked for was not reached, and that is reported"
+    running.max_seconds = None
+    running.analyse(chess.Board(), depth=40, multipv=4)
+    assert uci.limits[-1].time is None, "no cap, no time limit"
+    running.analyse(chess.Board(), depth=40, time_s=0.05)
+    assert uci.limits[-1].time == 0.05
+
+
+def _info(rank: int, depth: int, move: str, cp: int) -> dict[str, object]:
+    return {
+        "multipv": rank,
+        "depth": depth,
+        "pv": [chess.Move.from_uci(move)],
+        "score": chess.engine.PovScore(chess.engine.Cp(cp), chess.WHITE),
+    }
+
+
+class _ScriptedSearch:
+    """python-chess's analysis, scripted: the infos it reports, its lines when it ends, and,
+    with `hold`, a search that waits on the test before it ends."""
+
+    def __init__(
+        self,
+        infos: list[dict[str, object]],
+        multipv: list[dict[str, object]],
+        started: threading.Event,
+        hold: threading.Event | None,
+    ) -> None:
+        self.infos, self.multipv = infos, multipv
+        self.started, self.hold = started, hold
+
+    def __enter__(self) -> _ScriptedSearch:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def __iter__(self):  # noqa: ANN204
+        yield from self.infos
+        self.started.set()
+        if self.hold is not None:
+            self.hold.wait()
+
+    stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self.hold is not None:
+            self.hold.set()
+
+
+class _ScriptedUci:
+    """A stand-in for python-chess's engine: each search scripted, every option set kept."""
+
+    def __init__(self, infos: list[dict[str, object]], multipv: list[dict[str, object]]) -> None:
+        self.options = {"Threads": None, "Hash": None}
+        self.configured: list[dict[str, object]] = []
+        self.infos, self.multipv = infos, multipv
+        self.started = threading.Event()
+        self.hold: threading.Event | None = None
+        self.limits: list[chess.engine.Limit] = []
+        self.search: _ScriptedSearch | None = None
+
+    def configure(self, options: dict[str, object]) -> None:
+        self.configured.append(dict(options))
+
+    def analysis(
+        self, board: chess.Board, limit: chess.engine.Limit, multipv: int
+    ) -> _ScriptedSearch:
+        self.limits.append(limit)
+        self.search = _ScriptedSearch(self.infos, self.multipv, self.started, self.hold)
+        return self.search
+
+    def quit(self) -> None:
+        return None
+
+
+# Four lines at depth 13, then the first two of depth 14 before the time cap cut it.
+_D13 = [
+    _info(1, 13, "e2e4", 40),
+    _info(2, 13, "d2d4", 30),
+    _info(3, 13, "g1f3", 20),
+    _info(4, 13, "c2c4", 10),
+]
+_D14 = [_info(1, 14, "d2d4", 45), _info(2, 14, "e2e4", 35)]
+
+
+def _scripted_engine(uci: _ScriptedUci) -> Engine:
+    running = Engine(path=Path("scripted"), multipv=4)
+    running._engine = uci  # type: ignore[assignment]  # open() keeps a running engine
+    return running
+
+
+def test_a_search_cut_short_gives_lines_of_one_depth() -> None:
+    """Cut by the time cap mid-depth, Stockfish's first lines are a depth further than the
+    rest ([14, 14, 13, 13]), and the gap between them (the only-move and decisive-moment
+    calls) set two depths against each other. The lines are the last depth finished whole."""
+    uci = _ScriptedUci([*_D13, *_D14], [*_D14, *_D13[2:]])
+    lines = _scripted_engine(uci).analyse(chess.Board(), depth=40, multipv=4)
+    assert [line.depth for line in lines] == [13, 13, 13, 13]
+    assert [line.moves[0] for line in lines] == ["e2e4", "d2d4", "g1f3", "c2c4"]
+    # A search that finished its last depth whole is answered with it, as before.
+    whole = _ScriptedUci([*_D13], [*_D13])
+    assert [line.depth for line in _scripted_engine(whole).analyse(chess.Board(), depth=13)] == [
+        13,
+        13,
+        13,
+        13,
+    ]
+
+
+def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
+    """Threads or hash saved while a search runs used to reach Stockfish at once: the
+    `setoption` stopped the search, and the cut one was kept as if whole (0.6 s and depth 14
+    of a 4 s search, the engine review 2026-10-01). They now wait for the search to end, and
+    the save does not wait for it."""
+    uci = _ScriptedUci([*_D13], [*_D13])
+    uci.hold = threading.Event()
+    running = _scripted_engine(uci)
+    worker = threading.Thread(target=lambda: running.analyse(chess.Board(), depth=13))
+    worker.start()
+    uci.started.wait()  # the search is under way, holding the engine
+    running.reconfigure(threads=1, hash_mb=32)  # returns: the save does not wait
+    assert uci.configured == [], "set during the search"
+    assert running.threads == 1 and running.hash_mb == 32
+    uci.hold.set()
+    worker.join()
+    assert uci.configured == [], "set as the search ended, with nothing to search"
+    uci.hold = None
+    running.analyse(chess.Board(), depth=13)
+    assert uci.configured == [{"Threads": 1, "Hash": 32}], "set before the next search"
+    # With no search running they are set at once.
+    running.reconfigure(threads=2)
+    assert uci.configured[-1] == {"Threads": 2, "Hash": 32}
+
+
+# A UCI engine that answers the handshake and then never answers a search: alive, and silent.
+_SILENT_ENGINE = """
+import sys
+for line in sys.stdin:
+    word = line.split()[0] if line.split() else ""
+    if word == "uci":
+        print("id name silent")
+        print("option name MultiPV type spin default 1 min 1 max 500")
+        print("uciok", flush=True)
+    elif word == "isready":
+        print("readyok", flush=True)
+    elif word == "quit":
+        break
+"""
+
+
 @needs_engine
-def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
-    """A knight endgame that takes minutes to reach depth 14 with four lines is cut short."""
-    slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-    engine.max_seconds = 0.1
-    started = time.monotonic()
+def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
+    """An engine that hangs without dying held the analyser's thread for good: the search
+    waited on it forever. A search the watchdog finds still running past its patience has its
+    process ended, and is made again on a new one. The watchdog's wait is driven here: its
+    patience runs out at once on the silent engine, and never on the real one."""
+    import sys
+
+    import chess.engine
+
+    assert STOCKFISH is not None
+    stub = tmp_path / "silent.py"
+    stub.write_text(_SILENT_ENGINE, encoding="utf-8")
+    waits: list[float] = []
+
+    def wait(done: threading.Event, seconds: float) -> bool:
+        waits.append(seconds)
+        return False if len(waits) == 1 else done.wait()
+
+    running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=5.0)
+    silent = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
+    running._engine = silent
+    running.watchdog_wait = wait
     try:
-        lines = engine.analyse(slow, depth=40, multipv=4)
+        lines = running.analyse(chess.Board(), depth=6)
+        assert lines, "searched again on a new engine"
+        assert running._engine is not silent, "the silent engine was replaced"
+        assert waits[0] == 5.0 + running.watchdog_s, "patience: the time limit and the grace"
     finally:
-        engine.max_seconds = 5.0
-    assert lines and time.monotonic() - started < 5.0
-    assert lines[0].depth < 40, "the depth asked for was not reached, and that is reported"
+        running.close()
 
 
 def test_an_illegal_move_is_refused_rather_than_measured() -> None:
@@ -704,6 +1009,55 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
     assert annotator.ahead_hits == 2
 
 
+def test_a_position_looked_at_ahead_carries_the_moves_that_lead_there() -> None:
+    """The engine reads a repetition from the moves before a position, so a position looked
+    at ahead is searched with them, as the game's own are: measured without them it was
+    cached, and the game arriving there judged its moves on a search that could not see the
+    repetition (the engine review, 2026-10-01). The look ahead is driven here a step at a
+    time, as the worker drives it."""
+    board = chess.Board()
+    for san in ("Nf3", "Nf6", "Ng1"):
+        board.push_san(san)
+    fake = FakeEngine({board.fen(): [_line("f6g8")]}, default=[_line("g1f3")])
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    analyser = Analyser(annotator, look_ahead=1)
+    analyser._plan_ahead(board, [_line("f6g8")])
+    while analyser._ahead:
+        analyser._look_ahead(*analyser._ahead.pop(0), analyser._ahead)
+    assert analyser.looked == 2
+    ahead = [
+        h
+        for fen, h in zip(fake.calls, fake.histories, strict=True)
+        if fen == _after("Nf3", "Nf6", "Ng1", "Ng8")
+    ]
+    assert ahead == [["g1f3", "g8f6", "f3g1", "f6g8"]], fake.histories
+
+
+def test_one_position_reached_by_two_histories_is_measured_for_each() -> None:
+    """The same placement after different quiet moves is not the same position to the
+    engine: which positions repeat differs. Cached by its FEN alone, the first history's
+    search answered the second."""
+    one = chess.Board()
+    for san in ("Nf3", "Nc6", "Nc3", "Nf6"):
+        one.push_san(san)
+    two = chess.Board()
+    for san in ("Nc3", "Nf6", "Nf3", "Nc6"):
+        two.push_san(san)
+    assert one.fen() == two.fen()
+    fake = FakeEngine()
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    annotator.measure(one)
+    annotator.measure(two)
+    annotator.measure(two.copy())
+    assert fake.calls.count(one.fen()) == 2, "each history searched once"
+    # After a capture or a pawn move nothing before can repeat: one search serves both.
+    for board in (one, two):
+        board.push_san("e4")
+    annotator.measure(one)
+    annotator.measure(two)
+    assert fake.calls.count(one.fen()) == 1
+
+
 class _DepthEngine(FakeEngine):
     """A fake engine that answers with the depth it was asked for."""
 
@@ -857,60 +1211,70 @@ class _StoppableEngine(FakeEngine):
     def __init__(self, answers: dict[str, list[Line]], ahead: set[str]) -> None:
         super().__init__(answers)
         self.ahead = ahead
+        self.entered = threading.Event()
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
         if self._interruptible and board.fen() in self.ahead:
-            self._stopped.wait(5)
+            self.entered.set()
+            self._stopped.wait()  # until `interrupt`: a look ahead not let go never ends
             raise Interrupted
         return super().analyse(board, **kwargs)
 
 
 def test_a_move_played_stops_the_look_ahead_at_once() -> None:
     """A search ahead of the game is let go the moment a move of the game's own comes: the
-    move never waits for a position it did not go to."""
+    move never waits for a position it did not go to. The fake's search ahead ends only when
+    it is interrupted, so a move that did not interrupt it would never be judged."""
     fake = _StoppableEngine(
         {chess.Board().fen(): [_line("e2e4"), _line("d2d4")]}, {_after("e4"), _after("d4")}
     )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
-    with Analyser(annotator, look_ahead=2) as analyser:
-        analyser.submit_position("g", chess.Board(), 0)
-        assert _until(lambda: analyser._looking), "never looked ahead"
-        t = time.monotonic()
-        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
-        assert _until(lambda: not analyser._looking and analyser.pending == 0, 1.0)
-        assert time.monotonic() - t < 0.5
-        got = _drain(analyser)
+    analyser = Analyser(annotator, look_ahead=2)
+    analyser.start()
+    analyser.submit_position("g", chess.Board(), 0)
+    fake.entered.wait()  # the worker is searching ahead
+    analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
+    judged = threading.Event()
+    got: list[object] = []
+    while not judged.is_set():
+        event = analyser._results.get()  # waits for the worker's next word
+        got.append(event)
+        if isinstance(event, MoveAssessment):
+            judged.set()
+    analyser.close()
     assert any(isinstance(e, MoveAssessment) and e.uci == "g1f3" for e in got)
     assert analyser.looked == 0 and annotator.ahead_hits == 0
 
 
-@needs_engine
-def test_the_engine_stops_a_search_it_is_interrupted_in(engine: Engine) -> None:
-    import threading
-
+def test_the_engine_stops_a_search_it_is_interrupted_in() -> None:
+    """`interrupt` stops the search under way inside `interruptible`, which then raises
+    `Interrupted`. The scripted search runs until it is stopped: one not stopped never ends."""
     from sidecoach.analysis.engine import Interrupted
 
+    uci = _ScriptedUci([*_D13], [*_D13])
+    uci.hold = threading.Event()
+    running = _scripted_engine(uci)
     raised: list[BaseException] = []
 
     def search() -> None:
         try:
-            with engine.interruptible():
-                engine.analyse(chess.Board(), depth=60, multipv=1)
+            with running.interruptible():
+                running.analyse(chess.Board(), depth=60)
         except BaseException as exc:  # noqa: BLE001
             raised.append(exc)
 
     worker = threading.Thread(target=search)
     worker.start()
-    assert _until(lambda: engine._search is not None), "the search never started"
-    t = time.monotonic()
-    engine.interrupt()
-    worker.join(5)
-    assert not worker.is_alive() and time.monotonic() - t < 1.0
+    uci.started.wait()
+    running.interrupt()
+    worker.join()
+    assert uci.search is not None and uci.search.stopped
     assert raised and isinstance(raised[0], Interrupted)
     # The engine answers as before afterwards.
-    assert engine.analyse(chess.Board(), depth=6, multipv=1)
+    uci.hold = None
+    assert running.analyse(chess.Board(), depth=13)
 
 
 def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Path) -> None:
@@ -1030,26 +1394,25 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
 def test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it() -> None:
     """After a takeback the move before the replacement is the one the game kept; the last
     move judged was the withdrawn one, a ply too far, and the replacement was judged as if
-    nothing came before it: the opponent's mistake unseen, a loss after it a blunder, not
-    the miss it is (the state review, 2026-10-01)."""
+    nothing came before it: the opponent's blunder unseen, the best reply to it merely
+    best, not the great move it is (the state review, 2026-10-01)."""
     start = chess.Board()
     fake = FakeEngine(
         {
             start.fen(): [Line(moves=["d2d4"], depth=6, expected_score=0.55)],
-            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.70)],
+            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.90)],
             _after("e4", "a6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
-            _after("e4", "h6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
         }
     )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     board = chess.Board()
     first = annotator.assess_move("g", board, board.parse_san("e4"), 1)
-    assert first.severity is Severity.MISTAKE, "the opponent erred"
+    assert first.severity is Severity.BLUNDER, "the opponent blundered"
     board.push_san("e4")
     withdrawn = annotator.assess_move("g", board, board.parse_san("a6"), 2)
-    replacement = annotator.assess_move("g", board, board.parse_san("h6"), 2)
-    assert withdrawn.label is Label.MISS
-    assert replacement.label is Label.MISS, replacement.label
+    replacement = annotator.assess_move("g", board, board.parse_san("e5"), 2)
+    assert withdrawn.label is Label.BLUNDER
+    assert replacement.label is Label.GREAT, replacement.label
 
 
 # Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.

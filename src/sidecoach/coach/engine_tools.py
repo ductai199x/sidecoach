@@ -24,6 +24,7 @@ import chess
 
 from sidecoach.analysis.computed import rest_of_line
 from sidecoach.analysis.engine import san_line
+from sidecoach.analysis.score import game_over
 from sidecoach.coach.effects import line_notes
 from sidecoach.coach.facts import PIECE_NAMES, standing_words
 from sidecoach.coach.inventory import inventory_lines
@@ -124,8 +125,10 @@ class EngineTools:
         known_before: Sequence[Line] = (),
         depth: int = 14,
     ) -> None:
-        self.now = now.copy(stack=False)
-        self.before = before.copy(stack=False) if before is not None else None
+        # With their moves: Stockfish reads a repetition from them, and a move that
+        # repeats a position the third time ends the game (`score.game_over`).
+        self.now = now.copy()
+        self.before = before.copy() if before is not None else None
         self.engine = engine
         self.player = player
         self.known = {"now": list(known_now), "before_last_move": list(known_before)}
@@ -161,7 +164,7 @@ class EngineTools:
         head = self._heading(start, played, where)
         if illegal:
             head += f" {illegal} is not a legal move there, so the analysis stops before it."
-        if after.is_game_over(claim_draw=True):
+        if game_over(after):
             return f"{head} The game is over there: {_result(after)}."
         known = self.known.get(where, [])
         own = rest_of_line(known, [m.uci() for m in played]) if played else None
@@ -246,7 +249,7 @@ class EngineTools:
         self, start: chess.Board, moves: list[str]
     ) -> tuple[chess.Board, list[chess.Move], str]:
         """The board after `moves`, the moves played, and the first one that could not be."""
-        board = start.copy(stack=False)
+        board = start.copy()
         played: list[chess.Move] = []
         for token in moves:
             try:
@@ -287,19 +290,21 @@ class EngineTools:
         best = list(known) or self.engine.analyse(start, depth=self.depth)
         if not best:
             return ""
-        after = start.copy(stack=False)
+        after = start.copy()
         after.push(first[0])
         san = san_line(start, [first[0].uci()])
         head = f"The first move given, {san}, is"
         if best[0].moves and best[0].moves[0] == first[0].uci():
             return f"{head} the engine's best move from {origin}."
-        if after.is_game_over(claim_draw=True):
+        if game_over(after):
             return ""
         own = next((line for line in best if line.moves[:1] == [first[0].uci()]), None)
         if own is not None:
             score = own.expected_score
         else:
-            reply = self.engine.analyse(after, depth=self.depth)
+            # At the best line's depth: set against a shallower search, a move as good as
+            # the best read as worse by what the depths differ by.
+            reply = self.engine.analyse(after, depth=best[0].depth or self.depth)
             if not reply:
                 return ""
             score = 1.0 - reply[0].expected_score
