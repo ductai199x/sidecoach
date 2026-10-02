@@ -8,6 +8,7 @@ import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.llm.HttpReply
 import com.sidecoach.llm.Transport
 import com.sidecoach.llm.UrlTransport
+import com.sidecoach.voice.Py
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URLEncoder
@@ -162,7 +163,7 @@ object Library {
 
     /** The player's side by their usernames, null when neither player is theirs. `side_of`. */
     fun sideOf(white: String?, black: String?, userNames: Iterable<String>): String? {
-        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
+        val names = userNames.map { Py.strip(it) }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
         return when {
             !white.isNullOrEmpty() && white.lowercase() in names -> "white"
             !black.isNullOrEmpty() && black.lowercase() in names -> "black"
@@ -177,7 +178,7 @@ object Library {
      * `refresh`.
      */
     fun refresh(store: Store, userNames: Iterable<String>) {
-        store.fillSides(userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() })
+        store.fillSides(userNames.map { Py.strip(it) }.filter { it.isNotEmpty() }.map { it.lowercase() })
         if (store.setting(CLASSES_KEY) != CLASSES.toString()) {
             for (row in store.library()) {
                 if (row.source == "chesscom") continue // chess.com's own class, as its archive gives it
@@ -300,7 +301,6 @@ object Library {
     private val COMMENT = Regex("\\{[^}]*\\}|;[^\\n]*")
     private val VARIATION = Regex("\\([^()]*\\)")
     private val MOVE_NOISE = Regex("\\$\\d+|\\d+\\.+")
-    private val SPACE = Regex("\\s+")
     private val RESULTS = setOf("1-0", "0-1", "1/2-1/2", "*")
 
     /**
@@ -316,8 +316,10 @@ object Library {
             if (bare == text) break
             text = bare
         }
-        return MOVE_NOISE.replace(text, " ").split(SPACE)
-            .filter { it.isNotEmpty() && it !in RESULTS }
+        // Split as Python's str.split() does, on its whitespace: a PGN pasted with non-breaking
+        // spaces between the moves paired with nothing on ASCII \s (the review of 2026-10-01).
+        return Py.split(MOVE_NOISE.replace(text, " "))
+            .filter { it !in RESULTS }
             .map { it.trimEnd('+', '#', '!', '?') }
     }
 
@@ -334,7 +336,7 @@ object Library {
         { it.key },
     )
 
-    private fun named(name: String?): String? = name?.trim()?.takeIf { it != "" && it != "?" }?.lowercase()
+    private fun named(name: String?): String? = name?.let { Py.strip(it) }?.takeIf { it != "" && it != "?" }?.lowercase()
 
     /** Whether [row] is a copy of [best] (see the rule above). `_same_game`. */
     private fun sameGame(best: LibraryRow, row: LibraryRow, moves: MutableMap<String, List<String>?>): Boolean {

@@ -255,7 +255,31 @@ class GamesApiTest {
         other.close()
     }
 
-    /** Nothing paid for is lost: the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
+    /**
+     * The review of 2026-10-01: a game's moves were split on ASCII whitespace where the desktop's
+     * `_signature` splits on Python's (`str.split()`), so moves joined by non-breaking or other
+     * Unicode spaces read as one word and the copy paired with nothing. Split as Python does,
+     * the moves are the same words, and a game pasted that way is one game with the site's.
+     */
+    @Test
+    fun aGamePastedWithUnicodeSpacesPairsWithTheSitesRecord() {
+        val spaced = LONGER.replace("1. e4 {[%clk 0:09:58]} e5", "1. e4 {[%clk 0:09:58]}　e5")
+            .replace("4. d3 Bc5 5. Nc3", "4. d3 Bc5\u001f5. Nc3")
+        val plain = Library.signature(LONGER)
+        assertEquals("the same moves as words", plain, Library.signature(spaced))
+        assertEquals("e4", plain.first())
+
+        val store = Store(null)
+        val pasted = Library.fromPgn(spaced, listOf("nosegazm")).single()
+        val site = site(LONGER, "chesscom:12")
+        store.addLibraryGame(pasted)
+        store.addLibraryGame(site)
+        assertEquals(mapOf(pasted.key to site.key), Library.reconcile(store))
+        assertEquals(listOf(site.key), shown(store))
+        store.close()
+    }
+
+    /** Nothing paid for is lost:the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
     @Test
     fun aCopysReviewAndPaidWordsGoToTheSurvivor() {
         val store = Store(null)
