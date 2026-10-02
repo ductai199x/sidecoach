@@ -466,29 +466,52 @@ def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
     assert pipe.reconciler.board.fen() == board.fen()
 
 
+_M = chess.Move.from_uci
+_S = chess.parse_square
+# The overlay sweep of 8711b37 (scratchpad overlay_sweep.py), whole: arrows through pieces,
+# piece to piece, along a file and a rank, on both rooks and both bishops, four at once, thick,
+# green; red marks on pieces, on both rooks, on every pawn; a selected knight and bishop.
 _OVERLAYS: dict[str, dict[str, Any]] = {
-    "arrows on both rooks": {"arrows": (chess.Move.from_uci("a1b1"), chess.Move.from_uci("h1g1"))},
-    "arrow from piece to piece": {"arrows": (chess.Move.from_uci("d1d2"),)},
+    "arrow f3xe5": {"arrows": (_M("f3e5"),)},
+    "arrow c4xf7": {"arrows": (_M("c4f7"),)},
+    "arrow d1-d2 piece to piece": {"arrows": (_M("d1d2"),)},
+    "arrow a1-a2 piece to piece": {"arrows": (_M("a1a2"),)},
+    "arrow e1-e8 along a file": {"arrows": (_M("e1e8"),)},
+    "arrow a2-h2 along the pawns": {"arrows": (_M("a2h2"),)},
+    "arrows on both rooks": {"arrows": (_M("a1b1"), _M("h1g1"))},
+    "arrows on both bishops": {"arrows": (_M("c1d2"), _M("c4b5"))},
+    "four arrows": {"arrows": (_M("c4f7"), _M("f3g5"), _M("d1h5"), _M("c5f2"))},
+    "red marks on pieces": {"red_marks": (_S("f7"), _S("e5"), _S("c6"), _S("c4"), _S("f3"))},
+    "red marks on both rooks": {"red_marks": (_S("a1"), _S("h1"))},
     "red marks on the pawns": {
-        "red_marks": tuple(chess.parse_square(f + "2") for f in "abcfgh") + (chess.E4, chess.D3)
+        "red_marks": tuple(_S(f + "2") for f in "abcfgh") + (chess.E4, chess.D3)
     },
     "a selected knight": {"selected": chess.F3},
+    "a selected bishop": {"selected": chess.C4},
+    "a thick orange arrow": {"arrows": (_M("f3e5"),), "arrow_width": 0.3},
+    "green arrows": {"arrows": (_M("c4f7"), _M("d1d2")), "arrow_colour": "green"},
 }
+_OVERLAY_SETS = ("cburnett", "maestro", "staunty", "leipzig", "alpha", "pixel")
 
 
+@pytest.mark.parametrize("theme", ["green", "brown"])
+@pytest.mark.parametrize("style", _OVERLAY_SETS)
 @pytest.mark.parametrize("overlay", list(_OVERLAYS))
-def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(overlay: str) -> None:
+def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
+    overlay: str, style: str, theme: str
+) -> None:
     """The look is learned again on a still board when a kind of which two or more pieces
-    stand reads every one of them off its square (round 3): what a new set does, and what
-    something drawn over the board does not. Held three seconds, an overlay does not even set
-    a learning off (the overlay sweep: 192 of 192, six sets, two themes, sixteen overlays),
-    and the game is read on after it."""
+    stand reads every one of them off its square (round 3, 8711b37): what a new set does, and
+    what something drawn over the board does not -- a measured rule, so its sweep is the
+    suite's (round 3 audit E13, Tai 2026-10-02: keep the rule, with the overlay sweep in the
+    suite). Sixteen overlays, six sets, two themes, 192 cases: held three seconds, an overlay
+    does not even set a learning off, and the game is read on after it."""
     from sidecoach.vision.pieces import ThemeModel
 
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
-    look: dict[str, Any] = {"style": "staunty", "theme": "green"}
+    look: dict[str, Any] = {"style": style, "theme": theme}
     for _ in range(3):
         pipe.process(synthetic_board(board=board, **look), ts)
         ts += 0.1
@@ -513,7 +536,7 @@ def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(overlay:
             pipe.process(held, ts, changed=i == 0)
             ts += 0.1
     assert pipe.model is model and learned == []
-    for uci in ("c2c3", "d7d6"):
+    for uci in ("c2c3", "d7d6", "b1d2", "a7a6"):
         move = board.push_uci(uci)
         for _ in range(3):
             pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
