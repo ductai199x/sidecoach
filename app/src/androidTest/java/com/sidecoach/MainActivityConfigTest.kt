@@ -31,4 +31,23 @@ class MainActivityConfigTest {
             ActivityInfo.CONFIG_UI_MODE or ActivityInfo.CONFIG_FONT_SCALE or ActivityInfo.CONFIG_DENSITY
         assertTrue("configChanges ${info.configChanges}", info.configChanges and wanted == wanted)
     }
+
+    /**
+     * Tai, 2026-10-02: the test board (debug.BoardActivity) is the debug build's alone. In the
+     * phone build, the one he runs and these tests run against, no activity but the panel is
+     * there for another app to start.
+     */
+    @Test
+    fun theTestBoardIsNotInThePhoneBuild() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        val info = app.packageManager.getPackageInfo(
+            app.packageName,
+            PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES.toLong()),
+        )
+        val activities = info.activities.orEmpty().map { it.name }
+        assertTrue("$activities", activities.none { it.endsWith(".debug.BoardActivity") })
+        assertEquals(listOf(MainActivity::class.java.name), activities.filter { name ->
+            info.activities.orEmpty().first { it.name == name }.exported
+        })
+    }
 }

@@ -426,45 +426,20 @@ class GameAnnotator(
             // Another game, or a move that did not lead here: the move before is unknown.
             last = null
         }
-        val erred = last?.loss ?: 0.0
-        // Taking back on the square the opponent just captured on. Taking a piece that merely
-        // moved there is not obvious: that is how a blunder gets punished.
-        val captures = before.isCapture(move)
-        val recapture = last != null && last.captured && captures && move.to == last.to
-        // A capture nobody can take back is a grab, not a find; a king's capture always is.
-        // Taking back is read by the rules: a piece guarded only by one pinned to its own king
-        // is taken for nothing.
-        val freeGrab = captures && !Exchange.canRetake(before, move)
-        val obvious = recapture || freeGrab || before.legalMoves().size == 1
-        val top = measuredBefore.lines.firstOrNull()
-        val afterTop = measuredAfter.lines.firstOrNull()
-        // A forced mate the best move had, and the move played let go; one the move walks into.
-        // The mates are the lines' own: the curve puts a thousand centipawns a fortieth of a
-        // game below a mate, and a mate in four let go read as an inaccuracy.
-        val mating = top?.mate != null && top.mate > 0
-        val mateMissed = mating && !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
-        val mateAllowed = afterTop?.mate != null && afterTop.mate > 0 && !(top?.mate != null && top.mate < 0)
-        // What the best move had to find: a mate, material won, or -- after the opponent's
-        // error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
-        // to punish the opponent").
-        val won = if (top != null) materialWon(before, top.moves) else 0
-        val chance = mating || won >= TACTIC_GAIN || (erred >= thresholds.mistake && won >= 1)
-        val label = labelMove(
-            loss,
-            thresholds,
-            isBest = best.isNotEmpty() && best[0] == move.uci(),
-            inBook = inBook(after),
-            decisive = measuredBefore.decisive,
-            sacrifice = tags.any { it.name == "sacrifice" },
+        val label = verdict(
+            before,
+            move,
+            measuredBefore.lines,
+            measuredAfter.lines,
+            loss = loss,
             beforeScore = measuredBefore.score,
-            opponentBlundered = erred >= thresholds.blunder,
-            secondScore = measuredBefore.lines.getOrNull(1)?.expectedScore,
-            chance = chance,
-            mateMissed = mateMissed,
-            mateAllowed = mateAllowed,
-            obvious = obvious,
+            decisive = measuredBefore.decisive,
+            inBook = inBook(after),
+            sacrifice = tags.any { it.name == "sacrifice" },
+            previous = last?.let { Previous(it.loss, it.to, it.captured) },
+            thresholds = thresholds,
         )
-        assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, captures)
+        assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, before.isCapture(move))
         return MoveAssessment(
             gameId = gameId,
             ply = ply,
@@ -530,9 +505,17 @@ class GameAnnotator(
         val book = book ?: return null
         if (board.moveStack.isEmpty()) return null
         if (board.root().fen() != STARTING_FEN) return null
-        val found = book.identify(ArrayList(board.moveStack)) ?: return null
-        return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+        return openingName(book, board.moveStack)
     }
+}
+
+/**
+ * The opening [moves] from the start position are in, as the analysis carries it ("C50 Italian
+ * Game"); null when the book names none. `annotator.opening_name`.
+ */
+fun openingName(book: Book, moves: List<Move>): String? {
+    val found = book.identify(ArrayList(moves)) ?: return null
+    return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
 }
 
 /** A line's moves as moves, up to the first that does not parse: `annotator._moves`. */

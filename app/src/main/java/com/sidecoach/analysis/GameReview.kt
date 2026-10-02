@@ -1,8 +1,13 @@
 package com.sidecoach.analysis
 
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.Move
 import com.sidecoach.chess.PgnGame
+import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
+import com.sidecoach.events.Analysis
+import com.sidecoach.events.Label
+import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.ReviewedGame
 import com.sidecoach.events.ReviewedMove
 import com.sidecoach.events.Side
@@ -176,6 +181,104 @@ object GameReview {
     }
 
     private val CONTROL = Regex("^(\\d+)(?:\\+(\\d+))?$")
+
+    /**
+     * A saved review's labels made again from what it kept -- each position's lines, its
+     * decisive call and whether it was in book, each move's loss and tags -- by the rule a review
+     * labels with now ([verdict]), and, with [book], each position's opening named again: no
+     * engine. A review saved before the rules changed keeps its measurements and is labelled as
+     * one made today (Tai, 2026-10-02). `relabel`.
+     */
+    fun relabel(reviewed: ReviewedGame, thresholds: Thresholds, book: Book? = null): ReviewedGame {
+        val named = book != null && Board(reviewed.start.fen).fen() == STARTING_FEN
+        var beforeLines = reviewed.start.lines
+        var beforeDecisive = reviewed.start.decisive
+        var previous: Previous? = null
+        val played = ArrayList<Move>()
+        val moves = ArrayList<ReviewedMove>()
+        for (item in reviewed.moves) {
+            val board = Board(item.fenBefore)
+            val move = Move.fromUci(item.assessment.uci)
+            val label = verdict(
+                board,
+                move,
+                beforeLines,
+                item.after.lines,
+                loss = item.assessment.expectedLoss,
+                beforeScore = positionScore(board, beforeLines),
+                decisive = beforeDecisive,
+                inBook = item.after.inBook,
+                sacrifice = item.assessment.tags.any { it.name == "sacrifice" },
+                previous = previous,
+                thresholds = thresholds,
+            )
+            played.add(move)
+            val after = if (named) withOpening(item.after, openingName(book!!, played)) else item.after
+            moves.add(
+                ReviewedMove(
+                    ply = item.ply,
+                    san = item.san,
+                    side = item.side,
+                    fenBefore = item.fenBefore,
+                    assessment = withLabel(item.assessment, label),
+                    after = after,
+                    clockMs = item.clockMs,
+                    spentMs = item.spentMs,
+                ),
+            )
+            previous = Previous(item.assessment.expectedLoss, move.to, board.isCapture(move))
+            beforeLines = item.after.lines
+            beforeDecisive = item.after.decisive
+        }
+        return ReviewedGame(
+            headers = reviewed.headers,
+            start = reviewed.start,
+            moves = moves,
+            strength = reviewed.strength,
+            depth = reviewed.depth,
+            seconds = reviewed.seconds,
+        )
+    }
+
+    /** [a] with another label, its time and frame kept. */
+    private fun withLabel(a: MoveAssessment, label: Label): MoveAssessment =
+        MoveAssessment(
+            gameId = a.gameId,
+            ply = a.ply,
+            uci = a.uci,
+            expectedLoss = a.expectedLoss,
+            severity = a.severity,
+            best = a.best,
+            tags = a.tags,
+            depth = a.depth,
+            label = label,
+            accuracy = a.accuracy,
+        ).also {
+            it.ts = a.ts
+            it.sourceFrameId = a.sourceFrameId
+        }
+
+    /** [a] with another opening, its time and frame kept. */
+    private fun withOpening(a: Analysis, opening: String?): Analysis =
+        Analysis(
+            gameId = a.gameId,
+            fen = a.fen,
+            ply = a.ply,
+            lines = a.lines,
+            decisive = a.decisive,
+            onlyMove = a.onlyMove,
+            threats = a.threats,
+            traps = a.traps,
+            defences = a.defences,
+            threatens = a.threatens,
+            tags = a.tags,
+            opening = opening,
+            inBook = a.inBook,
+            provisional = a.provisional,
+        ).also {
+            it.ts = a.ts
+            it.sourceFrameId = a.sourceFrameId
+        }
 
     /**
      * Each move's clock after it and the time it took, in ms, from the PGN's `[%clk]` comments

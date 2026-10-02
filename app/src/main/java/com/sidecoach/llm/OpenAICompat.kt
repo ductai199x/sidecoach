@@ -459,7 +459,7 @@ class OpenAICompatProvider(
         val reply = sent(body, { 0 }) { transport.post(endpoint, headers, body.toString(), timeoutMs) }
         if (reply.status != 200) {
             // The status code stays in the message: the callers' backoff keys on "429".
-            throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
+            throw ProviderError(reply.status, reply.text, retryAfter(reply.headers))
         }
         val data = JSONObject(reply.text)
         val elapsed = (System.nanoTime() - started) / 1e9
@@ -584,7 +584,7 @@ class OpenAICompatProvider(
             }
         }
         if (reply.status != 200) {
-            throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
+            throw ProviderError(reply.status, reply.text, retryAfter(reply.headers))
         }
         val elapsed = (System.nanoTime() - started) / 1e9
         val completionDetails = usageJson.optJSONObject("completion_tokens_details") ?: JSONObject()
@@ -673,7 +673,7 @@ class OpenAICompatProvider(
             }
         }
         if (reply.status != 200) {
-            throw RuntimeException("${reply.status}: ${reply.text.take(200)}")
+            throw ProviderError(reply.status, reply.text, retryAfter(reply.headers))
         }
         val done = completed.length() > 0
         if (!done && !stopped) throw RuntimeException("stream ended before the response completed")

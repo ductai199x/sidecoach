@@ -150,7 +150,11 @@ class MainActivity : ComponentActivity() {
                 val profile = com.sidecoach.profile.Store(File(filesDir, "profile.sqlite"))
                 try {
                     runCatching { com.sidecoach.profile.Library.refresh(profile, SettingsApi.userNames(store)) }
-                    ReviewRoom.rederive(profile)
+                    ReviewRoom.rederive(
+                        profile,
+                        store.thresholds(),
+                        com.sidecoach.analysis.OpeningBook.load(File(filesDir, "openings")),
+                    )
                 } finally {
                     profile.close()
                 }

@@ -2,6 +2,8 @@ package com.sidecoach.coach
 
 import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.Motifs
+import com.sidecoach.analysis.humanExpectedScore
+import com.sidecoach.analysis.severityOf
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BISHOP
@@ -18,7 +20,9 @@ import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareRank
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
+import com.sidecoach.events.Severity
 import kotlin.math.abs
 
 /**
@@ -332,12 +336,14 @@ object IdeaReader {
         val top = analysis.lines[0]
         val mated = top.mate != null && top.mate > 0
         val winning = mated || top.expectedScore >= WON
-        var given = sacrifices(boards, pv, upto)
-        if (given.isNotEmpty() && idea.goal != "draw" && !winning && top.expectedScore < 0.5) {
-            // Given for nothing: a piece the line neither wins back nor buys anything with, the
-            // position no better for it, was given up, not sacrificed ("Use your queen on d1 --
-            // the piece you give up" of a queen thrown in front of a mate, 2026-10-01).
-            given = given.filter { wonBack(boards, it.first, board.turn) }
+        // A sacrifice is material given up in a line the engine rates as sound: giving it keeps at
+        // least a Good move's label ([sound]). Given for nothing -- a queen thrown in front of a
+        // mate ("Use your queen on d1 -- the piece you give up", 2026-10-01) -- the line is worth
+        // far less than the material given, and the piece was given up, not sacrificed (Tai,
+        // 2026-10-02: no score or points-back gate and no margin of its own; the label bands
+        // decide).
+        val given = sacrifices(boards, pv, upto).filter {
+            sound(top, balance(boards[it.first], board.turn))
         }
         return idea.copy(
             pinnedGuard = pinnedGuard(idea, boards, pv),
@@ -825,37 +831,40 @@ object IdeaReader {
     }
 
     /**
-     * The piece on `square`, its side to move, is lost whatever it does: it can be won
-     * where it stands, and every move of it lands where it can be won too, or takes something
-     * worth less than itself. Leaving such a piece, or cashing it in for a pawn, was called
-     * a sacrifice (the facts audit, 2026-10-01).
+     * The piece on `square`, its side to move, is lost whatever its side does: it can be
+     * won where it stands, and no move saves it -- not a move of it (each lands where it can be
+     * won too, or takes something worth less than itself), nor one that defends it, blocks the
+     * attack or takes the attacker. Leaving such a piece, or cashing it in for a pawn, was
+     * called a sacrifice (the facts audit, 2026-10-01); a piece another move could have saved
+     * is one (Tai, 2026-10-02).
      */
     private fun lostAnyway(board: Board, square: Int): Boolean {
         val piece = board.pieceAt(square) ?: return false
         if (piece.pieceType == KING || piece.pieceType == PAWN) return false
         if (!Exchange.canBeWon(board, square)) return false
         for (move in board.legalMoves()) {
-            if (move.from != square) continue
-            if (board.isCapture(move)) {
+            if (move.from == square && board.isCapture(move)) {
                 if (Exchange.exchange(board, move) >= 0) return false
                 continue
             }
             val after = board.copy(withStack = false)
             after.push(move)
-            if (!Exchange.canBeWon(after, move.to)) return false
+            if (!Exchange.canBeWon(after, if (move.from == square) move.to else square)) return false
         }
         return true
     }
 
     /**
-     * The material given at ply `i` comes back later in the line (two points of it at
-     * least), or the line mates.
+     * The engine rates the line as sound for what it gives: judged as a move is, giving the
+     * material keeps at least the Good label -- what the line is worth falls short of what the
+     * material the player had before the gift ([had], in pawns) is worth on the same curve by
+     * less than an inaccuracy ([severityOf], the labels' own bands; the default thresholds, the
+     * idea reader has no settings). A line that mates is; one that gets mated is not.
+     * `idea._sound`.
      */
-    private fun wonBack(boards: List<Board>, i: Int, us: Boolean): Boolean {
-        val last = boards.last()
-        if (last.isCheckmate() && last.turn != us) return true
-        val given = balance(boards[i + 2], us)
-        return (i + 3 until boards.size).any { balance(boards[it], us) >= given + 2 }
+    private fun sound(top: Line, had: Int): Boolean {
+        val lost = maxOf(0.0, humanExpectedScore(100 * had, null) - top.expectedScore)
+        return severityOf(lost) == Severity.NONE
     }
 
     /**

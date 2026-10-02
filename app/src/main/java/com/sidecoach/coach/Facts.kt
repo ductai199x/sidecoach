@@ -156,13 +156,12 @@ private val FACT_VALUES = intArrayOf(0, 1, 3, 3, 5, 9, 0)
  */
 fun standingWords(score: Double, thirdPerson: Boolean = false): String {
     val who = if (thirdPerson) "the player is" else "you are"
-    // Won at 0.8, as the idea reader counts a won position (`IdeaReader.WON`): "better" of a
-    // position four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
-    if (score >= 0.8) return "$who winning"
-    if (score >= 0.62) return "$who better"
-    if (score > 0.38) return "it is about equal"
-    if (score > 0.2) return "$who worse"
-    return "$who losing"
+    // The bands are `standing`'s (Score.kt), which the move labels read a winning chance by. Won
+    // at 0.8, as the idea reader counts a won position (`IdeaReader.WON`): "better" of a position
+    // four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
+    return listOf("$who losing", "$who worse", "it is about equal", "$who better", "$who winning")[
+        com.sidecoach.analysis.standing(score)
+    ]
 }
 
 private val CAMEL_SPLIT = Regex("(?<=[a-z])(?=[A-Z0-9])")

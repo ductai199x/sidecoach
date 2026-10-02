@@ -42,6 +42,32 @@ data class ToolRound(val reply: Completion, val results: List<String>)
 private val STATUS = Regex("^(\\d{3}):")
 
 /**
+ * A call the server answered with an error status. The message starts with the status
+ * ("429: ..."), as the callers read it; [retryAfterS] is how long the server asked to be left
+ * alone before the next call (its Retry-After), null when it named no time.
+ * `llm.base.ProviderError`.
+ */
+class ProviderError(val status: Int, text: String, val retryAfterS: Double? = null) :
+    RuntimeException("$status: ${text.take(200)}")
+
+/**
+ * The wait a reply's headers (by lower-case name) ask for, in seconds: `retry-after-ms`
+ * (OpenAI's), else `retry-after` as seconds or as an HTTP date (counted from [nowMs], the epoch
+ * time). Null when they name none or nothing readable. `llm.base.retry_after`.
+ */
+fun retryAfter(headers: Map<String, String>, nowMs: Long = System.currentTimeMillis()): Double? {
+    headers["retry-after-ms"]?.trim()?.toDoubleOrNull()?.let { return maxOf(0.0, it / 1000.0) }
+    val value = headers["retry-after"]?.trim().orEmpty()
+    if (value.isEmpty()) return null
+    value.toDoubleOrNull()?.let { return maxOf(0.0, it) }
+    val whenMs = runCatching {
+        java.time.ZonedDateTime.parse(value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+            .toInstant().toEpochMilli()
+    }.getOrNull() ?: return null
+    return maxOf(0.0, (whenMs - nowMs) / 1000.0)
+}
+
+/**
  * A request the server refused as it stands -- a 4xx other than 429 (bad request, too long, no
  * access): asking again costs time and changes nothing. Providers throw with the status code
  * heading the message. `llm.base.refused_for_good`.

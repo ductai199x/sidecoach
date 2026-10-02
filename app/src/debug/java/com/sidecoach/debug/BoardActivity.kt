@@ -8,6 +8,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.ImageView
 import androidx.activity.ComponentActivity
+import com.sidecoach.NotInFront
 
 /**
  * A rendered board, full screen, for testing the vision without a chess app.
@@ -17,12 +18,13 @@ import androidx.activity.ComponentActivity
  * frames of tools/make_game.py, shown one after another so the whole pipeline runs against a
  * game on the device. Both live in the debug source set and never reach a release build.
  *
- * Debug only.
+ * The debug build only (src/debug, Tai 2026-10-02): the phone build he runs has no such
+ * screen, so nothing outside the app can start it there.
  *
  *     adb shell am start -n com.sidecoach/.debug.BoardActivity -e board start-green
  *     adb shell am start -n com.sidecoach/.debug.BoardActivity  *         -e game /sdcard/Android/data/com.sidecoach/files/game --ei hold 2500
  */
-class BoardActivity : ComponentActivity() {
+class BoardActivity : ComponentActivity(), NotInFront {
 
     private lateinit var view: ImageView
     private val handler = Handler(Looper.getMainLooper())

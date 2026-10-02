@@ -842,6 +842,20 @@ class Store(val path: File?) {
         reviewsTouched()
     }
 
+    /**
+     * A saved review's report and summary made again from what it kept ([ReviewRoom.rederive]):
+     * its words -- the AI coach's, paid for -- stay as they are. Only the review read at
+     * [reviewedAt]: one replaced meanwhile is left alone. Whether it was written.
+     * `set_review_report`.
+     */
+    fun setReviewReport(key: String, strength: String, reviewedAt: Double, report: String, summary: String): Boolean =
+        lock.withLock {
+            exec(
+                "UPDATE reviews SET report = ?, summary = ? WHERE key = ? AND strength = ? AND reviewed_at = ?",
+                report, summary, key, strength, reviewedAt,
+            ) > 0
+        }
+
     /** The strength of the review each game's Stats facts come from, by its key. `stat_strengths`. */
     fun statStrengths(): Map<String, String> = lock.withLock {
         rows("SELECT key, strength FROM stat_games") { it.getString(0) to it.getString(1) }.toMap()

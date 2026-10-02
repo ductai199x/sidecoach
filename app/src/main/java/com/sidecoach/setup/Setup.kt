@@ -424,6 +424,19 @@ class Setup(
      */
     val onFetched = java.util.concurrent.CopyOnWriteArrayList<(List<String>) -> Unit>()
 
+    /**
+     * Told the run's state ([runState]) each time it changes: its start, each chunk, each
+     * item's end, the run's end. The app holds its download in the foreground with it while it
+     * runs ([SetupNotice], [SetupService]; Tai, 2026-10-02). The phone's own: the desktop's
+     * sidecar is not stopped in the background.
+     */
+    @Volatile var watcher: ((JSONObject) -> Unit)? = null
+
+    private fun told() {
+        val watch = watcher ?: return
+        runCatching { watch(runState()) }
+    }
+
     /** Every item with whether it is present, and the run in progress if any. */
     fun status(): JSONObject {
         val rows = JSONArray()
@@ -487,11 +500,13 @@ class Setup(
             state.put("queue", JSONArray(todo.map { it.id }))
             state.put("titles", JSONObject().apply { for (item in todo) put(item.id, item.title) })
         }
+        told()
         val worker = Thread({
             var base = 0L
             for (item in todo) {
                 if (cancelled) break
                 synchronized(lock) { state.put("item", item.id) }
+                told()
                 val start = base
                 val free = freeSpace(context.filesDir)
                 try {
@@ -504,6 +519,7 @@ class Setup(
                         // Cancel stops the item under way at its next chunk; its .part stays.
                         if (cancelled) throw Cancelled()
                         synchronized(lock) { state.put("done", start + minOf(done, item.size)) }
+                        told()
                     }
                     synchronized(lock) { state.getJSONArray("finished").put(item.id) }
                 } catch (_: Cancelled) {
@@ -516,6 +532,7 @@ class Setup(
                 }
                 base += item.size
                 synchronized(lock) { state.put("done", base) }
+                told()
             }
             val fetched = synchronized(lock) {
                 state.put("running", false)
@@ -523,6 +540,7 @@ class Setup(
                 val finished = state.getJSONArray("finished")
                 (0 until finished.length()).map { finished.getString(it) }
             }
+            told()
             if (fetched.isNotEmpty()) for (follower in onFetched) follower(fetched)
         }, "setup")
         worker.isDaemon = true

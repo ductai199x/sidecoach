@@ -716,7 +716,8 @@ class AnnotatorParityTest {
         board.push(board.parseSan("e4")!!)
         val withdrawn = annotator.assessMove("g", board, board.parseSan("a6")!!, 2)
         val replacement = annotator.assessMove("g", board, board.parseSan("e5")!!, 2)
-        assertEquals(Label.BLUNDER, withdrawn.label)
+        // The withdrawn a6 let the opponent's blunder go: a miss (Tai, 2026-10-02).
+        assertEquals(Label.MISS, withdrawn.label)
         assertEquals(Label.GREAT, replacement.label)
     }
 
