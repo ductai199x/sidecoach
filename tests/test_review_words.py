@@ -266,18 +266,36 @@ def test_the_student_reads_you_and_your_opponent() -> None:
     assert not wrong, "\n".join(f"{u} {s!r}: read {g!r}, wanted {r!r}" for u, s, g, r in wrong)
 
 
-def test_a_side_named_but_by_its_colour_is_dropped() -> None:
-    """In colours, "your" could be either side: the part goes, and with "why" the whole move."""
+def test_a_side_named_you_is_shown_as_written() -> None:
+    """No rule over the words drops a paragraph that says "you" or "your opponent" (Tai,
+    2026-10-02): it is shown as the model wrote it. Its "your" is the student's, as they read it,
+    and the board still refuses a false one."""
     game = _game()
-    kept, dropped, _ = review_words.checked(
-        {"why": "Your knight on c6 guards e5.", "lesson": "Guard your centre."}, game, 4, "black"
-    )
-    assert (kept, dropped) == ({}, 'why: names a side "Your"')
+    parts = {
+        "why": "Your knight on c6 guards e5, and your opponent has no quick way at it.",
+        "better": "x",
+        "lesson": "Guard your centre.",
+    }
+    words = _written(game, {4: parts}, "black")
+    assert words.texts[4] == {"why": parts["why"], "lesson": parts["lesson"]}
+    assert 4 not in words.dropped
+    # The knight on c6 is Black's: "your" read as White's is false about the board.
+    words = _written(game, {4: {"why": parts["why"]}}, "white")
+    assert 4 not in words.texts and words.dropped[4].startswith("why: Your knight on c6")
+
+
+def _written(
+    game: ReviewedGame, answers: dict[int, dict[str, str]], user: str | None
+) -> review_words.ReviewWords:
+    """The words written on the short game, its key moves answered `answers` (the rest "x")."""
+    whole: dict[int, dict[str, str] | Exception] = {p: {"why": "x"} for p in (3, 4, 6)}
+    whole.update(answers)
+    return review_words.write(game, _Model(whole), user=user, opening=None, prices=Prices())
 
 
 def test_a_piece_given_to_the_wrong_side_is_dropped() -> None:
     game = _game()  # the pawn on f2 is White's; a pawn named by its file is checked too
-    kept, dropped, _ = review_words.checked(
+    kept, dropped = review_words.checked(
         {"why": "Black's isolated f-pawn on f2 is weak."}, game, 4, "black"
     )
     assert kept == {}
@@ -294,39 +312,32 @@ def test_a_move_given_to_the_wrong_side_is_dropped() -> None:
     assert not review_words.wrong_side("Black must stop Bc4.", game, 3)
 
 
-def test_the_better_move_waits_for_the_answer() -> None:
-    """On the student's own bad move, a "why" giving the better move is kept for when the answer
-    is out; on the opponent's, the better move is not the student's to find."""
+def test_a_why_naming_the_better_move_is_shown_as_written() -> None:
+    """A "why" that gives the better move away, in notation or in words, is shown with the rest:
+    no rule over the words holds it back until the answer is out (Tai, 2026-10-02)."""
     game = _game()
-    parts = {"why": "Bc4 was the move.", "better": "Bc4 develops first and eyes f7."}
-    kept, dropped, reveals = review_words.checked(parts, game, 3, "white")
-    assert (kept, dropped, reveals) == (parts, "", True)
-    assert review_words.checked(parts, game, 3, "black")[2] is False
-    assert review_words.names_the_answer("Bc4 was the move.", game, 3), "side unknown: kept back"
-    assert not review_words.names_the_answer("Developing the bishop first was better.", game, 3)
-    assert not review_words.names_the_answer("Nc6 defends e5.", game, 4), "a great move is named"
-    # In words too: "the knight to e4" gave the answer before it was asked for (the review of
-    # 2026-10-01).
-    assert review_words.names_the_answer("Bringing the bishop out to c4 was better.", game, 3)
-    assert review_words.names_the_answer("The Bishop to c4 first.", game, 3)
-    assert not review_words.names_the_answer("The bishop belonged on the long diagonal.", game, 3)
+    for why in ("Bc4 was the move.", "Bringing the bishop out to c4 was better."):
+        parts = {"why": why, "better": "Bc4 develops first and eyes f7."}
+        for user in ("white", "black", None):
+            words = _written(game, {3: parts}, user)
+            assert words.texts[3] == {"why": why, "better": parts["better"]}
+            assert not getattr(words, "reveals", None), f"{user}: nothing held back"
 
 
-def test_a_lesson_is_general_advice() -> None:
-    """The lesson alone speaks to "you"; one naming a side or a square goes, the rest stays. A
-    good move has no "better"."""
+def test_a_lesson_is_shown_as_written() -> None:
+    """The lesson is the model's advice, shown as written: one that names a side or a square
+    is not dropped (Tai, 2026-10-02). A good move has no "better"."""
     game = _game()
     why = "Black's knight on c6 guards Black's pawn on e5."
     general = "Before you chase a piece, see what your opponent threatens."
-    kept, dropped, _ = review_words.checked(
-        {"why": why, "better": "x", "lesson": general}, game, 4, "black"
-    )
-    assert kept == {"why": "Your knight on c6 guards your pawn on e5.", "lesson": general}
-    assert dropped == ""
-    kept, dropped, _ = review_words.checked(
-        {"why": why, "lesson": "Black should guard e5 first."}, game, 4, "black"
-    )
-    assert (list(kept), dropped) == (["why"], 'lesson: names "Black"')
+    kept = review_words.checked({"why": why, "better": "x", "lesson": general}, game, 4, "black")
+    assert kept[:2] == ({"why": "Your knight on c6 guards your pawn on e5.", "lesson": general}, "")
+    for lesson, read in (
+        ("Black should guard e5 first.", "You should guard e5 first."),
+        ("Keep an eye on the e5 square.", "Keep an eye on the e5 square."),
+    ):
+        words = _written(game, {4: {"why": why, "lesson": lesson}}, "black")
+        assert words.texts[4]["lesson"] == read and 4 not in words.dropped
 
 
 def test_the_answer_is_read_by_its_heads() -> None:
@@ -366,7 +377,7 @@ def test_the_review_is_a_call_a_move_checked_and_costed() -> None:
         },
         4: {"why": "Your knight on c6 guards your pawn on e5."},
     }
-    assert set(words.dropped) == {6} and words.reveals == set()
+    assert set(words.dropped) == {6}
     assert sorted(model.asked) == [3, 4, 6], "one call a key move"
     assert words.cost is not None and abs(words.cost - 3 * (1000 * 0.20 + 300 * 1.20) / 1e6) < 1e-9
 

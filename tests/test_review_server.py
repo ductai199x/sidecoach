@@ -425,7 +425,6 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
         asked.append(told)
         return ReviewWords(
             texts={4: {"why": "Your knight on c6 guards your pawn on e5."}},
-            reveals={4},
             model=model.model,
             cost=0.0,
         )
@@ -462,7 +461,6 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
         "model": "local-model",
         "cost": 0.0,
         "texts": {"4": {"why": why}},
-        "reveals": [4],
         # Shown with its links to the board (coach/review_links.py).
         "links": {
             "4": {
@@ -1045,7 +1043,7 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
         return FakeEngine()
 
     assert review_room.review_row(settings, row, store, standard, workers=1, make_engine=engines)
-    words = {"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}, "reveals": []}
+    words = {"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}}
     store.set_review_words(row.key, "standard", json.dumps(words))
     saved = store.review(row.key, "standard")
     # The background review, begun before the window saved, finishes now.

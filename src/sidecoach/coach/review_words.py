@@ -14,10 +14,11 @@ The model names the sides only by colour, and the student's words are made from 
 (`to_student`: White and Black become "you" and "your opponent"). Asked to say "you" itself, it
 spoke to whoever played the move -- about one shown paragraph in four, the student's own move
 given to their opponent among them (luna at medium effort, 2026-09-30) -- and colours it does not
-turn round. Each paragraph is checked in colours first: against the board (`claims.check_draft`:
-whose piece stands where), for the side it gives a move to, and for a side named any other way;
-the lesson, general advice, names no side, square or move. A "why" that names the better move of
-the student's own mistake is shown only once the answer is (Retry asks them to find it).
+turn round. The words are shown as the model wrote them: only a false claim about the board
+refuses a paragraph, as in the live coach -- a piece the board puts elsewhere or with the other
+side (`claims.check_draft`), a move given to the side that does not play it. No rule over the
+words themselves drops or holds one back (Tai, 2026-10-02): a "why" that says "you", a lesson
+that names a square, a "why" that names the better move are shown as written.
 """
 
 from __future__ import annotations
@@ -103,13 +104,11 @@ Answer in this form and nothing else:
 @dataclass
 class ReviewWords:
     """The student's words by ply ("why", "lesson", and for a bad move "better"); the plies with
-    a part dropped, and why; the plies whose "why" names the better move (shown only once the
-    answer is); the model's answers by ply (in colours, for reading by hand); what the calls
-    cost, and each call's measures."""
+    a part refused for a false claim about the board, and why; the model's answers by ply (in
+    colours, for reading by hand); what the calls cost, and each call's measures."""
 
     texts: dict[int, dict[str, str]]
     dropped: dict[int, str] = field(default_factory=dict)
-    reveals: set[int] = field(default_factory=set)
     answers: dict[int, str] = field(default_factory=dict)
     model: str = ""
     cost: float | None = None
@@ -518,12 +517,8 @@ def _varied(text: str) -> str:
     return "".join(out)
 
 
-# --- The checks, in colours ----------------------------------------------------------------
+# --- The checks: false claims about the board ----------------------------------------------
 
-# A side named but by its colour: in colours, "your" and "the opponent" could be either.
-_PERSON = re.compile(r"\b(you|your|yours|yourself|opponent|opponent's|opponents)\b", re.IGNORECASE)
-# What general advice leaves out: a side, a square (a move ends in one).
-_PARTICULAR = re.compile(r"\b(White|Black|[a-h][1-8])\b")
 # A move given to a side: "White's Nf3", "Black played Nc6", "White could have played Bc4".
 _GIVEN = (
     r"(?:'s|\s+(?:played|plays|chose|chooses|went\s+for|goes\s+for|"
@@ -580,46 +575,20 @@ def wrong_side(paragraph: str, game: ReviewedGame, ply: int) -> str:
     return ""
 
 
-def names_the_answer(text: str, game: ReviewedGame, ply: int, user: str | None = None) -> bool:
-    """Whether a paragraph on the student's bad move gives the better move in notation: it is
-    Retry's answer. The opponent's moves are not the student's to find (with the student's side
-    unknown, every bad move is kept back)."""
-    move = game.moves[ply - 1]
-    label = move.assessment.label.value if move.assessment.label else None
-    theirs = user is not None and move.side.value != user
-    if label not in BAD or not move.assessment.best or theirs:
-        return False
-    board = chess.Board(move.fen_before)
-    answer = chess.Move.from_uci(move.assessment.best[0])
-    best = board.san(answer).rstrip("+#")
-    if re.search(rf"(?<![\w]){re.escape(best)}(?![\w])", text) is not None:
-        return True
-    # In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
-    # castling. Notation alone was caught, and "the knight to e4" showed the answer before it
-    # was asked for (the review of 2026-10-01).
-    if board.is_castling(answer):
-        return re.search(r"\bcastl(?:e|es|ed|ing)\b", text, re.I) is not None
-    piece = board.piece_type_at(answer.from_square)
-    name = chess.piece_name(piece) if piece is not None else "piece"
-    square = chess.square_name(answer.to_square)
-    verbs = r"(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
-    found = rf"\b{name}s?\b(?:\s+\w+){{0,2}}\s+{verbs}\s+{square}\b"
-    return re.search(found, text, re.I) is not None
-
-
-def problems(part: str, paragraph: str, game: ReviewedGame, ply: int) -> str:
-    """What stops a part on move `ply` from being shown, in words; empty when nothing. "why"
-    and "better", written in colours: a side named but by its colour, a piece the board puts
-    elsewhere or with the other side, a move given to the side that does not play it. The
-    lesson, general advice: a side, a square or a move named."""
+def problems(
+    part: str, paragraph: str, game: ReviewedGame, ply: int, user: str | None = None
+) -> str:
+    """The false claims about the board a "why" or "better" on move `ply` makes, in words; empty
+    when none: a piece the board puts elsewhere or with the other side, a move given to the side
+    that does not play it. A "your" the model wrote anyway is the student's, as the student
+    reads it (the mover's when their side is not known). The lesson, general advice, makes no
+    claim about the board."""
     if part == "lesson":
-        named = _PARTICULAR.search(paragraph)
-        return f'names "{named.group(1)}"' if named else ""
-    person = _PERSON.search(paragraph)
-    if person:
-        return f'names a side "{person.group(1)}"'
-    board = chess.Board(game.moves[ply - 1].fen_before)
-    found = check_draft(paragraph, board, after=_frames(game, ply))
+        return ""
+    move = game.moves[ply - 1]
+    board = chess.Board(move.fen_before)
+    us = None if user is None else (chess.WHITE if user == "white" else chess.BLACK)
+    found = check_draft(paragraph, board, after=_frames(game, ply), us=us)
     if found:
         return "; ".join(f"{p.text}: {p.reason}" for p in found)
     return wrong_side(paragraph, game, ply)
@@ -627,9 +596,9 @@ def problems(part: str, paragraph: str, game: ReviewedGame, ply: int) -> str:
 
 def checked(
     parts: dict[str, str], game: ReviewedGame, ply: int, user: str | None
-) -> tuple[dict[str, str], str, bool]:
-    """A move's parts the checks pass, in the student's words, each on its own; why a part was
-    dropped (empty when none); whether its "why" names the better move."""
+) -> tuple[dict[str, str], str]:
+    """A move's parts with no false claim about the board, in the student's words, each on its
+    own; why a part was refused (empty when none)."""
     label = game.moves[ply - 1].assessment.label
     # "better" is a bad move's alone: a good move was the better move.
     wanted = PARTS if label is not None and label.value in BAD else ("why", "lesson")
@@ -638,17 +607,16 @@ def checked(
     for part in wanted:
         if part not in parts:
             continue
-        problem = problems(part, parts[part], game, ply)
+        problem = problems(part, parts[part], game, ply, user)
         if problem:
             reasons.append(f"{part}: {problem}")
             if part == "why":
                 # Wrong about the board or a side: the model misread the move, so nothing it
                 # said of it stands.
-                return {}, "; ".join(reasons), False
+                return {}, "; ".join(reasons)
             continue
         kept[part] = to_student(parts[part], user)
-    reveals = "why" in kept and names_the_answer(parts["why"], game, ply, user)
-    return kept, "; ".join(reasons), reveals
+    return kept, "; ".join(reasons)
 
 
 def write(
@@ -723,13 +691,11 @@ def write(
         else:
             text = answered[ply]
         words.answers[ply] = text
-        kept, dropped, reveals = checked(parse(text), game, ply, user)
+        kept, dropped = checked(parse(text), game, ply, user)
         if kept:
             words.texts[ply] = kept
         if dropped:
             words.dropped[ply] = dropped
-        if reveals:
-            words.reveals.add(ply)
     words.cost = spent.cost(prices)
     return words
 

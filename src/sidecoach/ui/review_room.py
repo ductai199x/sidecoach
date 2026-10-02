@@ -291,7 +291,6 @@ class ReviewRoom:
                 "model": words.model,
                 "cost": cost,
                 "texts": {str(ply): parts for ply, parts in words.texts.items()},
-                "reveals": sorted(words.reveals),
             }
             shown = self._shown(saved, reviewed)
         except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"

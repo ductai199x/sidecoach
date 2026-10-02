@@ -72,8 +72,6 @@ def reading(game: ReviewedGame, user: str | None, words: review_words.ReviewWord
             if part in said:
                 shown = words.texts.get(ply, {}).get(part)
                 note = "" if shown else " (not shown)"
-                if shown and part == "why" and ply in words.reveals:
-                    note = " (shown with the answer)"
                 lines.append(f"  {part}{note}: {shown or said[part]}")
         lines.append("")
     tokens = {
