@@ -802,7 +802,12 @@ class GamePipeline:
         """
         bottom = self.bottom if bottom is None else bottom
         assert bottom is not None
-        start = chess.Board()
+        return self._reads_as(readings, None, bottom)
+
+    @staticmethod
+    def _reads_as(readings: Readings, position: chess.Board | None, bottom: Side) -> bool:
+        """`_reads_as_start`'s rule for any `position` (the start position when None)."""
+        start = chess.Board() if position is None else position
         contradictions = 0
         unknown = 0
         for r in range(8):
@@ -846,14 +851,28 @@ class GamePipeline:
             self.reconciler.bottom = bottom
             self.reconciler.user_side = bottom
         self.bootstraps += 1
-        if self.cache is not None:
-            # Last, and never in the way: an exception here -- a damaged set among the
-            # cached ones, a full disk -- left the rebuild half done (round 2, finding 9).
-            try:
-                self.cache.save(model, key=self._learned_set(model, frame, geometry, bottom))
-            except Exception:  # noqa: BLE001 - the theme simply goes unkept
-                log.warning("the learned theme was not cached", exc_info=True)
+        self._keep_look(model, frame, geometry, bottom, chess.Board())
         return True
+
+    def _keep_look(
+        self,
+        model: ThemeModel,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side,
+        position: chess.Board,
+    ) -> None:
+        """A look just learned from `frame` showing `position`, cached: replacing the set it
+        is learned again (`_learned_set`), else beside the others. Last, and never in the way:
+        an exception here -- a damaged set among the cached ones, a full disk -- left the
+        rebuild half done (round 2, finding 9)."""
+        if self.cache is None:
+            return
+        try:
+            key = self._learned_set(model, frame, geometry, bottom, position)
+            self.cache.save(model, key=key)
+        except Exception:  # noqa: BLE001 - the theme simply goes unkept
+            log.warning("the learned theme was not cached", exc_info=True)
 
     def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
         """The recogniser learned again, mid-game, when the board's look changed under it;
@@ -868,8 +887,9 @@ class GamePipeline:
         (`ThemeModel.from_position`, validated before it is used), and these readings are
         taken again with it. A board showing anything else -- another game, a dialog, a
         piece in flight -- matches no such position and is left alone. The model learned is
-        not cached: it lacks the kinds the position has lost, and the next start position
-        rebuilds and caches the whole set."""
+        cached as one learned at a start position is (`_keep_look`); it lacks the kinds the
+        position has lost, so it never replaces a set that knows them, and the next start
+        position caches the whole set."""
         rec, model, bottom, readings = self.reconciler, self.model, self.bottom, self._readings
         if rec is None or model is None or bottom is None or readings is None:
             return []
@@ -985,6 +1005,11 @@ class GamePipeline:
             self.model = learned
             self._readings = learned_readings
             self._look_lost = None
+            # Kept as a look learned at a game's start is (`_rebuild_model`), once it has read
+            # its own frame back as the position, every piece landed: unkept, an app restarted
+            # mid-game read the new look as nothing until a start position, which a puzzle
+            # never shows (round 3 audit, E11; Tai, 2026-10-02).
+            self._keep_look(learned, frame, geometry, bottom, position)
             return []
         if not stalled or not (shown or new_theme):
             # Nothing says the look changed (another board, a dialog, a story), or the game
@@ -1001,17 +1026,28 @@ class GamePipeline:
         return [BoardUnread(reason="look")]
 
     def _learned_set(
-        self, model: ThemeModel, frame: np.ndarray, geometry: BoardGeometry, bottom: Side
+        self,
+        model: ThemeModel,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side,
+        position: chess.Board | None = None,
     ) -> str | None:
-        """The cached set this start position shows again -- the same pieces on the same
-        board, learned before -- or None for a set not seen yet. Each set cached on these
-        board colours reads the frame; one that reads it as the start position is this set,
-        and the new model replaces it rather than standing beside it."""
+        """The cached set this frame shows again -- the same pieces on the same board,
+        learned before -- or None for a set not seen yet. Each set cached on these board
+        colours reads the frame; one that reads it as `position` (the start position by
+        default) is this set, and the new model replaces it rather than standing beside it
+        -- unless it knows a kind the new one does not: a look learned mid-game lacks the
+        kinds its position has lost, and replacing the whole set with it left a puzzle with
+        a queen unread (round 3 audit, E11)."""
         assert self.cache is not None
         if model.light_bg is None or model.dark_bg is None:
             return None
+        kinds = set(model.exemplar_labels)
         for key, cached in self.cache.candidates(model.light_bg, model.dark_bg):
-            if self._reads_as_start(cached.classify_frame(frame, geometry), bottom):
+            if not set(cached.exemplar_labels) <= kinds:
+                continue
+            if self._reads_as(cached.classify_frame(frame, geometry), position, bottom):
                 return key
         return None
 

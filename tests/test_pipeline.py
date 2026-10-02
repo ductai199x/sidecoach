@@ -344,6 +344,52 @@ def test_a_theme_changed_mid_game_to_a_cached_one_takes_the_cached_set(tmp_path)
     assert pipe.model is not None and pipe.model.exemplar_labels == learner.model.exemplar_labels
 
 
+def test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start(tmp_path) -> None:
+    """Round 3 audit E11 (Tai, 2026-10-02): a piece set changed mid-game was learned from the
+    game's position and used, but never cached; the app restarted mid-game read the new set as
+    nothing until a start position, which a puzzle never shows. It is cached now, as a set
+    learned at a start position is, once it has read its own frame back as the position --
+    beside the set learned at the start, which knows kinds it does not and is kept whole."""
+    from sidecoach.vision.squares import BoardGeometry
+    from sidecoach.vision.theme_cache import ThemeCache, sample_palette
+
+    cache = ThemeCache(tmp_path)
+    pipe = GamePipeline(cache=cache)
+    board, ts = _midgame(pipe, {"style": "cburnett"}, 0.0)
+    started = {key for key, _ in cache.candidates(*_palette_of(pipe, board))}
+    assert len(started) == 1, "the start position's set, cached"
+    changed = synthetic_board(board=board, highlight=board.peek(), style="pixel")
+    for i in range(10):
+        pipe.process(changed, ts, changed=i == 0)
+        ts += 0.1
+    assert pipe.model is not None and pipe.bootstraps == 1, "learned from the game's position"
+    move = chess.Move.from_uci("b8c6")
+    board.push(move)
+    later = synthetic_board(board=board, highlight=move, style="pixel")
+    assert pipe.board is not None
+    geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+    sampled = sample_palette(later, geometry)
+    assert sampled is not None
+    kept = dict(cache.candidates(*sampled))
+    assert started <= set(kept), "the whole set learned at the start is kept"
+    new = [model for key, model in kept.items() if key not in started]
+    assert len(new) == 1, "the look learned mid-game, cached"
+    # The app restarted: the cached set reads the game's next position, every piece.
+    assert GamePipeline._reads_as(new[0].classify_frame(later, geometry), board, Side.WHITE)
+    assert new[0].exemplar_labels == pipe.model.exemplar_labels
+
+
+def _palette_of(pipe: GamePipeline, board: chess.Board) -> tuple[Any, Any]:
+    from sidecoach.vision.squares import BoardGeometry
+    from sidecoach.vision.theme_cache import sample_palette
+
+    assert pipe.board is not None
+    geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
+    sampled = sample_palette(synthetic_board(board=board), geometry)
+    assert sampled is not None
+    return sampled
+
+
 def test_another_position_in_a_new_look_is_not_learned_as_the_game() -> None:
     """A board in a new theme showing another game's position: no legal move from the game
     puts its pieces there, so nothing is learned from it and the record stands."""
