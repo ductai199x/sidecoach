@@ -557,6 +557,18 @@ def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> 
     assert profiler.snapshot().insights[0] == (
         "Your biggest cost over 3 games is forks you missed: 3 moves."
     )
+    # Made again at the same strength (rederive, the background's catch-up): the line follows
+    # too -- keyed on the games and their strengths alone, it kept the stale cost (the audit of
+    # 2026-10-02).
+    for key in "abc":
+        store.save_stats(
+            "deep",
+            _game(key),
+            [_move(3, "white", phase="opening", label="blunder", loss=0.9)],
+        )
+    assert profiler.snapshot().insights[0] == (
+        "Your biggest cost over 3 games is mistakes in the opening: 3 moves."
+    )
     store.close()
 
 

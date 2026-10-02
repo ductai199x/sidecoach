@@ -358,10 +358,15 @@ def biggest_cost(store: Store) -> dict[str, Any] | None:
     return ranked[0] if ranked else None
 
 
-def cost_stamp(store: Store) -> tuple[tuple[str, str, str], ...]:
-    """What `biggest_cost` is made of, in a cheap stamp: the games it counts, each by its key,
-    the review its facts are from, and the player's side. It changes when a game's facts do."""
-    return tuple((g["key"], g["strength"], g["user_side"]) for g in _games(store, Filter()))
+def cost_stamp(store: Store) -> tuple[str | None, tuple[tuple[str, str, str], ...]]:
+    """What `biggest_cost` is made of, in a cheap stamp: the count of the saves of Stats facts
+    (`Store.stats_revision`), and the games it counts, each by its key, the review its facts are
+    from, and the player's side. It changes when a game's facts do -- made again at the same
+    strength too (rederive, the background's catch-up), which the games alone missed (the audit
+    of 2026-10-02) -- and when a game comes, goes or gains its side."""
+    return store.stats_revision(), tuple(
+        (g["key"], g["strength"], g["user_side"]) for g in _games(store, Filter())
+    )
 
 
 # ---- the ratings and the peers ---------------------------------------------------------------
