@@ -55,6 +55,13 @@ def _distance(
     return float(np.linalg.norm(a - b))
 
 
+def same_theme(
+    a_light: np.ndarray, a_dark: np.ndarray, b_light: np.ndarray, b_dark: np.ndarray
+) -> bool:
+    """Whether two palettes are one theme, by the cache's own tolerance."""
+    return _distance(a_light, a_dark, b_light, b_dark) <= MATCH_TOLERANCE
+
+
 def palette_key(light_bg: np.ndarray, dark_bg: np.ndarray) -> str:
     """A stable fingerprint for a board theme from its two square colours.
 

@@ -32,7 +32,7 @@ from sidecoach.state.reconcile import (
     highlighted_squares,
     loose_placement,
 )
-from sidecoach.vision.board_detect import BoardCandidate
+from sidecoach.vision.board_detect import BoardCandidate, refine, to_gray
 from sidecoach.vision.clock import ClockReader, ClockReading
 from sidecoach.vision.coordinates import (
     eights,
@@ -41,16 +41,18 @@ from sidecoach.vision.coordinates import (
     read_labels,
 )
 from sidecoach.vision.pieces import (
+    PIECE_MIN_FRACTION,
     CellReading,
     ThemeModel,
     looks_like_start_position,
     mark_on_empty,
+    occupancy,
     orientation_from_start,
     start_shaped,
 )
 from sidecoach.vision.result_badges import Badge, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
-from sidecoach.vision.theme_cache import ThemeCache, sample_palette
+from sidecoach.vision.theme_cache import ThemeCache, same_theme, sample_palette
 from sidecoach.vision.tracker import BoardTracker
 
 # Clocks. A reading is bottom/top relative to the board; the side at the bottom is the user,
@@ -88,6 +90,14 @@ COLD_NOTICE_S = 6.0
 # apart saying the other side is at the bottom turn the game round (`_flip_if_turned`).
 FLIP_CHECK_EVERY_S = 0.25
 CLOCK_MAX_MS = 3 * 60 * 60 * 1000  # three hours; anything above is a misread, not a clock
+# A game whose board the recogniser no longer reads -- this many cells unknown (a new theme
+# tints them all), or this many frames in a row no story explains (a new piece set read as
+# other pieces) -- has its look learned again from its own position, tried this often
+# (`_relearn_look`).
+RELEARN_UNKNOWN_CELLS = 32
+RELEARN_UNEXPLAINED_FRAMES = 2
+RELEARN_EVERY_S = 0.5
+RELEARN_HOLD_S = 0.5
 
 
 def _fit(readings: Readings) -> float:
@@ -95,6 +105,39 @@ def _fit(readings: Readings) -> float:
     nearest kind. The right set reads its own pieces well clear of any other kind."""
     margins = [cell.confidence for row in readings for cell in row if cell.kind == "piece"]
     return sum(margins) / len(margins) if margins else 0.0
+
+
+def _misreads(readings: Readings, position: chess.Board, bottom: Side) -> int:
+    """How many cells `readings` cannot show `position` on: unknown, empty where a piece
+    stands, a piece where none does, or a piece of another known kind."""
+    count = 0
+    for r in range(8):
+        for c in range(8):
+            reading = readings[r][c]
+            piece = position.piece_at(square_at(r, c, bottom))
+            if reading.kind == "unknown":
+                count += 1
+            elif piece is None:
+                count += int(reading.kind == "piece")
+            else:
+                count += int(
+                    reading.kind == "empty"
+                    or (reading.symbol is not None and reading.symbol != piece.symbol())
+                )
+    return count
+
+
+def _on_its_board(frame: np.ndarray, board: BoardCandidate) -> bool:
+    """Whether a re-fit of the lock finds the board where the lock is, to within the
+    tracker's deadband, and validated."""
+    refit = refine(to_gray(frame), board).board
+    shift = max(
+        abs(refit.region.x - board.region.x),
+        abs(refit.region.y - board.region.y),
+        abs(refit.region.x + refit.region.w - board.region.x - board.region.w),
+        abs(refit.region.y + refit.region.h - board.region.y - board.region.h),
+    )
+    return refit.fit >= 0.85 and shift <= 2
 
 
 def _plausible_ms(ms: int | None) -> int | None:
@@ -198,6 +241,11 @@ class GamePipeline:
     # whether one has stayed long enough to count as covering the board.
     _dialog_since: float | None = None
     _covered: bool = False
+    # When the look was last learned again mid-game, or tried (`_relearn_look`).
+    _relearn_tried: float | None = None
+    # The lock and the readings the look was last read broken with, and since when: it must
+    # read broken the same way for RELEARN_HOLD_S.
+    _relearn_seen: tuple[object, float] | None = None
     # The result the site's badges showed on the last read frames, and for how many; and
     # what the last read frame showed: the result and the two kings' squares.
     _badges: tuple[str, int] | None = None
@@ -259,6 +307,9 @@ class GamePipeline:
                 # second a frame on the phone).
                 self._start_on_screen = looks_like_start_position(frame, geometry)
                 self._start_checked = key
+        if self.model is not None and not self._start_on_screen:
+            # On every verified tick, changed or not: a new look must stay a moment.
+            self._relearn_look(frame, geometry, ts)
         self._start_seen = self._start_seen + 1 if self._start_on_screen else 0
         if self._should_bootstrap():
             # Decided on every verified tick, changed or not, so that a start position
@@ -764,6 +815,114 @@ class GamePipeline:
             self.reconciler.user_side = bottom
         self.bootstraps += 1
         return True
+
+    def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> None:
+        """The recogniser learned again, mid-game, when the board's look changed under it.
+
+        A theme or a piece set changed mid-game left the rest of the game unread, with no
+        event: the recogniser was rebuilt only from a start position, and a new theme reads
+        as unknown almost everywhere, a new set as other pieces (round 2, finding 2). The
+        game's own position says what is on the board: the record's position, or one legal
+        move on from it (played before the new look was read). One whose occupied squares
+        are the frame's, which the recogniser reads as neither it nor anything near it, is
+        learned from (`ThemeModel.from_position`, validated before it is used), and these
+        readings are taken again with it. A board showing anything else -- another game,
+        a dialog, a piece in flight -- matches no such position and is left alone. The model
+        learned is not cached: it lacks the kinds the position has lost, and the next start
+        position rebuilds and caches the whole set."""
+        rec, model, bottom, readings = self.reconciler, self.model, self.bottom, self._readings
+        if rec is None or model is None or bottom is None or readings is None:
+            return
+        if not rec.started or rec.finished or start_shaped(readings):
+            return  # a start position is the bootstrap's to learn from, and to cache
+        unknown = sum(1 for row in readings for reading in row if reading.kind == "unknown")
+        sampled = sample_palette(frame, geometry)
+        # A new theme is new square colours: half the board unknown on the colours the
+        # recogniser knows is a lock a few pixels off its board, before the re-fit caught up
+        # (the geometry sweep's seed 175), and a look learned there read nothing after.
+        new_theme = (
+            unknown >= RELEARN_UNKNOWN_CELLS
+            and sampled is not None
+            and model.light_bg is not None
+            and model.dark_bg is not None
+            and not same_theme(*sampled, model.light_bg, model.dark_bg)
+        )
+        dragging = any(reading.hover for row in readings for reading in row)
+        if dragging or (not new_theme and rec.unexplained_frames < RELEARN_UNEXPLAINED_FRAMES):
+            self._relearn_seen = None
+            return
+        # Only a look that stays broken, read the same on one lock for RELEARN_HOLD_S: a new
+        # look stays, while a piece in flight, a premove's ghost or a lock a few pixels off
+        # for a frame pass. Taken at two or three frames, a capture's animation was learned
+        # as the new look, and the next moves went unread (the stress sweep's seeds 59, 60,
+        # 194 and the geometry sweep's 133).
+        seen = (
+            self._readings_key,
+            tuple((reading.kind, reading.symbol) for row in readings for reading in row),
+        )
+        if self._relearn_seen is None or self._relearn_seen[0] != seen:
+            self._relearn_seen = (seen, ts)
+            return
+        if ts - self._relearn_seen[1] < RELEARN_HOLD_S:
+            return
+        if self._relearn_tried is not None and ts - self._relearn_tried < RELEARN_EVERY_S:
+            return
+        self._relearn_tried = ts
+        # The recogniser reads the frame as a position of this game, earlier or one move on:
+        # a move being taken back or browsed, a story pending -- not a new look (the stress
+        # sweep's seeds 16, 22 and 23: a rook's capture shown undone for two frames).
+        history = rec.board.copy()
+        base = history.copy(stack=False)
+        positions = [base]
+        for move in base.legal_moves:
+            if move.promotion not in (None, chess.QUEEN):
+                continue
+            after = base.copy(stack=False)
+            after.push(move)
+            positions.append(after)
+        earlier: list[chess.Board] = []
+        while history.move_stack:
+            history.pop()
+            earlier.append(history.copy(stack=False))
+        if any(_misreads(readings, p, bottom) < 2 for p in positions + earlier):
+            return
+        # Learned only on a lock that sits on its board to the pixel: a board in the middle
+        # of a nudge, the lock a few pixels off it, read its squares mixed and half the
+        # board as a new theme, and a look learned there read nothing after (the geometry
+        # sweep's seed 25).
+        if self.board is None or not _on_its_board(frame, self.board):
+            return
+        occupied = occupancy(frame, geometry) >= PIECE_MIN_FRACTION
+        for position in positions:
+            expected = np.array(
+                [[position.piece_at(square_at(r, c, bottom)) is not None for c in range(8)]
+                 for r in range(8)]
+            )  # fmt: skip
+            if (occupied != expected).any():
+                continue
+            # A set learned before on these colours, whole, that reads the position.
+            cached_reads = [
+                (cached, cached_readings)
+                for _key, cached in (
+                    self.cache.candidates(*sampled)
+                    if self.cache is not None and sampled is not None
+                    else []
+                )
+                if _misreads(
+                    cached_readings := cached.classify_frame(frame, geometry), position, bottom
+                )
+                <= 1
+            ]
+            if cached_reads:
+                self.model, self._readings = cached_reads[0]
+                return
+            learned = ThemeModel.from_position(frame, geometry, bottom, position)
+            if learned is None:
+                continue
+            learned.rank_labels = learn_rank_labels(frame, geometry, bottom) or model.rank_labels
+            self.model = learned
+            self._readings = learned.classify_frame(frame, geometry)
+            return
 
     def _learned_set(
         self, model: ThemeModel, frame: np.ndarray, geometry: BoardGeometry, bottom: Side

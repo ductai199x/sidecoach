@@ -1452,7 +1452,30 @@ class ThemeModel:
         `_start_reads_as_start`), or square colours that cannot be told apart -- or when there
         is no net to embed with (a broken install). The kings and queens have one cell each,
         and what a start frame shows is every piece's reference for the game."""
-        start = chess.Board()
+        return cls._learn(frame, geometry, bottom, chess.Board())
+
+    @classmethod
+    def from_position(
+        cls, frame: np.ndarray, geometry: BoardGeometry, bottom: Side, position: chess.Board
+    ) -> ThemeModel | None:
+        """The recogniser learned from a frame known to show `position`: the game's own
+        board when the theme or the piece set changed mid-game (round 2, finding 2). Nothing
+        else vouches for the frame, so it must show pieces exactly where `position` puts them
+        and none elsewhere, as the new look's own silhouettes read them, besides the start
+        frame's checks. A kind the position no longer holds (a queen traded) has no
+        exemplar until the next start position."""
+        return cls._learn(frame, geometry, bottom, position, check_occupancy=True)
+
+    @classmethod
+    def _learn(
+        cls,
+        frame: np.ndarray,
+        geometry: BoardGeometry,
+        bottom: Side,
+        start: chess.Board,
+        *,
+        check_occupancy: bool = False,
+    ) -> ThemeModel | None:
         net = embedder()
         if net is None:
             return None
@@ -1474,6 +1497,8 @@ class ThemeModel:
             for c in range(8):
                 sil = silhouette(crops[r][c], colours=colours, palette=palette)
                 piece = start.piece_at(square_at(r, c, bottom))
+                if check_occupancy and (sil.fraction >= PIECE_MIN_FRACTION) != (piece is not None):
+                    return None  # the frame is not this position
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
                     continue
@@ -1484,6 +1509,8 @@ class ThemeModel:
         model.piece_colours = colours
         model.palette = palette
         model.exemplars = [_fuse(symbol, sils) for symbol, sils in samples.items()]
+        if not light_bgs or not dark_bgs:
+            return None  # no empty square of a colour to learn it from
         model.light_bg = np.median(np.array(light_bgs), axis=0)
         model.dark_bg = np.median(np.array(dark_bgs), axis=0)
         gap = float(np.linalg.norm(model.light_bg - model.dark_bg))
