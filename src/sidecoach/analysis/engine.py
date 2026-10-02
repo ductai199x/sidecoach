@@ -90,6 +90,9 @@ class Engine:
     _interruptible: bool = field(default=False, init=False, repr=False)
     _stopped: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _search: chess.engine.SimpleAnalysisResult | None = field(default=None, init=False, repr=False)
+    # Closed by its owner: a search under way (a request's next one, a crash's restart)
+    # does not start another process nobody would close. `open` opens it again.
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -101,11 +104,17 @@ class Engine:
     @property
     def name(self) -> str:
         """What the engine calls itself, for the doctor and the logs."""
-        self.open()
+        self._start()
         assert self._engine is not None
         return str(self._engine.id.get("name", self.path.name))
 
     def open(self) -> None:
+        self._closed = False
+        self._start()
+
+    def _start(self) -> None:
+        if self._closed:
+            raise EngineUnavailable("the engine was closed")
         if self._engine is not None:
             return
         popen: dict[str, Any] = {}
@@ -149,6 +158,11 @@ class Engine:
                 self._engine.configure(options)
 
     def close(self) -> None:
+        self._closed = True
+        self._drop()
+
+    def _drop(self) -> None:
+        """The process gone (a crash's restart starts another; `close` does not)."""
         engine, self._engine = self._engine, None
         if engine is not None:
             with contextlib.suppress(Exception):  # a dead engine needs no goodbye
@@ -257,14 +271,14 @@ class Engine:
         on_depth: Callable[[list[chess.engine.InfoDict]], None] | None = None,
     ) -> list[chess.engine.InfoDict]:
         for attempt in (1, 2):
-            self.open()
+            self._start()
             assert self._engine is not None
             try:
                 if self._interruptible or on_depth is not None:
                     return self._streamed(board, limit, multipv, on_depth)
                 return list(self._engine.analyse(board, limit, multipv=multipv))
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
-                self.close()
+                self._drop()
                 if attempt == 2:
                     raise EngineUnavailable(f"engine died twice on {board.fen()}: {exc}") from exc
         raise AssertionError("unreachable")
