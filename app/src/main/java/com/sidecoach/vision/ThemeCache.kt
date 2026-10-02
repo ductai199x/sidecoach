@@ -61,6 +61,10 @@ object ThemeCache {
     /** Palettes closer than this (in BGR) are treated as the same theme. */
     const val MATCH_TOLERANCE = 20.0
 
+    /** Whether two palettes are one theme, by the cache's own tolerance (`theme_cache.same_theme`). */
+    fun sameTheme(aLight: DoubleArray, aDark: DoubleArray, bLight: DoubleArray, bDark: DoubleArray): Boolean =
+        distance(aLight, aDark, bLight, bDark) <= MATCH_TOLERANCE
+
     private fun distance(
         aLight: DoubleArray, aDark: DoubleArray, bLight: DoubleArray, bDark: DoubleArray,
     ): Double {

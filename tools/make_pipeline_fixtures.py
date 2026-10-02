@@ -555,6 +555,19 @@ def new_theme_new_game() -> list[dict]:
     return states
 
 
+def look_changed_mid_game(**look) -> list[dict]:
+    """`test_a_look_changed_mid_game_is_learned_from_the_game_s_own_position` (round 2,
+    finding 2): three plies on green with cburnett, then the board's theme or the piece set
+    changed (`look`) and held still for a second, unchanged ticks after the first, and the
+    game played on in the new look: learned again from the game's own position, its moves
+    followed, no new game."""
+    board = chess.Board()
+    states = [_shown(board, 3), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
+    states.append(dict(_shown(board, 10, highlight=board.peek(), **look), _changed=[True] + [False] * 9))
+    states += _moves(board, ("Nc6", "Bb5"), repeat=3, **look)
+    return states
+
+
 def flipped_before_the_first_move() -> list[dict]:
     """`test_board_flipped_before_the_first_move_keeps_the_game`: the pre-game board watched as
     White, then paired as Black: the board flips before a move, and the same game goes on,
@@ -1056,6 +1069,9 @@ SCENARIOS = {
         0.04,
     ),
     "new-theme-new-game": new_theme_new_game,
+    # Round 2, finding 2: a theme, then a piece set, changed mid-game.
+    "theme-changed-mid-game": lambda: look_changed_mid_game(theme="brown"),
+    "set-changed-mid-game": lambda: look_changed_mid_game(style="pixel"),
     "flipped-before-a-move": flipped_before_the_first_move,
     "reset-one-tick": reset_then_one_changed_tick,
     "lock-moves": the_lock_moves,
@@ -1093,6 +1109,8 @@ COUNT_READS = {"puzzle-read-once"}
 # the shortcut the other scenarios hold it to adds nothing to, and a replay costs a minute.
 READ_ONCE = {
     "new-theme-new-game",
+    "theme-changed-mid-game",
+    "set-changed-mid-game",
     "flipped-before-a-move",
     "reset-one-tick",
     "lock-moves",
@@ -1141,6 +1159,12 @@ SHORTCUT_SWEEP = {
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
+    "theme-changed-mid-game": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
+    ),
+    "set-changed-mid-game": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
+    ),
     "new-theme-new-game": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "d4", "Nf6"]
         and any(line.startswith("GameEnded * new game started") for line in lines)
