@@ -24,7 +24,6 @@ from sidecoach.analysis.score import (
     is_decisive,
     is_only_move,
     label_move,
-    material_won,
     move_accuracy,
     position_score,
     severity,
@@ -366,9 +365,9 @@ def test_brilliant_is_a_sound_sacrifice_that_was_needed() -> None:
     assert _label(0.0, is_best=True, sacrifice=True, before_score=0.05) is Label.BEST
 
 
-def test_a_miss_is_a_tactic_or_a_mate_let_go() -> None:
-    # The best move won material or mated, and the move played let it go: a miss, whatever
-    # the size of the loss, from an inaccuracy to a blunder.
+def test_a_miss_is_a_chance_to_punish_let_go() -> None:
+    # The opponent's move before was an error, and the move played let what it gave go: a
+    # miss, whatever the size of the loss, from an inaccuracy to a blunder.
     assert _label(0.06, chance=True) is Label.MISS
     assert _label(0.15, chance=True) is Label.MISS
     assert _label(0.90, chance=True) is Label.MISS
@@ -384,24 +383,6 @@ def test_a_miss_is_a_tactic_or_a_mate_let_go() -> None:
     assert _label(0.0, mate_allowed=True, before_score=0.3, is_best=True) is Label.BEST
 
 
-def test_what_a_line_wins_is_counted_after_the_replies() -> None:
-    # 1. e4 d5: exd5 Qxd5 is a pawn each, nothing won.
-    board = chess.Board()
-    for san in ("e4", "d5"):
-        board.push_san(san)
-    assert material_won(board, ["e4d5", "d8d5"]) == 0
-    # A knight left en prise and taken, the reply something else: three pawns.
-    hanging = chess.Board("4k3/8/8/3n4/8/8/8/3QK3 w - - 0 1")
-    assert material_won(hanging, ["d1d5", "e8f8"]) == 3
-    # Taking back what was just taken is a trade, not a win.
-    traded = chess.Board("4k3/8/8/3n4/8/2N5/8/4K3 b - - 0 1")
-    traded.push_san("Nxc3")
-    assert traded.turn == chess.WHITE and material_won(traded, ["e1d2", "c3d5"]) == 0
-    # A line that mates wins everything.
-    mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
-    assert material_won(mate, ["a1a8"]) == 99
-
-
 def _judged(before: chess.Board, move: str, before_line: Line, after_line: Line) -> MoveAssessment:
     after = before.copy()
     after.push_uci(move)
@@ -410,14 +391,65 @@ def _judged(before: chess.Board, move: str, before_line: Line, after_line: Line)
     return annotator.assess_move("g", before, chess.Move.from_uci(move), 1)
 
 
-def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
+def _answered(fen: str, theirs: str, mine: str, scores: tuple[Line, Line, Line]) -> MoveAssessment:
+    """The opponent's move `theirs` from `fen`, then the player's `mine`, judged in order by one
+    annotator: the lines of the three positions are `scores`."""
+    first = chess.Board(fen)
+    second = first.copy()
+    second.push_uci(theirs)
+    third = second.copy()
+    third.push_uci(mine)
+    fake = FakeEngine(
+        {b.fen(): [line] for b, line in zip((first, second, third), scores, strict=True)}
+    )
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    annotator.assess_move("g", first, chess.Move.from_uci(theirs), 1)
+    return annotator.assess_move("g", second, chess.Move.from_uci(mine), 2)
+
+
+def test_a_miss_is_failing_to_punish_the_opponents_mistake() -> None:
+    """Chess.com's miss, Tai's reading (2026-10-02): the opponent's move before was an error
+    and the reply let what it gave go -- whatever the best line would have won. A loss after
+    a sound move is labelled by its size, though the best line wins a piece: no "a tactic is
+    two pawns within eight plies" rule."""
+    # Pawn ending: black's ...e6 throws away an eighth of the game, white's best is the quiet
+    # Kd2, and Kf1 gives it back. No material in the line: a miss all the same.
+    pawns = "4k3/4p3/8/8/8/8/4P3/4K3 b - - 0 1"
+    erred = (
+        Line(moves=["e8d7"], depth=6, expected_score=0.47),
+        Line(moves=["e1d2"], depth=6, expected_score=0.65),
+        Line(moves=["e8d7"], depth=6, expected_score=0.47),
+    )
+    assert _answered(pawns, "e7e6", "e1f1", erred).label is Label.MISS
+    # Black's move costs nothing (the knight was lost anyway); white's best takes the knight,
+    # and Ke2 lets it go: a mistake by its size, not a miss.
+    knight = "4k3/8/8/3n4/8/8/8/3QK3 b - - 0 1"
+    sound = (
+        Line(moves=["e8f8"], depth=6, expected_score=0.35),
+        Line(moves=["d1d5", "f8e7"], depth=6, expected_score=0.65),
+        Line(moves=["d5f4"], depth=6, expected_score=0.5),
+    )
+    assert _answered(knight, "e8f8", "e1e2", sound).label is Label.MISTAKE
+
+
+def test_a_forced_mate_let_go_and_one_walked_into() -> None:
     """A mate is 1.0 on the curve and a thousand centipawns 0.975: a mate in four let go for
     a won ending read as an inaccuracy at most, and a move into a forced mate in a lost
-    position as good (the engine review, 2026-10-01)."""
+    position as good (the engine review, 2026-10-01). Let go after the opponent's error it is
+    a miss; with no error before it, it is no chance to punish (Tai, 2026-10-02) and is
+    labelled by its loss, flagged however small."""
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
     mating = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
     still_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
-    missed = _judged(board, "h2h3", mating, still_won)
+    let_go = _judged(board, "h2h3", mating, still_won)
+    assert let_go.label is Label.INACCURACY, let_go
+    # Black's Kg8 walks into the mate (a blunder), and h3 lets it go.
+    walked_in = (
+        Line(moves=["f8e8"], depth=6, expected_score=0.4),
+        mating,
+        still_won,
+    )
+    missed = _answered("5k2/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", "f8g8", "h2h3", walked_in)
     assert missed.label is Label.MISS, missed
     # The other side: worse but holding, and the move lets a mate in.
     lost = Line(moves=["g8f8"], depth=6, expected_score=0.2, score_cp=-400)
@@ -1583,7 +1615,8 @@ def test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it() -> No
     board.push_san("e4")
     withdrawn = annotator.assess_move("g", board, board.parse_san("a6"), 2)
     replacement = annotator.assess_move("g", board, board.parse_san("e5"), 2)
-    assert withdrawn.label is Label.BLUNDER
+    # The withdrawn a6 let the opponent's blunder go: a miss (Tai, 2026-10-02).
+    assert withdrawn.label is Label.MISS
     assert replacement.label is Label.GREAT, replacement.label
 
 

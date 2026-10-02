@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.config import CoachSettings
 from sidecoach.events import Label, Line, Severity
 
@@ -186,9 +187,11 @@ def label_move(
       the game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does
       not, calling 1...f5 a mistake.
     - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent":
-      the best move won material or mated (`chance`, read off its line by the annotator)
-      and the move played gave ground. It names the move whatever the size of the loss; a
-      forced mate let go (`mate_missed`) is one even when the move still wins.
+      the opponent's move before was an error (a mistake or a blunder: `chance`, read by
+      `verdict`), and the move played let what it gave go -- it gave ground, or let a forced
+      mate go (`mate_missed`) even while it still wins. It names the move whatever the size
+      of the loss (Tai, 2026-10-02: chess.com's meaning, failing to punish the opponent's
+      mistake; no "two pawns within eight plies" tactic rule).
     - Great, "a move that altered the course of the game": the best move where every other
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
@@ -232,49 +235,86 @@ def label_move(
     return Label.MISTAKE if verdict is Severity.MISTAKE else Label.INACCURACY
 
 
-# What a line wins, in pawns: the piece values every club player counts by.
-PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
-# A line that wins this much is a tactic to find (the coach's facts count the same).
-TACTIC_GAIN = 2
-# How far into a line a tactic is looked for: four moves each.
-TACTIC_PLIES = 8
+@dataclass(frozen=True)
+class Previous:
+    """The move before, as far as the next move's label needs it: what it cost its mover
+    (the opponent), where it landed and whether it captured."""
+
+    loss: float
+    to_square: chess.Square
+    captured: bool
 
 
-def _balance(board: chess.Board, us: chess.Color) -> int:
-    return sum(
-        PIECE_VALUES.get(piece.piece_type, 0) * (1 if piece.color == us else -1)
-        for piece in board.piece_map().values()
+def verdict(
+    before: chess.Board,
+    move: chess.Move,
+    before_lines: Sequence[Line],
+    after_lines: Sequence[Line],
+    *,
+    loss: float,
+    before_score: float,
+    decisive: bool,
+    in_book: bool,
+    sacrifice: bool,
+    previous: Previous | None,
+    thresholds: Thresholds,
+) -> Label:
+    """The label of `move` from `before`, read off the two positions' measured lines: the
+    annotator's as it judges a move, and a saved review's made again from what it kept
+    (`game_review.relabel`), so the two cannot drift. `previous`: the move before, None when
+    it is not known (the game's first move, or a move that did not lead here)."""
+    after = before.copy(stack=False)
+    after.push(move)
+    best = before_lines[0].moves if before_lines else []
+    erred = previous.loss if previous is not None else 0.0
+    captures = before.is_capture(move)
+    # Taking back on the square the opponent just captured on. Taking a piece that merely
+    # moved there is not obvious: that is how a blunder gets punished.
+    recapture = (
+        previous is not None
+        and previous.captured
+        and captures
+        and move.to_square == previous.to_square
     )
-
-
-def material_won(board: chess.Board, moves: Sequence[str], plies: int = TACTIC_PLIES) -> int:
-    """What the side to move wins over the first `plies` of `moves` (UCI), in pawns, counted
-    after the opponent's replies; a line that mates wins everything (99). Material the
-    opponent has just taken, which the side to move is owed back, is not won: taking back is
-    a trade (read from the board's moves; a board without them owes nothing)."""
-    us = board.turn
-    base = _balance(board, us)
-    back = board.copy()
-    while back.move_stack:
-        move = back.pop()
-        if not back.is_capture(move):
-            break
-        base = max(base, _balance(back, us))
-    at = board.copy(stack=False)
-    best = 0
-    for i, uci in enumerate(moves[:plies]):
-        try:
-            move = chess.Move.from_uci(uci)
-        except ValueError:
-            break
-        if move not in at.legal_moves:
-            break
-        at.push(move)
-        if at.is_checkmate():
-            return 99 if at.turn != us else best
-        if i % 2 == 1:
-            best = max(best, _balance(at, us) - base)
-    return best
+    # A capture nobody can take back is a grab, not a find; a king's capture always is.
+    # Taking back is read by the rules: a piece guarded only by one pinned to its own king
+    # is taken for nothing.
+    free_grab = captures and not exchange.can_retake(before, move)
+    obvious = recapture or free_grab or before.legal_moves.count() == 1
+    top = before_lines[0] if before_lines else None
+    after_top = after_lines[0] if after_lines else None
+    # A forced mate the best move had, and the move played let go; one the move walks
+    # into. The mates are the lines' own: the curve puts a thousand centipawns a fortieth
+    # of a game below a mate, and a mate in four let go read as an inaccuracy.
+    mating = top is not None and top.mate is not None and top.mate > 0
+    mate_missed = (
+        mating
+        and not after.is_checkmate()
+        and not (after_top is not None and after_top.mate is not None and after_top.mate < 0)
+    )
+    mate_allowed = (
+        after_top is not None
+        and after_top.mate is not None
+        and after_top.mate > 0
+        and not (top is not None and top.mate is not None and top.mate < 0)
+    )
+    return label_move(
+        loss,
+        thresholds,
+        is_best=bool(best) and best[0] == move.uci(),
+        in_book=in_book,
+        decisive=decisive,
+        sacrifice=sacrifice,
+        before_score=before_score,
+        second_score=before_lines[1].expected_score if len(before_lines) > 1 else None,
+        opponent_blundered=erred >= thresholds.blunder,
+        # A chance to punish: the opponent's move before was a mistake or a blunder, and
+        # what it gave is the player's to take (Tai, 2026-10-02: chess.com's miss).
+        chance=erred >= thresholds.mistake,
+        mate_missed=mate_missed,
+        mate_allowed=mate_allowed,
+        obvious=obvious,
+    )
 
 
 # Per-move accuracy: 100 for no loss, falling off exponentially with the drop in winning

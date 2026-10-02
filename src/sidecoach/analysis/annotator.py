@@ -22,21 +22,20 @@ from typing import Protocol
 
 import chess
 
-from sidecoach.analysis import exchange, motifs
+from sidecoach.analysis import motifs
 from sidecoach.analysis.computed import Computed
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines
 from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import (
-    TACTIC_GAIN,
+    Previous,
     Thresholds,
     eval_loss,
     is_decisive,
     is_only_move,
-    label_move,
-    material_won,
     move_accuracy,
     position_score,
     severity,
+    verdict,
 )
 from sidecoach.analysis.threats import AIM_DEPTH, aim_lines, threat_moves
 from sidecoach.analysis.traps import TRAP_DEPTH, trap_lines
@@ -425,58 +424,20 @@ class GameAnnotator:
         if previous is not None and (previous[0] != game_id or previous[1] != before.epd()):
             # Another game, or a move that did not lead here: the move before is unknown.
             previous = None
-        erred = previous[2] if previous is not None else 0.0
-        # Taking back on the square the opponent just captured on. Taking a piece that
-        # merely moved there is not obvious: that is how a blunder gets punished.
-        recapture = (
-            previous is not None
-            and previous[4]
-            and before.is_capture(move)
-            and move.to_square == previous[3]
-        )
-        # A capture nobody can take back is a grab, not a find; a king's capture always is.
-        # Taking back is read by the rules: a piece guarded only by one pinned to its own king
-        # is taken for nothing.
-        free_grab = before.is_capture(move) and not exchange.can_retake(before, move)
-        obvious = recapture or free_grab or before.legal_moves.count() == 1
-        top = measured_before.lines[0] if measured_before.lines else None
-        after_top = measured_after.lines[0] if measured_after.lines else None
-        # A forced mate the best move had, and the move played let go; one the move walks
-        # into. The mates are the lines' own: the curve puts a thousand centipawns a fortieth
-        # of a game below a mate, and a mate in four let go read as an inaccuracy.
-        mating = top is not None and top.mate is not None and top.mate > 0
-        mate_missed = (
-            mating
-            and not after.is_checkmate()
-            and not (after_top is not None and after_top.mate is not None and after_top.mate < 0)
-        )
-        mate_allowed = (
-            after_top is not None
-            and after_top.mate is not None
-            and after_top.mate > 0
-            and not (top is not None and top.mate is not None and top.mate < 0)
-        )
-        # What the best move had to find: a mate, material won, or -- after the opponent's
-        # error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
-        # to punish the opponent").
-        won = material_won(before, top.moves) if top is not None else 0
-        chance = mating or won >= TACTIC_GAIN or (erred >= self.thresholds.mistake and won >= 1)
-        label = label_move(
-            loss,
-            self.thresholds,
-            is_best=bool(best) and best[0] == move.uci(),
-            in_book=self._in_book(after),
-            decisive=measured_before.decisive,
-            sacrifice=any(tag.name == "sacrifice" for tag in tags),
+        label = verdict(
+            before,
+            move,
+            measured_before.lines,
+            measured_after.lines,
+            loss=loss,
             before_score=measured_before.score,
-            second_score=(
-                measured_before.lines[1].expected_score if len(measured_before.lines) > 1 else None
+            decisive=measured_before.decisive,
+            in_book=self._in_book(after),
+            sacrifice=any(tag.name == "sacrifice" for tag in tags),
+            previous=(
+                Previous(previous[2], previous[3], previous[4]) if previous is not None else None
             ),
-            opponent_blundered=erred >= self.thresholds.blunder,
-            chance=chance,
-            mate_missed=mate_missed,
-            mate_allowed=mate_allowed,
-            obvious=obvious,
+            thresholds=self.thresholds,
         )
         self._assessed[ply] = (
             game_id,
