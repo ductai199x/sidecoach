@@ -21,6 +21,7 @@ by CORS, because the bundled frontend calls the sidecar cross-origin.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import socket
@@ -1089,9 +1090,14 @@ def make_engine(
     )
 
 
-def _attached_port(settings: Settings, host: str) -> int | None:
-    """The port of a sidecar already serving this data directory, if its lock file names
-    a live process that answers /api/health; else None (and a stale lock is removed)."""
+def _token_digest(token: str) -> str:
+    """What the lock file keeps of the token: enough to match it, not to use it."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _lock_owner(settings: Settings, host: str) -> dict[str, Any] | None:
+    """The lock file's sidecar (port, pid, token digest) when it names a live process that
+    answers /api/health; else None (and a stale lock is removed)."""
     lock = settings.data_dir / LOCK_FILE
     if not lock.exists():
         return None
@@ -1105,12 +1111,37 @@ def _attached_port(settings: Settings, host: str) -> int | None:
                 conn.sendall(b"GET /api/health HTTP/1.0\r\nHost: x\r\n\r\n")
                 head = conn.recv(64)
             if head.startswith(b"HTTP/1.") and b" 200" in head:
-                return port
+                return {"port": port, "pid": pid, "token": str(info.get("token") or "")}
     except Exception:  # noqa: BLE001 - any doubt means no attach
         pass
     with contextlib.suppress(OSError):
         lock.unlink()
     return None
+
+
+def _attached_port(settings: Settings, host: str, token: str | None = None) -> int | None:
+    """The port of a sidecar already serving this data directory; with `token`, only one
+    that takes it. A shell relaunched soon after its predecessor died found that one's
+    sidecar still up (it leaves within PARENT_CHECK_S), attached, and every call was 401:
+    that sidecar wants the old shell's token."""
+    owner = _lock_owner(settings, host)
+    if owner is None:
+        return None
+    if token is not None and owner["token"] != _token_digest(token):
+        return None
+    return int(owner["port"])
+
+
+def _wait_for_exit(pid: int, timeout: float) -> bool:
+    """Whether process `pid` is gone within `timeout` seconds."""
+    import psutil
+
+    deadline = time.monotonic() + timeout
+    while psutil.pid_exists(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def _watch_parent(pid: int, stop: Any, lock: Path | None = None) -> None:
@@ -1162,10 +1193,15 @@ def run_server(
     import uvicorn
 
     if announce:
-        attached = _attached_port(settings, host)
+        attached = _attached_port(settings, host, token)
         if attached is not None:
             print(json.dumps({"port": attached, "attached": True}), flush=True)
             return
+        # A sidecar of another token: a dead shell's, on its way out (its parent watch);
+        # wait for it, so this one takes the lock and the data directory alone.
+        owner = _lock_owner(settings, host)
+        if owner is not None:
+            _wait_for_exit(int(owner["pid"]), PARENT_CHECK_S * 3 + 1.0)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -1199,7 +1235,10 @@ def run_server(
     if other is None:
         with contextlib.suppress(OSError):
             lock.parent.mkdir(parents=True, exist_ok=True)
-            lock.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+            lock.write_text(
+                json.dumps({"port": port, "pid": os.getpid(), "token": _token_digest(token)}),
+                encoding="utf-8",
+            )
     else:
         # A development panel beside the app, on the same data directory: the app's
         # lock names the app's sidecar and stays so, or the shell attaches to nothing.

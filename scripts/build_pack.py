@@ -104,6 +104,12 @@ def manifest(tag: str, versions: dict[str, str]) -> dict:
     }
 
 
+def needs_bump(old: dict, new: dict) -> bool:
+    """New wheels under the version already shipped: an installed pack of that version is
+    taken as current (`gpu.install` skips it), so the new wheels would never reach anyone."""
+    return bool(old) and old.get("version") == new["version"] and old.get("wheels") != new["wheels"]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--check", action="store_true", help="compare with the shipped manifests")
@@ -123,6 +129,13 @@ def main() -> int:
         if same:
             continue
         changed += 1
+        if needs_bump(old, m):
+            print(
+                f"  the wheels changed but the version is still {PACK_VERSION}: raise "
+                "PACK_VERSION here and in sidecoach/setup/gpu.py, or no installed pack updates",
+                file=sys.stderr,
+            )
+            return 1
         if not args.check:
             path.write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
             print(f"  -> {path}")

@@ -159,6 +159,33 @@ def detect() -> dict[str, Any]:
     return out
 
 
+_detected: dict[str, Any] = {"at": -1e9, "value": None}
+DETECT_MAX_AGE = 3.0
+
+
+def detect_recent(max_age: float = DETECT_MAX_AGE) -> dict[str, Any]:
+    """`detect`, reused for a few seconds: NVML costs ~20 ms a call and the setup page's
+    status (which asked it twice) is polled twice a second while a fetch runs."""
+    import time
+
+    now = time.monotonic()
+    value: dict[str, Any] | None = _detected["value"]
+    if value is None or now - _detected["at"] > max_age:
+        value = detect()
+        _detected.update({"at": now, "value": value})
+    return dict(value)
+
+
+def _offset(progress: Any, base: int, total: int) -> Any:
+    """A wheel's download progress as the whole pack's."""
+
+    def report(done: int, _total: int | None) -> None:
+        if progress:
+            progress(base + done, total)
+
+    return report
+
+
 def packs_dir(settings: Settings) -> Path:
     return settings.data_dir / "packs" / "cuda"
 
@@ -240,35 +267,40 @@ def install(settings: Settings, progress: Any = None) -> Path:
     target = packs_dir(settings) / version
     if (target / "site-packages").exists():
         return target
+    # The staging folder is kept across a failure, a Cancel or a kill: the wheels already
+    # unpacked are marked done and the one under way resumes from its .part (about 1.5 GB
+    # all told; it started over from nothing each time). `installed` never takes it.
     staging = packs_dir(settings) / f"{version}.staging"
-    if staging.exists():
-        shutil.rmtree(staging)
     wheels_dir = staging / "wheels"
+    marks = staging / "unpacked"
     site = staging / "site-packages"
-    site.mkdir(parents=True)
+    site.mkdir(parents=True, exist_ok=True)
+    marks.mkdir(parents=True, exist_ok=True)
     total = pack_size(m)
     done_before = 0
-    try:
-        for wheel in m["wheels"]:
-            base = done_before
-
-            def report(done: int, _total: int | None, base: int = base) -> None:
-                if progress:
-                    progress(base + done, total)
-
-            path = download(
-                wheel["url"], wheels_dir / wheel["filename"], report, wheel.get("sha256")
-            )
-            size = int(wheel.get("size") or path.stat().st_size)
-            unpack_wheel(path, site)
-            path.unlink()
+    for wheel in m["wheels"]:
+        size = int(wheel.get("size") or 0)
+        mark = marks / f"{wheel['filename']}.{wheel.get('sha256') or 'any'}"
+        if mark.exists():
             done_before += size
-        shutil.rmtree(wheels_dir, ignore_errors=True)
-        (staging / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
-        staging.replace(target)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)  # nothing half-done is left behind
-        raise
+            if progress:
+                progress(done_before, total)
+            continue
+        path = download(
+            wheel["url"],
+            wheels_dir / wheel["filename"],
+            _offset(progress, done_before, total),
+            wheel.get("sha256"),
+        )
+        size = size or path.stat().st_size
+        unpack_wheel(path, site)
+        mark.touch()
+        path.unlink()
+        done_before += size
+    shutil.rmtree(wheels_dir, ignore_errors=True)
+    shutil.rmtree(marks, ignore_errors=True)
+    (staging / "manifest.json").write_text(json.dumps(m, indent=2), encoding="utf-8")
+    staging.replace(target)
     return target
 
 
@@ -325,7 +357,7 @@ def status(settings: Settings) -> dict[str, Any]:
     pack = installed(settings)
     return {
         "mode": settings.gpu.mode,
-        "gpu": detect(),
+        "gpu": detect_recent(),
         "installed": str(pack) if pack else None,
         "active": dict(_activated),
         "manifest": manifest_source(),
@@ -339,7 +371,7 @@ def pack_item(settings: Settings) -> Any:
 
     if settings.gpu.mode == "cpu":
         return None
-    gpu = detect()
+    gpu = detect_recent()
     if not gpu.get("eligible"):
         return None
     try:

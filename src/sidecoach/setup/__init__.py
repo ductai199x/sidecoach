@@ -16,12 +16,12 @@ import contextlib
 import csv
 import hashlib
 import io
-import json
 import os
 import platform
 import shutil
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -42,7 +42,15 @@ KOKORO_FILES = {
         28_214_398,
     ),
 }
-STOCKFISH_API = "https://api.github.com/repos/official-stockfish/Stockfish/releases/latest"
+# The release the app takes, pinned as the phone (tools/fetch_stockfish.py) and the tests
+# are: "latest" moved under them, a renamed asset broke new installs, and the API that
+# named it is rate-limited for anonymous callers. The download URL needs no API call.
+STOCKFISH_TAG = "sf_19"
+STOCKFISH_RELEASES = "https://github.com/official-stockfish/Stockfish/releases/download"
+
+
+def stockfish_url(name: str, tag: str = STOCKFISH_TAG) -> str:
+    return f"{STOCKFISH_RELEASES}/{tag}/{name}"
 
 
 def stockfish_assets(system: str | None = None, machine: str | None = None) -> tuple[str, ...]:
@@ -84,6 +92,41 @@ def unpack_stockfish(archive: Path, dest: Path) -> list[Path]:
     return found
 
 
+def install_stockfish(
+    dest: Path, staging: Path, progress: Progress | None = None, tag: str = STOCKFISH_TAG
+) -> list[Path]:
+    """The pinned release's build for this platform, into `dest`. Downloaded and unpacked
+    in `staging` (outside `dest`, where the finder looks) and moved in only once an
+    executable came out: an extraction cut short left a half-written exe the finder took."""
+    archive: Path | None = None
+    for name in stockfish_assets():
+        try:
+            archive = download(stockfish_url(name, tag), staging / name, progress)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+    if archive is None:
+        raise RuntimeError(f"no Stockfish build for {platform.system()} in {tag}")
+    unpacked = staging / "unpacked"
+    if unpacked.exists():
+        shutil.rmtree(unpacked)
+    found = unpack_stockfish(archive, unpacked)
+    if not found:
+        raise RuntimeError(f"{archive.name} holds no Stockfish executable")
+    dest.mkdir(parents=True, exist_ok=True)
+    for child in list(unpacked.iterdir()):
+        where = dest / child.name
+        if where.is_dir():
+            shutil.rmtree(where)
+        elif where.exists():
+            where.unlink()
+        shutil.move(str(child), str(where))
+    archive.unlink()
+    unpacked.rmdir()
+    return [dest / f.relative_to(unpacked) for f in found]
+
+
 OPENINGS_BASE = "https://raw.githubusercontent.com/lichess-org/chess-openings/master"
 OPENINGS_VOLUMES = ("a", "b", "c", "d", "e")
 PUZZLES_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
@@ -116,10 +159,14 @@ def apply_hf_home(settings: Settings) -> None:
     warm-up of a fresh install pulled 2.4 GB on its own, 2026-09-21). A no-op outside
     the app."""
     if os.environ.get("SIDECOACH_DATA_DIR"):
-        if "HF_HOME" not in os.environ:
-            home = hf_home(settings)
-            home.mkdir(parents=True, exist_ok=True)
-            os.environ["HF_HOME"] = str(home)
+        # The app's own cache, whatever the person's environment says: an HF_HOME or
+        # HF_HUB_CACHE of their own sent the download elsewhere while `stt_present` looked
+        # here, and speech recognition stayed "missing" for good.
+        home = hf_home(settings)
+        home.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HOME"] = str(home)
+        for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+            os.environ.pop(name, None)
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
@@ -139,14 +186,18 @@ def hub_online() -> Any:
         constants.HF_HUB_OFFLINE = before
 
 
-def download(
-    url: str, target: Path, progress: Progress | None = None, expect_sha256: str | None = None
-) -> Path:
-    """Fetch `url` to `target` through a temporary file, resuming a partial one, with
-    progress callbacks; verified against `expect_sha256` when given."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_suffix(target.suffix + ".part")
-    done = part.stat().st_size if part.exists() else 0
+class Cancelled(Exception):
+    """The setup's Cancel, raised from the progress callback of the item under way."""
+
+
+class IncompleteDownload(RuntimeError):
+    """The connection ended before the body did; the `.part` is kept for a resume."""
+
+
+def _fetch_into(url: str, part: Path, done: int, progress: Progress | None) -> int:
+    """One request for what `part` lacks (all of it when `done` is 0); the bytes it then
+    holds. Raises `IncompleteDownload` when fewer bytes came than the server announced: a
+    read returns b'' on an early close, which looked like the end of the file."""
     headers = {"User-Agent": USER_AGENT}
     if done:
         headers["Range"] = f"bytes={done}-"
@@ -155,8 +206,10 @@ def download(
         if done and response.status != 206:
             done = 0  # the server did not resume; start over
         length = response.headers.get("Content-Length")
-        total = (int(length) + done) if length else None
+        expected = int(length) if length and length.isdigit() else None
+        total = (expected + done) if expected is not None else None
         mode = "ab" if done else "wb"
+        received = 0
         with part.open(mode) as fh:
             while True:
                 chunk = response.read(1 << 20)
@@ -164,8 +217,48 @@ def download(
                     break
                 fh.write(chunk)
                 done += len(chunk)
+                received += len(chunk)
                 if progress:
                     progress(done, total)
+        if expected is not None and received < expected:
+            raise IncompleteDownload(f"{part.name}: {received} of {expected} bytes came")
+    return done
+
+
+def download(
+    url: str,
+    target: Path,
+    progress: Progress | None = None,
+    expect_sha256: str | None = None,
+    expect_size: int | None = None,
+) -> Path:
+    """Fetch `url` to `target` through a temporary file, resuming a partial one, with
+    progress callbacks; verified against `expect_sha256` and `expect_size` when given. A
+    body cut short raises `IncompleteDownload` and never becomes `target`."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_suffix(target.suffix + ".part")
+    done = part.stat().st_size if part.exists() else 0
+    if expect_size is not None and done > expect_size:
+        part.unlink()
+        done = 0
+    # A .part already whole (killed between the last write and the rename) is not fetched
+    # again: a Range past its end is answered 416.
+    if expect_size is None or done != expect_size:
+        try:
+            done = _fetch_into(url, part, done, progress)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 416 or not done:
+                raise
+            # Range not satisfiable: the .part is whole when the server says it is exactly
+            # this long ("bytes */<size>"); anything else starts over.
+            whole = (exc.headers.get("Content-Range") or "").strip() == f"bytes */{done}"
+            if not whole:
+                part.unlink()
+                done = _fetch_into(url, part, 0, progress)
+    if expect_size is not None and done != expect_size:
+        if done > expect_size:
+            part.unlink()
+        raise IncompleteDownload(f"{target.name}: {done} bytes, {expect_size} expected")
     if expect_sha256:
         digest = hashlib.sha256()
         with part.open("rb") as fh:
@@ -200,16 +293,25 @@ def items(settings: Settings) -> list[Item]:
     out: list[Item] = []
     kokoro_dir = settings.voice_model_dir()
 
+    def kokoro_whole(name: str, size: int) -> bool:
+        path = kokoro_dir / name
+        return path.is_file() and path.stat().st_size == size
+
     def kokoro_present() -> bool:
-        return all((kokoro_dir / name).exists() for name in KOKORO_FILES)
+        return all(kokoro_whole(name, size) for name, (_, size) in KOKORO_FILES.items())
 
     def kokoro_fetch(progress: Progress) -> None:
         base = 0
         for name, (url, size) in KOKORO_FILES.items():
-            if (kokoro_dir / name).exists():
+            if kokoro_whole(name, size):
                 base += size
                 continue
-            download(url, kokoro_dir / name, lambda d, t, b=base: progress(b + d, None))
+            download(
+                url,
+                kokoro_dir / name,
+                lambda d, t, b=base: progress(b + d, None),
+                expect_size=size,
+            )
             base += size
 
     out.append(
@@ -228,23 +330,7 @@ def items(settings: Settings) -> list[Item]:
         return find_stockfish(settings) is not None
 
     def stockfish_fetch(progress: Progress) -> None:
-        request = urllib.request.Request(
-            STOCKFISH_API,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT},
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-            release = json.load(response)
-        wanted = stockfish_assets()
-        by_name = {a["name"]: a for a in release["assets"]}
-        asset = next((by_name[n] for n in wanted if n in by_name), None)
-        if asset is None:
-            raise RuntimeError(
-                f"no Stockfish build for {platform.system()} in {release['tag_name']}"
-            )
-        dest = settings.tools_dir
-        archive = download(asset["browser_download_url"], dest / asset["name"], progress)
-        unpack_stockfish(archive, dest)
-        archive.unlink()
+        install_stockfish(settings.tools_dir, settings.data_dir / "tmp" / "stockfish", progress)
 
     out.append(
         Item(
@@ -286,16 +372,22 @@ def items(settings: Settings) -> list[Item]:
 
         def watch() -> None:
             while not stop.is_set():
-                progress(_size_of([p for p in home.rglob("*") if p.is_file()]), None)
+                # A Cancel raised here ends only the meter; the hub's fetch runs its course.
+                with contextlib.suppress(Exception):
+                    progress(_size_of([p for p in home.rglob("*") if p.is_file()]), None)
                 time.sleep(1.0)
 
         threading.Thread(target=watch, daemon=True).start()
         try:
-            import onnx_asr  # type: ignore[import-not-found]
+            from onnx_asr.loader import (  # type: ignore[import-not-found]
+                create_asr_resolver,
+                create_vad_resolver,
+            )
 
+            # The files only: loading the 0.6B model to get them took ~2.5 GB of memory.
             with hub_online():
-                onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", providers=["CPUExecutionProvider"])
-                onnx_asr.load_vad("silero", providers=["CPUExecutionProvider"])
+                create_asr_resolver("nemo-parakeet-tdt-0.6b-v3").resolve_model()
+                create_vad_resolver("silero").resolve_model()
         finally:
             stop.set()
 
@@ -411,7 +503,10 @@ class Setup:
         """Fetch the items named (default: every missing one that is not optional) on a
         thread; False when a run is already going."""
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            # "running" is claimed under the lock: the thread is made only after the items
+            # are looked at, and a second click in that time started a second run into the
+            # same .part files.
+            if self._state.get("running") or (self._thread is not None and self._thread.is_alive()):
                 return False
             self._cancel.clear()
             self._state = {
@@ -422,12 +517,17 @@ class Setup:
                 "errors": {},
                 "finished": [],
             }
-        todo = [
-            i
-            for i in items(self.settings)
-            if (ids is None and not i.optional and not i.present())
-            or (ids and i.id in ids and not i.present())
-        ]
+        try:
+            todo = [
+                i
+                for i in items(self.settings)
+                if (ids is None and not i.optional and not i.present())
+                or (ids and i.id in ids and not i.present())
+            ]
+        except BaseException:
+            with self._lock:
+                self._state["running"] = False
+            raise
         total = sum(i.size for i in todo)
         with self._lock:
             self._state["total"] = total
@@ -445,13 +545,25 @@ class Setup:
                 def progress(
                     done: int, _total: int | None, base: int = base, size: int = item.size
                 ) -> None:
+                    # Cancel stops the item under way at its next chunk; its .part stays
+                    # for a resume.
+                    if self._cancel.is_set():
+                        raise Cancelled
                     with self._lock:
                         self._state["done"] = base + min(done, size)
 
+                free = free_space(self.settings.data_dir)
                 try:
+                    if free is not None and free < item.size:
+                        raise OSError(
+                            f"not enough free space: {item.size // 1_000_000} MB needed, "
+                            f"{free // 1_000_000} MB free"
+                        )
                     item.fetch(progress)
                     with self._lock:
                         self._state["finished"].append(item.id)
+                except Cancelled:
+                    break
                 except Exception as exc:  # noqa: BLE001 - reported, the next item goes on
                     with self._lock:
                         self._state["errors"][item.id] = f"{type(exc).__name__}: {exc}"
