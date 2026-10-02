@@ -397,10 +397,8 @@ class PanelApi(
             "say" -> {
                 if (!json.has("text")) return unprocessable()
                 if (voice == null) return ok(JSONObject().put("ok", false))
-                voice.stop()
-                val text = json.getString("text")
-                Captions.show(text)
-                voice.say(text)
+                PanelVoice.roomStop()
+                PanelVoice.roomSay(json.getString("text"))
                 ok(done())
             }
             // Retry (ui/ReviewRetry.kt): the position a move was played from, a new move graded
@@ -433,7 +431,7 @@ class PanelApi(
                 }
             }
             "hush" -> {
-                voice?.stop()
+                if (voice != null) PanelVoice.roomStop()
                 ok(JSONObject().put("ok", voice != null))
             }
             // Analysis (ReviewAnalysis.kt): any move from any position, the engine's lines for the
@@ -485,7 +483,7 @@ class PanelApi(
             "close" -> {
                 val room = rooms.get(key)
                 room?.close()
-                voice?.stop()
+                if (voice != null) PanelVoice.roomStop()
                 ok(JSONObject().put("ok", room != null))
             }
             else -> null

@@ -26,6 +26,9 @@ object PanelVoice {
     private val STALE_AFTER = mapOf("post_move" to 2, "post_mistake" to 2, "decisive_question" to 0, "stuck" to 0)
     private const val STALE_PLIES = 2
 
+    /** What the voice was last given, when a room (a review, a puzzle) gave it (`ROOM_VOICE`). */
+    const val ROOM_VOICE = "room"
+
     /**
      * A "verdict" this short (post-move praise alone, "Good.") is skipped when the voice is
      * busy; one with a lesson in it is longer, and waits its turn.
@@ -160,6 +163,24 @@ object PanelVoice {
         muted = on
         PanelEngine.set("muted" to on)
         Captions.muted(on)
+    }
+
+    /**
+     * A room's words (a review's card, a puzzle's coach) in the panel's voice, captioned as the
+     * panel's are: `server._room_voice`'s speak. Mute is silence everywhere: the coach's Mute
+     * silenced the coach only, and Game Review and the puzzles talked on (voice finding 12).
+     */
+    fun roomSay(text: String) {
+        val speaker = voiceOut() ?: return
+        Captions.show(text)
+        if (muted) return
+        voicing = ROOM_VOICE to null
+        speaker.say(text)
+    }
+
+    /** A room's hush: only a room's own words; closing a review cut off the live coach. */
+    fun roomStop() {
+        if (voicing?.first == ROOM_VOICE) voiceOut()?.stop()
     }
 
     /** `set_muted`. */

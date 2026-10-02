@@ -422,13 +422,9 @@ class PuzzleRooms(
                     dataDir = files,
                     // The panel's voice (`tts.say`, `tts.stop`), whichever the warm-up built;
                     // the words captioned as the panel's are.
-                    speak = { text ->
-                        PanelVoice.tts?.let { voice ->
-                            Captions.show(text)
-                            voice.say(text)
-                        }
-                    },
-                    stopSpeaking = { PanelVoice.tts?.stop() },
+                    // Muted, the words are captioned and not said; a room stops only its own.
+                    speak = { text -> if (PanelVoice.tts != null) PanelVoice.roomSay(text) },
+                    stopSpeaking = { if (PanelVoice.tts != null) PanelVoice.roomStop() },
                     mirror = { chan, level, text, data -> PanelEngine.emit(chan, level, text, data) },
                 ).also {
                     it.motifs = PanelEngine.puzzleMotifs

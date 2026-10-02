@@ -203,6 +203,28 @@ class PanelVoicePolicyTest {
     }
 
     /**
+     * A room's words (a review's card, a puzzle's coach): silent when muted, and a room's hush
+     * stops only its own words, never the live coach (`test_a_card_is_said_in_the_panels_voice_
+     * and_captioned`, voice finding 12).
+     */
+    @Test
+    fun muteSilencesTheRoomsAndARoomStopsOnlyItsOwnWords() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = "post_move" to 10 // the live coach speaking
+        PanelVoice.roomStop()
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        PanelVoice.roomSay("Na5 is a mistake.")
+        assertEquals(listOf("say:Na5 is a mistake."), fake.calls.toList())
+        PanelVoice.roomStop()
+        assertEquals("stop", fake.calls.last())
+        PanelVoice.setMuted(true)
+        fake.calls.clear()
+        PanelVoice.roomSay("Nf3 is best.")
+        assertTrue(fake.calls.none { it.startsWith("say:") })
+    }
+
+    /**
      * A word the fast game kept on the page is said once the player has been thinking in that
      * position as long as the pace allows (`_say_held_word`); one about a position the board
      * has left, or after the game is over, is dropped
