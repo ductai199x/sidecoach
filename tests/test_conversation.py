@@ -519,3 +519,22 @@ def test_a_past_positions_free_squares_are_said_of_that_position() -> None:
     past = convo._fact_lines({"target": target}, board, "player", past=True)
     assert now[0].endswith("(as it stands, before any move)"), now
     assert past[0].endswith("(in that position, before the move the player made there)"), past
+
+
+def test_what_was_said_before_any_move_is_said_at_the_start_position() -> None:
+    """At a puzzle, what was said before the first move hung under "Game so far" with no
+    position, read as said after a move never made (the deep prompt review, 2026-10-01)."""
+    convo = _conversation()
+    convo.user_said("hint")
+    convo.coach_said("Look at the f-file.")
+    _move(convo, chess.Board(), 1, "e4", by_user=True)
+    _move(
+        convo,
+        chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        2,
+        "e5",
+        by_user=False,
+    )
+    record = convo.render().split("# Game so far\n", 1)[1]
+    head = 'At the start position, before any move:\n    PLAYER said: "hint"'
+    assert record.startswith(head), record

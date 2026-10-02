@@ -482,10 +482,20 @@ class Conversation:
         if self.summary:
             game.append(f"Earlier dialogue, summarised: {self.summary}")
         stale_nods = self._stale_nods() if self.compact_record else set()
+        moved = False  # a move, takeback or re-read seen yet
+        headed = False
         for i, entry in enumerate(self.entries):
             if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
             sink = said if i > reached and not entry.past else game
+            if entry.kind in ("ply", "takeback", "resync"):
+                moved = True
+            elif sink is game and not moved and not headed:
+                headed = True
+                # What was said before any move hung under "Game so far" with no position:
+                # read as said after a move that was never made (the deep prompt review,
+                # 2026-10-01). It belongs to the start position, given in the Setting.
+                game.append("At the start position, before any move:")
             if entry.kind == "ply":
                 assert entry.record is not None
                 if i == reached:
