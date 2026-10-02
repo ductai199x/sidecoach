@@ -24,7 +24,7 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient
     engine = PanelEngine(
         Settings(data_dir=tmp_path), analysis=False, coach=False, frame_source=iter(())
     )
-    return TestClient(build_app(engine)), engine
+    return TestClient(base_url="http://127.0.0.1", app=build_app(engine)), engine
 
 
 def test_the_schema_carries_the_marks_the_page_reads(
@@ -99,7 +99,7 @@ def test_a_save_goes_back_to_the_file_the_settings_came_from(
     settings.data_dir = tmp_path
     assert settings.source == given and settings.coach.stuck_seconds == 50, "the file was read"
     engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.get("/api/settings").json()["path"] == str(given)
     values = client.get("/api/settings").json()["settings"]
     values["coach"]["stuck_seconds"] = 61

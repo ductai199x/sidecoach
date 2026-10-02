@@ -85,7 +85,7 @@ def test_the_preview_line_says_whether_the_voice_could_speak(
 ) -> None:
     settings = Settings(data_dir=tmp_path)
     engine = make_panel(settings)
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     # No voice models under pytest: the voice cannot speak, the button is told so, nothing
     # breaks.
     assert client.post("/api/say", json={"voice": "bf_emma"}).json() == {"ok": False}

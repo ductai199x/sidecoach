@@ -214,7 +214,7 @@ def test_a_spoken_move_reaches_the_coach_as_san(
     # A position where Nf3 is legal: the start position, as the engine would report it.
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     engine._state["running"] = True  # a session: the ask is queued for its loop
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
 
     if not engine._stt.load():
         pytest.skip(f"parakeet not loadable here: {engine._stt.healthcheck()[1]}")
@@ -265,7 +265,7 @@ def test_the_microphone_test_keeps_what_it_hears_and_asks_no_coach(
     engine._listener.mic = mic  # type: ignore[assignment]
     engine._listener.gate = _ScriptedGate([])  # type: ignore[assignment]
     engine._state["fen"] = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     status = client.get("/api/hear_test").json()
     assert status["on"] is False and status["heard"] == []
     started = client.post("/api/hear_test", json={"on": True}).json()

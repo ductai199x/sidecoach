@@ -23,7 +23,7 @@ from tests.synth import game_frames
 
 def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_path: Path) -> None:
     engine = make_panel()
-    client = TestClient(build_app(engine, token="s3cret"))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine, token="s3cret"))
     health = client.get("/api/health").json()
     assert health["ok"] is True and health["running"] is False and health["pid"] > 0
     # Everything else wants the bearer.
@@ -62,13 +62,51 @@ def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_p
     assert pre.headers.get("access-control-allow-origin") == "http://tauri.localhost"
 
 
+def test_cross_site_pages_and_foreign_hosts_are_refused(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    # No token (the CLI panel): a page on another site must still change nothing.
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1:8765", app=build_app(engine))
+    evil = {"Origin": "https://evil.example", "Content-Type": "text/plain"}
+    for path in ("/api/reset_profile", "/api/clear_caches", "/api/dump", "/api/hint"):
+        assert client.post(path, content=b"", headers=evil).status_code == 403, path
+    # The key's way out: a settings PUT pointing base_url elsewhere.
+    put = client.put(
+        "/api/settings",
+        json={"llm": {"base_url": "http://evil.example"}},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert put.status_code == 403
+    assert "evil" not in (engine.settings.llm.base_url or "")
+    # Sec-Fetch-Site alone (no Origin) is enough to know.
+    navigated = {"Sec-Fetch-Site": "cross-site"}
+    assert client.post("/api/stop", headers=navigated).status_code == 403
+    # DNS rebinding: a name that resolves here is not this server.
+    assert client.get("/api/settings", headers={"Host": "evil.example:8765"}).status_code == 403
+    assert client.get("/", headers={"Host": "evil.example"}).status_code == 403
+    # A same-origin page posting without JSON is refused too (a form, a beacon of text).
+    same = {"Origin": "http://127.0.0.1:8765", "Content-Type": "text/plain"}
+    assert client.post("/api/stop", content=b"{}", headers=same).status_code == 403
+    # What the panel itself sends goes through: same origin with JSON, the shell, localhost,
+    # and tools with no browser headers at all.
+    ok = {"Origin": "http://127.0.0.1:8765", "Sec-Fetch-Site": "same-origin"}
+    assert client.post("/api/stop", json={}, headers=ok).status_code == 200
+    assert client.get("/api/settings", headers={"Sec-Fetch-Site": "same-origin"}).status_code == 200
+    shell = {"Origin": "http://tauri.localhost", "Sec-Fetch-Site": "cross-site"}
+    assert client.post("/api/stop", json={}, headers=shell).status_code == 200
+    assert client.get("/api/health", headers={"Host": "localhost:8765"}).status_code == 200
+    assert client.get("/api/health", headers={"Host": "[::1]:8765"}).status_code == 200
+    assert client.post("/api/stop").status_code == 200
+
+
 @pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_a_session_that_persists_nothing_keeps_its_frames_in_memory(
     make_panel: Callable[..., PanelEngine], tmp_path: Path
 ) -> None:
     # A few frames are enough to keep.
     engine = make_panel(persist=False, frame_source=game_frames(("e4", "e5")))
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.post("/api/start").json()["ok"] is True
     assert engine._thread is not None
     engine._thread.join(timeout=90)

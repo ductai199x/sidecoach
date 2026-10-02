@@ -192,7 +192,7 @@ def test_the_pages_read_the_look_and_a_player_loads_their_own(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
     engine = make_panel()
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     first = client.get("/api/look").json()
     assert first["pieces"] == "sidecoach" and first["images"]["wK"] == "/pieces/wK.svg?v=own2"
     assert first["board"]["dark"] == "#769656"

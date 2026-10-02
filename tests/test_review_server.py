@@ -64,7 +64,7 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 2)
     engine = make_panel()
     engine.settings.profile.chesscom_user = "NoseGazm"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.get("/games").status_code == 200, "the library's page"
 
     # Brought in from a pasted PGN, and listed, not yet reviewed.
@@ -182,7 +182,7 @@ def test_the_analysis_board_plays_any_move_reads_the_engine_and_the_players_game
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     engine = make_panel()
     engine.settings.profile.chesscom_user = "nosegazm"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     state = _until_ready(client, key)["state"]
@@ -271,7 +271,7 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     engine = make_panel()
     voice = RecordingVoice()
     engine._tts = voice  # type: ignore[assignment]
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     assert client.post(f"/api/review/{key}/open", json={"strength": "fast"}).json()["voice"]
 
@@ -305,7 +305,7 @@ def test_a_move_is_retried_and_graded_as_the_review_graded_it(
     for module in (review_room, review_retry):
         monkeypatch.setattr(module, "Engine", engine_for)
     monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
-    client = TestClient(build_app(make_panel()))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(make_panel()))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     moves = _until_ready(client, key)["state"]["moves"]
@@ -383,7 +383,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     engine = make_panel()
     engine.settings.profile.chesscom_user = "NoseGazm"
     engine.settings.llm.provider = "none"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     ai = _until_ready(client, key)["state"]["ai"]
@@ -474,7 +474,7 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
     engine = make_panel()
     engine.settings.profile.chesscom_user = "NoseGazm"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     fast = STRENGTHS["fast"]
 
@@ -612,7 +612,7 @@ def _watched_and_imported(
     monkeypatch.setattr(review_room, "Engine", engine_for)
     engine = make_panel()
     engine.settings.profile.chesscom_user = "NoseGazm"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": LONGER}).json()["keys"][0]
     store = Store(engine.settings.data_dir / "profile.sqlite")
     row = library.find(store, key)
@@ -714,7 +714,7 @@ def test_a_removed_game_stays_out_until_undone_or_pasted_again(
     monkeypatch.setattr(
         library, "from_chesscom", lambda user, months=3: library.from_pgn(GAME, user_names=[user])
     )
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     keys = lambda: {g["key"] for g in client.get("/api/games").json()["games"]}  # noqa: E731
     first = client.post("/api/games/import", json={"source": "chesscom"}).json()
     (key,) = first["keys"]
@@ -762,7 +762,7 @@ def test_a_review_under_way_saves_nothing_for_a_game_removed_meanwhile(
     monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
     monkeypatch.setattr(review_room, "Engine", lambda **_: FakeEngine())
     engine = make_panel()
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     store = Store(engine.settings.data_dir / "profile.sqlite")
     row = library.find(store, key)
@@ -974,7 +974,7 @@ def test_bringing_in_from_a_site_needs_the_username_first(
 
     from sidecoach.ui.server import build_app
 
-    client = TestClient(build_app(make_panel()))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(make_panel()))
     said = client.post("/api/games/import", json={"source": "chesscom"}).json()
     assert not said["ok"] and "chess.com username" in said["error"]
     said = client.post("/api/games/import", json={"source": "lichess"}).json()
