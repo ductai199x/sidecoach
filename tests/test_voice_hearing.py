@@ -200,6 +200,92 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
         listener.set_mode("off")
 
 
+class _LevelGate(_ScriptedGate):
+    """A voice gate that reads a frame's own value as its speech probability, and counts the
+    frames it was asked about."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.asked = 0
+
+    def probability(self, frame: np.ndarray) -> float:
+        self.asked += 1
+        return float(frame[0])
+
+
+def test_the_microphone_is_ignored_while_the_coach_speaks_but_not_a_held_key() -> None:
+    """The echo guard (Tai, 2026-10-02): while the coach's voice plays, the microphone hears
+    the speakers, and what it hears is ignored -- no utterance starts (no barge-in by the
+    coach's own words, no question made of them), nothing of it is kept for the pre-roll, and
+    an utterance begun before the voice ends as the player's words alone. Listening resumes
+    with the first frame after the voice. A held push-to-talk key is heard all the same. Before,
+    the start bar was only raised to 0.85 and a loud echo crossed it."""
+    import queue as _queue
+
+    from sidecoach.voice.mic import HOP, PRE_ROLL_FRAMES, Listener
+    from tests.fakes import HANG_S, SteppedMic
+
+    # The frame's value is its speech probability (exact in float32): the echo is loud enough
+    # to cross the raised bar of 0.85.
+    ECHO, VOICE, QUIET = 0.875, 0.75, 0.0
+
+    def frames(value: float, n: int) -> None:
+        for _ in range(n):
+            mic.frames.put(np.full(HOP, value, dtype=np.float32))
+
+    speaking = [False]
+    starts: list[str] = []
+    heard: _queue.Queue[np.ndarray] = _queue.Queue()
+    mic = SteppedMic()
+    gate = _LevelGate()
+    listener = Listener(
+        mic,  # type: ignore[arg-type]
+        gate,  # type: ignore[arg-type]
+        on_utterance=lambda audio, seconds: heard.put(audio),
+        on_speech_start=lambda: starts.append("start"),
+        coach_speaking=lambda: speaking[0],
+    )
+    listener.set_mode("vad")
+    try:
+        # The coach speaks; the microphone hears it loud and long: nothing starts.
+        speaking[0] = True
+        frames(ECHO, 40)
+        mic.steps.idle()
+        assert starts == [] and heard.empty() and gate.asked == 0
+        # The voice stops: the very next frames are heard, with no echo in their pre-roll.
+        speaking[0] = False
+        frames(VOICE, 12)
+        frames(QUIET, 14)
+        mic.steps.idle()
+        assert starts == ["start"]
+        said = heard.get(timeout=HANG_S)
+        assert ECHO not in said and VOICE in said
+        # The player is talking when a line begins: the utterance ends as their words alone.
+        frames(VOICE, 12)
+        mic.steps.idle()
+        assert starts == ["start", "start"]
+        speaking[0] = True
+        frames(ECHO, 30)
+        mic.steps.idle()
+        said = heard.get(timeout=HANG_S)
+        assert ECHO not in said and np.count_nonzero(said == VOICE) == 12 * HOP
+        assert starts == ["start", "start"]
+        # Push-to-talk: the coach's words before the press are not kept (the pre-roll); what
+        # is said while the key is held is, whatever the voice is doing.
+        listener.set_mode("ptt")
+        frames(ECHO, PRE_ROLL_FRAMES)
+        mic.steps.idle()
+        listener.press()
+        frames(VOICE, 20)
+        mic.steps.idle()
+        listener.release()
+        said = heard.get(timeout=HANG_S)
+        assert ECHO not in said and np.count_nonzero(said == VOICE) == 20 * HOP
+    finally:
+        mic.steps.free()
+        listener.set_mode("off")
+
+
 # ---- hear -> correct -> ask over HTTP, with the real ear -------------------------------------
 
 

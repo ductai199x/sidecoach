@@ -93,7 +93,9 @@ class Endpointer:
     Speech starts when `start_frames` consecutive frames exceed `start` (two frames = 64 ms:
     quick enough for a barge-in, long enough to ignore a click). It ends after `end_ms` of
     frames below `end`. While the coach is speaking, the mic hears the speakers, so the start
-    threshold is raised to `start_while_speaking` -- a headset makes this moot.
+    threshold is raised to `start_while_speaking` -- a headset makes this moot. (The listener
+    no longer feeds it the coach's voice: since 2026-10-02 it ignores the microphone while the
+    voice plays, `mic.Listener._run`.)
     """
 
     start: float = 0.5

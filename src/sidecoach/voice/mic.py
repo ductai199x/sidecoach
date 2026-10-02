@@ -11,6 +11,10 @@ can never grow. `Listener` consumes those frames on its own thread in one of two
                 is not clipped, and ends after 400 ms of silence. Utterances are capped at
                 MAX_UTTERANCE_S so a noisy room cannot buffer forever.
 
+While the coach's voice plays, the microphone is ignored (the echo guard): in voice mode
+nothing starts and nothing is kept, and push-to-talk keeps no pre-roll of it. A held
+push-to-talk key is heard as ever -- pressing it silences the voice.
+
 Everything degrades: no sounddevice, no input device, or no VAD model leaves the coach deaf
 with a stated reason, never crashed. `on_utterance` runs on the listener thread; the caller
 does its STT there and hands the text to its own loop.
@@ -197,6 +201,8 @@ class Listener:
         self._deliveries: queue.Queue[tuple[np.ndarray, float] | None] = queue.Queue()
         self._deliverer: threading.Thread | None = None
         self._reopen_tried = 0.0
+        # The last frame was the coach's voice (the echo guard, `_run`).
+        self._echoed = False
 
     # ---- control ------------------------------------------------------------------------
 
@@ -261,6 +267,12 @@ class Listener:
                 continue
             self.level = max(float(np.abs(frame).max()), self.level * 0.8)
             partial: np.ndarray | None = None
+            # The echo guard (Tai, 2026-10-02): while the coach's voice plays, what the
+            # microphone hears is ignored -- it hears the speakers, and the coach's own words
+            # were cutting it off and coming back as a question. A held push-to-talk key is
+            # the exception (it silences the voice at once). Listening resumes with the first
+            # frame after the voice stops.
+            echo = self._coach_speaking()
             with self._lock:
                 mode = self.mode
                 if mode == "ptt":
@@ -275,16 +287,36 @@ class Listener:
                             self._finish(discard=False)
                             continue
                         partial = self._partial_due()
+                    elif echo:
+                        # Not held: the pre-roll a press would keep holds no coach's words.
+                        self._pre.clear()
                     else:
                         self._pre.append(frame)
             if mode != "vad":
                 if partial is not None:
                     self._on_partial(partial)  # type: ignore[misc]
                 continue
+            if echo:
+                # Voice mode, the coach speaking: the frame counts as silence and is kept
+                # nowhere. An utterance begun before the voice ends as the player's words
+                # alone; none can begin. The VAD is not run on it (its state starts afresh
+                # with the next frame heard).
+                with self._lock:
+                    self._echoed = True
+                    self._pre.clear()
+                    event = self.endpointer.feed(0.0)
+                    if event == "end":
+                        self._finish(discard=False)
+                    elif event == "drop":
+                        self._finish(discard=True)
+                continue
+            if self._echoed:
+                self._echoed = False
+                self.gate.reset()
             # Voice mode: the VAD runs outside the lock; it is the slow part.
             prob = self.gate.probability(frame)
             with self._lock:
-                event = self.endpointer.feed(prob, coach_speaking=self._coach_speaking())
+                event = self.endpointer.feed(prob)
                 if self.endpointer.speaking:
                     if event == "start":
                         self._buffer = list(self._pre)
