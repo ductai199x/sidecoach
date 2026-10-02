@@ -53,8 +53,10 @@ class Backlog:
         store_path: Path | None,
         *,
         make_engine: Callable[..., Engine] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings
+        self._clock = clock  # monotonic seconds: when a game failed, when the games were counted
         self.store_path = store_path
         self._make_engine = make_engine
         self._stop = threading.Event()
@@ -80,6 +82,8 @@ class Backlog:
     def close(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._thread.ident is None:  # never started (stepped by hand): its store is ours
+            self._store.close()
 
     def nudge(self) -> None:
         """Games came into the library: look for work now, not at the end of the rest (the
@@ -148,32 +152,41 @@ class Backlog:
         }
 
     def _run(self) -> None:
-        store = self._store
         try:
             while not self._stop.is_set():
-                if self.paused_by_you:
-                    # Paused by the player: the counts kept fresh for the page now and then
-                    # (reading the library is not free), at once when games come in.
-                    if time.monotonic() - self._counted > REST_S:
-                        self._todo(store)
-                    self._wake.wait(IDLE_S)
+                did = self.step()
+                # Nothing to do: looked at again after a rest, at once when woken (games came
+                # in, the player resumed). No Stockfish yet is not the game's failure: looked
+                # for again shortly, every game still waiting (the review of 2026-10-01: on a
+                # first run each one failed until the app restarted).
+                rest = {"paused": IDLE_S, "idle": REST_S, "no stockfish": IDLE_S}.get(did)
+                if rest is not None:
+                    self._wake.wait(rest)
                     self._wake.clear()
-                    continue
-                if self._keep_saved(store):
-                    continue
-                todo = self._todo(store)
-                if not todo:
-                    self._wake.wait(REST_S)
-                    self._wake.clear()
-                    continue
-                self._review(store, todo[0])
         finally:
-            store.close()
+            self._store.close()
+
+    def step(self) -> str:
+        """One turn of the job, what the thread runs again and again: "paused" (the counts kept
+        fresh for the page now and then, as reading the library is not free), "kept" (a saved
+        review's facts kept), "reviewed" (a game's review run), "no stockfish", or "idle"
+        (nothing to do)."""
+        store = self._store
+        if self.paused_by_you:
+            if self._clock() - self._counted > REST_S:
+                self._todo(store)
+            return "paused"
+        if self._keep_saved(store):
+            return "kept"
+        todo = self._todo(store)
+        if not todo:
+            return "idle"
+        return self._review(store, todo[0])
 
     def _resting(self, key: str) -> bool:
         """Whether a game's review failed less than FAILED_RETRY_S ago."""
         failed = self._failed.get(key)
-        return failed is not None and time.monotonic() - failed < FAILED_RETRY_S
+        return failed is not None and self._clock() - failed < FAILED_RETRY_S
 
     def _keep_saved(self, store: Store) -> bool:
         """One saved review's facts kept for Stats; whether there was one."""
@@ -186,7 +199,7 @@ class Backlog:
                     store, review.strength, ReviewedGame.model_validate_json(review.report), row
                 )
             except Exception:  # noqa: BLE001 - a review that cannot be read is skipped
-                self._failed[review.key] = time.monotonic()
+                self._failed[review.key] = self._clock()
             return True
         return False
 
@@ -210,10 +223,10 @@ class Backlog:
         todo = [r for r in waiting if not self._resting(r.key)]
         self.total = len(every)
         self.left = len(waiting)
-        self._counted = time.monotonic()
+        self._counted = self._clock()
         return sorted(todo, key=lambda r: r.played_at or r.added_at, reverse=True)
 
-    def _review(self, store: Store, row: LibraryRow) -> None:
+    def _review(self, store: Store, row: LibraryRow) -> str:
         # Stopped part way by the player's Pause or the app closing: it keeps what it measured
         # and goes on from there later.
         halt = threading.Event()
@@ -257,7 +270,7 @@ class Backlog:
         except NoStockfish:
             no_stockfish = True
         except Exception:  # noqa: BLE001 - a game that cannot be reviewed is tried again later
-            self._failed[row.key] = time.monotonic()
+            self._failed[row.key] = self._clock()
         finally:
             self.reviewing = None
             with self._lock:
@@ -267,8 +280,4 @@ class Backlog:
                     self._runs.append((run["done"] - run["start"], time.monotonic() - run["since"]))
                 if run is not None and run["total"]:
                     self._sizes.append(run["total"])
-        if no_stockfish:
-            # Not the game's failure: looked for again shortly, every game still waiting (the
-            # review of 2026-10-01: on a first run each one failed until the app restarted).
-            self._wake.wait(IDLE_S)
-            self._wake.clear()
+        return "no stockfish" if no_stockfish else "reviewed"

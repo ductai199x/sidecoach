@@ -430,6 +430,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     store_path = engine.settings.data_dir / "profile.sqlite"
     reviews = ReviewRooms(engine.settings, store_path=store_path, mirror=engine._emit)
+    app.state.reviews = reviews
     engine.settings_followers.append(lambda s: setattr(reviews, "settings", s))
     # The AI coach's words on reviews count in the panel's strip with the game's.
     engine.extra_usage.append(reviews.usages)

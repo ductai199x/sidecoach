@@ -130,6 +130,11 @@ class ReviewRoom:
         self._book: Any = None
         self.touched = time.monotonic()
         self.closed = False
+        # Set once the review is ready or failed, and while no words are being written: what a
+        # caller waits on rather than polling the state against a clock.
+        self.settled = threading.Event()
+        self.words_done = threading.Event()
+        self.words_done.set()
         self._thread = threading.Thread(target=self._run, name=f"review-{self.key}", daemon=True)
         self._thread.start()
 
@@ -211,6 +216,7 @@ class ReviewRoom:
                 # review of 2026-10-01).
                 return GONE
             self.words_status, self.words_error = "writing", None
+            self.words_done.clear()
             reviewed = self.reviewed
         threading.Thread(
             target=self._write_words, args=(reviewed, model), name=f"words-{self.key}", daemon=True
@@ -218,6 +224,12 @@ class ReviewRoom:
         return None
 
     def _write_words(self, reviewed: ReviewedGame, model: Any) -> None:
+        try:
+            self._words(reviewed, model)
+        finally:
+            self.words_done.set()
+
+    def _words(self, reviewed: ReviewedGame, model: Any) -> None:
         # A model that reasons by its effort (luna) reasons at REVIEW_EFFORT here, whatever the
         # live coach is set to; a local model does not reason: it reasons worse about chess,
         # not better (Tai, 2026-09-30).
@@ -388,6 +400,15 @@ class ReviewRoom:
             self._stop.clear()
             return True
 
+    def closing(self, now: float) -> bool:
+        """Whether the room ends at `now`: closed, or idle, and no words being written. Closed or
+        idle while the AI coach's words are written, it stays open until they are saved: its
+        store closed under them lost every answer that came after, each one paid for (the review
+        of 2026-10-01)."""
+        writing = self.words_status == "writing"
+        idle = now - self.touched > IDLE_CLOSE_S
+        return not writing and (self._stop.is_set() or idle)
+
     def join(self, timeout: float = 5.0) -> None:
         self._thread.join(timeout)
 
@@ -404,15 +425,11 @@ class ReviewRoom:
                     self.status = "failed"
                     self.error = str(exc)
                 self._emit("sys", "error", f"review failed: {exc!r}")
+            self.settled.set()
             while True:
                 with self._lock:
-                    # Closed, or idle, while the AI coach's words are written: open until they
-                    # are saved. Its store closed under them lost every answer that came after,
-                    # each one paid for (the review of 2026-10-01).
-                    writing = self.words_status == "writing"
                     stopped = self._stop.is_set()
-                    idle = time.monotonic() - self.touched > IDLE_CLOSE_S
-                    if not writing and (stopped or idle):
+                    if self.closing(time.monotonic()):
                         self.closed = True
                         break
                 if stopped:

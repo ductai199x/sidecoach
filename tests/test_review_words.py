@@ -434,39 +434,33 @@ def test_a_failed_call_drops_its_move_alone() -> None:
         )
 
 
-def test_the_calls_go_a_few_at_a_time() -> None:
+def test_the_calls_go_a_few_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every key move asked at once set a provider's rate limit off (the review of
-    2026-10-01): PARALLEL calls at most at a time."""
-    import threading
-    import time
+    2026-10-01): the calls go on a pool of PARALLEL workers at most."""
+    from concurrent.futures import ThreadPoolExecutor
 
-    game = _game()
-    now = most = 0
-    lock = threading.Lock()
+    pools: list[int] = []
 
-    class Slow(_Model):
-        def chat(self, system: str, messages: Any, **kw: Any) -> Completion:
-            nonlocal now, most
-            with lock:
-                now += 1
-                most = max(most, now)
-            time.sleep(0.05)
-            with lock:
-                now -= 1
-            return super().chat(system, messages, **kw)
+    class Counted(ThreadPoolExecutor):
+        def __init__(self, max_workers: int) -> None:
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
 
-    review_words.PARALLEL, parallel = 2, review_words.PARALLEL
-    try:
-        review_words.write(
-            game,
-            Slow(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."})),
-            user="black",
-            opening=None,
-            prices=Prices(),
-        )
-    finally:
-        review_words.PARALLEL = parallel
-    assert most == 2
+    monkeypatch.setattr(review_words, "ThreadPoolExecutor", Counted)
+    monkeypatch.setattr(review_words, "PARALLEL", 2)
+    model = _Model(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."}))
+    review_words.write(_game(), model, user="black", opening=None, prices=Prices())
+    assert pools == [2] and sorted(model.asked) == [3, 4, 6]
+    # Fewer moves than that: as many workers as moves.
+    review_words.write(
+        _game(),
+        model,
+        user="black",
+        opening=None,
+        prices=Prices(),
+        answered={3: "### why\nWhite played Nf3 early.", 4: "### why\nWhite played Nf3 early."},
+    )
+    assert pools == [2, 1]
 
 
 def test_no_call_is_made_once_told_to_stop() -> None:

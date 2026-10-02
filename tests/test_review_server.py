@@ -30,19 +30,35 @@ GAME = """[Event "Live Chess"]
 """
 
 
-def _until_ready(client: Any, key: str, seconds: float = 20.0) -> dict[str, Any]:
-    deadline = time.monotonic() + seconds
-    polled: dict[str, Any] = {}
-    while time.monotonic() < deadline:
-        polled = client.get(f"/api/review/{key}/poll").json()
-        if polled.get("state", {}).get("status") in ("ready", "failed"):
-            return polled
-        time.sleep(0.05)
-    state = polled.get("state", {})
-    lines = [line.get("text") for line in polled.get("lines", [])]
-    raise AssertionError(
-        f"the review never finished: {state.get('status')} {state.get('progress')} {lines[-3:]}"
-    )
+# How long an event may take before the test calls it lost: a bound on a hang, never what a
+# test asserts.
+HANG_S = 60.0
+
+
+def _room(client: Any, key: str) -> Any:
+    room = client.app.state.reviews.get(key)
+    assert room is not None, f"no room open for {key}"
+    return room
+
+
+def _until_ready(client: Any, key: str) -> dict[str, Any]:
+    """The room's state once its review is ready or failed: waited on, not polled."""
+    assert _room(client, key).settled.wait(HANG_S), "the review never settled"
+    return client.get(f"/api/review/{key}/poll").json()
+
+
+def _until_written(client: Any, key: str) -> dict[str, Any]:
+    """The room's AI words once they are no longer being written: waited on, not polled."""
+    assert _room(client, key).words_done.wait(HANG_S), "the words were never done"
+    return client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
+
+
+def _close(client: Any, key: str) -> None:
+    """The room closed, and its thread ended."""
+    room = _room(client, key)
+    assert client.post(f"/api/review/{key}/close").json()["ok"]
+    room.join(HANG_S)
+    assert room.closed
 
 
 def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
@@ -130,8 +146,7 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
     # Listed with its accuracies now; opened again, the saved review is read, not redone.
     row = next(g for g in client.get("/api/games").json()["games"] if g["key"] == key)
     assert row["reviewed"] and set(row["accuracy"]) == {"white", "black"}
-    assert client.post(f"/api/review/{key}/close").json()["ok"]
-    time.sleep(0.5)
+    _close(client, key)
     made.clear()
     again = (
         _until_ready(client, key)
@@ -419,10 +434,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     put = client.put("/api/settings", json={"settings": {"llm": {"provider": "local"}}})
     assert put.json()["ok"]
     assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
-    deadline = time.monotonic() + 10
-    while ai["status"] != "ready" and time.monotonic() < deadline:
-        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
-        time.sleep(0.05)
+    ai = _until_written(client, key)
     why = "Your knight on c6 guards your pawn on e5."
     words = {
         "model": "local-model",
@@ -451,8 +463,7 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
     assert [(a["user"], a["thinking"]) for a in asked] == [("black", False)]
     assert any(Model.usage in source() for source in engine.extra_usage)
 
-    client.post(f"/api/review/{key}/close")
-    time.sleep(0.5)
+    _close(client, key)
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     assert _until_ready(client, key)["state"]["ai"]["words"] == words
     assert len(asked) == 1, "kept, not written again"
@@ -534,8 +545,7 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     }
     store.set_review_words(key, "fast", json.dumps(partial))
     store.close()
-    client.post(f"/api/review/{key}/close")
-    time.sleep(0.5)
+    _close(client, key)
     client.post(f"/api/review/{key}/open", json={"strength": "fast"})
     ai = _until_ready(client, key)["state"]["ai"]
     assert (ai["status"], ai["answered"], ai["words"]) == ("none", 2, None)
@@ -557,10 +567,7 @@ def test_a_review_the_app_was_closed_in_goes_on_from_where_it_was(
     monkeypatch.setattr(review_room.review_words, "write", write)
     engine.settings.llm.provider = "local"
     assert client.post(f"/api/review/{key}/ai").json()["ok"]
-    deadline = time.monotonic() + 10
-    while ai["status"] != "ready" and time.monotonic() < deadline:
-        ai = client.get(f"/api/review/{key}/poll").json()["state"]["ai"]
-        time.sleep(0.05)
+    ai = _until_written(client, key)
     assert ai["status"] == "ready" and ai["answered"] == 0
     assert set(told[0]["answered"]) == {first, second}, "the answers paid for, not asked again"
     assert abs(ai["words"]["cost"] - 0.006) < 1e-9, "what was paid before counted in"
@@ -824,10 +831,7 @@ def test_a_review_window_on_a_game_removed_meanwhile_says_so(
         Settings(data_dir=tmp_path), store_path=path, make_engine=lambda **_: FakeEngine()
     )
     room = rooms.open(row.key, "fast")
-    assert room is not None
-    deadline = time.monotonic() + 10
-    while room.status not in ("ready", "failed") and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert room is not None and room.settled.wait(HANG_S)
     state = room.state()
     assert state["status"] == "failed" and "no longer" in state["error"], state
     room.close()
@@ -870,13 +874,9 @@ def test_no_ai_words_are_paid_for_on_a_game_removed(
     settings.llm.provider = "local"
     rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
     room = rooms.open(row.key, "fast")
-    assert room is not None
-    deadline = time.monotonic() + 10
-    while room.status != "ready" and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
     assert room.write_words() is None
-    while room.words_status == "writing" and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert room.words_done.wait(HANG_S)
     assert stopped == [False, True], "no more calls once it is gone"
     assert (room.words_status, room.words_error) == ("failed", review_room.GONE)
     assert room.write_words() == review_room.GONE, "none asked on a game gone"
@@ -1007,23 +1007,16 @@ def test_ai_words_cut_short_by_failed_calls_offer_try_again_for_the_rest(
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
     rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
-
-    def until(check: Callable[[], bool]) -> bool:
-        deadline = time.monotonic() + 10
-        while not check() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        return check()
-
     room = rooms.open(row.key, "fast")
-    assert room is not None and until(lambda: room.status == "ready")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
     assert room.write_words() is None
-    assert until(lambda: room.words_status != "writing")
+    assert room.words_done.wait(HANG_S)
     ai = room.state()["ai"]
     assert ai["status"] == "failed" and "1 of 2" in ai["error"] and ai["answered"] == 1
     saved = store.review(row.key, "fast")
     assert saved is not None and json.loads(saved.words or "{}").get("partial"), "kept, not done"
     assert room.write_words() is None  # Try again
-    assert until(lambda: room.words_status == "ready")
+    assert room.words_done.wait(HANG_S) and room.words_status == "ready"
     assert asked == [set(), {2}], "the rest alone"
     room.close()
     store.close()
@@ -1055,7 +1048,7 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
 
     def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
         asked.append(1)
-        go.wait(10)  # each answer arrives, and is paid for, after the window closed
+        assert go.wait(HANG_S)  # each answer arrives, and is paid for, after the window closed
         paid = {"prompt_tokens": 1, "completion_tokens": 1}
         for ply in (2, 4):
             kw["on_answer"](ply, f"### why\nMove {ply}.", paid)
@@ -1070,45 +1063,42 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
     rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
-
-    def until(check: Callable[[], bool]) -> bool:
-        deadline = time.monotonic() + 10
-        while not check() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        return check()
-
     room = rooms.open(row.key, "fast")
-    assert room is not None and until(lambda: room.status == "ready")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
     assert room.write_words() is None
     room.close()
-    time.sleep(review_room.TICK_S * 3)
-    assert rooms.get(row.key) is room and not room.closed, "open while its words are written"
+    # The room's own rule, asked at any moment: closed while writing, it does not end.
+    assert not room.closing(time.monotonic()), "open while its words are written"
+    assert rooms.get(row.key) is room and not room.closed
     assert rooms.open(row.key, "fast") is room, "opened again: the same room, still writing"
     assert room.state()["ai"]["status"] == "writing"
     go.set()
-    assert until(lambda: room.words_status == "ready")
+    assert room.words_done.wait(HANG_S) and room.words_status == "ready"
     saved = store.review(row.key, "fast")
     assert saved is not None and json.loads(saved.words or "{}")["texts"] == {
         "2": {"why": "a"},
         "4": {"why": "b"},
     }, "saved whole"
     assert asked == [1], "asked once"
-    time.sleep(review_room.TICK_S * 3)
-    assert rooms.get(row.key) is room, "opened again, it stays open"
+    assert not room.closing(time.monotonic()), "opened again, it stays open"
+    assert rooms.get(row.key) is room
 
     room.close()
-    assert until(lambda: room.closed), "closed with nothing being written: closed at once"
+    room.join(HANG_S)
+    assert room.closed, "closed with nothing being written: closed at once"
 
     # Closed while writing, not opened again: open until the words are saved, then closed.
     go.clear()
     store.set_review_words(row.key, "fast", "")
     again = rooms.open(row.key, "fast")
-    assert again is not None and again is not room and until(lambda: again.status == "ready")
+    assert again is not None and again is not room
+    assert again.settled.wait(HANG_S) and again.status == "ready"
     assert again.write_words() is None
     again.close()
-    time.sleep(review_room.TICK_S * 3)
+    assert not again.closing(time.monotonic()) and not again.closed, "writing: stays"
     go.set()
-    assert until(lambda: again.closed), "closed once its words are saved"
+    again.join(HANG_S)
+    assert again.closed, "closed once its words are saved"
     saved = store.review(row.key, "fast")
     assert saved is not None and "partial" not in json.loads(saved.words or "{}")
     store.close()
@@ -1169,11 +1159,9 @@ def test_a_deep_review_stopped_part_way_keeps_its_positions_through_standard(
     room = review_room.ReviewRoom(
         settings, row, store_path=path, strength="standard", make_engine=engines
     )
-    deadline = time.monotonic() + 10
-    while room.status != "ready" and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert room.settled.wait(HANG_S)
     room.close()
-    room.join()
+    room.join(HANG_S)
     assert room.status == "ready"
     assert deep_kept() == kept, "Standard opened"
     assert store.progress(row.key, "standard", standard.depth, standard.multipv) == []
