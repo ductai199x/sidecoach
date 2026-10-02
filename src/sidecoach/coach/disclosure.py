@@ -484,14 +484,47 @@ def _names_move(text: str, move: str) -> bool:
     return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
 
 
-_LONG_WORD = re.compile(r"[a-z]{6,}")
+# A piece named by whose it is: "their king", "your queen", "the opponent's rook".
+_OWNED_PIECE = re.compile(
+    rf"\b(your|their|the opponent's|opponent's)\s+({_PIECE})s?\b", re.IGNORECASE
+)
+_MATE_NAMED = re.compile(r"\b(?:check)?mat(?:e|es|ed|ing)\b", re.IGNORECASE)
+_PROMOTION_NAMED = re.compile(r"\bpromot(?:e|es|ed|ing|ion)\b", re.IGNORECASE)
+
+
+def _things_named(text: str) -> set[str]:
+    """What `text` names besides squares and moves: the pieces it names by whose they are
+    ("their king"), a mate, a promotion."""
+    found = {
+        f"{'your' if owner.lower() == 'your' else 'their'} {piece.lower()}"
+        for owner, piece in _OWNED_PIECE.findall(text)
+    }
+    if _MATE_NAMED.search(text):
+        found.add("mate")
+    if _PROMOTION_NAMED.search(text):
+        found.add("promotion")
+    return found
+
+
+def _moves_in(text: str) -> list[str]:
+    """The moves `text` names in SAN (a piece move, a capture, a promotion, castling), not
+    the bare squares."""
+    out = [m.group(0) for m in re.finditer(r"(?<![-A-Za-z0-9])O-O(?:-O)?(?![-A-Za-z0-9])", text)]
+    for token in _TOKEN_SPLIT.split(text):
+        match = _SQUARE_TOKEN.fullmatch(token)
+        if match and _TRAILING_MARKS.sub("", token) != match.group(1):
+            out.append(token)
+    return out
 
 
 def said_level(text: str, facts: PositionFacts) -> DisclosureLevel:
-    """The rung a reply of the AI coach carried, from what it says: the first two moves of the
-    engine's line (LINE), a move the sheet lists as a candidate (MOVE), a square of the target,
-    the piece or the squares that carry the theme (FOCUS), a square or a threat of the key fact
-    or the words of the idea (IDEA), else SILENT -- nothing of the ladder was said.
+    """The rung a reply of the AI coach carried, from what it names: the first two moves of the
+    engine's line (LINE); a move the sheet lists as a candidate (MOVE); a square of the target,
+    the piece or the squares that carry the theme, or the piece that does it (FOCUS); a square,
+    a move, a piece, a mate or a promotion that the idea's facts name -- the goal, the theme,
+    the key fact, the stakes, the trap, the threats, the target's piece (IDEA); else SILENT --
+    nothing of the ladder was said. A reply that only answers "am I winning?" names none of it,
+    and the ladder does not move (Tai, 2026-10-02: no word-overlap guess, no floor).
 
     The ladder of hints (each rung said once, none below one already said) follows this, not a
     guess from the question's words: with the AI on, the model reads the question and decides
@@ -504,16 +537,28 @@ def said_level(text: str, facts: PositionFacts) -> DisclosureLevel:
     if any(_names_move(moves_text, m) for m in answers):
         return DisclosureLevel.MOVE
     squares = squares_in(text)
+    named = _things_named(text)
     focus = " ".join(x for x in (facts.target, facts.piece, *facts.focus) if x)
-    if squares & squares_in(focus):
+    if squares & squares_in(focus) or (facts.piece and named & _things_named(facts.piece)):
         return DisclosureLevel.FOCUS
-    idea = " ".join(x for x in (facts.key, facts.stakes, facts.situation, facts.trap) if x)
-    if squares & squares_in(idea) or any(_names_move(moves_text, t) for t in facts.threats):
-        return DisclosureLevel.IDEA
-    words = " ".join(
-        x for x in (facts.goal, facts.theme, facts.plan, facts.mechanism, facts.stakes) if x
-    ).lower()
-    mine = set(_LONG_WORD.findall(text.lower()))
-    if len(mine & set(_LONG_WORD.findall(words))) >= 2:
+    idea = " ".join(
+        x
+        for x in (
+            facts.goal,
+            facts.theme,
+            facts.mechanism,
+            facts.key,
+            facts.stakes,
+            facts.situation,
+            facts.trap,
+            facts.target,
+        )
+        if x
+    )
+    if (
+        squares & squares_in(idea)
+        or named & _things_named(idea)
+        or any(_names_move(moves_text, m) for m in [*facts.threats, *_moves_in(idea)])
+    ):
         return DisclosureLevel.IDEA
     return DisclosureLevel.SILENT

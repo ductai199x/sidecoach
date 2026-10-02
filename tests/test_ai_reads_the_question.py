@@ -19,6 +19,7 @@ from tests.coaching import (
     play_to_scholar,
     scripted_coach,
     sent,
+    stuck,
 )
 from tests.test_coach import _looked
 
@@ -279,7 +280,60 @@ def test_the_rung_a_reply_said_is_read_from_its_words() -> None:
     assert said_level("After e4 e5 it is level.", pawn) is DisclosureLevel.LINE
     ladder = Disclosure()
     assert ladder.said(DisclosureLevel.IDEA) is DisclosureLevel.IDEA
+    assert ladder.said(DisclosureLevel.SILENT) is None
     assert ladder.said(DisclosureLevel.IDEA) is None
     assert ladder.said(DisclosureLevel.MOVE) is DisclosureLevel.MOVE
     assert ladder.said(DisclosureLevel.FOCUS) is None, "never lower after higher"
     assert ladder.level is DisclosureLevel.MOVE
+
+
+def test_the_rung_is_what_the_reply_names_never_a_count_of_shared_words() -> None:
+    """Two words of six letters shared with the goal or theme read as the idea (a magic number,
+    Tai 2026-10-02): now the reply's squares, moves, pieces, mate and promotion are read against
+    what the idea's facts name, and words alone climb nothing."""
+    from sidecoach.coach.disclosure import PositionFacts, said_level
+
+    facts = PositionFacts(
+        fen=chess.STARTING_FEN,
+        side_to_move="white",
+        phase="opening",
+        goal="you can mate in one move",
+        theme="a mating attack",
+        mechanism="a mating attack: their king runs out of squares",
+        key="Their king on e8 has one free square, and you have three checks",
+        target="their king on e8, whose only free square is e7; you have three checks",
+        piece="your queen on h5",
+        candidates=["Qxf7#"],
+        line=["Qxf7#"],
+    )
+    assert said_level("Every attack needs squares.", facts) is DisclosureLevel.SILENT
+    assert said_level("You are winning, and the material is level.", facts) is (
+        DisclosureLevel.SILENT
+    )
+    assert said_level("Their king is short of air.", facts) is DisclosureLevel.IDEA
+    assert said_level("There is a mate here somewhere.", facts) is DisclosureLevel.IDEA
+    assert said_level("Your queen can do it.", facts) is DisclosureLevel.FOCUS
+    assert said_level("Your knight is fine where it is.", facts) is DisclosureLevel.SILENT
+    trap = facts.model_copy(update={"key": None, "trap": "hxg4 looks like it wins, but Qh5 mates"})
+    assert said_level("Careful with hxg4.", trap) is DisclosureLevel.IDEA
+
+
+def test_an_answer_that_names_nothing_of_the_idea_leaves_the_ladder_where_it_was() -> None:
+    """ "am I winning?" answered "You are winning; the material is level." raised the ladder to
+    the idea, and the stuck hint 45 seconds later was the second hint, the idea never said (Tai,
+    2026-10-02: the ladder rises only when the reply hints)."""
+    coach, provider = scripted_coach(
+        ["You are winning, and the material is level.", "Their king is nearly out of squares."]
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    position = coach._current
+    assert position is not None
+    coach.ask("am I winning?", 8.0)
+    [answer] = drain(coach)
+    assert answer.text == "You are winning, and the material is level."
+    assert position.disclosure.level is DisclosureLevel.SILENT, "nothing of the idea was said"
+    [hint] = stuck(coach)
+    assert hint.trigger is Trigger.STUCK and hint.level is DisclosureLevel.IDEA
+    assert len(provider.calls) == 2

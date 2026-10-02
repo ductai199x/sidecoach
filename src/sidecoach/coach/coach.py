@@ -1865,10 +1865,10 @@ class Speaker:
         marks = [*request.annotations, *mentions_in(text, request.board)]
         if not request.rung_by_reply:
             return request.level, None, marks
-        # An answer says at least the idea of the position, as a first hint does -- a quiet one
-        # names no square the words could be matched on -- so the ladder never offers the idea
-        # again after an answer was given.
-        level = max(said_level(text, request.facts), DisclosureLevel.IDEA)
+        # Only what the reply names climbs the ladder: an answer to "am I winning?" that names
+        # nothing of the idea moves nothing, and the stuck hint after it is still the idea
+        # (Tai, 2026-10-02: an answer raised the ladder to the idea whatever it said).
+        level = said_level(text, request.facts)
         if request.level >= DisclosureLevel.LINE:
             level = request.level  # a game that is over withholds nothing
         base = annotations_for(request.facts, level, request.board, trigger=request.trigger)
