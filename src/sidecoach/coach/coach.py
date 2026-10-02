@@ -1382,6 +1382,25 @@ REPAIR_SYSTEM = (
 )
 
 
+# A rate-limited call is asked again once after this long, when the provider's timeout,
+# counted from the first call, leaves room for it.
+RATE_BACKOFF_S = 2.0
+
+
+def _retry_wait(exc: Exception, provider: object, began: float) -> float | None:
+    """How long to wait before asking again after a failed call, or None to give up: only
+    a rate limit (429) is worth a second call; a timeout spent the time, a refused key or a
+    bad request will fail the same way, and each would be paid or wasted twice."""
+    import time
+
+    if not str(exc).startswith("429"):
+        return None
+    budget = getattr(provider, "timeout_s", None)
+    if isinstance(budget, int | float) and time.monotonic() - began + RATE_BACKOFF_S >= budget:
+        return None
+    return RATE_BACKOFF_S
+
+
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
@@ -1424,6 +1443,7 @@ class Speaker:
         self._results: queue.SimpleQueue[Spoken] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         self._busy = threading.Event()
+        self._closed = threading.Event()
 
     @property
     def pending(self) -> int:
@@ -1497,6 +1517,9 @@ class Speaker:
         reply is sampled by its own stated likelihood from those that pass. Because several are
         offered at once, a clean one is usually among them, so the template is rarely needed.
         """
+        import time
+
+        began = time.monotonic()
         messages = _vs_wrap(list(request.messages), request.candidates)
         problems: list[str] = []
         text = ""
@@ -1548,6 +1571,7 @@ class Speaker:
                 reader = _FirstCandidate(
                     request.stream_to, lambda t: self._problems(t, request), limit=limit
                 )
+            failed: Exception | None = None
             try:
                 completion = self._complete(
                     provider, request, messages, reader.feed if reader is not None else None
@@ -1558,6 +1582,7 @@ class Speaker:
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 raw = ""
+                failed = exc
             if reader is not None:
                 reader.finish()
                 if reader.spoken:
@@ -1576,6 +1601,15 @@ class Speaker:
                 stats["stream_problems"] = reader.problems or (
                     ["the voice declined"] if reader.declined else ["the stream ended early"]
                 )
+            if failed is not None:
+                # A failed call is not a draft: no complaint, no second paid call for a
+                # timeout or a refused key. A rate limit is waited out once, inside the
+                # provider's timeout counted from the first call.
+                problems = [f"the call failed: {self.last_error}"]
+                wait = _retry_wait(failed, provider, began)
+                if wait is None or self._closed.wait(wait):
+                    break
+                continue
             scored = [
                 (prob, candidate, self._problems(candidate, request))
                 for prob, candidate in _parse_candidates(raw)

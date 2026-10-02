@@ -51,6 +51,9 @@ EMPTY_THINK_PREFILL = "<think>\n\n</think>\n\n"
 REASONING_HEADROOM = 4000
 # The fewest output tokens the Responses API takes; fewer is refused.
 MIN_OUTPUT_TOKENS = 16
+# The failures that come after the request reached the server: the call is billed. A
+# refused connection or a connect timeout never reached it, and is not.
+_SENT_LOST = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
 
 
 def chat_turns(turns: Sequence[ToolRound]) -> list[dict[str, Any]]:
@@ -296,6 +299,16 @@ class OpenAICompatProvider:
     def _endpoint(self) -> str:
         return f"{self.base_url}/{'responses' if self.wire == 'responses' else 'chat/completions'}"
 
+    def _lost(self, body: dict[str, Any], completion_chars: int, exc: Exception) -> None:
+        """A call that reached the server and then failed -- a read timeout, a dropped
+        connection -- is billed all the same: counted, estimated from what was sent and
+        what came back."""
+        self.usage.record(
+            {"lost": type(exc).__name__},
+            prompt_chars=self._chars(body),
+            completion_chars=completion_chars,
+        )
+
     @staticmethod
     def _chars(body: dict[str, Any]) -> int:
         """The prompt's size in characters, for the estimate when no usage comes back."""
@@ -419,7 +432,11 @@ class OpenAICompatProvider:
             tool_choice=tool_choice,
         )
         started = time.perf_counter()
-        response = self._client.post(self._endpoint, json=body)
+        try:
+            response = self._client.post(self._endpoint, json=body)
+        except _SENT_LOST as exc:
+            self._lost(body, 0, exc)
+            raise
         if response.status_code != 200:
             # The status code stays in the message: the callers' backoff keys on "429".
             raise RuntimeError(f"{response.status_code}: {response.text[:200]}")
@@ -526,48 +543,52 @@ class OpenAICompatProvider:
         usage: dict[str, Any] = {}
         finish: str | None = None
         stopped = False
-        with self._client.stream("POST", self._endpoint, json=body) as response:
-            if response.status_code != 200:
-                text = response.read().decode("utf-8", "replace")
-                raise RuntimeError(f"{response.status_code}: {text[:200]}")
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[6:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                if chunk.get("usage"):
-                    usage = chunk["usage"]
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    if delta.get("reasoning_content"):
-                        reasoning.append(str(delta["reasoning_content"]))
-                    if choice.get("finish_reason"):
-                        finish = choice["finish_reason"]
-                    for piece in delta.get("tool_calls") or []:
-                        call = calls.setdefault(
-                            int(piece.get("index") or 0),
-                            {"id": "", "function": {"name": "", "arguments": ""}},
-                        )
-                        call["id"] = piece.get("id") or call["id"]
-                        function = piece.get("function") or {}
-                        call["function"]["name"] += function.get("name") or ""
-                        call["function"]["arguments"] += function.get("arguments") or ""
-                    text = delta.get("content")
-                    if not text:
+        try:
+            with self._client.stream("POST", self._endpoint, json=body) as response:
+                if response.status_code != 200:
+                    text = response.read().decode("utf-8", "replace")
+                    raise RuntimeError(f"{response.status_code}: {text[:200]}")
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
                         continue
-                    if first is None:
-                        first = time.perf_counter() - started
-                    parts.append(text)
-                    if not on_delta(text):
-                        stopped = True
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
                         break
-                if stopped:
-                    break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("reasoning_content"):
+                            reasoning.append(str(delta["reasoning_content"]))
+                        if choice.get("finish_reason"):
+                            finish = choice["finish_reason"]
+                        for piece in delta.get("tool_calls") or []:
+                            call = calls.setdefault(
+                                int(piece.get("index") or 0),
+                                {"id": "", "function": {"name": "", "arguments": ""}},
+                            )
+                            call["id"] = piece.get("id") or call["id"]
+                            function = piece.get("function") or {}
+                            call["function"]["name"] += function.get("name") or ""
+                            call["function"]["arguments"] += function.get("arguments") or ""
+                        text = delta.get("content")
+                        if not text:
+                            continue
+                        if first is None:
+                            first = time.perf_counter() - started
+                        parts.append(text)
+                        if not on_delta(text):
+                            stopped = True
+                            break
+                    if stopped:
+                        break
+        except _SENT_LOST as exc:
+            self._lost(body, len("".join(parts)), exc)
+            raise
         elapsed = time.perf_counter() - started
         completion_details = usage.get("completion_tokens_details") or {}
         prompt_details = usage.get("prompt_tokens_details") or {}
@@ -611,41 +632,45 @@ class OpenAICompatProvider:
         preambles: set[int] = set()  # the output items that are preambles, by index
         final: dict[str, Any] = {}
         stopped = False
-        with self._client.stream("POST", self._endpoint, json=body) as response:
-            if response.status_code != 200:
-                text = response.read().decode("utf-8", "replace")
-                raise RuntimeError(f"{response.status_code}: {text[:200]}")
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    event = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    continue
-                kind = event.get("type")
-                if kind == "response.output_item.added":
-                    if (event.get("item") or {}).get("phase") == "commentary":
-                        preambles.add(int(event.get("output_index") or 0))
-                elif kind == "response.output_text.delta":
-                    text = str(event.get("delta") or "")
-                    if not text or int(event.get("output_index") or 0) in preambles:
+        try:
+            with self._client.stream("POST", self._endpoint, json=body) as response:
+                if response.status_code != 200:
+                    text = response.read().decode("utf-8", "replace")
+                    raise RuntimeError(f"{response.status_code}: {text[:200]}")
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
                         continue
-                    if first is None:
-                        first = time.perf_counter() - started
-                    parts.append(text)
-                    if not on_delta(text):
-                        stopped = True
+                    try:
+                        event = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    kind = event.get("type")
+                    if kind == "response.output_item.added":
+                        if (event.get("item") or {}).get("phase") == "commentary":
+                            preambles.add(int(event.get("output_index") or 0))
+                    elif kind == "response.output_text.delta":
+                        text = str(event.get("delta") or "")
+                        if not text or int(event.get("output_index") or 0) in preambles:
+                            continue
+                        if first is None:
+                            first = time.perf_counter() - started
+                        parts.append(text)
+                        if not on_delta(text):
+                            stopped = True
+                            break
+                    elif kind == "response.output_item.done":
+                        items[int(event.get("output_index") or 0)] = event.get("item") or {}
+                    elif kind in ("response.completed", "response.incomplete"):
+                        final = event.get("response") or {}
                         break
-                elif kind == "response.output_item.done":
-                    items[int(event.get("output_index") or 0)] = event.get("item") or {}
-                elif kind in ("response.completed", "response.incomplete"):
-                    final = event.get("response") or {}
-                    break
-                elif kind == "response.failed":
-                    error = (event.get("response") or {}).get("error") or {}
-                    raise RuntimeError(f"failed: {error.get('code')}: {error.get('message')}")
-                elif kind == "error":
-                    raise RuntimeError(f"error: {event.get('code')}: {event.get('message')}")
+                    elif kind == "response.failed":
+                        error = (event.get("response") or {}).get("error") or {}
+                        raise RuntimeError(f"failed: {error.get('code')}: {error.get('message')}")
+                    elif kind == "error":
+                        raise RuntimeError(f"error: {event.get('code')}: {event.get('message')}")
+        except _SENT_LOST as exc:
+            self._lost(body, len("".join(parts)), exc)
+            raise
         if not final and not stopped:
             raise RuntimeError("stream ended before the response completed")
         elapsed = time.perf_counter() - started
