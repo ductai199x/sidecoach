@@ -512,14 +512,20 @@ class GameAnnotator:
             return None
         if board.root().fen() != chess.STARTING_FEN:
             return None
-        found = self.book.identify(list(board.move_stack))
-        if found is None:
-            return None
-        eco = getattr(found, "eco", None)
-        name = getattr(found, "name", None)
-        if name is None:
-            return None
-        return f"{eco} {name}" if eco else str(name)
+        return opening_name(self.book, board.move_stack)
+
+
+def opening_name(book: Book, moves: Sequence[chess.Move]) -> str | None:
+    """The opening `moves` from the start position are in, as the analysis carries it ("C50
+    Italian Game"); None when the book names none."""
+    found = book.identify(list(moves))
+    if found is None:
+        return None
+    eco = getattr(found, "eco", None)
+    name = getattr(found, "name", None)
+    if name is None:
+        return None
+    return f"{eco} {name}" if eco else str(name)
 
 
 def _moves(line: Line) -> list[chess.Move]:

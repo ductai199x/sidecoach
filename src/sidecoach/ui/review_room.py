@@ -24,7 +24,7 @@ from typing import Any
 import chess
 import chess.pgn
 
-from sidecoach.analysis.annotator import Measured
+from sidecoach.analysis.annotator import Book, Measured
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import (
     STRENGTHS,
@@ -34,6 +34,7 @@ from sidecoach.analysis.game_review import (
     measured_from_json,
     measured_json,
     positions,
+    relabel,
     review_game,
     workers_for,
 )
@@ -57,8 +58,11 @@ GONE = "This game is no longer in your record."
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
 # What a review's summary and its Stats facts are made of from its report (`rederive`): raised
-# when that changes, the reviews kept. 2: the phases are Lichess's Divider's (efdd8a3).
-DERIVED = 2
+# when that changes, the reviews kept. 2: the phases are Lichess's Divider's (efdd8a3). 3: the
+# move labels are made again by today's rule (a miss is failing to punish the opponent's
+# error; chess.com's great, brilliant and book) and the openings named as Lichess names them
+# (Tai, 2026-10-02).
+DERIVED = 3
 DERIVED_KEY = "reviews.derived"
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
@@ -687,14 +691,18 @@ def review_row(
     return reviewed, summary
 
 
-def rederive(store: Store) -> int:
-    """Every saved review's summary, and its facts for Stats, made again from its report when
-    what they are made of has changed since (DERIVED): no engine, a few hundredths of a second
-    a game. The phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106
-    sides' phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review
-    of 2026-10-01). Returns the reviews made again."""
+def rederive(store: Store, thresholds: Thresholds | None = None, book: Book | None = None) -> int:
+    """Every saved review's labels, openings, summary and facts for Stats made again from its
+    report when what they are made of has changed since (DERIVED): no engine, a few hundredths
+    of a second a game. The phases became Lichess's (efdd8a3) with the reviews saved as they
+    were: 98 of 106 sides' phase grades and 745 of 3,522 moves' phases in Stats were the old
+    rule's (the review of 2026-10-01). The labels are made again by today's rule from each
+    move's saved measurements (`relabel`), the openings by `book` when there is one, and the
+    AI coach's words -- paid for -- are never touched (Tai, 2026-10-02). `thresholds`: the
+    settings' (the defaults without). Returns the reviews made again."""
     if store.setting(DERIVED_KEY) == str(DERIVED):
         return 0
+    thresholds = thresholds or Thresholds()
     counted = store.stat_strengths()
     done = 0
     for key, strength in store.saved_reviews():
@@ -702,8 +710,12 @@ def rederive(store: Store) -> int:
         if saved is None or saved.version != REVIEW_VERSION:
             continue
         try:
-            reviewed = ReviewedGame.model_validate_json(saved.report)
-            store.set_review_summary(key, strength, summarize(reviewed).model_dump_json())
+            reviewed = relabel(ReviewedGame.model_validate_json(saved.report), thresholds, book)
+            summary = summarize(reviewed).model_dump_json()
+            if not store.set_review_report(
+                key, strength, saved.reviewed_at, reviewed.model_dump_json(), summary
+            ):
+                continue  # replaced or removed meanwhile: that one stands
             row = library.find(store, key)
             if counted.get(key) == strength and row is not None:
                 keep_stats(store, strength, reviewed, row)
