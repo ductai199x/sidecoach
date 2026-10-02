@@ -47,3 +47,19 @@ def test_hand_of_knows_the_modifiers_only() -> None:
     assert hand_of("shift", 0x36, False) == "r"
     assert hand_of("shift", 0x99, False) is None
     assert hand_of("f9", 0x43, False) is None
+
+
+def test_the_keys_a_held_key_reads_as_down_by() -> None:
+    """The push-to-talk key is let go of only when Windows reads it up by every key it may be
+    held by: a modifier's generic key too, so a Right Ctrl reported as plain Ctrl never reads as
+    up while held (round 3 audit, 2026-10-02)."""
+    from sidecoach.voice.hotkey import windows_keys
+
+    assert windows_keys("ctrl_r") == (0xA3, 0x11)
+    assert windows_keys("shift_l") == (0xA0, 0x10)
+    assert windows_keys("alt_gr") == (0xA5, 0x12)
+    assert windows_keys("ctrl") == (0x11,)
+    assert windows_keys("f9") == (0x78,)
+    assert windows_keys("v") == (0x56,)
+    assert windows_keys("mouse_x1") == (0x05,)
+    assert windows_keys("menu") == ()  # unknown: never second-guessed

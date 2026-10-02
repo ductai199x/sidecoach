@@ -1518,7 +1518,12 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
     on the same game at ply 0 it passed as the new position's -- the profile filed White's
     analysis for a position with Black to move (the state review, 2026-10-01). The engine
     lets go of what it is on at a reset, and the glue passes on nothing of a position the
-    game no longer stands on, nor of another game."""
+    game no longer stands on, nor of another game.
+
+    The white reading's full measure is held until something stops it (`_WholeMeasureHeld`):
+    the test acts mid-measure by the engine's state, not by how long a search takes (it
+    took 0.3 s a search, and a slow moment between the measure's start and the drain
+    failed it)."""
     from sidecoach.cli import _Assessing
     from sidecoach.config import Settings
     from sidecoach.events import GameStarted, Resync, Side

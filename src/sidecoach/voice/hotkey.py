@@ -31,6 +31,44 @@ _LEFT_SHIFT_SCAN = 0x2A
 _RIGHT_SHIFT_SCAN = 0x36
 
 
+_SIDED_VK = {
+    "ctrl_l": 0xA2,
+    "ctrl_r": 0xA3,
+    "shift_l": 0xA0,
+    "shift_r": 0xA1,
+    "alt_l": 0xA4,
+    "alt_r": 0xA5,
+    "alt_gr": 0xA5,
+}
+_GENERIC_VK = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12}
+_MOUSE_VK = {"x1": 0x05, "x2": 0x06, "middle": 0x04}
+
+
+def windows_keys(name: str) -> tuple[int, ...]:
+    """The Windows virtual keys the push-to-talk key `name` reads as held by: its own, and for
+    a modifier its generic one too (a keyboard or a remapper reporting Right Ctrl as plain Ctrl
+    must never read as up while held). Empty for a key this does not know."""
+    name = (name or "").strip().lower()
+    if name.startswith(MOUSE_PREFIX):
+        vk = _MOUSE_VK.get(name.removeprefix(MOUSE_PREFIX))
+        return (vk,) if vk is not None else ()
+    if name in _SIDED_VK:
+        return (_SIDED_VK[name], _GENERIC_VK[name.split("_")[0]])
+    if name in _GENERIC_VK:
+        return (_GENERIC_VK[name],)
+    if name.startswith("f") and name[1:].isdigit() and 1 <= int(name[1:]) <= 24:
+        return (0x70 + int(name[1:]) - 1,)
+    if len(name) == 1 and name.isalnum():
+        return (ord(name.upper()),)
+    return ()
+
+
+def _windows_key_down(vk: int) -> bool:
+    import ctypes
+
+    return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)  # type: ignore[attr-defined]
+
+
 def hand_of(generic: str, scan: int, extended: bool) -> str | None:
     """ "l" or "r" for a modifier ("ctrl", "alt" or "shift") from the hardware's scan data, or
     None for a key this does not know."""
@@ -84,6 +122,8 @@ class GlobalPushToTalk:
         self._down = False
         self._lock = threading.Lock()
         self.detail = "off"
+        # Whether a virtual key is down now (Windows: GetAsyncKeyState); None elsewhere.
+        self.key_down: Callable[[int], bool] | None = _windows_key_down if os.name == "nt" else None
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.key:
@@ -118,6 +158,23 @@ class GlobalPushToTalk:
             with contextlib.suppress(Exception):
                 listener.stop()
         self._release()
+
+    def let_go_if_up(self) -> bool:
+        """Whether the key, taken as held, is in fact up: then it is let go of here (its release
+        called) and True. Windows removes a keyboard hook that answered late without a word,
+        and the key-up never came: the coach stayed silent, push-to-talk "held", until the
+        next press (round 3 audit, 2026-10-02). False when it is down, not taken as held, or
+        its state cannot be read."""
+        vks = windows_keys(self.key)
+        if not self._down or self.key_down is None or not vks:
+            return False
+        try:
+            if any(self.key_down(vk) for vk in vks):
+                return False
+        except Exception:  # noqa: BLE001 - unreadable: taken as held, as before
+            return False
+        self._release()
+        return True
 
     def _press(self) -> None:
         with self._lock:

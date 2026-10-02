@@ -69,3 +69,31 @@ def test_pressing_the_key_cuts_what_is_playing_at_once(
     fake.busy = True
     engine.ptt(True)
     assert fake.stops >= 1, "the voice was stopped on the press"
+
+
+def test_a_key_whose_key_up_was_lost_is_let_go_of(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """Windows removes a keyboard hook that answered late, without a word, and the key-up of
+    the push-to-talk key never comes: the coach stayed silent until the next press, and that
+    press was taken for the key repeating (round 3 audit, 2026-10-02). Asked whether it is
+    held, a global key that is in fact up is let go of. A press on the page's own button is
+    not the global key and is never second-guessed."""
+    engine, fake = _panel(make_panel)
+    down = {"key": True}
+    engine._hotkey.key = "ctrl_r"
+    engine._hotkey.key_down = lambda vk: down["key"]
+    engine._hotkey._press()  # the hook saw the key go down
+    assert engine._ptt_held()
+    down["key"] = False  # let go; the hook is gone and says nothing
+    assert not engine._ptt_held()
+    assert engine.poll()["state"]["ptt"] is False
+    assert engine._speak("stuck", "Look at f7.", ply=12) == "speak"
+    presses: list[bool] = []
+    engine._hotkey._on_press = lambda: presses.append(True)
+    engine._hotkey._press()
+    assert presses == [True], "the next press was taken for the key repeating"
+    # The page's button: no global key is held, and the key's state is not asked.
+    engine._hotkey._release()
+    engine.ptt(True)
+    assert engine._ptt_held()

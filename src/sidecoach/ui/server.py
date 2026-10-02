@@ -788,6 +788,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
 
     setup = Setup(engine.settings)
     engine.settings_followers.append(lambda s: setattr(setup, "settings", s))
+    setup.on_fetched.append(engine.setup_fetched)
 
     @app.get("/api/setup/status")
     def setup_status() -> dict[str, Any]:
@@ -1081,7 +1082,10 @@ def _room_voice(
             caption(text)
         # Mute is silence everywhere: the coach's Mute silenced the coach only, and Game
         # Review and the puzzles talked on (voice finding 12, 2026-10-01). Still captioned.
-        if getattr(engine, "muted", False):
+        # So is the push-to-talk key held: the player is talking, and the coach is silent
+        # everywhere (Tai, 2026-10-01: "if push to talk is on then the coach must be muted";
+        # the rooms talked on, round 3 audit).
+        if getattr(engine, "muted", False) or engine._ptt_held():
             return
         engine._voicing = (ROOM_VOICE, None)
         engine._tts.say(text)

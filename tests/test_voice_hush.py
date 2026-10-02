@@ -92,6 +92,46 @@ def test_a_barge_in_silences_the_rest_of_the_reply(tmp_path: Path) -> None:
     assert "Then look at Nh4 and Ne3." in _captioned(engine)
 
 
+def _feed_all(engine: PanelEngine) -> _FirstCandidate:
+    sink = engine._stream_sink(Trigger.USER_ASK, None)
+    assert sink is not None
+    reader = _FirstCandidate(sink, lambda text: [])
+    return reader
+
+
+def test_a_mute_before_the_first_sentence_keeps_the_ai_reply(tmp_path: Path) -> None:
+    """Muted while the model still thinks: the sink declined the first sentence, and the coach
+    put the offline template in the AI reply's place (round 3 audit, 2026-10-02). The reply is
+    the text, shown, and nothing is said."""
+    engine, fake = _engine(tmp_path)
+    reader = _feed_all(engine)
+    engine.set_muted(True)
+    for chunk in CHUNKS:
+        reader.feed(chunk)
+    reader.finish()
+    assert not reader.declined
+    assert reader.spoken == REPLY.strip()
+    assert "Then look at Nh4 and Ne3." in _captioned(engine)
+    assert not any(c.startswith("say:") for c in fake.calls)
+
+
+def test_a_reply_held_for_the_pace_is_held_whole(tmp_path: Path) -> None:
+    """A fast game holds a reply back for the pace ("text"): the sink declined it, and the
+    coach's template took its place. The whole reply is the text and the word held; nothing is
+    said until the game slows."""
+    engine, fake = _engine(tmp_path)
+    engine.voice_action = lambda *_args: "text"  # type: ignore[method-assign]
+    reader = _feed_all(engine)
+    for chunk in CHUNKS:
+        reader.feed(chunk)
+    reader.finish()
+    assert not reader.declined
+    assert reader.spoken == REPLY.strip()
+    assert engine._held_word is not None and engine._held_word[1] == REPLY.strip()
+    assert "Then look at Nh4 and Ne3." in _captioned(engine)
+    assert not any(c.startswith("say:") for c in fake.calls)
+
+
 class HeldSTT:
     """Speech recognition the test holds in the middle: `begun` says a recognition has
     started, and its words come once the test lets them (`go`) -- the time Parakeet takes on a
@@ -112,7 +152,7 @@ class HeldSTT:
 
     def transcribe(self, audio: Any, sample_rate: int = 16000) -> str:
         self.begun.set()
-        self.go.wait(HANG_S)
+        assert self.go.wait(HANG_S), "the test never let the recogniser go"
         return self.words.pop(0)
 
 

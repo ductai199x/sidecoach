@@ -363,6 +363,74 @@ def test_the_recogniser_loads_once_setup_has_fetched_it(monkeypatch: pytest.Monk
     assert stt.load() is True  # Setup fetched it: no restart needed
 
 
+def test_speech_recognition_is_on_once_setup_has_fetched_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Voice finding 4, the player's path: the recogniser failed to load at start (its files not
+    there yet), so listening stayed off, the microphone button hidden and its test refused,
+    until a restart -- Setup fetched the files and nothing loaded them (round 3 audit,
+    2026-10-02). Setup's run ends, the recogniser is loaded, and listening is applied as the
+    settings say."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import sidecoach.setup as setup_module
+    from sidecoach.config import Settings
+    from sidecoach.setup import Item
+    from sidecoach.ui.panel import PanelEngine
+    from sidecoach.ui.server import build_app
+
+    monkeypatch.setenv("SIDECOACH_CONFIG", str(tmp_path / "sidecoach.toml"))
+    monkeypatch.delenv("SIDECOACH_DATA_DIR", raising=False)
+    settings = Settings(data_dir=tmp_path)
+    settings.voice.listen = "ptt"
+    engine = PanelEngine(settings, analysis=False, coach=False, frame_source=iter(()))
+    files = {"there": False}
+
+    class Recogniser:
+        loaded = False
+
+        def healthcheck(self) -> tuple[bool, str]:
+            return (True, "fake") if self.loaded or files["there"] else (False, "not downloaded")
+
+        def load(self) -> bool:
+            self.loaded = files["there"]
+            return self.loaded
+
+    modes: list[str] = []
+
+    def set_mode(mode: str) -> str:
+        modes.append(mode)
+        listener.mode = mode
+        return mode
+
+    listener = SimpleNamespace(mode="off", level=0.0, set_mode=set_mode, mic=None)
+    engine._listener = listener  # type: ignore[assignment]
+    engine._hotkey = SimpleNamespace(start=lambda: True, stop=lambda: None, detail="")  # type: ignore[assignment]
+    engine._mic = SimpleNamespace(healthcheck=lambda: (True, "mic"))  # type: ignore[assignment]
+    engine._stt = Recogniser()  # type: ignore[assignment]
+    engine._tts = SimpleNamespace(healthcheck=lambda: (True, "voice"), busy=False)  # type: ignore[assignment]
+    engine._warm_voice()  # the start: no files yet
+    assert engine.poll(0)["state"]["stt_ready"] is False and listener.mode == "off"
+
+    def fetch(_progress: object) -> None:
+        files["there"] = True
+
+    item = Item("stt", "Speech recognition", 1, lambda: files["there"], fetch)
+    monkeypatch.setattr(setup_module, "items", lambda _settings: [item])
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    assert client.post("/api/setup/start", json={"ids": ["stt"]}).json()["ok"]
+    runs = [t for t in threading.enumerate() if t.name == "setup"]
+    for run in runs:
+        run.join(10)
+    for after in [t for t in threading.enumerate() if t.name == "voice-after-setup"]:
+        after.join(10)
+    state = engine.poll(0)["state"]
+    assert state["stt_ready"] is True, state["stt_detail"]
+    assert listener.mode == "ptt" and modes[-1] == "ptt"
+
+
 class _QuietGate:
     def load(self) -> bool:
         return True

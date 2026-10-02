@@ -473,6 +473,9 @@ class Setup:
     _thread: threading.Thread | None = None
     _state: dict[str, Any] = field(default_factory=dict)
     _cancel: threading.Event = field(default_factory=threading.Event)
+    # Told the ids fetched once a run ends: what was loaded before their files came (the
+    # voice, the recogniser) is loaded again, not left off until a restart.
+    on_fetched: list[Callable[[list[str]], None]] = field(default_factory=list)
 
     def status(self) -> dict[str, Any]:
         """Every item with whether it is present, and the run in progress if any."""
@@ -573,6 +576,10 @@ class Setup:
             with self._lock:
                 self._state["running"] = False
                 self._state["item"] = None
+                fetched = list(self._state["finished"])
+            if fetched:
+                for follower in list(self.on_fetched):
+                    follower(fetched)
 
         self._thread = threading.Thread(target=run, name="setup", daemon=True)
         self._thread.start()
