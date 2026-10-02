@@ -230,6 +230,21 @@ object Captions {
         }
     }
 
+    /**
+     * A line captioned when it was held back (a word in a fast game), said now: the box, faded
+     * since, comes back with the words (the desktop's `caption_again`, voice finding 20).
+     */
+    fun again() {
+        if (!on || front) return
+        main.post {
+            if (quitted || box != null || said.isEmpty()) return@post
+            if (ensureBox()) {
+                box?.setText(said.toString())
+                hideSoon()
+            }
+        }
+    }
+
     /** The voice muted or not, wherever that was said: the box's speaker follows. */
     fun muted(on: Boolean) {
         main.post { box?.showMuted(on) }
@@ -278,8 +293,15 @@ object Captions {
             }
             return
         }
+        // The sample line is no word of the coach's: the coach's first word takes its place
+        // (the desktop's `begin`). It stayed above the real words.
+        val afterSample = previewing && !force
         previewing = force
         finish()
+        if (afterSample) said.setLength(0)
+        // A box fading out went with the line that came during its fade; the sample's box lets
+        // every touch through, and kept on screen it stayed untouchable (voice findings 3, 8).
+        box?.let { if (it.fading || (!force && !it.touchable)) discardBox() }
         if (said.isNotEmpty()) said.append(if (continues) " " else "\n")
         trim()
         saying = line(text)
@@ -370,7 +392,7 @@ object Captions {
 
     private fun hideSoon(speaking: Long = 0) {
         main.removeCallbacks(hideLater)
-        if (keep) return
+        if (keep && !previewing) return
         main.postDelayed(hideLater, speaking + hideAfterMs)
     }
 
@@ -395,11 +417,29 @@ object Captions {
 
     private fun hide() {
         val view = box ?: return
-        if (view.busy) {
+        // Up while the voice speaks, as the desktop's box is (its poll's `speaking`): a flat five
+        // seconds from the line's start faded it under a long line still being said (finding 9).
+        if (view.busy || voiceSpeaking()) {
             hideSoon()
             return
         }
-        view.fadeOut { if (box === view) drop() }
+        view.fadeOut {
+            if (box === view) {
+                drop()
+                restore() // kept on screen: back, touchable, after the sample line
+            }
+        }
+    }
+
+    private fun voiceSpeaking(): Boolean = runCatching { PanelVoice.voiceOut()?.busy == true }.getOrDefault(false)
+
+    /** The box gone at once, the words kept (a fading box, the sample line's untouchable one). */
+    private fun discardBox() {
+        main.removeCallbacks(hideLater)
+        box?.detach()
+        box = null
+        target?.detach()
+        target = null
     }
 
     /** Where the box is on the screen now, for the tests; null when it is not shown. */
@@ -419,6 +459,9 @@ object Captions {
 
     /** Whether the game's moves are up under the words, for the tests. */
     internal fun movesUp(): Boolean = box?.movesShown ?: false
+
+    /** Whether the box up now takes touches, for the tests; null when it is not shown. */
+    internal fun touchable(): Boolean? = box?.touchable
 
     /** The words the box shows, for the tests; null when it is not shown. */
     internal fun wordsShown(): String? = box?.shownText()
@@ -525,7 +568,7 @@ object Captions {
     /** The caption box: its buttons, the words, the moves a tap shows, and the bar that sets its
      * height. */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
-    private class Box(private val ctx: Context, touchable: Boolean = true) : LinearLayout(ctx) {
+    private class Box(private val ctx: Context, val touchable: Boolean = true) : LinearLayout(ctx) {
         private val windows = ctx.getSystemService(WindowManager::class.java)
         private val params: WindowManager.LayoutParams
         private val words = TextView(ctx)
@@ -789,7 +832,12 @@ object Captions {
             runCatching { windows.removeView(this) }
         }
 
+        /** Fading out: a line that comes now gets a box of its own (finding 8). */
+        var fading = false
+            private set
+
         fun fadeOut(then: () -> Unit) {
+            fading = true
             animate().alpha(0f).setDuration(350).withEndAction(then).start()
         }
 

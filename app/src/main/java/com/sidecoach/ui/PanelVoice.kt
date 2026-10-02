@@ -341,6 +341,7 @@ object PanelVoice {
         heldWord = null
         voicing = held.trigger to held.ply
         awaitAudio(held.trigger, held.ply, held.text)
+        Captions.again() // captioned when it was held back, long faded: back while it is said
         speaker.say(held.text)
         PanelEngine.emit("voice", "debug", "speaking ($voice), the game slowed: ${PanelEngine.elide(held.text, 60)}")
     }

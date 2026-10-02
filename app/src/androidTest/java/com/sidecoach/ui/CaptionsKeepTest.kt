@@ -119,6 +119,63 @@ class CaptionsKeepTest {
         }
     }
 
+    /**
+     * The sample line over a box kept on screen fades as any sample does, and the kept box comes
+     * back touchable, without it; a real line after a sample does not run on from it; a line
+     * that comes while the box fades gets a box; a held word said later brings the faded box
+     * back (voice findings 3, 8 and 20).
+     */
+    @Test
+    fun theSampleLineLeavesATouchableBoxAndALineDuringTheFadeIsShown() {
+        automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
+        automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
+        Thread.sleep(1500)
+        app.getSharedPreferences("captions", 0).edit().clear().commit()
+        Captions.reset()
+        Captions.hideAfterMs = FADE_MS
+        Captions.configure(app, true)
+        try {
+            // Kept on screen, a look changed: the sample, then the kept box, touchable, empty of it.
+            Captions.keep(true)
+            Captions.preview()
+            assertTrue("no sample box", waitFor(3000) { box() != null })
+            var touchable: Boolean? = null
+            assertTrue("the kept box stayed untouchable", waitFor(9000) {
+                instrumentation.runOnMainSync { touchable = Captions.touchable() }
+                touchable == true
+            })
+            var words: String? = null
+            instrumentation.runOnMainSync { words = Captions.wordsShown() }
+            assertTrue("the sample stayed: $words", words?.contains("This is how captions look") != true)
+            // A real line straight after a sample: the sample is not above it.
+            Captions.preview()
+            Thread.sleep(200)
+            Captions.show("Nice move.")
+            assertTrue("the line did not show", waitFor(3000) {
+                instrumentation.runOnMainSync { words = Captions.wordsShown() }
+                words == "Nice move."
+            })
+            instrumentation.runOnMainSync { touchable = Captions.touchable() }
+            assertTrue("the line's box is untouchable", touchable == true)
+            // Not kept: a line that comes while the box fades out is shown.
+            Captions.keep(false)
+            Captions.show("Your bishop is loose.")
+            assertTrue(waitFor(3000) { box() != null })
+            Thread.sleep(FADE_MS + 120) // into the 350 ms fade
+            Captions.show("What defends it?")
+            Thread.sleep(800)
+            assertNotNull("the line during the fade went with the box", box())
+            assertTrue("the box did not fade", waitFor(9000) { box() == null })
+            // A held word said now: the box comes back with the words.
+            Captions.again()
+            assertTrue("the faded box did not come back", waitFor(3000) { box() != null })
+        } finally {
+            Captions.keep(false)
+            Captions.configure(app, false)
+            Captions.hideAfterMs = Captions.HIDE_AFTER_MS
+        }
+    }
+
     private companion object {
         /** The fade's wait in this test: a second, against the five the box ships with. */
         const val FADE_MS = 1000L
