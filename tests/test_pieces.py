@@ -477,6 +477,28 @@ def test_reads_a_set_from_its_own_start_position(style: str, theme: str, cell: i
     assert not wrong, wrong
 
 
+def test_the_embedders_own_cache_keeps_the_crops_used_last(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`CellEmbedder.embed` keeps the newest CACHED embeddings by the crop's pixels: a crop
+    seen again is a hit and becomes the newest, and the oldest goes first. (Reached before
+    only when one test process happened to embed over 2,048 crops: whether the eviction ran
+    depended on how the tests were dealt to the workers.)"""
+    from sidecoach.vision import embedding
+
+    monkeypatch.setattr(embedding, "CACHED", 2)
+    embedder = CellEmbedder()  # its own cache, not the one the other tests share
+    rng = np.random.default_rng(5)
+    a, b, c = (rng.integers(0, 256, (48, 48, 3), dtype=np.uint8) for _ in range(3))
+    first = embedder.embed([a, b])
+    assert len(embedder._seen) == 2
+    again = embedder.embed([a])  # a hit: a is now the newest
+    assert np.array_equal(again[0], first[0])
+    third = embedder.embed([c])  # past CACHED: the oldest, b, goes
+    kept = list(embedder._seen.values())
+    assert len(kept) == 2
+    assert np.array_equal(kept[0], first[0]) and np.array_equal(kept[1], third[0])
+    assert not any(np.array_equal(v, first[1]) for v in kept), "b was the oldest"
+
+
 @pytest.mark.slow  # -m slow: the default run reads the net on the CPU (tests/conftest.py)
 def test_the_net_runs_on_the_gpu_and_reads_as_on_the_cpu() -> None:
     """The app takes the GPU when it has one, and the tests read the net on the CPU: this

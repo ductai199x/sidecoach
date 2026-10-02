@@ -44,3 +44,49 @@ def test_a_verifier_that_cannot_be_built_leaves_the_coach_without_one() -> None:
     for kind, expected in (("", None), ("same", provider), ("opneai", None)):
         settings.coach.verify = kind
         assert _verifier(settings, provider) is expected, kind
+
+
+class _Behind:
+    """An analyser with `pending` verdicts still to come: each poll hands one over."""
+
+    def __init__(self, pending: int, forever: bool = False) -> None:
+        self.pending = pending
+        self.forever = forever
+        self.polls = 0
+
+    def poll(self) -> list[object]:
+        self.polls += 1
+        if self.pending == 0:
+            return []
+        if not self.forever:
+            self.pending -= 1
+        return [f"verdict {self.polls}"]
+
+
+def test_the_end_of_a_game_waits_for_the_engine_to_catch_up_and_no_longer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_Assessing.wait` at the end of a game: every verdict still to come is drained, polled
+    every 50 ms while the engine is behind; an engine that never catches up is let go at the
+    timeout with what it gave. On a clock the test owns (the replay and record commands use
+    it; the analysis tests wait on the analyser's own signals instead)."""
+    from tests.fakes import ManualClock
+
+    clock = ManualClock()
+    monkeypatch.setattr(cli, "time", clock.time_module())
+    assessing = cli._Assessing(Settings(data_dir=tmp_path), enabled=False)
+    assert assessing.wait() == [], "no engine: nothing to wait for"
+    behind = _Behind(pending=3)
+    assessing.analyser = behind  # type: ignore[assignment]
+    assert assessing.wait(timeout=30.0) == ["verdict 1", "verdict 2", "verdict 3"]
+    assert clock.sleeps == [0.05, 0.05, 0.05], "polled each 50 ms while behind, then not"
+    clock.sleeps.clear()
+    stuck = _Behind(pending=1, forever=True)
+    assessing.analyser = stuck  # type: ignore[assignment]
+    start = clock.now
+    drained = assessing.wait(timeout=1.0)
+    waited = clock.now - start
+    assert 1.0 <= waited < 1.0 + 0.05 + 1e-9, f"let go at the first poll past 1 s: {waited}"
+    assert set(clock.sleeps) == {0.05}
+    polls = len(clock.sleeps) + 1  # one a sleep, and the last drain on the way out
+    assert drained == [f"verdict {n}" for n in range(1, polls + 1)], "with every verdict it gave"

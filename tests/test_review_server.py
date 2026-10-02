@@ -906,6 +906,51 @@ def test_no_ai_words_are_paid_for_on_a_game_removed(
     store.close()
 
 
+def test_a_review_closed_while_it_runs_stops_and_is_no_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The player closes Game Review while its engine is still at the game: the review stops
+    there, saves nothing, and is not taken for a failure (nor for a game that left the
+    record) -- the room just ends. Its engine's first search is held until the room is
+    closed, so the close lands mid-review every time."""
+    import threading
+
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    searching, gate = threading.Event(), threading.Event()
+
+    class HeldEngine(FakeEngine):
+        def analyse(self, board: Any, **kwargs: Any) -> Any:
+            if not searching.is_set():
+                searching.set()
+                assert gate.wait(HANG_S), "the held search was never let go"
+            return super().analyse(board, **kwargs)
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    settings = Settings(data_dir=tmp_path)
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: HeldEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None and searching.wait(HANG_S), "the review never reached its engine"
+    room.close()
+    gate.set()
+    assert room.settled.wait(HANG_S), "the review never settled"
+    room.join(HANG_S)
+    assert room.closed
+    assert room.status != "failed" and room.error is None, (room.status, room.error)
+    texts = [line["text"] for line in room.poll()["lines"]]
+    assert not any("left the record" in t or "review failed" in t for t in texts), texts
+    assert store.review(row.key, "fast") is None, "a stopped review is not saved"
+    store.close()
+
+
 def test_words_that_fail_with_the_store_failing_too_still_end_and_the_room_closes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -176,9 +176,16 @@ def test_shutdown_ends_the_session_before_the_process_goes(
     all_read = threading.Event()
 
     def live_game() -> Any:
-        yield from game_frames()
+        last = None
+        for last in game_frames():
+            yield last
         all_read.set()  # every frame read and handled: the screen shows nothing new ...
         engines[0]._stop.wait(HANG_S)  # ... until the session is stopped
+        # A capture still delivers the frame after the stop: the loop sees the stop before it
+        # reads it (the session loop's own check between frames), not the source running dry.
+        if last is not None:
+            frame_id, ts, frame = last
+            yield frame_id + 1, ts + 0.1, frame
 
     def make(settings: Settings, **_: Any) -> PanelEngine:
         engine = make_panel(settings, frame_source=live_game())

@@ -793,6 +793,36 @@ def test_asking_before_the_engine_has_looked_is_answered_when_it_has_even_early(
         assert answered[0].text != out[0].text
 
 
+def test_an_early_analysis_of_a_position_left_behind_answers_nothing_asked_now() -> None:
+    """The engine behind the game: its early look at a position the game has moved past
+    lands while the player waits on a question about the position now. It is kept for its
+    own position, and the question waits for the engine's look at the board now -- never
+    answered from the older one. (The takeback tests met this only when their engine was
+    slow enough; here it is the step the test takes.)"""
+    coach, provider = scripted_coach([])
+    play_to_scholar(coach)
+    coach.ask("hint", 6.5)
+    asked = drain(coach)
+    assert len(asked) == 1 and asked[0].trigger is Trigger.USER_ASK  # "a moment"
+    behind = coach.positions[4].board
+    move = next(iter(behind.legal_moves)).uci()
+    late = Analysis(
+        game_id="g",
+        fen=behind.fen(),
+        ply=4,
+        lines=[Line(moves=[move], depth=12, expected_score=0.5)],
+        decisive=False,
+        only_move=False,
+        provisional=True,
+    )
+    coach.on_event(late, 6.8)
+    assert coach.positions[4].analysis == late, "kept for its own position"
+    assert drain(coach) == [] and provider.prompts == [], "the question about now still waits"
+    coach.on_event(mate_analysis(6, decisive=False).model_copy(update={"provisional": True}), 7.0)
+    answered = drain(coach)
+    assert answered and all(m.trigger is Trigger.USER_ASK for m in answered)
+
+
 def test_an_analysis_early_or_full_says_nothing_of_its_own() -> None:
     """What the engine finds is no reason to speak while the player thinks: neither its
     early look nor the full depth says a word, a decisive moment included (Tai,

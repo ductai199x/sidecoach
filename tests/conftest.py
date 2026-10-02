@@ -191,8 +191,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers", "embedder: loads the embedding net outside the vision suite (tests/conftest.py)"
     )
     _below_normal_priority()  # the controller and, since this runs in each, every worker
-    if os.environ.get("PYTEST_XDIST_WORKER") or config.getvalue("dist") == "no":
-        _one_thread_each()  # a process that runs tests (the controller of workers runs none)
     # No panel built by a test loads Kokoro or Parakeet; the one that wants the real recogniser
     # says so (PanelEngine(voice_models=True)).
     os.environ.setdefault("SIDECOACH_VOICE_MODELS", "0")
@@ -214,6 +212,16 @@ def pytest_configure(config: pytest.Config) -> None:
             "to end, or set SIDECOACH_TEST_ALONGSIDE=1 if it is not a live game.",
             returncode=3,
         )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """The pools capped in a process that runs tests (the controller of workers runs none),
+    before anything is collected and after every plugin is configured: imported any earlier,
+    the app's modules ran their import before coverage was recording in a worker, and their
+    module-level lines (300 of them) read as never run."""
+    if os.environ.get("PYTEST_XDIST_WORKER") or session.config.getvalue("dist") == "no":
+        _one_thread_each()
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:

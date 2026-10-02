@@ -40,6 +40,8 @@ class FakeOutputStream:
     gate: threading.Event | None = None
     opening = threading.Event()
     instances: list[FakeOutputStream] = []
+    # Set: the device is there but asks for no samples yet (a busy audio stack).
+    held = False
 
     def __init__(self, samplerate: int, channels: int, dtype: str, device: Any, callback: Any):
         FakeOutputStream.opening.set()
@@ -57,7 +59,7 @@ class FakeOutputStream:
         def run() -> None:
             while not self.closed:
                 with self._device:
-                    if not self.dead:
+                    if not self.dead and not FakeOutputStream.held:
                         out = np.zeros((480, 1), dtype=np.float32)
                         self.callback(out, 480, None, None)
                         self.played += int(np.count_nonzero(out))
@@ -136,6 +138,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
 def voice(monkeypatch: pytest.MonkeyPatch, clock: ManualClock) -> Iterator[WatchedTTS]:
     monkeypatch.setattr(kk, "follows_system_default", lambda device, kind: False)
     FakeOutputStream.gate = None
+    FakeOutputStream.held = False
     FakeOutputStream.opening = threading.Event()
     FakeOutputStream.instances = []
     tts = WatchedTTS(model_dir=Path("."), output_device=1)
@@ -187,6 +190,42 @@ def test_a_dead_output_stream_is_dropped_and_reopened(
     second = FakeOutputStream.instances[1]
     second.halt()
     assert second.played > 0
+
+
+def test_a_live_stream_slow_to_take_a_line_is_waited_for_not_dropped(
+    voice: WatchedTTS, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of the dead stream: a device that is there but has not asked for the
+    line yet is waited on, round after round, and the line plays on the same stream once it
+    asks. The voice's clock does not move, so the device is never silent for STREAM_DEAD_S;
+    the test lets the device ask only after the voice has looked at least twice."""
+    voice.say("First line.")
+    voice.line_done()
+    stream = FakeOutputStream.instances[0]
+    looks = threading.Condition()
+    seen = [0]
+    read = kk.time.monotonic
+
+    def monotonic() -> float:
+        with looks:
+            seen[0] += 1
+            looks.notify_all()
+        return read()
+
+    monkeypatch.setattr(kk.time, "monotonic", monotonic)
+    FakeOutputStream.held = True
+    played = stream.played
+    voice.say("Second line.")
+    with looks:
+        # The wait's own start, then a round that found the line still queued and the
+        # device alive (the device asks for nothing while held, so these are the wait's).
+        assert looks.wait_for(lambda: seen[0] >= 3, HANG_S), "the voice never looked again"
+    assert voice.busy and not stream.dead
+    FakeOutputStream.held = False
+    voice.line_done()
+    assert not voice.busy and not stream.dead
+    assert FakeOutputStream.instances == [stream], "the same stream, not reopened"
+    assert stream.played > played, "the second line played on it"
 
 
 def test_a_closed_voice_releases_its_worker_model_and_stream(voice: WatchedTTS) -> None:

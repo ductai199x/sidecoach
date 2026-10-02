@@ -1274,6 +1274,62 @@ def test_the_position_the_player_left_gives_way_to_the_one_they_face() -> None:
     assert analyser.pending == 0
 
 
+class _HoldTheResumed(_YieldOnceEngine):
+    """The give-way engine above, whose search of `fen` taken up again (its second whole
+    measure) waits at `gate` -- an interrupt does not cut it short -- and then answers."""
+
+    def __init__(self, fen: str) -> None:
+        super().__init__({})
+        self.fen = fen
+        self.measures = 0
+        self.resumed = threading.Event()  # the measure taken up again is under way
+        self.gate = threading.Event()
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        several = int(kwargs.get("multipv") or 1) > 1  # type: ignore[call-overload]
+        if several and board.fen() == self.fen:
+            self.measures += 1
+            if self.measures == 2:
+                self.resumed.set()
+                assert self.gate.wait(HANG_S), "the resumed measure was never let go"
+                return [Line(moves=["e7e5"], depth=18, expected_score=0.5)]
+        return super().analyse(board, **kwargs)
+
+
+def test_a_measure_taken_up_again_and_then_taken_back_says_nothing() -> None:
+    """The position the player left gave way to the one they faced and was taken up again
+    (above); then both moves are taken back while it is measured. Its search ends with lines
+    all the same, and they are dropped: nothing about a withdrawn move is passed on, and the
+    request is settled. (The takeback tests met this only when the timing fell so.)"""
+    board = chess.Board()
+    board.push_san("e4")
+    fake = _HoldTheResumed(board.fen())
+    board = chess.Board()
+    analyser = Analyser(GameAnnotator(engine=fake, depth=18, with_threats=False))
+    watch = AnalyserWatch(analyser)
+    with analyser:
+        analyser.submit_move("g", board, chess.Move.from_uci("e2e4"), 1, by_user=True)
+        assert fake.holding.wait(HANG_S), "the full measure never started"
+        board.push_san("e4")
+        analyser.submit_move("g", board, chess.Move.from_uci("e7e5"), 2, by_user=False)
+        assert fake.resumed.wait(HANG_S), "the measure was never taken up again"
+        before = [
+            (type(e).__name__, getattr(e, "ply", None), getattr(e, "provisional", False))
+            for e in analyser.poll()
+        ]
+        analyser.withdraw("g", 0)  # both moves taken back, the resumed measure under way
+        fake.gate.set()
+        after = watch.settled()
+    assert before == [
+        ("MoveAssessment", 1, False),
+        ("Analysis", 2, True),
+        ("MoveAssessment", 2, False),
+        ("Analysis", 2, False),
+    ], before
+    assert after == [], f"a withdrawn move's measure passed on: {after}"
+    assert analyser.pending == 0 and fake.measures == 2
+
+
 @needs_engine
 def test_each_depth_is_delivered_as_the_search_finishes_it(
     engine: Engine, monkeypatch: pytest.MonkeyPatch
