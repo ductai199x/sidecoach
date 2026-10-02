@@ -43,6 +43,9 @@ class StatsReviewTest {
             store.saveStats("standard", game("pgn:1", userSide = null), listOf(move(1)))
             var shown = Stats.stats(store, Stats.Filter(), now)
             assertEquals(0 to 1, shown.getJSONObject("overview").getInt("games") to shown.getInt("unsided"))
+            // A filter that takes no game says so, not "add your username" for a game it leaves out
+            // anyway (the audit of 2026-10-02).
+            assertEquals(0, Stats.stats(store, Stats.Filter(timeClass = "blitz"), now).getInt("unsided"))
             Library.refresh(store, listOf("tai"))
             shown = Stats.stats(store, Stats.Filter(), now)
             assertEquals(1 to 0, shown.getJSONObject("overview").getInt("games") to shown.getInt("unsided"))

@@ -1,9 +1,13 @@
 package com.sidecoach.ui
 
+import com.sidecoach.profile.Library
+import com.sidecoach.profile.Store
 import com.sidecoach.voice.Py
 import com.sidecoach.voice.Voices
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.IOException
 
 /**
  * The settings over HTTP, for the panel's settings page. `sidecoach/ui/settings_api.py`.
@@ -21,9 +25,37 @@ import org.json.JSONObject
  * in it, so the page never shows one that does nothing (Tai, 2026-09-24: the Voice setting
  * listed one voice, and the page showed the desktop's devices, folders and GPU switches).
  */
-class SettingsApi(val store: SettingsStore) {
+class SettingsApi(
+    val store: SettingsStore,
+    /** The player's record, whose games follow the usernames ([refreshLibrary]). */
+    private val profile: File = File(store.files, "profile.sqlite"),
+) {
 
     companion object {
+        /** The usernames in the settings, for the games that follow them. */
+        fun userNames(store: SettingsStore): List<String> {
+            val profile = store.section("profile")
+            return listOf(profile.optString("chesscom_user", ""), profile.optString("lichess_user", ""))
+                .map { Py.strip(it) }.filter { it.isNotEmpty() }
+        }
+
+        /**
+         * The games' fields that follow the usernames, as the settings read now
+         * ([Library.refresh]): a game brought in before the username was set gets the player's
+         * side. The desktop's background review refreshes at every look; the phone has none, so
+         * it is done where the usernames can change -- a save that changes one, and the app's
+         * start -- not only when Stats or Your games is opened: until then the coach's biggest
+         * cost and Stats left such games out (the review of 2026-10-01).
+         */
+        fun refreshLibrary(store: SettingsStore, profile: File = File(store.files, "profile.sqlite")) {
+            val record = Store(profile)
+            try {
+                Library.refresh(record, userNames(store))
+            } finally {
+                record.close()
+            }
+        }
+
         /**
          * One write of the settings at a time, each whole -- read, merge, save, apply: a
          * Settings save, a switch on the panel kept for the next session (muted, how the coach
@@ -34,6 +66,15 @@ class SettingsApi(val store: SettingsStore) {
          * remembering. `settings_api.saving`.
          */
         val SAVING = Any()
+
+        /**
+         * Each Settings page's latest save applied, by its count, guarded by [SAVING]. The page
+         * sends a save as it closes (the phone hides it at every app switch) beside the one on its
+         * way; the two can land in either order, and the older one, landing last, put back what
+         * the later one changed (the audit of 2026-10-02). The later save carries every change
+         * since the last acknowledged, so the older one has nothing it lacks. `_applied`.
+         */
+        val APPLIED = HashMap<String, Long>()
     }
 
     fun describe(): JSONObject = JSONObject().apply {
@@ -66,7 +107,23 @@ class SettingsApi(val store: SettingsStore) {
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
         val stored = JSONObject()
+        // The Settings page that sent it and its count of saves (`SettingsUpdate.page`, `seq`).
+        val page = if (body.isNull("page")) null else body.optString("page", "").ifEmpty { null }
+        val seq = if (body.isNull("seq") || !body.has("seq")) null else body.optLong("seq")
         val (after, changed) = synchronized(SAVING) {
+            if (page != null && seq != null && seq <= (APPLIED[page] ?: 0L)) {
+                // An older save of the page, landing after a later one: the later one had it all.
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("path", store.values().optString("data_dir"))
+                    put("changed", JSONArray())
+                    put("now", JSONArray())
+                    put("next", JSONArray())
+                    put("restart", JSONArray())
+                    put("secrets", JSONObject())
+                    put("superseded", true)
+                }
+            }
             val before = store.values()
             // What changed, laid over the settings as they are now (`settings_api.update`'s
             // `_merged`): the page sends only what changed, and laid over the defaults that reset
@@ -88,10 +145,17 @@ class SettingsApi(val store: SettingsStore) {
             ) {
                 llmWanted.put("model", JSONObject.NULL)
             }
+            dropHeld(wanted)
             // The phone owns these; the page shows them and cannot move them.
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
-            store.save(wanted)
+            try {
+                store.save(wanted)
+            } catch (e: IOException) {
+                // Not kept: said to the page, never a crash (`settings_api.update`'s OSError).
+                return JSONObject().put("ok", false).put("error", "The settings could not be saved: ${e.message}")
+            }
+            if (page != null && seq != null) APPLIED[page] = seq
             val after = store.values()
             val changed = changed(before, after)
 
@@ -111,6 +175,14 @@ class SettingsApi(val store: SettingsStore) {
             PanelWarm.applySettings(store, changed)
             PanelEngine.settingsTouched()
             after to changed
+        }
+        if ("profile.chesscom_user" in changed || "profile.lichess_user" in changed) {
+            // The player's side of the games brought in before the username was set.
+            try {
+                refreshLibrary(store, profile)
+            } catch (e: Exception) {
+                PanelEngine.emit("sys", "warn", "your games could not follow the new username yet: $e")
+            }
         }
         val applies = applies(JSONObject(store.schema))
         val now = changed.filter { applies[it] == "now" }
@@ -170,12 +242,39 @@ class SettingsApi(val store: SettingsStore) {
                 }
                 PanelEngine.emit("sys", "warn", "${loc.joinToString(".")}: not kept for the next session (${error.optString("msg")})")
             }
+            dropHeld(wanted)
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
-            store.save(wanted)
+            try {
+                store.save(wanted)
+            } catch (e: IOException) {
+                // The switch has moved; only its keeping failed, and the log says so
+                // (`settings_api.remember`'s OSError).
+                PanelEngine.emit("sys", "warn", "${names(change)}: not kept for the next session (${e.message})")
+                return
+            }
             PanelEngine.settingsTouched()
         }
     }
+
+    /**
+     * A value the settings hold and refuse, which the change does not set, put back to its
+     * default, and the log says so: left, it refused every later save and mute for a field
+     * nobody had sent (the settings review, 2026-10-01). Only a field the change itself sets is
+     * refused; those were checked before this. `settings_api._validated` with `drop_refused`.
+     */
+    private fun dropHeld(wanted: JSONObject) {
+        val dropped = SettingsCheck.dropRefused(JSONObject(store.schema), store.defaults(), wanted)
+        if (dropped.isNotEmpty()) {
+            PanelEngine.emit("sys", "warn", "settings: ${dropped.joinToString(", ")} could not be kept, back at the default")
+        }
+    }
+
+    /** The fields a change sets, `section.field`, as the log names them. */
+    private fun names(change: JSONObject): String = change.keys().asSequence().flatMap { key ->
+        val section = change.opt(key)
+        if (section is JSONObject) section.keys().asSequence().map { "$key.$it" } else sequenceOf(key)
+    }.joinToString(", ")
 
     private fun words(names: List<String>): String =
         names.joinToString(", ") { it.substringAfterLast('.').replace("_", " ") }
@@ -223,11 +322,42 @@ class SettingsApi(val store: SettingsStore) {
             val b = new.opt(key)
             if (prefix.isEmpty() && a is JSONObject && b is JSONObject) {
                 out.addAll(changed(a, b, "$key."))
-            } else if (a?.toString() != b?.toString()) {
+            } else if (!same(a, b)) {
                 out.add("$prefix$key")
             }
         }
         return out.sorted()
+    }
+
+    /**
+     * Two JSON values equal as Python's == finds them: objects by their keys and values in any
+     * order, lists in order, numbers by value (1 is 1.0, True is 1). Compared as text,
+     * llm.extra_body re-sent with its keys in another order counted as changed and rebuilt the
+     * coach's model for nothing (the review of 2026-10-01).
+     */
+    private fun same(a: Any?, b: Any?): Boolean {
+        val x = if (a == JSONObject.NULL) null else a
+        val y = if (b == JSONObject.NULL) null else b
+        return when {
+            x == null || y == null -> x == null && y == null
+            x is JSONObject && y is JSONObject -> {
+                val keys = x.keys().asSequence().toSet()
+                keys == y.keys().asSequence().toSet() && keys.all { same(x.opt(it), y.opt(it)) }
+            }
+            x is JSONArray && y is JSONArray -> x.length() == y.length() && (0 until x.length()).all { same(x.opt(it), y.opt(it)) }
+            (x is Number || x is Boolean) && (y is Number || y is Boolean) -> {
+                if (x is Boolean && y is Boolean) return x == y
+                fun value(v: Any): Double = if (v is Boolean) (if (v) 1.0 else 0.0) else (v as Number).toDouble()
+                val bothWhole = (x is Int || x is Long || x is Boolean) && (y is Int || y is Long || y is Boolean)
+                if (bothWhole) {
+                    fun whole(v: Any): Long = if (v is Boolean) (if (v) 1L else 0L) else (v as Number).toLong()
+                    whole(x) == whole(y)
+                } else {
+                    value(x) == value(y)
+                }
+            }
+            else -> x == y
+        }
     }
 }
 
@@ -306,6 +436,33 @@ object SettingsCheck {
     }
 
     /**
+     * Each field of [values] (a whole settings document) the settings refuse put back to its
+     * value in [defaults], in place, as the desktop's `drop_refused` takes it out of the data so
+     * it takes its default; the others stay. Checked again after each round, as
+     * `config._read_settings` and `settings_api._validated` validate again; returns the dotted
+     * names put back (`section.field`, or a top-level one).
+     */
+    fun dropRefused(schema: JSONObject, defaults: JSONObject, values: JSONObject): List<String> {
+        val dropped = ArrayList<String>()
+        repeat(values.length() + 1) { // each round puts at least one field back
+            val errors = validate(schema, defaults, values).errors
+            var took = false
+            for (i in 0 until errors.length()) {
+                val loc = errors.getJSONObject(i).getJSONArray("loc").let { a -> (0 until minOf(a.length(), 2)).map { a.get(it).toString() } }
+                if (loc.isEmpty()) continue
+                val holder = if (loc.size == 1) values else values.optJSONObject(loc[0]) ?: continue
+                val fallback = if (loc.size == 1) defaults.opt(loc[0]) else defaults.optJSONObject(loc[0])?.opt(loc[1])
+                if (holder.has(loc.last()) && holder.opt(loc.last())?.toString() == fallback?.toString()) continue // already the default
+                holder.put(loc.last(), copy(fallback))
+                dropped.add(loc.joinToString("."))
+                took = true
+            }
+            if (!took) return dropped
+        }
+        return dropped
+    }
+
+    /**
      * The fields pydantic checks with a validator of their own: the board's pieces, a shipped
      * set or one of the player's own (`BoardSettings._known_pieces`), and its theme
      * (`_known_theme`). The page offers only those; a name it does not is refused as there.
@@ -374,7 +531,13 @@ object SettingsCheck {
         }
         if (coerced.error != null) return coerced
         val number = coerced.value as? Number ?: return coerced
-        return bounds(inner, number, value, loc) ?: coerced
+        bounds(inner, number, value, loc)?.let { return it }
+        // A JSON document cannot hold a number that is not finite: "inf" in a field with no
+        // bound made the save throw, a 500 (the review of 2026-10-01). Refused as a field,
+        // in pydantic's words for it.
+        val x = number.toDouble()
+        if (x.isNaN() || x.isInfinite()) return Checked(null, error("finite_number", loc, "Input should be a finite number", value))
+        return coerced
     }
 
     /** pydantic-core's order: at most, below, at least, above. */

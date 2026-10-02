@@ -311,23 +311,24 @@ class ReviewRoomTest {
         var go = CountDownLatch(1)
         var model = Held(go)
         val room = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
-        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        assertTrue("loaded", room.settled.await(HANG_MS) && room.status == "ready")
         assertNull(room.writeWords())
         room.close()
-        Thread.sleep(1000)
-        assertFalse("open while its words are written", room.closed)
+        // The room's own rule, asked at any moment: closed while writing, it does not end.
+        assertFalse("open while its words are written", room.closing(SystemClock.elapsedRealtime()))
+        assertFalse(room.closed)
         assertTrue("opened again: the same room goes on", room.reopen())
         assertEquals("writing", room.state().getJSONObject("ai").getString("status"))
         go.countDown()
-        until(room, 20, "words") { it.getJSONObject("ai").getString("status") == "ready" }
+        assertTrue("words", room.wordsDone.await(HANG_MS))
+        assertEquals("ready", room.state().getJSONObject("ai").getString("status"))
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
         val asked = model.asked.size
         assertEquals("asked once each", game.getJSONArray("key_plies").length(), asked)
-        Thread.sleep(1000)
-        assertFalse("opened again, it stays open", room.closed)
+        assertFalse("opened again, it stays open", room.closing(SystemClock.elapsedRealtime()))
+        assertFalse(room.closed)
         room.close()
-        val end = SystemClock.elapsedRealtime() + 5000
-        while (!room.closed && SystemClock.elapsedRealtime() < end) Thread.sleep(50)
+        room.join(HANG_MS)
         assertTrue("nothing being written: closed at once", room.closed)
 
         // Closed while writing, not opened again: open until the words are saved, then closed.
@@ -335,16 +336,174 @@ class ReviewRoomTest {
         go = CountDownLatch(1)
         model = Held(go)
         val again = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
-        until(again, 10, "loaded again") { it.getString("status") == "ready" }
+        assertTrue("loaded again", again.settled.await(HANG_MS) && again.status == "ready")
         assertNull(again.writeWords())
         again.close()
-        Thread.sleep(1000)
-        assertFalse(again.closed)
+        assertFalse("writing: stays", again.closing(SystemClock.elapsedRealtime()) || again.closed)
         go.countDown()
-        val done = SystemClock.elapsedRealtime() + 20_000
-        while (!again.closed && SystemClock.elapsedRealtime() < done) Thread.sleep(50)
+        again.join(HANG_MS)
         assertTrue("closed once its words are saved", again.closed)
         assertFalse("saved whole", saved()!!.optBoolean("partial", false))
+    }
+
+    /** A game of the desktop's saved reviews (profile/reviews.json) at Fast with key moves, saved in a store of its own. */
+    private class Saved(val files: File, val storePath: File, val row: LibraryRow, val game: JSONObject) {
+        val keyPlies: List<Int> = game.getJSONArray("key_plies").let { a -> (0 until a.length()).map { a.getInt(it) } }
+
+        fun words(): JSONObject? = Store(storePath).let { s -> s.review(row.key, "fast").also { s.close() } }
+            ?.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
+
+        fun remove() = Store(storePath).apply { removeGame(row.key) }.close()
+    }
+
+    private fun saved(name: String): Saved {
+        val fixture = JSONObject(InstrumentationRegistry.getInstrumentation().context.assets.open("profile/reviews.json").bufferedReader().use { it.readText() })
+        val games = fixture.getJSONArray("games")
+        val game = (0 until games.length()).map { games.getJSONObject(it) }
+            .first { it.getString("strength") == "fast" && it.getJSONArray("key_plies").length() > 1 }
+        val files = File(context.cacheDir, name).apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val storePath = File(files, "profile.sqlite")
+        val row = Library.fromPgn(game.getString("pgn"), listOf("nosegazm")).single()
+        Store(storePath).apply {
+            addLibraryGame(row)
+            assertTrue(saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, game.getJSONObject("reviewed").toString(), game.getJSONObject("summary").toString()))
+        }.close()
+        return Saved(files, storePath, row, game)
+    }
+
+    private val noEngine = EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") }
+
+    /**
+     * Some calls failed and the words were saved as done: the failed moves had none for good,
+     * and nothing offered to finish them (the review of 2026-10-01). The room says it could not
+     * finish, keeps the answers paid for as partial, and Try again asks the rest alone. The
+     * desktop's test_ai_words_cut_short_by_failed_calls_offer_try_again_for_the_rest.
+     */
+    @Test
+    fun aiWordsCutShortByFailedCallsOfferTryAgainForTheRest() {
+        val saved = saved("review-words-failed")
+        val failing = saved.keyPlies.last()
+        val asked: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+        val fail = java.util.concurrent.atomic.AtomicBoolean(true)
+        val model = object : LLMProvider {
+            override val name = "flaky"
+
+            override fun healthcheck(): Pair<Boolean, String> = true to "flaky"
+
+            override fun chat(system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean): Completion {
+                val ply = PLY.find(messages[0].content)?.groupValues?.get(1)?.toInt() ?: -1
+                asked.add(ply)
+                if (ply == failing && fail.get()) throw java.io.IOException("429: slow down")
+                return Completion(
+                    text = "### why\nThis gives the opponent time.\n### lesson\nLook at what your opponent can do next.",
+                    stats = mapOf("prompt_tokens" to 1000.0, "completion_tokens" to 300.0),
+                )
+            }
+        }
+        val room = ReviewRoom(saved.files, SettingsStore(context), saved.row, saved.storePath, "fast", noEngine, model = { model to null })
+        try {
+            assertTrue("loaded", room.settled.await(HANG_MS) && room.status == "ready")
+            assertNull(room.writeWords())
+            assertTrue(room.wordsDone.await(HANG_MS))
+            val total = saved.keyPlies.size
+            val ai = room.state().getJSONObject("ai")
+            assertEquals("failed", ai.getString("status"))
+            assertEquals(
+                "Written on ${total - 1} of $total key moves; the rest failed (the call failed: 429: slow down).",
+                ai.getString("error"),
+            )
+            assertEquals("the answers paid for", total - 1, ai.getInt("answered"))
+            assertTrue("kept, not done", saved.words()!!.optBoolean("partial", false))
+            assertEquals(saved.keyPlies.toSet(), asked.toSet())
+
+            asked.clear()
+            fail.set(false)
+            assertNull("Try again", room.writeWords())
+            assertTrue(room.wordsDone.await(HANG_MS))
+            assertEquals("ready", room.state().getJSONObject("ai").getString("status"))
+            assertEquals("the rest alone", setOf(failing), asked.toSet())
+            assertFalse("saved whole", saved.words()!!.optBoolean("partial", false))
+        } finally {
+            room.close()
+            room.join(HANG_MS)
+        }
+    }
+
+    /**
+     * AI words on a game removed meanwhile were paid for, then saved on nothing (the review of
+     * 2026-10-01). Removed while they are written, no more calls are made and the room says why;
+     * removed before, none are asked. The calls one at a time, so "no more" is a count. The
+     * desktop's test_no_ai_words_are_paid_for_on_a_game_removed.
+     */
+    @Test
+    fun noAiWordsArePaidForOnAGameRemoved() {
+        val saved = saved("review-words-gone")
+        val asked: MutableList<Int> = java.util.Collections.synchronizedList(ArrayList())
+        val model = object : LLMProvider {
+            override val name = "removing"
+
+            override fun healthcheck(): Pair<Boolean, String> = true to "removing"
+
+            override fun chat(system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean): Completion {
+                asked.add(PLY.find(messages[0].content)?.groupValues?.get(1)?.toInt() ?: -1)
+                if (asked.size == 1) saved.remove() // removed while the first answer is written
+                return Completion(text = "### why\nMove.", stats = mapOf("prompt_tokens" to 1.0, "completion_tokens" to 1.0))
+            }
+        }
+        val was = com.sidecoach.coach.ReviewWords.PARALLEL
+        com.sidecoach.coach.ReviewWords.PARALLEL = 1
+        val room = ReviewRoom(saved.files, SettingsStore(context), saved.row, saved.storePath, "fast", noEngine, model = { model to null })
+        try {
+            assertTrue("loaded", room.settled.await(HANG_MS) && room.status == "ready")
+            assertNull(room.writeWords())
+            assertTrue(room.wordsDone.await(HANG_MS))
+            assertEquals("no more calls once it is gone", 1, asked.size)
+            val ai = room.state().getJSONObject("ai")
+            assertEquals("failed", ai.getString("status"))
+            assertEquals(ReviewRoom.GONE, ai.getString("error"))
+            assertEquals("none asked on a game gone", ReviewRoom.GONE, room.writeWords())
+            assertEquals(1, asked.size)
+        } finally {
+            com.sidecoach.coach.ReviewWords.PARALLEL = was
+            room.close()
+            room.join(HANG_MS)
+        }
+    }
+
+    /**
+     * A game removed while its review room analysed it left the page at 100% for good (the
+     * review of 2026-10-01): the room ends failed, saying why. Removed as the engines are made,
+     * once the analysis has begun. The desktop's
+     * test_a_review_window_on_a_game_removed_meanwhile_says_so.
+     */
+    @Test
+    fun aReviewRoomOnAGameRemovedMeanwhileSaysSo() {
+        val maker = maker()
+        assumeTrue("the engine or its network is missing", maker != null)
+        val files = File(context.cacheDir, "review-gone").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val storePath = File(files, "profile.sqlite")
+        val row = Library.fromPgn(pgn, listOf("nosegazm")).single()
+        Store(storePath).apply { addLibraryGame(row) }.close()
+        val removing = EngineMaker { threads, multipv ->
+            Store(storePath).apply { removeGame(row.key) }.close()
+            maker!!.make(threads, multipv)
+        }
+        val room = ReviewRoom(files, SettingsStore(context), row, storePath, "fast", removing)
+        try {
+            assertTrue("settled", room.settled.await(180_000))
+            val state = room.state()
+            assertEquals(state.toString().take(400), "failed", state.getString("status"))
+            assertEquals(ReviewRoom.GONE, state.getString("error"))
+        } finally {
+            room.close()
+            room.join(HANG_MS)
+        }
     }
 
     /**
@@ -391,6 +550,9 @@ class ReviewRoomTest {
     }
 
     companion object {
+        // How long a wait on the room may take before the test fails: a bound, never a pause.
+        private const val HANG_MS = 20_000L
+
         private val PLY = Regex("\"key move\": \\{\"ply\": (\\d+)")
 
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.

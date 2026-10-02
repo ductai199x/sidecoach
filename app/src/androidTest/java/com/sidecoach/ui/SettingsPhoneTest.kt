@@ -222,6 +222,47 @@ class SettingsPhoneTest {
         }
     }
 
+    /**
+     * The page closing (on the phone, hidden at every app switch) sends what changed since in a
+     * save of its own beside the one on its way; the two could land in either order, and the
+     * older one, last, put back what the later one changed (the audit of 2026-10-02). Each page
+     * numbers its saves; one older than the last applied is answered and not applied. Another
+     * page's saves are its own. The desktop's
+     * test_an_older_save_of_a_page_landing_after_a_later_one_is_not_applied.
+     */
+    @Test
+    fun anOlderSaveOfAPageLandingAfterALaterOneIsNotApplied() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val page = "page-${System.nanoTime()}"
+        fun save(page: String, seq: Long, stuck: Int): JSONObject = api.update(
+            JSONObject()
+                .put("settings", JSONObject().put("coach", JSONObject().put("stuck_seconds", stuck)))
+                .put("page", page)
+                .put("seq", seq),
+        )
+        fun stuck(): Double = store.values().getJSONObject("coach").getDouble("stuck_seconds")
+        try {
+            assertTrue(save(page, 2, 47).getBoolean("ok")) // the save sent as the page closed lands first
+            val older = save(page, 1, 35)
+            assertTrue(older.toString(), older.getBoolean("ok") && older.getBoolean("superseded"))
+            assertEquals(0, older.getJSONArray("changed").length())
+            assertEquals(47.0, stuck(), 0.0)
+            assertTrue("another page counts its own", save("$page-other", 1, 55).getBoolean("ok"))
+            assertEquals(55.0, stuck(), 0.0)
+            assertEquals(
+                listOf("coach.stuck_seconds"),
+                save(page, 3, 65).getJSONArray("changed").let { a -> (0 until a.length()).map { a.getString(it) } },
+            )
+            val plain = JSONObject().put("settings", JSONObject().put("coach", JSONObject().put("stuck_seconds", 75)))
+            assertTrue("a save with no number", api.update(plain).getBoolean("ok"))
+            assertEquals(75.0, stuck(), 0.0)
+        } finally {
+            store.save(saved)
+        }
+    }
+
     @Test
     fun aSaveOfOneFieldKeepsEveryOther() {
         val store = SettingsStore(app)
@@ -493,6 +534,115 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A write of the settings that fails is said, never silent and never a crash (the review of
+     * 2026-10-01: commit() answered false and the save was told kept). A Settings save answers
+     * ok false with the reason; a switch kept for the next session says it was not kept. The
+     * desktop's `update` and `remember` catch save_settings' OSError the same way.
+     */
+    @Test
+    fun aSaveThatCannotBeWrittenIsSaidNotRaised() {
+        val failing = object : SettingsStore(app) {
+            override fun save(values: JSONObject) = throw java.io.IOException("the storage is full")
+        }
+        val api = SettingsApi(failing)
+        val before = failing.values().toString()
+        val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", "someone-else"))))
+        assertFalse(res.toString(), res.getBoolean("ok"))
+        assertEquals("The settings could not be saved: the storage is full", res.getString("error"))
+        assertEquals("nothing changed", before, failing.values().toString())
+
+        val cursor = PanelEngine.poll(0).getInt("cursor")
+        api.remember(JSONObject().put("voice", JSONObject().put("muted", !failing.muted())))
+        val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+        assertTrue(
+            "said",
+            (0 until lines.length()).any {
+                lines.getJSONObject(it).getString("text") == "voice.muted: not kept for the next session (the storage is full)"
+            },
+        )
+        assertEquals("nothing changed", before, failing.values().toString())
+    }
+
+    /**
+     * A number that is not finite in a field with no bound ("inf" for a price) is refused as
+     * that field's error, and every other setting stays as it was: a JSON document cannot hold
+     * it, and the save threw, a 500 (the review of 2026-10-01).
+     */
+    @Test
+    fun aNumberThatIsNotFiniteIsAFieldErrorNeverA500() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val before = store.values().toString()
+        for (text in listOf("inf", "-Infinity", "nan")) {
+            val llm = JSONObject().put("price_prompt_per_m", text).put("timeout_s", 90)
+            val res = api.update(JSONObject().put("settings", JSONObject().put("llm", llm)))
+            assertFalse(res.toString(), res.getBoolean("ok"))
+            val errors = res.getJSONArray("errors")
+            assertEquals(res.toString(), 1, errors.length())
+            assertEquals("[\"llm\",\"price_prompt_per_m\"]", errors.getJSONObject(0).getJSONArray("loc").toString())
+            assertEquals("finite_number", errors.getJSONObject(0).getString("type"))
+            assertEquals(text, errors.getJSONObject(0).getString("input"))
+            assertEquals("nothing was saved", before, store.values().toString())
+        }
+    }
+
+    /**
+     * An object field re-sent with its keys in another order is not a change: compared as text,
+     * llm.extra_body counted as changed and rebuilt the coach's model for nothing (the review of
+     * 2026-10-01). The desktop's `_changed` compares with Python's ==; a key's value that does
+     * change, or a list in another order, still is one.
+     */
+    @Test
+    fun anObjectFieldInAnotherKeyOrderIsNotAChange() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            fun extra(body: String) = JSONObject().put("llm", JSONObject().put("extra_body", JSONObject(body)))
+            val first = api.update(JSONObject().put("settings", extra("""{"top_k": 20, "seed": 7, "more": {"a": 1, "b": [1, 2]}}""")))
+            assertTrue(first.toString(), first.getBoolean("ok"))
+            val again = api.update(JSONObject().put("settings", extra("""{"more": {"b": [1, 2], "a": 1.0}, "seed": 7, "top_k": 20}""")))
+            assertTrue(again.toString(), again.getBoolean("ok"))
+            assertEquals("[]", again.getJSONArray("changed").toString())
+            val moved = api.update(JSONObject().put("settings", extra("""{"more": {"b": [2, 1], "a": 1}, "seed": 7, "top_k": 20}""")))
+            assertEquals("[\"llm.extra_body\"]", moved.getJSONArray("changed").toString())
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
+     * A game pasted before the username was set has the player's side once a save sets the
+     * username, Stats unopened: the phone has no background review to refresh the library, and
+     * Stats and the coach's biggest cost left such games out until Stats or Your games was
+     * opened (the review of 2026-10-01).
+     */
+    @Test
+    fun aGamePastedBeforeTheUsernameHasItsSideOnceTheUsernameIsSaved() {
+        val store = SettingsStore(app)
+        val files = File(app.cacheDir, "settings-refresh").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val record = File(files, "profile.sqlite")
+        val api = SettingsApi(store, record)
+        val saved = store.values()
+        val name = "tester${System.nanoTime()}"
+        val pgn = "[White \"Someone\"]\n[Black \"$name\"]\n[Result \"0-1\"]\n[TimeControl \"600\"]\n\n1. f3 e5 2. g4 Qh4# 0-1\n"
+        val row = com.sidecoach.profile.Library.fromPgn(pgn).single()
+        assertEquals("pasted with no username: no side", null, row.userSide)
+        com.sidecoach.profile.Store(record).apply { addLibraryGame(row) }.close()
+        try {
+            val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", " $name "))))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            val side = com.sidecoach.profile.Store(record).let { s -> s.libraryGame(row.key).also { s.close() } }!!.userSide
+            assertEquals("the player's side, Stats unopened", "black", side)
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to
@@ -534,9 +684,114 @@ class SettingsPhoneTest {
             assertEquals(mapOf("n" to 2, "tags" to listOf("a", "b")), extra["extra"])
             values.getJSONObject("capture").put("fps", 99)
             store.save(values)
-            assertEquals("kept in range", 30, store.captureFps())
+            // Past the field's bound (30): refused when the settings are read, so the default,
+            // as the desktop's start reads it (`config._read_settings`).
+            assertEquals("refused, the default", 10, store.captureFps())
         } finally {
             store.save(saved)
+            unreadableCopies().filter { "\"fps\":99" in it.readText() }.forEach { it.delete() }
         }
+    }
+
+    private fun unreadableCopies(): List<File> =
+        app.filesDir.listFiles { f -> f.name.startsWith("settings.unreadable-") }.orEmpty().toList()
+
+    /**
+     * Saved settings with a value the settings refuse are read field by field: that field takes
+     * its default, every other is kept, and the saved text is kept and said -- read unchecked, a
+     * value past its bound reached the code (the desktop's `config._read_settings` and
+     * `drop_refused`; the end of `test_a_settings_file_that_cannot_be_read_is_kept_not_run_over`).
+     */
+    @Test
+    fun aStoredValueTheSettingsRefuseTakesItsDefaultAndTheRestIsKept() {
+        val store = SettingsStore(app)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val stamp = System.nanoTime()
+        try {
+            val values = store.values()
+            values.getJSONObject("capture").put("fps", 99)
+            values.getJSONObject("profile").put("chesscom_user", "nosegazm-$stamp")
+            values.getJSONObject("coach").put("stuck_seconds", 61)
+            values.getJSONObject("voice").put("speed", "fast") // not a number
+            prefs.edit().putString("json", values.toString()).commit()
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            val read = store.values()
+            assertEquals("past its bound: the default", 10, read.getJSONObject("capture").getInt("fps"))
+            assertEquals("not a number: the default", 1.0, read.getJSONObject("voice").getDouble("speed"), 0.0)
+            assertEquals("nosegazm-$stamp", read.getJSONObject("profile").getString("chesscom_user"))
+            assertEquals(61, read.getJSONObject("coach").getInt("stuck_seconds"))
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            assertTrue(
+                "said, by field",
+                (0 until lines.length()).map { lines.getJSONObject(it).getString("text") }
+                    .any { "capture.fps" in it && "voice.speed" in it && "settings.unreadable-" in it },
+            )
+            assertEquals("the text is kept", 1, unreadableCopies().count { "nosegazm-$stamp" in it.readText() })
+        } finally {
+            unreadableCopies().filter { "nosegazm-$stamp" in it.readText() }.forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
+    /**
+     * A save of another field succeeds with a refused value held, and puts that value back to its
+     * default where it is kept: left, it refused every later save and mute for a field nobody had
+     * sent (`settings_api._validated` with `drop_refused`, the desktop's
+     * `test_a_change_is_never_dropped_for_a_value_already_held`). A field the change itself sets
+     * is still refused.
+     */
+    @Test
+    fun aSaveWithARefusedValueHeldSucceedsAndPutsItBack() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val stamp = System.nanoTime()
+        try {
+            val values = store.values()
+            values.getJSONObject("capture").put("fps", 60)
+            values.getJSONObject("profile").put("chesscom_user", "nosegazm-$stamp")
+            prefs.edit().putString("json", values.toString()).commit()
+
+            val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("lichess_user", "tai"))))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            val kept = JSONObject(prefs.getString("json", null)!!)
+            assertEquals("back at the default where it is kept", 10, kept.getJSONObject("capture").getInt("fps"))
+            assertEquals("tai", kept.getJSONObject("profile").getString("lichess_user"))
+            assertEquals("nosegazm-$stamp", kept.getJSONObject("profile").getString("chesscom_user"))
+
+            api.remember(JSONObject().put("voice", JSONObject().put("muted", true)))
+            assertTrue("a switch is kept too", store.muted())
+
+            val refused = api.update(JSONObject().put("settings", JSONObject().put("capture", JSONObject().put("fps", 60))))
+            assertFalse("the change's own field is refused", refused.getBoolean("ok"))
+            assertEquals("[\"capture\",\"fps\"]", refused.getJSONArray("errors").getJSONObject(0).getJSONArray("loc").toString())
+        } finally {
+            unreadableCopies().filter { "nosegazm-$stamp" in it.readText() }.forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
+    /**
+     * The save-time half on its own ([SettingsCheck.dropRefused], `drop_refused`): a document
+     * holding refused values has each put back to its default, by name, and the others stay.
+     */
+    @Test
+    fun refusedFieldsArePutBackToTheirDefaultsByName() {
+        val store = SettingsStore(app)
+        val schema = JSONObject(store.schema)
+        val values = store.defaults()
+        values.getJSONObject("capture").put("fps", 60)
+        values.getJSONObject("engine").put("depth", 999)
+        values.getJSONObject("profile").put("chesscom_user", "nosegazm")
+        values.put("board", "not a section")
+        val dropped = SettingsCheck.dropRefused(schema, store.defaults(), values)
+        assertEquals(setOf("capture.fps", "engine.depth", "board"), dropped.toSet())
+        assertEquals(10, values.getJSONObject("capture").getInt("fps"))
+        assertEquals(store.defaults().getJSONObject("engine").getInt("depth"), values.getJSONObject("engine").getInt("depth"))
+        assertEquals(store.defaults().getJSONObject("board").toString(), values.getJSONObject("board").toString())
+        assertEquals("nosegazm", values.getJSONObject("profile").getString("chesscom_user"))
+        assertEquals("nothing more", emptyList<String>(), SettingsCheck.dropRefused(schema, store.defaults(), values))
     }
 }

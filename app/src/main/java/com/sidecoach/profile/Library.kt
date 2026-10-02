@@ -8,6 +8,7 @@ import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.llm.HttpReply
 import com.sidecoach.llm.Transport
 import com.sidecoach.llm.UrlTransport
+import com.sidecoach.voice.Py
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URLEncoder
@@ -162,7 +163,7 @@ object Library {
 
     /** The player's side by their usernames, null when neither player is theirs. `side_of`. */
     fun sideOf(white: String?, black: String?, userNames: Iterable<String>): String? {
-        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
+        val names = userNames.map { Py.strip(it) }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
         return when {
             !white.isNullOrEmpty() && white.lowercase() in names -> "white"
             !black.isNullOrEmpty() && black.lowercase() in names -> "black"
@@ -177,7 +178,7 @@ object Library {
      * `refresh`.
      */
     fun refresh(store: Store, userNames: Iterable<String>) {
-        store.fillSides(userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() })
+        store.fillSides(userNames.map { Py.strip(it) }.filter { it.isNotEmpty() }.map { it.lowercase() })
         if (store.setting(CLASSES_KEY) != CLASSES.toString()) {
             for (row in store.library()) {
                 if (row.source == "chesscom") continue // chess.com's own class, as its archive gives it
@@ -295,12 +296,11 @@ object Library {
     // same `twins`), so the list, Stats, the insights and the backlog count it once. Two copies
     // are one game when at least one was pasted (a site's own ids tell its games apart: two games
     // of one site, or of two sites, are two), they play the same moves from the start to the end,
-    // their results do not disagree, and the players, when both name them, are the same.
+    // their results do not disagree, and the players and when it was played, when both say, are the same.
     private val SITES = setOf("chesscom", "lichess")
     private val COMMENT = Regex("\\{[^}]*\\}|;[^\\n]*")
     private val VARIATION = Regex("\\([^()]*\\)")
     private val MOVE_NOISE = Regex("\\$\\d+|\\d+\\.+")
-    private val SPACE = Regex("\\s+")
     private val RESULTS = setOf("1-0", "0-1", "1/2-1/2", "*")
 
     /**
@@ -316,8 +316,10 @@ object Library {
             if (bare == text) break
             text = bare
         }
-        return MOVE_NOISE.replace(text, " ").split(SPACE)
-            .filter { it.isNotEmpty() && it !in RESULTS }
+        // Split as Python's str.split() does, on its whitespace: a PGN pasted with non-breaking
+        // spaces between the moves paired with nothing on ASCII \s (the review of 2026-10-01).
+        return Py.split(MOVE_NOISE.replace(text, " "))
+            .filter { it !in RESULTS }
             .map { it.trimEnd('+', '#', '!', '?') }
     }
 
@@ -334,7 +336,7 @@ object Library {
         { it.key },
     )
 
-    private fun named(name: String?): String? = name?.trim()?.takeIf { it != "" && it != "?" }?.lowercase()
+    private fun named(name: String?): String? = name?.let { Py.strip(it) }?.takeIf { it != "" && it != "?" }?.lowercase()
 
     /** Whether [row] is a copy of [best] (see the rule above). `_same_game`. */
     private fun sameGame(best: LibraryRow, row: LibraryRow, moves: MutableMap<String, List<String>?>): Boolean {
@@ -346,6 +348,20 @@ object Library {
             val x = named(a)
             val y = named(b)
             if (x != null && y != null && x != y) return false
+        }
+        // A copy of a game was played when the game was: two games played at two times are two,
+        // however alike -- the same short game against the same bot, played again, was taken for
+        // a copy, and one real game left the list, Stats and the insights (the audit of
+        // 2026-10-02). Both saying the time of day (UTCTime), the same time; else the same day
+        // or the next, as [mayBe] reads a date alone (a date can be another time zone's).
+        val bestAt = best.playedAt
+        val rowAt = row.playedAt
+        if (bestAt != null && rowAt != null) {
+            if (TIMED.containsMatchIn(best.pgn) && TIMED.containsMatchIn(row.pgn)) {
+                if (bestAt != rowAt) return false
+            } else if (kotlin.math.abs(bestAt - rowAt) > DATE_WINDOW_S) {
+                return false
+            }
         }
         for (each in listOf(best, row)) {
             if (each.key !in moves) moves[each.key] = sans(each.pgn)

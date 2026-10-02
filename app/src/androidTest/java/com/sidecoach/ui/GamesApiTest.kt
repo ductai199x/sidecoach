@@ -255,7 +255,66 @@ class GamesApiTest {
         other.close()
     }
 
-    /** Nothing paid for is lost: the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
+    /**
+     * The review of 2026-10-01: a game's moves were split on ASCII whitespace where the desktop's
+     * `_signature` splits on Python's (`str.split()`), so moves joined by non-breaking or other
+     * Unicode spaces read as one word and the copy paired with nothing. Split as Python does,
+     * the moves are the same words, and a game pasted that way is one game with the site's.
+     */
+    @Test
+    fun aGamePastedWithUnicodeSpacesPairsWithTheSitesRecord() {
+        val spaced = LONGER.replace("1. e4 {[%clk 0:09:58]} e5", "1. e4 {[%clk 0:09:58]}　e5")
+            .replace("4. d3 Bc5 5. Nc3", "4. d3 Bc5\u001f5. Nc3")
+        val plain = Library.signature(LONGER)
+        assertEquals("the same moves as words", plain, Library.signature(spaced))
+        assertEquals("e4", plain.first())
+
+        val store = Store(null)
+        val pasted = Library.fromPgn(spaced, listOf("nosegazm")).single()
+        val site = site(LONGER, "chesscom:12")
+        store.addLibraryGame(pasted)
+        store.addLibraryGame(site)
+        assertEquals(mapOf(pasted.key to site.key), Library.reconcile(store))
+        assertEquals(listOf(site.key), shown(store))
+        store.close()
+    }
+
+    /**
+     * The same moves, players and result played again another day are another game, not a copy
+     * (the audit of 2026-10-02): to the second when both say the time of day, else the same day
+     * or the next. The desktop's test_the_same_game_played_again_another_day_is_another_game.
+     */
+    @Test
+    fun theSameGamePlayedAgainAnotherDayIsAnotherGame() {
+        val timed = LONGER.replace(
+            "[TimeControl \"600\"]\n",
+            "[TimeControl \"600\"]\n[UTCDate \"2026.09.29\"]\n[UTCTime \"23:30:00\"]\n",
+        )
+        for (dated in listOf(true, false)) {
+            val store = Store(null)
+            var later = timed.replace("2026.09.29", "2026.10.06")
+            if (!dated) later = later.replace("[UTCTime \"23:30:00\"]\n", "").replace("[UTCDate \"2026.10.06\"]\n", "")
+            val site = site(timed, "chesscom:1")
+            val again = Library.fromPgn(later, listOf("nosegazm")).single()
+            for (row in listOf(site, again)) store.addLibraryGame(row)
+            Library.reconcile(store)
+            assertEquals("two games", listOf(site.key, again.key).sorted(), shown(store))
+            assertEquals(emptyMap<String, String>(), store.twins())
+            // The same game's copy, a date alone on the day after its UTC date (another time
+            // zone): one game.
+            val copy = Library.fromPgn(
+                timed.replace("[UTCTime \"23:30:00\"]\n", "").replace("[UTCDate \"2026.09.29\"]\n", "")
+                    .replace("2026.09.29", "2026.09.30"),
+                listOf("nosegazm"),
+            ).single()
+            store.addLibraryGame(copy)
+            Library.reconcile(store)
+            assertEquals(mapOf(copy.key to site.key), store.twins())
+            store.close()
+        }
+    }
+
+    /** Nothing paid for is lost:the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
     @Test
     fun aCopysReviewAndPaidWordsGoToTheSurvivor() {
         val store = Store(null)
@@ -275,6 +334,40 @@ class GamesApiTest {
         assertEquals("{\"texts\":{\"4\":{\"why\":\"Paid for.\"}}}", store.review(site.key, "deep")!!.words)
         assertTrue("the copy's own rows stay", store.review(pasted.key, "deep") != null)
         store.close()
+    }
+
+    /**
+     * The review of 2026-10-01: only the first parse of a copy's saved report was guarded, so a
+     * report that lacks a move's "after" threw out of carrying the reviews and Your games did
+     * not list. The desktop's `_carry_one` returns False when the report does not read: the
+     * games are listed and the review is not carried.
+     */
+    @Test
+    fun aCopysReportThatDoesNotReadLeavesYourGamesListing() {
+        val files = dir("unread-report")
+        val store = Store(File(files, "profile.sqlite"))
+        val pasted = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val site = site(LONGER, "chesscom:11")
+        store.addLibraryGame(pasted)
+        store.addLibraryGame(site)
+        val fens = com.sidecoach.analysis.GameReview.positions(Library.gamesIn(LONGER).first()).map { it.fen() }
+        val moves = org.json.JSONArray()
+        for (i in 0 until fens.size - 1) {
+            val move = JSONObject().put("fen_before", fens[i]).put("assessment", JSONObject())
+            if (i != 3) move.put("after", JSONObject().put("fen", fens[i + 1])) // the fourth lacks its "after"
+            moves.put(move)
+        }
+        val report = JSONObject().put("start", JSONObject()).put("moves", moves)
+        val summary = JSONObject().put("white", JSONObject().put("accuracy", 71.5)).put("black", JSONObject().put("accuracy", 83.25))
+        assertTrue(store.saveReview(pasted.key, "deep", ReviewRoom.REVIEW_VERSION, 1.0, report.toString(), summary.toString()))
+        store.close()
+
+        val games = listed(files)
+        assertEquals("the site's record stands for the copy", setOf(site.key), games.keys)
+        Store(File(files, "profile.sqlite")).apply {
+            assertEquals("the report that does not read is not carried", null, review(site.key, "deep"))
+            assertTrue("the copy's own review stays", review(pasted.key, "deep") != null)
+        }.close()
     }
 
     companion object {

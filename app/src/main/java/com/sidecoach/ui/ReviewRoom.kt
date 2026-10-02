@@ -118,7 +118,12 @@ class ReviewRoom(
     @Volatile var closed = false
         private set
 
-    private val thread = Thread({ run() }, "review-$key").apply { isDaemon = true }
+    // Set once the review is ready or failed, and while no words are being written: what a
+    // caller waits on rather than polling the state against a clock.
+    val settled = Flag()
+    val wordsDone = Flag(true)
+
+    private val thread =Thread({ run() }, "review-$key").apply { isDaemon = true }
 
     init {
         thread.start()
@@ -211,9 +216,16 @@ class ReviewRoom(
             if (!store.inRecord(key)) return GONE
             wordsStatus = "writing"
             wordsError = null
+            wordsDone.clear()
             reviewed = r
         }
-        Thread({ writeWords(reviewed, provider!!) }, "words-$key").apply { isDaemon = true }.start()
+        Thread({
+            try {
+                writeWords(reviewed, provider!!)
+            } finally {
+                wordsDone.set()
+            }
+        }, "words-$key").apply { isDaemon = true }.start()
         return null
     }
 
@@ -415,6 +427,18 @@ class ReviewRoom(
         }
     }
 
+    /**
+     * Whether the room ends at [nowMs] (`SystemClock.elapsedRealtime`): closed, or idle, and no
+     * words being written. Closed or idle while the AI coach's words are written, it stays open
+     * until they are saved: its store closed under them lost every answer that came after, each
+     * one paid for (the review of 2026-10-01). `closing`.
+     */
+    fun closing(nowMs: Long): Boolean = synchronized(lock) {
+        val writing = wordsStatus == "writing"
+        val idle = nowMs - touched > IDLE_CLOSE_MS
+        !writing && (stop.get() || idle)
+    }
+
     fun join(timeoutMs: Long = 5000) = thread.join(timeoutMs)
 
     // ---- the review ---------------------------------------------------------------------------
@@ -431,16 +455,12 @@ class ReviewRoom(
                 }
                 emit("sys", "error", "review failed: $exc")
             }
+            settled.set()
             var halted = false
             while (true) {
                 val waitOn = synchronized(lock) {
-                    // Closed, or idle, while the AI coach's words are written: open until they are
-                    // saved. Its store closed under them lost every answer that came after, each
-                    // one paid for (the review of 2026-10-01).
-                    val writing = wordsStatus == "writing"
                     halted = stop.get()
-                    val idle = SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS
-                    if (!writing && (halted || idle)) {
+                    if (closing(SystemClock.elapsedRealtime())) {
                         closed = true
                         null
                     } else {
@@ -605,6 +625,10 @@ class ReviewRoom(
                     store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
                     val row = Library.find(store, key)
                     if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                }.onFailure {
+                    // Said: skipped in silence, nothing told why a review kept its old summary
+                    // (the audit of 2026-10-02).
+                    android.util.Log.w("sidecoach.review", "the saved review of $key ($strength) could not be summed up again: $it")
                 }.isSuccess
                 if (ok) done += 1
             }
@@ -808,25 +832,30 @@ class ReviewRoom(
         private fun carryOne(store: Store, old: ReviewRow, imported: String, row: LibraryRow): Boolean {
             val games = Library.gamesIn(row.pgn)
             // The report as saved (the desktop's JSON): the import's key, headers and clocks
-            // put in, then read back.
-            val was = runCatching { JSONObject(old.report) }.getOrNull() ?: return false
-            val moves = was.optJSONArray("moves")
-            if (games.isEmpty() || moves == null || moves.length() == 0) return false
-            val game = games[0]
-            val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
-                moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
-            if (seen != GameReview.positions(game).map { it.fen() }) return false
-            val times = GameReview.clocks(game)
-            for (i in 0 until moves.length()) {
-                val move = moves.getJSONObject(i)
-                move.getJSONObject("assessment").put("game_id", imported)
-                move.getJSONObject("after").put("game_id", imported)
-                move.put("clock_ms", times[i].first ?: JSONObject.NULL)
-                move.put("spent_ms", times[i].second ?: JSONObject.NULL)
-            }
-            was.getJSONObject("start").put("game_id", imported)
-            was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
-            val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: return false
+            // put in, then read back. Every read of it is part of the one guarded parse, as the
+            // desktop's model_validate_json: a report that lacks a field (a move's "after", the
+            // start) is not carried, where it threw out of carryTwins and Your games did not
+            // list (the review of 2026-10-01).
+            val reviewed = runCatching {
+                val was = JSONObject(old.report)
+                val moves = was.optJSONArray("moves")
+                if (games.isEmpty() || moves == null || moves.length() == 0) return false
+                val game = games[0]
+                val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
+                    moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
+                if (seen != GameReview.positions(game).map { it.fen() }) return false
+                val times = GameReview.clocks(game)
+                for (i in 0 until moves.length()) {
+                    val move = moves.getJSONObject(i)
+                    move.getJSONObject("assessment").put("game_id", imported)
+                    move.getJSONObject("after").put("game_id", imported)
+                    move.put("clock_ms", times[i].first ?: JSONObject.NULL)
+                    move.put("spent_ms", times[i].second ?: JSONObject.NULL)
+                }
+                was.getJSONObject("start").put("game_id", imported)
+                was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
+                ReviewJson.reviewed(was)
+            }.getOrNull() ?: return false
             val saved = store.saveReview(
                 imported,
                 old.strength,
@@ -863,6 +892,36 @@ class ReviewRoom(
                 maxSeconds = config.maxSeconds,
             )
         }
+    }
+}
+
+/**
+ * `threading.Event`, which the desktop's room waits on: set, cleared and set again, and waited
+ * on until it is set -- where a CountDownLatch counts down once.
+ */
+class Flag(initially: Boolean = false) {
+    private val lock = Object()
+
+    @Volatile private var on = initially
+
+    fun set() = synchronized(lock) {
+        on = true
+        lock.notifyAll()
+    }
+
+    fun clear() = synchronized(lock) { on = false }
+
+    fun isSet(): Boolean = on
+
+    /** Waits until it is set, at most [timeoutMs]; whether it is. */
+    fun await(timeoutMs: Long): Boolean = synchronized(lock) {
+        val end = System.nanoTime() + timeoutMs * 1_000_000
+        while (!on) {
+            val left = (end - System.nanoTime()) / 1_000_000
+            if (left <= 0) return false
+            lock.wait(left)
+        }
+        true
     }
 }
 

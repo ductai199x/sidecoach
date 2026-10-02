@@ -549,7 +549,34 @@ class ProfileTest {
             listOf("Your biggest cost over 3 games is forks you missed: 3 moves."),
             profiler.snapshot().insights,
         )
+        // Made again at the same strength (rederive, the catch-up of a saved review): the line
+        // follows too -- keyed on the games and their strengths alone, it kept the stale cost
+        // (the audit of 2026-10-02).
+        for (key in listOf("a", "b", "c")) {
+            store.saveStats("deep", game(key), listOf(move(3, "opening", "blunder", 0.9)))
+        }
+        assertEquals(
+            listOf("Your biggest cost over 3 games is mistakes in the opening: 3 moves."),
+            profiler.snapshot().insights,
+        )
         store.close()
+    }
+
+    /**
+     * A mistake with no cause -- not classified, or its cause cleared by the player's correction
+     * -- was read as a chance's row, and its fork counted as missed a second time ("5 of the 6"):
+     * a chance's row is one that counts chances (the audit of 2026-10-02;
+     * `test_a_mistake_with_no_cause_is_not_counted_as_a_missed_chance_twice`).
+     */
+    @Test
+    fun aMistakeWithNoCauseIsNotCountedAsAMissedChanceTwice() {
+        val games = setOf("a", "b", "c")
+        val rows = listOf(
+            CellRow(cause = null, motif = "fork", phase = "middlegame", errors = 2, chances = 0, expectedLoss = 0.4, games = games),
+            CellRow(cause = Causes.MISSED_THREAT, motif = "fork", phase = "middlegame", errors = 1, chances = 0, expectedLoss = 0.2, games = games),
+            CellRow(cause = null, motif = "fork", phase = "middlegame", errors = 3, chances = 6, expectedLoss = 0.0, games = games),
+        )
+        assertTrue(Insights.insights(rows, 3, null).contains("You missed a fork 3 of the 6 times you had one."))
     }
 
     /**

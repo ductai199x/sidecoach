@@ -73,11 +73,14 @@ object Stats {
     private fun clock(): Double = System.currentTimeMillis() / 1000.0
 
     /** The games the filter takes, whose player's side is known, oldest first. `_games`. */
-    private fun games(store: Store, f: Filter, now: Double): List<StatGameRow> {
+    private fun games(store: Store, f: Filter, now: Double): List<StatGameRow> =
+        filtered(store, f, now).filter { it.userSide == "white" || it.userSide == "black" }
+
+    /** The games the filter takes, whether the player's side is known or not, oldest first. `_filtered`. */
+    private fun filtered(store: Store, f: Filter, now: Double): List<StatGameRow> {
         val since = if (f.days != null && f.days != 0) now - f.days.toLong() * 86400 else null
         val out = ArrayList<StatGameRow>()
         for (g in store.statGames()) {
-            if (g.userSide != "white" && g.userSide != "black") continue
             if (!f.timeClass.isNullOrEmpty() && g.timeClass != f.timeClass) continue
             if (since != null && (g.playedAt ?: 0.0) < since) continue
             if ((f.opponents == "people" && g.bot) || (f.opponents == "bots" && !g.bot)) continue
@@ -208,7 +211,10 @@ object Stats {
         // The reviewed games whose player's side is not known (no username of theirs in them):
         // the page says why they are left out, rather than showing nothing (the review of
         // 2026-10-01).
-        out.put("unsided", store.statGames().count { it.userSide != "white" && it.userSide != "black" })
+        // Those the filter takes: counted over every game, a filter no game meets was told "add
+        // your username" rather than "no reviewed games for these filters" (the audit of
+        // 2026-10-02).
+        out.put("unsided", filtered(store, f, now).count { it.userSide != "white" && it.userSide != "black" })
         return out
     }
 
@@ -390,12 +396,14 @@ object Stats {
     }
 
     /**
-     * What [biggestCost] is made of, in a cheap stamp: the games it counts, each by its key, the
-     * review its facts are from, and the player's side. It changes when a game's facts do.
-     * `cost_stamp`.
+     * What [biggestCost] is made of, in a cheap stamp: the count of the saves of Stats facts
+     * ([Store.statsRevision]), and the games it counts, each by its key, the review its facts are
+     * from, and the player's side. It changes when a game's facts do -- made again at the same
+     * strength too (rederive, the catch-up of a saved review), which the games alone missed (the
+     * audit of 2026-10-02) -- and when a game comes, goes or gains its side. `cost_stamp`.
      */
-    fun costStamp(store: Store): List<Triple<String, String, String?>> =
-        games(store, Filter(), clock()).map { Triple(it.key, it.strength, it.userSide) }
+    fun costStamp(store: Store): Pair<String?, List<Triple<String, String, String?>>> =
+        store.statsRevision() to games(store, Filter(), clock()).map { Triple(it.key, it.strength, it.userSide) }
 
     // ---- the ratings and the peers -----------------------------------------------------------------
 

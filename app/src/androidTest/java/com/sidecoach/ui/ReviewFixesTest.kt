@@ -94,6 +94,37 @@ class ReviewFixesTest {
         assertEquals("nothing proves how", null, StatFacts.endedBy(null, "1-0", played(short, "1-0")))
     }
 
+    /**
+     * A stored move list with a move that is not legal proves nothing: the desktop's `ended_by`
+     * pushes with `push_uci`, which raises on it, and gives the header's ending. The phone pushed
+     * unchecked, so the queen's jump through its own pawn here mated (the review of 2026-10-01).
+     */
+    @Test
+    fun aMoveListWithAnIllegalMoveProvesNoEnding() {
+        fun stored(ucis: List<String>, result: String): com.sidecoach.events.ReviewedGame {
+            val g = JSONObject().put("headers", JSONObject().put("Result", result)).put("strength", "fast").put("depth", 14)
+            val start = JSONObject().put("game_id", "g").put("fen", com.sidecoach.chess.STARTING_FEN).put("ply", 0)
+                .put("lines", org.json.JSONArray()).put("decisive", false).put("only_move", false)
+            g.put("start", start)
+            val moves = org.json.JSONArray()
+            for ((i, uci) in ucis.withIndex()) {
+                moves.put(
+                    JSONObject().put("ply", i + 1).put("san", uci).put("side", if (i % 2 == 0) "white" else "black")
+                        .put("fen_before", com.sidecoach.chess.STARTING_FEN)
+                        .put("assessment", JSONObject().put("game_id", "g").put("ply", i + 1).put("uci", uci).put("expected_loss", 0.0).put("severity", "none").put("best", org.json.JSONArray()))
+                        .put("after", JSONObject(start.toString()).put("ply", i + 1)),
+                )
+            }
+            return ReviewJson.reviewed(g.put("moves", moves))
+        }
+        // d8h4 with the pawn still on e7: the fool's mate's final position, reached illegally.
+        val jumped = listOf("f2f3", "d8h4", "g2g4", "a7a6")
+        assertEquals("the header's ending", "Normal", StatFacts.endedBy("Normal", "0-1", stored(jumped, "0-1")))
+        assertEquals("none", null, StatFacts.endedBy(null, "0-1", stored(jumped, "0-1")))
+        val played = listOf("f2f3", "e7e5", "g2g4", "d8h4")
+        assertEquals("the legal one mates", "checkmate", StatFacts.endedBy(null, "0-1", stored(played, "0-1")))
+    }
+
     /** `test_a_game_set_up_from_a_position_is_rated_from_where_it_starts`, test_performance.py. */
     @Test
     fun aGameSetUpFromAPositionIsRatedFromWhereItStarts() {
