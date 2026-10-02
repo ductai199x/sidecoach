@@ -571,6 +571,37 @@ class SettingsPhoneTest {
     }
 
     /**
+     * A game pasted before the username was set has the player's side once a save sets the
+     * username, Stats unopened: the phone has no background review to refresh the library, and
+     * Stats and the coach's biggest cost left such games out until Stats or Your games was
+     * opened (the review of 2026-10-01).
+     */
+    @Test
+    fun aGamePastedBeforeTheUsernameHasItsSideOnceTheUsernameIsSaved() {
+        val store = SettingsStore(app)
+        val files = File(app.cacheDir, "settings-refresh").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val record = File(files, "profile.sqlite")
+        val api = SettingsApi(store, record)
+        val saved = store.values()
+        val name = "tester${System.nanoTime()}"
+        val pgn = "[White \"Someone\"]\n[Black \"$name\"]\n[Result \"0-1\"]\n[TimeControl \"600\"]\n\n1. f3 e5 2. g4 Qh4# 0-1\n"
+        val row = com.sidecoach.profile.Library.fromPgn(pgn).single()
+        assertEquals("pasted with no username: no side", null, row.userSide)
+        com.sidecoach.profile.Store(record).apply { addLibraryGame(row) }.close()
+        try {
+            val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("chesscom_user", " $name "))))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            val side = com.sidecoach.profile.Store(record).let { s -> s.libraryGame(row.key).also { s.close() } }!!.userSide
+            assertEquals("the player's side, Stats unopened", "black", side)
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to

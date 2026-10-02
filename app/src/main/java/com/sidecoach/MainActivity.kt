@@ -141,11 +141,15 @@ class MainActivity : ComponentActivity() {
 
         val store = SettingsStore(this)
         // The saved reviews summed up again when the rule they are made with changed: once, in
-        // the background, never in the way of the panel (the desktop's server does it so).
+        // the background, never in the way of the panel (the desktop's server does it so). First
+        // the games follow the usernames ([SettingsApi.refreshLibrary]): the phone has no
+        // background review to do it, and Stats and the coach's biggest cost left out a game
+        // brought in before the username was set until Stats or Your games was opened.
         Thread({
             runCatching {
                 val profile = com.sidecoach.profile.Store(File(filesDir, "profile.sqlite"))
                 try {
+                    runCatching { com.sidecoach.profile.Library.refresh(profile, SettingsApi.userNames(store)) }
                     ReviewRoom.rederive(profile)
                 } finally {
                     profile.close()

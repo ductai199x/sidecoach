@@ -1,9 +1,12 @@
 package com.sidecoach.ui
 
+import com.sidecoach.profile.Library
+import com.sidecoach.profile.Store
 import com.sidecoach.voice.Py
 import com.sidecoach.voice.Voices
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 
 /**
@@ -22,9 +25,37 @@ import java.io.IOException
  * in it, so the page never shows one that does nothing (Tai, 2026-09-24: the Voice setting
  * listed one voice, and the page showed the desktop's devices, folders and GPU switches).
  */
-class SettingsApi(val store: SettingsStore) {
+class SettingsApi(
+    val store: SettingsStore,
+    /** The player's record, whose games follow the usernames ([refreshLibrary]). */
+    private val profile: File = File(store.files, "profile.sqlite"),
+) {
 
     companion object {
+        /** The usernames in the settings, for the games that follow them. */
+        fun userNames(store: SettingsStore): List<String> {
+            val profile = store.section("profile")
+            return listOf(profile.optString("chesscom_user", ""), profile.optString("lichess_user", ""))
+                .map { Py.strip(it) }.filter { it.isNotEmpty() }
+        }
+
+        /**
+         * The games' fields that follow the usernames, as the settings read now
+         * ([Library.refresh]): a game brought in before the username was set gets the player's
+         * side. The desktop's background review refreshes at every look; the phone has none, so
+         * it is done where the usernames can change -- a save that changes one, and the app's
+         * start -- not only when Stats or Your games is opened: until then the coach's biggest
+         * cost and Stats left such games out (the review of 2026-10-01).
+         */
+        fun refreshLibrary(store: SettingsStore, profile: File = File(store.files, "profile.sqlite")) {
+            val record = Store(profile)
+            try {
+                Library.refresh(record, userNames(store))
+            } finally {
+                record.close()
+            }
+        }
+
         /**
          * One write of the settings at a time, each whole -- read, merge, save, apply: a
          * Settings save, a switch on the panel kept for the next session (muted, how the coach
@@ -118,6 +149,14 @@ class SettingsApi(val store: SettingsStore) {
             PanelWarm.applySettings(store, changed)
             PanelEngine.settingsTouched()
             after to changed
+        }
+        if ("profile.chesscom_user" in changed || "profile.lichess_user" in changed) {
+            // The player's side of the games brought in before the username was set.
+            try {
+                refreshLibrary(store, profile)
+            } catch (e: Exception) {
+                PanelEngine.emit("sys", "warn", "your games could not follow the new username yet: $e")
+            }
         }
         val applies = applies(JSONObject(store.schema))
         val now = changed.filter { applies[it] == "now" }
