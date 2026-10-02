@@ -24,6 +24,12 @@ from sidecoach.capture.mss_backend import MssCapture
 from sidecoach.events import Region
 
 FIRST_FRAME_TIMEOUT_S = 3.0
+# WGC delivers a frame on every screen update, up to the refresh rate, and each costs a copy
+# of the whole monitor (two copies, 19.6 ms a frame at 1440p, before round 2's finding 6):
+# at 144 Hz that was most of a core for a pipeline that reads ten frames a second. Frames
+# come no faster than the fastest capture rate the settings allow (30 a second), so the
+# newest is never more than a frame of that rate old.
+MIN_UPDATE_INTERVAL_MS = 1000 // 30
 
 
 class _Session:
@@ -42,14 +48,20 @@ class _Session:
         self.frames = 0
         self.closed = False
         capture = WindowsCapture(
-            cursor_capture=False, draw_border=False, monitor_index=monitor_index
+            cursor_capture=False,
+            draw_border=False,
+            monitor_index=monitor_index,
+            minimum_update_interval=MIN_UPDATE_INTERVAL_MS,
         )
 
         @capture.event
         def on_frame_arrived(frame: Frame, control: InternalCaptureControl) -> None:
-            bgr = frame.convert_to_bgr().frame_buffer
+            # One plain copy out of the buffer WGC reuses, alpha and all: a memcpy, 2 ms at
+            # 1440p against 12 for dropping the alpha on the way. `grab` drops it from the
+            # crop it is asked for, at the pipeline's rate.
+            bgra = frame.frame_buffer.copy()
             with self._lock:
-                self._frame = np.ascontiguousarray(bgr[:, :, :3]).copy()
+                self._frame = bgra
                 self.frames += 1
             self._arrived.set()
 
@@ -60,6 +72,7 @@ class _Session:
         self._control = capture.start_free_threaded()
 
     def latest(self) -> np.ndarray | None:
+        """The newest frame, BGRA."""
         with self._lock:
             return self._frame
 
@@ -110,7 +123,7 @@ class WgcCapture:
         if frame is None:
             raise RuntimeError("no frame captured yet")
         y0, x0 = region.y - mon.y, region.x - mon.x
-        crop = frame[y0 : y0 + region.h, x0 : x0 + region.w]
+        crop = frame[y0 : y0 + region.h, x0 : x0 + region.w, :3]
         if crop.shape[:2] != (region.h, region.w):
             raise RuntimeError(f"captured {frame.shape[1]}x{frame.shape[0]}, wanted {region}")
         return np.ascontiguousarray(crop)
