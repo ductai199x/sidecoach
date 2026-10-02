@@ -369,6 +369,19 @@ def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
     assert walked.label is Label.BLUNDER, walked
 
 
+def test_the_best_move_of_a_mating_line_is_never_a_mate_let_go() -> None:
+    """The line before shows a long mate, the engine's own first move is played, and the
+    search after it does not report the mate (past its horizon, or cut by the time cap): the
+    best move let nothing go. It was labelled an inaccuracy -- `mate_missed` flagged it, and
+    a loss of nothing fell through to the lowest flag (the facts audit, 2026-10-02)."""
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    long_mate = Line(moves=["h2h3", "g8f8"], depth=6, expected_score=1.0, mate=9)
+    seen_as_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
+    best = _judged(board, "h2h3", long_mate, seen_as_won)
+    assert best.expected_loss == 0.0
+    assert best.label is Label.BEST, best
+
+
 def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:
     assert move_accuracy(0.0) == 100.0
     assert 75 < move_accuracy(0.01) < 80
