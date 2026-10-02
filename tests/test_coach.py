@@ -2570,3 +2570,19 @@ def test_the_second_hint_for_castling_says_what_the_king_goes_after() -> None:
     directive = directive_of(sent(provider, len(provider.calls) - 1))
     assert "Name the piece to use" in directive, directive
     assert "Here the move is castling" in directive
+
+
+def test_a_move_named_on_their_turn_is_not_called_unrated() -> None:
+    """On the opponent's move a move the player names is never examined, yet the directive
+    said "when the engine does not rate their move, say it is not the strongest" (the deep
+    prompt review, 2026-10-01)."""
+    coach, provider = scripted_coach(["[p=1.0] Fine.", "[p=1.0] Fine."])
+    start_game(coach, Side.BLACK)
+    play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("what about Qxf7?", 8.0)
+    drain(coach)
+    directive = directive_of(sent(provider, len(provider.calls) - 1))
+    assert "say it is not the strongest" not in directive, directive
+    assert "rate one only from the engine's word on it" in directive

@@ -4804,8 +4804,17 @@ class Coach:
                 "propose a move, or name a square or piece, say plainly whether it holds up and "
                 "what it does or allows, from the engine's word on it where given above -- "
                 "theirs to hear in full: the score after it, how far behind the best, the reply, "
-                "what the move does; when the engine does not rate their move, say it is not the "
-                "strongest and, in general terms, why. Of the position they face, keep back only "
+                "what the move does; "
+                + (
+                    "when the engine does not rate their move, say it is not the strongest and, "
+                    "in general terms, why. "
+                    if position.board.turn == self.user_colour
+                    # On the opponent's move a move they name is not examined (`analyse_named`):
+                    # "not rated" there means nothing (the deep prompt review, 2026-10-01).
+                    else "on the opponent's move no move they name is rated here: rate one only "
+                    "from the engine's word on it. "
+                )
+                + "Of the position they face, keep back only "
                 "what the level line does, and point them toward the right idea"
                 + (
                     " in words."
