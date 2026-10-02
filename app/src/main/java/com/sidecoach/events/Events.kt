@@ -125,8 +125,9 @@ class Analysis(
     val tags: List<MotifTag> = emptyList(),
     val opening: String? = null,
     /**
-     * The game is still in the opening book at this position ([opening] is the deepest line it
-     * passed through, and stays after the game leaves the book).
+     * The game is still in the opening book at this position ([opening] is the last named
+     * position it reached in its first 40 plies, as Lichess names it, and stays after the game
+     * leaves the book).
      */
     val inBook: Boolean = false,
     /**

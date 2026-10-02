@@ -505,9 +505,17 @@ class GameAnnotator(
         val book = book ?: return null
         if (board.moveStack.isEmpty()) return null
         if (board.root().fen() != STARTING_FEN) return null
-        val found = book.identify(ArrayList(board.moveStack)) ?: return null
-        return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+        return openingName(book, board.moveStack)
     }
+}
+
+/**
+ * The opening [moves] from the start position are in, as the analysis carries it ("C50 Italian
+ * Game"); null when the book names none. `annotator.opening_name`.
+ */
+fun openingName(book: Book, moves: List<Move>): String? {
+    val found = book.identify(ArrayList(moves)) ?: return null
+    return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
 }
 
 /** A line's moves as moves, up to the first that does not parse: `annotator._moves`. */
