@@ -238,6 +238,7 @@ object Library {
         pgn.headers["Result"] = game.result ?: "*"
         val started = LocalDateTime.ofEpochSecond(kotlin.math.floor(game.startedAt).toLong(), 0, ZoneOffset.UTC)
         pgn.headers["Date"] = DATE.format(started)
+        if (!game.reason.isNullOrEmpty()) pgn.headers["Termination"] = game.reason // how Sidecoach saw it end, for Stats
         if (!game.timeControl.isNullOrEmpty()) pgn.headers["TimeControl"] = game.timeControl
         return LibraryRow(
             key = "watched:${game.gameId}",

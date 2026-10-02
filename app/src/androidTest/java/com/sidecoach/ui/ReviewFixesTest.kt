@@ -59,6 +59,41 @@ class ReviewFixesTest {
         assertEquals("sharp", GameSummaries.shapeOf(sharp, "1-0"))
     }
 
+    /** `test_how_a_game_ended_when_its_header_does_not_say`, test_stat_facts.py. */
+    @Test
+    fun howAGameEndedWhenItsHeaderDoesNotSay() {
+        fun played(sans: List<String>, result: String): com.sidecoach.events.ReviewedGame {
+            val g = JSONObject().put("headers", JSONObject().put("Result", result)).put("strength", "fast").put("depth", 14)
+            val start = JSONObject().put("game_id", "g").put("fen", com.sidecoach.chess.STARTING_FEN).put("ply", 0)
+                .put("lines", org.json.JSONArray()).put("decisive", false).put("only_move", false)
+            g.put("start", start)
+            val moves = org.json.JSONArray()
+            val board = com.sidecoach.chess.Board()
+            for ((i, san) in sans.withIndex()) {
+                val move = board.parseSan(san)!!
+                val side = if (board.turn) "white" else "black"
+                val before = board.fen()
+                board.push(move)
+                moves.put(
+                    JSONObject().put("ply", i + 1).put("san", san).put("side", side).put("fen_before", before)
+                        .put("assessment", JSONObject().put("game_id", "g").put("ply", i + 1).put("uci", move.uci()).put("expected_loss", 0.0).put("severity", "none").put("best", org.json.JSONArray()))
+                        .put("after", JSONObject(start.toString()).put("fen", board.fen()).put("ply", i + 1)),
+                )
+            }
+            return ReviewJson.reviewed(g.put("moves", moves))
+        }
+        val mate = listOf("f3", "e5", "g4", "Qh4#")
+        assertEquals("checkmate", StatFacts.endedBy("Normal", "0-1", played(mate, "0-1")))
+        assertEquals("checkmate", StatFacts.endedBy(null, "0-1", played(mate, "0-1")))
+        val short = listOf("e4", "e5")
+        assertEquals("resignation", StatFacts.endedBy("Normal", "1-0", played(short, "1-0")))
+        assertEquals("agreement", StatFacts.endedBy("Normal", "1/2-1/2", played(short, "1/2-1/2")))
+        val shuffle = List(2) { listOf("Nf3", "Nf6", "Ng1", "Ng8") }.flatten()
+        assertEquals("repetition", StatFacts.endedBy("Normal", "1/2-1/2", played(shuffle, "1/2-1/2")))
+        assertEquals("nosegazm won on time", StatFacts.endedBy("nosegazm won on time", "1-0", played(short, "1-0")))
+        assertEquals("nothing proves how", null, StatFacts.endedBy(null, "1-0", played(short, "1-0")))
+    }
+
     /** `test_a_game_set_up_from_a_position_is_rated_from_where_it_starts`, test_performance.py. */
     @Test
     fun aGameSetUpFromAPositionIsRatedFromWhereItStarts() {
