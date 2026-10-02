@@ -184,7 +184,10 @@ object GameSummaries {
         for (phase in PHASES) {
             val inside = moves.filter { it.phase == phase }
             if (inside.size < MIN_PHASE_MOVES) continue
-            val accuracy = round(Py.sum(inside.map { it.accuracy }) / inside.size, 1)
+            // `fmean`, an exactly rounded sum over the count, as the desktop's: a plain sum over
+            // the size put 1.8% of phases 0.1 apart, and a grade can flip on it (the review of
+            // 2026-10-01).
+            val accuracy = round(Stats.fmean(inside.map { it.accuracy }), 1)
             val labels = inside.mapNotNull { it.label }
             phases.add(PhaseGrade(phase, inside.size, accuracy, phaseGrade(accuracy, labels)))
         }
