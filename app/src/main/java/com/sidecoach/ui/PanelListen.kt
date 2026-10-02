@@ -20,7 +20,7 @@ import java.io.File
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -68,9 +68,14 @@ object PanelListen {
     /** `panel._lock` for the dictation: its words so far and the timer that sends them. */
     private val lock = Any()
     private var dictationText = ""
-    private var dictationTimer: ScheduledFuture<*>? = null
+    private var dictationTimer: Future<*>? = null
     private val timers = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "dictation").apply { isDaemon = true }
+    }
+
+    /** What arms the second of quiet (`panel._make_timer`); a test hands in one it fires itself. */
+    internal var makeTimer: (delayMs: Long, send: () -> Unit) -> Future<*> = { delayMs, send ->
+        timers.schedule({ send() }, delayMs, TimeUnit.MILLISECONDS)
     }
 
     /** One partial recognition at a time (`_partial_busy`); a partial still running skips the next. */
@@ -387,16 +392,14 @@ object PanelListen {
     private fun dictation(text: String, live: Boolean, sendsAt: Long?): Map<String, Any?> =
         mapOf("text" to text, "live" to live, "sends_at" to sendsAt)
 
-    /** (Re)start the second of quiet after which the dictation is sent. `_dictation_arm`. */
-    private fun dictationArm() {
+    /** (Re)start the second of quiet after which the dictation is sent. Under [lock]. `_dictation_arm_locked`. */
+    private fun dictationArmLocked() {
         val delay = (sendDelayS * 1000).toLong()
-        synchronized(lock) {
-            dictationTimer?.cancel(false)
-            dictationTimer = timers.schedule({ dictationSend() }, delay, TimeUnit.MILLISECONDS)
-            PanelEngine.set(
-                "dictation" to dictation(dictationText, live = false, sendsAt = System.currentTimeMillis() + delay),
-            )
-        }
+        dictationTimer?.cancel(false)
+        dictationTimer = makeTimer(delay) { dictationSend() }
+        PanelEngine.set(
+            "dictation" to dictation(dictationText, live = false, sendsAt = System.currentTimeMillis() + delay),
+        )
     }
 
     /**
@@ -404,19 +407,19 @@ object PanelListen {
      * second of quiet, else the box stops saying it is listening. [holds]: the count of presses
      * and utterances when this one ended its recording; one more came while it was being
      * recognised, and the box waits for that one, which settles it in turn: the second of quiet
-     * ran from the first, and the question went in two halves (voice finding 5).
-     * `_dictation_settle`.
+     * ran from the first, and the question went in two halves (voice finding 5). The count is
+     * compared and the send armed in one locked step: a press between the two armed a send while
+     * the key was held (round 3 audit). `_dictation_settle`.
      */
     private fun dictationSettle(holds: Int? = null) {
-        if (holds != null && holds != dictationHolds) {
-            synchronized(lock) { PanelEngine.set("dictation" to dictation(dictationText, live = true, sendsAt = null)) }
-            return
-        }
-        val pending = synchronized(lock) { dictationText.isNotEmpty() }
-        if (pending) {
-            dictationArm()
-        } else {
-            synchronized(lock) { PanelEngine.set("dictation" to dictation("", live = false, sendsAt = null)) }
+        synchronized(lock) {
+            if (holds != null && holds != dictationHolds) {
+                PanelEngine.set("dictation" to dictation(dictationText, live = true, sendsAt = null))
+            } else if (dictationText.isNotEmpty()) {
+                dictationArmLocked()
+            } else {
+                PanelEngine.set("dictation" to dictation("", live = false, sendsAt = null))
+            }
         }
     }
 
@@ -479,12 +482,6 @@ object PanelListen {
     }
 
     /**
-     * Something was said: transcribe it, correct it against the board, and into the text box
-     * after whatever was said before in this dictation, sent after a second of quiet unless more
-     * comes. Runs on the listener's delivery thread (or the request's, for `/api/hear`).
-     * `_on_utterance`.
-     */
-    /**
      * The microphone test's page went away without saying so (Settings closed during the test):
      * the test ends at the panel's next poll, not only at the next utterance, which left it
      * listening in voice mode whatever the player had chosen (voice finding 10). `poll`'s check.
@@ -500,6 +497,12 @@ object PanelListen {
 
     internal val hearTestRunning: Boolean get() = hearTestOn
 
+    /**
+     * Something was said: transcribe it, correct it against the board, and into the text box
+     * after whatever was said before in this dictation, sent after a second of quiet unless more
+     * comes. Runs on the listener's delivery thread (or the request's, for `/api/hear`).
+     * `_on_utterance`.
+     */
     internal fun onUtterance(audio: FloatArray, seconds: Double) {
         utteranceGen += 1
         val holds = dictationHolds // a press or an utterance after this one began

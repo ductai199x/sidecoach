@@ -121,6 +121,26 @@ class SetupDownloadTest {
         while (setup.runState().optBoolean("running") && System.currentTimeMillis() < deadline) Thread.sleep(20)
     }
 
+    /**
+     * Voice finding 4: Setup fetched the voice and the recogniser and nothing loaded them; they
+     * stayed off until a restart. A run that ends tells its followers what it fetched (the panel
+     * loads the voice again, [com.sidecoach.ui.PanelWarm.setupFetched]); a failed item is not
+     * among them (`test_speech_recognition_is_on_once_setup_has_fetched_it`).
+     */
+    @Test
+    fun aRunThatEndsTellsWhatItFetched() {
+        val told = java.util.concurrent.LinkedBlockingQueue<List<String>>()
+        val setup = Setup(app, itemsOf = {
+            listOf(
+                Item("stt", "recogniser", 10, { false }, { }),
+                Item("kokoro", "voice", 10, { false }, { throw java.io.IOException("offline") }),
+            )
+        })
+        setup.onFetched.add { ids -> told.put(ids) }
+        assertTrue(setup.start())
+        assertEquals(listOf("stt"), told.poll(10, java.util.concurrent.TimeUnit.SECONDS))
+    }
+
     @Test
     fun aDoubleTapRunsOneSetup() {
         val fetched = java.util.concurrent.atomic.AtomicInteger()

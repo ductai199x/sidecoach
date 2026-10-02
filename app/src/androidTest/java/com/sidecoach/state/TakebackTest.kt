@@ -97,6 +97,25 @@ class TakebackTest {
         }
     }
 
+    /**
+     * `_HeldFullEngine`: its first full-depth search ([full]) runs until [Engine.interrupt]
+     * stops it, as a real one's does; every other search, the early depth's included, answers
+     * at once. A test acts mid-measure by this state, not by how long a search takes.
+     */
+    private class HeldFullEngine(private val full: Int) : QuietEngine() {
+        @Volatile var held = false
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+            if (interruptibleNow && depth == full && !held) {
+                held = true
+                val until = SystemClock.elapsedRealtime() + 5000 // a safety net only: the test stops it
+                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
+                throw Interrupted()
+            }
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+        }
+    }
+
     private fun played(board: Board, san: String, ply: Int): MovePlayed {
         val before = board.fen()
         val move = board.parseSan(san)!!
@@ -256,14 +275,18 @@ class TakebackTest {
     fun aPositionReReadMidMeasureGetsNoWordOnTheOldReading() {
         val white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
         val black = white.replace(" w ", " b ")
-        val analyser = Analyser(GameAnnotator(SlowEngine(300), depth = 18, withThreats = false))
+        // The white reading's full measure is held until something stops it ([HeldFullEngine]):
+        // a 300 ms search failed the test whenever a slow moment fell between the measure's
+        // start and the drain (round 3 audit, 2026-10-02).
+        val engine = HeldFullEngine(full = 18)
+        val analyser = Analyser(GameAnnotator(engine, depth = 18, withThreats = false))
         val assessing = Assessing(analyser)
         analyser.start()
         try {
             assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = white, kind = "position"))
             val deadline = System.currentTimeMillis() + 5000
-            while (!analyser.looking && System.currentTimeMillis() < deadline) Thread.sleep(5)
-            assertTrue("the full measure never began", analyser.looking)
+            while (!engine.held && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            assertTrue("the full measure never began", engine.held)
             val before = assessing.drain()
             assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
             val after = assessing.wait(10.0)

@@ -418,6 +418,12 @@ class Setup(
     private var state = JSONObject()
     @Volatile private var cancelled = false
 
+    /**
+     * Told the ids fetched once a run ends (`Setup.on_fetched`): what was loaded before their
+     * files came (the voice, the recogniser) is loaded again, not left off until a restart.
+     */
+    val onFetched = java.util.concurrent.CopyOnWriteArrayList<(List<String>) -> Unit>()
+
     /** Every item with whether it is present, and the run in progress if any. */
     fun status(): JSONObject {
         val rows = JSONArray()
@@ -511,10 +517,13 @@ class Setup(
                 base += item.size
                 synchronized(lock) { state.put("done", base) }
             }
-            synchronized(lock) {
+            val fetched = synchronized(lock) {
                 state.put("running", false)
                 state.put("item", JSONObject.NULL)
+                val finished = state.getJSONArray("finished")
+                (0 until finished.length()).map { finished.getString(it) }
             }
+            if (fetched.isNotEmpty()) for (follower in onFetched) follower(fetched)
         }, "setup")
         worker.isDaemon = true
         synchronized(lock) { thread = worker }

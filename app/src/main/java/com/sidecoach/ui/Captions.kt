@@ -530,6 +530,17 @@ object Captions {
         target = null
     }
 
+    /**
+     * For the tests, on the main thread: the box's fade begun now, and whether it is fading
+     * ([hide]); a line given at once ([begin]). A line during the fade is then a step of the
+     * test, not a sleep timed into the 350 ms.
+     */
+    internal fun fadeNow() = hide()
+
+    internal fun fadingNow(): Boolean = box?.fading == true
+
+    internal fun showNow(text: String) = begin(text, 0)
+
     /** Where the box is on the screen now, for the tests; null when it is not shown. */
     internal fun shownAt(): Rect? = box?.bounds()
 

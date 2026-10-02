@@ -290,6 +290,9 @@ class Listener(
         return "$mode (${mic.detail})"
     }
 
+    /** For the tests: a push-to-talk press is being kept (the desktop's `_started_at`). */
+    internal val pressTaken: Boolean get() = synchronized(lock) { ptt && startedAt != null }
+
     /** Push-to-talk down: start keeping frames. */
     fun press() {
         synchronized(lock) {
