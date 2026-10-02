@@ -260,6 +260,8 @@ object Stats {
         "endgame.other" to "endgame",
     )
     const val WORK = 3 // the areas Work on this names
+    const val WORK_GAMES = 3 // the games before it names any
+    const val WORK_MOVES = 3 // the moves an area needs before it is named
 
     /**
      * The one area a move's cost counts in, when it cost anything worth a word: a tactic it
@@ -274,12 +276,19 @@ object Stats {
         return if (m.phase == "opening") "opening" else "quiet"
     }
 
-    /** Each area's cost: the expected score its moves lost, a game (`n`, the games). `_costs`. */
+    /**
+     * Each area's cost: the expected score its moves lost, a game (`n`, the games), and how many
+     * moves it counts (`moves`). The cost ranks the areas and meets the peers'; it is no count of
+     * points: a position lost can swing back, and the losses add up past the games lost ("11.1
+     * points" for one area when 9 were lost in all, the review of 2026-10-01). `_costs`.
+     */
     private fun costs(d: Data): JSONObject {
         val lost = HashMap<String, Double>()
+        val count = HashMap<String, Int>()
         for (m in d.moves) {
             val where = area(m) ?: continue
             lost[where] = (lost[where] ?: 0.0) + m.loss
+            count[where] = (count[where] ?: 0) + 1
         }
         val games = d.games.size
         val names = KINDS.map { "missed.$it" } + KINDS.map { "allowed.$it" } + "opening" + ENDGAMES.map { "endgame.$it" } + "quiet"
@@ -288,6 +297,7 @@ object Stats {
             val figure = JSONObject()
                 .put("value", if (games != 0) round((lost[name] ?: 0.0) / games, 4) else JSONObject.NULL)
                 .put("n", games)
+                .put("moves", count[name] ?: 0)
             val dot = name.indexOf('.')
             if (dot >= 0) {
                 val head = name.substring(0, dot)
@@ -302,12 +312,16 @@ object Stats {
 
     /**
      * The areas that cost the player most ([WORK] of them), dearest first: each with its cost a
-     * game and its peers' (when known), and its puzzles' motif; its positions are [positions]'
-     * "area" selector's. `work`.
+     * game and its peers' (when known), the moves it counts, and its puzzles' motif; its positions
+     * are [positions]' "area" selector's. Nothing over fewer than [WORK_GAMES] games, and no area
+     * of fewer than [WORK_MOVES] moves: one game's blunder is no area to work on. `work`.
      */
     fun work(costs: JSONObject): JSONArray {
         val ranked = walk(costs)
-            .filter { (_, figure) -> !figure.isNull("value") && figure.getDouble("value") != 0.0 }
+            .filter { (_, figure) ->
+                !figure.isNull("value") && figure.getDouble("value") != 0.0 &&
+                    figure.getInt("n") >= WORK_GAMES && figure.optInt("moves") >= WORK_MOVES
+            }
             .sortedBy { (_, figure) -> -figure.getDouble("value") }
         val out = JSONArray()
         for ((path, figure) in ranked.take(WORK)) {
@@ -316,6 +330,7 @@ object Stats {
                     .put("area", path)
                     .put("cost", figure.get("value"))
                     .put("games", figure.get("n"))
+                    .put("moves", figure.get("moves"))
                     .put("peers", figure.opt("peers") ?: JSONObject.NULL)
                     .put("grade", figure.opt("grade") ?: JSONObject.NULL)
                     .put("motif", MOTIFS[path] ?: JSONObject.NULL),
