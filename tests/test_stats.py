@@ -324,3 +324,20 @@ def test_stats_read_the_store_in_a_few_queries(tmp_path: Path) -> None:
     found = positions(store, Filter(), "gallery", "blunder")
     assert len(found) == st.POSITIONS_MAX and asked == [st.POSITIONS_BATCH, st.POSITIONS_BATCH]
     assert found[0]["key"] == "g000", "the latest first"
+
+
+def test_the_facts_kept_for_stats_are_the_strongest_reviews(tmp_path: Path) -> None:
+    """A Fast look after a Deep review lowered Stats (the review of 2026-10-01): a game's facts
+    are replaced only by a review as strong or stronger, and the reviews still to keep facts of
+    are each game's strongest."""
+    store = Store(tmp_path / "profile.sqlite")
+    store.save_stats("deep", _game("a"), [_move(1, "white", loss=0.0)])
+    store.save_stats("fast", _game("a"), [_move(1, "white", loss=0.4, label="blunder")])
+    assert [g["strength"] for g in store.stat_games()] == ["deep"]
+    assert store.stat_moves(["a"])[0]["loss"] == 0.0
+    store.save_stats("deep", _game("a"), [_move(1, "white", loss=0.1, label="inaccuracy")])
+    assert store.stat_moves(["a"])[0]["loss"] == 0.1, "as strong: replaced"
+    for strength, at in (("deep", 1.0), ("fast", 2.0)):
+        store.save_review("b", strength, 1, at, "{}", None)
+    assert [(r.key, r.strength) for r in store.reviews_without_stats()] == [("b", "deep")]
+    assert store.best_review("b").strength == "deep"  # type: ignore[union-attr]

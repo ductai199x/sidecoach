@@ -1219,13 +1219,14 @@ class Store:
         return [LibraryRow(**dict(r)) for r in rows]
 
     def reviews_without_stats(self) -> list[ReviewRow]:
-        """Each game's latest review whose facts are not kept yet (a watched game its import
-        stands for needs none once the import's are kept: `stat_games`)."""
+        """Each game's strongest review (`best_review`) whose facts are not kept yet (a watched
+        game its import stands for needs none once the import's are kept: `stat_games`)."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
                 f" AND r.key NOT IN ({_STOOD_FOR})"
-                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
+                " AND r.rowid = (SELECT rowid FROM reviews WHERE key = r.key"
+                f" ORDER BY {_RANK} DESC, reviewed_at DESC LIMIT 1)"
             ).fetchall()
         return [ReviewRow(**dict(r)) for r in rows]
 
