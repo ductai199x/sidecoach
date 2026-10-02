@@ -176,3 +176,30 @@ def test_a_reply_after_the_player_moved_again_is_late_but_shown_in_order() -> No
     board = chess.Board(coach.board.fen())
     _played(coach, board, 8, "e8e7", False, 11.0)
     assert coach.moved_on(moment) is False
+
+
+def test_the_rung_a_reply_said_is_read_from_its_words() -> None:
+    """`said_level`: the move, the focus, the line; and the ladder never falls."""
+    from sidecoach.coach.disclosure import Disclosure, PositionFacts, said_level
+
+    facts = PositionFacts(
+        fen=chess.STARTING_FEN,
+        side_to_move="white",
+        phase="opening",
+        target="the opponent's king on e8",
+        piece="the player's queen on h5",
+        goal="the player can mate in one move",
+        candidates=["Qxf7#"],
+        line=["Qxf7#"],
+    )
+    assert said_level("Qxf7 is mate.", facts) is DisclosureLevel.MOVE
+    assert said_level("Their king on e8 has no square left.", facts) is DisclosureLevel.FOCUS
+    assert said_level("Look for a check.", facts) is DisclosureLevel.SILENT
+    long = facts.model_copy(update={"line": ["Qxf7#", "Kd8"]})
+    assert said_level("Qxf7 and then Kd8 is forced.", long) is DisclosureLevel.LINE
+    ladder = Disclosure()
+    assert ladder.said(DisclosureLevel.IDEA) is DisclosureLevel.IDEA
+    assert ladder.said(DisclosureLevel.IDEA) is None
+    assert ladder.said(DisclosureLevel.MOVE) is DisclosureLevel.MOVE
+    assert ladder.said(DisclosureLevel.FOCUS) is None, "never lower after higher"
+    assert ladder.level is DisclosureLevel.MOVE
