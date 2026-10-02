@@ -38,6 +38,9 @@ val MODES = listOf("off", "ptt", "vad")
 const val PRE_ROLL_FRAMES = 10
 const val MAX_UTTERANCE_S = 20.0
 
+/** How often a microphone whose input failed is tried again (`MIC_REOPEN_S`). */
+const val MIC_REOPEN_S = 3.0
+
 /** Ten seconds of backlog before the oldest is dropped. */
 const val QUEUE_FRAMES = SAMPLE_RATE / HOP * 10
 
@@ -51,6 +54,10 @@ interface FrameSource {
     val isOpen: Boolean
     fun open(): Boolean
     fun close()
+
+    /** Open, but no frame will come again: the input failed (the device gone, the audio server
+     * restarted). `Microphone.stalled`. */
+    fun stalled(): Boolean = false
 }
 
 /** What decides a frame is speech: the [SileroGate], or a test's script. */
@@ -107,6 +114,8 @@ class Microphone(private val context: Context) : FrameSource {
     }
 
     override val isOpen: Boolean get() = record != null
+
+    override fun stalled(): Boolean = record != null && !reading
 
     override fun open(): Boolean {
         if (record != null) return true
@@ -249,6 +258,8 @@ class Listener(
         synchronized(lock) {
             finish(discard = true)
             mode = wanted
+            // A key held across the switch: the next press starts afresh (it was ignored).
+            ptt = false
         }
         if (wanted == "off") {
             stop = true
@@ -295,6 +306,20 @@ class Listener(
         }
     }
 
+    private var reopenTried = 0.0
+
+    /**
+     * A microphone whose input failed is reopened, at most once every [MIC_REOPEN_S]: it stayed
+     * closed until the mode was switched, and the coach deaf (voice finding 17).
+     */
+    private fun reopenIfStalled() {
+        val t = now()
+        if (t - reopenTried < MIC_REOPEN_S || !mic.stalled()) return
+        reopenTried = t
+        mic.close()
+        if (mic.open()) onEvent("info", "microphone reopened (${mic.detail})")
+    }
+
     // ---- the loop ----------------------------------------------------------------------------
 
     private fun run() {
@@ -304,6 +329,7 @@ class Listener(
             val frame = mic.frames.poll(200, TimeUnit.MILLISECONDS)
             if (frame == null) {
                 level *= 0.5
+                reopenIfStalled()
                 continue
             }
             var peak = 0.0
@@ -316,8 +342,15 @@ class Listener(
                 if (current == "ptt") {
                     if (ptt) {
                         buffer.add(frame)
-                        cap()
-                        partial = partialDue()
+                        if (cap()) {
+                            // A key held past the longest utterance: what was said goes to the
+                            // recogniser, and holding on keeps nothing more until the next press.
+                            // The buffer grew without end (voice finding 7).
+                            ptt = false
+                            finish(discard = false)
+                        } else {
+                            partial = partialDue()
+                        }
                     } else {
                         pre.addLast(frame)
                         while (pre.size > PRE_ROLL_FRAMES) pre.removeFirst()
@@ -459,11 +492,15 @@ class ParakeetStt(private val context: Context, private val dir: java.io.File) :
     override fun load(): Boolean {
         synchronized(lock) {
             if (asr != null) return true
-            if (failed != null) return false
+            // A model not downloaded yet is looked for again: Setup fetches it after the first
+            // warm-up, and the recogniser stayed off until a restart (voice finding 4). Any
+            // other failure stands.
+            if (failed != null && failed != NOT_DOWNLOADED) return false
+            failed = null
             if (!Parakeet.FILES.all { java.io.File(dir, it).exists() }) {
                 // The files come from Setup only, as the desktop's offline hub has it; the phone's
                 // Setup is in the drawer, where the desktop's is under Help.
-                failed = "not downloaded yet (Setup, in the menu)"
+                failed = NOT_DOWNLOADED
                 VoiceLog.warn("Parakeet unavailable, speech recognition is off: $failed")
                 return false
             }
@@ -532,5 +569,8 @@ class ParakeetStt(private val context: Context, private val dir: java.io.File) :
     companion object {
         /** The encoder's threads: the phone's big cores, as the voice's. */
         const val THREADS = 4
+
+        /** Why the recogniser is off before Setup fetched it: looked for again at each load. */
+        const val NOT_DOWNLOADED = "not downloaded yet (Setup, in the menu)"
     }
 }

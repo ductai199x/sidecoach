@@ -117,7 +117,36 @@ class KokoroTtsTest {
         Log.i(TAG, "stopped after $made of ${pieces.size} pieces")
     }
 
+    /**
+     * The first run's warm-up loads the voice before Setup has fetched it; once the files arrive
+     * it is loaded again, not left dead until a restart; a closed voice never is
+     * (`test_the_voice_loads_once_setup_has_fetched_its_files`, voice finding 4).
+     */
+    @Test
+    fun theVoiceIsLoadedAgainOnceSetupHasFetchedItsFiles() {
+        val dir = File(app.cacheDir, "kokoro-latch-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val tts = KokoroTts(app, dir)
+            assertTrue(!tts.load()) // the warm-up, before Setup
+            assertTrue("nothing changed: not tried again", !(ARRIVED.invoke(tts) as Boolean))
+            File(dir, KokoroTts.ONNX_FILE).writeBytes(byteArrayOf(1))
+            File(dir, KokoroTts.VOICES_FILE).writeBytes(byteArrayOf(1))
+            assertTrue("the files came: tried again", ARRIVED.invoke(tts) as Boolean)
+            assertTrue(!tts.load()) // stand-ins, not a model: tried, and failed on them
+            assertTrue("the same stand-ins: not tried again", !(ARRIVED.invoke(tts) as Boolean))
+            tts.close()
+            File(dir, KokoroTts.ONNX_FILE).writeBytes(byteArrayOf(1, 2))
+            assertTrue("closed: never again", !(ARRIVED.invoke(tts) as Boolean))
+        } finally {
+            dir.listFiles()?.forEach { it.delete() }
+            dir.delete()
+        }
+    }
+
     companion object {
+        /** `KokoroTts.filesArrived`: whether a failed load would be tried again now. */
+        private val ARRIVED = KokoroTts::class.java.getDeclaredMethod("filesArrived").apply { isAccessible = true }
+
         private const val TAG = "sidecoach.voice"
 
         /** The loaded graph, to see that it is the same one after more loads and voice changes. */

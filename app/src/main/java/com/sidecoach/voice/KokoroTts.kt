@@ -49,6 +49,8 @@ class KokoroTts(
 
     @Volatile private var kokoro: Kokoro? = null
     @Volatile private var failed = false
+    @Volatile private var closed = false
+    @Volatile private var failedFiles: List<Pair<Long, Long>?> = emptyList()
     private val loadLock = Any()
     @Volatile var loadSeconds: Double? = null
         private set
@@ -138,7 +140,8 @@ class KokoroTts(
     fun load(): Boolean {
         synchronized(loadLock) {
             if (kokoro != null) return true
-            if (failed) return false
+            if (failed && !filesArrived()) return false
+            failed = false
             return try {
                 val began = SystemClock.elapsedRealtime()
                 kokoro = Kokoro.load(context, onnxPath, voicesPath, THREADS)
@@ -147,9 +150,25 @@ class KokoroTts(
             } catch (exc: Throwable) { // any load failure degrades to silence
                 VoiceLog.warn("Kokoro voice unavailable, going silent: ${VoiceLog.said(exc)}")
                 failed = true
+                failedFiles = modelFiles()
                 false
             }
         }
+    }
+
+    /** The model files as they are now (size and time), null for a missing one. */
+    private fun modelFiles(): List<Pair<Long, Long>?> =
+        listOf(onnxPath, voicesPath).map { if (it.exists()) it.length() to it.lastModified() else null }
+
+    /**
+     * A load that failed is tried again once the model files have changed since: the first
+     * run's warm-up ran before Setup fetched them, and the voice stayed dead until a restart
+     * (voice finding 4). A closed voice ([close]) never is.
+     */
+    private fun filesArrived(): Boolean {
+        if (closed) return false
+        val now = modelFiles()
+        return null !in now && now != failedFiles
     }
 
     /**
@@ -174,7 +193,7 @@ class KokoroTts(
      * in another voice (a preview) without changing the coach's.
      */
     override fun say(text: String, voice: String?) {
-        if (failed) return
+        if (failed && !filesArrived()) return
         val spoken = Py.strip(Notation.speak(text, voice = true))
         if (spoken.isEmpty()) return
         ensureWorker()
@@ -207,6 +226,7 @@ class KokoroTts(
      * synthesised; nothing speaks or loads afterwards.
      */
     fun close() {
+        closed = true
         failed = true
         stop()
         synchronized(lock) {
@@ -371,15 +391,25 @@ class KokoroTts(
                         }
                     }
                 }
-                if (synchronized(lock) { generation } != chunk.mine) continue
+                // The track opened before the cancel check, and the piece written in slices, each
+                // checked: a stop landing while the track opened, or during a piece, was ignored
+                // and the line played over a mute or a barge-in (voice finding 13).
                 val out = openTrack()
+                if (synchronized(lock) { generation } != chunk.mine) continue
                 if (line != null) {
                     underruns = out.underrunCount
                     Log.i(TAG, "line: first sound ${SystemClock.elapsedRealtime() - line.queuedAt} ms after it was queued")
                     runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
                     runCatching { onCaption?.invoke(line.given.ifEmpty { line.spoken }, chunk.speechMs) }
                 }
-                out.write(chunk.samples, 0, chunk.samples.size, AudioTrack.WRITE_BLOCKING)
+                var at = 0
+                while (at < chunk.samples.size) {
+                    if (synchronized(lock) { generation } != chunk.mine) break
+                    val n = minOf(WRITE_SLICE, chunk.samples.size - at)
+                    val wrote = out.write(chunk.samples, at, n, AudioTrack.WRITE_BLOCKING)
+                    if (wrote <= 0) break
+                    at += wrote
+                }
                 if (chunk.done != null) Log.i(TAG, "line: played with ${out.underrunCount - underruns} gaps")
             } catch (_: InterruptedException) {
                 return
@@ -425,6 +455,9 @@ class KokoroTts(
 
     companion object {
         private const val TAG = "sidecoach.voice"
+
+        /** Samples written at a time, a stop checked between: 50 ms at 24 kHz. */
+        private const val WRITE_SLICE = 1200
         /**
          * The full-precision model, as the desktop runs it (Tai, 2026-09-23): on the Pixel's ARM
          * cores it speaks twice as fast as the int8 one (0.61 of real time against 1.20), whose
