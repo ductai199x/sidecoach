@@ -91,7 +91,7 @@ def build_coach(provider_name: str, ledger: Ledger | None, computed: Computed) -
     routine = cli._routine_provider(settings, getattr(provider, "inner", provider))
     if ledger is not None and routine is not getattr(provider, "inner", provider):
         routine = Metered(routine, ledger)
-    return Coach(
+    coach = Coach(
         provider,
         policy=policy,
         draft_check=cli._draft_check(),
@@ -106,6 +106,8 @@ def build_coach(provider_name: str, ledger: Ledger | None, computed: Computed) -
         persona=settings.coach.persona,
         rating=(settings.profile.rating_low, settings.profile.rating_high),
     )
+    coach.sync_claims = True  # a question's request exists when ask() returns
+    return coach
 
 
 def run(provider_name: str, seed: int, budget: int, show_record: int) -> None:

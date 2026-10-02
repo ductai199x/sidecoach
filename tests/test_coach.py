@@ -1350,6 +1350,7 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
         ["[p=1.0] Bc4 is fine: a little behind the best. What does it aim at?"]
     )
     coach.engine = _ItalianEngine()
+    coach.sync_claims = True  # a question with the engine runs on a worker otherwise
     _italian(coach)
     coach.ask("what about Bc4?", 6.0)
     out = drain(coach)
@@ -1383,6 +1384,7 @@ def test_a_move_proposed_in_a_statement_is_examined_and_nothing_is_said_twice() 
     already said since the last move is not said again."""
     coach, provider = scripted_coach(["[p=1.0] Fine."])
     coach.engine = _ItalianEngine()
+    coach.sync_claims = True  # a question with the engine runs on a worker otherwise
     _italian(coach)
     coach.ask("I'll play Bc4 and aim at f7.", 6.0)
     assert [m.text for m in drain(coach)] == ["Fine."]
