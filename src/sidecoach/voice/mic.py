@@ -193,6 +193,8 @@ class Listener:
         with self._lock:
             self._finish(discard=True)
             self.mode = mode
+            # A key held across the switch: the next press starts afresh (it was ignored).
+            self._ptt = False
         if mode == "off":
             self._stop.set()
             if self._thread is not None:
@@ -249,7 +251,14 @@ class Listener:
                 if mode == "ptt":
                     if self._ptt:
                         self._buffer.append(frame)
-                        self._cap()
+                        if self._cap():
+                            # A key held past the longest utterance: what was said goes to
+                            # the recogniser, and holding on keeps nothing more until the
+                            # next press. The buffer grew without end, and each partial
+                            # recognised it all (voice finding 7, 2026-10-01).
+                            self._ptt = False
+                            self._finish(discard=False)
+                            continue
                         partial = self._partial_due()
                     else:
                         self._pre.append(frame)

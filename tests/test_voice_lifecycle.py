@@ -177,3 +177,50 @@ def test_the_recogniser_loads_once_setup_has_fetched_it(monkeypatch: pytest.Monk
     assert stt.load() is False
     assert stt._failed is not None and stt._failed.startswith("not downloaded")
     assert stt.load() is True  # Setup fetched it: no restart needed
+
+
+class _QuietGate:
+    def load(self) -> bool:
+        return True
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "fake"
+
+    def reset(self) -> None:
+        pass
+
+    def probability(self, frame: Any) -> float:
+        return 0.0
+
+
+def test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go() -> None:
+    """Voice finding 7: a held key buffered without end; a switch with the key down left it
+    pressed, so the next press was ignored."""
+    from sidecoach.voice.mic import MAX_UTTERANCE_S, Listener
+    from sidecoach.voice.vad import HOP, SAMPLE_RATE
+    from tests.fakes import FedMic
+
+    utterances: list[float] = []
+    mic = FedMic()
+    ear = Listener(
+        mic,  # type: ignore[arg-type]
+        _QuietGate(),  # type: ignore[arg-type]
+        on_utterance=lambda audio, s: utterances.append(len(audio) / SAMPLE_RATE),
+    )
+    ear.set_mode("ptt")
+    try:
+        ear.press()
+        for _ in range(int((MAX_UTTERANCE_S + 5) * SAMPLE_RATE // HOP)):
+            mic.frames.put(np.full(HOP, 0.01, dtype=np.float32))
+        assert _until(lambda: mic.frames.empty() and utterances)
+        assert utterances[0] <= MAX_UTTERANCE_S + 0.1
+        assert len(ear._buffer) * HOP <= SAMPLE_RATE  # holding on keeps nothing more
+        ear.release()
+        ear.press()
+        ear.set_mode("vad")
+        ear.set_mode("ptt")
+        assert not ear._ptt
+        ear.press()
+        assert ear._started_at is not None  # the fresh press is taken
+    finally:
+        ear.set_mode("off")
