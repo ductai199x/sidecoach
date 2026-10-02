@@ -932,6 +932,8 @@ fun factsFromAnalysis(
             principle = IdeaWords.lesson(held.lesson, idea)
             question = held.ask
             why = why?.let { Regex("the \\w+ on [a-h][1-8] is loose").replace(it) { held.clause } }
+            // The defender is named now: the target no longer says nothing defends it.
+            target = target?.let { Regex(": (after your \\w+ move, )?nothing defends it$").replace(it, "") }
         } else {
             defended = held.said
             principle = if (!principle.isNullOrEmpty()) principle else IdeaWords.lesson(held.lesson, idea)

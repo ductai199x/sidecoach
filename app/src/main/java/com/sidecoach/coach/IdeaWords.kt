@@ -39,6 +39,9 @@ object IdeaWords {
     )
     private val ORDINAL = mapOf(1 to "first", 2 to "second", 3 to "third", 4 to "fourth", 5 to "fifth")
 
+    /** The player's `n`-th move, said: "second move". */
+    private fun afterMove(n: Int): String = ORDINAL[n]?.let { "$it move" } ?: "next few moves"
+
     /** What a line's words are split on, compiled once rather than at every line read. */
     private val SPACES = Regex("\\s+")
 
@@ -735,7 +738,9 @@ object IdeaWords {
                 val p = where.pieceAt(s)
                 p != null && p.colour != board.turn
             }
-            val later = if (idea.blowAt > 1) " after your first move" else ""
+            // The pattern is there to play on the player's blowAt-th move: after the move before
+            // it ("after your first move" was said of forks that come on the third, 2026-10-01).
+            val later = if (idea.blowAt > 1) " after your ${afterMove(idea.blowAt - 1)}" else ""
             if (blow.name == "fork" && idea.blowMove != null) {
                 // The first square is where the forking piece lands; the targets follow, and they
                 // stand where they are before the fork as after it.
@@ -768,9 +773,11 @@ object IdeaWords {
                     "blocking$later"
             }
             if ((blow.name == "trappedPiece" || blow.name == "hangingPiece") && theirs.isNotEmpty()) {
+                // The tag reads the board after the blow itself: nothing defends the piece once
+                // the player's blowAt-th move is on the board, not now ("nothing defends it" of
+                // a piece the first move cuts off, 2026-10-01).
                 val state = if (blow.name == "trappedPiece") "it has no safe square" else "nothing defends it"
-                val whenText = if (idea.blowAt > 1) "after your first move, " else ""
-                return "their ${now(idea, board, theirs[0])}: $whenText$state"
+                return "their ${now(idea, board, theirs[0])}: after your ${afterMove(idea.blowAt)}, $state"
             }
         }
         val targetPiece = if (idea.target != null) board.pieceAt(idea.target) else null

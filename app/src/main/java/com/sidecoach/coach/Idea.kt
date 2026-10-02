@@ -332,11 +332,18 @@ object IdeaReader {
         val top = analysis.lines[0]
         val mated = top.mate != null && top.mate > 0
         val winning = mated || top.expectedScore >= WON
+        var given = sacrifices(boards, pv, upto)
+        if (given.isNotEmpty() && idea.goal != "draw" && !winning && top.expectedScore < 0.5) {
+            // Given for nothing: a piece the line neither wins back nor buys anything with, the
+            // position no better for it, was given up, not sacrificed ("Use your queen on d1 --
+            // the piece you give up" of a queen thrown in front of a mate, 2026-10-01).
+            given = given.filter { wonBack(boards, it.first, board.turn) }
+        }
         return idea.copy(
             pinnedGuard = pinnedGuard(idea, boards, pv),
             also = alsoTactic(idea, boards, pv),
             intermezzo = intermezzo(boards, pv, minOf(pv.size, 10)),
-            sacrifices = sacrifices(boards, pv, upto),
+            sacrifices = given,
             winning = winning,
             level = top.expectedScore < LEVEL && !mated,
             down = balance(board, board.turn) < 0,
@@ -804,6 +811,8 @@ object IdeaReader {
             val reply = pv[i + 1]
             val given = boards[i + 1].pieceAt(reply.to)
             if (given == null || given.colour != us) continue
+            val origin = if (pv[i].to == reply.to) pv[i].from else reply.to
+            if (lostAnyway(boards[i], origin)) continue  // it could not be saved: no sacrifice
             lowest = afterReply
             val took = if (boards[i].isCapture(pv[i])) boards[i].pieceTypeAt(pv[i].to) else 0
             if (given.pieceType == ROOK && (took == BISHOP || took == KNIGHT)) {
@@ -813,6 +822,40 @@ object IdeaReader {
             }
         }
         return out
+    }
+
+    /**
+     * The piece on `square`, its side to move, is lost whatever it does: it can be won
+     * where it stands, and every move of it lands where it can be won too, or takes something
+     * worth less than itself. Leaving such a piece, or cashing it in for a pawn, was called
+     * a sacrifice (the facts audit, 2026-10-01).
+     */
+    private fun lostAnyway(board: Board, square: Int): Boolean {
+        val piece = board.pieceAt(square) ?: return false
+        if (piece.pieceType == KING || piece.pieceType == PAWN) return false
+        if (!Exchange.canBeWon(board, square)) return false
+        for (move in board.legalMoves()) {
+            if (move.from != square) continue
+            if (board.isCapture(move)) {
+                if (Exchange.exchange(board, move) >= 0) return false
+                continue
+            }
+            val after = board.copy(withStack = false)
+            after.push(move)
+            if (!Exchange.canBeWon(after, move.to)) return false
+        }
+        return true
+    }
+
+    /**
+     * The material given at ply `i` comes back later in the line (two points of it at
+     * least), or the line mates.
+     */
+    private fun wonBack(boards: List<Board>, i: Int, us: Boolean): Boolean {
+        val last = boards.last()
+        if (last.isCheckmate() && last.turn != us) return true
+        val given = balance(boards[i + 2], us)
+        return (i + 3 until boards.size).any { balance(boards[it], us) >= given + 2 }
     }
 
     /**

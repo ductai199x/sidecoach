@@ -96,6 +96,13 @@ class CoachTest {
         return coach.poll()
     }
 
+    /** Waits for the coach's background threads of that name to end: the event, not a time. */
+    private fun joinThreads(name: String) {
+        for (thread in Thread.getAllStackTraces().keys) {
+            if (thread.name == name) thread.join()
+        }
+    }
+
     /**
      * `stuck` (desktop `tests/coaching.py`): the player stuck on the position the stuck limit
      * long: the coach's first word unasked (the only one while they think -- Tai, 2026-10-01),
@@ -1204,7 +1211,8 @@ class CoachTest {
         val (instruction, fallback) = coach.instruction(
             Trigger.POST_MOVE, position, DisclosureLevel.LINE, null, emptyList(), blunder, played,
         )
-        assertTrue(fallback, fallback in COST_YOU.map { it.replace("{best}", "Qxf7#") + "." })
+        // A blunder is said as one, never "that cost you something" (the facts audit, 2026-10-01).
+        assertTrue(fallback, fallback in COST_BY_SEVERITY.getValue("blunder").map { it.replace("{best}", "Qxf7#") + "." })
         assertTrue(instruction, "which was a blunder" in instruction && "fine" !in instruction)
         assertTrue(instruction, "no lesson, no question" in instruction)
         // A move a little behind the best is still fine.
@@ -1964,28 +1972,22 @@ class CoachTest {
         assertTrue(mayCarryClaims("my knight is hanging"))
         assertTrue(mayCarryClaims("can I castle"))
         val threads = java.util.Collections.synchronizedList(ArrayList<String>())
-        val started = java.util.concurrent.CountDownLatch(1)
-        val done = java.util.concurrent.CountDownLatch(1)
         val provider = ScriptedProvider(listOf("Not quite. What is your most active piece already eyeing?"))
         val coach = Coach(
             provider,
             policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
             claims = ClaimsCheck { _, _, _ ->
                 threads.add(Thread.currentThread().name)
-                started.countDown()
-                Thread.sleep(200)
-                listOf("'Nf3 is good': not the strongest, Qxf7# mates").also { done.countDown() }
+                listOf("'Nf3 is good': not the strongest, Qxf7# mates")
             },
         )
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        val begun = System.nanoTime()
         coach.ask("is Nf3 good here", 8.0)
-        assertTrue("the caller never waits on the check", System.nanoTime() - begun < 100_000_000L)
-        assertTrue(started.await(2, java.util.concurrent.TimeUnit.SECONDS))
-        assertTrue(done.await(2, java.util.concurrent.TimeUnit.SECONDS))
-        Thread.sleep(200) // the worker hands the request over after the check
-        assertTrue(threads.toString(), threads.isNotEmpty() && threads[0] != Thread.currentThread().name)
+        // The check runs on its own thread, so the caller never waits on it: wait for that
+        // thread to end -- an event, not a time -- and assert on where it ran and what it said.
+        joinThreads("sidecoach-claims")
+        assertEquals(listOf("sidecoach-claims"), threads.toList())
         assertEquals(listOf("Not quite. What is your most active piece already eyeing?"), messages(coach).map { it.text })
         assertTrue("Their claims, checked against the board" in given(provider, 0).last().content)
         coach.hint(9.0) // a bare hint never runs the check
@@ -2114,13 +2116,10 @@ class CoachTest {
             )
         }
         coach.ask("why am I always losing in the middlegame?", 7.0)
-        // The answer lands on the lookup's own thread: gathered until it is out.
-        val said = ArrayList<CoachMessage>()
-        val deadline = System.nanoTime() + 5_000_000_000L
-        while (said.none { it.text.startsWith("Over 9 games") } && System.nanoTime() < deadline) {
-            said.addAll(messages(coach))
-            Thread.sleep(20)
-        }
+        // The answer lands on the lookup's own thread: wait for that thread to end, not for a
+        // time, then read what was said.
+        joinThreads("profile-ask")
+        val said = messages(coach)
         assertEquals(listOf("why am I always losing in the middlegame?"), asked.toList())
         assertTrue(said.isNotEmpty() && said.last().text.startsWith("Over 9 games") && said.last().trigger == Trigger.USER_ASK)
         assertEquals("answer", coach.profileAnswers[0].first)

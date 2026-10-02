@@ -232,15 +232,22 @@ fun describeEffects(board: Board, move: Move, limit: Int = 3, hazards: Boolean =
     }
     for (s in covered.sortedWith(compareByDescending<Int> { valueAt(it) }.thenBy { it })) {
         val by = namesAt(after, Exchange.capturers(after, them, s))
-        out.add("defends ${nameAt(after, s)}, which is attacked by $by")
+        if (move.to in Exchange.defenders(after, us, s)) {
+            out.add("defends ${nameAt(after, s)}, which is attacked by $by")
+        } else {
+            // Saved by a defence the move uncovers, or by what it takes: not "defends",
+            // which names the moved piece (the facts audit, 2026-10-01).
+            out.add("makes ${nameAt(after, s)} safe from $by")
+        }
         break
     }
 
-    // A rook or queen onto a file with no pawn of its own on it.
+    // A rook or queen onto a file with no pawn of its own on it, the file as the move leaves
+    // it: a capture of their pawn opens it ("takes the half-open file" of Rxd6, 2026-10-01).
     if (mover != null && (mover.pieceType == ROOK || mover.pieceType == QUEEN)) {
         val fileIndex = squareFile(move.to)
-        val ownPawn = (0 until 8).any { board.pieceAt(square(fileIndex, it)) == Piece(PAWN, us) }
-        val theirPawn = (0 until 8).any { board.pieceAt(square(fileIndex, it)) == Piece(PAWN, them) }
+        val ownPawn = (0 until 8).any { after.pieceAt(square(fileIndex, it)) == Piece(PAWN, us) }
+        val theirPawn = (0 until 8).any { after.pieceAt(square(fileIndex, it)) == Piece(PAWN, them) }
         if (squareFile(move.from) != fileIndex && !ownPawn) {
             val kind = if (!theirPawn) "open" else "half-open"
             out.add("takes the $kind ${FILE_NAMES[fileIndex]}-file")

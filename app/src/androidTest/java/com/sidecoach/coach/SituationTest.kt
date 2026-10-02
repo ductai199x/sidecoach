@@ -187,4 +187,45 @@ class SituationTest {
         assertEquals("a sacrifice is said", sacrifice, Situation.withinBudget(sacrifice, budget = 1))
         assertEquals("One. Two.", Situation.withinBudget("One. Two.", budget = 5))
     }
+
+    /** `test_the_stakes_in_check_say_what_the_lines_bear_out` (the facts audit, 2026-10-01). */
+    @Test
+    fun theStakesInCheckSayWhatTheLinesBearOut() {
+        // In check and lost: every way out is "within a hair" because all of them lose.
+        val board = Board("4k3/8/8/8/8/8/3q4/4K3 w - - 0 1")
+        var said = Situation.stakesWords(board, Situation.Stakes("check", 3, 0.02, null, 2), null)
+        assertTrue(said, said != null && "fine" !in said && "losing" in said)
+        // One way out best, the next only 0.09 behind: not "only one way out holds".
+        said = Situation.stakesWords(board, Situation.Stakes("check", 1, 0.93, line(listOf("e1f1"), 0.84), 2), null)
+        assertTrue(said, said != null && "only one" !in said)
+        said = Situation.stakesWords(board, Situation.Stakes("check", 1, 0.6, line(listOf("e1f1"), 0.52), 2), null)
+        assertTrue(said, said != null && "only one" !in said)
+        // Winning, the next still winning: "only one move keeps it that way" is false.
+        assertNull(Situation.stakesWords(board, Situation.Stakes("won", 1, 0.99, line(listOf("e1f1"), 0.82), 20), null))
+    }
+
+    /** `test_the_plan_words_hold_on_the_board_now` (the facts audit, 2026-10-01). */
+    @Test
+    fun thePlanWordsHoldOnTheBoardNow() {
+        fun key(fen: String, uci: String, kind: String): String {
+            val said = Situation.positionalKey(Board(fen), Move.fromUci(uci), kind, null, "endgame")
+            assertNotNull(said)
+            return said!!
+        }
+        // Rec2 with a rook already on c7: "none of your rooks is there yet" was false.
+        var said = key("r4k2/2Rn1p2/p2r2p1/3p4/1P3P1p/3B4/P3RKPP/8 w - - 0 28", "e2c2", "takeFile")
+        assertTrue(said, "none of your rooks" !in said)
+        // Behind their passed pawn on g7, the rook holds it back; it pushes nothing.
+        said = key("6k1/R5P1/1p6/3pK3/P2P2r1/8/8/8 b - - 0 46", "g4g1", "rookBehindPasser")
+        assertTrue(said, "their passed pawn on g7" in said && "pushes" !in said)
+        // A king on e1 has no wing: not "the other wing from yours".
+        val fen = "r1bq1rk1/ppp1npbp/3pn1p1/4p3/4P2P/2PPNN2/PPB2PP1/R1BQK2R w KQ - 1 12"
+        said = key(fen, "h4h5", "pawnStorm")
+        assertTrue(said, "other wing" !in said)
+        val storm = Situation.planKey(Board(fen), LinePlan("storm", square = parseSquare("g8")))
+        assertTrue(storm, storm != null && "opposite wings" !in storm)
+        // b6 hits c5 now: c5 is no square "no pawn of theirs can ever attack" yet.
+        val outpost = Situation.planKey(Board("4k3/8/1p6/8/3P4/1N6/8/4K3 w - - 0 1"), LinePlan("outpost", square = parseSquare("c5")))
+        assertTrue(outpost, outpost != null && "can ever attack" !in outpost)
+    }
 }

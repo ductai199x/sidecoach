@@ -766,4 +766,24 @@ class CoachPrimitivesTest {
         private const val TAG = "sidecoach.coach"
         private const val COACH = "chess/coach.json"
     }
+
+    /**
+     * `test_the_words_hold_for_the_board_the_move_leaves` (the facts audit, 2026-10-01): the file
+     * as the capture leaves it, "defends" only of the moved piece, and no fork that one answer
+     * to the check undoes.
+     */
+    @Test
+    fun theWordsHoldForTheBoardTheMoveLeaves() {
+        var board = Board("8/6bk/6p1/3QP1Bp/3N4/Pp6/1q4PP/2r3RK b - - 0 40")
+        var said = describeEffects(board, board.parseSan("Qxa3")!!, limit = 9)
+        assertTrue(said.toString(), "takes the open a-file" in said)
+        // Kc1 steps off the d-file: the knight on d2, no longer pinned, guards the queen on b3.
+        board = Board("2kr1b1r/p4ppp/1P6/3q4/8/1Q6/1P1N4/R2K4 w - - 7 28")
+        said = describeEffects(board, board.parseSan("Kc1")!!, limit = 9)
+        assertTrue(said.toString(), said.none { it.startsWith("defends") })
+        // Qa4+ "forks" the king and the knight on b4, but Nc6 blocks and saves the knight.
+        board = Board("r1bqk2r/ppp2ppp/3p4/8/1nBPP1n1/5N2/PP3PPP/R1BQR1K1 w kq - 0 12")
+        said = describeEffects(board, board.parseSan("Qa4+")!!, limit = 9)
+        assertTrue(said.toString(), said.none { it.startsWith("forks") })
+    }
 }

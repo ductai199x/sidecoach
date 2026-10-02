@@ -2440,7 +2440,8 @@ class Coach(
                 } else {
                     null
                 }
-                val opener = bags.draw("cost", COST_YOU).replace("{best}", best)
+                val kind = costKind(assessment.severity, label)
+                val opener = bags.draw("cost:$kind", COST_BY_SEVERITY.getValue(kind)).replace("{best}", best)
                 val rule = ruleOf(facts, best, board = position.board, played = played.uci)
                 val (lessonText, held) = freshLesson(opener, rule, facts) { withRule ->
                     lessonTemplate(
@@ -2559,7 +2560,9 @@ class Coach(
             ) {
                 // A mistake in blitz: the policy keeps it to the word after the move (no
                 // lesson), but the word says what the move was -- never "fine".
-                fallback = bags.draw("cost", COST_YOU).replace("{best}", best) + "."
+                val kind = costKind(assessment.severity, label)
+                fallback = bags.draw("cost:$kind", COST_BY_SEVERITY.getValue(kind)).replace("{best}", best)
+                fallback += "."
                 instructionText =
                     "The player just played ${played.san}, which was ${rated(label)}: $best " +
                         "($betterWords) was better. It is a fast game: one or two sentences, no " +
@@ -2571,7 +2574,11 @@ class Coach(
                 // little behind" (the coach review, 2026-10-01).
                 val slip = assessment.severity == Severity.INACCURACY || label == "inaccuracy"
                 val opener = (
-                    if (slip) bags.draw("cost", COST_YOU) else bags.draw("fine", FINE_TIGHTER)
+                    if (slip) {
+                        bags.draw("cost:inaccuracy", COST_BY_SEVERITY.getValue("inaccuracy"))
+                    } else {
+                        bags.draw("fine", FINE_TIGHTER)
+                    }
                     ).replace("{best}", best)
                 val (lessonText, held) = freshLesson(
                     opener,

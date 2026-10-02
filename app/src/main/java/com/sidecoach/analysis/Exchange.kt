@@ -139,8 +139,22 @@ object Exchange {
     /**
      * The most `colour` nets by taking on `square` (were it `colour`'s move); 0 when it cannot
      * take or would lose by it.
+     *
+     * When the other side is to move and in check, it answers the check first: the most
+     * `colour` nets after its best answer (0 when the piece steps away). Handing the move over
+     * with a null move in check left every recapture illegal, and every defended piece of the
+     * checked side read as loose.
      */
     fun bestCapture(board: Board, colour: Boolean, square: Int): Int {
+        val replies = checkAnswers(board, !colour)
+        if (replies != null) {
+            var least = 0
+            for ((i, b) in replies.withIndex()) {
+                val nets = if (b.pieceAt(square) == null) 0 else bestCapture(b, colour, square)
+                least = if (i == 0) nets else minOf(least, nets)
+            }
+            return least
+        }
         val view = asMover(board, colour)
         var best = 0
         for (m in capturesOnView(view, colour, square)) best = maxOf(best, exchange(view, m))
@@ -154,10 +168,30 @@ object Exchange {
         return bestCapture(board, !piece.colour, square) > 0
     }
 
-    /** The piece on `square` is attacked by a legal capturer and nothing can take back. */
+    /**
+     * The boards after each legal answer when `colour` is to move and in check; null
+     * otherwise. A side in check cannot pass, so whether its piece can be taken is a question
+     * about the board after its answer.
+     */
+    private fun checkAnswers(board: Board, colour: Boolean): List<Board>? {
+        if (board.turn != colour || !board.isCheck()) return null
+        return board.legalMoves().map { move -> board.copy(withStack = false).also { it.push(move) } }
+    }
+
+    /**
+     * The piece on `square` is attacked by a legal capturer and nothing can take back.
+     *
+     * When its side is to move and in check, the piece hangs only if it does after every
+     * answer to the check (one that moves the piece saves it).
+     */
     fun hanging(board: Board, square: Int): Boolean {
         val piece = board.pieceAt(square) ?: return false
         if (piece.pieceType == KING) return false
+        val replies = checkAnswers(board, piece.colour)
+        if (replies != null) {
+            return replies.isNotEmpty() &&
+                replies.all { b -> b.pieceAt(square) == piece && hanging(b, square) }
+        }
         val view = asMover(board, !piece.colour)
         for (move in capturesOnView(view, !piece.colour, square)) {
             val after = view.copy(withStack = false)

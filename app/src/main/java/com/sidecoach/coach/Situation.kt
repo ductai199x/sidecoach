@@ -4,6 +4,7 @@ import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.PositionalFact
 import com.sidecoach.analysis.atHome
 import com.sidecoach.analysis.isPassed
+import com.sidecoach.analysis.pawnSafe
 import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_FILES
 import com.sidecoach.chess.BB_SQUARES
@@ -187,6 +188,13 @@ object Situation {
         val was = if (before == 1) "one square" else "${IdeaWords.inWords(before)} squares"
         val name = NAMES.getValue(piece.pieceType)
         return "${board.san(move)}: your $name goes from $was to ${IdeaWords.inWords(later)}"
+    }
+
+    /** The kings stand on opposite wings (files a-c against f-h); a king on d or e has none. */
+    private fun kingsApart(board: Board, us: Boolean): Boolean {
+        val ours = board.king(us) ?: return false
+        val theirs = board.king(!us) ?: return false
+        return setOf(wing(ours), wing(theirs)) == setOf("on the queenside", "on the kingside")
     }
 
     private fun wing(sq: Int): String {
@@ -399,6 +407,16 @@ object Situation {
         return "anything else gives back much of what you have"
     }
 
+    /**
+     * One move holds: the next best drops by `ONLY_DROP` at least, and out of a win when
+     * the best one wins ("only one move keeps it that way" was said with the next at 0.93).
+     */
+    private fun only(stakes: Stakes): Boolean {
+        val line = stakes.nextLine
+        if (stakes.good != 1 || line == null || stakes.top - line.expectedScore < ONLY_DROP) return false
+        return stakes.top < WON || line.expectedScore < WON
+    }
+
     /** The stakes as the first hint says them. */
     fun stakesWords(board: Board, stakes: Stakes, opening: String?): String? {
         val kind = stakes.kind
@@ -411,7 +429,12 @@ object Situation {
                 }
                 return "You're in check, and there is only one legal move"
             }
-            if (stakes.good == 1 && stakes.nextLine != null) {
+            if (stakes.top < LOST) {
+                // "More than one way out is fine" was said of a lost king, every way out within a
+                // hair of the best because all of them lose (the facts audit, 2026-10-01).
+                return "You're in check and losing; the best way out makes them work for it"
+            }
+            if (only(stakes)) {
                 if (stakes.top >= WON) {
                     return "You're in check but winning, and only one way out keeps it that way: " +
                         cost(board, stakes)
@@ -429,8 +452,7 @@ object Situation {
             return "This is opening theory$name"
         }
         if (kind == "won") {
-            val line = stakes.nextLine
-            if (stakes.good == 1 && line != null && stakes.top - line.expectedScore >= ONLY_DROP) {
+            if (only(stakes)) {
                 return "You're winning, but only one move keeps it that way: ${cost(board, stakes)}"
             }
             return null
@@ -681,6 +703,10 @@ object Situation {
         }
         if (kind == "takeFile") {
             val file = "abcdefgh"[squareFile(best.to)]
+            if (board.piecesMask(ROOK, us) and BB_FILES[squareFile(best.to)] != BB_EMPTY) {
+                // A rook already on it: "none of your rooks is there yet" was false (2026-10-01).
+                return "The $file-file has no pawns of yours on it"
+            }
             return "The $file-file has no pawns of yours on it, and none of your rooks is there yet"
         }
         if ((kind == "pushPasser" || kind == "passerPawnEnding") && piece.pieceType == PAWN) {
@@ -689,7 +715,20 @@ object Situation {
             val away = "${IdeaWords.inWords(toGo)} square${if (toGo != 1) "s" else ""}"
             return "Your passed pawn on $frm is $away from queening"
         }
-        if (kind == "rookBehindPasser") return "Your rook on $frm belongs behind a passed pawn, where it pushes it on"
+        if (kind == "rookBehindPasser") {
+            // Behind their passer the rook holds it back; it pushes only your own (it was said
+            // "where it pushes it on" of their pawn, 2026-10-01).
+            val after = board.copy(withStack = false)
+            after.push(best)
+            val file = squareFile(best.to)
+            val passers = after.pieces(PAWN, !us).filter { squareFile(it) == file && isPassed(after, it) }
+            val ours = after.pieces(PAWN, us).any { squareFile(it) == file && isPassed(after, it) }
+            if (passers.isNotEmpty() && !ours) {
+                return "Your rook on $frm belongs behind their passed pawn on ${sq(passers[0])}, " +
+                    "where it holds it back"
+            }
+            return "Your rook on $frm belongs behind a passed pawn, where it pushes it on"
+        }
         if (kind == "break") {
             val after = board.copy(withStack = false)
             after.push(best)
@@ -719,7 +758,11 @@ object Situation {
         }
         if (kind == "pawnStorm") {
             val king = board.king(!us) ?: return null
-            return "Their king on ${sq(king)} is on the other wing from yours: your pawns can roll at it"
+            if (kingsApart(board, us)) {
+                return "Their king on ${sq(king)} is on the other wing from yours: your pawns can roll at it"
+            }
+            // A king in the centre has no wing ("the other wing from yours" of a king on e1).
+            return "Their king on ${sq(king)} is ${wing(king)}, and yours is not: your pawns can roll at it"
         }
         if (kind == "simplify") return "You are ahead in material: every trade brings the win closer"
         return null
@@ -734,8 +777,11 @@ object Situation {
             return "The plan is an attack on their king on $sq$who"
         }
         if (plan.kind == "storm" && sq != null) {
-            return "The plan is a pawn storm on their king on $sq: with the kings on opposite " +
-                "wings, it costs your own king nothing"
+            if (kingsApart(board, board.turn)) {
+                return "The plan is a pawn storm on their king on $sq: with the kings on opposite " +
+                    "wings, it costs your own king nothing"
+            }
+            return "The plan is a pawn storm on their king on $sq, away from your own king"
         }
         if (plan.kind == "double" && !plan.where.isNullOrEmpty()) {
             val detail = if (plan.detail.isNullOrEmpty()) "open" else plan.detail
@@ -743,7 +789,12 @@ object Situation {
         }
         if (plan.kind == "outpost" && sq != null) {
             val who = if (!pieces.isNullOrEmpty()) pieces else "a knight"
-            return "$sq is a square no pawn of theirs can ever attack, and $who can reach it"
+            if (pawnSafe(board, plan.square, board.turn)) {
+                return "$sq is a square no pawn of theirs can ever attack, and $who can reach it"
+            }
+            // The line makes it one (a pawn of theirs that attacks it now is traded or passes
+            // on the way): "no pawn of theirs can ever attack" was said with b6 hitting c5.
+            return "$sq becomes a square no pawn of theirs can attack, and $who can reach it"
         }
         if (plan.kind == "passer" && sq != null) {
             return "Your passed pawn on $sq is the point: push it, and it ties their pieces down"
