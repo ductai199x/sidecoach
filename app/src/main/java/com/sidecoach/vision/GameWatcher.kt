@@ -652,16 +652,25 @@ class GameWatcher(
 
     /**
      * The end of a session: `panel._run`'s `finally`, on the vision thread. A Stop waits a few
-     * seconds for the engine's backlog, so the review has every verdict; the coach's replies
-     * in flight are waited for; the strip is brought up to date once more; Stockfish and the
-     * coach stay for the next Start (only the screen stops), the engine's game dropped; the
-     * session is summarised for the next one's coach, and the stores are closed.
+     * seconds for the engine's backlog, so the review has every verdict; the session is
+     * summarised for the next one's coach; the coach's replies in flight are waited for; the
+     * strip is brought up to date once more; Stockfish and the coach stay for the next Start
+     * (only the screen stops), the engine's game dropped; and the stores are closed.
      */
     override fun close() {
         try {
             val late = assessing.wait(5.0)
             coaching.events(late, SystemClock.elapsedRealtime() / 1000.0)
             coaching.events(PanelEngine.profile(profiler, late, flush = true), SystemClock.elapsedRealtime() / 1000.0)
+            // The session's end is written before the wait for the coach's replies below (up
+            // to 30 s): the desktop's quit gives the loop 10 s, and the session's end, last, was
+            // never written when a reply was on its way (`panel._run`).
+            try {
+                val summary = profiler.endSession(System.currentTimeMillis() / 1000.0)
+                if (!summary.isNullOrEmpty()) PanelEngine.emit("game", "info", "session: $summary")
+            } catch (exc: Exception) {  // the profile must not block the shutdown
+                PanelEngine.emit("sys", "error", "profile error at close: ${PanelEngine.pyRepr(exc)}")
+            }
             // Nothing unasked until the next Start reads the board again: the coach outlives
             // the session, and the first ticks after Start gave stuck hints about this one's last
             // position (the game-state review, 2026-10-01).
@@ -670,12 +679,6 @@ class GameWatcher(
             // The strip once more, with the replies that came after the last tick.
             pipeline?.let { one -> runCatching { PanelEngine.health(one, coaching, ticks, pipelineMs, 1.0, lastTs) } }
             assessing.reset()
-            try {
-                val summary = profiler.endSession(System.currentTimeMillis() / 1000.0)
-                if (!summary.isNullOrEmpty()) PanelEngine.emit("game", "info", "session: $summary")
-            } catch (exc: Exception) {  // the profile must not block the shutdown
-                PanelEngine.emit("sys", "error", "profile error at close: ${PanelEngine.pyRepr(exc)}")
-            }
         } finally {
             PanelEngine.profiler = null
             coaching.useRecord(null)
