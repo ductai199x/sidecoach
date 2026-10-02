@@ -232,9 +232,9 @@ def label_move(
       the position offered a winning chance (`chance`, read by `verdict` from the engine's
       lines) and the move played gave ground (a loss of an inaccuracy or more), whatever
       the size of the loss (Tai, 2026-10-02). And a forced mate let go (`mate_let_go`,
-      read by `verdict`): the player had a mate in N and the move played leaves none, or
-      only a longer one -- a miss whatever it cost, even while it still wins; a move that
-      keeps a mate as short is labelled by its loss (Tai, 2026-10-02 12:16).
+      read by `verdict`): a mate in 1 not given, no mate left, or one MATE_LONGER moves
+      longer while the opponent still has a piece -- a miss whatever it cost, even while it
+      still wins; any other longer mate is labelled by its loss (Tai, 2026-10-02 12:50).
     - Great, "a move that altered the course of the game": the best move where every other
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
@@ -331,20 +331,44 @@ def mate_after(
     return None
 
 
+# How much longer a forced mate may get, in the player's moves, before letting it go is a
+# Miss -- with a piece still on the opponent's side. Tai, 2026-10-02 12:45: "instead of 1 move
+# longer, change it to 3-4 moves longer"; 12:50: four, the rule "mate in 1 missed, or the mate
+# gone, or 4+ moves longer" with technique endgames exempt. One move longer gave 41 Misses in
+# the six recorded games, nearly all in won endgames chess.com left unmarked.
+MATE_LONGER = 4
+
+
 def mate_let_go(
     move: chess.Move, after: chess.Board, before_lines: Sequence[Line], after_lines: Sequence[Line]
 ) -> bool:
-    """The player had a forced mate in N, and `move` leaves none or only a longer one (Tai,
-    2026-10-02 12:16: "if I can mate in 5 but I made a move that still good, keep the advantage
-    but no more mate in 5 then that's a miss. if I can mate in 1 but I made a move that is now
-    mate in 2 then that's also a miss. if i can mate in 3 but I made a different move that's
-    ALSO mate in 3 then that is fine"). The engine's own first move is never one (`label_move`
-    checks it): its line is the mate."""
+    """The player had a forced mate in N and `move` let it go (Tai, 2026-10-02 12:50):
+    1. it was a mate in 1, and the move does not mate ("missing mate in 1 is a miss regardless
+       - it's a special rule", 12:46);
+    2. the move leaves no forced mate at all;
+    3. or the mate gets MATE_LONGER or more of the player's moves longer while the opponent
+       still has a piece -- against a bare king, or a king and pawns, the technique mate (the
+       box, the ladder, queening first) is the method to learn, and a longer route is fine.
+    Any other longer mate is labelled by its loss. The engine's own first move is never one
+    (`label_move` checks it): its line is the mate. No deeper search for "no mate left": the
+    analyses the labels use decide."""
     top = before_lines[0] if before_lines else None
     if top is None or top.mate is None or top.mate <= 0:
         return False
     kept = mate_after(move, after, before_lines, after_lines)
-    return kept is None or kept > top.mate
+    if kept is None:
+        return True
+    if top.mate == 1:
+        return kept != 1
+    return kept >= top.mate + MATE_LONGER and _has_a_piece(after, after.turn)
+
+
+def _has_a_piece(board: chess.Board, color: chess.Color) -> bool:
+    """Whether `color` has anything but its king and pawns."""
+    return any(
+        p.color == color and p.piece_type not in (chess.KING, chess.PAWN)
+        for p in board.piece_map().values()
+    )
 
 
 def verdict(

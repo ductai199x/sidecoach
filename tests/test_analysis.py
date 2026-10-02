@@ -516,6 +516,56 @@ def test_a_forced_mate_let_go_and_one_walked_into() -> None:
     assert kept.label is Label.EXCELLENT, kept
 
 
+def _mate_judged(fen: str, best_san: str, n: int, played_san: str, m: int | None) -> Label:
+    """The label of `played_san` from `fen`, where the best line (`best_san` first) mates in
+    `n`, and the move played leaves a mate in `m` of the player's moves (None: no mate, the
+    position still a thousand centipawns up)."""
+    board = chess.Board(fen)
+    best = board.parse_san(best_san).uci()
+    played = board.parse_san(played_san).uci()
+    before = Line(moves=[best], depth=6, expected_score=1.0, mate=n)
+    if m is None:
+        after = Line(moves=[], depth=6, expected_score=0.03, score_cp=-1000)
+    else:
+        after = Line(moves=[], depth=6, expected_score=0.0, mate=1 - m)
+    label = _judged(board, played, before, after).label
+    assert label is not None
+    return label
+
+
+def test_a_mate_let_go_is_a_miss_in_one_none_left_or_four_longer_with_a_piece() -> None:
+    """Tai, 2026-10-02 12:50: a missed forced mate is a Miss when (1) it was a mate in 1 and
+    the move does not mate; (2) the move leaves no forced mate; (3) the mate gets MATE_LONGER
+    (4) or more of the player's moves longer while the opponent still has a piece. Any other
+    longer mate is labelled by its loss. The three games' cases of the analysis
+    (findings/mate-miss-analysis.md) among them."""
+    from sidecoach.analysis.score import MATE_LONGER
+
+    assert MATE_LONGER == 4
+    # (1) g01 ply 77: 39. Qg7# was mate in 1; 39. Qf2 leaves a mate in 2.
+    g01 = "5Q2/7k/1pp1p3/p7/P2P4/1PK1P3/2P5/6R1 w - - 2 39"
+    assert _mate_judged(g01, "Qg7#", 1, "Qf2", 2) is Label.MISS
+    # (2) no mate left, the opponent a bare king or not.
+    assert _mate_judged(g01, "Qg7#", 1, "Qf2", None) is Label.MISS
+    # g04 ply 91: mate in 4 with 46. Qf6+; 46. Qh7 is a mate in 7, the opponent with a
+    # bishop: three moves longer, under four -- labelled by its loss, not a miss.
+    g04 = "2b2k2/8/3P2Q1/p4p2/2P2P1P/1P6/P6P/4K3 w - - 1 46"
+    assert _mate_judged(g04, "Qf6+", 4, "Qh7", 7) is Label.EXCELLENT
+    # (3) the same position, the mate four moves longer: a miss.
+    assert _mate_judged(g04, "Qf6+", 4, "Qh7", 8) is Label.MISS
+    # g02 ply 137: mate in 8 with 69. Nc4+ against a bare king; 69. Ne8 is a mate in 10 --
+    # the technique, fine however much longer.
+    g02 = "8/8/1kPN4/1P1K4/8/8/8/8 w - - 3 69"
+    assert _mate_judged(g02, "Nc4+", 8, "Ne8", 10) is Label.EXCELLENT
+    assert _mate_judged(g02, "Nc4+", 8, "Ne8", 14) is Label.EXCELLENT
+    # King and pawns are technique too; a mate gone there is still a miss.
+    pawns = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
+    assert _mate_judged(pawns, "Ra8#", 1, "h3", 2) is Label.MISS
+    assert _mate_judged(pawns, "Ra8#", 1, "h3", None) is Label.MISS
+    assert _mate_judged(pawns, "Ra8#", 3, "h3", 8) is Label.EXCELLENT
+    assert _mate_judged(pawns, "Ra8#", 3, "h3", None) is Label.MISS
+
+
 def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
     """The settings' save forgets what was measured (`forget_measured`) from another thread,
     and the search under way then finishes the old way. Kept, it was the depth-12 position a
