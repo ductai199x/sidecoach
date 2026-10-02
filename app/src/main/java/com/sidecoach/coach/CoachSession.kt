@@ -1070,12 +1070,16 @@ class Coach(
             // A turn of the conversation only in the moment it was asked for: a reply about the
             // game before, or about a move taken back, is shown but never part of the history of
             // the game now (what the model reads of it, the follow-up it makes of the player's
-            // next words).
+            // next words). One asked before the player's last move is this game's, but about the
+            // position they moved from: written in the record, not under what was said at the
+            // position now -- there it was a turn since the move ("do not repeat the verdict"),
+            // and a question it ended with made their next words its answer.
             if (!one.recorded && one.epoch == epoch) {
                 synchronized(lock) {
                     conversation.coachSaid(
                         one.message.text,
                         nod = one.message.trigger == Trigger.POST_MOVE,
+                        past = one.late,
                     )
                 }
             }
@@ -1860,7 +1864,7 @@ class Coach(
         val out = ArrayList<String>()
         for (entry in entries.asReversed()) {
             if (entry.kind == "ply" || entry.kind == "takeback" || entry.kind == "resync") break
-            if (entry.kind == "coach") out.add(entry.text)
+            if (entry.kind == "coach" && !entry.past) out.add(entry.text) // a late reply: the record's
         }
         return out
     }
@@ -1883,6 +1887,7 @@ class Coach(
         // Their words themselves, when ask() has recorded them already, are not the thread.
         if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
         for (entry in entries.asReversed()) {
+            if (entry.past) continue // about a position left: no turn of the one now
             if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
             if (entry.kind != "note") return false
         }
@@ -3561,11 +3566,12 @@ class Coach(
      * Whether the coach's last turn, since the player's last move, ended with a question and
      * nothing but notes came between: their words may be its answer. `Coach._last_turn_asked`.
      */
-    private fun lastTurnAsked(): Boolean {
+    internal fun lastTurnAsked(): Boolean {
         var entries = synchronized(lock) { conversation.entries.toList() }
         // Their words themselves, when ask() has recorded them already, are not the thread.
         if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
         for (entry in entries.asReversed()) {
+            if (entry.past) continue // about a position left: no turn of the one now
             if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
             if (entry.kind != "note") return false
         }

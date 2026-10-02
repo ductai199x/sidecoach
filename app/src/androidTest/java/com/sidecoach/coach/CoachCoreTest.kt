@@ -939,6 +939,39 @@ class CoachCoreTest {
         assertTrue("PLAYER said: \"what's the plan here?\"" in harnessOf(provider))
     }
 
+    /**
+     * A reply asked for before the player moved and landing after it is shown (late), and it is
+     * this game's -- but about the position they moved from: written in the record, not said at
+     * the position now. Recorded there, the next question was told "do not repeat the verdict",
+     * and its "?" made the next words its answer.
+     * `test_a_reply_that_lands_after_the_players_move_is_the_records_not_said_here`.
+     */
+    @Test
+    fun aReplyThatLandsAfterThePlayersMoveIsTheRecordsNotSaidHere() {
+        val reply = "Look at f7: what does their king have left?"
+        val (coach, provider) = scripted(listOf(reply, "The bishop check gave the king a square."))
+        playToScholar(coach)
+        coach.quiet = true // no word on the move: the late reply is the only coach turn
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("what should I aim for?", 8.0) // built; the model has not answered yet
+        mateMissed(coach, 9.0) // the player moves first
+        val board = Board(SCHOLAR)
+        board.push(board.parseSan("Bxf7+")!!)
+        looked(coach, board, 7, listOf("e8e7"), 9.5)
+        val out = messages(coach).filter { it.trigger == Trigger.USER_ASK }
+        assertEquals("shown, in its place", listOf(reply), out.map { it.text })
+        assertTrue(coach.spoken.first().late)
+        assertEquals("not said at the position now", emptyList<String>(), coach.saidSinceMove())
+        assertFalse(coach.lastTurnAsked() || coach.answeringOurQuestion("the king"))
+        assertTrue("in the record", reply in coach.conversation.render().substringBefore("# Position now"))
+        coach.ask("why was that bad?", 10.0)
+        messages(coach)
+        val directive = directiveOf(provider)
+        assertFalse("You have spoken since the last move already" in directive)
+        assertFalse("Your last turn above ended with a question" in directive)
+    }
+
     /** `said_level`: what a reply said, from its words. */
     @Test
     fun theRungAReplySaidIsReadFromItsWords() {
