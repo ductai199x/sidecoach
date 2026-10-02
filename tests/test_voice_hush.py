@@ -5,16 +5,18 @@ findings 1 and 2, 2026-10-01). A fake voice: nothing loads, nothing plays."""
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from sidecoach.coach.coach import _FirstCandidate
 from sidecoach.config import Settings
 from sidecoach.events import Trigger
+from sidecoach.ui import panel as panel_mod
 from sidecoach.ui.panel import PanelEngine
+from tests.fakes import HANG_S, ManualClock
 
 REPLY = (
     "Your knight on f5 is loose and the queen can reach g6 with check. "
@@ -90,11 +92,17 @@ def test_a_barge_in_silences_the_rest_of_the_reply(tmp_path: Path) -> None:
     assert "Then look at Nh4 and Ne3." in _captioned(engine)
 
 
-class SlowSTT:
-    name = "slow"
+class HeldSTT:
+    """Speech recognition the test holds in the middle: `begun` says a recognition has
+    started, and its words come once the test lets them (`go`) -- the time Parakeet takes on a
+    few seconds of speech, as long as the test needs it to be."""
+
+    name = "held"
 
     def __init__(self, words: list[str]) -> None:
         self.words = words
+        self.begun = threading.Event()
+        self.go = threading.Event()
 
     def healthcheck(self) -> tuple[bool, str]:
         return True, "fake"
@@ -103,29 +111,45 @@ class SlowSTT:
         return True
 
     def transcribe(self, audio: Any, sample_rate: int = 16000) -> str:
-        time.sleep(0.15)  # Parakeet on a few seconds of speech, roughly
+        self.begun.set()
+        self.go.wait(HANG_S)
         return self.words.pop(0)
 
 
 def test_a_press_while_the_last_words_are_recognised_keeps_one_question(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Voice finding 5: the key pressed again while the first half was being recognised; the
     second of quiet started when that recognition ended, and sent the first half alone while
-    the player still held the key."""
+    the player still held the key. The second of quiet is the panel's timer on a clock the
+    test moves (tests/fakes.py ManualClock)."""
     engine, _ = _engine(tmp_path)
-    engine._stt = SlowSTT(["what about", "the knight"])  # type: ignore[assignment]
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "time", clock.time_module())
+    monkeypatch.setattr(panel_mod, "threading", clock.threading_module())
+    quiet = panel_mod.DICTATION_SEND_DELAY_S
+    stt = HeldSTT(["what about", "the knight"])
+    engine._stt = stt  # type: ignore[assignment]
     engine._listener.mode = "ptt"
     engine._state["running"] = True  # a session: the ask is queued for its loop
     audio = np.zeros(16000, np.float32)
     engine.ptt(True)
     first = threading.Thread(target=engine._on_utterance, args=(audio, 1.0))
     first.start()  # released: the first half goes to the recogniser ...
-    time.sleep(0.05)
-    engine.ptt(True)  # ... and the key is pressed again
-    first.join()
+    assert stt.begun.wait(HANG_S), "the first half never reached the recogniser"
+    engine.ptt(True)  # ... and the key is pressed again while it is recognised
+    stt.go.set()
+    first.join(HANG_S)
+    assert not first.is_alive()
     assert engine.poll()["state"]["dictation"]["sends_at"] is None
-    time.sleep(1.3)  # still holding the key
+    assert clock.pending() == [], "no send armed while the key is held"
+    clock.advance(1.3)  # still holding the key
     assert engine._commands.empty()
     engine._on_utterance(audio, 1.0)  # released
-    assert engine._commands.get(timeout=3) == ("ask_spoken", "what about the knight")
+    released = clock.now
+    sends_at = engine.poll()["state"]["dictation"]["sends_at"]
+    assert sends_at == int((released + quiet) * 1000), "a second after the release"
+    clock.advance_to(released + quiet - 0.01)
+    assert engine._commands.empty(), "not before the second of quiet"
+    clock.advance_to(released + quiet)
+    assert engine._commands.get_nowait() == ("ask_spoken", "what about the knight")

@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import threading
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 from sidecoach.config import Settings, secrets_get, secrets_set, to_toml
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import build_app
+from tests.fakes import HANG_S, ManualClock
 
 
 def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, PanelEngine]:
@@ -231,6 +233,34 @@ def test_a_key_taken_out_of_an_object_field_goes(
     assert engine.settings.llm.provider == "openai", "the rest of the section is kept"
 
 
+class _WatchedLock:
+    """The settings' lock (re-entrant, as `settings_api.saving` is), telling when a thread
+    finds it taken and has to wait (`on_wait`, `waited`)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self.waited = False
+        self.on_wait: Callable[[], None] = lambda: None
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(blocking=False):
+            return True
+        if not blocking:
+            return False
+        self.waited = True
+        self.on_wait()
+        return self._lock.acquire(timeout=timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
 @pytest.mark.parametrize("other", ["muted", "record", "captions"])
 def test_two_writes_at_once_keep_both_changes(
     other: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -239,24 +269,32 @@ def test_two_writes_at_once_keep_both_changes(
     the same moment: each read the settings, laid its change over them and wrote, and the
     later write put back what the earlier one changed -- 81 usernames lost in 150 rounds, and
     the file left unreadable in 15 of 400 (the settings review, 2026-10-01). One write at a
-    time, the whole read-merge-write: both changes stay, in the file and in the panel."""
+    time, the whole read-merge-write: both changes stay, in the file and in the panel.
+
+    The Settings save holds still between its read and its write until the other write has
+    either landed (no lock: the race lost) or is held at the settings' lock -- which the test
+    sees, the lock telling when someone waits on it. No delay decides which."""
     from sidecoach.config import load_settings
     from sidecoach.ui import settings_api
 
+    lock = _WatchedLock()
+    monkeypatch.setattr(settings_api, "saving", lock)  # before the app takes it
     client, engine = _client(tmp_path, monkeypatch)
     real = settings_api.save_settings
-    saving, other_done = threading.Event(), threading.Event()
+    saving = threading.Event()
+    moved_on = threading.Event()  # the other write held at the lock, or done
+    lock.on_wait = moved_on.set
     calls: list[int] = []
 
-    def slow(settings: Settings, path: Path | None = None) -> Path:
+    def held(settings: Settings, path: Path | None = None) -> Path:
         """The Settings save holds still between its read and its write."""
         if not calls:
             calls.append(1)
             saving.set()
-            other_done.wait(0.15)  # long enough for an unlocked write to land in between
+            assert moved_on.wait(HANG_S), "the other write neither waited nor landed"
         return real(settings, path)
 
-    monkeypatch.setattr(settings_api, "save_settings", slow)
+    monkeypatch.setattr(settings_api, "save_settings", held)
     body = {"settings": {"profile": {"chesscom_user": "nosegazm"}}, "secrets": {}}
     first = threading.Thread(target=lambda: client.put("/api/settings", json=body))
     first.start()
@@ -268,8 +306,10 @@ def test_two_writes_at_once_keep_both_changes(
     else:
         on = {"settings": {"voice": {"captions": True}}, "secrets": {}}
         assert client.put("/api/settings", json=on).json()["ok"]
-    other_done.set()
+    moved_on.set()  # the other write is done (if it never waited, it landed in between)
     first.join(5)
+    assert not first.is_alive()
+    assert lock.waited, "the other write landed in the middle of the Settings save"
     section, field = {
         "muted": ("voice", "muted"),
         "record": ("capture", "record"),
@@ -446,12 +486,16 @@ def test_a_microphone_test_whose_window_closed_ends_at_the_next_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Voice finding 10: Settings closed during the test (its onDestroy does not run on a
-    window's close) left it on, listening in voice mode, until the next utterance."""
+    window's close) left it on, listening in voice mode, until the next utterance. The
+    panel's clock is one the test moves: on to HEAR_TEST_TIMEOUT_S unpolled the test goes on,
+    past it it ends."""
     from types import SimpleNamespace
 
     from sidecoach.ui import panel as panel_mod
 
     _, engine = _client(tmp_path, monkeypatch)
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "time", clock.time_module())
 
     def set_mode(mode: str) -> str:
         listener.mode = mode
@@ -464,9 +508,13 @@ def test_a_microphone_test_whose_window_closed_ends_at_the_next_poll(
     engine._stt = SimpleNamespace(healthcheck=lambda: (True, "stt"))  # type: ignore[assignment]
     engine.set_listen("ptt")
     assert engine.set_hear_test(True)["on"] and listener.mode == "vad"
+    seen = clock.now  # the test's page asked last
     engine.poll(0)  # the main window's poll, the test's page still polling
     assert engine._hear_test_on
-    engine._hear_test_seen -= panel_mod.HEAR_TEST_TIMEOUT_S + 1  # the page went away
+    clock.advance_to(seen + panel_mod.HEAR_TEST_TIMEOUT_S)
+    engine.poll(0)
+    assert engine._hear_test_on, "not yet past its time"
+    clock.advance(1)  # the page went away
     engine.poll(0)
     assert not engine._hear_test_on and listener.mode == "ptt"
 

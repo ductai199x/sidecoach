@@ -8,15 +8,18 @@ coach and the voice have the time they had in the real game.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from sidecoach.config import Settings
 from sidecoach.events import Region
 from sidecoach.replay.recording import Recorder
+from sidecoach.ui import server
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.server import make_engine
+from tests.fakes import ManualClock
 from tests.synth import game_frames
 
 LONG = "Your knight on f5 is loose; the queen check on g6 wins it. What defends it?"
@@ -174,9 +177,11 @@ def test_a_word_held_in_a_fast_game_is_said_once_the_player_slows(
     assert len(fake.calls) == 1, "a word held at the game's end is dropped"
 
 
-def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
+def test_replay_is_paced_to_its_timestamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A recording of a rendered game whose ticks are a second apart, replayed at 4x:
-    the frames come a quarter of a second apart in wall time, not as fast as they read."""
+    the frames come a quarter of a second apart in wall time, not as fast as they read.
+    The replay keeps its pace on a clock the test owns (tests/fakes.py ManualClock): reading
+    a frame takes no time on it, and every wait is written down."""
     frames = [frame for _, _, frame in game_frames(("e4", "e5"), frames_per_state=1)]
     region = Region(0, 0, frames[0].shape[1], frames[0].shape[0])
     rec = tmp_path / "rec"
@@ -185,49 +190,57 @@ def test_replay_is_paced_to_its_timestamps(tmp_path: Path) -> None:
         recorder.write(frame, ts=float(i), store=True)
     recorder.close()
     settings = Settings(data_dir=tmp_path)
+    clock = ManualClock()
+    monkeypatch.setattr(server, "time", clock.time_module())
 
     fast = make_engine(settings, replay=rec, speed=0)
     assert fast.frame_source is not None
-    t0 = time.monotonic()
+    t0 = clock.now
     assert [ts for _, ts, _ in fast.frame_source] == [0.0, 1.0, 2.0]
-    # Two seconds of recording: unpaced it reads in milliseconds, paced at 1x it would
-    # take two seconds. The bound is loose because the suite runs on every core at once
-    # and decoding three frames has taken most of half a second under that load.
-    assert time.monotonic() - t0 < 1.0, "unpaced replay waited"
+    # Two seconds of recording: unpaced it never waits; paced at 1x it would take two seconds.
+    assert clock.sleeps == [], "unpaced replay waited"
+    assert clock.now - t0 < 1.0, "unpaced replay waited"
 
     paced = make_engine(settings, replay=rec, speed=4.0)
     assert paced.frame_source is not None
     src = iter(paced.frame_source)
-    t0 = time.monotonic()  # the pace is kept from the first frame, whatever decoding cost
+    t0 = clock.now  # the pace is kept from the first frame, whatever decoding cost
     next(src)
+    assert clock.now == t0, "the first frame comes at once"
     next(src)
-    elapsed = time.monotonic() - t0
+    elapsed = clock.now - t0
     assert elapsed >= 0.2, f"replay ran unpaced: {elapsed:.2f}s for a second at 4x"
+    assert elapsed == 0.25, "a second of recording at 4x: a quarter of a second"
+    next(src)
+    assert clock.now - t0 == 0.5, "each frame at its own time, from the first"
 
 
 def test_the_way_from_a_move_to_its_first_sound_is_timed(
-    make_panel: Callable[..., PanelEngine],
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The status strip's move->speech latency: the move is noted when committed, the
     reply's first line remembered when queued, and the time taken the moment the voice
-    says the line's audio has started; amortised over the session."""
-    import time
-
+    says the line's audio has started; amortised over the session. The panel's clock is one
+    the test moves: the time taken is exactly the time that passed."""
     from sidecoach.events import Trigger
+    from sidecoach.ui import panel as panel_mod
 
     engine = make_panel()
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "time", clock.time_module())
     engine._note_move(1)
     assert engine._latency()["move_to_speech_s"] is None
     sink = engine._stream_sink(Trigger.POST_MOVE, 0)
     assert sink is not None
-    time.sleep(0.05)
+    clock.advance(0.25)  # the word is written ...
     assert sink("e4: best.")  # the first line of the word on ply 1, queued
     assert "e4: best." in engine._awaiting_audio
-    time.sleep(0.05)
+    clock.advance(0.5)  # ... and synthesised
     engine._on_audio_starts("e4: best.")  # the voice: playing now
     lat = engine._latency()
     assert lat["move_to_speech_n"] == 1 and lat["move_to_speech_s"] is not None
     assert 0.08 <= lat["move_to_speech_s"] <= 2.0, lat
+    assert lat["move_to_speech_s"] == 0.75, "from the move, not from the line queued"
     assert lat["move_to_speech_last_s"] == lat["move_to_speech_s"]
     # A line nobody waited for, or a stuck hint, is not a move's latency.
     engine._on_audio_starts("something else")

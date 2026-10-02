@@ -4,10 +4,11 @@ session that persists nothing, and the lock file a second launch attaches throug
 
 from __future__ import annotations
 
+import builtins
 import json
+import queue
 import socket
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from sidecoach.config import Settings
 from sidecoach.ui import server
 from sidecoach.ui.panel import FrameRing, PanelEngine
 from sidecoach.ui.server import build_app
+from tests.fakes import HANG_S, ManualClock
 from tests.synth import game_frames
 
 
@@ -161,19 +163,39 @@ def test_the_frame_ring_bounds_itself() -> None:
 
 @pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_shutdown_ends_the_session_before_the_process_goes(
-    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: Any, capsys: Any
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: Any
 ) -> None:
     """The shell's quit: /api/shutdown stops the running session and the server, and
-    run_server returns only after the session's own close ran (the review and profile)."""
+    run_server returns only after the session's own close ran (the review and profile).
+
+    The real server on a real port: that is what the shell talks to. Its port is read from
+    the line it announces, the moment it is printed; the session reads a game and then waits
+    for the next frame as a live capture does, until it is stopped -- so it is running when
+    the shutdown comes, however fast or slow the machine."""
     engines: list[PanelEngine] = []
+    all_read = threading.Event()
+
+    def live_game() -> Any:
+        yield from game_frames()
+        all_read.set()  # every frame read and handled: the screen shows nothing new ...
+        engines[0]._stop.wait(HANG_S)  # ... until the session is stopped
 
     def make(settings: Settings, **_: Any) -> PanelEngine:
-        engine = make_panel(settings, frame_source=game_frames())
+        engine = make_panel(settings, frame_source=live_game())
         engine.warm = lambda background=True: None  # type: ignore[method-assign]
         engines.append(engine)
         return engine
 
+    announced: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def announce(*args: Any, **kwargs: Any) -> None:
+        builtins.print(*args, **kwargs)
+        line = " ".join(str(a) for a in args)
+        if line.startswith("{"):
+            announced.put(json.loads(line))
+
     monkeypatch.setattr(server, "make_engine", make)
+    monkeypatch.setattr(server, "print", announce, raising=False)
     settings = Settings(data_dir=tmp_path)
     done = threading.Event()
 
@@ -182,26 +204,19 @@ def test_shutdown_ends_the_session_before_the_process_goes(
         done.set()
 
     threading.Thread(target=serve, daemon=True).start()
-    port = 0
-    deadline = time.monotonic() + 30
-    while not port and time.monotonic() < deadline:
-        for line in capsys.readouterr().out.splitlines():
-            if line.startswith("{"):
-                port = json.loads(line)["port"]
-        time.sleep(0.05)
+    port = announced.get(timeout=HANG_S)["port"]
     assert port
     base = f"http://127.0.0.1:{port}"
     auth = {"Authorization": "Bearer t"}
     assert httpx.post(f"{base}/api/start", headers=auth).json()["ok"] is True
     engine = engines[0]
-    deadline = time.monotonic() + 30
-    while engine.poll(0)["state"]["ply"] < 4 and time.monotonic() < deadline:
-        time.sleep(0.05)
+    assert all_read.wait(HANG_S), "the session never read the game"
+    assert engine.poll(0)["state"]["ply"] >= 4
     assert engine.running
     # Without the token the route is refused; with it the server ends.
     assert httpx.post(f"{base}/api/shutdown").status_code == 401
     assert httpx.post(f"{base}/api/shutdown", headers=auth).json() == {"ok": True}
-    assert done.wait(30), "run_server did not return"
+    assert done.wait(HANG_S), "run_server did not return"
     assert not engine.running
     texts = [ln["text"] for ln in engine.poll(0)["lines"]]
     assert "engine stopped" in texts  # the loop's own close ran to its end
@@ -235,10 +250,14 @@ def test_a_second_launch_attaches_through_the_lock_file(tmp_path: Path) -> None:
     listener.close()
 
 
-def test_a_relaunch_never_attaches_to_a_sidecar_of_another_token(tmp_path: Path) -> None:
+def test_a_relaunch_never_attaches_to_a_sidecar_of_another_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Setup finding 7: a shell relaunched soon after its predecessor died attached to the
     dying sidecar, which wants the old token: every call was 401. Only a sidecar that takes
-    this launch's token is attached to; the lock keeps a digest of it, never the token."""
+    this launch's token is attached to; the lock keeps a digest of it, never the token. (A
+    real socket answers the health check: the lock is followed over the wire. The wait for a
+    dying sidecar runs on a clock the test owns.)"""
     import os
 
     settings = Settings(data_dir=tmp_path)
@@ -274,6 +293,12 @@ def test_a_relaunch_never_attaches_to_a_sidecar_of_another_token(tmp_path: Path)
         assert server._attached_port(settings, "127.0.0.1", "new") is None
     finally:
         listener.close()
-    # The wait for a dying sidecar ends when it is gone, and gives up on a live one.
+    # The wait for a dying sidecar ends when it is gone, and gives up on a live one -- once
+    # its time is up, not before.
+    clock = ManualClock()
+    monkeypatch.setattr(server, "time", clock.time_module())
     assert server._wait_for_exit(2**22 + 12345, 1.0)
+    assert clock.sleeps == [], "a process already gone is not waited for"
+    begun = clock.now
     assert not server._wait_for_exit(os.getpid(), 0.3)
+    assert 0.3 <= clock.now - begun <= 0.3 + max(clock.sleeps) + 1e-9, "gave up at its time"

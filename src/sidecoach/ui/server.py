@@ -1134,8 +1134,7 @@ def make_engine(
             settings.voice.listen = listen
     frame_source = None
     if replay is not None:
-        import time
-
+        # The pace below reads the module's own `time` (a test gives it a clock of its own).
         from sidecoach.replay.recording import Recording
 
         def frames() -> Any:

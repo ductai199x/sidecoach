@@ -457,21 +457,34 @@ class _Recogniser:
         return True, "fake"
 
 
+def _partial_done(engine: PanelEngine) -> None:
+    """Wait for the partial recognition running now to end: it holds `_partial_busy`, taken
+    before its thread starts and let go once its words are in the box (or dropped)."""
+    from tests.fakes import HANG_S
+
+    assert engine._partial_busy.acquire(timeout=HANG_S), "the partial never ended"
+    engine._partial_busy.release()
+
+
 def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What is said reaches the page as it is recognised, and is asked of the coach a second
     after the utterance ends -- unless more is said first, which appends, or the player types
     over it, which keeps the words in the box and stops the send (Tai, 2026-09-22: no
-    'heard:' line, the words in the text box, streamed, then sent)."""
-    import time
-
+    'heard:' line, the words in the text box, streamed, then sent). The second of quiet is
+    the panel's timer on a clock the test moves (tests/fakes.py ManualClock); a partial runs on
+    a thread of its own, waited on through the lock it holds while it works."""
     import numpy as np
 
     from sidecoach.ui import panel as panel_mod
+    from tests.fakes import ManualClock
 
-    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
     engine = make_panel(record=False)
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "time", clock.time_module())
+    monkeypatch.setattr(panel_mod, "threading", clock.threading_module())
+    quiet = panel_mod.DICTATION_SEND_DELAY_S
     engine._stt = _Recogniser()  # type: ignore[assignment]
     engine._state["running"] = True  # a session: the ask is queued for its loop
 
@@ -484,23 +497,28 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     assert dictation()["live"] is True
     # Partials while the key is held: the words so far, live.
     engine._on_partial(np.zeros(16000, dtype=np.float32))
-    deadline = time.monotonic() + 2
-    while dictation()["text"] != "hello hello" and time.monotonic() < deadline:
-        time.sleep(0.02)
+    _partial_done(engine)
     assert dictation() == {"text": "hello hello", "live": True, "sends_at": None}
     # The key comes up: the final result replaces the partial and the send is armed.
     engine._on_utterance(np.zeros(16000 * 2, dtype=np.float32), 2.0)
     d = dictation()
     assert d["text"] == "hello hello hello hello hello" and d["live"] is False
     assert d["sends_at"] is not None
+    assert d["sends_at"] == int((clock.now + quiet) * 1000), "a second after the utterance"
     assert engine._commands.empty()
     # Pressed again before it sends: it waits, and the next utterance appends.
+    clock.advance(quiet / 2)
     engine._dictation_hold()
     assert dictation()["sends_at"] is None
+    assert clock.pending() == [], "the send that was armed is called off"
     engine._on_utterance(np.zeros(16000 // 2, dtype=np.float32), 0.5)
     assert dictation()["text"] == "hello hello hello hello hello hello"
     # ...and after the quiet, one ask with everything, and the box is clear.
-    name, payload = engine._commands.get(timeout=2)
+    ended = clock.now
+    clock.advance_to(ended + quiet - 0.01)
+    assert engine._commands.empty(), "not before a second of quiet"
+    clock.advance_to(ended + quiet)
+    name, payload = engine._commands.get_nowait()
     assert (name, payload) == ("ask_spoken", "hello hello hello hello hello hello")
     assert dictation() == {"text": "", "live": False, "sends_at": None}
     # A partial still being recognised when its utterance ends is dropped: the final
@@ -512,13 +530,14 @@ def test_dictation_streams_into_the_box_and_sends_after_a_second_of_quiet(
     engine._on_partial(np.zeros(16000, dtype=np.float32))  # blocks in transcribe
     engine._on_utterance(np.zeros(16000 * 2, dtype=np.float32), 2.0)
     stt.gate.set()
-    time.sleep(0.2)
+    _partial_done(engine)
     assert dictation()["text"] == "hello hello hello hello hello"
     # Typed over before it sends: the words go to the box to edit, and nothing is asked.
     assert dictation()["sends_at"] is not None
     assert engine.cancel_dictation() == {"ok": True, "text": "hello hello hello hello hello"}
     assert dictation() == {"text": "", "live": False, "sends_at": None}
-    time.sleep(0.4)  # past the send delay
+    assert clock.pending() == [], "the send is called off"
+    clock.advance(10 * quiet)  # past the send delay
     assert engine._commands.empty()
     # No 'heard:' line at info level any more: the words are on the page, not in the terminal.
     assert not any(
@@ -531,13 +550,18 @@ def test_a_click_after_the_words_does_not_hold_their_send(
 ) -> None:
     """Words said, then a click in voice mode before they send: the click starts an
     utterance (the send waits) and is dropped -- the words go on to send, and the box stops
-    saying it is listening. They used to wait for good (2026-09-23)."""
+    saying it is listening. They used to wait for good (2026-09-23). The second of quiet is
+    the panel's timer on a clock the test moves."""
     import numpy as np
 
     from sidecoach.ui import panel as panel_mod
+    from tests.fakes import ManualClock
 
-    monkeypatch.setattr(panel_mod, "DICTATION_SEND_DELAY_S", 0.3)
     engine = make_panel(record=False)
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "time", clock.time_module())
+    monkeypatch.setattr(panel_mod, "threading", clock.threading_module())
+    quiet = panel_mod.DICTATION_SEND_DELAY_S
     engine._stt = _Recogniser()  # type: ignore[assignment]
     engine._state["running"] = True
     engine._on_utterance(np.zeros(16000, dtype=np.float32), 1.0)
@@ -547,10 +571,15 @@ def test_a_click_after_the_words_does_not_hold_their_send(
         "live": True,
         "sends_at": None,
     }
+    assert clock.pending() == [], "the send waits while the click lasts"
     engine._on_dropped()  # ...and is dropped
     d = engine.poll(0)["state"]["dictation"]
     assert d["live"] is False and d["sends_at"] is not None
-    assert engine._commands.get(timeout=2) == ("ask_spoken", "hello hello")
+    dropped = clock.now
+    clock.advance_to(dropped + quiet - 0.01)
+    assert engine._commands.empty(), "not before a second of quiet"
+    clock.advance_to(dropped + quiet)
+    assert engine._commands.get_nowait() == ("ask_spoken", "hello hello")
     # With nothing said before it, the box simply stops listening.
     engine._on_speech_start()
     engine._on_dropped()
@@ -711,29 +740,30 @@ def test_the_splash_never_waits_for_the_local_model(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Setup finding 18: the warm-up's one request to a local model server waited for the
-    model's first load (up to a minute), and the splash with it. It runs on its own now."""
+    model's first load (up to a minute), and the splash with it. It runs on its own now: the
+    warm-up is done while the model's request is still held, unanswered."""
     import threading
-    import time
 
     import sidecoach.vision.pieces as pieces
 
     engine = make_panel(record=False)
     released = threading.Event()
     asked = threading.Event()
+    answered = threading.Event()
 
     def slow_model() -> None:
         asked.set()
         released.wait(10)
+        answered.set()
 
     monkeypatch.setattr(pieces, "embedder", lambda: None)
     monkeypatch.setattr(engine, "_warm_voice", lambda: None)
     monkeypatch.setattr(engine, "_warm_pipeline", lambda: None)
     monkeypatch.setattr(engine, "_warm_engines", lambda: None)
     monkeypatch.setattr(engine, "_warm_model", slow_model)
-    begun = time.monotonic()
     try:
         engine.warm(background=False)
-        assert time.monotonic() - begun < 5.0
+        assert not answered.is_set(), "the warm-up waited for the model's answer"
         assert engine.warm_status()["done"] is True
         assert asked.wait(5), "the model is still warmed, in the background"
     finally:

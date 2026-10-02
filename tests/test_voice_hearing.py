@@ -164,15 +164,15 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
     """Whoever was told an utterance began is told when it comes to nothing: a click the
     endpointer drops in voice mode, a push-to-talk tap too short to hold a word. Neither was
     said before (2026-09-23), and the panel's dictation stayed held -- a cough in voice mode
-    kept the words said just before it from ever being sent."""
-    import time
-
+    kept the words said just before it from ever being sent. The listener reads the frames as
+    the test steps it (tests/fakes.py SteppedMic): every frame is handled when it is asked."""
     from sidecoach.voice.mic import HOP, Listener
+    from tests.fakes import SteppedMic
 
     starts: list[str] = []
     dropped: list[str] = []
     heard: list[float] = []
-    mic = FedMic()
+    mic = SteppedMic()
     # Two confident frames start speech; the silence after it is a click, not an ask.
     gate = _ScriptedGate([0.9, 0.9] + [0.1] * 20)
     listener = Listener(
@@ -183,18 +183,21 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
         on_dropped=lambda: dropped.append("dropped"),
     )
     listener.set_mode("vad")
-    for _ in range(22):
-        mic.frames.put(np.zeros(HOP, dtype=np.float32))
-    deadline = time.monotonic() + 3
-    while not dropped and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert starts == ["start"] and dropped == ["dropped"] and heard == []
-    # Push-to-talk: a press and a release with nothing kept in between.
-    listener.set_mode("ptt")
-    listener.press()
-    listener.release()
-    assert dropped == ["dropped", "dropped"] and heard == []
-    listener.set_mode("off")
+    try:
+        for _ in range(22):
+            mic.frames.put(np.zeros(HOP, dtype=np.float32))
+        mic.steps.idle()  # all 22 read and handled; the listener waits for the next
+        assert starts == ["start"] and dropped == ["dropped"] and heard == []
+        # Push-to-talk: a press and a release with nothing kept in between.
+        listener.set_mode("ptt")
+        listener.press()
+        listener.release()
+        assert dropped == ["dropped", "dropped"] and heard == []
+        # Nothing was ever handed to the utterances' thread (so none is on its way).
+        assert listener._deliverer is None and listener._deliveries.empty()
+    finally:
+        mic.steps.free()
+        listener.set_mode("off")
 
 
 # ---- hear -> correct -> ask over HTTP, with the real ear -------------------------------------
@@ -203,12 +206,19 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
 @pytest.mark.slow
 @pytest.mark.skipif(find_spec("onnx_asr") is None, reason="voice extras not installed")
 def test_a_spoken_move_reaches_the_coach_as_san(
-    make_panel: Callable[..., PanelEngine], tmp_path: Path
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The real ear on a real clip. The second of quiet before the ask is the panel's timer on
+    a clock the test moves; the panel's own clock stays real, so `stt_ms` is the ear's real
+    time."""
     from fastapi.testclient import TestClient
 
+    from sidecoach.ui import panel as panel_mod
     from sidecoach.ui.server import build_app
+    from tests.fakes import ManualClock
 
+    clock = ManualClock()
+    monkeypatch.setattr(panel_mod, "threading", clock.threading_module())
     settings = Settings(data_dir=tmp_path, voice=VoiceSettings(stt_device="cpu", listen="off"))
     engine = make_panel(settings, voice_models=True)
     # A position where Nf3 is legal: the start position, as the engine would report it.
@@ -228,7 +238,9 @@ def test_a_spoken_move_reaches_the_coach_as_san(
     assert heard[-1]["data"]["stt_ms"] < 2000
     # The corrected text is in the text box, and asked of the coach after a second of quiet.
     assert client.get("/api/poll").json()["state"]["dictation"]["text"] == "Nf3"
-    name, payload = engine._commands.get(timeout=3)
+    assert engine._commands.empty(), "not before the second of quiet"
+    clock.advance(panel_mod.DICTATION_SEND_DELAY_S)
+    name, payload = engine._commands.get_nowait()
     assert (name, payload) == ("ask_spoken", "Nf3")
     # The ear was loaded once and says where.
     ear = engine._stt

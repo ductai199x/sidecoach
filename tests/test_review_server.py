@@ -5,7 +5,6 @@ review saved for it."""
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -1146,8 +1145,10 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
     assert room.write_words() is None
     room.close()
-    # The room's own rule, asked at any moment: closed while writing, it does not end.
-    assert not room.closing(time.monotonic()), "open while its words are written"
+    # The room's own rule, asked at any moment: closed while writing, it does not end -- not
+    # even once it has been left idle past IDLE_CLOSE_S.
+    for now in (room.touched, room.touched + review_room.IDLE_CLOSE_S + 1):
+        assert not room.closing(now), "open while its words are written"
     assert rooms.get(row.key) is room and not room.closed
     assert rooms.open(row.key, "fast") is room, "opened again: the same room, still writing"
     assert room.state()["ai"]["status"] == "writing"
@@ -1159,7 +1160,9 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
         "4": {"why": "b"},
     }, "saved whole"
     assert asked == [1], "asked once"
-    assert not room.closing(time.monotonic()), "opened again, it stays open"
+    assert not room.closing(room.touched), "opened again, it stays open"
+    assert not room.closing(room.touched + review_room.IDLE_CLOSE_S), "... while it is used"
+    assert room.closing(room.touched + review_room.IDLE_CLOSE_S + 1), "... and not when idle"
     assert rooms.get(row.key) is room
 
     room.close()
@@ -1174,7 +1177,7 @@ def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     assert again.settled.wait(HANG_S) and again.status == "ready"
     assert again.write_words() is None
     again.close()
-    assert not again.closing(time.monotonic()) and not again.closed, "writing: stays"
+    assert not again.closing(again.touched) and not again.closed, "writing: stays"
     go.set()
     again.join(HANG_S)
     assert again.closed, "closed once its words are saved"
