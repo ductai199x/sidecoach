@@ -461,6 +461,11 @@ class PanelEngine:
         # answered with no session running (`_answer_unwatched`).
         self._coach_out = threading.Lock()
         self._unwatched_tick = threading.Event()  # never set: the wait between looks
+        # The coach built on demand for a question asked while the panel has none -- in the
+        # first seconds after launch, or with no Stockfish yet -- and the AI coach on
+        # (`_asking_coach`). Kept for the next such question; closed with the panel.
+        self._on_demand: Any = None
+        self._on_demand_lock = threading.Lock()
         self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
         if self.settings.unreadable:
@@ -679,11 +684,11 @@ class PanelEngine:
         self.stop()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=10.0)
-        for stage in (self._assessing, self._coaching):
+        for stage in (self._assessing, self._coaching, self._on_demand):
             if stage is not None:
                 with contextlib.suppress(Exception):
                     stage.close()
-        self._assessing = self._coaching = None
+        self._assessing = self._coaching = self._on_demand = None
         with contextlib.suppress(Exception):
             self._hotkey.stop()
         with contextlib.suppress(Exception):
@@ -704,6 +709,17 @@ class PanelEngine:
             self._emit("user", "info", f"you: {payload}", spoken=name == "ask_spoken")
             coaching = self._coaching
             coach = getattr(coaching, "coach", None)
+            if coach is None and self.coach and self.settings.llm.provider != "none":
+                # No coach yet -- the first seconds after launch, or no Stockfish yet -- and
+                # the AI coach on: one is built for the question, on its own thread, and the
+                # question goes to the model (Tai, 2026-10-02).
+                threading.Thread(
+                    target=self._answer_on_demand,
+                    args=(str(payload),),
+                    name="sidecoach-ask-unwatched",
+                    daemon=True,
+                ).start()
+                return
             if coach is not None and not coach._offline:
                 # The AI coach answers every question, a session running or not (Tai,
                 # 2026-10-02), with what it has; it is told no game is being watched.
@@ -714,20 +730,58 @@ class PanelEngine:
                     daemon=True,
                 ).start()
                 return
-            # The offline coach: a plain, honest line.
-            text = "Press Start first: I can only answer about a game I am watching."
-            self._emit(
-                "coach",
-                "info",
-                f"user_ask · not watching — {text}",
-                full=text,
-                trigger="user_ask",
-                ply=None,
-                voice="text",
-            )
-            self.caption(text)
+            self._not_watching()
             return
         self._commands.put((name, payload))
+
+    def _not_watching(self) -> None:
+        """The offline coach's answer to a question with no session: a plain, honest line."""
+        text = "Press Start first: I can only answer about a game I am watching."
+        self._emit(
+            "coach",
+            "info",
+            f"user_ask · not watching — {text}",
+            full=text,
+            trigger="user_ask",
+            ply=None,
+            voice="text",
+        )
+        self.caption(text)
+
+    def _answer_on_demand(self, text: str) -> None:
+        """A question with no session and no coach built yet, the AI coach on: the coach is
+        built now (`_asking_coach`) and asked. A model that cannot be reached leaves it
+        offline, and the offline coach's line is the answer."""
+        coaching = self._asking_coach()
+        coach = getattr(coaching, "coach", None)
+        if coach is None or coach._offline:
+            self._not_watching()
+            return
+        self._answer_unwatched(coaching, text)
+
+    def _asking_coach(self) -> Any:
+        """The coach for a question with no session: the panel's own when the warm-up has
+        built it meanwhile, else one built on demand -- with no engine stage, so no Stockfish
+        is needed (its own is started for a question that needs one, if there is one) -- and
+        kept for the next such question."""
+        with self._on_demand_lock:
+            kept = self._coaching
+            if getattr(kept, "coach", None) is not None:
+                return kept
+            if self._on_demand is None:
+                from sidecoach.cli import _Coaching
+
+                coaching = _Coaching(self.settings, True, None)
+                coaching.sink = lambda _message: None
+                if coaching.coach is not None:
+                    coaching.coach.stream_sink = self._stream_sink
+                self._emit(
+                    "sys",
+                    "info" if coaching.on else "warn",
+                    f"coach, for a question with no session: {coaching.detail}",
+                )
+                self._on_demand = coaching
+            return self._on_demand
 
     def _answer_unwatched(self, coaching: Any, text: str) -> None:
         """A question with no session running, to the AI coach: asked, and its reply logged
@@ -929,15 +983,16 @@ class PanelEngine:
         saves close together the later one's model is the one kept. False when it failed, which
         the log says; True with no coach to rebuild, which the next build reads anyway."""
         with self._provisioning:
-            coaching = self._coaching
-            if coaching is None or coaching.coach is None:
-                return True
-            try:
-                coaching.reprovision(self.settings)
-            except Exception as exc:  # noqa: BLE001 - the page must hear of it
-                self._emit("sys", "warn", f"{', '.join(names)}: not applied ({exc})")
-                return False
-            self._emit("sys", "info", f"coach: {coaching.detail}")
+            # The coach built on demand for a question with no session follows too.
+            for coaching in (self._coaching, self._on_demand):
+                if coaching is None or coaching.coach is None:
+                    continue
+                try:
+                    coaching.reprovision(self.settings)
+                except Exception as exc:  # noqa: BLE001 - the page must hear of it
+                    self._emit("sys", "warn", f"{', '.join(names)}: not applied ({exc})")
+                    return False
+                self._emit("sys", "info", f"coach: {coaching.detail}")
             return True
 
     def _reload_voice(self) -> None:

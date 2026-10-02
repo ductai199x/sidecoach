@@ -719,6 +719,47 @@ def test_with_the_ai_coach_on_an_ask_with_no_session_goes_to_the_model(
     assert not any("Press Start first" in ln["text"] for ln in lines)
 
 
+def test_with_the_ai_coach_on_an_ask_before_any_coach_is_built_goes_to_the_model(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-10-02 (UI #4): in the first seconds after launch -- the warm-up has built no
+    coach yet -- or with no Stockfish (no coach is built without one), a question with the AI
+    coach on got "Press Start first". A coach is built for it on demand, and the question goes
+    to the model, told no game is watched; a second question finds the same coach."""
+    import threading
+
+    from sidecoach.coach.coach import NO_BOARD_UNWATCHED
+    from tests.coaching import directive_of
+    from tests.fakes import ScriptedProvider
+
+    reply = "The Italian: quick development, a safe king."
+    provider = ScriptedProvider(then=reply)
+    monkeypatch.setattr("sidecoach.llm.factory.make_provider", lambda *_a, **_k: provider)
+    engine = make_panel(record=False, coach=True)
+    assert engine._coaching is None, "nothing built yet: the first seconds after launch"
+
+    def ask(text: str) -> None:
+        PanelApi(engine).ask(text)
+        for thread in threading.enumerate():
+            if thread.name == "sidecoach-ask-unwatched":
+                thread.join(timeout=60)  # its end is the signal; the 60 s only a safety net
+
+    try:
+        ask("what opening should I learn?")
+        assert engine._commands.empty()
+        asked = [directive_of(messages) for _system, messages in provider.prompts]
+        assert any(NO_BOARD_UNWATCHED in task for task in asked), "told no game is watched"
+        lines = engine.poll(0)["lines"]
+        assert not any("Press Start first" in ln["text"] for ln in lines)
+        fulls = [ln["data"].get("full") for ln in lines if ln["chan"] == "coach"]
+        assert reply in fulls
+        built = engine._on_demand
+        ask("and against 1. d4?")
+        assert engine._on_demand is built, "the coach built on demand is kept"
+    finally:
+        engine.close()
+
+
 def test_the_move_list_badges_follow_takebacks_and_resyncs(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
