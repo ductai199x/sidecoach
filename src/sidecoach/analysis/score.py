@@ -159,6 +159,29 @@ def severity(loss: float, thresholds: Thresholds | None = None) -> Severity:
     return Severity.NONE
 
 
+# How a side stands, by its expected score: the bands the coach speaks in (`facts.standing_words`:
+# losing, worse, about equal, better, winning). "Better" starts at 0.62 and "winning" at 0.8, as
+# the idea reader counts a level and a won position (`idea.LEVEL`, `idea.WON`).
+WORSE_FROM = 0.2
+EQUAL_FROM = 0.38
+BETTER_FROM = 0.62
+WINNING_FROM = 0.8
+
+
+def standing(score: float) -> int:
+    """The band an expected score falls in: 0 losing, 1 worse, 2 about equal, 3 better, 4
+    winning."""
+    if score >= WINNING_FROM:
+        return 4
+    if score >= BETTER_FROM:
+        return 3
+    if score > EQUAL_FROM:
+        return 2
+    if score > WORSE_FROM:
+        return 1
+    return 0
+
+
 def label_move(
     loss: float,
     thresholds: Thresholds,
@@ -171,7 +194,6 @@ def label_move(
     opponent_blundered: bool,
     second_score: float | None = None,
     chance: bool = False,
-    mate_missed: bool = False,
     mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
@@ -187,11 +209,11 @@ def label_move(
       the game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does
       not, calling 1...f5 a mistake.
     - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent":
-      the opponent's move before was an error (a mistake or a blunder: `chance`, read by
-      `verdict`), and the move played let what it gave go -- it gave ground, or let a forced
-      mate go (`mate_missed`) even while it still wins. It names the move whatever the size
-      of the loss (Tai, 2026-10-02: chess.com's meaning, failing to punish the opponent's
-      mistake; no "two pawns within eight plies" tactic rule).
+      the position offered a winning chance (`chance`, read by `verdict` from the engine's
+      lines) and the move played gave ground (a loss of an inaccuracy or more), whatever
+      the size of the loss (Tai, 2026-10-02). A forced mate let go by a move that still wins
+      as much -- under an inaccuracy's loss -- is labelled by that loss, never "inaccuracy":
+      chess.com left five such moves of the six games unmarked.
     - Great, "a move that altered the course of the game": the best move where every other
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
@@ -209,10 +231,7 @@ def label_move(
     # Walking into a mate from a lost position is not the move that lost: chess.com leaves
     # those unmarked (eleven of them in the six games, the best move among them).
     mate_allowed = mate_allowed and not lost and not is_best
-    # The engine's own first move lets no mate go, whatever the search after it reports (a
-    # long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
-    mate_missed = mate_missed and not is_best
-    flagged = loss >= thresholds.inaccuracy or mate_missed or mate_allowed
+    flagged = loss >= thresholds.inaccuracy or mate_allowed
     if in_book and loss < thresholds.mistake:
         return Label.BOOK
     if flagged and chance and not is_best:
@@ -243,6 +262,33 @@ class Previous:
     loss: float
     to_square: chess.Square
     captured: bool
+
+
+def winning_chance(
+    after: chess.Board,
+    before_lines: Sequence[Line],
+    after_lines: Sequence[Line],
+    before_score: float,
+) -> bool:
+    """Whether the move from the position measured by `before_lines` to `after` let a
+    winning chance go, read off the engine's own lines (Tai, 2026-10-02: chess.com's miss --
+    the opponent's error or a tactic already on the board, whichever gave it). The chance:
+    the best line stood better or winning (`standing` 3 or more, from 0.62), and the move
+    played leaves a lower band; or the best line mates, and the move played does not (nor
+    mates itself, nor leaves a mate the engine still sees). The engine's evaluation decides,
+    not where the chance came from: an opponent's error that left the player no better was
+    no chance to win."""
+    top = before_lines[0] if before_lines else None
+    after_top = after_lines[0] if after_lines else None
+    mating = top is not None and top.mate is not None and top.mate > 0
+    if mating:
+        return not after.is_checkmate() and not (
+            after_top is not None and after_top.mate is not None and after_top.mate < 0
+        )
+    left = 1.0 - position_score(after, after_lines)
+    return standing(before_score) >= standing(BETTER_FROM) and standing(left) < standing(
+        before_score
+    )
 
 
 def verdict(
@@ -283,15 +329,8 @@ def verdict(
     obvious = recapture or free_grab or before.legal_moves.count() == 1
     top = before_lines[0] if before_lines else None
     after_top = after_lines[0] if after_lines else None
-    # A forced mate the best move had, and the move played let go; one the move walks
-    # into. The mates are the lines' own: the curve puts a thousand centipawns a fortieth
-    # of a game below a mate, and a mate in four let go read as an inaccuracy.
-    mating = top is not None and top.mate is not None and top.mate > 0
-    mate_missed = (
-        mating
-        and not after.is_checkmate()
-        and not (after_top is not None and after_top.mate is not None and after_top.mate < 0)
-    )
+    # A forced mate the move walks into. The mates are the lines' own: the curve puts a
+    # thousand centipawns a fortieth of a game below a mate.
     mate_allowed = (
         after_top is not None
         and after_top.mate is not None
@@ -308,10 +347,7 @@ def verdict(
         before_score=before_score,
         second_score=before_lines[1].expected_score if len(before_lines) > 1 else None,
         opponent_blundered=erred >= thresholds.blunder,
-        # A chance to punish: the opponent's move before was a mistake or a blunder, and
-        # what it gave is the player's to take (Tai, 2026-10-02: chess.com's miss).
-        chance=erred >= thresholds.mistake,
-        mate_missed=mate_missed,
+        chance=winning_chance(after, before_lines, after_lines, before_score),
         mate_allowed=mate_allowed,
         obvious=obvious,
     )
