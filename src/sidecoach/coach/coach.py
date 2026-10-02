@@ -3438,7 +3438,9 @@ class Coach:
         if event.by_user and event.think_ms is not None:
             self._think_s.append(event.think_ms / 1000.0)
         if event.by_user:
-            self._pending_asks = []  # they played on: the questions are answered by the move
+            # A question held for the engine's look stays held: it is answered once the
+            # position they face now is read, like one asked across a takeback (Tai,
+            # 2026-10-02: no reply is dropped).
             self._own_moves += 1
         self.board = board_after(self.board, event)
         self.moves[event.ply] = event

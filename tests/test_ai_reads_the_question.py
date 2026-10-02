@@ -178,6 +178,27 @@ def test_a_reply_after_the_player_moved_again_is_late_but_shown_in_order() -> No
     assert coach.moved_on(moment) is False
 
 
+def test_a_question_held_for_the_engine_is_answered_after_the_player_moves() -> None:
+    """ "One moment -- still looking" was a promise: the player moving before the engine's
+    look came threw the question away unanswered (Tai, 2026-10-02: no reply is dropped). It
+    is answered once the position they face now is read."""
+    from tests.test_coach import _played
+
+    coach, provider = scripted_coach(["Develop the knight and keep the centre."])
+    play_to_scholar(coach)
+    coach.ask("what's the plan here?", 7.0)  # no analysis yet: held
+    [wait] = drain(coach)
+    assert wait.text.startswith("One moment")
+    board = chess.Board(coach.board.fen())
+    _played(coach, board, 7, "b1c3", True, 8.0)
+    _played(coach, board, 8, "a7a6", False, 9.0)
+    assert not provider.calls, "nothing is answered before the position is read"
+    _looked(coach, board, 8, ["d2d3"], 10.0)
+    out = [m for m in drain(coach) if m.trigger is Trigger.USER_ASK]
+    assert [m.text for m in out] == ["Develop the knight and keep the centre."]
+    assert 'PLAYER said: "what\'s the plan here?"' in harness_of(sent(provider))
+
+
 def test_the_rung_a_reply_said_is_read_from_its_words() -> None:
     """`said_level`: the move, the focus, the line; and the ladder never falls."""
     from sidecoach.coach.disclosure import Disclosure, PositionFacts, said_level
