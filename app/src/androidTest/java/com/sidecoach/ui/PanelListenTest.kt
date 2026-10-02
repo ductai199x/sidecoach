@@ -160,7 +160,11 @@ class PanelListenTest {
     @Test
     fun anAskBeforeStartIsAnsweredAtOnceNotKeptForALaterSession() {
         PanelEngine.set("running" to false)
-        // No coach yet (the offline coach's line is the same): the plain line, not the model.
+        // No coach yet (the offline coach's line is the same) and no model named: the plain
+        // line. With a model named a coach is built for the question (the next test).
+        val store = SettingsStore(app)
+        val settingsSaved = store.values()
+        store.save(JSONObject(settingsSaved.toString()).apply { getJSONObject("llm").put("provider", "none") })
         val saved = PanelWarm.coaching
         PanelWarm.coaching = null
         try {
@@ -174,6 +178,88 @@ class PanelListenTest {
             assertTrue(reply.getJSONObject("data").getString("full").startsWith("Press Start first"))
         } finally {
             PanelWarm.coaching = saved
+            store.save(settingsSaved)
+        }
+    }
+
+    /** A model that answers one line, and the questions it was asked. */
+    private class Scripted(val reply: String) : com.sidecoach.llm.LLMProvider {
+        val prompts: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
+        override val name = "scripted"
+        override fun healthcheck(): Pair<Boolean, String> = true to "scripted"
+        override fun chat(
+            system: String,
+            messages: List<com.sidecoach.llm.ChatMessage>,
+            maxTokens: Int,
+            temperature: Double,
+            thinking: Boolean,
+        ): com.sidecoach.llm.Completion {
+            prompts.add(messages.last().content)
+            return com.sidecoach.llm.Completion(text = reply)
+        }
+    }
+
+    /**
+     * Tai, 2026-10-02 (UI #4): in the first seconds after launch -- the warm-up has built no
+     * coach yet -- or with no Stockfish, a question with the AI coach on got "Press Start
+     * first". A coach is built for it on demand, and the question goes to the model, told no
+     * game is watched; a second question finds the same coach.
+     * `test_with_the_ai_coach_on_an_ask_before_any_coach_is_built_goes_to_the_model`.
+     */
+    @Test
+    fun withTheAiCoachOnAnAskBeforeAnyCoachIsBuiltGoesToTheModel() {
+        PanelEngine.set("running" to false)
+        PanelWarm.adopt(app)
+        val store = SettingsStore(app)
+        val settingsSaved = store.values()
+        // A model named: the AI coach on (the scripted model below stands in for it).
+        store.save(JSONObject(settingsSaved.toString()).apply { getJSONObject("llm").put("provider", "local") })
+        val reply = "The Italian: quick development, a safe king."
+        val model = Scripted(reply)
+        val saved = PanelWarm.coaching
+        val savedMaker = PanelWarm.makeAsking
+        val savedOnDemand = PanelWarm.onDemand
+        var built = 0
+        PanelWarm.coaching = null
+        PanelWarm.onDemand = null
+        PanelWarm.makeAsking = { _, settings ->
+            built += 1
+            // Built offline (no network at its build), then given the scripted model.
+            val named = settings.values()
+            settings.save(JSONObject(named.toString()).apply { getJSONObject("llm").put("provider", "none") })
+            val runner = com.sidecoach.coach.CoachRunner(settings)
+            settings.save(named)
+            val coach = runner.coach!!
+            coach.setProviders(model, routineProvider = model)
+            coach.spawn = { work, _ -> work() } // the question's worker, run here
+            runner
+        }
+        fun ask(text: String) {
+            PanelEngine.ask(text)
+            for (thread in Thread.getAllStackTraces().keys) {
+                if (thread.name == "sidecoach-ask-unwatched") thread.join(60_000) // its end is the signal
+            }
+        }
+        try {
+            val before = PanelEngine.poll(0).getInt("cursor")
+            ask("what opening should I learn?")
+            assertTrue("an ask with no session was queued", asked.isEmpty())
+            assertTrue("told no game is watched", model.prompts.any { com.sidecoach.coach.NO_BOARD_UNWATCHED in it })
+            val lines = PanelEngine.poll(before).getJSONArray("lines")
+            val texts = (0 until lines.length()).map { lines.getJSONObject(it) }
+            assertTrue(texts.none { "Press Start first" in it.getString("text") })
+            val full = texts.filter { it.getString("chan") == "coach" && it.getString("level") == "info" }
+                .mapNotNull { it.optJSONObject("data")?.optString("full")?.ifEmpty { null } }
+            assertEquals(listOf(reply), full)
+            val first = PanelWarm.onDemand
+            ask("and against 1. d4?")
+            assertTrue("the coach built on demand is kept", PanelWarm.onDemand === first && built == 1)
+        } finally {
+            PanelWarm.onDemand?.close()
+            PanelWarm.onDemand = savedOnDemand
+            PanelWarm.makeAsking = savedMaker
+            PanelWarm.coaching = saved
+            store.save(settingsSaved)
         }
     }
 
