@@ -141,6 +141,25 @@ fun severityOf(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Sever
     else -> Severity.NONE
 }
 
+/*
+ * How a side stands, by its expected score: the bands the coach speaks in (`standingWords`:
+ * losing, worse, about equal, better, winning). "Better" starts at 0.62 and "winning" at 0.8, as
+ * the idea reader counts a level and a won position (`IdeaReader.LEVEL`, `IdeaReader.WON`).
+ */
+const val WORSE_FROM = 0.2
+const val EQUAL_FROM = 0.38
+const val BETTER_FROM = 0.62
+const val WINNING_FROM = 0.8
+
+/** The band an expected score falls in: 0 losing, 1 worse, 2 about equal, 3 better, 4 winning. `standing`. */
+fun standing(score: Double): Int = when {
+    score >= WINNING_FROM -> 4
+    score >= BETTER_FROM -> 3
+    score > EQUAL_FROM -> 2
+    score > WORSE_FROM -> 1
+    else -> 0
+}
+
 /**
  * What kind of move it was, in the words chess.com's review uses, as its help pages define them
  * (2026-10-01) and as far as six of the user's reviewed games bear them out. `score.label_move`.
@@ -154,11 +173,11 @@ fun severityOf(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Sever
  *   game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does not,
  *   calling 1...f5 a mistake.
  * - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent": the
- *   opponent's move before was an error (a mistake or a blunder: [chance], read by [verdict]),
- *   and the move played let what it gave go -- it gave ground, or let a forced mate go
- *   ([mateMissed]) even while it still wins. It names the move whatever the size of the loss
- *   (Tai, 2026-10-02: chess.com's meaning, failing to punish the opponent's mistake; no "two
- *   pawns within eight plies" tactic rule).
+ *   position offered a winning chance ([chance], read by [verdict] from the engine's lines) and
+ *   the move played gave ground (a loss of an inaccuracy or more), whatever the size of the
+ *   loss (Tai, 2026-10-02). A forced mate let go by a move that still wins as much -- under an
+ *   inaccuracy's loss -- is labelled by that loss, never "inaccuracy": chess.com left five such
+ *   moves of the six games unmarked.
  * - Great, "a move that altered the course of the game": the best move where every other lost
  *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
  *   Merely the best move after any error was great 30 times in the six games where chess.com
@@ -183,7 +202,6 @@ fun labelMove(
     opponentBlundered: Boolean,
     secondScore: Double? = null,
     chance: Boolean = false,
-    mateMissed: Boolean = false,
     mateAllowed: Boolean = false,
     obvious: Boolean = false,
 ): Label {
@@ -191,10 +209,7 @@ fun labelMove(
     // Walking into a mate from a lost position is not the move that lost: chess.com leaves
     // those unmarked (eleven of them in the six games, the best move among them).
     val allowed = mateAllowed && !lost && !isBest
-    // The engine's own first move lets no mate go, whatever the search after it reports (a
-    // long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
-    val missed = mateMissed && !isBest
-    val flagged = loss >= thresholds.inaccuracy || missed || allowed
+    val flagged = loss >= thresholds.inaccuracy || allowed
     if (inBook && loss < thresholds.mistake) return Label.BOOK
     if (flagged && chance && !isBest) return Label.MISS
     if (allowed) return Label.BLUNDER
@@ -219,6 +234,25 @@ fun labelMove(
  * opponent), where it landed and whether it captured. `score.Previous`.
  */
 data class Previous(val loss: Double, val to: Int, val captured: Boolean)
+
+/**
+ * Whether the move from the position measured by [beforeLines] to [after] let a winning chance
+ * go, read off the engine's own lines (Tai, 2026-10-02: chess.com's miss -- the opponent's error
+ * or a tactic already on the board, whichever gave it). The chance: the best line stood better
+ * or winning ([standing] 3 or more, from 0.62), and the move played leaves a lower band; or the
+ * best line mates, and the move played does not (nor mates itself, nor leaves a mate the engine
+ * still sees). The engine's evaluation decides, not where the chance came from: an opponent's
+ * error that left the player no better was no chance to win. `score.winning_chance`.
+ */
+fun winningChance(after: Board, beforeLines: List<Line>, afterLines: List<Line>, beforeScore: Double): Boolean {
+    val top = beforeLines.firstOrNull()
+    val afterTop = afterLines.firstOrNull()
+    if (top?.mate != null && top.mate > 0) {
+        return !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
+    }
+    val left = 1.0 - positionScore(after, afterLines)
+    return standing(beforeScore) >= standing(BETTER_FROM) && standing(left) < standing(beforeScore)
+}
 
 /**
  * The label of [move] from [before], read off the two positions' measured lines: the
@@ -254,11 +288,8 @@ fun verdict(
     val obvious = recapture || freeGrab || before.legalMoves().size == 1
     val top = beforeLines.firstOrNull()
     val afterTop = afterLines.firstOrNull()
-    // A forced mate the best move had, and the move played let go; one the move walks into.
-    // The mates are the lines' own: the curve puts a thousand centipawns a fortieth of a
-    // game below a mate, and a mate in four let go read as an inaccuracy.
-    val mating = top?.mate != null && top.mate > 0
-    val mateMissed = mating && !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
+    // A forced mate the move walks into. The mates are the lines' own: the curve puts a
+    // thousand centipawns a fortieth of a game below a mate.
     val mateAllowed = afterTop?.mate != null && afterTop.mate > 0 && !(top?.mate != null && top.mate < 0)
     return labelMove(
         loss,
@@ -270,10 +301,7 @@ fun verdict(
         beforeScore = beforeScore,
         opponentBlundered = erred >= thresholds.blunder,
         secondScore = beforeLines.getOrNull(1)?.expectedScore,
-        // A chance to punish: the opponent's move before was a mistake or a blunder, and what
-        // it gave is the player's to take (Tai, 2026-10-02: chess.com's miss).
-        chance = erred >= thresholds.mistake,
-        mateMissed = mateMissed,
+        chance = winningChance(after, beforeLines, afterLines, beforeScore),
         mateAllowed = mateAllowed,
         obvious = obvious,
     )
