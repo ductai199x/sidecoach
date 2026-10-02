@@ -500,8 +500,15 @@ def effects(board: chess.Board, move: chess.Move, threat: chess.Move | None) -> 
         if square == move.from_square or not exchange.can_be_won(board, square):
             continue
         if after.piece_at(square) is not None and not exchange.can_be_won(after, square):
+            # "Covers" only when the moved piece guards it; a block, a capture or a pin
+            # that saves it makes it safe ("covers your pawn on f4" of Ne4, 2026-10-01).
+            guards = move.to_square in exchange.defenders(after, us, square)
+            if not guards and after.is_check():
+                continue  # a check only puts the capture off by a move
+            said = "covers your" if guards else "makes your"
+            safe = "" if guards else " safe"
             out.append(
-                Effect(f"covers your {_named(board, square)}", "Which of your pieces needs cover?")
+                Effect(f"{said} {_named(board, square)}{safe}", "Which of your pieces needs cover?")
             )
             break
     pawn_ending = all(p.piece_type in (chess.KING, chess.PAWN) for p in board.piece_map().values())
