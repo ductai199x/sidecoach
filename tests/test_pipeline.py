@@ -404,35 +404,32 @@ def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
     assert pipe.reconciler.board.fen() == board.fen()
 
 
-def test_a_look_that_cannot_be_learned_again_is_told_once(monkeypatch) -> None:
-    """A new look the game's position cannot teach -- here every learning fails -- left the
-    game unread in silence (round 3). The person is told once, after the wait a board unread
-    at the start gets (COLD_NOTICE_S), and not again while it stays; with the old look back,
-    the game is read on and the note may come again for a later change."""
-    from sidecoach.state import pipeline as pipeline_module
-    from sidecoach.vision.pieces import ThemeModel
+def test_a_look_that_cannot_be_learned_again_is_told_once() -> None:
+    """A new theme first read with two plies already played on it: the frame is neither the
+    game's position nor one move on, so nothing can be learned from it, and the game went
+    unread in silence (round 3). The person is told once, after the wait a board unread at the
+    start gets (COLD_NOTICE_S), and not again while it stays; with the old theme back, the
+    game is read on, both plies with it."""
+    from sidecoach.state.pipeline import COLD_NOTICE_S
 
     pipe = GamePipeline()
     board, ts = _midgame(pipe, {"theme": "green"}, 0.0)
-    monkeypatch.setattr(ThemeModel, "from_position", classmethod(lambda cls, *a: None))
-    changed = synthetic_board(board=board, highlight=board.peek(), theme="brown")
+    recorded = board.fen()
+    board.push_uci("b8c6")
+    last = board.push_uci("f1b5")
+    changed = synthetic_board(board=board, highlight=last, theme="brown")
     told: list[tuple[float, BoardUnread]] = []
     start = ts
-    for i in range(int((pipeline_module.COLD_NOTICE_S + 3.0) / 0.1)):
-        told += [
-            (ts, e) for e in pipe.process(changed, ts, changed=i == 0) if isinstance(e, BoardUnread)
-        ]
+    for i in range(int((COLD_NOTICE_S + 3.0) / 0.1)):
+        events = pipe.process(changed, ts, changed=i == 0)
+        told += [(ts, e) for e in events if isinstance(e, BoardUnread)]
         ts += 0.1
     assert [e.reason for _, e in told] == ["look"], told
-    assert told[0][0] - start >= pipeline_module.COLD_NOTICE_S
-    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
-    back = synthetic_board(board=board, highlight=board.peek(), theme="green")
-    for i in range(5):
+    assert told[0][0] - start >= COLD_NOTICE_S
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == recorded
+    back = synthetic_board(board=board, highlight=last, theme="green")
+    for i in range(8):
         pipe.process(back, ts, changed=i == 0)
         ts += 0.1
-    assert pipe._look_lost is None
-    move = board.push_uci("b8c6")
-    for _ in range(3):
-        pipe.process(synthetic_board(board=board, highlight=move, theme="green"), ts)
-        ts += 0.1
     assert pipe.reconciler.board.fen() == board.fen()
+    assert pipe._look_lost is None
