@@ -623,10 +623,10 @@ internal fun lessonData(board: Board?, best: String, played: String?, rule: Stri
  * worse than one that says a little too much).
  */
 const val IDEA_LEVEL_WORDS =
-    "the idea: what is at stake and the key fact, with every piece, square and move of " +
-        "theirs the sheet names, the target's square included. Keep back only the answer: the " +
-        "player's move, the square it goes to (unless the target stands there), and which of " +
-        "their pieces makes it"
+    "the idea: what is at stake and the key fact, with every piece, square and move of the " +
+        "opponent's the sheet names, the target's square included. Keep back only the answer: " +
+        "the player's move, the square it goes to (unless the target stands there), and which of " +
+        "the player's pieces makes it"
 const val SEE_ALL_WORDS =
     "You see the answer so that the hint can be precise and true; a hint that gives a little " +
         "too much is a lesser fault than a vague one."
@@ -680,6 +680,14 @@ const val MOVE_DIRECTIVE =
     "The next hint is the answer: give the move and explain it correctly from the fact " +
         "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two " +
         "sentences, no question."
+const val MOVE_GIVEN =
+    "They asked for another hint, and the move has been given already: it is {move}. Say so " +
+        "plainly, with what it does from the fact sheet's why, in other words than before. One or " +
+        "two sentences, no question."
+const val FOCUS_KING =
+    "Here the move is castling: the piece is the king, and what it goes after is its own " +
+        "safety and the rook's way into the game, as the sheet gives them -- never a piece of " +
+        "theirs."
 
 fun vsDirective(candidates: Int = VS_CANDIDATES): String {
     val count = NUMBER_WORDS[candidates] ?: candidates.toString()
@@ -785,6 +793,19 @@ private val CLAUSE = Regex("(?<=[.;:!?])\\s+|\\s+--\\s+|,\\s+(?:but|though|while
 /** A clause about the move just played without naming it: "That was ...", "It cost ...". */
 private val ABOUT_IT = Regex("^\\W*(?:that|it|this|your (?:last )?move)\\b", RegexOption.IGNORE_CASE)
 
+/**
+ * Such a clause calling the move something: "That was a blunder", "It is the best move", "it's
+ * not the strongest" -- not "It is best to ...", "It avoids the mistake of ...".
+ */
+private val CALLED_IT = Regex(
+    "^\\W*(?:that|it|this|your (?:last )?move)(?:'s|\\s+(?:was|is|were))\\s+(?:not\\s+)?" +
+        "(?:(?:just|really|clearly|simply|actually|definitely|probably|also|still|truly)\\s+)*" +
+        "(?:(?:a|an|the|your)\\s+)?(?:(?:big|small|real|clear|serious|slight|costly|tiny|minor|" +
+        "bad|huge)\\s+)?(?:blunder|mistake|inaccuracy|miss|best|strongest|top|engine's)\\b" +
+        "(?!\\s+to\\b)",
+    RegexOption.IGNORE_CASE,
+)
+
 /** `re.split`: the pieces between the matches, empty ones kept. */
 private fun splitClauses(text: String): List<String> = text.split(CLAUSE)
 
@@ -807,11 +828,15 @@ internal fun verdictProblems(text: String, request: CoachRequest): List<String> 
     val bestOk = label == "best" || label == "excellent" || a.expectedLoss < 0.005
     val problems = ArrayList<String>()
     for (clause in splitClauses(text)) {
-        if (!(namesIt.containsMatchIn(clause) || ABOUT_IT.containsMatchIn(clause))) continue
+        val named = namesIt.containsMatchIn(clause)
+        if (!(named || ABOUT_IT.containsMatchIn(clause))) continue
+        // Unnamed, the clause speaks of the move only where it calls it so: "It avoids the mistake
+        // of ..." and "It is best to develop" were refused (the deep prompt review, 2026-10-01).
+        val saidOfIt = named || CALLED_IT.containsMatchIn(clause)
         val others = SAN.findAll(clause).map { it.groupValues[1] }
             .filter { it.trimEnd('+', '#') != core }
             .toList()
-        if (others.isEmpty() && !bestOk && SAYS_BEST.containsMatchIn(clause) &&
+        if (others.isEmpty() && saidOfIt && !bestOk && SAYS_BEST.containsMatchIn(clause) &&
             !Regex(
                 "\\bnot (?:the )?(?:best|strongest)\\b|\\bwas better\\b|\\bwas stronger\\b",
                 RegexOption.IGNORE_CASE,
@@ -819,7 +844,7 @@ internal fun verdictProblems(text: String, request: CoachRequest): List<String> 
         ) {
             problems.add("called $played the best move; its verdict is $label")
         }
-        if (a.severity == Severity.NONE && SAYS_SLIP.containsMatchIn(clause) &&
+        if (a.severity == Severity.NONE && saidOfIt && SAYS_SLIP.containsMatchIn(clause) &&
             !Regex(
                 "\\bnot (?:a )?(?:blunder|mistake)\\b|\\bno (?:blunder|mistake)\\b",
                 RegexOption.IGNORE_CASE,
@@ -1093,6 +1118,44 @@ class FirstCandidate(
         done = true
         val (text, _) = candidate()
         if (text.isNotEmpty()) offer(text, final = true)
+    }
+
+    /**
+     * The model called the engine, and writes its reply again from the start: the next round's
+     * text is read from its own start. Sliced with the last round's spoken length, the voice
+     * said "ith the queen is mate" (the deep prompt review, 2026-10-01). A round that already
+     * spoke ends the reading: what was said stands. `_FirstCandidate.new_round`.
+     */
+    fun newRound() {
+        buffer = ""
+        if (spoken.isNotEmpty()) done = true
+    }
+}
+
+/**
+ * A tool round's text held back from the voice: a model calling the engine writes a preamble
+ * first ("Let me check that with the engine."), in the same turn as its calls, and it was
+ * spoken. The text goes on once a candidate's marker is seen -- a preamble has none -- or whole
+ * at the round's end when the round calls nothing; a round that calls the engine is dropped,
+ * and the reader starts over ([FirstCandidate.newRound]). `_RoundGate`.
+ */
+class RoundGate(private val onDelta: (String) -> Boolean) {
+    private var held = ""
+    private var open = false
+
+    fun feed(delta: String): Boolean {
+        if (open) return onDelta(delta)
+        held += delta
+        if (VS_MARKER.containsMatchIn(THINK_BLOCK.replace(held, ""))) {
+            open = true
+            return onDelta(held)
+        }
+        return true
+    }
+
+    /** The round is over; [called]: it called the engine. */
+    fun end(called: Boolean) {
+        if (!called && !open && held.isNotEmpty()) onDelta(held)
     }
 }
 
@@ -1755,7 +1818,13 @@ class Speaker(
             var raw: String
             var failed: Exception? = null
             try {
-                val completion = complete(provider, request, messages, reader?.let { it::feed })
+                val completion = complete(
+                    provider,
+                    request,
+                    messages,
+                    reader?.let { it::feed },
+                    reader?.let { it::newRound },
+                )
                 raw = completion.text
                 stats = LinkedHashMap(completion.stats)
             } catch (exc: Exception) {
@@ -1793,7 +1862,13 @@ class Speaker(
                 if (pause(wait)) break
                 continue
             }
-            val scored = parseCandidates(raw).map { (prob, candidate) ->
+            // Declined, the stream was closed in the first candidate's first sentence: that
+            // candidate is cut off, and it went out as the text (the deep prompt review,
+            // 2026-10-01). Only candidates the stream finished are read.
+            val parsed = parseCandidates(raw).let {
+                if (reader != null && reader.declined) it.dropLast(1) else it
+            }
+            val scored = parsed.map { (prob, candidate) ->
                 Triple(prob, candidate, problemsOf(candidate, request))
             }
             var passed = scored.filter { it.third.isEmpty() }.map { it.first to it.second }
@@ -1836,7 +1911,7 @@ class Speaker(
                                 "fresh, varied replies that avoid those"
                         }
                         ) +
-                    ", keeping to the messages above."
+                    ", keeping to what the sections above say."
             )
             messages = messages.dropLast(1) + retry
         }
@@ -1890,12 +1965,13 @@ class Speaker(
         request: CoachRequest,
         messages: List<ChatMessage>,
         onDelta: StreamCallback?,
+        newRound: (() -> Unit)? = null,
     ): Completion {
         val tools = request.tools
         var refused = ""
         val completion = if (tools != null && provider is ToolsProvider) {
             try {
-                withTools(provider, tools, request, messages, onDelta)
+                withTools(provider, tools, request, messages, onDelta, newRound)
             } catch (e: Exception) {
                 if (!refusedForGood(e)) throw e
                 refused = (e.message ?: "").take(200)
@@ -1934,10 +2010,13 @@ class Speaker(
         request: CoachRequest,
         messages: List<ChatMessage>,
         onDelta: StreamCallback?,
+        newRound: (() -> Unit)? = null,
     ): Completion {
         var turns = emptyList<ToolRound>()
         var round = 0
         while (true) {
+            // A round that may call the engine goes through a gate (`_RoundGate`).
+            val gate = if (onDelta != null && round < TOOL_ROUNDS) RoundGate(onDelta) else null
             val completion = provider.chatTools(
                 request.system,
                 messages,
@@ -1946,8 +2025,11 @@ class Speaker(
                 maxTokens = VS_MAX_TOKENS,
                 temperature = VS_TEMPERATURE,
                 toolChoice = if (round == TOOL_ROUNDS) "none" else null,
-                onDelta = onDelta,
+                onDelta = gate?.let { it::feed } ?: onDelta,
             )
+            val calling = completion.toolCalls.isNotEmpty() && round < TOOL_ROUNDS
+            gate?.end(calling)
+            if (calling) newRound?.invoke()
             if (completion.toolCalls.isEmpty() || round == TOOL_ROUNDS) return completion
             val results = completion.toolCalls.map { tools.run(it.name, it.arguments) }
             turns = turns + ToolRound(completion, results)

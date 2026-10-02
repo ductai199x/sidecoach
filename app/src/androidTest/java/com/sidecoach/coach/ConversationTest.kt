@@ -482,6 +482,31 @@ class ConversationTest {
     }
 
     /**
+     * At a puzzle, what was said before the first move hung under "Game so far" with no
+     * position, read as said after a move never made (the deep prompt review, 2026-10-01;
+     * `test_what_was_said_before_any_move_is_said_at_the_start_position`).
+     */
+    @Test
+    fun whatWasSaidBeforeAnyMoveIsSaidAtTheStartPosition() {
+        val convo = Conversation()
+        convo.newGame(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = Board().fen()))
+        convo.userSaid("hint")
+        convo.coachSaid("Look at the f-file.")
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            convo.move(
+                MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = ply % 2 == 1),
+            )
+        }
+        val record = convo.render().substringAfter("# Game so far\n")
+        assertTrue(record, record.startsWith("At the start position, before any move:\n    PLAYER said: "))
+    }
+
+    /**
      * Dialogue compaction: what was said earlier than the last `keep` plies is folded into one
      * summary at the top of the record; the summariser is called once and sees only the dialogue,
      * each line with the move it followed; the last plies keep their words; with nothing older to

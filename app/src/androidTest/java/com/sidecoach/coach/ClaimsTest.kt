@@ -252,6 +252,67 @@ class ClaimsTest {
     private fun showClaim(claim: Claim): String =
         "${claim.kind.slug}|${claim.subject}|${claim.target}|${claim.move}|${claim.text}"
 
+    /**
+     * Attacks, defences, pins, forks and mates said of the present are decided on the board, and
+     * a piece placed in a plan or a future is not a false placement (the deep prompt review,
+     * 2026-10-01). The desktop's test_claims.py cases of the same names, one to one.
+     */
+    @Test
+    fun relationsMatesAndPlansAreReadAsTheDesktopReadsThem() {
+        val sicilian = "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5"
+        val trap = "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5"
+        val scholar = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+        val nimzo = "rnbqk2r/pppp1ppp/4pn2/8/1bPP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4"
+        val cases = listOf(
+            Triple(sicilian, "Your knight on f6 attacks their queen on d1.", listOf("the knight on f6 does not attack d1")),
+            Triple(sicilian, "Your knight on f6 attacks their pawn on e4, which their knight on c3 defends.", emptyList()),
+            Triple(trap, "Their queen on g5 forks your knight on e5 and the pawn on g2.", emptyList()),
+            Triple(
+                trap,
+                "Their queen on g5 forks your knight on e5 and your bishop on c4.",
+                listOf("the queen on g5 does not attack e5 and c4"),
+            ),
+            Triple(trap, "Your bishop on c4 pins the pawn on f7.", listOf("the bishop on c4 does not pin f7")),
+            Triple(
+                nimzo,
+                "Their bishop on b4 pins your knight on c3 to the king, and your knight on c3 is " +
+                    "defended by the pawn on b2.",
+                emptyList(),
+            ),
+            Triple(trap, "Your knight on e5 is defended by the bishop on c4.", listOf("the bishop on c4 does not defend e5")),
+            Triple(scholar, "Qxf7 is mate: there is mate in one.", emptyList()),
+            Triple(scholar, "Bxf7 is mate.", listOf("Bxf7 is not mate")),
+            Triple(
+                scholar,
+                "Bxf7+ first would only lose time; if they slip, Bxf7 is mate later. Once your knight " +
+                    "on g1 comes out, your knight on g1 attacks nothing yet.",
+                emptyList(),
+            ),
+            Triple(
+                sicilian,
+                "A knight on d5 would be a monster here. Aim to get a rook on c8. Your king on g8 " +
+                    "will be safe after castling.",
+                emptyList(),
+            ),
+            Triple(
+                trap,
+                "Castle, and the king on g1 covers g2. If you play Nc3, your knight on c3 defends the " +
+                    "pawn on e4.",
+                emptyList(),
+            ),
+            Triple(trap, "Look at your knight on g5 at once.", listOf("g5 holds their queen")),
+        )
+        for ((fen, text, wanted) in cases) {
+            val board = Board(fen)
+            val us = board.turn
+            val said = checkDraft(text, board, us = us).map { "${it.text}: ${it.reason}" }
+            for (fault in wanted) {
+                assertTrue("$text\n  wanted: $fault\n  said: $said", said.any { fault in it })
+            }
+            assertEquals("$text\n  said: $said", wanted.size, said.size)
+        }
+    }
+
     private fun claimStrings(array: JSONArray): List<String> = (0 until array.length()).map { i ->
         val o = array.getJSONObject(i)
         "${o.getString("kind")}|${orNull(o, "subject")}|${orNull(o, "target")}|" +

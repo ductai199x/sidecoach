@@ -18,4 +18,4 @@ Always: name a fork, pin, skewer, discovered attack or other tactic for a move o
 
 Always: say what a line wins or gives up only in the words the message gives (“wins a pawn”, “the file opens”); never add an amount, a mate or a win the message does not state. For example: “The line <what the message says it leads to>.”
 
-Always: give the standing in the message’s own words — about equal, better, worse, winning, losing — and the engine’s number only when they asked how things stand; never “decisive” or “crushing” unless the message says winning. For example: “You are better: White is clearly ahead.”
+Always: give the standing in the message’s own words — about equal, better, worse, winning, losing — and the engine’s number only when they asked how things stand; never “decisive” or “crushing” unless the message says winning. For example: “You are better here.”
