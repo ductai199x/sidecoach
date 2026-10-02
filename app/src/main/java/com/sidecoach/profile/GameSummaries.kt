@@ -126,7 +126,7 @@ object GameSummaries {
             val label = move.assessment.label
             perSide.getValue(move.side).add(Moved(phase, move.assessment.accuracy ?: 0.0, label))
             val standing = if (move.side == Side.WHITE) graph.last() else 1.0 - graph.last()
-            played.getValue(move.side).add(Performance.Played(move.ply - 1, move.assessment.expectedLoss, standing))
+            played.getValue(move.side).add(Performance.Played(Performance.pliesBefore(move.fenBefore), move.assessment.expectedLoss, standing))
             if (label == Label.BOOK) {
                 lastBook = move.ply
             } else if (label != null && label in KEY_LABELS) {

@@ -88,6 +88,19 @@ object Performance {
         ),
     )
 
+    private val SPACES = Regex("\\s+")
+
+    /**
+     * The half-moves played before a position, by its FEN's move number and side to move: a game
+     * set up from a position starts where the position says, not at the opening (the review of
+     * 2026-10-01: such a game's moves counted as the opening's for the rating). `plies_before`.
+     */
+    fun pliesBefore(fen: String): Int {
+        val fields = fen.trim().split(SPACES)
+        val number = (if (fields.size > 5) fields[5].toIntOrNull() else null) ?: 1
+        return 2 * (maxOf(number, 1) - 1) + (if (fields.size > 1 && fields[1] == "b") 1 else 0)
+    }
+
     /** `bisect_right(EDGES, loss)`. */
     fun bucket(loss: Double): Int = EDGES.count { it <= loss }
 

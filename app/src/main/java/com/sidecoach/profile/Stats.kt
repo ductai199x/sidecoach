@@ -346,10 +346,12 @@ object Stats {
     // ---- the ratings and the peers -----------------------------------------------------------------
 
     /**
-     * Moves as the rating model reads them: the plies before each (the store counts White's
-     * first move as ply 1), the loss, the mover's expected score. `_rated`.
+     * Moves as the rating model reads them: the plies before each (by the position it was played
+     * from: a game set up from a position starts at its own move), the loss, the mover's expected
+     * score. `_rated`.
      */
-    private fun rated(moves: List<StatMoveRow>): List<Performance.Played> = moves.map { Performance.Played(it.ply - 1, it.loss, it.score) }
+    private fun rated(moves: List<StatMoveRow>): List<Performance.Played> =
+        moves.map { Performance.Played(Performance.pliesBefore(it.fen), it.loss, it.score) }
 
     /** The scale the page speaks: Lichess's when every game is a Lichess game. `_site`. */
     private fun site(d: Data): String? = if (d.games.isNotEmpty() && d.games.all { it.source == "lichess" }) "lichess" else null

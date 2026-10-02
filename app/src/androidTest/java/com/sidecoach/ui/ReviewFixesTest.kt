@@ -58,4 +58,11 @@ class ReviewFixesTest {
         val sharp = listOf(0.5, 0.75, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 1.0)
         assertEquals("sharp", GameSummaries.shapeOf(sharp, "1-0"))
     }
+
+    /** `test_a_game_set_up_from_a_position_is_rated_from_where_it_starts`, test_performance.py. */
+    @Test
+    fun aGameSetUpFromAPositionIsRatedFromWhereItStarts() {
+        assertEquals(45, com.sidecoach.profile.Performance.pliesBefore("4k3/8/8/8/8/8/4P3/4K3 b - - 0 23"))
+        assertEquals(0, com.sidecoach.profile.Performance.pliesBefore(com.sidecoach.chess.STARTING_FEN))
+    }
 }
