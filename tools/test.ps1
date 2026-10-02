@@ -2,12 +2,8 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1 -Class com.sidecoach.analysis.EngineTest
-#   powershell -ExecutionPolicy Bypass -File tools\test.ps1 -All
 #
-# -All adds what the default run leaves out (Tai, 2026-10-01: "SLIM DOWN THE SUITE AND MAKE IT
-# BLAZING FAST"): every case of the sweeps (`-e sweep true`: the cases marked `sweep` in their
-# fixtures, as the desktop's --sweep) and the screenshots kept for a person to look at
-# (`-e shots true`).
+# The default run is the whole suite: every case of every test (Tai, 2026-10-02).
 #
 # The tests run against the `phone` build type, the build the phone runs: not debuggable, so
 # the code runs as fast as it does there (app/build.gradle.kts). Gradle's
@@ -19,8 +15,7 @@
 param(
     [string]$Serial = "emulator-5556",
     [string]$Class = "",
-    [switch]$SkipBuild,
-    [switch]$All
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,7 +120,6 @@ for ($i = 0; $i -lt $files.Count; $i++) {
 
 & $adb -s $Serial logcat -c
 $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener,com.sidecoach.FilesIn")
-if ($All) { $args += @("-e", "sweep", "true", "-e", "shots", "true") }
 if ($Class) { $args += @("-e", "class", $Class) }
 $args += "com.sidecoach.test/androidx.test.runner.AndroidJUnitRunner"
 Write-Host "running..."

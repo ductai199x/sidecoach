@@ -70,7 +70,6 @@ powershell -File tools\install.ps1 -Serial <serial>   # the same, checked: refus
                                                # session, prints what landed
 powershell -File tools\test.ps1                # the parity suite, on a device or emulator
 powershell -File tools\test.ps1 -Class com.sidecoach.state.PipelineTest
-powershell -File tools\test.ps1 -All           # and every case of the sweeps, and the screenshots
 ```
 
 The phone runs the `phone` build type: the debug build in all but being debuggable, signed with
@@ -83,9 +82,8 @@ The tests are instrumented, not unit tests: they need OpenCV's native library, t
 runtime and the engine, so they run on a device. `tools/test.ps1` rather than Gradle's
 `connectedPhoneAndroidTest`, which uninstalls the app when it is done and takes the engine's
 network with it. It installs only what changed, and pushes the model files the tests load once
-(through the app's external files: `com.sidecoach.FilesIn` moves them in). A test that holds one
-behaviour to many cases of one kind runs a representative few by default; `-All` adds the rest
-(the cases marked `sweep` in their fixtures, as the desktop's `--sweep`).
+(through the app's external files: `com.sidecoach.FilesIn` moves them in). The default run is
+the whole suite: every case of every test.
 
 The engine is built from source with the NDK, without its 98 MB network; the app fetches the
 network on first run, as the desktop fetches the engine:

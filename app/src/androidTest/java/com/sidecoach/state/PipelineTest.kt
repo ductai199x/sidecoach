@@ -4,7 +4,6 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.Parallel
-import com.sidecoach.Sweep
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
@@ -78,12 +77,9 @@ class PipelineTest {
         val text = context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() }
         val all = JSONObject(text).getJSONArray("runs")
         // A scenario that pins a behaviour of the pipeline's is replayed once; the still screen's
-        // shortcut is held to the others (`READ_ONCE` in the generator), and of those to the few
-        // that meet every event it passes on unless the sweep is asked for (`SHORTCUT_SWEEP`,
-        // `tools/test.ps1 -All`).
+        // shortcut is held to the others (`READ_ONCE` in the generator).
         val runs = (0 until all.length()).map { all.getJSONObject(it) }
             .filter { !(sameFrameShortcut && it.optBoolean("read_once")) }
-            .filter { !(sameFrameShortcut && it.optBoolean("shortcut_sweep") && !Sweep.all) }
         val failures = java.util.Collections.synchronizedList(ArrayList<String>())
         // The scenarios side by side: each its own pipeline, and each thread its own net, one
         // thread to a net. Two at a time: a scenario holds its frames' pixels and planes and,

@@ -1137,25 +1137,6 @@ READ_ONCE = {
     "puzzle-read-once",
 }
 
-# The rest of the still screen's replay, left to `tools/test.ps1 -All` (`shortcut_sweep`; Tai,
-# 2026-10-01: "SLIM DOWN THE SUITE AND MAKE IT BLAZING FAST"): the shortcut is one behaviour,
-# and the scenarios the default replay keeps -- mate-green, takeback-brown,
-# quick-takebacks-green, unexplained-green, piece-sets-green, puzzle-flip-green and
-# reread-selected-green -- meet every event it passes on (a mate, a takeback, an unexplained
-# change, an unread board, a flip, a re-read asked for) and the theme cache's sessions. Each is
-# still replayed in full by `everyFrameIsReadAsThePythonReadsIt`.
-SHORTCUT_SWEEP = {
-    "resign-green",
-    "takeback-jump-green",
-    "takebacks-a-frame-each-green",
-    "fast-reply-green",
-    "flip-slide-green",
-    "setup-lit-green",
-    "reread-selected-brown",
-    "slide-rook-green",
-    "slide-queen-green",
-}
-
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
@@ -1512,8 +1493,6 @@ def run(name: str, states: list[dict]) -> dict:
     }
     if name in READ_ONCE:
         data["read_once"] = True
-    if name in SHORTCUT_SWEEP:
-        data["shortcut_sweep"] = True
     if name in COUNT_READS:
         data["reads"] = _Reads.count
     if themes is not None:

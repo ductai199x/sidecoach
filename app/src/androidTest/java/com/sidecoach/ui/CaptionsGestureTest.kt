@@ -71,15 +71,7 @@ class CaptionsGestureTest {
         event.recycle()
     }
 
-    /**
-     * The screenshots are for a person to look at, so they are taken when asked for
-     * (`tools/test.ps1 -All`, or `-e shots true`): a dozen screen grabs saved as PNGs were
-     * seconds of every run that nobody looked at.
-     */
-    private val shooting = InstrumentationRegistry.getArguments().getString("shots") == "true"
-
     private fun shot(name: String) {
-        if (!shooting) return
         val image = automation.takeScreenshot() ?: return
         File(shots, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
         Log.i(TAG, "screenshot $name")
