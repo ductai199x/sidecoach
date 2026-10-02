@@ -21,15 +21,25 @@ from typing import Any
 import numpy as np
 
 from sidecoach.capture.mss_backend import MssCapture
+from sidecoach.config import CaptureSettings
 from sidecoach.events import Region
 
 FIRST_FRAME_TIMEOUT_S = 3.0
 # WGC delivers a frame on every screen update, up to the refresh rate, and each costs a copy
 # of the whole monitor (two copies, 19.6 ms a frame at 1440p, before round 2's finding 6):
 # at 144 Hz that was most of a core for a pipeline that reads ten frames a second. Frames
-# come no faster than the fastest capture rate the settings allow (30 a second), so the
+# come no faster than the fastest capture rate the settings allow (`_fastest_fps`), so the
 # newest is never more than a frame of that rate old.
-MIN_UPDATE_INTERVAL_MS = 1000 // 30
+
+
+def _fastest_fps() -> int:
+    """The `fps` setting's upper bound, read from the setting itself: a literal 30 here
+    would have capped the capture silently once the bound was raised (round 3)."""
+    bounds = CaptureSettings.model_fields["fps"].metadata
+    return next(int(bound.le) for bound in bounds if getattr(bound, "le", None) is not None)
+
+
+MIN_UPDATE_INTERVAL_MS = 1000 // _fastest_fps()
 
 
 class _Session:

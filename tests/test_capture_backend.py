@@ -81,3 +81,19 @@ def test_wgc_is_paced_and_copies_each_frame_once(monkeypatch: pytest.MonkeyPatch
     assert made["minimum_update_interval"] == wgc_backend.MIN_UPDATE_INTERVAL_MS > 0
     assert frame.shape == (2, 3, 3) and frame.flags.c_contiguous
     assert frame[..., 0].max() == 10 and frame[..., 2].min() == 30
+
+
+def test_wgc_frames_come_as_fast_as_the_fps_setting_allows() -> None:
+    """The cap on WGC's frames was a literal 30 a second, today's `fps` bound repeated: a
+    higher bound would have stayed capped here, silently (round 3). It is the fastest rate
+    the setting accepts."""
+    from pydantic import ValidationError
+
+    from sidecoach.capture import wgc_backend
+    from sidecoach.config import CaptureSettings
+
+    fastest = wgc_backend._fastest_fps()
+    assert CaptureSettings(fps=fastest).fps == fastest
+    with pytest.raises(ValidationError):
+        CaptureSettings(fps=fastest + 1)
+    assert 1000 // fastest == wgc_backend.MIN_UPDATE_INTERVAL_MS
