@@ -423,9 +423,10 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     instruction, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), blunder, played
     )
-    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
+    from sidecoach.coach.coach import COST_BY_SEVERITY, FINE_TIGHTER
 
-    assert fallback in [c.format(best="Qxf7#") + "." for c in COST_YOU]
+    # A blunder is said as one, never "that cost you something" (the facts audit, 2026-10-01).
+    assert fallback in [c.format(best="Qxf7#") + "." for c in COST_BY_SEVERITY["blunder"]]
     assert "which was a blunder" in instruction and "fine" not in instruction
     assert "no lesson, no question" in instruction
     # A move a little behind the best is still fine.
