@@ -325,10 +325,15 @@ fn ask_shutdown(port: u16, token: &str) -> bool {
 }
 
 fn stop_sidecar(app: &AppHandle, state: &Sidecar) {
+    let port = *state.port.lock().unwrap();
+    stop_sidecar_on(app, state, port);
+}
+
+/// `stop_sidecar` for a sidecar serving on `port` (None: it never served, it is killed).
+fn stop_sidecar_on(app: &AppHandle, state: &Sidecar, port: Option<u16>) {
     if let Some(mut child) = state.child.lock().unwrap().take() {
         // An orderly end first, so the sidecar's own close runs; a bounded wait; then
         // the kill for a sidecar that hangs or never served.
-        let port = *state.port.lock().unwrap();
         let asked = port.is_some_and(|p| ask_shutdown(p, &state.token));
         let started = Instant::now();
         let mut exited = false;
@@ -402,13 +407,15 @@ fn sidecar_status(state: State<'_, Sidecar>) -> SidecarStatus {
 /// through `sidecar_status` for the new port or the error.
 #[tauri::command]
 fn restart_sidecar(app: AppHandle, state: State<'_, Sidecar>) {
-    // Cleared before the answer, so the page's wait sees only the new sidecar; with no port
-    // the old one is not asked to close but killed (it is gone or not answering).
-    *state.port.lock().unwrap() = None;
+    // Cleared before the answer, so the page's wait sees only the new sidecar. The old port
+    // is kept for the old sidecar's close: one still serving (the page may have failed its
+    // polls for another reason) is asked to close in order, as at a quit, not killed with
+    // the session's end unwritten; one that is gone is killed after the ask fails.
+    let old = state.port.lock().unwrap().take();
     *state.error.lock().unwrap() = None;
     std::thread::spawn(move || {
         let state = app.state::<Sidecar>();
-        stop_sidecar(&app, &state);
+        stop_sidecar_on(&app, &state, old);
         if let Err(err) = start_sidecar(&app, &state) {
             eprintln!("sidecar: {err}");
             *state.error.lock().unwrap() = Some(err);
