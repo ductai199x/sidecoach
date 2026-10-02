@@ -811,10 +811,17 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
         watched = [r for r in library.from_watched(store) if r.key not in twins]
         rows = [*store.library(), *watched]
         rows.sort(key=lambda r: r.played_at or r.added_at, reverse=True)
+        stood_for: dict[str, list[str]] = {}  # an import -> the watched games it stands for
+        for was, imported in twins.items():
+            stood_for.setdefault(imported, []).append(was)
         out = []
         for row in rows:
             review = store.latest_review(row.key)
-            summary = json.loads(review.summary) if review and review.summary else None
+            # An import not reviewed yet whose watched game was: that review's accuracies until
+            # the import has its own (the review of 2026-10-01: pairing a record that differs
+            # from its import took the game's accuracy away; it is not reviewed for that).
+            shown = review or _latest(store, stood_for.get(row.key, []))
+            summary = json.loads(shown.summary) if shown and shown.summary else None
             out.append(
                 {
                     **row.__dict__,
@@ -842,6 +849,12 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
         "games": out,
         "users": {"chesscom": profile.chesscom_user, "lichess": profile.lichess_user},
     }
+
+
+def _latest(store: Any, keys: list[str]) -> Any | None:
+    """The latest review of any of these games, or None."""
+    reviews = [r for r in (store.latest_review(k) for k in keys) if r is not None]
+    return max(reviews, key=lambda r: r.reviewed_at, default=None)
 
 
 def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:

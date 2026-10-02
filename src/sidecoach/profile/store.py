@@ -246,6 +246,8 @@ WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
 RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 # A removed game's rows are kept this long, for Undo (the page offers it for seconds).
 UNDO_KEEP_S = 600.0
+# The watched games Stats leaves out: those whose import's facts are kept (the import counts).
+_STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
 
 class QueryRefused(ValueError):
@@ -489,12 +491,13 @@ class Store:
             row = self._db.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
         return None if row is None else GameRow(**dict(row))
 
-    def games(self, limit: int = 50, *, finished: bool = True) -> list[GameRow]:
-        """The most recent games, newest first."""
+    def games(self, limit: int | None = 50, *, finished: bool = True) -> list[GameRow]:
+        """The most recent games, newest first; every one when `limit` is None."""
         clause = "WHERE result IS NOT NULL" if finished else ""
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM games {clause} ORDER BY started_at DESC LIMIT ?", (limit,)
+                f"SELECT * FROM games {clause} ORDER BY started_at DESC LIMIT ?",
+                (-1 if limit is None else limit,),
             ).fetchall()
         return [GameRow(**dict(row)) for row in rows]
 
@@ -921,12 +924,13 @@ class Store:
             )
             self._db.commit()
 
-    def library(self, limit: int = 500) -> list[LibraryRow]:
-        """The imported games, the latest played first."""
+    def library(self) -> list[LibraryRow]:
+        """Every imported game, the latest played first. Every one: the Games window listed 500
+        while the background review and Stats counted all (the review of 2026-10-01), and the
+        games past it could not be seen, opened or removed."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC"
             ).fetchall()
         return [LibraryRow(**dict(r)) for r in rows]
 
@@ -1013,6 +1017,18 @@ class Store:
             row = self._db.execute("SELECT 1 FROM removed WHERE key = ?", (key,)).fetchone()
         return row is not None
 
+    def in_record(self, key: str) -> bool:
+        """Whether a game (by its library key) is in the player's record: its import in the
+        library, or Sidecoach's record of the watched game -- gone once removed, or once the
+        profile is reset."""
+        if key.startswith(WATCHED):
+            table, column, value = "games", "game_id", key[len(WATCHED) :]
+        else:
+            table, column, value = "library", "key", key
+        with self._lock:
+            row = self._db.execute(f"SELECT 1 FROM {table} WHERE {column} = ?", (value,)).fetchone()
+        return row is not None
+
     def unremove(self, keys: Sequence[str]) -> None:
         """Games the player brought in by hand (a pasted PGN): no longer left out."""
         with self._lock, self._db:
@@ -1090,11 +1106,12 @@ class Store:
 
     def stat_games(self) -> list[dict[str, Any]]:
         """The reviewed games' facts, each game once: a watched game its import stands for is
-        left out."""
+        left out once the import's own facts are kept. Until then the watched game counts (the
+        review of 2026-10-01: a game whose record differed from its import left Stats the moment
+        the import came in, until the import was reviewed -- on the phone, until it was opened)."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins)"
-                " ORDER BY played_at"
+                f"SELECT * FROM stat_games WHERE key NOT IN ({_STOOD_FOR}) ORDER BY played_at"
             ).fetchall()
         return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
 
@@ -1120,11 +1137,11 @@ class Store:
 
     def reviews_without_stats(self) -> list[ReviewRow]:
         """Each game's latest review whose facts are not kept yet (a watched game its import
-        stands for needs none)."""
+        stands for needs none once the import's are kept: `stat_games`)."""
         with self._lock:
             rows = self._db.execute(
                 "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)"
-                " AND r.key NOT IN (SELECT watched FROM twins)"
+                f" AND r.key NOT IN ({_STOOD_FOR})"
                 " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)"
             ).fetchall()
         return [ReviewRow(**dict(r)) for r in rows]
@@ -1137,16 +1154,26 @@ class Store:
         reviewed_at: float,
         report: str,
         summary: str | None,
-    ) -> None:
-        """A game reviewed whole; its words, if any were prepared for an older review, go."""
+    ) -> bool:
+        """A game reviewed whole; whether it was saved. A review of an older format is replaced,
+        and its words go with it. One of this format saved already stays: another reviewer
+        finished first (the review of 2026-10-01: the background review and a review window on
+        one game at once -- the window saved first, the player paid for the AI coach's words,
+        and the background's save wiped them). Nor is a game the player removed meanwhile
+        saved. One statement, so no other connection's save or removal comes in between."""
         with self._lock:
-            self._db.execute(
-                "INSERT OR REPLACE INTO reviews"
-                " (key, strength, version, reviewed_at, report, summary, words)"
-                " VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                (key, strength, version, reviewed_at, report, summary),
+            cursor = self._db.execute(
+                "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)"
+                " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS"
+                " (SELECT 1 FROM removed WHERE key = ?)"
+                " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version,"
+                " reviewed_at = excluded.reviewed_at, report = excluded.report,"
+                " summary = excluded.summary, words = NULL"
+                " WHERE reviews.version != excluded.version",
+                (key, strength, version, reviewed_at, report, summary, key),
             )
             self._db.commit()
+        return cursor.rowcount > 0
 
     def review(self, key: str, strength: str) -> ReviewRow | None:
         with self._lock:
@@ -1185,12 +1212,18 @@ class Store:
             ).fetchall()
         return [str(r["measured"]) for r in rows]
 
-    def clear_progress(self, key: str) -> None:
-        """A game's review is saved: what any review of it kept part way goes (the background
-        review's at another strength has nothing left to go on with -- it reviews only games
-        with no review)."""
+    def clear_progress(self, key: str, strength: str | None = None) -> None:
+        """A game's review at `strength` is saved: what a review of it at that strength kept
+        part way goes -- every strength's when none is named (the game is gone). A Deep review
+        stopped part way kept its positions only until the game's Standard review was saved or
+        opened, and started over (the review of 2026-10-01)."""
         with self._lock:
-            self._db.execute("DELETE FROM review_progress WHERE key = ?", (key,))
+            if strength is None:
+                self._db.execute("DELETE FROM review_progress WHERE key = ?", (key,))
+            else:
+                self._db.execute(
+                    "DELETE FROM review_progress WHERE key = ? AND strength = ?", (key, strength)
+                )
             self._db.commit()
 
     def set_review_words(self, key: str, strength: str, words: str) -> None:

@@ -70,6 +70,10 @@ NO_AI = "No AI coach is set up: choose one in Settings."
 Model = Callable[[], tuple[Any | None, str | None]]
 
 
+class NoStockfish(RuntimeError):
+    """No Stockfish to review with yet -- a first run, Setup still fetching it: no game's fault."""
+
+
 class ReviewRoom:
     def __init__(
         self,
@@ -253,8 +257,11 @@ class ReviewRoom:
                 self.words_status, self.words_error = "failed", str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
             return
-        with contextlib.suppress(Exception):  # a room closed meanwhile keeps them unsaved
+        # The room stays open while they are written (`_run`), so its store is open to keep them.
+        try:
             self.store.set_review_words(self.key, self.strength.name, json.dumps(saved))
+        except Exception as exc:  # noqa: BLE001 - shown even so; said, never left "writing"
+            self._emit("sys", "error", f"the AI coach's words could not be saved: {exc!r}")
         with self._lock:
             self.words, self.words_status = shown, "ready"
             self._answered, self._spent = {}, 0.0
@@ -335,7 +342,23 @@ class ReviewRoom:
         return f"{found.eco} {found.name}" if found.eco else str(found.name)
 
     def close(self) -> None:
+        """The page left. The room closes at its next tick -- once the AI coach's words being
+        written are saved, if they are (`_run`)."""
         self._stop.set()
+
+    def reopen(self) -> bool:
+        """Opened again: whether this room goes on. One closed but still open -- its words being
+        written, or its next tick not come -- stays open; one closed, or whose analysis is
+        stopping, does not (a new room goes on from what it kept)."""
+        with self._lock:
+            if self.closed:
+                return False
+            if not self._stop.is_set():
+                return True
+            if self.status != "ready":
+                return False
+            self._stop.clear()
+            return True
 
     def join(self, timeout: float = 5.0) -> None:
         self._thread.join(timeout)
@@ -353,11 +376,23 @@ class ReviewRoom:
                     self.status = "failed"
                     self.error = str(exc)
                 self._emit("sys", "error", f"review failed: {exc!r}")
-            while not self._stop.is_set():
-                if time.monotonic() - self.touched > IDLE_CLOSE_S:
-                    self._emit("sys", "info", "room idle; closing")
-                    break
-                self._stop.wait(TICK_S)
+            while True:
+                with self._lock:
+                    # Closed, or idle, while the AI coach's words are written: open until they
+                    # are saved. Its store closed under them lost every answer that came after,
+                    # each one paid for (the review of 2026-10-01).
+                    writing = self.words_status == "writing"
+                    stopped = self._stop.is_set()
+                    idle = time.monotonic() - self.touched > IDLE_CLOSE_S
+                    if not writing and (stopped or idle):
+                        self.closed = True
+                        break
+                if stopped:
+                    time.sleep(TICK_S)
+                else:
+                    self._stop.wait(TICK_S)
+            if not stopped:
+                self._emit("sys", "info", "room idle; closing")
         finally:
             self.closed = True
             self.store.close()
@@ -372,7 +407,7 @@ class ReviewRoom:
             return False
         reviewed = ReviewedGame.model_validate_json(saved.report)
         with contextlib.suppress(Exception):  # a kill between the save and the clearing
-            self.store.clear_progress(self.key)
+            self.store.clear_progress(self.key, self.strength.name)
         # Its words ready with it: the page stops asking once the review is. Words the app was
         # closed in the middle of writing are the answers paid for so far, kept to go on from.
         kept = json.loads(saved.words) if saved.words else None
@@ -406,6 +441,11 @@ class ReviewRoom:
             stop=self._stop,
         )
         if done is None:
+            if not self._stop.is_set():  # not stopped: the game went from the record meanwhile
+                with self._lock:
+                    self.status = "failed"
+                    self.error = "This game is no longer in your record."
+                self._emit("sys", "warn", f"{self.key} left the record while it was reviewed")
             return
         reviewed, summary = done
         self._ready(reviewed, summary)
@@ -494,7 +534,7 @@ def review_row(
         raise ValueError("the game's PGN has no moves")
     path = find_stockfish(settings)
     if path is None:
-        raise RuntimeError("no Stockfish to review with")
+        raise NoStockfish("no Stockfish to review with")
     engine = settings.engine
     known: dict[str, Measured] = {}
     for text in store.progress(row.key, strength.name, strength.depth, strength.multipv):
@@ -559,11 +599,14 @@ def review_row(
         )
     if stop is not None and stop.is_set():
         return None
-    if store.is_removed(row.key):  # taken out of the player's record while it was reviewed
+    if not store.in_record(row.key):
+        # Taken out of the player's record while it was reviewed: removed, or the profile reset
+        # (the review of 2026-10-01: a review saved after a reset left Stats a game that nothing
+        # listed and nothing could remove).
         store.clear_progress(row.key)
         return None
     summary = summarize(reviewed)
-    store.save_review(
+    saved = store.save_review(
         row.key,
         strength.name,
         REVIEW_VERSION,
@@ -571,7 +614,21 @@ def review_row(
         reviewed.model_dump_json(),
         summary.model_dump_json(),
     )
-    store.clear_progress(row.key)
+    if not saved:
+        # Another review of the game at this strength finished first -- the background review
+        # and a review window at once -- and stays, with any words the player paid for on it
+        # (the review of 2026-10-01): this one is handed that one. None if the game was removed.
+        kept = store.review(row.key, strength.name)
+        if kept is None:
+            store.clear_progress(row.key)
+            return None
+        store.clear_progress(row.key, strength.name)
+        return (
+            ReviewedGame.model_validate_json(kept.report),
+            GameSummary.model_validate_json(kept.summary or "{}"),
+        )
+    # What this strength's review kept part way goes; another strength's stays, to go on from.
+    store.clear_progress(row.key, strength.name)
     keep_stats(store, strength.name, reviewed, row)
     return reviewed, summary
 
@@ -620,17 +677,18 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
                 "moves": moves,
             }
         )
-        store.save_review(
+        if not store.save_review(
             imported,
             old.strength,
             REVIEW_VERSION,
             time.time(),
             reviewed.model_dump_json(),
             summarize(reviewed).model_dump_json(),
-        )
+        ):
+            continue  # reviewed meanwhile (that review stays, with its words), or removed
         if old.words:
             store.set_review_words(imported, old.strength, old.words)
-        store.clear_progress(imported)
+        store.clear_progress(imported, old.strength)
         keep_stats(store, old.strength, reviewed, row)
         carried.append(imported)
     return carried
@@ -796,7 +854,7 @@ class ReviewRooms:
     def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
         with self._lock:
             room = self._rooms.get(key)
-            if room is not None and not room.closed and room.strength.name == strength:
+            if room is not None and room.strength.name == strength and room.reopen():
                 return room
             row = self.row(key)
             if row is None:

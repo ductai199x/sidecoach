@@ -3,10 +3,13 @@ and over the panel's API."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import chess
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecoach.config import Settings
@@ -69,6 +72,79 @@ def test_reset_profile_empties_every_table_and_clear_caches_removes_the_files(
     # A missing profile is fine.
     (tmp_path / "profile.sqlite").unlink()
     assert reset_profile(settings) == tmp_path / "profile.sqlite"
+
+
+def test_a_reset_keeps_the_pause_of_the_background_review(tmp_path: Path) -> None:
+    """The review of 2026-10-01: Reset profile emptied the settings table, the player's Pause of
+    the background review with it -- a choice about the app's work, not something the profile
+    learned -- so the next start reviewed again. The puzzle level still goes."""
+    from sidecoach.maintenance import KEPT_SETTINGS
+    from sidecoach.ui.backlog import PAUSED_KEY
+
+    assert PAUSED_KEY in KEPT_SETTINGS
+    _filled(tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    store.set_setting(PAUSED_KEY, "1")
+    reset_profile(Settings(data_dir=tmp_path))
+    assert store.setting(PAUSED_KEY) == "1" and store.setting("puzzle_level") is None
+    store.close()
+
+
+def test_a_review_under_way_saves_nothing_for_a_profile_reset_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of 2026-10-01: Reset profile while a game was reviewed (the background review,
+    or a review window): the review saved itself and its Stats facts for a game no longer in the
+    library -- Stats counted a game nothing listed and nothing could remove. It saves nothing,
+    keeps nothing part way, and the window says why."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.profile import library
+    from sidecoach.ui import review_room
+    from tests.fakes import FakeEngine
+    from tests.test_review_server import GAME
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    settings = Settings(data_dir=tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    searched = [0]
+
+    class Resetting(FakeEngine):
+        """Reset profile pressed while the engine searches the review's fourth position."""
+
+        def analyse(self, board: chess.Board, **kwargs: Any) -> list[Any]:
+            searched[0] += 1
+            if searched[0] == 4:
+                reset_profile(settings)
+            return super().analyse(board, **kwargs)
+
+    done = review_room.review_row(
+        settings, row, store, STRENGTHS["fast"], workers=1, make_engine=lambda **_: Resetting()
+    )
+    assert done is None
+    assert store.review(row.key, "fast") is None and store.stat_games() == []
+    assert store.progress(row.key, "fast", 14, 3) == []
+
+    # A review window on it: the review is no longer there to save, and it says so.
+    store.add_library_game(row)
+    searched[0] = 0
+    room = review_room.ReviewRoom(
+        settings,
+        row,
+        store_path=tmp_path / "profile.sqlite",
+        strength="fast",
+        make_engine=lambda **_: Resetting(),
+    )
+    deadline = time.monotonic() + 10
+    while room.status not in ("ready", "failed") and time.monotonic() < deadline:
+        time.sleep(0.02)
+    room.close()
+    room.join()
+    assert room.status == "failed" and room.error and "no longer" in room.error
+    assert store.stat_games() == []
+    store.close()
 
 
 def test_the_panel_resets_the_profile_and_clears_the_caches_over_the_api(

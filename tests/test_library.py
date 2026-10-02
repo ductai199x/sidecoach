@@ -277,6 +277,67 @@ def test_a_removed_game_stays_out_and_undo_puts_it_back(tmp_path, monkeypatch) -
     store.close()
 
 
+def test_every_game_is_listed_however_many() -> None:
+    """The review of 2026-10-01: the Games window listed at most 500 imports and 200 watched
+    games, while the background review and Stats counted every one: a game past the caps could
+    not be seen, opened or removed, nor a watched one paired with its import."""
+    import dataclasses
+
+    from sidecoach.profile import library
+    from sidecoach.profile.library import find
+
+    # Pairing looks only at the imports played within the date window: the timed one inside it.
+    assert max(library.TWIN_BEFORE_S, library.TWIN_AFTER_S) <= library.DATE_WINDOW_S
+    store = Store(None)
+    (row,) = from_pgn(
+        GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), user_names=["nosegazm"]
+    )
+    start = row.played_at or 0.0
+    # The first game played: imported and watched, older than every other.
+    store.add_library_game(row)
+    oldest = _watch(store, "g0", SANS, start + 60)
+    # Then 500 imports and 200 watched games, days later and far apart: none pair.
+    later = start + 10 * 86400
+    for i in range(500):
+        store.add_library_game(
+            dataclasses.replace(row, key=f"chesscom:{i}", played_at=later + i * 86400)
+        )
+    for i in range(200):
+        _watch(store, f"w{i}", SANS, later + 600 * 86400 + i * 86400)
+    assert len(store.library()) == 501 and row.key in {r.key for r in store.library()}
+    watched = from_watched(store)
+    assert len(watched) == 201 and oldest in {r.key for r in watched}
+    assert find(store, oldest) is not None, "opened"
+    assert reconcile(store) == {oldest: row.key}, "paired with its import"
+    store.close()
+
+
+def test_a_pasted_game_removed_stays_out_when_the_site_brings_it_in() -> None:
+    """The review of 2026-10-01: a game pasted as a PGN, then removed, came back when the
+    player's games were brought in from chess.com -- the same game under the site's key. It
+    stays out; pasted again by hand, it comes back (that is the player asking for it)."""
+    from sidecoach.profile.library import games_in, left_out, pasted_key, row_for
+
+    store = Store(None)
+    (pasted,) = from_pgn(GAME, user_names=["nosegazm"])
+    fetched = row_for(
+        games_in(GAME)[0],
+        source="chesscom",
+        key="chesscom:174300959956",
+        user_names=["nosegazm"],
+        time_class="rapid",
+    )
+    assert pasted_key(fetched) == pasted.key and pasted_key(pasted) == pasted.key
+    store.add_library_game(pasted)
+    store.remove_game(pasted.key)
+    assert left_out(store, [fetched]) == {fetched.key}, "the site's copy stays out"
+    (other,) = from_pgn(OTHER, user_names=["nosegazm"])
+    assert left_out(store, [other]) == set(), "another game is not"
+    store.unremove([pasted.key])  # pasted again by hand
+    assert left_out(store, [fetched]) == set()
+    store.close()
+
+
 def test_a_watched_record_that_is_no_game_stays_out(tmp_path) -> None:  # noqa: ANN001
     """What Sidecoach recorded is a game when it finished and its moves play out from where it
     began: a puzzle's mating line recorded from the start position, a game never finished,
@@ -301,7 +362,7 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
     assert [r.key for r in store.library()] == [newer.key, older.key]  # the latest played first
     assert store.library_game(older.key) == older
 
-    store.save_review(
+    assert store.save_review(
         older.key, "standard", 1, 100.0, json.dumps({"moves": []}), json.dumps({"accuracy": 80})
     )
     store.set_review_words(older.key, "standard", json.dumps({"1": "Book."}))
@@ -311,14 +372,20 @@ def test_the_library_keeps_games_and_their_reviews(tmp_path) -> None:  # noqa: A
         and review.version == 1
         and json.loads(review.words or "{}") == {"1": "Book."}
     )
-    # Reviewed again: the words of the older review go with it.
-    store.save_review(older.key, "standard", 2, 200.0, "{}", None)
+    # Another reviewer of the same format finishing second: the review saved first stays, with
+    # its words (the review of 2026-10-01: the background review wiped the words paid for).
+    assert not store.save_review(older.key, "standard", 1, 150.0, "{}", None)
+    assert store.review(older.key, "standard") == review
+    # Reviewed again in a newer format: the words of the older review go with it.
+    assert store.save_review(older.key, "standard", 2, 200.0, "{}", None)
     again = store.review(older.key, "standard")
     assert again is not None and again.version == 2 and again.words is None
     assert store.review(older.key, "deep") is None
 
     store.remove_game(older.key)
     assert store.library_game(older.key) is None and store.review(older.key, "standard") is None
+    assert not store.save_review(older.key, "deep", 2, 300.0, "{}", None), "removed: not saved"
+    assert store.review(older.key, "deep") is None
     store.close()
 
 

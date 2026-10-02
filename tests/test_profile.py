@@ -543,6 +543,98 @@ def test_the_clock_makes_it_time_pressure() -> None:
     assert evidence[0].cause == causes.TIME_PRESSURE and evidence[0].time_pressure
 
 
+def test_a_clock_read_in_one_game_never_reaches_the_next() -> None:
+    """The review of 2026-10-01: the last clock reading of a game carried into the next, so a
+    mistake in an untimed game after a blitz game finished on 4 seconds was blamed on the clock.
+    A reading belongs to the game it was taken in."""
+    f = Feed()
+    f.send(ClockObservation(white_ms=180_000, black_ms=180_000, running=Side.WHITE))
+    for san in ("e4", "e5", "Nf3", "Nc6"):
+        f.play(san)
+    f.send(ClockObservation(white_ms=4_000, black_ms=30_000, running=Side.WHITE))
+    f.end("0-1")
+    # An untimed bot game next: no clock on the screen, so no reading.
+    f.next_game("bot")
+    f.play("e4")
+    f.play("e5")
+    got = f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    evidence = [e for e in got if isinstance(e, ProfileEvidence)]
+    assert evidence and evidence[0].cause != causes.TIME_PRESSURE
+    assert {m.clock_ms for m in f.store.moves("bot")} == {None}
+
+
+def test_a_clock_box_not_read_keeps_its_last_reading() -> None:
+    """A reading with one side's box unreadable is no reading of that side: its clock stays as
+    last read (it was set to nothing, and a move on 6 seconds was no longer time pressure)."""
+    f = Feed()
+    f.send(ClockObservation(white_ms=6_000, black_ms=200_000, running=Side.WHITE))
+    f.play("e4")
+    f.send(ClockObservation(white_ms=None, black_ms=190_000, running=Side.BLACK))
+    f.play("e5")
+    got = f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    assert [m.clock_ms for m in f.store.moves("g")] == [6_000, 190_000, 6_000]
+    evidence = [e for e in got if isinstance(e, ProfileEvidence)]
+    assert evidence[0].cause == causes.TIME_PRESSURE
+
+
+def test_the_time_control_is_the_clock_as_the_game_began() -> None:
+    """The review of 2026-10-01: a watched game's time control was its first clock reading as
+    read -- 599000/597500, read a second or two in, was "9.98333 min": a ten-minute game
+    counted as blitz -- and a game joined from the middle took the time left for its control.
+    The control is the reading to the whole minute; a joined game's clocks give none."""
+    from sidecoach.profile.library import time_class_of
+
+    f = Feed()
+    f.send(ClockObservation(white_ms=599_000, black_ms=597_500, running=Side.WHITE))
+    game = f.store.game("g")
+    assert game is not None and game.time_control == "10 min"
+    assert time_class_of("10 min") == "rapid"
+    assert time_class_of("9.98333 min") == "rapid", "as records kept before say it"
+    f.end()
+    # A game joined from the middle: its clocks say how much time was left, not the control.
+    f.next_game(
+        "j", kind="position", fen="r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+    )
+    f.send(ClockObservation(white_ms=271_000, black_ms=244_000, running=Side.WHITE))
+    joined = f.store.game("j")
+    assert joined is not None and joined.time_control is None
+
+
+def test_a_game_removed_right_after_it_ends_keeps_nothing_more() -> None:
+    """The review of 2026-10-01: a game removed from the player's record right after it ended
+    still took rows -- the engine's late verdict as evidence, the coach's words, the review --
+    and the profile's cells counted the late mistake. Once removed, nothing more is kept."""
+    from sidecoach.events import Analysis, CoachMessage, DisclosureLevel, Line, Trigger
+
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    f.unjudged("Qh5")  # the engine trails: its verdict comes after the end
+    move, after = f.board.peek().uci(), f.board.fen()
+    f.end("1-0")
+    assert f.store.remove_game("watched:g") == ["watched:g"]
+    late = [
+        MoveAssessment(
+            game_id="g", ply=3, uci=move, expected_loss=0.12, severity=Severity.MISTAKE,
+            best=["g1f3"], tags=[], depth=14, label=Label.MISTAKE, accuracy=76.0,
+        ),
+        Analysis(
+            game_id="g", fen=after, ply=3, lines=[Line(moves=[], depth=14, expected_score=0.5)],
+            decisive=False, only_move=False, tags=[FORK],
+        ),
+        CoachMessage(
+            text="You missed a chance there.", level=DisclosureLevel.IDEA,
+            trigger=Trigger.POST_MISTAKE, ply=2,
+        ),
+    ]  # fmt: skip
+    got = [e for event in late for e in f.send(event)] + f.profiler.tick(f.ts + 1000.0)
+    assert got == [], "no review, no evidence for a game that is gone"
+    for table in ("games", "moves", "evidence", "dialogue", "recommendations"):
+        assert f.store.query(f"SELECT * FROM {table} WHERE game_id = 'g'")[1] == [], table
+    assert sum(c.errors for c in f.store.cells()) == 0
+    assert f.profiler.end_session(f.ts + 2000.0) is None, "nor in the session's summary"
+
+
 def test_the_game_ends_with_a_review_and_a_snapshot() -> None:
     f = Feed()
     f.play("e4", label=Label.BOOK)

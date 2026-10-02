@@ -28,12 +28,15 @@ from sidecoach.events import ReviewedGame
 from sidecoach.profile import library
 from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
-from sidecoach.ui.review_room import carry_twins, review_row
+from sidecoach.ui.review_room import NoStockfish, carry_twins, review_row
 
 WORKERS = 2
 STRENGTH = "standard"
-IDLE_S = 5.0  # between looks while waiting for the player's own work
+IDLE_S = 5.0  # between looks while waiting for the player's own work, or for Stockfish
 REST_S = 30.0  # between looks when every game is reviewed
+# A game whose review failed is tried again this long after, and counted meanwhile: one failure
+# kept it out for the whole session, and out of the job's count (the review of 2026-10-01).
+FAILED_RETRY_S = 600.0
 PAUSED_KEY = "backlog.paused"  # the store's settings: "1" while the player has it paused
 # The estimate of the time left: the pace of this session's last games, once this many
 # positions were measured; a game's positions until one is seen.
@@ -56,7 +59,8 @@ class Backlog:
         self._make_engine = make_engine
         self._stop = threading.Event()
         self._wake = threading.Event()  # games came in, or the player resumed: look now
-        self._failed: set[str] = set()  # games that cannot be reviewed, skipped this session
+        # Games whose review failed, and when (monotonic): skipped until FAILED_RETRY_S after.
+        self._failed: dict[str, float] = {}
         self._store = Store(store_path)
         self._lock = threading.Lock()
         self.paused_by_you = self._store.setting(PAUSED_KEY) == "1"
@@ -166,40 +170,46 @@ class Backlog:
         finally:
             store.close()
 
+    def _resting(self, key: str) -> bool:
+        """Whether a game's review failed less than FAILED_RETRY_S ago."""
+        failed = self._failed.get(key)
+        return failed is not None and time.monotonic() - failed < FAILED_RETRY_S
+
     def _keep_saved(self, store: Store) -> bool:
         """One saved review's facts kept for Stats; whether there was one."""
         for review in store.reviews_without_stats():
             row = library.find(store, review.key)
-            if row is None or review.key in self._failed:
+            if row is None or self._resting(review.key):
                 continue
             try:
                 keep_stats(
                     store, review.strength, ReviewedGame.model_validate_json(review.report), row
                 )
             except Exception:  # noqa: BLE001 - a review that cannot be read is skipped
-                self._failed.add(review.key)
+                self._failed[review.key] = time.monotonic()
             return True
         return False
 
     def _todo(self, store: Store) -> list[LibraryRow]:
         """The games no review covers, the latest played first; a watched game its import
-        stands for is the import's to review. Counts the job's games as it goes."""
+        stands for is the import's to review. Counts the job's games as it goes: a game whose
+        review failed is counted, waiting, though it is not tried again until later."""
         twins = library.reconcile(store)
         carry_twins(store, twins)
-        imported = store.library(limit=100_000)
+        imported = store.library()
         watched = [r for r in library.from_watched(store) if r.key not in twins]
         every = [*imported, *watched]
         unreviewed = {r.key for r in store.unreviewed()}
-        todo = [
+        waiting = [
             r
             for r in every
             if (
                 r.key in unreviewed if r.source != "watched" else store.latest_review(r.key) is None
             )
-            and r.key not in self._failed
         ]
-        self.total = len([r for r in every if r.key not in self._failed])
-        self.left = len(todo)
+        todo = [r for r in waiting if not self._resting(r.key)]
+        self.total = len(every)
+        self.left = len(waiting)
         self._counted = time.monotonic()
         return sorted(todo, key=lambda r: r.played_at or r.added_at, reverse=True)
 
@@ -229,6 +239,7 @@ class Backlog:
                 "start": start,
                 "since": time.monotonic(),
             }
+        no_stockfish = False
         try:
             done = review_row(
                 self.settings,
@@ -243,8 +254,10 @@ class Backlog:
             )
             if done is not None:
                 self.left = max(0, self.left - 1)
-        except Exception:  # noqa: BLE001 - a game that cannot be reviewed is skipped
-            self._failed.add(row.key)
+        except NoStockfish:
+            no_stockfish = True
+        except Exception:  # noqa: BLE001 - a game that cannot be reviewed is tried again later
+            self._failed[row.key] = time.monotonic()
         finally:
             self.reviewing = None
             with self._lock:
@@ -254,3 +267,8 @@ class Backlog:
                     self._runs.append((run["done"] - run["start"], time.monotonic() - run["since"]))
                 if run is not None and run["total"]:
                     self._sizes.append(run["total"])
+        if no_stockfish:
+            # Not the game's failure: looked for again shortly, every game still waiting (the
+            # review of 2026-10-01: on a first run each one failed until the app restarted).
+            self._wake.wait(IDLE_S)
+            self._wake.clear()

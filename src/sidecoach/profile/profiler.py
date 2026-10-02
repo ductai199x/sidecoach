@@ -16,6 +16,7 @@ period, or when the session closes, whichever comes first.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -53,7 +54,7 @@ from sidecoach.profile.puzzles import (
     record_attempt,
 )
 from sidecoach.profile.review import ERRORS, UserMove, build_review
-from sidecoach.profile.store import Store
+from sidecoach.profile.store import WATCHED, Store
 
 # A finished game waits this long for the engine's last verdicts before its review is
 # built from what is there.
@@ -74,6 +75,9 @@ RETRY_FAIL_S = 3600.0
 
 
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+# A clock's first reading this close below a whole minute is that minute (`time_control_words`;
+# library.time_class_of reads the records kept before the same way).
+START_SLACK_MS = 5_000
 
 
 def material_balance(board: chess.Board, side: chess.Color) -> int:
@@ -86,13 +90,18 @@ def material_balance(board: chess.Board, side: chess.Color) -> int:
 
 
 def time_control_words(white_ms: int | None, black_ms: int | None) -> str | None:
-    """The time control from the clock's first reading: "10 min", "3 min", "30 s"."""
+    """The time control from the clock's first reading as a game began: "10 min", "3 min",
+    "30 s". A reading up to START_SLACK_MS short of a whole minute is that minute: the first
+    reading comes a second or two after the clock started (599000 was "9.98333 min", a
+    ten-minute game counted as blitz: the review of 2026-10-01)."""
     start = max((ms for ms in (white_ms, black_ms) if ms is not None), default=None)
     if start is None or start <= 0:
         return None
+    whole = math.ceil(start / 60_000)
+    if whole * 60_000 - start <= START_SLACK_MS:
+        return f"{whole} min"
     if start >= 60_000:
-        minutes = start / 60_000
-        return f"{minutes:g} min"
+        return f"{start / 60_000:g} min"
     return f"{start // 1000} s"
 
 
@@ -128,6 +137,8 @@ class _Game:
     # The game is over; its review waits for the last verdicts (see `_maybe_review`).
     end: GameEnded | None = None
     provisional: bool = False  # a position, not yet known to be a game
+    # Joined from the middle: its clocks say how much time was left, not the time control.
+    joined: bool = False
     ended_at: float = 0.0
     reviewed: bool = False
     # The game's phase so far: a phase reached is never left (`phase.game_phases`).
@@ -181,9 +192,22 @@ class Profiler:
         if isinstance(event, GameStarted):
             return [*self.flush(ts), *self._start(event, ts)]
         if isinstance(event, ClockObservation):
-            self._clock = (event.white_ms, event.black_ms)
+            # A box not read is no news of that side (state/pipeline.py `clock_observation`):
+            # its clock stays as last read, not set to nothing (the review of 2026-10-01).
+            white, black = self._clock
+            self._clock = (
+                event.white_ms if event.white_ms is not None else white,
+                event.black_ms if event.black_ms is not None else black,
+            )
             game = self._game
-            if game is not None and game.time_control is None and not game.ended:
+            # A game joined from the middle took the time left for its control (the review of
+            # 2026-10-01): it has none from its clocks.
+            if (
+                game is not None
+                and game.time_control is None
+                and not game.ended
+                and not game.joined
+            ):
                 game.time_control = time_control_words(event.white_ms, event.black_ms)
                 if game.time_control is not None:
                     self.store.set_game(game.game_id, time_control=game.time_control)
@@ -196,6 +220,8 @@ class Profiler:
                 return self._another_position(event, ts)
             return []
         if game.ended and isinstance(event, MovePlayed | Takeback | Resync | GameEnded):
+            return []
+        if self._removed(game):
             return []
         if isinstance(event, Analysis | MoveAssessment) and event.game_id != game.game_id:
             return []  # the engine's late word on the game before this one
@@ -241,6 +267,10 @@ class Profiler:
     def _start(self, event: GameStarted, ts: float) -> list[Event]:
         self._drop_if_provisional()
         self._side = event.user_side
+        # The clocks read in the game before are not this one's: an untimed game after a blitz
+        # game finished on 4 seconds had every mistake blamed on the clock (the review of
+        # 2026-10-01).
+        self._clock = (None, None)
         if event.kind != "game":
             # A puzzle, an analysis board, or a game joined from the middle. A puzzle of
             # the store is followed for its outcome, not as a game -- a solved puzzle was
@@ -265,6 +295,7 @@ class Profiler:
             started_at=ts,
             last_fen=event.start_fen,
             provisional=event.kind != "game",
+            joined=event.kind != "game",
         )
         self.store.start_game(
             event.game_id, ts, event.user_side.value, event.start_fen, self.session_id
@@ -503,10 +534,20 @@ class Profiler:
         )
         return self._maybe_review(game, ts)
 
+    def _removed(self, game: _Game) -> bool:
+        """Whether the player removed the game from their record once it ended (the Games list
+        offers only finished games): nothing more is kept of it -- the engine's late verdicts,
+        the coach's words and the review were rows of a game that was gone, and the profile's
+        cells still counted them (the review of 2026-10-01). It is not reviewed either."""
+        if not game.ended or not self.store.is_removed(f"{WATCHED}{game.game_id}"):
+            return False
+        game.reviewed = True
+        return True
+
     def _maybe_review(self, game: _Game, ts: float, *, force: bool = False) -> list[Event]:
         """The review of a finished game, once every move of the player's has its verdict
         or the grace period is up; `force` builds it from what is there."""
-        if game.end is None or game.reviewed:
+        if game.end is None or game.reviewed or self._removed(game):
             return []
         waiting = any(p.assessment is None for p in game.plies.values() if p.move.by_user)
         if waiting and not force and ts - game.ended_at < REVIEW_GRACE_S:

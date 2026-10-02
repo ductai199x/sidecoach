@@ -76,6 +76,58 @@ def test_a_game_brought_in_is_reviewed_in_the_background_and_its_facts_kept(
         store.close()
 
 
+def test_a_game_that_failed_once_is_counted_and_tried_again(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of 2026-10-01: a game whose review raised once was skipped for the rest of the
+    session and left out of the job's count, so the job said "empty" with games waiting; on a
+    first run, before Setup had fetched Stockfish, every game failed until the app restarted.
+    With no Stockfish yet no game has failed: they are reviewed once it is there. A game that
+    failed is still counted, and tried again a while later."""
+    from sidecoach.ui import backlog as backlog_module
+    from sidecoach.ui import review_room
+
+    stockfish: list[Path | None] = [None]
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: stockfish[0])
+    monkeypatch.setattr(backlog_module, "IDLE_S", 0.05)
+    monkeypatch.setattr(backlog_module, "REST_S", 0.05)
+    monkeypatch.setattr(backlog_module, "FAILED_RETRY_S", 0.5)
+    broken = [True]
+
+    class Breaking(FakeEngine):
+        def open(self) -> None:
+            if broken[0]:
+                raise RuntimeError("the engine would not start")
+
+    settings = make_panel().settings
+    path = settings.data_dir / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    backlog = backlog_module.Backlog(settings, path, make_engine=lambda **_: Breaking())
+    backlog.start()
+    try:
+        # No Stockfish yet: counted and waiting, never "empty".
+        assert _until(lambda: backlog.state()["total"] == 1)
+        time.sleep(0.3)
+        state = backlog.state()
+        assert (state["status"], state["total"], state["waiting"]) == ("reviewing", 1, 1)
+        # Stockfish fetched, but the engine would not start: failed, still counted.
+        stockfish[0] = Path("stockfish")
+        time.sleep(0.3)
+        state = backlog.state()
+        assert (state["status"], state["total"], state["waiting"]) == ("reviewing", 1, 1)
+        assert store.latest_review(row.key) is None
+        # The engine starts again: the game is tried again, without a restart, and reviewed.
+        broken[0] = False
+        assert _until(lambda: backlog.state()["status"] == "done", 10.0)
+        assert store.latest_review(row.key) is not None
+    finally:
+        backlog.close()
+        backlog.join(10.0)
+        store.close()
+
+
 def test_the_player_pauses_and_resumes_and_a_pause_outlives_a_restart(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:

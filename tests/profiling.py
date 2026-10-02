@@ -33,7 +33,17 @@ class Feed:
         self.ts = 0.0
         self.user_side = user_side
         self.out: list = []
+        self.game_id = "g"
         self.send(GameStarted(game_id="g", user_side=user_side, start_fen=chess.STARTING_FEN))
+
+    def next_game(self, game_id: str, *, kind: str = "game", fen: str = chess.STARTING_FEN) -> list:
+        """The next game begun, from `fen` (`kind` "position": a game joined from the middle)."""
+        self.game_id = game_id
+        self.board = chess.Board(fen)
+        self.ply = 0
+        return self.send(
+            GameStarted(game_id=game_id, user_side=self.user_side, start_fen=fen, kind=kind)
+        )
 
     def send(self, event) -> list:
         self.ts += 1.0
@@ -50,7 +60,7 @@ class Feed:
         self.ply += 1
         return self.send(
             MovePlayed(
-                game_id="g",
+                game_id=self.game_id,
                 ply=self.ply,
                 san=san,
                 uci=move.uci(),
@@ -86,7 +96,7 @@ class Feed:
         )
         got += self.send(
             MoveAssessment(
-                game_id="g",
+                game_id=self.game_id,
                 ply=self.ply,
                 uci=move.uci(),
                 expected_loss=loss,
@@ -113,7 +123,7 @@ class Feed:
             )
             got += self.send(
                 Analysis(
-                    game_id="g",
+                    game_id=self.game_id,
                     fen=self.board.fen(),
                     ply=self.ply,
                     lines=lines,
@@ -127,6 +137,10 @@ class Feed:
     def end(self, result: str = "1-0", reason: str = "resignation") -> list:
         return self.send(
             GameEnded(
-                game_id="g", result=result, reason=reason, pgn="1. e4", final_fen=self.board.fen()
+                game_id=self.game_id,
+                result=result,
+                reason=reason,
+                pgn="1. e4",
+                final_fen=self.board.fen(),
             )
         )
