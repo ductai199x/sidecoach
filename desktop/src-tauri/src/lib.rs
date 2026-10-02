@@ -246,7 +246,10 @@ fn start_sidecar(app: &AppHandle, state: &Sidecar) -> Result<u16, String> {
     // (a release build has no console), else to ours.
     let stderr = data_dir(app)
         .and_then(|d| std::fs::create_dir_all(&d).ok().map(|_| d))
-        .and_then(|d| std::fs::File::create(d.join("sidecar.log")).ok())
+        .and_then(|d| {
+            keep_previous_log(&d);
+            std::fs::File::create(d.join("sidecar.log")).ok()
+        })
         .map(Stdio::from)
         .unwrap_or_else(Stdio::inherit);
     cmd.stdout(Stdio::piped())
@@ -303,6 +306,30 @@ fn stop_sidecar(app: &AppHandle, state: &Sidecar) {
         if let Some(dir) = data_dir(app).or_else(|| repo_root().map(|r| r.join("data"))) {
             let _ = std::fs::remove_file(dir.join("panel.lock"));
         }
+    }
+}
+
+/// Stops the sidecar when dropped. Kept in the app's resource table: the updater's install
+/// (Windows) exits the process without a `RunEvent::Exit`, after `cleanup_before_exit`,
+/// which clears that table -- so the sidecar no longer holds the files the installer is
+/// about to replace (setup finding 10).
+struct SidecarGuard(AppHandle);
+
+impl tauri::Resource for SidecarGuard {}
+
+impl Drop for SidecarGuard {
+    fn drop(&mut self) {
+        stop_sidecar(&self.0, &self.0.state::<Sidecar>());
+    }
+}
+
+/// The sidecar's log of the previous launch kept as `sidecar.1.log` before a new one
+/// starts: truncating it at every launch lost the trace of the crash that ended the last
+/// (setup finding 22).
+fn keep_previous_log(dir: &std::path::Path) {
+    let log = dir.join("sidecar.log");
+    if log.exists() {
+        let _ = std::fs::rename(&log, dir.join("sidecar.1.log"));
     }
 }
 
@@ -670,6 +697,7 @@ pub fn run() {
             if !splash {
                 show_main(&handle);
             }
+            app.resources_table().add(SidecarGuard(handle.clone()));
             std::thread::spawn(move || {
                 let state = handle.state::<Sidecar>();
                 match start_sidecar(&handle, &state) {
@@ -725,6 +753,24 @@ pub fn run() {
                         .emit_to("w-captions", "panel-front", *focused);
                 }
             }
+            // The splash closed by the person (Alt+F4, the taskbar) before the main window
+            // showed: nothing would be left on the screen and the app ran on unseen (setup
+            // finding 13). It quits, as closing the main window does. `splash_done` shows the
+            // main window before it closes the splash, so that close is not this one; with
+            // the tray setting the tray icon is still there to reopen it.
+            if let WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "splash" {
+                    let app = window.app_handle();
+                    let main_shown = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_visible().ok())
+                        .unwrap_or(false);
+                    let tray = app.state::<Shell>().settings.lock().unwrap().close == "tray";
+                    if !main_shown && !tray {
+                        app.exit(0);
+                    }
+                }
+            }
             // Where each window is, for the next start (`places`).
             match event {
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => places::record(window),
@@ -764,4 +810,32 @@ pub fn run() {
             stop_sidecar(handle, &handle.state::<Sidecar>());
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_previous_log;
+
+    #[test]
+    fn the_previous_launch_log_is_kept() {
+        let dir = std::env::temp_dir().join(format!("sidecoach-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sidecar.log"), "the crash").unwrap();
+        keep_previous_log(&dir);
+        assert!(!dir.join("sidecar.log").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sidecar.1.log")).unwrap(),
+            "the crash"
+        );
+        // The one before that is replaced; no log at all is no error.
+        std::fs::write(dir.join("sidecar.log"), "the next").unwrap();
+        keep_previous_log(&dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sidecar.1.log")).unwrap(),
+            "the next"
+        );
+        keep_previous_log(&dir);
+        let _ = std::fs::remove_file(dir.join("sidecar.1.log"));
+        let _ = std::fs::remove_dir(&dir);
+    }
 }
