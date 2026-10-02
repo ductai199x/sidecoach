@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -83,6 +84,9 @@ class Engine:
     # Work the player is not waiting on (the background review of imported games) yields
     # the processor to everything else: the process runs below normal priority.
     low_priority: bool = False
+    # A search still running this long past its time limit is an engine that stopped
+    # answering without dying: its process is ended and the search made again (`_watched`).
+    watchdog_s: float = 10.0
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -217,7 +221,8 @@ class Engine:
         with self._lock:
             if self._options_owed:
                 self._configure()
-            infos = self._analyse_with_restart(board, limit, wanted, depths)
+            with self._watched(limit):
+                infos = self._analyse_with_restart(board, limit, wanted, depths)
         lines = as_lines(infos, carry_best)
         if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
             lines[0] = self._carried_on(board, lines[0], MIN_BEST_PLIES)
@@ -237,7 +242,8 @@ class Engine:
             with self._lock:
                 if self._options_owed:
                     self._configure()
-                infos = self._analyse_with_restart(end, limit, 1)
+                with self._watched(limit):
+                    infos = self._analyse_with_restart(end, limit, 1)
             more = (infos[0].get("pv") or []) if infos else []
             if not more:
                 break
@@ -245,6 +251,38 @@ class Engine:
                 moves.append(move.uci())
                 end.push(move)
         return line.model_copy(update={"moves": moves})
+
+    @contextlib.contextmanager
+    def _watched(self, limit: chess.engine.Limit) -> Iterator[None]:
+        """A search with a time limit, watched: still running `watchdog_s` past it, the
+        engine has stopped answering without dying -- the search would wait on it for good,
+        and the analyser's thread with it -- so its process is ended, and the search is
+        made again on a new one (`_analyse_with_restart`), watched the same way."""
+        if limit.time is None:
+            yield
+            return
+        done = threading.Event()
+        patience = limit.time + self.watchdog_s
+
+        def watch() -> None:
+            while not done.wait(patience):
+                self._end_process()
+
+        watcher = threading.Thread(target=watch, name="sidecoach-engine-watchdog", daemon=True)
+        watcher.start()
+        try:
+            yield
+        finally:
+            done.set()
+
+    def _end_process(self) -> None:
+        """The engine's process ended from outside, the way a crash ends it."""
+        engine = self._engine
+        if engine is None:
+            return
+        with contextlib.suppress(Exception):  # gone already
+            kill = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+            os.kill(engine.transport.get_pid(), kill)
 
     @contextlib.contextmanager
     def interruptible(self) -> Iterator[None]:

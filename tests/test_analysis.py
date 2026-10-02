@@ -562,6 +562,52 @@ def test_a_search_cut_short_gives_lines_of_one_depth(engine: Engine) -> None:
         assert len({line.depth for line in lines}) == 1, [line.depth for line in lines]
 
 
+# A UCI engine that answers the handshake and then never answers a search: alive, and silent.
+_SILENT_ENGINE = """
+import sys
+for line in sys.stdin:
+    word = line.split()[0] if line.split() else ""
+    if word == "uci":
+        print("id name silent")
+        print("option name MultiPV type spin default 1 min 1 max 500")
+        print("uciok", flush=True)
+    elif word == "isready":
+        print("readyok", flush=True)
+    elif word == "quit":
+        break
+"""
+
+
+@needs_engine
+def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
+    """An engine that hangs without dying held the analyser's thread for good: the search
+    waited on it forever. A search running well past its time cap has its process ended,
+    and the search is made again on a new one."""
+    import sys
+
+    import chess.engine
+
+    assert STOCKFISH is not None
+    stub = tmp_path / "silent.py"
+    stub.write_text(_SILENT_ENGINE, encoding="utf-8")
+    running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=0.3)
+    running._engine = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
+    running.watchdog_s = 2.0  # room for the new engine to start on a busy machine
+    try:
+        got: dict[str, list[Line]] = {}
+        worker = threading.Thread(
+            target=lambda: got.setdefault("lines", running.analyse(chess.Board(), depth=30))
+        )
+        started = time.monotonic()
+        worker.start()
+        worker.join(15)
+        assert not worker.is_alive(), "the search still waits on the silent engine"
+        assert got["lines"], "searched again on a new engine"
+        assert time.monotonic() - started < 10
+    finally:
+        running.close()
+
+
 @needs_engine
 def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
     """Threads or hash saved while a search runs used to reach Stockfish at once: the
