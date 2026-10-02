@@ -114,6 +114,13 @@ class ReviewWords:
     model: str = ""
     cost: float | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # The plies whose call failed: not done, to ask again (Try again), never dropped for good.
+    failed: set[int] = field(default_factory=set)
+
+
+# The calls asked at once: every key move at once (MOST of them) set a provider's rate limit
+# off, and the moves whose calls failed were left without words (the review of 2026-10-01).
+PARALLEL = 4
 
 
 def key_plies(game: ReviewedGame) -> list[int]:
@@ -644,10 +651,11 @@ def write(
 ) -> ReviewWords:
     """The model's review of the game's key moves, checked: a call a move, all at once. Without
     thinking unless asked: a small model reasons worse about chess, not better (Tai,
-    2026-09-30). A call that fails drops its move; when every one fails (and none was answered
-    before), the first failure is raised. `answered`: the answers already paid for (words the
-    app was closed in the middle of), not asked again; `on_answer(ply, text, stats)` is handed
-    each new answer the moment it arrives, to keep it. The cost is of the new calls."""
+    2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
+    fails (and none was answered before), the first failure is raised. `answered`: the answers
+    already paid for (words the app was closed in the middle of), not asked again;
+    `on_answer(ply, text, stats)` is handed each new answer the moment it arrives, to keep it.
+    The cost is of the new calls."""
     answered = dict(answered or {})
     plies = key_plies(game)
     words = ReviewWords(texts={}, model=getattr(provider, "model", ""))
@@ -673,7 +681,7 @@ def write(
 
     replies: dict[int, Completion | Exception] = {}
     if todo:
-        with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+        with ThreadPoolExecutor(max_workers=min(PARALLEL, len(todo))) as pool:
             asked = {pool.submit(ask, ply): ply for ply in todo}
             for done in as_completed(asked):
                 ply, reply = asked[done], done.result()
@@ -689,6 +697,7 @@ def write(
         reply = replies.get(ply)
         if isinstance(reply, Exception):
             words.dropped[ply] = f"the call failed: {reply}"
+            words.failed.add(ply)
             continue
         if reply is not None:
             spent.record(reply.stats)

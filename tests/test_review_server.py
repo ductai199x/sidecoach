@@ -877,6 +877,70 @@ def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
     store.close()
 
 
+def test_ai_words_cut_short_by_failed_calls_offer_try_again_for_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Some calls failed and the words were saved as done: the failed moves had none for good,
+    and nothing offered to finish them (the review of 2026-10-01). The room says it could not
+    finish, keeps the answers paid for, and Try again asks the rest alone."""
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    asked: list[set[int]] = []
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        answered = set(kw["answered"])
+        asked.append(answered)
+        paid = {"prompt_tokens": 1, "completion_tokens": 1}
+        if not answered:
+            kw["on_answer"](2, "### why\nMove 2.", paid)
+            return ReviewWords(
+                texts={2: {"why": "a"}}, dropped={4: "the call failed: 429"}, failed={4}
+            )
+        kw["on_answer"](4, "### why\nMove 4.", paid)
+        return ReviewWords(texts={2: {"why": "a"}, 4: {"why": "b"}}, model="gpt-x", cost=0.01)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    monkeypatch.setattr(review_room.review_words, "key_plies", lambda game: [2, 4])
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+
+    def until(check: Callable[[], bool]) -> bool:
+        deadline = time.monotonic() + 10
+        while not check() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return check()
+
+    room = rooms.open(row.key, "fast")
+    assert room is not None and until(lambda: room.status == "ready")
+    assert room.write_words() is None
+    assert until(lambda: room.words_status != "writing")
+    ai = room.state()["ai"]
+    assert ai["status"] == "failed" and "1 of 2" in ai["error"] and ai["answered"] == 1
+    saved = store.review(row.key, "fast")
+    assert saved is not None and json.loads(saved.words or "{}").get("partial"), "kept, not done"
+    assert room.write_words() is None  # Try again
+    assert until(lambda: room.words_status == "ready")
+    assert asked == [set(), {2}], "the rest alone"
+    room.close()
+    store.close()
+
+
 def test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

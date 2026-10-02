@@ -418,6 +418,7 @@ def test_a_failed_call_drops_its_move_alone() -> None:
     words = review_words.write(game, _Model(answers), user="black", opening=None, prices=Prices())
     assert set(words.texts) == {3, 6}
     assert words.dropped == {4: "the call failed: 429: slow down"}
+    assert words.failed == {4}, "to ask again, not dropped for good"
     with pytest.raises(RuntimeError, match="down"):
         review_words.write(
             game,
@@ -426,3 +427,38 @@ def test_a_failed_call_drops_its_move_alone() -> None:
             opening=None,
             prices=Prices(),
         )
+
+
+def test_the_calls_go_a_few_at_a_time() -> None:
+    """Every key move asked at once set a provider's rate limit off (the review of
+    2026-10-01): PARALLEL calls at most at a time."""
+    import threading
+    import time
+
+    game = _game()
+    now = most = 0
+    lock = threading.Lock()
+
+    class Slow(_Model):
+        def chat(self, system: str, messages: Any, **kw: Any) -> Completion:
+            nonlocal now, most
+            with lock:
+                now += 1
+                most = max(most, now)
+            time.sleep(0.05)
+            with lock:
+                now -= 1
+            return super().chat(system, messages, **kw)
+
+    review_words.PARALLEL, parallel = 2, review_words.PARALLEL
+    try:
+        review_words.write(
+            game,
+            Slow(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."})),
+            user="black",
+            opening=None,
+            prices=Prices(),
+        )
+    finally:
+        review_words.PARALLEL = parallel
+    assert most == 2

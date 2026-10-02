@@ -248,6 +248,20 @@ class ReviewRoom:
                 answered=answered,
                 on_answer=keep,
             )
+            if words.failed:
+                # Some calls failed: the answers paid for are kept (`keep`), and Try again asks
+                # the rest. They were saved as done, the failed moves without words for good and
+                # nothing offered to finish them (the review of 2026-10-01).
+                total = len(review_words.key_plies(reviewed))
+                first = next(iter(words.dropped[p] for p in sorted(words.failed)))
+                with self._lock:
+                    self.words_status = "failed"
+                    self.words_error = (
+                        f"Written on {total - len(words.failed)} of {total} key moves; the rest"
+                        f" failed ({first})."
+                    )
+                self._emit("sys", "error", f"the AI coach's words: {self.words_error}")
+                return
             cost = None if words.cost is None else words.cost + spent_before
             saved = {
                 "model": words.model,
