@@ -86,8 +86,9 @@ class EngineReviewTest {
         assertEquals(Label.BEST, label(0.0, isBest = true, sacrifice = true, beforeScore = 0.05))
     }
 
+    /** `test_a_miss_is_a_chance_to_punish_let_go`. */
     @Test
-    fun aMissIsATacticOrAMateLetGo() {
+    fun aMissIsAChanceToPunishLetGo() {
         assertEquals(Label.MISS, label(0.06, chance = true))
         assertEquals(Label.MISS, label(0.15, chance = true))
         assertEquals(Label.MISS, label(0.90, chance = true))
@@ -97,18 +98,6 @@ class EngineReviewTest {
         assertEquals(Label.BLUNDER, label(0.02, mateAllowed = true, beforeScore = 0.3))
         assertEquals(Label.GOOD, label(0.02, mateAllowed = true, beforeScore = 0.03))
         assertEquals(Label.BEST, label(0.0, mateAllowed = true, beforeScore = 0.3, isBest = true))
-    }
-
-    @Test
-    fun whatALineWinsIsCountedAfterTheReplies() {
-        val board = Board()
-        for (san in listOf("e4", "d5")) board.push(board.parseSan(san)!!)
-        assertEquals(0, materialWon(board, listOf("e4d5", "d8d5")))
-        assertEquals(3, materialWon(Board("4k3/8/8/3n4/8/8/8/3QK3 w - - 0 1"), listOf("d1d5", "e8f8")))
-        val traded = Board("4k3/8/8/3n4/8/2N5/8/4K3 b - - 0 1")
-        traded.push(traded.parseSan("Nxc3")!!)
-        assertEquals(0, materialWon(traded, listOf("e1d2", "c3d5")))
-        assertEquals(99, materialWon(Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1"), listOf("a1a8")))
     }
 
     // ---- a claimable draw ----------------------------------------------------------------
@@ -251,12 +240,57 @@ class EngineReviewTest {
         return annotator.assessMove("g", before, Move.fromUci(move), 1)
     }
 
+    /**
+     * The opponent's move [theirs] from [fen], then the player's [mine], judged in order by one
+     * annotator: the lines of the three positions are [scores]. `_answered`.
+     */
+    private fun answered(fen: String, theirs: String, mine: String, scores: List<Line>): MoveAssessment {
+        val first = Board(fen)
+        val second = first.copy()
+        second.push(Move.fromUci(theirs))
+        val third = second.copy()
+        third.push(Move.fromUci(mine))
+        val fake = FakeEngine(listOf(first, second, third).map { it.fen() }.zip(scores.map { listOf(it) }).toMap())
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        annotator.assessMove("g", first, Move.fromUci(theirs), 1)
+        return annotator.assessMove("g", second, Move.fromUci(mine), 2)
+    }
+
+    /**
+     * `test_a_miss_is_failing_to_punish_the_opponents_mistake`: chess.com's miss, Tai's reading
+     * (2026-10-02) -- the opponent's move before was an error and the reply let what it gave go,
+     * whatever the best line would have won. A loss after a sound move is labelled by its size,
+     * though the best line wins a piece: no "a tactic is two pawns within eight plies" rule.
+     */
     @Test
-    fun aForcedMateLetGoIsAMissAndOneWalkedIntoABlunder() {
+    fun aMissIsFailingToPunishTheOpponentsMistake() {
+        val erred = listOf(
+            Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.47),
+            Line(moves = listOf("e1d2"), depth = 6, expectedScore = 0.65),
+            Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.47),
+        )
+        assertEquals(Label.MISS, answered("4k3/4p3/8/8/8/8/4P3/4K3 b - - 0 1", "e7e6", "e1f1", erred).label)
+        val sound = listOf(
+            Line(moves = listOf("e8f8"), depth = 6, expectedScore = 0.35),
+            Line(moves = listOf("d1d5", "f8e7"), depth = 6, expectedScore = 0.65),
+            Line(moves = listOf("d5f4"), depth = 6, expectedScore = 0.5),
+        )
+        assertEquals(Label.MISTAKE, answered("4k3/8/8/3n4/8/8/8/3QK3 b - - 0 1", "e8f8", "e1e2", sound).label)
+    }
+
+    /**
+     * `test_a_forced_mate_let_go_and_one_walked_into`: let go after the opponent's error a mate is
+     * a miss; with no error before it, it is no chance to punish (Tai, 2026-10-02) and is
+     * labelled by its loss, flagged however small.
+     */
+    @Test
+    fun aForcedMateLetGoAndOneWalkedInto() {
         val board = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
         val mating = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
         val stillWon = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.03, scoreCp = -1000)
-        assertEquals(Label.MISS, judged(board, "h2h3", mating, stillWon).label)
+        assertEquals(Label.INACCURACY, judged(board, "h2h3", mating, stillWon).label)
+        val walkedIn = listOf(Line(moves = listOf("f8e8"), depth = 6, expectedScore = 0.4), mating, stillWon)
+        assertEquals(Label.MISS, answered("5k2/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1", "f8g8", "h2h3", walkedIn).label)
         val worse = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.2, scoreCp = -400)
         val mates = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
         val black = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")

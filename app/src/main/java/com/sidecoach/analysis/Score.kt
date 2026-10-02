@@ -1,12 +1,7 @@
 package com.sidecoach.analysis
 
-import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.Board
-import com.sidecoach.chess.KNIGHT
 import com.sidecoach.chess.Move
-import com.sidecoach.chess.PAWN
-import com.sidecoach.chess.QUEEN
-import com.sidecoach.chess.ROOK
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.Severity
@@ -159,9 +154,11 @@ fun severityOf(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Sever
  *   game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does not,
  *   calling 1...f5 a mistake.
  * - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent": the
- *   best move won material or mated ([chance], read off its line by the annotator) and the move
- *   played gave ground. It names the move whatever the size of the loss; a forced mate let go
- *   ([mateMissed]) is one even when the move still wins.
+ *   opponent's move before was an error (a mistake or a blunder: [chance], read by [verdict]),
+ *   and the move played let what it gave go -- it gave ground, or let a forced mate go
+ *   ([mateMissed]) even while it still wins. It names the move whatever the size of the loss
+ *   (Tai, 2026-10-02: chess.com's meaning, failing to punish the opponent's mistake; no "two
+ *   pawns within eight plies" tactic rule).
  * - Great, "a move that altered the course of the game": the best move where every other lost
  *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
  *   Merely the best move after any error was great 30 times in the six games where chess.com
@@ -217,49 +214,69 @@ fun labelMove(
     }
 }
 
-/** What a line wins, in pawns: the piece values every club player counts by. */
-val PIECE_VALUES = mapOf(PAWN to 1, KNIGHT to 3, BISHOP to 3, ROOK to 5, QUEEN to 9)
-
-/** A line that wins this much is a tactic to find (the coach's facts count the same). */
-const val TACTIC_GAIN = 2
-
-/** How far into a line a tactic is looked for: four moves each. */
-const val TACTIC_PLIES = 8
-
-private fun balance(board: Board, us: Boolean): Int {
-    var total = 0
-    for (piece in board.pieceMap().values) {
-        val worth = PIECE_VALUES[piece.pieceType] ?: 0
-        total += if (piece.colour == us) worth else -worth
-    }
-    return total
-}
+/**
+ * The move before, as far as the next move's label needs it: what it cost its mover (the
+ * opponent), where it landed and whether it captured. `score.Previous`.
+ */
+data class Previous(val loss: Double, val to: Int, val captured: Boolean)
 
 /**
- * What the side to move wins over the first [plies] of [moves] (UCI), in pawns, counted after
- * the opponent's replies; a line that mates wins everything (99). Material the opponent has
- * just taken, which the side to move is owed back, is not won: taking back is a trade (read
- * from the board's moves; a board without them owes nothing). `score.material_won`.
+ * The label of [move] from [before], read off the two positions' measured lines: the
+ * annotator's as it judges a move, and a saved review's made again from what it kept
+ * (`GameReview.relabel`), so the two cannot drift. [previous]: the move before, null when it
+ * is not known (the game's first move, or a move that did not lead here). `score.verdict`.
  */
-fun materialWon(board: Board, moves: List<String>, plies: Int = TACTIC_PLIES): Int {
-    val us = board.turn
-    var base = balance(board, us)
-    val back = board.copy()
-    while (back.moveStack.isNotEmpty()) {
-        val move = back.pop()
-        if (!back.isCapture(move)) break
-        base = maxOf(base, balance(back, us))
-    }
-    val at = board.copy(withStack = false)
-    var best = 0
-    for ((i, uci) in moves.take(plies).withIndex()) {
-        val move = Move.fromUciOrNull(uci) ?: break
-        if (!at.isLegal(move)) break
-        at.push(move)
-        if (at.isCheckmate()) return if (at.turn != us) 99 else best
-        if (i % 2 == 1) best = maxOf(best, balance(at, us) - base)
-    }
-    return best
+fun verdict(
+    before: Board,
+    move: Move,
+    beforeLines: List<Line>,
+    afterLines: List<Line>,
+    loss: Double,
+    beforeScore: Double,
+    decisive: Boolean,
+    inBook: Boolean,
+    sacrifice: Boolean,
+    previous: Previous?,
+    thresholds: Thresholds,
+): Label {
+    val after = before.copy(withStack = false)
+    after.push(move)
+    val best = beforeLines.firstOrNull()?.moves ?: emptyList()
+    val erred = previous?.loss ?: 0.0
+    // Taking back on the square the opponent just captured on. Taking a piece that merely
+    // moved there is not obvious: that is how a blunder gets punished.
+    val captures = before.isCapture(move)
+    val recapture = previous != null && previous.captured && captures && move.to == previous.to
+    // A capture nobody can take back is a grab, not a find; a king's capture always is.
+    // Taking back is read by the rules: a piece guarded only by one pinned to its own king
+    // is taken for nothing.
+    val freeGrab = captures && !Exchange.canRetake(before, move)
+    val obvious = recapture || freeGrab || before.legalMoves().size == 1
+    val top = beforeLines.firstOrNull()
+    val afterTop = afterLines.firstOrNull()
+    // A forced mate the best move had, and the move played let go; one the move walks into.
+    // The mates are the lines' own: the curve puts a thousand centipawns a fortieth of a
+    // game below a mate, and a mate in four let go read as an inaccuracy.
+    val mating = top?.mate != null && top.mate > 0
+    val mateMissed = mating && !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
+    val mateAllowed = afterTop?.mate != null && afterTop.mate > 0 && !(top?.mate != null && top.mate < 0)
+    return labelMove(
+        loss,
+        thresholds,
+        isBest = best.isNotEmpty() && best[0] == move.uci(),
+        inBook = inBook,
+        decisive = decisive,
+        sacrifice = sacrifice,
+        beforeScore = beforeScore,
+        opponentBlundered = erred >= thresholds.blunder,
+        secondScore = beforeLines.getOrNull(1)?.expectedScore,
+        // A chance to punish: the opponent's move before was a mistake or a blunder, and what
+        // it gave is the player's to take (Tai, 2026-10-02: chess.com's miss).
+        chance = erred >= thresholds.mistake,
+        mateMissed = mateMissed,
+        mateAllowed = mateAllowed,
+        obvious = obvious,
+    )
 }
 
 /** 0 to 100 for one move, from its loss in expected score. */
