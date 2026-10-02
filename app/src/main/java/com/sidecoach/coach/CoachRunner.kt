@@ -63,6 +63,9 @@ class CoachRunner(
         val (model, detail) = provision(settings)
         val offline = model is OfflineProvider
         this.detail = "${model.name} ($detail)"
+        // One routine provider for the replies and the claims: one ledger, counted in the cost strip
+        // with the Speaker's (`cli._Coaching`, desktop 8f7822b).
+        val routine = routineProvider(settings, model)
         return try {
             Coach(
                 model,
@@ -72,13 +75,13 @@ class CoachRunner(
                 },
                 // The claims in their words are parsed at the routine effort: at medium every ask with
                 // a claim waited on a second full model call first (the runtime audit, 2026-09-25).
-                claims = if (offline) null else claimsCheck(routineProvider(settings, model)),
+                claims = if (offline) null else claimsCheck(routine),
                 verifier = if (offline) null else verifier(settings, model),
                 engine = coachEngine?.let { EngineLike(it::analyse) },
                 summariseEvery = settings.summariseEvery(),
                 summariser = model,
                 compactRecord = settings.compactRecord(),
-                routineProvider = routineProvider(settings, model),
+                routineProvider = routine,
                 verbalizedSampling = settings.verbalizedSampling(),
                 localVerdicts = settings.localVerdicts(),
                 lessonWaitS = LESSON_WAIT_S,
@@ -99,11 +102,12 @@ class CoachRunner(
         val coach = coach ?: return
         val (provider, detail) = provision(settings)
         val offline = provider is OfflineProvider
+        val routine = routineProvider(settings, provider)
         coach.setProviders(
             provider,
-            routineProvider = routineProvider(settings, provider),
+            routineProvider = routine,
             verifier = if (offline) null else verifier(settings, provider),
-            claims = if (offline) null else claimsCheck(routineProvider(settings, provider)),
+            claims = if (offline) null else claimsCheck(routine),
         )
         this.detail = "${provider.name} ($detail)"
     }
