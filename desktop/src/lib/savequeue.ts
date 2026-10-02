@@ -20,7 +20,9 @@ export function saveQueue(save: (keepalive: boolean) => Promise<void>): SaveQueu
       again = true;
       // The page closing: what changed since the save on its way goes now, in a request of
       // its own that outlives the page. Left to the next round, it was lost: a page gone runs
-      // no next round, and that round had no keepalive (the settings review, 2026-10-01).
+      // no next round, and that round had no keepalive (the settings review, 2026-10-01). The
+      // two may land in either order; the page numbers its saves and the server keeps the
+      // later one (settings_api `update`, the audit of 2026-10-02).
       if (keepalive) void save(true).catch(() => {});
       return inFlight;
     }

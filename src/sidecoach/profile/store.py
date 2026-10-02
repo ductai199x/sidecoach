@@ -248,6 +248,8 @@ RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 UNDO_KEEP_S = 600.0
 # The review strengths, weakest first: a stronger review stands for the game.
 STRENGTH_RANK = {"fast": 1, "standard": 2, "deep": 3}
+# The settings' row that counts the saves of Stats facts (`Store.stats_revision`).
+STATS_REVISION_KEY = "stats.revision"
 _RANK = (
     "CASE strength "
     + " ".join(f"WHEN '{name}' THEN {rank}" for name, rank in STRENGTH_RANK.items())
@@ -1166,7 +1168,20 @@ class Store:
                 " :chance, :found, :allowed, :structure, :themes, :endgame, :spent_ms, :clock_ms)",
                 [{**m, "key": key, "found": int(m["found"])} for m in moves],
             )
+            # Raised with every save of facts, in the same commit (`stats_revision`).
+            self._db.execute(
+                "INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT(key)"
+                " DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+                (STATS_REVISION_KEY,),
+            )
             self._db.commit()
+
+    def stats_revision(self) -> str | None:
+        """A count raised with every save of a game's Stats facts: what was read from them is
+        stale once it moves. The games' keys, strengths and sides alone missed facts made again
+        at the same strength -- rederive, the background's catch-up -- and the coach kept a
+        stale "biggest cost" (the audit of 2026-10-02)."""
+        return self.setting(STATS_REVISION_KEY)
 
     def stat_games(self) -> list[dict[str, Any]]:
         """The reviewed games' facts, each game once: a watched game its import stands for is

@@ -497,6 +497,56 @@ def test_a_change_is_never_dropped_for_a_value_already_held(
     assert any("voice.speed" in ln["text"] for ln in engine.poll(0)["lines"])
 
 
+def test_a_settings_file_the_disk_will_not_take_is_said_never_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: a write the disk refused (full, read-only) raised out of a mute or
+    a listening switch kept for the next session -- a 500 after the switch had moved -- and out
+    of a Settings save, a 500 the page could only call "not reached". The switch stays moved and
+    the log says it was not kept; the save answers why, and nothing of it is applied."""
+    from sidecoach.ui import settings_api
+
+    client, engine = _client(tmp_path, monkeypatch)
+
+    def disk_full(*_: Any, **__: Any) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(settings_api, "save_settings", disk_full)
+    muted = client.post("/api/muted", json={"muted": True})
+    assert muted.status_code == 200 and muted.json()["ok"]
+    lines = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert any("voice.muted: not kept for the next session" in t for t in lines), lines
+    user = {"settings": {"profile": {"chesscom_user": "nosegazm"}}, "secrets": {}}
+    saved = client.put("/api/settings", json=user)
+    assert saved.status_code == 200
+    assert saved.json()["ok"] is False
+    assert saved.json()["error"].startswith("The settings could not be saved")
+    assert engine.settings.profile.chesscom_user == ""
+
+
+def test_a_number_that_is_not_finite_is_refused_by_its_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: a price of "inf" was taken (the field has no upper bound) and made
+    every cost infinite; the phone, whose settings are JSON, cannot hold it at all. Refused by its
+    field, as the phone refuses it; a file that holds one reads it as its default."""
+    from sidecoach.config import load_settings
+
+    client, engine = _client(tmp_path, monkeypatch)
+    sent = {"settings": {"llm": {"price_prompt_per_m": "inf"}}, "secrets": {}}
+    answer = client.put("/api/settings", json=sent).json()
+    assert answer["ok"] is False
+    assert [(e["loc"], e["type"]) for e in answer["errors"]] == [
+        (["llm", "price_prompt_per_m"], "finite_number")
+    ]
+    assert engine.settings.llm.price_prompt_per_m is None
+    path = tmp_path / "held.toml"
+    path.write_text('[llm]\nprice_prompt_per_m = inf\nmodel = "kept"\n', encoding="utf-8")
+    held = load_settings(path)
+    assert held.llm.price_prompt_per_m is None and held.llm.model == "kept"
+    assert held.unreadable is not None and "llm.price_prompt_per_m" in held.unreadable
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -558,6 +608,34 @@ def test_a_change_made_while_a_save_is_on_its_way_outlives_the_page(tmp_path: Pa
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "[false,true]"
+
+
+def test_an_older_save_of_a_page_landing_after_a_later_one_is_not_applied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: the page closing sends what changed since in a save of its own
+    beside the one on its way, and the two could land in either order: the older one, last,
+    put back what the later one changed. Each page numbers its saves; one older than the last
+    applied is answered and not applied. Another page's saves are its own."""
+    from sidecoach.config import load_settings
+
+    client, engine = _client(tmp_path, monkeypatch)
+
+    def save(page: str, seq: int, name: str) -> dict[str, Any]:
+        body = {"settings": {"profile": {"chesscom_user": name}}, "page": page, "seq": seq}
+        return client.put("/api/settings", json=body).json()
+
+    assert save("p", 2, "later")["ok"]  # the save sent as the page closed lands first
+    older = save("p", 1, "earlier")
+    assert older["ok"] and older["superseded"] and older["changed"] == []
+    assert engine.settings.profile.chesscom_user == "later"
+    assert load_settings(tmp_path / "sidecoach.toml").profile.chesscom_user == "later"
+    assert save("q", 1, "another window")["ok"], "another page counts its own"
+    assert engine.settings.profile.chesscom_user == "another window"
+    assert save("p", 3, "next")["changed"] == ["profile.chesscom_user"]
+    unnumbered = {"settings": {"profile": {"chesscom_user": "plain"}}}
+    assert client.put("/api/settings", json=unnumbered).json()["ok"], "a save with no number"
+    assert engine.settings.profile.chesscom_user == "plain"
 
 
 def test_usernames_are_kept_without_spaces_around(

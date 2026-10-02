@@ -55,14 +55,17 @@ def as_cells(rows: Sequence[CellRow]) -> list[ProfileCell]:
 def motif_rates(rows: Sequence[CellRow]) -> list[tuple[str, float, int, int]]:
     """Each motif missed often enough, over enough of its chances and games: (motif, the rate
     it is missed, smoothed as (misses + 1) / (chances + 2) to rank them, misses, chances), in
-    the order its chances came. The cells without a cause count a motif's chances and, in
+    the order its chances came. The cells that count chances count a motif's chances and, in
     their errors, the chances missed; a mistake's own motif may be a tactic it allowed, never
     a chance the player had."""
     chances: dict[str, int] = defaultdict(int)
     misses: dict[str, int] = defaultdict(int)
     games: dict[str, set[str]] = defaultdict(set)
     for r in rows:
-        if r.motif is None or r.cause is not None:
+        # A chance's row is one that counts chances: a mistake's row has none, with a cause or
+        # without (not classified, or cleared by a correction) -- told apart by the cause, a
+        # mistake with none was counted as missed a second time (the audit of 2026-10-02).
+        if r.motif is None or r.chances == 0:
             continue
         chances[r.motif] += r.chances
         misses[r.motif] += r.errors
