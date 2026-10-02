@@ -87,6 +87,11 @@ class Engine:
     # A search still running this long past its time limit is an engine that stopped
     # answering without dying: its process is ended and the search made again (`_watched`).
     watchdog_s: float = 10.0
+    # How the watchdog waits: until the search is done (True) or the patience has run (False).
+    # A test drives it without waiting on the clock.
+    watchdog_wait: Callable[[threading.Event, float], bool] = field(
+        default=lambda done, seconds: done.wait(seconds), repr=False
+    )
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -265,7 +270,7 @@ class Engine:
         patience = limit.time + self.watchdog_s
 
         def watch() -> None:
-            while not done.wait(patience):
+            while not self.watchdog_wait(done, patience):
                 self._end_process()
 
         watcher = threading.Thread(target=watch, name="sidecoach-engine-watchdog", daemon=True)

@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import chess
+import chess.engine
 import pytest
 
 from sidecoach.analysis.annotator import Analyser, GameAnnotator, _mate_in
@@ -617,37 +618,149 @@ def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
     assert label("4k3/8/5n2/8/4B3/2N5/8/4K3 b - - 0 1") is Label.GREAT
 
 
-@needs_engine
-def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
-    """A knight endgame that takes minutes to reach depth 14 with four lines is cut short."""
-    slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-    engine.max_seconds = 0.1
-    started = time.monotonic()
-    try:
-        lines = engine.analyse(slow, depth=40, multipv=4)
-    finally:
-        engine.max_seconds = 5.0
-    assert lines and time.monotonic() - started < 5.0
-    assert lines[0].depth < 40, "the depth asked for was not reached, and that is reported"
+def test_no_single_position_may_hold_up_a_game() -> None:
+    """A knight endgame that takes minutes to reach depth 14 with four lines is cut short:
+    every search asked for a depth carries the time cap too, and a search the cap ended
+    reports the depth it reached."""
+    uci = _ScriptedUci([*_D13], [*_D13])
+    running = _scripted_engine(uci)
+    running.max_seconds = 0.1
+    lines = running.analyse(chess.Board(), depth=40, multipv=4)
+    assert uci.limits[-1].depth == 40 and uci.limits[-1].time == 0.1
+    assert lines[0].depth == 13, "the depth asked for was not reached, and that is reported"
+    running.max_seconds = None
+    running.analyse(chess.Board(), depth=40, multipv=4)
+    assert uci.limits[-1].time is None, "no cap, no time limit"
+    running.analyse(chess.Board(), depth=40, time_s=0.05)
+    assert uci.limits[-1].time == 0.05
 
 
-@needs_engine
-def test_a_search_cut_short_gives_lines_of_one_depth(engine: Engine) -> None:
-    """Cut by the time cap mid-depth, Stockfish's best line is a depth further than the
-    rest, and the gap between them (the only-move and decisive-moment calls) set a deeper
-    search against a shallower one. The lines are those of the last depth finished whole."""
-    slow = chess.Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-    quiet = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
-    engine.max_seconds = 0.15
-    try:
-        cuts = [
-            engine.analyse(board, depth=40, multipv=4) for board in (slow, quiet) for _ in range(4)
-        ]
-    finally:
-        engine.max_seconds = 5.0
-    for lines in cuts:
-        assert len(lines) == 4
-        assert len({line.depth for line in lines}) == 1, [line.depth for line in lines]
+def _info(rank: int, depth: int, move: str, cp: int) -> dict[str, object]:
+    return {
+        "multipv": rank,
+        "depth": depth,
+        "pv": [chess.Move.from_uci(move)],
+        "score": chess.engine.PovScore(chess.engine.Cp(cp), chess.WHITE),
+    }
+
+
+class _ScriptedSearch:
+    """python-chess's analysis, scripted: the infos it reports, its lines when it ends, and,
+    with `hold`, a search that waits on the test before it ends."""
+
+    def __init__(
+        self,
+        infos: list[dict[str, object]],
+        multipv: list[dict[str, object]],
+        started: threading.Event,
+        hold: threading.Event | None,
+    ) -> None:
+        self.infos, self.multipv = infos, multipv
+        self.started, self.hold = started, hold
+
+    def __enter__(self) -> _ScriptedSearch:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def __iter__(self):  # noqa: ANN204
+        yield from self.infos
+        self.started.set()
+        if self.hold is not None:
+            self.hold.wait()
+
+    stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self.hold is not None:
+            self.hold.set()
+
+
+class _ScriptedUci:
+    """A stand-in for python-chess's engine: each search scripted, every option set kept."""
+
+    def __init__(self, infos: list[dict[str, object]], multipv: list[dict[str, object]]) -> None:
+        self.options = {"Threads": None, "Hash": None}
+        self.configured: list[dict[str, object]] = []
+        self.infos, self.multipv = infos, multipv
+        self.started = threading.Event()
+        self.hold: threading.Event | None = None
+        self.limits: list[chess.engine.Limit] = []
+        self.search: _ScriptedSearch | None = None
+
+    def configure(self, options: dict[str, object]) -> None:
+        self.configured.append(dict(options))
+
+    def analysis(
+        self, board: chess.Board, limit: chess.engine.Limit, multipv: int
+    ) -> _ScriptedSearch:
+        self.limits.append(limit)
+        self.search = _ScriptedSearch(self.infos, self.multipv, self.started, self.hold)
+        return self.search
+
+    def quit(self) -> None:
+        return None
+
+
+# Four lines at depth 13, then the first two of depth 14 before the time cap cut it.
+_D13 = [
+    _info(1, 13, "e2e4", 40),
+    _info(2, 13, "d2d4", 30),
+    _info(3, 13, "g1f3", 20),
+    _info(4, 13, "c2c4", 10),
+]
+_D14 = [_info(1, 14, "d2d4", 45), _info(2, 14, "e2e4", 35)]
+
+
+def _scripted_engine(uci: _ScriptedUci) -> Engine:
+    running = Engine(path=Path("scripted"), multipv=4)
+    running._engine = uci  # type: ignore[assignment]  # open() keeps a running engine
+    return running
+
+
+def test_a_search_cut_short_gives_lines_of_one_depth() -> None:
+    """Cut by the time cap mid-depth, Stockfish's first lines are a depth further than the
+    rest ([14, 14, 13, 13]), and the gap between them (the only-move and decisive-moment
+    calls) set two depths against each other. The lines are the last depth finished whole."""
+    uci = _ScriptedUci([*_D13, *_D14], [*_D14, *_D13[2:]])
+    lines = _scripted_engine(uci).analyse(chess.Board(), depth=40, multipv=4)
+    assert [line.depth for line in lines] == [13, 13, 13, 13]
+    assert [line.moves[0] for line in lines] == ["e2e4", "d2d4", "g1f3", "c2c4"]
+    # A search that finished its last depth whole is answered with it, as before.
+    whole = _ScriptedUci([*_D13], [*_D13])
+    assert [line.depth for line in _scripted_engine(whole).analyse(chess.Board(), depth=13)] == [
+        13,
+        13,
+        13,
+        13,
+    ]
+
+
+def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
+    """Threads or hash saved while a search runs used to reach Stockfish at once: the
+    `setoption` stopped the search, and the cut one was kept as if whole (0.6 s and depth 14
+    of a 4 s search, the engine review 2026-10-01). They now wait for the search to end, and
+    the save does not wait for it."""
+    uci = _ScriptedUci([*_D13], [*_D13])
+    uci.hold = threading.Event()
+    running = _scripted_engine(uci)
+    worker = threading.Thread(target=lambda: running.analyse(chess.Board(), depth=13))
+    worker.start()
+    uci.started.wait()  # the search is under way, holding the engine
+    running.reconfigure(threads=1, hash_mb=32)  # returns: the save does not wait
+    assert uci.configured == [], "set during the search"
+    assert running.threads == 1 and running.hash_mb == 32
+    uci.hold.set()
+    worker.join()
+    assert uci.configured == [], "set as the search ended, with nothing to search"
+    uci.hold = None
+    running.analyse(chess.Board(), depth=13)
+    assert uci.configured == [{"Threads": 1, "Hash": 32}], "set before the next search"
+    # With no search running they are set at once.
+    running.reconfigure(threads=2)
+    assert uci.configured[-1] == {"Threads": 2, "Hash": 32}
 
 
 # A UCI engine that answers the handshake and then never answers a search: alive, and silent.
@@ -669,8 +782,9 @@ for line in sys.stdin:
 @needs_engine
 def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
     """An engine that hangs without dying held the analyser's thread for good: the search
-    waited on it forever. A search running well past its time cap has its process ended,
-    and the search is made again on a new one."""
+    waited on it forever. A search the watchdog finds still running past its patience has its
+    process ended, and is made again on a new one. The watchdog's wait is driven here: its
+    patience runs out at once on the silent engine, and never on the real one."""
     import sys
 
     import chess.engine
@@ -678,52 +792,23 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
     assert STOCKFISH is not None
     stub = tmp_path / "silent.py"
     stub.write_text(_SILENT_ENGINE, encoding="utf-8")
-    running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=0.3)
-    running._engine = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
-    running.watchdog_s = 4.0  # room for the new engine to start on a busy machine
+    waits: list[float] = []
+
+    def wait(done: threading.Event, seconds: float) -> bool:
+        waits.append(seconds)
+        return False if len(waits) == 1 else done.wait()
+
+    running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=5.0)
+    silent = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
+    running._engine = silent
+    running.watchdog_wait = wait
     try:
-        got: dict[str, list[Line]] = {}
-        worker = threading.Thread(
-            target=lambda: got.setdefault("lines", running.analyse(chess.Board(), depth=30))
-        )
-        started = time.monotonic()
-        worker.start()
-        worker.join(30)
-        assert not worker.is_alive(), "the search still waits on the silent engine"
-        assert got["lines"], "searched again on a new engine"
-        assert time.monotonic() - started < 20
+        lines = running.analyse(chess.Board(), depth=6)
+        assert lines, "searched again on a new engine"
+        assert running._engine is not silent, "the silent engine was replaced"
+        assert waits[0] == 5.0 + running.watchdog_s, "patience: the time limit and the grace"
     finally:
         running.close()
-
-
-@needs_engine
-def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
-    """Threads or hash saved while a search runs used to reach Stockfish at once: the
-    `setoption` stopped the search, and the cut one was kept as if whole (0.6 s and depth 14
-    of a 4 s search, the engine review 2026-10-01). They now wait for the search to end."""
-    assert STOCKFISH is not None
-    quiet = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
-    with Engine(path=STOCKFISH, threads=2, hash_mb=64, multipv=4, max_seconds=1.5) as running:
-        got: dict[str, float] = {}
-
-        def search() -> None:
-            started = time.monotonic()
-            running.analyse(quiet, depth=60)
-            got["took"] = time.monotonic() - started
-
-        worker = threading.Thread(target=search)
-        worker.start()
-        time.sleep(0.4)
-        saved = time.monotonic()
-        running.reconfigure(threads=1, hash_mb=32)
-        assert time.monotonic() - saved < 0.2, "the save does not wait on the search"
-        worker.join(10)
-        assert got["took"] > 1.2, f"the search was cut short at {got['took']:.2f} s"
-        assert running.threads == 1 and running.hash_mb == 32
-        running.analyse(quiet, depth=4)  # the next search starts with them
-        assert running._engine is not None
-        config = vars(running._engine.protocol)["config"]  # what was last set on the process
-        assert config.get("Threads") == 1 and config.get("Hash") == 32
 
 
 def test_an_illegal_move_is_refused_rather_than_measured() -> None:
@@ -928,23 +1013,24 @@ def test_a_position_looked_at_ahead_carries_the_moves_that_lead_there() -> None:
     """The engine reads a repetition from the moves before a position, so a position looked
     at ahead is searched with them, as the game's own are: measured without them it was
     cached, and the game arriving there judged its moves on a search that could not see the
-    repetition (the engine review, 2026-10-01)."""
+    repetition (the engine review, 2026-10-01). The look ahead is driven here a step at a
+    time, as the worker drives it."""
     board = chess.Board()
     for san in ("Nf3", "Nf6", "Ng1"):
         board.push_san(san)
     fake = FakeEngine({board.fen(): [_line("f6g8")]}, default=[_line("g1f3")])
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
-    with Analyser(annotator, look_ahead=1) as analyser:
-        before = board.copy()
-        before.pop()
-        analyser.submit_move("g", before, chess.Move.from_uci("f3g1"), 3, by_user=False)
-        assert _until(lambda: analyser.looked == 2), analyser.looked
+    analyser = Analyser(annotator, look_ahead=1)
+    analyser._plan_ahead(board, [_line("f6g8")])
+    while analyser._ahead:
+        analyser._look_ahead(*analyser._ahead.pop(0), analyser._ahead)
+    assert analyser.looked == 2
     ahead = [
         h
         for fen, h in zip(fake.calls, fake.histories, strict=True)
         if fen == _after("Nf3", "Nf6", "Ng1", "Ng8")
     ]
-    assert ahead and ahead[-1] == ["g1f3", "g8f6", "f3g1", "f6g8"], fake.histories
+    assert ahead == [["g1f3", "g8f6", "f3g1", "f6g8"]], fake.histories
 
 
 def test_one_position_reached_by_two_histories_is_measured_for_each() -> None:
@@ -1125,60 +1211,70 @@ class _StoppableEngine(FakeEngine):
     def __init__(self, answers: dict[str, list[Line]], ahead: set[str]) -> None:
         super().__init__(answers)
         self.ahead = ahead
+        self.entered = threading.Event()
 
     def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
         from sidecoach.analysis.engine import Interrupted
 
         if self._interruptible and board.fen() in self.ahead:
-            self._stopped.wait(5)
+            self.entered.set()
+            self._stopped.wait()  # until `interrupt`: a look ahead not let go never ends
             raise Interrupted
         return super().analyse(board, **kwargs)
 
 
 def test_a_move_played_stops_the_look_ahead_at_once() -> None:
     """A search ahead of the game is let go the moment a move of the game's own comes: the
-    move never waits for a position it did not go to."""
+    move never waits for a position it did not go to. The fake's search ahead ends only when
+    it is interrupted, so a move that did not interrupt it would never be judged."""
     fake = _StoppableEngine(
         {chess.Board().fen(): [_line("e2e4"), _line("d2d4")]}, {_after("e4"), _after("d4")}
     )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
-    with Analyser(annotator, look_ahead=2) as analyser:
-        analyser.submit_position("g", chess.Board(), 0)
-        assert _until(lambda: analyser._looking), "never looked ahead"
-        t = time.monotonic()
-        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
-        assert _until(lambda: not analyser._looking and analyser.pending == 0, 1.0)
-        assert time.monotonic() - t < 0.5
-        got = _drain(analyser)
+    analyser = Analyser(annotator, look_ahead=2)
+    analyser.start()
+    analyser.submit_position("g", chess.Board(), 0)
+    fake.entered.wait()  # the worker is searching ahead
+    analyser.submit_move("g", chess.Board(), chess.Move.from_uci("g1f3"), 1, by_user=False)
+    judged = threading.Event()
+    got: list[object] = []
+    while not judged.is_set():
+        event = analyser._results.get()  # waits for the worker's next word
+        got.append(event)
+        if isinstance(event, MoveAssessment):
+            judged.set()
+    analyser.close()
     assert any(isinstance(e, MoveAssessment) and e.uci == "g1f3" for e in got)
     assert analyser.looked == 0 and annotator.ahead_hits == 0
 
 
-@needs_engine
-def test_the_engine_stops_a_search_it_is_interrupted_in(engine: Engine) -> None:
-    import threading
-
+def test_the_engine_stops_a_search_it_is_interrupted_in() -> None:
+    """`interrupt` stops the search under way inside `interruptible`, which then raises
+    `Interrupted`. The scripted search runs until it is stopped: one not stopped never ends."""
     from sidecoach.analysis.engine import Interrupted
 
+    uci = _ScriptedUci([*_D13], [*_D13])
+    uci.hold = threading.Event()
+    running = _scripted_engine(uci)
     raised: list[BaseException] = []
 
     def search() -> None:
         try:
-            with engine.interruptible():
-                engine.analyse(chess.Board(), depth=60, multipv=1)
+            with running.interruptible():
+                running.analyse(chess.Board(), depth=60)
         except BaseException as exc:  # noqa: BLE001
             raised.append(exc)
 
     worker = threading.Thread(target=search)
     worker.start()
-    assert _until(lambda: engine._search is not None), "the search never started"
-    t = time.monotonic()
-    engine.interrupt()
-    worker.join(5)
-    assert not worker.is_alive() and time.monotonic() - t < 1.0
+    uci.started.wait()
+    running.interrupt()
+    worker.join()
+    assert uci.search is not None and uci.search.stopped
     assert raised and isinstance(raised[0], Interrupted)
     # The engine answers as before afterwards.
-    assert engine.analyse(chess.Board(), depth=6, multipv=1)
+    uci.hold = None
+    assert running.analyse(chess.Board(), depth=13)
 
 
 def test_what_the_engine_says_of_a_withdrawn_move_is_not_passed_on(tmp_path: Path) -> None:
