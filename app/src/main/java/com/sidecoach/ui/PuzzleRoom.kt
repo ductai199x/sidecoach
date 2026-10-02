@@ -213,8 +213,14 @@ class PuzzleRoom(
                 }
                 "ask" -> {
                     val text = payload.toString()
-                    emit("user", "info", "you: $text")
-                    coaching.ask(text, ts)
+                    if (coaching.on) {
+                        emit("user", "info", "you: $text")
+                        coaching.ask(text, ts)
+                    } else {
+                        // No coach here (no Stockfish yet): said, as the panel says it, so the
+                        // page's typing dots end; asked in silence, they stayed for good.
+                        emit("user", "warn", "no coach to ask: $text")
+                    }
                 }
                 "voice" -> {
                     voice = payload == true && speak != null

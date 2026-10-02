@@ -154,8 +154,15 @@ class PuzzleModeTest {
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
             assertEquals("1075", store.setting("puzzle_level"))
-            // The user's question reaches the room's coach (off here: nothing answers, no error).
+            // The user's question reaches the room. Its coach is off here: the room says so, as
+            // the panel does, or the page's typing dots waited for an answer for good.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/ask", """{"text": "hint"}""").getBoolean("ok"))
+            logged(api, fork.id, "no coach to ask: hint")
+            val said = call(api, "GET", "/api/puzzle/${fork.id}/poll").getJSONArray("lines")
+            assertTrue(
+                "no turn of a conversation nobody answers",
+                (0 until said.length()).none { said.getJSONObject(it).getString("text") == "you: hint" },
+            )
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/voice", """{"on": false}""").getBoolean("ok"))
             // Closing ends the room; the outcome is not recorded twice.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
