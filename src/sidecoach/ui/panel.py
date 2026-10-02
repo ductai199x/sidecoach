@@ -1032,9 +1032,15 @@ class PanelEngine:
             self._set(ptt=False)
 
     def _ptt_held(self) -> bool:
-        """The push-to-talk key is down in push-to-talk mode: the voice stays silent."""
+        """The push-to-talk key is down in push-to-talk mode: the voice stays silent. A global
+        key taken as held that is in fact up -- its key-up lost with a keyboard hook Windows
+        removed -- is let go of here, so the coach is not silent for good (round 3 audit)."""
         with self._lock:
-            return bool(self._state.get("ptt"))
+            held = bool(self._state.get("ptt"))
+        let_go = getattr(self._hotkey, "let_go_if_up", None)
+        if held and let_go is not None and let_go():
+            return False
+        return held
 
     def reset_profile(self) -> str:
         """Empty the player model (maintenance.reset_profile). The running profiler's
