@@ -412,11 +412,11 @@ def space_plan(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
     return []
 
 
-# Wings for a pawn majority: the flanks, where a majority makes an outside passed pawn. The
-# centre files (d, e) are left out -- a central plus is about breaks and the passers the
-# other detectors already name, not about which wing to play on.
-_QUEENSIDE = (0, 1, 2)  # files a, b, c
-_KINGSIDE = (5, 6, 7)  # files f, g, h
+# Wings for a pawn majority: the halves of the board, a-d and e-h. Counted on the flanks
+# alone (a-c, f-h), a "queenside majority" of three pawns to two was said with their d-pawn
+# making it three all (270 of 878 claims, the facts audit, 2026-10-01).
+_QUEENSIDE = (0, 1, 2, 3)  # files a to d
+_KINGSIDE = (4, 5, 6, 7)  # files e to h
 
 
 def pawn_majority(board: chess.Board, us: chess.Color) -> list[PositionalFact]:
@@ -995,8 +995,11 @@ def _center_distance(square: chess.Square) -> int:
 def king_activity(
     board: chess.Board, us: chess.Color, *, phase: str = "middlegame"
 ) -> list[PositionalFact]:
-    """In the endgame, a King left on the rim: it should be marching toward the centre."""
-    if phase != "endgame":
+    """In the endgame, a King left on the rim: it should be marching toward the centre --
+    not while their queen is on the board, where the walk walks into checks and mates
+    ("bring it toward the centre" was said with queens on in 1,097 of 1,802 claims, the
+    facts audit, 2026-10-01)."""
+    if phase != "endgame" or board.pieces_mask(chess.QUEEN, not us):
         return []
     king = board.king(us)
     if king is None or _center_distance(king) < 3:
