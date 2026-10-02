@@ -295,6 +295,7 @@ open class Engine(
      * it resumed; `stop` ends the search as `movetime` does, with its best move.
      */
     private fun watch(number: Int) {
+        var stopSent = false
         synchronized(clock) {
             while (searchNumber == number && budgetMs != 0L) {
                 if (paused) {
@@ -303,14 +304,31 @@ open class Engine(
                 }
                 val left = budgetMs - ranMs - (SystemClock.elapsedRealtime() - runningSince)
                 if (left <= 0) {
+                    if (stopSent) {
+                        // Not ended [streamGraceMs] of running time past its `stop`: a wedged
+                        // engine. Its process is killed, the search ends as a crash does, and the
+                        // restart answers it; the reader held the lock forever (`engine._watchdog`).
+                        Log.w(TAG, "the engine did not end its search: killed")
+                        budgetMs = 0
+                        runCatching { process?.destroyForcibly() }
+                        return
+                    }
                     runCatching { send("stop") }
-                    budgetMs = 0
-                    return
+                    stopSent = true
+                    budgetMs += streamGraceMs
+                    continue
                 }
                 clock.wait(left)
             }
         }
     }
+
+    /**
+     * How long past its `stop` a search may run before the engine is taken for wedged:
+     * python-chess's own timeout for a search (`engine.STREAM_GRACE_S`).
+     */
+    @Volatile
+    var streamGraceMs: Long = 10_000
 
     /**
      * The best lines for `board`, best first, from the side to move's point of view. A
