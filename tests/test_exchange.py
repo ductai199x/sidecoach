@@ -52,3 +52,21 @@ def test_an_exchange_wins_what_it_wins() -> None:
     board = chess.Board("4k3/2p5/3p4/8/8/8/8/3QK3 w - - 0 1")
     assert exchange.exchange(board, chess.Move.from_uci("d1d6")) == -8
     assert exchange.best_capture(board, chess.WHITE, sq("d6")) == 0
+
+
+def test_a_side_in_check_answers_it_before_its_pieces_can_be_taken() -> None:
+    # White is in check from the d1 rook: a null move to hand Black the move left Rf1xf7
+    # illegal, and the defended rook on f7 read as hanging. After Kc2 or Ka2 it is defended.
+    board = chess.Board("8/pk1r1Rp1/1p2p2p/4P1bP/4N3/8/PP6/1K1r1R2 w - - 5 34")
+    assert not exchange.hanging(board, sq("f7"))
+    assert not exchange.can_be_won(board, sq("f7"))
+    # Bxh7+: Black answers the check, and the queen on a5 still guards the bishop on g5.
+    board = chess.Board("r1b2rk1/3n1ppB/p2pp3/q5b1/2PQ3P/2N5/PP4PR/3K2N1 b - - 0 17")
+    # (hxg5 still wins it for a pawn: it can be won, but it is not hanging.)
+    assert not exchange.hanging(board, sq("g5"))
+    assert exchange.can_be_won(board, sq("g5"))
+    # A knight check that forks the king and an unguarded rook: the rook hangs after every
+    # answer, and can be won.
+    board = chess.Board("r3k3/2N5/8/8/8/8/8/4K3 b - - 0 1")
+    assert exchange.hanging(board, sq("a8"))
+    assert exchange.can_be_won(board, sq("a8"))
