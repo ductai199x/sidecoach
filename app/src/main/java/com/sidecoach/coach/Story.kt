@@ -464,6 +464,9 @@ object Story {
         for (square in squaresOf(after.attacksMask(move.to) and before.inv())) {
             val piece = after.pieceAt(square) ?: continue
             if (piece.colour == us || piece.pieceType == KING) continue
+            // A line it cannot take along is no attack: a pinned piece, or a king onto a
+            // guarded piece (the facts audit, 2026-10-01).
+            if (move.to !in Exchange.capturers(after, us, square)) continue
             val loose = Exchange.defenders(after, piece.colour, square).isEmpty()
             if (trapped(after, square)) {
                 out.add(
@@ -516,7 +519,13 @@ object Story {
         for (square in squaresOf(board.occupiedCo[if (us) 1 else 0])) {
             if (square == move.from || !Exchange.canBeWon(board, square)) continue
             if (after.pieceAt(square) != null && !Exchange.canBeWon(after, square)) {
-                out.add(Effect("covers your ${named(board, square)}", "Which of your pieces needs cover?"))
+                // "Covers" only when the moved piece guards it; a block, a capture or a pin
+                // that saves it makes it safe ("covers your pawn on f4" of Ne4, 2026-10-01).
+                val guards = move.to in Exchange.defenders(after, us, square)
+                if (!guards && after.isCheck()) continue  // a check only puts the capture off by a move
+                val said = if (guards) "covers your" else "makes your"
+                val safe = if (guards) "" else " safe"
+                out.add(Effect("$said ${named(board, square)}$safe", "Which of your pieces needs cover?"))
                 break
             }
         }

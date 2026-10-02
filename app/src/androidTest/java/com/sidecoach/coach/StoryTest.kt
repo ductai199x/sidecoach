@@ -261,4 +261,21 @@ class StoryTest {
          */
         val stories: JSONObject by lazy { fixture("chess/coach.json", setOf("stories", "trap_tests")) }
     }
+
+    /**
+     * `test_covers_only_when_the_moved_piece_guards_it` and
+     * `test_attacks_only_what_the_moved_piece_can_take` (the facts audit, 2026-10-01).
+     */
+    @Test
+    fun coversAndAttacksOnlyWhatTheMovedPieceDoes() {
+        var board = Board("2r4r/4kpp1/p3p2p/7n/Bq3P2/2N2Q1P/1PP3P1/4R1K1 w - - 2 28")
+        var said = Story.effects(board, board.parseSan("Ne4")!!, null).map { it.said }
+        assertTrue(said.toString(), "makes your pawn on f4 safe" in said && said.none { it.startsWith("covers") })
+        said = Story.effects(board, board.parseSan("g3")!!, null).map { it.said }
+        assertTrue(said.toString(), "covers your pawn on f4" in said)
+        // Kf7 next to a rook on e8 that the queen on e5 guards: the king cannot take it.
+        board = Board("1r2R1k1/p5p1/2p4p/2PpQ3/2nP4/B3PP1P/P5PK/4q3 b - - 10 34")
+        said = Story.effects(board, board.parseSan("Kf7")!!, null).map { it.said }
+        assertTrue(said.toString(), said.none { it.startsWith("attacks") })
+    }
 }
