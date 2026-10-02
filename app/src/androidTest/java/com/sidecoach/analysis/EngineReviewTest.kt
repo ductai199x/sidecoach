@@ -337,6 +337,49 @@ class EngineReviewTest {
         assertEquals(Label.EXCELLENT, kept.label)
     }
 
+    /**
+     * `_mate_judged`: the label of [playedSan] from [fen], where the best line ([bestSan] first)
+     * mates in [n], and the move played leaves a mate in [m] of the player's moves (null: no mate,
+     * the position still a thousand centipawns up).
+     */
+    private fun mateJudged(fen: String, bestSan: String, n: Int, playedSan: String, m: Int?): Label {
+        val board = Board(fen)
+        val best = board.parseSan(bestSan)!!.uci()
+        val played = board.parseSan(playedSan)!!.uci()
+        val before = Line(moves = listOf(best), depth = 6, expectedScore = 1.0, mate = n)
+        val after = if (m == null) {
+            Line(moves = emptyList(), depth = 6, expectedScore = 0.03, scoreCp = -1000)
+        } else {
+            Line(moves = emptyList(), depth = 6, expectedScore = 0.0, mate = 1 - m)
+        }
+        return judged(board, played, before, after).label!!
+    }
+
+    /**
+     * `test_a_mate_let_go_is_a_miss_in_one_none_left_or_four_longer_with_a_piece` (Tai,
+     * 2026-10-02 12:50): (1) a mate in 1 not given; (2) no mate left; (3) a mate MATE_LONGER (4)
+     * or more moves longer while the opponent still has a piece. Any other longer mate is labelled
+     * by its loss. The three games' cases of the analysis among them.
+     */
+    @Test
+    fun aMateLetGoIsAMissInOneNoneLeftOrFourLongerWithAPiece() {
+        assertEquals(4, MATE_LONGER)
+        val g01 = "5Q2/7k/1pp1p3/p7/P2P4/1PK1P3/2P5/6R1 w - - 2 39"
+        assertEquals(Label.MISS, mateJudged(g01, "Qg7#", 1, "Qf2", 2))
+        assertEquals(Label.MISS, mateJudged(g01, "Qg7#", 1, "Qf2", null))
+        val g04 = "2b2k2/8/3P2Q1/p4p2/2P2P1P/1P6/P6P/4K3 w - - 1 46"
+        assertEquals(Label.EXCELLENT, mateJudged(g04, "Qf6+", 4, "Qh7", 7))
+        assertEquals(Label.MISS, mateJudged(g04, "Qf6+", 4, "Qh7", 8))
+        val g02 = "8/8/1kPN4/1P1K4/8/8/8/8 w - - 3 69"
+        assertEquals(Label.EXCELLENT, mateJudged(g02, "Nc4+", 8, "Ne8", 10))
+        assertEquals(Label.EXCELLENT, mateJudged(g02, "Nc4+", 8, "Ne8", 14))
+        val pawns = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 1, "h3", 2))
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 1, "h3", null))
+        assertEquals(Label.EXCELLENT, mateJudged(pawns, "Ra8#", 3, "h3", 8))
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 3, "h3", null))
+    }
+
     /** `test_the_standing_bands_are_the_coachs`: the bands a winning chance is read in are the coach's words. */
     @Test
     fun theStandingBandsAreTheCoachs() {
