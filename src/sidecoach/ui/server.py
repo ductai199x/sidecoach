@@ -277,8 +277,10 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         return {"ok": True, "path": engine.dump()}
 
     @app.get("/api/poll")
-    def poll(since: int = 0) -> dict[str, Any]:
-        return api.poll(since)
+    def poll(since: int = 0, lines: int = 1) -> dict[str, Any]:
+        # `lines=0`: the state alone (the captions' window reads no log lines, four times a
+        # second for the whole session).
+        return api.poll(since if lines else 2**62)
 
     @app.post("/api/start")
     def start() -> dict[str, bool]:

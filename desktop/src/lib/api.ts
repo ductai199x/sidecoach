@@ -123,6 +123,9 @@ export type Poll = { state?: PanelState; lines?: LogLine[]; cursor?: number };
 
 export const panel = {
   poll: (since: number) => get<Poll>(`/api/poll?since=${since | 0}`),
+  /** The state alone, no log lines (the captions' window; the phone ignores `lines` and its
+   *  page has no such window). */
+  pollState: () => get<Poll>("/api/poll?lines=0"),
   health: () => get<{ ok: boolean; version: string; pid: number; running: boolean }>("/api/health"),
   start: () => post("/api/start"),
   stop: () => post("/api/stop"),

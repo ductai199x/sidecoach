@@ -56,6 +56,9 @@ def test_health_perf_and_the_token(make_panel: Callable[..., PanelEngine], tmp_p
     assert (
         client.get("/api/poll", params={"since": got["cursor"]}, headers=auth).json()["lines"] == []
     )
+    # The captions' lean poll: the state, never a log line, even from the start.
+    lean = client.get("/api/poll", params={"lines": 0}, headers=auth).json()
+    assert lean["lines"] == [] and "state" in lean and lean["cursor"] == got["cursor"]
     # The static page is not behind the token; the shell's origins are allowed by CORS.
     assert client.get("/").status_code == 200
     pre = client.options(
