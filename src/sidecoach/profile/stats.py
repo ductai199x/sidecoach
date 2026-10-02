@@ -81,11 +81,14 @@ class Filter:
 
 def _games(store: Store, f: Filter) -> list[dict[str, Any]]:
     """The games the filter takes, whose player's side is known, oldest first."""
+    return [g for g in _filtered(store, f) if g["user_side"] in ("white", "black")]
+
+
+def _filtered(store: Store, f: Filter) -> list[dict[str, Any]]:
+    """The games the filter takes, whether the player's side is known or not, oldest first."""
     since = time.time() - f.days * 86400 if f.days else None
     out = []
     for g in store.stat_games():
-        if g["user_side"] not in ("white", "black"):
-            continue
         if f.time_class and g["time_class"] != f.time_class:
             continue
         if since is not None and (g["played_at"] or 0) < since:
@@ -171,7 +174,9 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
     out["work"] = work(out["costs"])
     # The reviewed games whose player's side is not known (no username of theirs in them): the
     # page says why they are left out, rather than showing nothing (the review of 2026-10-01).
-    out["unsided"] = sum(1 for g in store.stat_games() if g["user_side"] not in ("white", "black"))
+    # Those the filter takes: counted over every game, a filter no game meets was told "add your
+    # username" rather than "no reviewed games for these filters" (the audit of 2026-10-02).
+    out["unsided"] = sum(1 for g in _filtered(store, f) if g["user_side"] not in ("white", "black"))
     return out
 
 
