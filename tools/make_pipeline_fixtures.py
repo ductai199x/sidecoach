@@ -603,6 +603,34 @@ def look_unlearnable_told() -> list[dict]:
     return states
 
 
+def overlays_held_still() -> list[dict]:
+    """`test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser` (round 3): an
+    opening in staunty, then arrows on both rooks, an arrow from piece to piece, red marks on
+    the pawns and a selected knight, each held three seconds on the still board, unchanged
+    ticks after the first; the game read on after them, its recogniser never learned again
+    (the desktop's test counts the learnings; here the moves after say the game is read)."""
+    board = chess.Board()
+    look = dict(style="staunty")
+    states = [_shown(board, 3, **look)]
+    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5"):
+        move = board.push_uci(uci)
+        states.append(_shown(board, 3, highlight=move, **look))
+    overlays = [
+        dict(arrows=(chess.Move.from_uci("a1b1"), chess.Move.from_uci("h1g1"))),
+        dict(arrows=(chess.Move.from_uci("d1d2"),)),
+        dict(red_marks=tuple(chess.parse_square(f + "2") for f in "abcfgh") + (chess.E4, chess.D3)),
+        dict(selected=chess.F3),
+    ]
+    frames = int(3.0 * FPS)
+    for overlay in overlays:
+        held = _shown(board, frames, highlight=board.peek(), **look, **overlay)
+        states.append(dict(held, _changed=[True] + [False] * (frames - 1)))
+    for uci in ("c2c3", "d7d6"):
+        move = board.push_uci(uci)
+        states.append(_shown(board, 3, highlight=move, **look))
+    return states
+
+
 def flipped_before_the_first_move() -> list[dict]:
     """`test_board_flipped_before_the_first_move_keeps_the_game`: the pre-game board watched as
     White, then paired as Black: the board flips before a move, and the same game goes on,
@@ -1114,7 +1142,18 @@ SCENARIOS = {
     "set-one-wrong-maestro-leipzig": lambda: set_read_one_piece_wrong(
         "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
     ),
+    "set-unlanded-cburnett-chess7": lambda: set_read_one_piece_wrong(
+        "cburnett",
+        "chess7",
+        "e2e3 a7a6 d1e2 h7h6 e2d3 g8f6 d3f5 f6g8 f5e4 c7c5 e4c4 h6h5 c4e6 b7b6 g2g3 a6a5 f1d3"
+        " d7d6 f2f3 c8d7 g1e2 g8h6 b1c3 a8a6",
+        "e6e7 d8e7 h1f1 f7f5",
+    ),
+    "set-unlanded-cburnett-leipzig": lambda: set_read_one_piece_wrong(
+        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4", "g3g4 h7h5 c2c4 f8h6"
+    ),
     "look-unlearnable-told": look_unlearnable_told,
+    "overlays-held-still": overlays_held_still,
     "flipped-before-a-move": flipped_before_the_first_move,
     "reset-one-tick": reset_then_one_changed_tick,
     "lock-moves": the_lock_moves,
@@ -1156,7 +1195,10 @@ READ_ONCE = {
     "set-changed-mid-game",
     "set-one-wrong-maestro-cburnett",
     "set-one-wrong-maestro-leipzig",
+    "set-unlanded-cburnett-chess7",
+    "set-unlanded-cburnett-leipzig",
     "look-unlearnable-told",
+    "overlays-held-still",
     "flipped-before-a-move",
     "reset-one-tick",
     "lock-moves",
@@ -1216,6 +1258,16 @@ EXPECT = {
     ),
     "set-one-wrong-maestro-leipzig": lambda lines, data: (
         len(_sans(lines)) == 10 and data["bootstraps"] == 1
+    ),
+    "set-unlanded-cburnett-chess7": lambda lines, data: (
+        len(_sans(lines)) == 28 and data["bootstraps"] == 1
+    ),
+    "set-unlanded-cburnett-leipzig": lambda lines, data: (
+        len(_sans(lines)) == 10 and data["bootstraps"] == 1
+    ),
+    "overlays-held-still": lambda lines, data: (
+        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Bc5", "c3", "d6"]
+        and not any(line.startswith(("BoardUnread", "Resync")) for line in lines)
     ),
     "look-unlearnable-told": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"]

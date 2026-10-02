@@ -888,9 +888,15 @@ class GamePipeline(
         // (the desktop's geometry sweep, seed 175).
         val newTheme = unknown >= RELEARN_UNKNOWN_CELLS && sampled != null &&
             !ThemeCache.sameTheme(sampled.first, sampled.second, current.lightBg, current.darkBg)
-        if (!newTheme && rec.unexplainedFor < RELEARN_UNEXPLAINED_FRAMES) {
+        // The game unread: a new theme, or frames no story explains (a new set read as other
+        // pieces). Or not yet unread but about to be: a new set read as the right pieces that
+        // no longer land on their squares ([unlanded]), on a board the reconciler explains only
+        // because an unsettled piece holds no story back -- until a move lands on one (round 3,
+        // the desktop's look-change sweep, cburnett to chess7 and to leipzig).
+        val stalled = newTheme || rec.unexplainedFor >= RELEARN_UNEXPLAINED_FRAMES
+        if (!stalled) game.lookLost = null // the game is read
+        if (!stalled && !unlanded(readings)) {
             game.relearnSeen = null
-            game.lookLost = null // the game is read again
             return none
         }
         if (readings.any { it.hover }) { // a piece dragged
@@ -939,15 +945,17 @@ class GamePipeline(
             }
             if ((0 until 64).any { occupied[it] != (labels[it] != "empty") }) continue
             shown = true
-            // A set learned before on these colours, whole, that reads the position -- every
-            // cell of it: the recogniser this game was read with is among the cached sets, and
-            // read with one piece wrong it was taken again, and nothing changed.
+            // A recogniser is taken only when it reads the position on every cell, every piece
+            // landed on its square ([readsLanded]): the recogniser this game was read with is
+            // among the cached sets, and read with one piece wrong it was taken again, and
+            // nothing changed; and one learned where something drawn spoils a piece would read
+            // it off its square, and is not taken.
             val palette = sampled
             val store = cache
             if (store != null && palette != null) {
                 for ((_, cached) in store.candidates(palette.first, palette.second)) {
                     val cachedReadings = cached.classifyFrame(frame, geometry, embedder)
-                    if (misreads(cachedReadings, position, whiteAtBottom) == 0) {
+                    if (readsLanded(cachedReadings, position, whiteAtBottom)) {
                         model = cached
                         game.readingsValue = cachedReadings
                         game.lookLost = null
@@ -956,13 +964,17 @@ class GamePipeline(
                 }
             }
             val learned = ThemeModel.fromPosition(frame, geometry, whiteAtBottom, embedder, labels) ?: continue
+            val learnedReadings = learned.classifyFrame(frame, geometry, embedder)
+            if (!readsLanded(learnedReadings, position, whiteAtBottom)) continue
             learned.rankLabels = Coordinates.learnRankLabels(frame, geometry, side).ifEmpty { current.rankLabels }
             model = learned
-            game.readingsValue = learned.classifyFrame(frame, geometry, embedder)
+            game.readingsValue = learnedReadings
             game.lookLost = null
             return none
         }
-        if (!(shown || newTheme)) return none // nothing says the look changed: another board, a dialog, a story
+        // Nothing says the look changed (another board, a dialog, a story), or the game is
+        // still read.
+        if (!stalled || !(shown || newTheme)) return none
         // The game's board in a new look that cannot be learned -- pieces the frame shows where
         // the game has none, a kind its silhouettes do not separate -- or a new theme with moves
         // played since: the game goes unread, and the person is told once, as of a board unread
@@ -974,22 +986,36 @@ class GamePipeline(
     }
 
     /**
-     * How many cells [readings] cannot show [position] on: unknown, empty where a piece stands,
-     * a piece where none does, or a piece of another known kind (`pipeline._misreads`).
+     * Whether a kind of which two or more pieces stand on the board reads every one of them off
+     * its square (unsettled): what a new piece set the recogniser still names right looks like
+     * (its landing references are the old set's), while something drawn over the board -- an
+     * arrow, a mark, a highlight -- spoils squares, not every piece of a kind
+     * (`pipeline._unlanded`, round 3).
      */
-    private fun misreads(readings: Readings, position: Board, whiteAtBottom: Boolean): Int {
-        var count = 0
+    private fun unlanded(readings: Readings): Boolean {
+        val landed = HashMap<String, MutableList<Boolean>>()
+        for (reading in readings) {
+            val symbol = reading.symbol
+            if (reading.kind == Kind.PIECE && symbol != null) landed.getOrPut(symbol) { ArrayList() }.add(reading.settled)
+        }
+        return landed.values.any { it.size >= 2 && it.none { settled -> settled } }
+    }
+
+    /**
+     * Whether [readings] show [position] on every cell: each of its pieces of its own kind,
+     * landed on its square, and nothing on the squares it leaves empty (`pipeline._reads_landed`).
+     */
+    private fun readsLanded(readings: Readings, position: Board, whiteAtBottom: Boolean): Boolean {
         for (i in 0 until 64) {
             val reading = readings[i]
             val piece = position.pieceAt(Squares.squareAt(i / 8, i % 8, whiteAtBottom))
-            count += when {
-                reading.kind == Kind.UNKNOWN -> 1
-                piece == null -> if (reading.kind == Kind.PIECE) 1 else 0
-                reading.kind == Kind.EMPTY || (reading.symbol != null && reading.symbol != piece.symbol()) -> 1
-                else -> 0
+            if (piece == null) {
+                if (reading.kind != Kind.EMPTY) return false
+            } else if (!(reading.kind == Kind.PIECE && reading.symbol == piece.symbol() && reading.settled)) {
+                return false
             }
         }
-        return count
+        return true
     }
 
     /**
