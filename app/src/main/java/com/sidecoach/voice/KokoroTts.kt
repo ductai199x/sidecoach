@@ -33,7 +33,15 @@ import java.util.concurrent.LinkedBlockingQueue
  * phone the track is kept open and playing and Android plays the silence itself when nothing
  * is written, which costs no work and lets the audio path rest when the coach has been quiet
  * for a while -- a phone's battery pays for every second the audio hardware stays awake.
+ * The track names no device, so Android moves it to the output it routes to now (the desktop
+ * follows the system's default output by Windows' notification); one it lost is opened afresh
+ * mid-line ([writePiece]).
  */
+/** What a line's samples are written to: the voice's [AudioTrack], or a test's. */
+fun interface PcmSink {
+    fun write(samples: FloatArray, at: Int, n: Int): Int
+}
+
 class KokoroTts(
     private val context: Context,
     private val modelDir: File,
@@ -405,15 +413,13 @@ class KokoroTts(
                     runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
                     runCatching { onCaption?.invoke(line.given.ifEmpty { line.spoken }, chunk.speechMs) }
                 }
-                var at = 0
-                while (at < chunk.samples.size) {
-                    if (synchronized(lock) { generation } != chunk.mine) break
-                    val n = minOf(WRITE_SLICE, chunk.samples.size - at)
-                    val wrote = out.write(chunk.samples, at, n)
-                    if (wrote <= 0) break
-                    at += wrote
-                }
-                if (chunk.done != null) Log.i(TAG, "line: played with ${out.underrunCount - underruns} gaps")
+                writePiece(
+                    chunk.samples,
+                    output = { PcmSink(out::write) },
+                    reopen = { PcmSink(reopenOutput(out)::write) },
+                    stopped = { synchronized(lock) { generation } != chunk.mine },
+                )
+                if (chunk.done != null) Log.i(TAG, "line: played with ${(output ?: out).underrunCount - underruns} gaps")
             } catch (_: InterruptedException) {
                 return
             } catch (exc: Exception) { // audio errors are not fatal
@@ -422,6 +428,24 @@ class KokoroTts(
                 chunk.done?.countDown()
             }
         }
+    }
+
+    /**
+     * The output [dead] dropped and a new one opened, on wherever Android routes the voice now.
+     * Android moves a playing track to a new output itself (headphones plugged in, a Bluetooth
+     * headset connected: the track asks for no device, so it follows the system's routing); a
+     * track it could not move, or one the audio server lost, answered every write with an error
+     * and the voice stayed silent until a restart (Tai, 2026-10-02: the voice follows the output
+     * without a restart).
+     */
+    @Synchronized
+    private fun reopenOutput(dead: Output): Output {
+        if (output === dead) {
+            output = null
+            runCatching { dead.release() }
+            VoiceLog.warn("the voice's output track died; opened afresh on the current output")
+        }
+        return openOutput()
     }
 
     /** The open output, opened at the first line and kept playing. */
@@ -495,7 +519,32 @@ class KokoroTts(
         private const val TAG = "sidecoach.voice"
 
         /** Samples written at a time, a stop checked between: 50 ms at 24 kHz. */
-        private const val WRITE_SLICE = 1200
+        internal const val WRITE_SLICE = 1200
+
+        /**
+         * A piece written to the output in slices of [WRITE_SLICE], [stopped] checked before each:
+         * an output that answers a write with [AudioTrack.ERROR_DEAD_OBJECT] (Android could not
+         * move the track to a new route, or the audio server restarted) is opened afresh once
+         * ([reopen]) and the rest of the piece goes there, mid-line. The samples written.
+         */
+        internal fun writePiece(samples: FloatArray, output: () -> PcmSink, reopen: () -> PcmSink, stopped: () -> Boolean): Int {
+            var out = output()
+            var reopened = false
+            var at = 0
+            while (at < samples.size) {
+                if (stopped()) break
+                val n = minOf(WRITE_SLICE, samples.size - at)
+                val wrote = out.write(samples, at, n)
+                if (wrote == AudioTrack.ERROR_DEAD_OBJECT && !reopened) {
+                    reopened = true
+                    out = reopen()
+                    continue
+                }
+                if (wrote <= 0) break
+                at += wrote
+            }
+            return at
+        }
         /**
          * The full-precision model, as the desktop runs it (Tai, 2026-09-23): on the Pixel's ARM
          * cores it speaks twice as fast as the int8 one (0.61 of real time against 1.20), whose

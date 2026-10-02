@@ -105,7 +105,8 @@ class SileroGate(private val model: File) : VoiceGate {
  * Speech starts when [startFrames] consecutive frames exceed [start] (two frames = 64 ms: quick
  * enough for a barge-in, long enough to ignore a click). It ends after [endMs] of frames below
  * [end]. While the coach is speaking, the mic hears the speakers, so the start threshold is
- * raised to [startWhileSpeaking] -- a headset makes this moot.
+ * raised to [startWhileSpeaking] -- a headset makes this moot. (The listener no longer feeds it the
+ * coach's voice: since 2026-10-02 it ignores the microphone while the voice plays, [Listener].)
  */
 class Endpointer(
     val start: Double = 0.5,

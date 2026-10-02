@@ -240,6 +240,62 @@ class PanelVoicePolicyTest {
     }
 
     /**
+     * Muted while the model still thinks, or with no voice to say it: the sink declined the first
+     * sentence and the coach put the offline template in the AI reply's place (round 3 audit,
+     * 2026-10-02; `test_a_mute_before_the_first_sentence_keeps_the_ai_reply`). Every sentence is
+     * taken, shown, and nothing is said.
+     */
+    @Test
+    fun aMuteBeforeTheFirstSentenceKeepsTheAiReply() {
+        for (case in listOf("muted", "no voice")) {
+            val fake = FakeTts()
+            PanelVoice.speaker = if (case == "no voice") null else fake
+            PanelVoice.voicing = null
+            val sink = PanelVoice.streamSink(Trigger.USER_ASK, null)
+            assertNotNull(case, sink)
+            if (case == "muted") PanelVoice.setMuted(true)
+            assertTrue(case, sink!!("Your knight on f5 is loose."))
+            assertTrue(case, sink("Then look at Nh4."))
+            assertTrue(case, fake.calls.none { it.startsWith("say:") })
+            PanelVoice.setMuted(false)
+        }
+    }
+
+    /**
+     * A fast game holds a reply back for the pace ("text"): the sink declined it, and the coach's
+     * template took its place. The whole reply is taken and is the word held, said once the game
+     * slows (`test_a_reply_held_for_the_pace_is_held_whole`).
+     */
+    @Test
+    fun aReplyHeldForThePaceIsHeldWhole() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        val coach = Coach(OfflineProvider())
+        coach.onEvent(GameStarted("g", Pieces.Side.WHITE, Board().fen()), 0.0)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(MovePlayed("g", ply, san, move.uci(), before, board.fen(), byUser = ply % 2 == 1, thinkMs = 1000), ply.toDouble())
+        }
+        assertTrue(coach.fastNow(7.0))
+        PanelVoice.coach = coach
+        PanelVoice.loopTs = 7.0
+        PanelEngine.set("ply" to 6)
+        val sink = PanelVoice.streamSink(Trigger.STUCK, 6)
+        assertNotNull(sink)
+        assertTrue(sink!!("Look at f7."))
+        assertTrue(sink("Who guards it?"))
+        assertEquals(emptyList<String>(), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 13.0) // the game slowed: the whole reply is said
+        assertEquals(listOf("say:Look at f7. Who guards it?"), fake.calls.toList())
+        assertTrue(sink("And then?")) // written after it was taken: follows it in the voice
+        assertEquals("say:And then?", fake.calls.last())
+    }
+
+    /**
      * The position moves on: the voice about the old one stops, and a reply that lands after is
      * shown but not spoken (Tai, 2026-10-02: "There is no need to drop any replies, the text
      * message should come out in the same correct order. The only thing that might be good is to
@@ -361,6 +417,11 @@ class PanelVoicePolicyTest {
         fake.calls.clear()
         PanelVoice.roomSay("Nf3 is best.")
         assertTrue(fake.calls.none { it.startsWith("say:") })
+        // The push-to-talk key held: the player is talking, the card is not said (round 3 audit).
+        PanelVoice.setMuted(false)
+        PanelEngine.set("ptt" to true)
+        PanelVoice.roomSay("Rc1 next.")
+        assertTrue(fake.calls.none { it.startsWith("say:") })
     }
 
     /**
@@ -409,6 +470,46 @@ class PanelVoicePolicyTest {
         coach.finished = false
         PanelVoice.sayHeldWord(coach, 30.0)
         assertEquals(1, fake.calls.size)
+    }
+
+    /**
+     * A streamed reply whose first sentence met a fast game was declined: the model's reply was
+     * thrown away and the template shown in its place (Tai, 2026-10-02: kept, never replaced). It is
+     * taken sentence by sentence, captioned, not said, and held whole for the pace like a word on
+     * the page: said once the player slows.
+     * `test_a_streamed_reply_in_a_fast_game_is_kept_and_held_whole_for_the_pace`.
+     */
+    @Test
+    fun aStreamedReplyInAFastGameIsKeptAndHeldWholeForThePace() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = null
+        val coach = Coach(OfflineProvider())
+        coach.onEvent(GameStarted("g", Pieces.Side.WHITE, Board().fen()), 0.0)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(MovePlayed("g", ply, san, move.uci(), before, board.fen(), byUser = ply % 2 == 1, thinkMs = 1000), ply.toDouble())
+        }
+        PanelVoice.coach = coach
+        PanelVoice.loopTs = 7.0
+        PanelEngine.set("ply" to 6, "ptt" to false)
+        var sink = PanelVoice.streamSink(Trigger.POST_MISTAKE, 5)!!
+        assertTrue("kept, not declined", sink("Nf6 left f7 to the queen."))
+        assertTrue(sink("Qxf7 is mate now."))
+        assertEquals("a fast game: not said yet", emptyList<String>(), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 13.0) // the game slowed
+        assertEquals(listOf("say:Nf6 left f7 to the queen. Qxf7 is mate now."), fake.calls.toList())
+        // Cut off while held (the position left): the rest is captioned and nothing is said later.
+        sink = PanelVoice.streamSink(Trigger.POST_MISTAKE, 5)!!
+        assertTrue(sink("Look at f7."))
+        PanelVoice.positionMovedOn("takeback")
+        assertTrue(sink("Their king has no square."))
+        PanelVoice.sayHeldWord(coach, 30.0)
+        assertEquals(1, fake.calls.count { it.startsWith("say:") })
     }
 
     /**

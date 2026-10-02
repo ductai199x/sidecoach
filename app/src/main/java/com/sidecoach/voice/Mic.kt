@@ -29,6 +29,10 @@ import java.util.concurrent.TimeUnit
  *                 clipped, and ends after 400 ms of silence. Utterances are capped at
  *                 [MAX_UTTERANCE_S] so a noisy room cannot buffer forever.
  *
+ * While the coach's voice plays, the microphone is ignored (the echo guard): in voice mode nothing
+ * starts and nothing is kept, and push-to-talk keeps no pre-roll of it. A held push-to-talk key is
+ * heard as ever -- pressing it silences the voice.
+ *
  * Everything degrades: no permission, no input, or no VAD model leaves the coach deaf with a
  * stated reason, never crashed.
  */
@@ -292,6 +296,9 @@ class Listener(
         return "$mode (${mic.detail})"
     }
 
+    /** For the tests: a push-to-talk press is being kept (the desktop's `_started_at`). */
+    internal val pressTaken: Boolean get() = synchronized(lock) { ptt && startedAt != null }
+
     /** Push-to-talk down: start keeping frames. */
     fun press() {
         synchronized(lock) {
@@ -313,6 +320,9 @@ class Listener(
     }
 
     private var reopenTried = 0.0
+
+    /** The last frame was the coach's voice (the echo guard, [run]). */
+    private var echoed = false
 
     /**
      * A microphone whose input failed is reopened, at most once every [MIC_REOPEN_S]: it stayed
@@ -343,6 +353,12 @@ class Listener(
             level = maxOf(peak, level * 0.8)
             var partial: FloatArray? = null
             val current: String
+            // The echo guard (Tai, 2026-10-02): while the coach's voice plays, what the
+            // microphone hears is ignored -- it hears the speakers, and the coach's own words
+            // were cutting it off and coming back as a question. A held push-to-talk key is the
+            // exception (it silences the voice at once). Listening resumes with the first frame
+            // after the voice stops.
+            val echo = coachSpeaking()
             synchronized(lock) {
                 current = mode
                 if (current == "ptt") {
@@ -357,6 +373,9 @@ class Listener(
                         } else {
                             partial = partialDue()
                         }
+                    } else if (echo) {
+                        // Not held: the pre-roll a press would keep holds no coach's words.
+                        pre.clear()
                     } else {
                         pre.addLast(frame)
                         while (pre.size > PRE_ROLL_FRAMES) pre.removeFirst()
@@ -367,12 +386,31 @@ class Listener(
                 partial?.let { onPartial?.invoke(it) }
                 continue
             }
+            if (echo) {
+                // Voice mode, the coach speaking: the frame counts as silence and is kept
+                // nowhere. An utterance begun before the voice ends as the player's words alone;
+                // none can begin. The VAD is not run on it (its state starts afresh with the
+                // next frame heard).
+                synchronized(lock) {
+                    echoed = true
+                    pre.clear()
+                    when (endpointer.feed(0.0)) {
+                        "end" -> finish(discard = false)
+                        "drop" -> finish(discard = true)
+                    }
+                }
+                continue
+            }
+            if (echoed) {
+                echoed = false
+                gate.reset()
+            }
             // Voice mode: the VAD runs outside the lock; it is the slow part.
             val prob = gate.probability(frame).toDouble()
             var event: String?
             var skip = false
             synchronized(lock) {
-                event = endpointer.feed(prob, coachSpeaking())
+                event = endpointer.feed(prob)
                 if (endpointer.speaking) {
                     if (event == "start") {
                         buffer = ArrayList(pre)

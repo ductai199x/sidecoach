@@ -207,6 +207,39 @@ class MaintenanceTest {
         own.close()
     }
 
+    /**
+     * The audit of 2026-10-02 (For Tai #14): Reset profile landing in the instant after the review
+     * asked whether the game is in the record, or after its review was saved and before its Stats
+     * facts, still saved them for a game no longer in the record. The saves ask it themselves, in
+     * the same statement: staged at that instant -- the review looked, then the reset on another
+     * connection -- neither is saved. The desktop's
+     * test_a_reset_between_the_reviews_look_and_its_save_saves_nothing.
+     */
+    @Test
+    fun aResetBetweenTheReviewsLookAndItsSaveSavesNothing() {
+        val files = dir("reset-between")
+        val store = Store(File(files, "profile.sqlite"))
+        val row = Library.fromPgn(PGN, listOf("nosegazm")).single()
+        store.addLibraryGame(row)
+        store.startGame("w1", 1.0, "black", STARTING_FEN)
+        for (key in listOf(row.key, "watched:w1")) assertTrue("the review's look", store.inRecord(key))
+        Maintenance.resetProfile(files) // lands now, on another connection
+        for (key in listOf(row.key, "watched:w1")) {
+            assertFalse("no review of $key", store.saveReview(key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, "{}", null))
+            assertNull(store.review(key, "fast"))
+            val game = com.sidecoach.profile.GameFact(
+                key = key, source = "pgn", timeClass = null, playedAt = 1.0, userSide = "black",
+                bot = false, result = "0-1", opening = null, termination = null,
+            )
+            store.saveStats("fast", game, emptyList(), held = true)
+        }
+        assertTrue("nor its Stats facts", store.statGames().isEmpty())
+        // In the record, both are saved as before.
+        store.addLibraryGame(row)
+        assertTrue(store.saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, "{}", null))
+        store.close()
+    }
+
     private companion object {
         const val PGN = "[White \"Anakin_737\"]\n[Black \"nosegazm\"]\n[Result \"0-1\"]\n[TimeControl \"600\"]\n\n" +
             "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. d3 Bc5 5. Nc3 d6 6. h3 Na5 0-1\n"

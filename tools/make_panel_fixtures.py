@@ -221,6 +221,7 @@ def moves_game() -> list[Any]:
         Unexplained(game_id=GAME, fen=befores[6], reason="e4 unexplained for 40 frames"),
         BoardUnread(reason="unlearned"),
         BoardUnread(reason="orientation"),
+        BoardUnread(reason="look"),  # round 3: a look changed mid-game and not learned again
         ClockObservation(white_ms=180000, black_ms=175500, running=Side.BLACK),
         ClockObservation(white_ms=None, black_ms=5000, running=None),
         ScreenStateChanged(state=ScreenState.COVERED),

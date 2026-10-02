@@ -229,12 +229,9 @@ class ReviewWordsParityTest {
             val parts = strings(c.getJSONObject("parts"))
             val ply = c.getInt("ply")
             val user = str(c, "user")
-            val (kept, dropped, reveals) = ReviewWords.checked(parts, short, ply, user)
+            val (kept, dropped) = ReviewWords.checked(parts, short, ply, user)
             same("checked $i kept", JSONObject(kept), c.getJSONObject("kept"), failures)
             same("checked $i dropped", dropped, c.getString("dropped"), failures)
-            same("checked $i reveals", reveals, c.getBoolean("reveals"), failures)
-            val answers = JSONObject().apply { for ((part, text) in parts) put(part, ReviewWords.namesTheAnswer(text, short, ply, user)) }
-            same("checked $i names_the_answer", answers, c.getJSONObject("names_the_answer"), failures)
             val sides = JSONObject().apply { for ((part, text) in parts) put(part, ReviewWords.wrongSide(text, short, ply)) }
             same("checked $i wrong_side", sides, c.getJSONObject("wrong_side"), failures)
         }
@@ -272,7 +269,7 @@ class ReviewWordsParityTest {
         )
         val want = r.getJSONObject("result")
         val mine = wordsJson(words)
-        for (key in listOf("texts", "dropped", "reveals", "answers", "model", "cost")) same("effort $key", mine.get(key), want.get(key), failures)
+        for (key in listOf("texts", "dropped", "answers", "model", "cost")) same("effort $key", mine.get(key), want.get(key), failures)
         val texts = JSONObject().apply { val o = r.getJSONObject("on_answer"); for (k in o.keys()) put(k, o.getJSONObject(k).getString("text")) }
         same("effort on_answer", kept, texts, failures)
         same("effort efforts asked", JSONArray(wire.bodies.values.map { it.optString("reasoning_effort") }.distinct()), r.getJSONArray("efforts"), failures)
@@ -337,11 +334,10 @@ class ReviewWordsParityTest {
         fun statsOf(o: JSONObject): Map<String, Any?> =
             LinkedHashMap<String, Any?>().apply { for (k in o.keys()) put(k, o.get(k)) }
 
-        /** The words as the fixture writes them (`words_json`): plies as strings, reveals sorted. */
+        /** The words as the fixture writes them (`words_json`): plies as strings. */
         fun wordsJson(words: ReviewWords.Words): JSONObject = JSONObject()
             .put("texts", textsJson(words))
             .put("dropped", JSONObject().apply { for ((p, why) in words.dropped) put("$p", why) })
-            .put("reveals", JSONArray(words.reveals.sorted()))
             .put("answers", JSONObject().apply { for ((p, text) in words.answers) put("$p", text) })
             .put("model", words.model)
             .put("cost", words.cost ?: JSONObject.NULL)

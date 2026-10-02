@@ -267,9 +267,9 @@ object StatFacts {
         Regex("^\\[Termination \"([^\"]*)\"\\]", RegexOption.MULTILINE).find(row.pgn)?.groupValues?.get(1)
 
     /** A reviewed game's facts kept for Stats, in place of any from an older review. `keep_stats`. */
-    fun keepStats(store: Store, strength: String, reviewed: ReviewedGame, row: LibraryRow) {
+    fun keepStats(store: Store, strength: String, reviewed: ReviewedGame, row: LibraryRow, held: Boolean = false) {
         val (game, moves) = factsOf(reviewed, row)
-        store.saveStats(strength, game, moves)
+        store.saveStats(strength, game, moves, held = held)
     }
 }
 

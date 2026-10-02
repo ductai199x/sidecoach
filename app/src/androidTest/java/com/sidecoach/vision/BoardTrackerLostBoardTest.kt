@@ -45,6 +45,59 @@ class BoardTrackerLostBoardTest {
         assertEquals("the first lock only", 1, tracker.fullSearches)
     }
 
+    /**
+     * A compact lost-board sweep: the game board at 50 px cells resized past the near range,
+     * another game's board on the screen at the old size, the game played on while the board
+     * was lost. With six plies played, a board found counted as the lost one only within eight
+     * cells of its occupancy; the shrunk game board was not, the detector put the bigger board
+     * first, and the other game was locked for good (round 3, finding 1's residual). Of the
+     * boards found, the nearest in occupancy is taken (desktop
+     * `test_a_resized_board_is_found_beside_another_board_of_its_old_size`).
+     */
+    @Test
+    fun aResizedBoardIsFoundBesideAnotherBoardOfItsOldSize() {
+        for (newCell in listOf(30, 37, 80)) {
+            for (sameTheme in listOf(true, false)) {
+                for (played in listOf(false, true)) {
+                    val case = "new cell $newCell, same theme $sameTheme, six plies $played"
+                    val before = FloatArray(W * H) { 32f }
+                    draw(before, GAME_X, 40, 50, GAME, light = 200f, dark = 120f)
+                    val after = FloatArray(W * H) { 32f }
+                    draw(after, GAME_X, 40, newCell, if (played) GAME_PLAYED else GAME, light = 200f, dark = 120f)
+                    val (light, dark) = if (sameTheme) 200f to 120f else 225f to 150f
+                    draw(after, 1100, 60, 50, OTHER, light, dark)
+                    val tracker = BoardTracker()
+                    repeat(3) { tracker.update(Plane(W, H, before)) }
+                    var board: BoardCandidate? = null
+                    repeat(30) { board = tracker.update(Plane(W, H, after)) }
+                    val found = checkNotNull(board) { "$case: no lock" }
+                    assertTrue("$case: not verified", tracker.verified)
+                    assertTrue("$case: locked $found", abs(found.region.x - GAME_X) <= 2)
+                    assertTrue("$case: locked $found", abs(found.cellPx - newCell) <= 1.5)
+                }
+            }
+        }
+    }
+
+    /**
+     * The last frame that validated the lock was kept whole, for the lost board's pieces (round
+     * 3): only the board's region is kept, and it reads the same pieces (desktop
+     * `test_a_lock_keeps_its_board_s_pixels_not_the_frame`).
+     */
+    @Test
+    fun aLockKeepsItsBoardsPixelsNotTheFrame() {
+        val frame = page(gameCell = 50, thumbnail = false, sameTheme = true)
+        val tracker = BoardTracker()
+        val board = checkNotNull(tracker.update(frame))
+        val (pixels, placed) = checkNotNull(tracker.seen)
+        assertEquals(board.region.w, pixels.width)
+        assertEquals(board.region.h, pixels.height)
+        val whole = checkNotNull(BoardRefine.boardOccupancy(frame, board.region, board.cellPx))
+        val kept = checkNotNull(BoardRefine.boardOccupancy(pixels, placed.region, placed.cellPx))
+        assertTrue("no piece read", whole.any { it })
+        assertTrue("the kept pixels read other pieces", whole.contentEquals(kept))
+    }
+
     private fun page(gameCell: Int, thumbnail: Boolean, sameTheme: Boolean, gameX: Int = GAME_X, gameY: Int = 40): Plane {
         val data = FloatArray(W * H) { 32f }
         draw(data, gameX, gameY, gameCell, GAME, light = 200f, dark = 120f)
@@ -80,6 +133,9 @@ class BoardTrackerLostBoardTest {
 
         // The desktop test's two positions, rank 8 first.
         private val GAME = listOf("r.bq.rk.", "..ppbppp", "p.n..n..", ".p..p...", "....P...", ".B...N..", "PPPP.PPP", "RNBQR.K.")
+
+        // GAME after six plies played while the board was lost: d4 Kh8 g4 d5 exd5 Be6.
+        private val GAME_PLAYED = listOf("r..q.r.k", "..p.bppp", "p.n.bn..", ".p.Pp...", "...P..P.", ".B...N..", "PPP..P.P", "RNBQR.K.")
         private val OTHER = listOf("rnbqkb.r", "pp..pppp", "...p.n..", "........", "...NP...", "........", "PPP..PPP", "RNBQKB.R")
 
         @JvmStatic

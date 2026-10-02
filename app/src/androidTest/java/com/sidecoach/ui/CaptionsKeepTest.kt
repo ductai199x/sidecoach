@@ -176,8 +176,7 @@ class CaptionsKeepTest {
             assertTrue("the sample stayed: $words", words?.contains("This is how captions look") != true)
             // A real line straight after a sample: the sample is not above it.
             Captions.preview()
-            assertTrue("no sample", waitFor { onMain { Captions.wordsShown() }?.contains("This is how captions look") == true })
-            Captions.show("Nice move.")
+            Captions.show("Nice move.") // posted after the sample: its order, not a wait
             assertTrue("the line did not show", waitFor {
                 words = onMain { Captions.wordsShown() }
                 words == "Nice move."
@@ -186,21 +185,49 @@ class CaptionsKeepTest {
             // Not kept: a line that comes while the box fades out is shown.
             Captions.keep(false)
             Captions.show("Your bishop is loose.")
-            assertTrue(waitFor { onMain { Captions.wordsShown() }?.endsWith("Your bishop is loose.") == true })
-            clock.advance(Captions.HIDE_AFTER_MS)
-            assertEquals("the box is not fading out", true, onMain { Captions.fading() })
-            Captions.show("What defends it?")
-            // The fade-out the line came in has run its course: the line's box is up all the same.
-            assertTrue("the line during the fade got no box", waitFor {
-                onMain { Captions.fading() } == false && onMain { Captions.wordsShown() }?.endsWith("What defends it?") == true
-            })
-            settle()
+            assertTrue(waitFor { box() != null })
+            // The fade begun and a line given in one step on the main thread: by the box's
+            // state, not a sleep timed into the 350 ms fade (round 3 audit, 2026-10-02).
+            var fading = false
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+                Captions.showNow("What defends it?")
+            }
+            assertTrue("the box was not fading", fading)
+            var shownNow: String? = null
+            instrumentation.runOnMainSync { shownNow = Captions.wordsShown() }
+            assertTrue("the line during the fade was not shown: $shownNow", shownNow?.endsWith("What defends it?") == true)
+            instrumentation.runOnMainSync { fading = Captions.fadingNow() }
+            assertTrue("the line's box is the fading one", !fading)
             assertNotNull("the line during the fade went with the box", box())
             fadesAtItsTime(clock, "the line during the fade")
             // A held word said now: the box comes back with the words.
             Captions.again()
             assertTrue("the faded box did not come back", waitFor { box() != null })
+            // The voice still speaking: the box waits for it, and fades once it is done (voice
+            // finding 9: a flat five seconds faded it under a long line still being said).
+            val voice = object : com.sidecoach.voice.TtsProvider {
+                override val name = "speaking"
+                @Volatile override var busy = true
+                override fun healthcheck() = true to "fake"
+                override fun say(text: String, voice: String?) = Unit
+                override fun stop() = Unit
+            }
+            PanelVoice.speaker = voice
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+            }
+            assertTrue("the box faded while the voice spoke", !fading)
+            voice.busy = false
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+            }
+            assertTrue("the box did not fade once the voice was done", fading)
         } finally {
+            PanelVoice.speaker = null
             Captions.keep(false)
             Captions.configure(app, false)
             Captions.reset()

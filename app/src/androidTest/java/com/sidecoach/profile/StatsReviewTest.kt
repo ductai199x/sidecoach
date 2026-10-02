@@ -74,6 +74,7 @@ class StatsReviewTest {
             assertEquals(0.0, store.statMoves(listOf("a")).single().loss, 0.0)
             store.saveStats("deep", game("a"), listOf(move(1, label = "inaccuracy", loss = 0.1)))
             assertEquals("as strong: replaced", 0.1, store.statMoves(listOf("a")).single().loss, 0.0)
+            store.addLibraryGame(LibraryRow("b", "chesscom", 0.0, "*")) // a review is of a listed game
             store.saveReview("b", "deep", 1, 1.0, "{}", null)
             store.saveReview("b", "fast", 1, 2.0, "{}", null)
             assertEquals(listOf("b" to "deep"), store.reviewsWithoutStats().map { it.key to it.strength })

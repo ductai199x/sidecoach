@@ -47,7 +47,7 @@ import chess  # noqa: E402
 from sidecoach.events import Analysis, MotifTag, ReviewedGame  # noqa: E402
 from sidecoach.profile import library, performance, stat_facts, stats  # noqa: E402
 from sidecoach.profile.puzzles import open_store, puzzle_level  # noqa: E402
-from sidecoach.profile.store import LibraryRow, Store  # noqa: E402
+from sidecoach.profile.store import WATCHED, LibraryRow, Store  # noqa: E402
 from sidecoach.ui import server  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -159,6 +159,19 @@ class Builder:
         self.store.add_library_game(row)
         self.ops.append({"op": "library", "row": row_json(row)})
 
+    def held(self, key: str) -> None:
+        """The game in the player's record, as a review is saved only of one (`save_review`): a
+        watched game's record, else a bare library row -- its side and class left to its facts'
+        (`stat_games` takes the library's only where it has them)."""
+        if self.store.in_record(key):
+            return
+        if key.startswith(WATCHED):
+            game_id = key[len(WATCHED) :]
+            self.store.start_game(game_id, NOW - DAY, "white", chess.STARTING_FEN)
+            self.ops.append({"op": "game", "game_id": game_id, "started_at": NOW - DAY, "user_side": "white", "start_fen": chess.STARTING_FEN})
+        else:
+            self.library(LibraryRow(key=key, source=key.split(":", 1)[0], added_at=NOW - DAY, pgn="*"))
+
     def keep(self, strength: str, index: int, reviewed: ReviewedGame, headers: dict[str, str] | None, row: LibraryRow) -> None:
         game = reviewed if headers is None else reviewed.model_copy(update={"headers": headers})
         stat_facts.keep_stats(self.store, strength, game, row)
@@ -177,6 +190,7 @@ class Builder:
         self.ops.append({"op": "twin", "watched": watched, "imported": imported})
 
     def review(self, key: str, strength: str, reviewed_at: float, summary: str | None = None) -> None:
+        self.held(key)
         self.store.save_review(key, strength, 3, reviewed_at, "{}", summary)
         self.ops.append({"op": "review", "key": key, "strength": strength, "version": 3, "reviewed_at": reviewed_at, "report": "{}", "summary": summary})
 

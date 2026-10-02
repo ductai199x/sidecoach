@@ -100,6 +100,10 @@ class ReviewRoom(
     private var answered = LinkedHashMap<Int, String>()
     private var spent = 0.0
 
+    // The words paid for on the watched game this one stands for, by this review's plies
+    // ([carriedWords]): shown with this game's own, never asked again.
+    private var carried: Map<Int, JSONObject> = emptyMap()
+
     // The words' cost as the button says it, by model name and the moves answered already.
     private var estimated: Pair<Pair<String?, Set<Int>>, Double?>? = null
 
@@ -189,7 +193,7 @@ class ReviewRoom(
         val name = modelOf(provider)
         val reviewed = synchronized(lock) { reviewed }
         if (provider == null || reviewed == null) return null
-        val done = synchronized(lock) { answered.keys.toSet() }
+        val done = synchronized(lock) { answered.keys.toSet() + carried.keys }
         val cached = estimated
         if (cached == null || cached.first != (name to done)) {
             val prices = pricesFor(settings.llm(), name)
@@ -237,6 +241,7 @@ class ReviewRoom(
         val provider = if (reasons) (given as OpenAICompatProvider).withEffort(REVIEW_EFFORT) else given
         val prices = pricesFor(settings.llm(), modelOf(provider))
         val (before, spentBefore) = synchronized(lock) { LinkedHashMap(answered) to spent }
+        val carriedPlies = synchronized(lock) { carried.keys.toSet() }
 
         // Each answer kept the moment it is paid for: the app closed now loses none of them.
         fun keep(ply: Int, text: String, stats: Map<String, Any?>) {
@@ -268,6 +273,7 @@ class ReviewRoom(
                 answered = before,
                 onAnswer = ::keep,
                 stop = { !store.inRecord(key) },
+                carried = carriedPlies,
             )
             if (!store.inRecord(key)) throw IllegalStateException(GONE)
             if (written.failed.isNotEmpty()) {
@@ -289,7 +295,6 @@ class ReviewRoom(
                 .put("model", written.model)
                 .put("cost", cost ?: JSONObject.NULL)
                 .put("texts", JSONObject().apply { for ((ply, parts) in written.texts) put(ply.toString(), JSONObject(parts as Map<*, *>)) })
-                .put("reveals", JSONArray(written.reveals.sorted()))
             shown = shown(saved, reviewed)
         } catch (exc: Exception) { // a failure is said, never left "writing"
             val gone = runCatching { !store.inRecord(key) }.getOrDefault(false)
@@ -318,12 +323,35 @@ class ReviewRoom(
     }
 
     /**
-     * The saved words as the page draws them: each paragraph also as its links to the board
-     * (coach/ReviewLinks.kt), made on showing so they follow the linking's rules. `_shown`.
+     * The saved words as the page draws them, with the words carried from the watched game this
+     * one stands for on the moves that have none of their own: each paragraph also as its links
+     * to the board (coach/ReviewLinks.kt), made on showing so they follow the linking's rules.
+     * `_shown`.
      */
     private fun shown(saved: JSONObject, reviewed: ReviewedGame): JSONObject {
-        val links = ReviewLinks.linked(saved.optJSONObject("texts") ?: JSONObject(), reviewed, row.userSide)
-        return JSONObject(saved.toString()).put("links", links)
+        val own = saved.optJSONObject("texts") ?: JSONObject()
+        val extra = synchronized(lock) { carried }.filterKeys { !own.has(it.toString()) }
+        val texts = if (extra.isEmpty()) own else JSONObject().apply {
+            val all = extra.mapKeys { it.key.toString() } + own.keys().asSequence().associateWith { own.get(it) }
+            for (ply in all.keys.sortedBy { it.toInt() }) put(ply, all.getValue(ply))
+        }
+        val links = ReviewLinks.linked(texts, reviewed, row.userSide)
+        return JSONObject(saved.toString()).put("texts", texts).put("links", links)
+    }
+
+    /**
+     * The words paid for on the watched game this one stands for, by this review's plies, kept
+     * for showing and for the calls not to ask again; shown as the words when this game has none
+     * of its own yet (null when there are none). `_carry`.
+     */
+    private fun carry(reviewed: ReviewedGame): JSONObject? {
+        val (found, model) = runCatching { carriedWords(store, key, reviewed, strength.name) }
+            .onFailure { emit("sys", "error", "the watched game's AI words could not be read: $it") }
+            .getOrDefault(emptyMap<Int, JSONObject>() to "")
+        synchronized(lock) { carried = found }
+        if (found.isEmpty()) return null
+        emit("sys", "info", "AI words on ${found.size} moves carried from the watched game")
+        return shown(JSONObject().put("model", model).put("cost", JSONObject.NULL).put("texts", JSONObject()), reviewed)
     }
 
     // ---- analysis (ReviewAnalysis.kt): the engine's lines for the board, the explorer, the game
@@ -496,7 +524,7 @@ class ReviewRoom(
                 spent = if (kept.isNull("cost")) 0.0 else kept.optDouble("cost", 0.0)
             }
         } else if (kept != null && kept.length() > 0) {
-            words = shown(kept, reviewed)
+            words = kept
         }
         ready(reviewed, ReviewJson.summary(saved.summary ?: "{}"), words)
         emit("sys", "info", "review of $key loaded (${strength.name})")
@@ -561,9 +589,18 @@ class ReviewRoom(
         }
     }
 
-    private fun ready(reviewed: ReviewedGame, summary: GameSummary, words: JSONObject? = null) {
+    /**
+     * The review ready, with its saved words ([saved]) as the page draws them, and the words
+     * carried from the watched game it stands for: the words are done once every key move has
+     * some, else the rest are there to ask for. `_ready`.
+     */
+    private fun ready(reviewed: ReviewedGame, summary: GameSummary, saved: JSONObject? = null) {
         val moves = ReviewViews.moveViews(reviewed)
         val practice = practice(reviewed)
+        val fromWatched = carry(reviewed)
+        val words = if (saved != null) shown(saved, reviewed) else fromWatched
+        val every = synchronized(lock) { carried.keys.containsAll(ReviewWords.keyPlies(reviewed)) }
+        val written = saved != null || (fromWatched != null && every)
         val retries = Retries(
             reviewed,
             strength,
@@ -579,10 +616,8 @@ class ReviewRoom(
             this.moves = moves
             this.practice = practice
             this.retries = retries
-            if (words != null) {
-                this.words = words
-                wordsStatus = "ready"
-            }
+            if (words != null) this.words = words
+            if (written) wordsStatus = "ready"
             status = "ready"
             total = reviewed.moves.size + 1
             done = total
@@ -624,7 +659,7 @@ class ReviewRoom(
                     val reviewed = ReviewJson.reviewed(saved.report)
                     store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
                     val row = Library.find(store, key)
-                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row, held = true)
                 }.onFailure {
                     // Said: skipped in silence, nothing told why a review kept its old summary
                     // (the audit of 2026-10-02).
@@ -765,7 +800,7 @@ class ReviewRoom(
             }
             // What this strength's review kept part way goes; another strength's stays, to go on from.
             store.clearProgress(row.key, strength.name)
-            StatFacts.keepStats(store, strength.name, reviewed, row)
+            StatFacts.keepStats(store, strength.name, reviewed, row, held = true)
             return reviewed to summary
         }
 
@@ -780,9 +815,56 @@ class ReviewRoom(
             for (review in store.reviewsWithoutStats()) {
                 if (key != null && review.key != key) continue
                 val row = Library.find(store, review.key) ?: continue
-                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row) }
+                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row, held = true) }
             }
         }
+
+        /**
+         * The AI coach's words paid for on the games this one stands for (a watched game its
+         * import stands for, whose record differs from it, so its review was not carried whole),
+         * by this review's plies, and the model that wrote them. A word goes to the move played
+         * from the same position (the FEN's board, side, castling and en passant: a game joined
+         * late counts its moves from another number) with the same move; the n-th time a position
+         * and move come in one game, to their n-th time in the other. Words on moves the two games
+         * do not share stay with the watched game's own review, where they were saved: nothing is
+         * moved or deleted (Tai, 2026-10-02). The review at this strength first, then the
+         * strongest; a move's first words found stand. `carried_words`.
+         */
+        fun carriedWords(store: Store, key: String, reviewed: ReviewedGame, strength: String): Pair<Map<Int, JSONObject>, String> {
+            val sources = store.twins().filter { it.value == key }.keys
+            if (sources.isEmpty()) return emptyMap<Int, JSONObject>() to ""
+            val plies = LinkedHashMap<Pair<String, String>, MutableList<Int>>()
+            for (move in reviewed.moves) plies.getOrPut(position(move.fenBefore) to move.assessment.uci) { ArrayList() }.add(move.ply)
+            val out = LinkedHashMap<Int, JSONObject>()
+            var model = ""
+            for (source in sources) {
+                // This strength first, the order kept (the strongest first) otherwise.
+                val reviews = store.reviewsOf(source).sortedBy { it.strength != strength }
+                for (old in reviews) {
+                    // A review or words that no longer read give nothing.
+                    val words = runCatching { old.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) } }.getOrNull() ?: continue
+                    val texts = words.optJSONObject("texts")
+                    if (words.optBoolean("partial", false) || texts == null || texts.length() == 0) continue
+                    val was = runCatching { ReviewJson.reviewed(old.report) }.getOrNull() ?: continue
+                    val seen = HashMap<Pair<String, String>, Int>()
+                    for (move in was.moves) {
+                        val at = position(move.fenBefore) to move.assessment.uci
+                        val nth = seen[at] ?: 0
+                        seen[at] = nth + 1
+                        val said = texts.optJSONObject(move.ply.toString())
+                        val mine = plies[at].orEmpty()
+                        if (said != null && said.length() > 0 && nth < mine.size && mine[nth] !in out) {
+                            out[mine[nth]] = JSONObject(said.toString())
+                            if (model.isEmpty()) model = if (words.isNull("model")) "" else words.optString("model")
+                        }
+                    }
+                }
+            }
+            return out to model
+        }
+
+        /** A FEN's position: the board, the side to move, castling and en passant. `_position`. */
+        private fun position(fen: String): String = fen.split(" ").filter { it.isNotEmpty() }.take(4).joinToString(" ")
 
         /**
          * Each watched game's review carried to its import when the import has none and the two
@@ -869,7 +951,7 @@ class ReviewRoom(
             if (!saved) return false // reviewed meanwhile (that review stays, with its words), or removed
             old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
             store.clearProgress(imported, old.strength)
-            StatFacts.keepStats(store, old.strength, reviewed, row)
+            StatFacts.keepStats(store, old.strength, reviewed, row, held = true)
             return true
         }
 

@@ -228,6 +228,8 @@ class StatsParityTest {
                     store.saveStats(op.getString("strength"), gameFact(op.getJSONObject("game")), (0 until moves.length()).map { moveFact(moves.getJSONObject(it)) })
                 }
                 "twin" -> store.addTwin(op.getString("watched"), op.getString("imported"))
+                // A watched game's record: a review is saved only of a game in the record.
+                "game" -> store.startGame(op.getString("game_id"), op.getDouble("started_at"), op.getString("user_side"), op.getString("start_fen"))
                 "review" -> store.saveReview(
                     op.getString("key"),
                     op.getString("strength"),

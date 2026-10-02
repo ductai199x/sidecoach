@@ -443,6 +443,140 @@ class PanelListenTest {
     }
 
     /**
+     * A microphone's frames, put in by the test, read by the listener; when there are none, the
+     * listener's wait for the next ends only when the test says ([idle]), never on a clock
+     * (tests/fakes.py `SteppedFrames`). [idle] returning means every frame put in was read and
+     * handled; [free] lets the listener go.
+     */
+    private class SteppedFrames : LinkedBlockingQueue<FloatArray>() {
+        private val go = java.util.concurrent.Semaphore(0)
+        private val waiting = java.util.concurrent.Semaphore(0)
+        private var parked = false
+        @Volatile private var free = false
+
+        override fun poll(timeout: Long, unit: TimeUnit): FloatArray? {
+            super.poll()?.let { return it }
+            if (free) return null
+            waiting.release() // every frame read and handled: the listener waits here
+            go.tryAcquire(HANG_S, TimeUnit.SECONDS)
+            return null
+        }
+
+        private fun park() = assertTrue("the listener never came for a frame", waiting.tryAcquire(HANG_S, TimeUnit.SECONDS))
+
+        fun idle() {
+            if (!parked) {
+                park()
+                parked = true
+            }
+            go.release()
+            park()
+        }
+
+        fun free() {
+            free = true
+            go.release()
+        }
+
+        companion object {
+            const val HANG_S = 30L
+        }
+    }
+
+    /** A voice gate that reads a frame's own value as its speech probability, and counts. */
+    private class LevelGate : VoiceGate {
+        @Volatile var asked = 0
+        override fun load() = true
+        override fun healthcheck() = true to "level"
+        override fun reset() = Unit
+        override fun probability(input: FloatArray): Float {
+            asked += 1
+            return input[0]
+        }
+    }
+
+    /**
+     * The echo guard (Tai, 2026-10-02; `test_the_microphone_is_ignored_while_the_coach_speaks_but_not_a_held_key`):
+     * while the coach's voice plays, what the microphone hears is ignored -- no utterance starts,
+     * nothing of it is kept for the pre-roll, and an utterance begun before the voice ends as the
+     * player's words alone. Listening resumes with the first frame after the voice. A held
+     * push-to-talk key is heard all the same. Before, the start bar was only raised to 0.85.
+     */
+    @Test
+    fun theMicrophoneIsIgnoredWhileTheCoachSpeaksButNotAHeldKey() {
+        // The frame's value is its speech probability: the echo crosses the raised bar of 0.85.
+        val echo = 0.875f
+        val voice = 0.75f
+        val quiet = 0f
+        val steps = SteppedFrames()
+        val mic = object : FrameSource {
+            override val frames: BlockingQueue<FloatArray> = steps
+            override val detail = "stepped by the test"
+            override val isOpen = true
+            override fun open() = true
+            override fun close() = Unit
+        }
+        fun frames(value: Float, n: Int) = repeat(n) { steps.put(FloatArray(HOP) { value }) }
+        fun count(said: FloatArray, value: Float) = said.count { it == value }
+        val speaking = java.util.concurrent.atomic.AtomicBoolean(false)
+        val starts = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val heard = LinkedBlockingQueue<FloatArray>()
+        val gate = LevelGate()
+        val listener = Listener(
+            mic,
+            gate,
+            onUtterance = { audio, _ -> heard.put(audio) },
+            onSpeechStart = { starts.add("start") },
+            coachSpeaking = { speaking.get() },
+        )
+        listener.setMode("vad")
+        try {
+            // The coach speaks; the microphone hears it loud and long: nothing starts.
+            speaking.set(true)
+            frames(echo, 40)
+            steps.idle()
+            assertEquals(emptyList<String>(), starts.toList())
+            assertTrue(heard.isEmpty())
+            assertEquals(0, gate.asked)
+            // The voice stops: the very next frames are heard, with no echo in their pre-roll.
+            speaking.set(false)
+            frames(voice, 12)
+            frames(quiet, 14)
+            steps.idle()
+            assertEquals(listOf("start"), starts.toList())
+            var said = heard.poll(SteppedFrames.HANG_S, TimeUnit.SECONDS)!!
+            assertEquals(0, count(said, echo))
+            assertTrue(count(said, voice) > 0)
+            // The player is talking when a line begins: the utterance ends as their words alone.
+            frames(voice, 12)
+            steps.idle()
+            assertEquals(listOf("start", "start"), starts.toList())
+            speaking.set(true)
+            frames(echo, 30)
+            steps.idle()
+            said = heard.poll(SteppedFrames.HANG_S, TimeUnit.SECONDS)!!
+            assertEquals(0, count(said, echo))
+            assertEquals(12 * HOP, count(said, voice))
+            assertEquals(listOf("start", "start"), starts.toList())
+            // Push-to-talk: the coach's words before the press are not kept (the pre-roll); what
+            // is said while the key is held is, whatever the voice is doing.
+            listener.setMode("ptt")
+            frames(echo, com.sidecoach.voice.PRE_ROLL_FRAMES)
+            steps.idle()
+            listener.press()
+            frames(voice, 20)
+            steps.idle()
+            listener.release()
+            said = heard.poll(SteppedFrames.HANG_S, TimeUnit.SECONDS)!!
+            assertEquals(0, count(said, echo))
+            assertEquals(20 * HOP, count(said, voice))
+        } finally {
+            steps.free()
+            listener.setMode("off")
+        }
+    }
+
+    /**
      * The key pressed again while the first half was being recognised: that recognition ended
      * after the press and armed the second of quiet, and the first half went alone while the
      * player held the key (`test_a_press_while_the_last_words_are_recognised_keeps_one_question`,
@@ -503,8 +637,10 @@ class PanelListenTest {
             listener.press()
             listener.setMode("vad")
             listener.setMode("ptt")
-            // The fresh press is taken: a second's speech and a release make an utterance.
+            // The fresh press is taken, by the listener's own state as the desktop asserts it: a
+            // second's speech, a 100 ms sleep and a release raced the listener (round 3 audit).
             listener.press()
+            assertTrue("the fresh press was ignored", listener.pressTaken)
             repeat(16000 / HOP) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
             mic.steps.idle()
             listener.release()

@@ -312,14 +312,22 @@ class CoachRunner(
                 val action = if (one.streamed) {
                     "streamed"
                 } else {
-                    PanelVoice.speak(message.trigger.slug, message.text, message.ply, movedOn = one.late)
+                    // A stuck hint a question came behind is shown first, in its place, and not
+                    // spoken: the voice goes to the answer (Tai, 2026-10-02).
+                    PanelVoice.speak(
+                        message.trigger.slug,
+                        message.text,
+                        message.ply,
+                        movedOn = one.late || one.unvoiced,
+                    )
                 }
-                when (action) {
-                    "streamed" -> meta.add("streamed")
-                    "stale" -> meta.add("not spoken: board moved on")
-                    "skip" -> meta.add("not spoken: voice busy")
-                    "text" -> meta.add("text: fast game")
-                    "supersede" -> meta.add("cut in")
+                when {
+                    action == "streamed" -> meta.add("streamed")
+                    one.unvoiced -> meta.add("not spoken: a question came behind it")
+                    action == "stale" -> meta.add("not spoken: board moved on")
+                    action == "skip" -> meta.add("not spoken: voice busy")
+                    action == "text" -> meta.add("text: fast game")
+                    action == "supersede" -> meta.add("cut in")
                 }
                 if (one.late) meta.add("late: asked for a moment that is over") // shown in its place
                 PanelEngine.said(message, one, meta.joinToString(" · "), action)

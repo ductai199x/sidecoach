@@ -1353,6 +1353,12 @@ class Spoken(
      * unsaid, the question was never asked.
      */
     val elicit: Boolean = false,
+    /**
+     * A hint said unasked that a question came behind while it waited ([Speaker.submit]): shown
+     * first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
+     * `Spoken.unvoiced`.
+     */
+    val unvoiced: Boolean = false,
 ) {
     /**
      * Set by [CoachSession.poll]: the moment it was asked for is over (the epoch or the player's
@@ -1368,6 +1374,7 @@ class Spoken(
             message, level, problems, attempts,
             calls.map { ModelCall(it.raw, it.stats, it.candidates, it.passed, "") },
             recorded, streamed, verified, repaired, leaks, notes, epoch, ownMoves, rung, elicit,
+            unvoiced,
         )
         lighter.late = late
         return lighter
@@ -1439,6 +1446,19 @@ const val PACE_MOVES = 4
  */
 internal val UNASKED_HINTS = setOf(Trigger.STUCK, Trigger.DECISIVE_QUESTION)
 
+/**
+ * Said for a question whose reply failed and whose template is empty: a failed reply to the
+ * player never ends in silence (Tai, 2026-10-02). `NOT_ANSWERED`.
+ */
+const val NOT_ANSWERED = "I could not put an answer together just now; ask me again in a moment."
+
+/**
+ * What is said when the model's reply failed: the template, or for a question with none, a short
+ * honest line. `coach._said_for`.
+ */
+internal fun saidFor(request: CoachRequest): String =
+    if (request.fallback.isEmpty() && request.trigger == Trigger.USER_ASK) NOT_ANSWERED else request.fallback
+
 /** How many plies back the coach keeps a position and its facts. */
 const val POSITIONS_KEPT = 40
 
@@ -1505,7 +1525,7 @@ class CoachRequest(
      * voice), or null for a reply that goes out whole once checked. The sink returns false
      * to stop the stream: the board has moved on, or the voice is not wanted.
      */
-    val streamTo: ((String) -> Boolean)? = null,
+    var streamTo: ((String) -> Boolean)? = null,
     /**
      * A mundane reply -- a word on a fine move -- which the Speaker's routine model writes
      * (the same model at less reasoning, by default none: the first sound comes in under a
@@ -1556,7 +1576,15 @@ class CoachRequest(
      */
     val rungByReply: Boolean = false,
     val elicit: Boolean = false,
-)
+) {
+    /**
+     * Set by [Speaker.submit] on a hint said unasked when a question is queued behind it: its text
+     * comes first, as it was said first, and the voice does not say it ([Spoken.unvoiced]).
+     * `_Request.unvoiced`.
+     */
+    @Volatile
+    var unvoiced: Boolean = false
+}
 
 /**
  * The boards along the engine's line, so what the line does reads as real.
@@ -1917,7 +1945,8 @@ class Speaker(
      * come out in the same correct order"): a remark dropped here was never seen, and a lesson
      * dropped took the rule it was charged against and the question it was to end with
      * ([CoachSession.elicitDue]) with it. A hint said unasked keeps its place ahead of the ask
-     * ([UNASKED_HINTS]).
+     * ([UNASKED_HINTS]), and is not spoken: the voice goes to the answer (Tai, 2026-10-02: "the
+     * stuck hint does not need to be voiced but the order should still be preserved").
      */
     fun submit(request: CoachRequest) {
         if (request.trigger != Trigger.USER_ASK) {
@@ -1929,6 +1958,7 @@ class Speaker(
         val ahead = ArrayList<Any>() // said already, the asks before this one, the hints
         val behind = ArrayList<Any>()
         for (item in waiting) {
+            if (item is CoachRequest && item.trigger in UNASKED_HINTS) item.unvoiced = true
             if (item !is CoachRequest || item.trigger == Trigger.USER_ASK ||
                 item.trigger in UNASKED_HINTS
             ) {
@@ -1972,10 +2002,11 @@ class Speaker(
             return speakNow(request)
         } catch (exc: Exception) {
             noteFailure("reply", exc)
-            val shaped = shaped(request, request.fallback)
+            val said = saidFor(request)
+            val shaped = shaped(request, said)
             return Spoken(
                 message = CoachMessage(
-                    text = request.fallback,
+                    text = said,
                     level = shaped.level,
                     trigger = request.trigger,
                     gameId = request.gameId,
@@ -1990,6 +2021,7 @@ class Speaker(
                 ownMoves = request.ownMoves,
                 rung = shaped.rung,
                 elicit = request.elicit,
+                unvoiced = request.unvoiced,
             )
         }
     }
@@ -2007,12 +2039,10 @@ class Speaker(
         if (!request.rungByReply) {
             return Shaped(request.level, null, request.annotations + mentionsIn(text, request.board))
         }
-        // An answer says at least the idea of the position, as a first hint does -- a quiet one
-        // names no square the words could be matched on -- so the ladder never offers the idea
-        // again after an answer was given.
-        var level = DisclosureLevel.of(
-            maxOf(saidLevel(text, request.facts).value, DisclosureLevel.IDEA.value),
-        )
+        // Only what the reply names climbs the ladder: an answer to "am I winning?" that names
+        // nothing of the idea moves nothing, and the stuck hint after it is still the idea (Tai,
+        // 2026-10-02: an answer raised the ladder to the idea whatever it said).
+        var level = saidLevel(text, request.facts)
         if (request.level.value >= DisclosureLevel.LINE.value) level = request.level // a game that is over withholds nothing
         val base = annotationsFor(request.facts, level, request.board, request.trigger)
         return Shaped(level, level, base + mentionsIn(text, request.board))
@@ -2069,19 +2099,21 @@ class Speaker(
                 epoch = request.epoch,
                 ownMoves = request.ownMoves,
                 elicit = request.elicit,
+                unvoiced = request.unvoiced,
             )
         }
+        val streamTo = request.streamTo
         while (attempts < 2 && !(attempts > 0 && closed.count == 0L)) {
             attempts += 1
             var stats: MutableMap<String, Any?> = LinkedHashMap()
             var reader: FirstCandidate? = null
             val streaming = provider as? StreamingProvider
-            if (request.streamTo != null && attempts == 1 && verifier == null && streaming != null) {
+            if (streamTo != null && attempts == 1 && verifier == null && streaming != null) {
                 // The first candidate goes to the voice sentence by sentence as it is
                 // written, each sentence checked before it is said; the stream is
                 // closed once that candidate is complete, the others unwritten.
                 val (limit, _) = directiveLimits(request.messages.last().content.substringAfterLast("# Task"))
-                reader = FirstCandidate(request.streamTo, { t -> problemsOf(t, request) }, limit = limit)
+                reader = FirstCandidate(streamTo, { t -> problemsOf(t, request) }, limit = limit)
             }
             var raw: String
             var failed: Exception? = null
@@ -2187,7 +2219,7 @@ class Speaker(
         val notes: List<String>
         if (problems.isNotEmpty() && !streamed) {
             fallbacks += 1
-            text = request.fallback
+            text = saidFor(request)
             leaks = emptyList()
             notes = emptyList()
         } else {
@@ -2220,6 +2252,7 @@ class Speaker(
             ownMoves = request.ownMoves,
             rung = shaped.rung,
             elicit = request.elicit,
+            unvoiced = request.unvoiced,
         )
     }
 

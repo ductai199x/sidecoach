@@ -56,7 +56,34 @@ object BoardRefine {
      * the part of its ring the frame shows, when that is half the cell or more both ways, and
      * is NaN when it is less.
      */
-    fun cells(gray: Plane, region: Region, cell: Double, pad: Int = 1): DoubleArray {
+    fun cells(gray: Plane, region: Region, cell: Double, pad: Int = 1): DoubleArray =
+        synchronized(medianMemo) {
+            // The medians read from the last grey image, by geometry, with the most rings read
+            // there: a tick reads one geometry several times -- the lock's fit, its readable
+            // cells, its square colours, a re-fit's cells and its phases -- and a geometry read
+            // with more rings around it holds the fewer (`board_detect._cells`, round 3).
+            if (medianPlane.get() !== gray) {
+                medianMemo.clear()
+                medianPlane = java.lang.ref.WeakReference(gray) // an image let go is not held
+            }
+            val key = region to cell
+            val held = medianMemo[key]
+            if (held != null && held.first >= pad) {
+                val skip = held.first - pad
+                val side = 8 + 2 * pad
+                val wide = 8 + 2 * held.first
+                DoubleArray(side * side) { i -> held.second[(i / side + skip) * wide + i % side + skip] }
+            } else {
+                val medians = readCells(gray, region, cell, pad)
+                medianMemo[key] = pad to medians
+                medians.copyOf()
+            }
+        }
+
+    private var medianPlane = java.lang.ref.WeakReference<Plane>(null)
+    private val medianMemo = HashMap<Pair<Region, Double>, Pair<Int, DoubleArray>>()
+
+    private fun readCells(gray: Plane, region: Region, cell: Double, pad: Int): DoubleArray {
         val band = ringBand(cell)
         val side = 8 + 2 * pad
         val out = DoubleArray(side * side) { Double.NaN }

@@ -400,6 +400,7 @@ class CoachPrimitivesTest {
         plan = nullable(o, "plan"),
         ideas = strings(o.getJSONArray("ideas")),
         candidates = strings(o.getJSONArray("candidates")),
+        good = o.optJSONArray("good")?.let { strings(it) } ?: emptyList(),
         threats = strings(o.getJSONArray("threats")),
         line = strings(o.getJSONArray("line")),
         stakes = nullable(o, "stakes"),

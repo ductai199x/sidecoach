@@ -12,6 +12,7 @@ import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.opencv.android.OpenCVLoader
+import java.io.DataOutputStream
 import java.io.File
 
 /**
@@ -126,6 +127,59 @@ class ThemeStoreTest {
                 ThemeStore(damaged).candidates(model.lightBg, model.darkBg)  // must not throw
             }
             damaged.deleteRecursively()
+        }
+        directory.deleteRecursively()
+    }
+
+    /**
+     * A length read from a damaged theme file -- a mask's bits, the embeddings' count and size,
+     * a landing crop's rows and columns -- asked for more memory than there is, and the store
+     * caught the OutOfMemoryError (round 2, finding 9). Each length is held to the bytes left in
+     * the file before anything is allocated by it, so a file that says it holds two billion of
+     * something reads as nothing, and no Error is ever raised (none is caught any more).
+     */
+    @Test
+    fun aDamagedLengthIsRefusedBeforeItIsAllocated() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "themes-store-lengths")
+        val light = doubleArrayOf(181.0, 217.0, 240.0)
+        val dark = doubleArrayOf(99.0, 136.0, 181.0)
+        fun header(out: DataOutputStream) {
+            out.writeInt(ThemeCache.CACHE_VERSION)
+            for (v in light) out.writeDouble(v)
+            for (v in dark) out.writeDouble(v)
+            out.writeBoolean(true)
+        }
+        val cases = mapOf<String, (DataOutputStream) -> Unit>(
+            "mask bits" to { out ->
+                header(out)
+                out.writeInt(1) // one exemplar
+                out.writeUTF("P")
+                out.writeInt(Int.MAX_VALUE) // its tone's bits
+            },
+            "embeddings" to { out ->
+                header(out)
+                repeat(3) { out.writeInt(0) } // no exemplars, piece colours or palette
+                out.writeInt(Int.MAX_VALUE) // vectors
+                out.writeInt(Int.MAX_VALUE) // numbers each
+            },
+            "landing crop" to { out ->
+                header(out)
+                repeat(3) { out.writeInt(0) }
+                repeat(2) { out.writeInt(0) } // no vectors
+                repeat(2) { out.writeInt(0) } // no labels, no rank labels
+                out.writeInt(1) // one crop
+                out.writeUTF("P")
+                out.writeBoolean(true)
+                out.writeInt(1_000_000) // rows
+                out.writeInt(1_000_000) // columns
+            },
+        )
+        for ((name, write) in cases) {
+            directory.deleteRecursively()
+            directory.mkdirs()
+            DataOutputStream(File(directory, "theme-damaged-length.bin").outputStream()).use(write)
+            assertTrue("$name: read as a set", ThemeStore(directory).candidates(light, dark).isEmpty())
         }
         directory.deleteRecursively()
     }

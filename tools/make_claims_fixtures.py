@@ -279,12 +279,14 @@ class RecordedEngine:
         if not legal:
             self.seen[fen] = []
             return []
-        # Three candidate lines whose scores straddle CANDIDATE_MARGIN, so the near-equal
-        # set is sometimes one move and sometimes several. No search, but the same answer
-        # every time for the same board.
+        # Four candidate lines whose scores straddle the grading bands (score.about_as_good,
+        # score.graded_good), so the near-equal set is sometimes one move and sometimes several,
+        # and a move is sometimes good, a little behind, and sometimes not. No search, but the
+        # same answer every time for the same board.
         base = (sum(ord(c) for c in fen) % 401) - 200
+        behind = (0, 1, 30, 80)
         out: list[Line] = []
-        for index in range(min(3, len(legal))):
+        for index in range(min(4, len(legal))):
             pick = legal[(index * 5 + len(legal)) % len(legal)]
             work = board.copy(stack=False)
             work.push(pick)
@@ -292,7 +294,7 @@ class RecordedEngine:
             moves = [pick.uci()]
             if reply:
                 moves.append(reply[(index + len(reply)) % len(reply)].uci())
-            cp = base - index * (1 if index == 1 else 40)
+            cp = base - behind[index]
             out.append(
                 Line(
                     moves=moves,
@@ -314,9 +316,11 @@ class RecordedEngine:
 
 
 def facts_for(board: chess.Board) -> PositionFacts:
-    """Candidates and a threat line that belong to this position, plus one unreadable each."""
+    """Candidates, a good move a little behind them and a threat line that belong to this
+    position, plus one unreadable each."""
     legal = list(board.legal_moves)
     candidates = [board.san(move) for move in legal[:2]] + ["Qz9"]
+    good = [board.san(move) for move in legal[2:3]] + ["Qz8"]
     passed = board.copy(stack=False)
     threats: list[str] = []
     if not board.is_check():
@@ -327,6 +331,7 @@ def facts_for(board: chess.Board) -> PositionFacts:
         side_to_move="white" if board.turn == chess.WHITE else "black",
         phase="middlegame",
         candidates=candidates,
+        good=good,
         threats=threats,
     )
 
@@ -337,6 +342,7 @@ def facts_json(facts: PositionFacts) -> dict:
         "side_to_move": facts.side_to_move,
         "phase": facts.phase,
         "candidates": list(facts.candidates),
+        "good": list(facts.good),
         "threats": list(facts.threats),
     }
 
@@ -363,6 +369,12 @@ def claims_for(board: chess.Board) -> list[C.Claim]:
                 text=f"{kind}: {subject} / {target} / {move}",
             )
         )
+    # A move graded Good, a little behind the best (`facts_for`'s `good`), called good and
+    # called the best: true, and false (desktop T6, 2026-10-02).
+    for san in [board.san(move) for move in legal[2:3]] + ["Qz8"]:
+        for said in (f"{san} is a good move", f"{san} is the best move"):
+            out.append(C.Claim(kind=C.ClaimKind("best"), subject=None, target=None, move=san,
+                               text=said))
     # Each piece of the position by its square: hanging, safe, and what reaches it -- by
     # geometry, so a pinned attacker or a king that may not take back is asked about too.
     for square in asked_squares(board):

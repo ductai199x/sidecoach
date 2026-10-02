@@ -3055,8 +3055,9 @@ class CoachTest {
 
     /**
      * A mistake's verdict landing after the opponent's reply, with the player to move: no question
-     * that sends them to the board, and not what the move allowed (finding 7;
-     * `test_a_late_lesson_asks_nothing_while_they_think`).
+     * that sends them to the board (finding 7). What the move allowed is still said, as in any
+     * lesson: it happened on the board, and nothing of the lesson is held back (Tai, 2026-10-02).
+     * `test_a_late_lesson_asks_nothing_while_they_think`.
      */
     @Test
     fun aLateLessonAsksNothingWhileTheyThink() {
@@ -3066,7 +3067,7 @@ class CoachTest {
         messages(coach)
         val board = Board(SCHOLAR)
         val plays = ArrayList<Move>()
-        for ((ply, san) in listOf(7 to "Bxf7+", 8 to "Ke7")) {
+        for ((ply, san) in listOf(7 to "d3", 8 to "Nxh5")) {
             val before = board.fen()
             val move = board.parseSan(san)!!
             board.push(move)
@@ -3078,6 +3079,24 @@ class CoachTest {
                 ),
                 10.0 + ply,
             )
+            if (ply == 7) {
+                // The engine's look at the position d3 left: the knight takes the queen.
+                val reply = Board(board.fen())
+                val line = ArrayList<String>()
+                for (step in listOf("Nxh5", "Nf3", "d6")) {
+                    val found = reply.parseSan(step)!!
+                    line.add(found.uci())
+                    reply.push(found)
+                }
+                coach.onEvent(
+                    Analysis(
+                        gameId = "g", fen = board.fen(), ply = 7,
+                        lines = listOf(Line(moves = line, depth = 12, expectedScore = 0.75)),
+                        decisive = false, onlyMove = false,
+                    ),
+                    17.5,
+                )
+            }
         }
         coach.onEvent(
             MoveAssessment(
@@ -3088,10 +3107,11 @@ class CoachTest {
         )
         messages(coach)
         val lesson = provider.prompts.indices.map { directiveOf(given(provider, it)) }
-            .first { "The player just played Bxf7+" in it }
+            .first { "The player just played d3" in it }
         assertTrue(lesson, "no question" in lesson)
         assertTrue(lesson, "one question that sends them to find" !in lesson)
-        assertTrue(lesson, "missed or allowed" !in lesson)
+        assertTrue(lesson, "what their move missed or allowed" in lesson)
+        assertTrue(lesson, "What d3 allowed, from the engine's line: after d3, Nxh5 wins your queen" in lesson)
     }
 
     /**
