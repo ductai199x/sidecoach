@@ -169,9 +169,21 @@ def detect_recent(max_age: float = DETECT_MAX_AGE) -> dict[str, Any]:
     import time
 
     now = time.monotonic()
-    if _detected["value"] is None or now - _detected["at"] > max_age:
-        _detected.update({"at": now, "value": detect()})
-    return dict(_detected["value"])
+    value: dict[str, Any] | None = _detected["value"]
+    if value is None or now - _detected["at"] > max_age:
+        value = detect()
+        _detected.update({"at": now, "value": value})
+    return dict(value)
+
+
+def _offset(progress: Any, base: int, total: int) -> Any:
+    """A wheel's download progress as the whole pack's."""
+
+    def report(done: int, _total: int | None) -> None:
+        if progress:
+            progress(base + done, total)
+
+    return report
 
 
 def packs_dir(settings: Settings) -> Path:
@@ -274,13 +286,12 @@ def install(settings: Settings, progress: Any = None) -> Path:
             if progress:
                 progress(done_before, total)
             continue
-        base = done_before
-
-        def report(done: int, _total: int | None, base: int = base) -> None:
-            if progress:
-                progress(base + done, total)
-
-        path = download(wheel["url"], wheels_dir / wheel["filename"], report, wheel.get("sha256"))
+        path = download(
+            wheel["url"],
+            wheels_dir / wheel["filename"],
+            _offset(progress, done_before, total),
+            wheel.get("sha256"),
+        )
         size = size or path.stat().st_size
         unpack_wheel(path, site)
         mark.touch()
