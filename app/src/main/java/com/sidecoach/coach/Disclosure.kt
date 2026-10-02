@@ -117,7 +117,13 @@ data class PositionFacts(
     val plan: String? = null,
     /** The most instructive static features of the position, in the coach's words. */
     val ideas: List<String> = emptyList(),
+    /**
+     * The moves about as good as the best (graded Best or Excellent), and those graded Good, a
+     * little behind them ([gradedMoves]): a good move the player names is said to be good, never
+     * refused as bad.
+     */
     val candidates: List<String> = emptyList(),
+    val good: List<String> = emptyList(),
     val threats: List<String> = emptyList(),
     val line: List<String> = emptyList(),
     /**
@@ -166,6 +172,7 @@ data class PositionFacts(
         out["plan"] = plan
         out["ideas"] = ideas
         out["candidates"] = candidates
+        out["good"] = good
         out["threats"] = threats
         out["line"] = line
         out["stakes"] = stakes
@@ -649,7 +656,39 @@ private val PIECE_WORD = Regex(PIECE_RE)
 /** `re.findall(rf"({_PIECE})s? on ([a-h][1-8])", ...)`: a piece word and its square. */
 private val PIECE_ON_SQUARE = Regex("($PIECE_RE)s? on ([a-h][1-8])")
 
-private val LONG_WORD = Regex("[a-z]{6,}")
+/** A piece named by whose it is: "their king", "your queen", "the opponent's rook". `_OWNED_PIECE`. */
+private val OWNED_PIECE = Regex("(?i)\\b(your|their|the opponent's|opponent's)\\s+($PIECE_RE)s?\\b")
+private val MATE_NAMED = Regex("(?i)\\b(?:check)?mat(?:e|es|ed|ing)\\b")
+private val PROMOTION_NAMED = Regex("(?i)\\bpromot(?:e|es|ed|ing|ion)\\b")
+private val CASTLE_NAMED = Regex("(?<![-A-Za-z0-9])O-O(?:-O)?(?![-A-Za-z0-9])")
+
+/**
+ * What [text] names besides squares and moves: the pieces it names by whose they are ("their
+ * king"), a mate, a promotion. `disclosure._things_named`.
+ */
+private fun thingsNamed(text: String): Set<String> {
+    val found = LinkedHashSet<String>()
+    for (m in OWNED_PIECE.findAll(text)) {
+        val owner = if (m.groupValues[1].lowercase() == "your") "your" else "their"
+        found.add("$owner ${m.groupValues[2].lowercase()}")
+    }
+    if (MATE_NAMED.containsMatchIn(text)) found.add("mate")
+    if (PROMOTION_NAMED.containsMatchIn(text)) found.add("promotion")
+    return found
+}
+
+/**
+ * The moves [text] names in SAN (a piece move, a capture, a promotion, castling), not the bare
+ * squares. `disclosure._moves_in`.
+ */
+private fun movesIn(text: String): List<String> {
+    val out = CASTLE_NAMED.findAll(text).map { it.value }.toMutableList()
+    for (token in tokensOf(text)) {
+        val square = destinationOf(token) ?: continue
+        if (trailingMarksOff(token) != square) out.add(token)
+    }
+    return out
+}
 
 /**
  * Whether [text] names the move [move]: its letters as a whole move, not inside another ("e4" is
@@ -669,10 +708,13 @@ private fun namesMove(text: String, move: String): Boolean {
 }
 
 /**
- * The rung a reply of the AI coach carried, from what it says: the first two moves of the
- * engine's line (LINE), a move the sheet lists as a candidate (MOVE), a square of the target,
- * the piece or the squares that carry the theme (FOCUS), a square or a threat of the key fact or
- * the words of the idea (IDEA), else SILENT -- nothing of the ladder was said.
+ * The rung a reply of the AI coach carried, from what it names: the first two moves of the
+ * engine's line (LINE); a move the sheet lists as a candidate (MOVE); a square of the target, the
+ * piece or the squares that carry the theme, or the piece that does it (FOCUS); a square, a move,
+ * a piece, a mate or a promotion that the idea's facts name -- the goal, the theme, the key fact,
+ * the stakes, the trap, the threats, the target's piece (IDEA); else SILENT -- nothing of the
+ * ladder was said. A reply that only answers "am I winning?" names none of it, and the ladder does
+ * not move (Tai, 2026-10-02: no word-overlap guess, no floor).
  *
  * The ladder of hints (each rung said once, none below one already said) follows this, not a
  * guess from the question's words: with the AI on, the model reads the question and decides what
@@ -687,20 +729,30 @@ fun saidLevel(text: String, facts: PositionFacts): DisclosureLevel {
     val answers = facts.candidates + line.take(1)
     if (answers.any { namesMove(movesText, it) }) return DisclosureLevel.MOVE
     val squares = squaresIn(text)
+    val named = thingsNamed(text)
     val focus = listOfNotNull(facts.target, facts.piece, *facts.focus.toTypedArray())
         .filter { it.isNotEmpty() }.joinToString(" ")
     val focusSquares = squaresIn(focus)
-    if (squares.any { it in focusSquares }) return DisclosureLevel.FOCUS
-    val idea = listOfNotNull(facts.key, facts.stakes, facts.situation, facts.trap)
-        .filter { it.isNotEmpty() }.joinToString(" ")
+    val pieceNamed = !facts.piece.isNullOrEmpty() && named.any { it in thingsNamed(facts.piece) }
+    if (squares.any { it in focusSquares } || pieceNamed) return DisclosureLevel.FOCUS
+    val idea = listOfNotNull(
+        facts.goal,
+        facts.theme,
+        facts.mechanism,
+        facts.key,
+        facts.stakes,
+        facts.situation,
+        facts.trap,
+        facts.target,
+    ).filter { it.isNotEmpty() }.joinToString(" ")
     val ideaSquares = squaresIn(idea)
-    if (squares.any { it in ideaSquares } || facts.threats.any { namesMove(movesText, it) }) {
+    val ideaNamed = thingsNamed(idea)
+    if (
+        squares.any { it in ideaSquares } ||
+        named.any { it in ideaNamed } ||
+        (facts.threats + movesIn(idea)).any { namesMove(movesText, it) }
+    ) {
         return DisclosureLevel.IDEA
     }
-    val words = listOfNotNull(facts.goal, facts.theme, facts.plan, facts.mechanism, facts.stakes)
-        .filter { it.isNotEmpty() }.joinToString(" ").lowercase()
-    val mine = LONG_WORD.findAll(text.lowercase()).map { it.value }.toSet()
-    val ideaWords = LONG_WORD.findAll(words).map { it.value }.toSet()
-    if ((mine intersect ideaWords).size >= 2) return DisclosureLevel.IDEA
     return DisclosureLevel.SILENT
 }

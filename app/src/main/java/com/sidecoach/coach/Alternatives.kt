@@ -1,5 +1,6 @@
 package com.sidecoach.coach
 
+import com.sidecoach.analysis.clearlyWorse
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
@@ -18,8 +19,10 @@ import com.sidecoach.events.Line
  * the middle of an exchange says nothing of material), and never a figure.
  */
 
-/** A line this far behind the best, in expected score, starts a clearly worse move. */
-const val WORSE_MARGIN = 0.10
+/*
+ * A clearly worse move is one the move labels grade a mistake or a blunder ([clearlyWorse]; Tai,
+ * 2026-10-02: the grading bands, not a margin of our own).
+ */
 
 /** How far a line is read: the sheet's own ([LINE_PLIES]). */
 const val READ_PLIES = 8
@@ -96,7 +99,7 @@ fun worseMoves(board: Board, analysis: Analysis, player: Boolean, limit: Int = M
     for (line in lines.drop(1)) {
         val drop = best.expectedScore - line.expectedScore
         val san = firstSan(board, line)
-        if (drop < WORSE_MARGIN || san == null || san in seen) continue
+        if (!clearlyWorse(drop) || san == null || san in seen) continue
         seen.add(san)
         val wrong = wrongWith(board, best, line, player)
         if (wrong != null) named.add(Worse(san, drop, wrong))
@@ -119,7 +122,21 @@ fun worseSaid(worse: List<Worse>, past: Boolean = false): String {
 fun fineSaid(fine: List<String>, past: Boolean = false): String {
     // [past]: of the position the player has moved from ("were all fine there").
     if (fine.size == 1) return if (past) "${fine[0]} was the move there." else "${fine[0]} is the move here."
-    val names = fine.dropLast(1).joinToString(", ") + " and ${fine.last()}"
-    if (past) return "$names were all fine there -- about equally good."
-    return "$names are all fine here -- about equally good."
+    val names = listed(fine)
+    val every = if (fine.size == 2) "both" else "all"
+    if (past) return "$names were $every fine there -- about equally good."
+    return "$names are $every fine here -- about equally good."
 }
+
+/**
+ * The moves graded Good, a little behind the best: "Be7 and d6 are good too, a little behind." --
+ * "" when there are none. `alternatives.good_said`.
+ */
+fun goodSaid(good: List<String>, past: Boolean = false): String {
+    if (good.isEmpty()) return ""
+    val verb = if (past) (if (good.size == 1) "was" else "were") else (if (good.size == 1) "is" else "are")
+    return "${listed(good)} $verb good too, a little behind."
+}
+
+private fun listed(moves: List<String>): String =
+    if (moves.size == 1) moves[0] else moves.dropLast(1).joinToString(", ") + " and ${moves.last()}"

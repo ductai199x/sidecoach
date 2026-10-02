@@ -235,6 +235,7 @@ class ClaimsTest {
         sideToMove = o.getString("side_to_move"),
         phase = o.getString("phase"),
         candidates = strings(o.getJSONArray("candidates")),
+        good = o.optJSONArray("good")?.let { strings(it) } ?: emptyList(),
         threats = strings(o.getJSONArray("threats")),
     )
 

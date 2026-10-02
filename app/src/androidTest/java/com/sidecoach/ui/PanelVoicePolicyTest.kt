@@ -394,6 +394,46 @@ class PanelVoicePolicyTest {
     }
 
     /**
+     * A streamed reply whose first sentence met a fast game was declined: the model's reply was
+     * thrown away and the template shown in its place (Tai, 2026-10-02: kept, never replaced). It is
+     * taken sentence by sentence, captioned, not said, and held whole for the pace like a word on
+     * the page: said once the player slows.
+     * `test_a_streamed_reply_in_a_fast_game_is_kept_and_held_whole_for_the_pace`.
+     */
+    @Test
+    fun aStreamedReplyInAFastGameIsKeptAndHeldWholeForThePace() {
+        val fake = FakeTts()
+        PanelVoice.speaker = fake
+        PanelVoice.voicing = null
+        val coach = Coach(OfflineProvider())
+        coach.onEvent(GameStarted("g", Pieces.Side.WHITE, Board().fen()), 0.0)
+        val board = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            val ply = i + 1
+            val move = board.parseSan(san)!!
+            val before = board.fen()
+            board.push(move)
+            coach.onEvent(MovePlayed("g", ply, san, move.uci(), before, board.fen(), byUser = ply % 2 == 1, thinkMs = 1000), ply.toDouble())
+        }
+        PanelVoice.coach = coach
+        PanelVoice.loopTs = 7.0
+        PanelEngine.set("ply" to 6, "ptt" to false)
+        var sink = PanelVoice.streamSink(Trigger.POST_MISTAKE, 5)!!
+        assertTrue("kept, not declined", sink("Nf6 left f7 to the queen."))
+        assertTrue(sink("Qxf7 is mate now."))
+        assertEquals("a fast game: not said yet", emptyList<String>(), fake.calls.toList())
+        PanelVoice.sayHeldWord(coach, 13.0) // the game slowed
+        assertEquals(listOf("say:Nf6 left f7 to the queen. Qxf7 is mate now."), fake.calls.toList())
+        // Cut off while held (the position left): the rest is captioned and nothing is said later.
+        sink = PanelVoice.streamSink(Trigger.POST_MISTAKE, 5)!!
+        assertTrue(sink("Look at f7."))
+        PanelVoice.positionMovedOn("takeback")
+        assertTrue(sink("Their king has no square."))
+        PanelVoice.sayHeldWord(coach, 30.0)
+        assertEquals(1, fake.calls.count { it.startsWith("say:") })
+    }
+
+    /**
      * The settings page's Listen button (`test_the_preview_line_says_whether_the_voice_could_speak`,
      * `test_voice_labels_read_as_accent_sex_and_name`): a voice that cannot speak says so and
      * nothing breaks; one that can says the line in the voice asked for, under its label, and

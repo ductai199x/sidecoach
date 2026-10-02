@@ -139,9 +139,28 @@ fun evalLoss(before: List<Line>, playedUci: String, afterScore: Double): Double 
     return maxOf(0.0, best.expectedScore - (1.0 - afterScore))
 }
 
+/**
+ * A move this far behind the best is about as good as it: chess.com's Best or Excellent band, as
+ * [labelMove] grades it. The coach's "about equally good" moves are these (Tai, 2026-10-02: the
+ * bands, not an arbitrary margin). `score.about_as_good`.
+ */
+fun aboutAsGood(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Boolean = loss < thresholds.excellent
+
+/**
+ * A move this far behind the best is graded good or better -- Best, Excellent or Good -- and no
+ * inaccuracy ([labelMove]'s flag). `score.graded_good`.
+ */
+fun gradedGood(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Boolean = loss < thresholds.inaccuracy
+
+/**
+ * A move this far behind the best is clearly worse: a mistake or a blunder, as [severityOf] grades
+ * it. `score.clearly_worse`.
+ */
+fun clearlyWorse(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Boolean = loss >= thresholds.mistake
+
 fun severityOf(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Severity = when {
     loss >= thresholds.blunder -> Severity.BLUNDER
-    loss >= thresholds.mistake -> Severity.MISTAKE
+    clearlyWorse(loss, thresholds) -> Severity.MISTAKE
     loss >= thresholds.inaccuracy -> Severity.INACCURACY
     else -> Severity.NONE
 }
@@ -197,7 +216,7 @@ fun labelMove(
     // The engine's own first move lets no mate go, whatever the search after it reports (a
     // long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
     val missed = mateMissed && !isBest
-    val flagged = loss >= thresholds.inaccuracy || missed || allowed
+    val flagged = !gradedGood(loss, thresholds) || missed || allowed
     if (inBook && loss < thresholds.mistake) return Label.BOOK
     if (flagged && chance && !isBest) return Label.MISS
     if (allowed) return Label.BLUNDER
@@ -208,7 +227,7 @@ fun labelMove(
             if (isBest && (decisive || opponentBlundered)) return Label.GREAT
         }
         if (isBest) return Label.BEST
-        return if (loss < thresholds.excellent) Label.EXCELLENT else Label.GOOD
+        return if (aboutAsGood(loss, thresholds)) Label.EXCELLENT else Label.GOOD
     }
     return when (severityOf(loss, thresholds)) {
         Severity.BLUNDER -> Label.BLUNDER

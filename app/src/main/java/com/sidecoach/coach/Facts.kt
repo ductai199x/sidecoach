@@ -2,7 +2,9 @@ package com.sidecoach.coach
 
 import com.sidecoach.analysis.Exchange
 import com.sidecoach.analysis.PositionalFact
+import com.sidecoach.analysis.aboutAsGood
 import com.sidecoach.analysis.bestMoveIdea
+import com.sidecoach.analysis.gradedGood
 import com.sidecoach.analysis.phaseOf
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.analysis.topFeatures
@@ -25,6 +27,7 @@ import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.Line
 import com.sidecoach.events.MotifTag
 
 /**
@@ -139,13 +142,13 @@ val COACH_PIECE_NAMES = arrayOf("", "pawn", "knight", "bishop", "rook", "queen",
 
 private val FACT_VALUES = intArrayOf(0, 1, 3, 3, 5, 9, 0)
 
-/**
- * Candidates within this much of the best line are "the near-equal set": the moves that are all
- * fine, said so when the player asks for the best moves and never refused when they name one (the
- * claim check reads the same set). 0.02 left out a move three hundredths behind that an engine's
- * depth would swap with the best.
+/*
+ * "The near-equal set", the candidates: the moves graded as the move labels grade them, Best or
+ * Excellent ([aboutAsGood]) -- all fine, said so when the player asks for the best moves. The moves
+ * graded Good, a little behind them, are `good`: never refused as bad when the player names one
+ * (the claim check reads both). Tai, 2026-10-02: the grading bands, not a margin of our own (0.02,
+ * then 0.03 to pass a move 0.029 behind). [gradedMoves].
  */
-const val CANDIDATE_MARGIN = 0.03
 
 /**
  * An expected score from the player's side, in words: as the coach says it to the player
@@ -1094,15 +1097,7 @@ fun factsFromAnalysis(
         why = "${board.san(best)}: ${moveReason.replaceFirstChar { it.lowercase() }}"
     }
 
-    val candidates = ArrayList<String>()
-    if (lines.isNotEmpty()) {
-        val top = lines[0].expectedScore
-        for (line in lines) {
-            if (line.moves.isEmpty() || top - line.expectedScore > CANDIDATE_MARGIN) continue
-            val move = toMove(line.moves[0])
-            if (move != null && board.isLegal(move)) candidates.add(board.san(move))
-        }
-    }
+    val (candidates, good) = gradedMoves(board, lines)
 
     var line = if (lines.isNotEmpty()) {
         sanLine(board, lines[0].moves, limit = 8).split(" ").filter { it.isNotEmpty() }
@@ -1135,6 +1130,7 @@ fun factsFromAnalysis(
         plan = plan,
         ideas = ideas,
         candidates = candidates,
+        good = good,
         threats = threats,
         line = line,
         stakes = stakesText,
@@ -1144,6 +1140,29 @@ fun factsFromAnalysis(
         situation = situationText,
         principle = principleSaid,
     )
+}
+
+/**
+ * The first moves of the engine's lines as the move labels grade them against the best line: about
+ * as good as it (Best, Excellent), and good, a little behind (Good) -- in SAN, in the lines' order.
+ * `facts.graded_moves`.
+ */
+fun gradedMoves(board: Board, lines: List<Line>): Pair<List<String>, List<String>> {
+    val fine = ArrayList<String>()
+    val good = ArrayList<String>()
+    if (lines.isEmpty()) return fine to good
+    val top = lines[0].expectedScore
+    for (line in lines) {
+        if (line.moves.isEmpty()) continue
+        val loss = top - line.expectedScore
+        if (!gradedGood(loss)) continue
+        val move = toMove(line.moves[0]) ?: continue
+        if (!board.isLegal(move)) continue
+        val san = board.san(move)
+        if (san in fine || san in good) continue
+        (if (aboutAsGood(loss)) fine else good).add(san)
+    }
+    return fine to good
 }
 
 /**

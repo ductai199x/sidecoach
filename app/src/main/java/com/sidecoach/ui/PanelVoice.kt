@@ -308,7 +308,9 @@ object PanelVoice {
      * No reply is dropped (Tai, 2026-10-02): a reply that is not to be spoken -- stale, skipped, or
      * asked for a moment that is over ([movedOn]) -- is taken sentence by sentence all the same,
      * captioned and kept as the reply's text, and only silent. Declining it, as before, made the
-     * coach say a template in its place.
+     * coach say a template in its place. So is a reply in a fast game ("text"): taken, captioned,
+     * and held whole for the pace as a word on the page is ([heldWord]), said once the player
+     * slows (Tai, 2026-10-02: a streamed reply is kept, never replaced by the template).
      */
     fun streamSink(trigger: Trigger, ply: Int?, movedOn: () -> Boolean = { false }): ((String) -> Boolean)? {
         // No voice yet (the warm-up has not built it): nothing to stream to, as when muted -- the
@@ -318,13 +320,30 @@ object PanelVoice {
         val name = trigger.slug
         var started = false
         var silent = false // began while the push-to-talk key was held, or is not to be spoken
+        var holding = false // a fast game's reply, held whole for the pace
+        val held = ArrayList<String>()
+        var ours: Held? = null // the word it is held as
         var hushedAt = hushed
+        fun hold() {
+            val word = Held(name, held.joinToString(" "), ply, ours?.since ?: (SystemClock.elapsedRealtime() / 1000.0))
+            heldWord = word
+            ours = word
+        }
         return sink@{ sentence ->
             val continues = started
-            if (started && (muted || hushed != hushedAt || silent)) {
+            if (started && holding && !muted && hushed == hushedAt && ours != null && heldWord === ours) {
+                // Not said yet, nor replaced: the sentence joins the reply held for the pace.
+                held.add(sentence)
+                hold()
+                Captions.show(sentence, true)
+                return@sink true
+            }
+            if (started && (muted || hushed != hushedAt || silent || holding)) {
                 // Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is still
                 // the reply -- in the chat, the record and the captions -- only silent.
-                // Declining here cut the reply's text at what had been said.
+                // Declining here cut the reply's text at what had been said. A reply held for
+                // the pace and cut off is not said later either.
+                if (holding && ours != null && heldWord === ours) heldWord = null
                 Captions.show(sentence, true)
                 return@sink true
             }
@@ -352,7 +371,18 @@ object PanelVoice {
                     voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
                 }
                 if (action == "supersede") speaker.stop()
-                if (action == "text") return@sink false // a fast game: held for the pace, not lost
+                if (action == "text") {
+                    // A fast game: on the page now, the whole reply held for the pace and said once
+                    // the player slows ([sayHeldWord]); declined, the model's reply was thrown away
+                    // and the template shown in its place.
+                    started = true
+                    holding = true
+                    held.add(sentence)
+                    hold()
+                    Captions.show(sentence)
+                    PanelEngine.emit("voice", "debug", "held for the pace: ${PanelEngine.elide(sentence, 60)}")
+                    return@sink true
+                }
                 if (action != "speak" && action != "supersede") {
                     // Shown, in its place, not spoken: the rest of the reply follows the same.
                     started = true
