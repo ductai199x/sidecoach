@@ -176,7 +176,10 @@ object PanelVoice {
     fun roomSay(text: String) {
         val speaker = voiceOut() ?: return
         Captions.show(text)
-        if (muted) return
+        // So is the push-to-talk key held: the player is talking, and the coach is silent
+        // everywhere (Tai, 2026-10-01: "if push to talk is on then the coach must be muted"; the
+        // rooms talked on, round 3 audit).
+        if (muted || PanelEngine.pttHeld()) return
         voicing = ROOM_VOICE to null
         speaker.say(text)
     }

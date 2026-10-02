@@ -385,6 +385,11 @@ class PanelVoicePolicyTest {
         fake.calls.clear()
         PanelVoice.roomSay("Nf3 is best.")
         assertTrue(fake.calls.none { it.startsWith("say:") })
+        // The push-to-talk key held: the player is talking, the card is not said (round 3 audit).
+        PanelVoice.setMuted(false)
+        PanelEngine.set("ptt" to true)
+        PanelVoice.roomSay("Rc1 next.")
+        assertTrue(fake.calls.none { it.startsWith("say:") })
     }
 
     /**
