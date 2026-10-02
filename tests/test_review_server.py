@@ -1411,7 +1411,8 @@ def test_saved_reviews_are_relabelled_by_the_new_rules_and_keep_their_words(
     punish the opponent's error; chess.com's great, brilliant and book) and the openings'
     naming are made again from their saved data at startup, once -- and the AI coach's words,
     paid for, are kept to the byte. A review saved with the old rule's labels (every move a
-    miss here) and an old opening name gets today's."""
+    miss here) and an old opening name gets today's -- one relabelled by the rule before the
+    mate rule (stamped 3) too (Tai, 2026-10-02 12:16)."""
     import shutil
 
     from sidecoach.analysis.openings import OpeningBook
@@ -1440,7 +1441,7 @@ def test_saved_reviews_are_relabelled_by_the_new_rules_and_keep_their_words(
     )
     words = json.dumps({"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}})
     store.set_review_words(row.key, "fast", words)
-    store.set_setting(review_room.DERIVED_KEY, "2")
+    store.set_setting(review_room.DERIVED_KEY, "3")
     tables = tmp_path / "openings"
     tables.mkdir()
     shutil.copy(Path(__file__).parent / "openings_sample.tsv", tables / "c.tsv")

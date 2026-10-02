@@ -61,8 +61,9 @@ REVIEW_VERSION = 1
 # when that changes, the reviews kept. 2: the phases are Lichess's Divider's (efdd8a3). 3: the
 # move labels are made again by today's rule (a miss is failing to punish the opponent's
 # error; chess.com's great, brilliant and book) and the openings named as Lichess names them
-# (Tai, 2026-10-02).
-DERIVED = 3
+# (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a longer one -- is a miss
+# (Tai, 2026-10-02 12:16).
+DERIVED = 4
 DERIVED_KEY = "reviews.derived"
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
