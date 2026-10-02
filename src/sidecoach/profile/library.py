@@ -259,6 +259,8 @@ def watched_row(game: GameRow, moves: list[MoveRow]) -> LibraryRow | None:
     pgn.headers["Black"] = you if game.user_side == "black" else them
     pgn.headers["Result"] = game.result or "*"
     pgn.headers["Date"] = time.strftime("%Y.%m.%d", time.gmtime(game.started_at))
+    if game.reason:
+        pgn.headers["Termination"] = game.reason  # how Sidecoach saw it end, for Stats
     if game.time_control:
         pgn.headers["TimeControl"] = game.time_control
     return LibraryRow(

@@ -26,7 +26,14 @@ from typing import Any
 
 from sidecoach.profile import performance
 from sidecoach.profile.game_summary import SHAPES
-from sidecoach.profile.stat_facts import ENDGAMES, KINDS, STRUCTURES, THEMES, standing
+from sidecoach.profile.stat_facts import (
+    ENDGAMES,
+    KINDS,
+    STRUCTURES,
+    THEMES,
+    standing,
+    termination_kind,
+)
 from sidecoach.profile.store import Store
 
 BAD = ("mistake", "miss", "blunder")
@@ -114,27 +121,6 @@ def family(opening: str | None) -> str | None:
         return None
     name = re.sub(r"^[A-E]\d\d\s+", "", opening)
     return name.split(":")[0].strip()
-
-
-def termination_kind(text: str | None) -> str:
-    """How a game ended, from chess.com's and Lichess's Termination header."""
-    t = (text or "").lower()
-    for word, kind in (
-        ("checkmate", "checkmate"),
-        ("resign", "resignation"),
-        ("on time", "time"),
-        ("time forfeit", "time"),
-        ("timeout", "time"),
-        ("abandon", "abandoned"),
-        ("agreement", "agreement"),
-        ("repetition", "repetition"),
-        ("stalemate", "stalemate"),
-        ("insufficient", "insufficient material"),
-        ("50", "fifty moves"),
-    ):
-        if word in t:
-            return kind
-    return "other"
 
 
 class _Data:
