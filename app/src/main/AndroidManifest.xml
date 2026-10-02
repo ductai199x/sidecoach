@@ -50,13 +50,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Debug only: a rendered board on the screen, so the vision can be tried
-             without a chess app in front. -->
-        <activity
-            android:name=".debug.BoardActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:label="Test board" />
+        <!-- The test board (debug.BoardActivity) is the debug build's alone: its own
+             manifest, src/debug/AndroidManifest.xml. -->
 
         <service
             android:name=".capture.CaptureService"

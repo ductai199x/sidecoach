@@ -4,7 +4,9 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 import com.sidecoach.coach.Corrections
-import com.sidecoach.debug.BoardActivity
+
+/** A screen of the app's that is not Sidecoach in front: what it shows is read as a game. */
+interface NotInFront
 
 /**
  * The app, and the one thing it needs to know process-wide: whether one of its own screens
@@ -17,8 +19,9 @@ import com.sidecoach.debug.BoardActivity
  * game. The desktop does the same thing by masking its own window and vetoing its own
  * board by signature (vision/ownboard.py).
  *
- * [BoardActivity] is the exception, and it is a debug screen whose whole purpose is to put
- * a rendered board on the display for the vision to read.
+ * A [NotInFront] screen is the exception: the debug build's test board (debug.BoardActivity,
+ * src/debug), whose whole purpose is to put a rendered board on the display for the vision
+ * to read.
  */
 class SidecoachApp : Application() {
 
@@ -31,11 +34,11 @@ class SidecoachApp : Application() {
         Corrections.load(assets)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
-                if (activity !is BoardActivity) showing++
+                if (activity !is NotInFront) showing++
             }
 
             override fun onActivityPaused(activity: Activity) {
-                if (activity !is BoardActivity) showing--
+                if (activity !is NotInFront) showing--
             }
 
             override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
