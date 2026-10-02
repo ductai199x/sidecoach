@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import chess
+import pytest
 
 from sidecoach.coach.coach import Coach, unlock_for
 from sidecoach.coach.disclosure import Unlock
@@ -27,6 +28,7 @@ from tests.coaching import (
     harness_of,
     mate_analysis,
     mate_missed,
+    mate_played,
     offline_coach,
     play_to_scholar,
     sent,
@@ -339,6 +341,288 @@ def test_a_hint_asked_after_the_move_was_given_says_why_it_beats_what_is_worse()
     assert "has been given already: it is Qxf7#" in directive
     assert "Clearly worse here, and what goes wrong: Qd1 passes up the mate" in directive
     assert "instead of something that looks as good but is clearly worse" in directive
+
+
+# 5, 13. A lesson on a withdrawn move is dropped, and its question was never asked
+
+
+def test_a_lesson_on_a_withdrawn_move_is_neither_shown_nor_spoken() -> None:
+    """poll() skipped only the recording: the lesson on the move taken back was shown and
+    spoken (the deep coach.py review, 2026-10-01)."""
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    mate_missed(coach, 10.0)  # the lesson is queued
+    coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
+    assert drain(coach) == []
+    assert coach.spoken == [] and len(coach.withdrawn) == 1
+    assert coach.policy.last_reason is not None and "no longer has" in coach.policy.last_reason
+
+
+def test_a_question_that_ends_a_dropped_lesson_is_asked_again_not_marked_asked() -> None:
+    """ "What did you expect?" was marked asked before its lesson went out: a lesson dropped
+    ended the question for the game."""
+    from sidecoach.coach.coach import ELICIT_EVERY
+
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    coach._mistakes = ELICIT_EVERY - 1
+    mate_missed(coach, 10.0)
+    assert coach._elicit_asked is not None, "asked, in the lesson queued"
+    coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
+    drain(coach)
+    assert coach._elicit_asked is None, "the lesson was never said: nor was the question"
+
+
+# 6. A question does not delete the lesson on a mistake or the review
+
+
+def _requests(coach: Coach, *triggers: Trigger) -> list:
+    from sidecoach.coach.coach import _Request
+
+    position = coach.positions[6]
+    assert position.facts is not None
+    return [
+        _Request(
+            trigger=trigger,
+            level=DisclosureLevel.IDEA,
+            system="",
+            messages=[{"role": "user", "content": "x"}],
+            facts=position.facts,
+            board=position.board,
+            fallback=trigger.value,
+            ply=6,
+            game_id="g",
+        )
+        for trigger in triggers
+    ]
+
+
+def test_a_question_overtakes_a_remark_but_not_the_lesson_or_the_review() -> None:
+    """Any question deleted the queued lessons and the review (the noise budget was charged
+    for a lesson never said). A remark or a nudge is stale; a lesson and the review wait for
+    the answer, and go after it."""
+    from sidecoach.coach.coach import Speaker
+    from sidecoach.llm.offline import OfflineProvider
+
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    speaker = Speaker(OfflineProvider())
+    for request in _requests(
+        coach,
+        Trigger.STUCK,
+        Trigger.POST_MISTAKE,
+        Trigger.REVIEW,
+        Trigger.POST_MOVE,
+        Trigger.USER_ASK,
+    ):
+        speaker.submit(request)
+    assert speaker.dropped == 2 and speaker.pending == 3
+    speaker.run_pending()
+    assert [s.message.trigger for s in speaker.poll()] == [
+        Trigger.USER_ASK,
+        Trigger.POST_MISTAKE,
+        Trigger.REVIEW,
+    ]
+
+
+# 7. A failure while answering is counted, and the question is answered
+
+
+def test_a_failure_building_a_reply_is_counted_and_the_template_is_said() -> None:
+    """A speaker-thread error left the question with no answer and no template; run_pending
+    did not catch, so no test could see it."""
+    from sidecoach.coach.coach import Speaker
+    from sidecoach.llm.offline import OfflineProvider
+
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    speaker = Speaker(OfflineProvider())
+
+    def boom(request: object) -> None:
+        raise RuntimeError("boom")
+
+    speaker.speak_now = boom  # type: ignore[method-assign]
+    speaker.submit(_requests(coach, Trigger.USER_ASK)[0])
+    speaker.run_pending()
+    said = speaker.poll()
+    assert [s.message.text for s in said] == ["user_ask"], "the template"
+    assert speaker.failures == 1 and speaker.last_error == "reply: RuntimeError: boom"
+    assert said[0].problems == ["the reply failed: RuntimeError: boom"]
+
+
+def test_a_failure_on_the_claims_thread_is_counted_and_the_question_answered() -> None:
+    provider = ScriptedProvider(["Yes, Qxf7 is mate."])
+    coach = Coach(
+        provider,
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        claims=lambda text, board, facts: [],
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    held: list[Callable[[], None]] = []
+    coach.spawn = lambda work, name: held.append(work)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    coach._speak = boom  # type: ignore[method-assign]
+    coach.ask("Is Qxf7 mate?", 8.0)
+    held[0]()  # the worker's end of it: nothing raised
+    assert coach.speaker.failures == 1
+    assert coach.speaker.last_error == "claims check: RuntimeError: boom"
+    answer = drain(coach)
+    assert [m.trigger for m in answer] == [Trigger.USER_ASK]
+    assert "could not work that out" in answer[0].text
+
+
+# 12. The summary's and the named analysis' failures are counted
+
+
+def test_a_failed_summary_is_counted_like_a_failed_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sidecoach.coach.coach as module
+
+    coach = offline_coach()
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("no model")
+
+    monkeypatch.setattr(module, "summarise", boom)
+    coach._summarise()
+    assert coach.speaker.failures == 1
+    assert coach.speaker.last_error == "summary: RuntimeError: no model"
+
+
+# 8. The pattern and the practice are unprompted too
+
+
+def test_the_pattern_and_the_practice_keep_quiet_in_quiet_mode_and_in_bullet() -> None:
+    from sidecoach.events import PuzzleRef, Recommendation
+    from sidecoach.profile import causes
+
+    def evidence(coach: Coach) -> None:
+        from sidecoach.events import ProfileEvidence
+
+        for ply in (9, 13, 17):
+            coach.on_event(
+                ProfileEvidence(
+                    game_id="g",
+                    ply=ply,
+                    phase="middlegame",
+                    expected_loss=0.2,
+                    cause=causes.MISSED_THREAT,
+                ),
+                float(ply),
+            )
+
+    recommended = Recommendation(
+        game_id="g",
+        motif="fork",
+        motif_words="fork",
+        reason="forks cost you most",
+        level=1500,
+        puzzles=[PuzzleRef(id="p1", url="https://example.org/p1", rating=1500)],
+    )
+    for how in ("quiet", "bullet"):
+        coach = offline_coach()
+        start_game(coach)
+        if how == "quiet":
+            coach.quiet = True
+        else:
+            from sidecoach.coach.policy import TimeControl
+
+            coach.policy.time_control = TimeControl.BULLET
+        evidence(coach)
+        coach.on_event(recommended, 20.0)
+        assert drain(coach) == [], how
+    coach = offline_coach()
+    start_game(coach)
+    evidence(coach)
+    coach.on_event(recommended, 20.0)
+    said = [m.text for m in drain(coach)]
+    assert len(said) == 2 and "three times" in said[0] and "For practice" in said[1]
+
+
+# 9. Two questions while the position is read: both are answered
+
+
+def test_two_questions_held_for_the_engine_are_both_answered_in_order() -> None:
+    coach = offline_coach()
+    start_game(coach)
+    coach.ask("what's the best move?", 1.0)
+    coach.ask("what is my opponent threatening?", 2.0)
+    held = drain(coach)
+    assert [m.text for m in held] == ["One moment -- still looking at this position."]
+    board, analysis = load("scholar")
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=board.fen(), kind="position"), 3.0
+    )
+    coach.on_event(analysis, 4.0)
+    answered = drain(coach)
+    assert len(answered) == 2, "the last question did not overwrite the first"
+    assert "Qxf7" in answered[0].text
+
+
+# 10. What the log keeps is bounded
+
+
+def test_the_log_keeps_the_prompts_of_the_last_replies_only() -> None:
+    from sidecoach.coach.coach import SPOKEN_PROMPTS_KEPT, ModelCall, Spoken
+    from sidecoach.events import CoachMessage
+
+    coach = offline_coach()
+    for n in range(SPOKEN_PROMPTS_KEPT + 10):
+        coach.speaker._results.put(
+            Spoken(
+                message=CoachMessage(
+                    text=f"m{n}", level=DisclosureLevel.IDEA, trigger=Trigger.USER_ASK
+                ),
+                level=DisclosureLevel.IDEA,
+                problems=[],
+                attempts=1,
+                calls=[ModelCall("raw", {}, 1, 1, prompt=f"prompt {n}")],
+            )
+        )
+    assert len(coach.poll()) == SPOKEN_PROMPTS_KEPT + 10
+    assert len(coach.spoken) == SPOKEN_PROMPTS_KEPT + 10, "the list itself is the panel's index"
+    kept = [s.calls[0].prompt for s in coach.spoken]
+    assert kept[:10] == [""] * 10 and kept[10] == "prompt 10" and kept[-1] == "prompt 29"
+
+
+def test_the_claim_readings_kept_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sidecoach.coach import draft_claims
+    from sidecoach.coach.coach import CLAIMS_KEPT, Speaker
+    from sidecoach.llm.offline import OfflineProvider
+
+    monkeypatch.setattr(draft_claims, "extract", lambda *args, **kwargs: [])
+    monkeypatch.setattr(draft_claims, "verify", lambda *args, **kwargs: [])
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    speaker = Speaker(OfflineProvider(), claim_reader=OfflineProvider())
+    request = _requests(coach, Trigger.USER_ASK)[0]
+    for n in range(CLAIMS_KEPT + 5):
+        speaker._claim_problems(f"reply number {n}", request)
+    assert len(speaker._claims_seen) == CLAIMS_KEPT
+    assert (request.board.fen(), "reply number 0") not in speaker._claims_seen
+
+
+# 14. The review's sentence counts what it says
+
+
+def test_the_review_sentence_names_every_label_it_counts() -> None:
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    mate_played(coach)  # a best move
+    assert coach._review_template().startswith("1 of your 1 moves were best.")
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves

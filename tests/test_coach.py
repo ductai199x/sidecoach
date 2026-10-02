@@ -2283,10 +2283,12 @@ def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() ->
         else:
             start_game(coach)
         out = drain(coach)  # the reply lands now
-        assert [m.trigger for m in out] == [Trigger.POST_MISTAKE], change
+        # A lesson on a move the board no longer has is neither shown nor spoken, and no turn
+        # of the moment now (the deep coach.py review, 2026-10-01).
+        assert out == [] and len(coach.withdrawn) == 1, change
         assert coach._said_since_move() == [], change
         assert not coach._answering_our_question("the bishop check"), change
-        assert out[0].text not in coach.conversation.render(), change
+        assert coach.withdrawn[0].message.text not in coach.conversation.render(), change
     coach = Coach(
         ScriptedProvider([]),
         policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),

@@ -1154,6 +1154,9 @@ class Spoken:
     # The moment of the game it was asked for (`Coach._epoch`): one that lands after a new
     # game, a takeback or a re-read is no turn of the moment now.
     epoch: int = 0
+    # The lesson ends by asking what the player saw (`Coach._elicit_due`): when it is dropped
+    # unsaid, the question was never asked.
+    elicit: bool = False
 
 
 @dataclass
@@ -1214,6 +1217,10 @@ FAST_PACE_S = 6.0
 PACE_MOVES = 4
 # How many plies back the coach keeps a position and its facts.
 POSITIONS_KEPT = 40
+# The replies the log keeps the prompts of (`Coach._lighten`), and the claim readings the
+# speaker keeps (`Speaker._claims_seen`).
+SPOKEN_PROMPTS_KEPT = 20
+CLAIMS_KEPT = 200
 # An opponent's move that follows the player's within this many seconds came straight away
 # (a bot): the player never faced the position in between, and "that move" they ask about
 # is their own (`Coach._replied_at_once`).
@@ -1286,6 +1293,7 @@ class _Request:
     tools: EngineTools | None = None
     # The moment of the game the request was built in (`Coach._epoch`).
     epoch: int = 0
+    elicit: bool = False
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1519,6 +1527,10 @@ def _retry_wait(exc: Exception, provider: object, elapsed: float) -> float | Non
     return RATE_BACKOFF_S
 
 
+# What a player's question makes stale while it waits unstarted: a word on a move, a nudge.
+_STALE_BY_AN_ASK = frozenset({Trigger.POST_MOVE, Trigger.STUCK, Trigger.DECISIVE_QUESTION})
+
+
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
@@ -1606,6 +1618,13 @@ class Speaker:
                 seen.setdefault(id(usage), usage)
         return list(seen.values())
 
+    def note_failure(self, what: str, exc: Exception) -> None:
+        """Something the coach does for the model's sake failed (a summary, the engine on a
+        move they named, the work of a question): counted and kept for the log, as a failed
+        call is -- a bare `last_error` was never read until the next failure."""
+        self.failures += 1
+        self.last_error = f"{what}: {type(exc).__name__}: {exc}"
+
     @property
     def pending(self) -> int:
         return self._requests.qsize() + (1 if self._busy.is_set() else 0)
@@ -1636,21 +1655,30 @@ class Speaker:
     def submit(self, request: _Request) -> None:
         """Queue a request. An ask goes ahead of any unprompted request still waiting: the
         player is waiting for this one, and a post-move remark or a nudge that has not
-        started yet would only be stale by the time the answer came out."""
-        if request.trigger is Trigger.USER_ASK:
-            kept: list[_Request | Spoken | None] = []
-            while True:
-                try:
-                    item = self._requests.get_nowait()
-                except queue.Empty:
-                    break
-                if isinstance(item, _Request) and item.trigger is not Trigger.USER_ASK:
-                    self.dropped += 1
-                    continue
-                kept.append(item)
-            for item in kept:
-                self._requests.put(item)
-        self._requests.put(request)
+        started yet would only be stale by the time the answer came out. A lesson on a
+        mistake and the review are no remark: the player's question does not make them stale,
+        and dropped, the rule they were charged against and the question they were to end
+        with (`Coach._elicit_due`) went unsaid -- they wait for the answer instead."""
+        if request.trigger is not Trigger.USER_ASK:
+            self._requests.put(request)
+            return
+        waiting: list[_Request | Spoken | None] = []
+        while True:
+            try:
+                waiting.append(self._requests.get_nowait())
+            except queue.Empty:
+                break
+        ahead: list[_Request | Spoken | None] = []  # said already, and the asks before this
+        behind: list[_Request | Spoken | None] = []
+        for item in waiting:
+            if not isinstance(item, _Request) or item.trigger is Trigger.USER_ASK:
+                ahead.append(item)
+            elif item.trigger in _STALE_BY_AN_ASK:
+                self.dropped += 1
+            else:
+                behind.append(item)
+        for item in [*ahead, request, *behind]:
+            self._requests.put(item)
 
     def submit_ready(self, spoken: Spoken, *, now: bool = False) -> None:
         """A message that is already final; it goes out through the same queue, in order --
@@ -1671,7 +1699,33 @@ class Speaker:
             if isinstance(request, Spoken):
                 self._results.put(request)
             elif request is not None:
-                self._results.put(self.speak_now(request))
+                self._results.put(self.answer(request))
+
+    def answer(self, request: _Request) -> Spoken:
+        """`speak_now`, and when it breaks -- not the model's call, which `speak_now` handles,
+        but anything else in building the reply -- the failure counted and the request's
+        template said instead: the player's question was left with no answer at all, and the
+        failure with no mark."""
+        try:
+            return self.speak_now(request)
+        except Exception as exc:  # noqa: BLE001
+            self.note_failure("reply", exc)
+            return Spoken(
+                message=CoachMessage(
+                    text=request.fallback,
+                    level=request.level,
+                    trigger=request.trigger,
+                    game_id=request.game_id,
+                    ply=request.ply,
+                    fen=request.board.fen(),
+                    annotations=list(request.annotations),
+                ),
+                level=request.level,
+                problems=[f"the reply failed: {type(exc).__name__}: {exc}"],
+                attempts=0,
+                epoch=request.epoch,
+                elicit=request.elicit,
+            )
 
     def poll(self) -> list[Spoken]:
         out: list[Spoken] = []
@@ -1721,6 +1775,7 @@ class Speaker:
                 problems=[],
                 attempts=0,
                 epoch=request.epoch,
+                elicit=request.elicit,
             )
         while attempts < 2 and not (attempts and self._closed.is_set()):
             attempts += 1
@@ -1857,6 +1912,7 @@ class Speaker:
             leaks=leaks,
             notes=notes,
             epoch=request.epoch,
+            elicit=request.elicit,
         )
 
     @staticmethod
@@ -2097,6 +2153,8 @@ class Speaker:
             self._claims_seen[key] = [
                 f"false: {p}" for p in draft_claims.verify(claims, request.board, player, line)
             ]
+            while len(self._claims_seen) > CLAIMS_KEPT:  # the oldest readings first
+                del self._claims_seen[next(iter(self._claims_seen))]
         return self._claims_seen[key]
 
     def _leaks(self, text: str, request: _Request) -> list[str]:
@@ -2148,10 +2206,9 @@ class Speaker:
                 if isinstance(request, Spoken):
                     self._results.put(request)
                 else:
-                    self._results.put(self.speak_now(request))
+                    self._results.put(self.answer(request))
             except Exception as exc:  # noqa: BLE001
-                self.failures += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"
+                self.note_failure("worker", exc)
             finally:
                 self._busy.clear()
 
@@ -2504,6 +2561,8 @@ class Coach:
         # The game as the model sees it: one message per move, the coach's turns between.
         self.conversation = Conversation(compact_record=compact_record)
         self.spoken: list[Spoken] = []
+        # What was dropped unsaid for its moment being gone (`_of_a_moment_gone`), for the log.
+        self.withdrawn: deque[Spoken] = deque(maxlen=SPOKEN_PROMPTS_KEPT)
         self._current: _Position | None = None
         self._clock_peak_ms: int | None = None
         # The conversation is read from the caller's thread and from a claims check.
@@ -2546,7 +2605,7 @@ class Coach:
         self._elicit_asked: float | None = None
         # A question asked before the engine had looked at the position on the board: it is
         # answered the moment the analysis lands (see `ask`).
-        self._pending_ask: tuple[str, float] | None = None
+        self._pending_asks: list[tuple[str, float]] = []
         self._elicit_answered = False
         # The moment of the game: a new game, a takeback and a re-read each start another. A
         # reply asked for in an earlier one and landing in this one is not a turn of this one:
@@ -2607,11 +2666,10 @@ class Coach:
             self._current = None
             self.finished = True
             self.conversation.ended(event)
-            if self._pending_ask is not None:
-                # The question held for the engine's look, answered now: nothing is withheld
-                # from a game that is over, and left waiting it was never answered.
-                text, _asked = self._pending_ask
-                self._pending_ask = None
+            # The questions held for the engine's look, answered now: nothing is withheld
+            # from a game that is over, and left waiting they were never answered.
+            asks, self._pending_asks = self._pending_asks, []
+            for text, _asked in asks:
                 self.ask(text, ts)
         elif isinstance(event, Recommendation):
             self._on_recommendation(event, ts)
@@ -2691,14 +2749,14 @@ class Coach:
             # answered the moment its analysis lands -- never from an older position's
             # (Tai, 2026-09-24: a hint pressed as a puzzle appeared got "I have not seen
             # enough of this game yet to say. Give me a move or two.").
-            if self._pending_ask is None:
+            if not self._pending_asks:
                 self._queue_plain(
                     Trigger.USER_ASK,
                     "One moment -- still looking at this position.",
                     ts,
                     turn=False,
                 )
-            self._pending_ask = (text, ts)
+            self._pending_asks.append((text, ts))  # each is answered, in the order asked
             return
         if position is None or position.facts is None:
             position = self._latest_with_facts()
@@ -2862,7 +2920,7 @@ class Coach:
                 # The engine's searches -- the moves named, the line's end -- take up to
                 # seconds each: on the caller's thread (the panel's loop) they stalled the
                 # vision (the deep prompt review, 2026-10-01).
-                self.spawn(answered, "sidecoach-ask")
+                self.spawn(self._guarded(answered, "question", ts, moment), "sidecoach-ask")
             else:
                 answered()
             return
@@ -2888,7 +2946,7 @@ class Coach:
         if self.sync_claims:
             checked()  # replay and evaluation: the request must exist when ask() returns
         else:
-            self.spawn(checked, "sidecoach-claims")
+            self.spawn(self._guarded(checked, "claims check", ts, moment), "sidecoach-claims")
 
     def _ask_profile(self, text: str, ts: float, moment: tuple[int, str | None]) -> None:
         """A question about the player over their games: answered from the record by the
@@ -2920,7 +2978,28 @@ class Coach:
             self.profile_answers.append(("answer", answer))
             self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True, moment=moment)
 
-        self.spawn(run, "profile-ask")
+        self.spawn(self._guarded(run, "record question", ts, moment), "profile-ask")
+
+    def _guarded(
+        self, work: Callable[[], None], what: str, ts: float, moment: tuple[int, str | None]
+    ) -> Callable[[], None]:
+        """A question's work for a worker thread, its failure counted and logged as a failed
+        call is, and the question answered with that rather than left with nothing."""
+
+        def run() -> None:
+            try:
+                work()
+            except Exception as exc:  # noqa: BLE001
+                self.speaker.note_failure(what, exc)
+                self._queue_plain(
+                    Trigger.USER_ASK,
+                    "I could not work that out just now; ask me again in a moment.",
+                    ts,
+                    record_now=True,
+                    moment=moment,
+                )
+
+        return run
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
@@ -2946,16 +3025,29 @@ class Coach:
         now once the coach has read it: wherever the board went meanwhile -- a takeback, a
         re-read, the next game -- "One moment" was a promise (the coach review, 2026-10-01)."""
         position = self._current
-        if self._pending_ask is None or position is None or position.facts is None:
+        if not self._pending_asks or position is None or position.facts is None:
             return
-        text, _asked = self._pending_ask
-        self._pending_ask = None
-        self.ask(text, ts)
+        asks, self._pending_asks = self._pending_asks, []
+        for text, _asked in asks:
+            self.ask(text, ts)
 
     def poll(self) -> list[CoachMessage]:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
+            if self._of_a_moment_gone(spoken):
+                # The lesson or the word on a move the board no longer has -- taken back, the
+                # game over, the board re-read: never shown or spoken, and the question it was
+                # to end with was never asked.
+                self.withdrawn.append(spoken)
+                if spoken.elicit:
+                    self._elicit_asked, self._elicit_answered = None, False
+                self.policy.last_reason = (
+                    f"not said: the {spoken.message.trigger.value} on ply {spoken.message.ply} "
+                    "was about a position the board no longer has"
+                )
+                continue
             self.spoken.append(spoken)
+            self._lighten()
             if not spoken.message.text:
                 # A failed model reply with nothing to fall back on: kept for the log (its
                 # calls say why), said to no one.
@@ -2970,6 +3062,27 @@ class Coach:
         return out
 
     # Internals
+
+    def _of_a_moment_gone(self, spoken: Spoken) -> bool:
+        """Whether a lesson or a word on a move was written for a moment that is over: a
+        takeback, a re-read or a new game came after the request. Only what is about a
+        position by its ply: an answer to the player's question, the review and the
+        practice are theirs in whatever moment they land."""
+        message = spoken.message
+        return (
+            spoken.epoch != self._epoch
+            and message.trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE)
+            and message.ply is not None
+        )
+
+    def _lighten(self) -> None:
+        """What the log keeps of the replies said long ago: their words and checks, not the
+        prompts (each the whole game's harness, up to twice a reply, for as long as the
+        session ran)."""
+        old = len(self.spoken) - SPOKEN_PROMPTS_KEPT - 1
+        if old >= 0:
+            for call in self.spoken[old].calls:
+                call.prompt = ""
 
     def reword(self, persona: str | None, rating: tuple[int, int] | None) -> None:
         """The system message and the templates' register for the player: set at the start
@@ -3041,6 +3154,11 @@ class Coach:
         self._review_lines = lines
         self._speak(Trigger.REVIEW, position, DisclosureLevel.LINE, ts)
 
+    def _unprompted_off(self) -> bool:
+        """Nothing is said unasked: the policy's quiet mode, or bullet, where the pattern and
+        the practice said after the game's moves came regardless (`InterjectionPolicy`)."""
+        return self.quiet or self.policy.time_control is TimeControl.BULLET
+
     def _on_evidence(self, event: ProfileEvidence, ts: float) -> None:
         """A mistake of the player's placed by the player model. The third time one cause
         is behind the session's mistakes, the pattern is said once, with the habit that
@@ -3056,6 +3174,8 @@ class Coach:
         self._causes_seen[event.cause] += 1
         if self._causes_seen[event.cause] < 3 or event.cause in self._pattern_told:
             return
+        if self._unprompted_off():
+            return  # nothing unasked: it comes the next time the cause does
         self._pattern_told.add(event.cause)
         words, habit = HABIT[event.cause]
         text = f"That is three times now: {words}."
@@ -3071,7 +3191,7 @@ class Coach:
     def _on_recommendation(self, event: Recommendation, ts: float) -> None:
         """The practice the profile picked after the review: a line naming the motif and
         the puzzles, on the card; no model call, the card carries the links."""
-        if event.game_id != self.game_id or not event.puzzles:
+        if event.game_id != self.game_id or not event.puzzles or self._unprompted_off():
             return
         n = len(event.puzzles)
         text = (
@@ -3169,7 +3289,7 @@ class Coach:
         if event.by_user and event.think_ms is not None:
             self._think_s.append(event.think_ms / 1000.0)
         if event.by_user:
-            self._pending_ask = None  # they played on: the question is answered by the move
+            self._pending_asks = []  # they played on: the questions are answered by the move
         self.board = board_after(self.board, event)
         self.moves[event.ply] = event
         self._moved_at[event.ply] = ts
@@ -3199,7 +3319,7 @@ class Coach:
                 self.conversation, self.summariser, keep=self.summarise_every, lock=self._lock
             )
         except Exception as exc:  # noqa: BLE001
-            self.speaker.last_error = f"summary: {type(exc).__name__}: {exc}"
+            self.speaker.note_failure("summary", exc)
 
     def _on_takeback(self, event: Takeback, ts: float) -> None:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
@@ -3626,7 +3746,7 @@ class Coach:
                 known=position.analysis.lines if position.analysis is not None else (),
             )
         except Exception as exc:  # noqa: BLE001
-            self.speaker.last_error = f"named analysis: {type(exc).__name__}: {exc}"
+            self.speaker.note_failure("named analysis", exc)
             return []
 
     def _said_since_move(self) -> list[str]:
@@ -3798,8 +3918,13 @@ class Coach:
                 if r.assessment.severity.value != "none":
                     numbered = f"{self.conversation._numbered(r.move)} ({label})"
                     lost.append((r.assessment.expected_loss, r.move.ply, numbered))
-        good = sum(counts.get(k, 0) for k in ("brilliant", "great", "best", "excellent"))
-        text = f"{good} of your {len(judged)} moves were best or excellent."
+        strong = ("brilliant", "great", "best", "excellent")
+        good = sum(counts.get(k, 0) for k in strong)
+        # The count and the words name the same labels: "best or excellent" over a count that
+        # held the great and the brilliant moves too said less than it counted.
+        named = [k for k in strong if counts.get(k)] or ["best", "excellent"]
+        said = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} or {named[-1]}"
+        text = f"{good} of your {len(judged)} moves were {said}."
         # What they keep missing, from the session's causes, before the game has a review.
         kept = [(n, cause) for cause, n in self._causes_seen.items() if n >= 2 and cause in HABIT]
         if kept:
@@ -4120,6 +4245,7 @@ class Coach:
             unlisted=unlisted,
             tools=tools,
             epoch=epoch,
+            elicit=elicit,
         )
         self.speaker.submit(request)
 
