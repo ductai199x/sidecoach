@@ -140,6 +140,9 @@ class MainActivity : ComponentActivity() {
 
         val store = SettingsStore(this)
         val ports = getSharedPreferences("panel", MODE_PRIVATE)
+        // The launch's secret: only this WebView holds it (a cookie in the app's private
+        // cookie store), so no other app on the phone can drive the local server.
+        val token = LocalServer.newToken()
         val port = LocalServer(
             assets,
             api = PanelApi(
@@ -158,6 +161,7 @@ class MainActivity : ComponentActivity() {
                 // outlives the window being rebuilt (a turn of the phone).
                 reviews = { ReviewRooms.shared(applicationContext) },
             ),
+            token = token,
         ).also { server = it }.start(preferred = ports.getInt(PORT_KEY, 0))
         // The same port next time, so the page's origin -- and its saved sizes and switches
         // with it -- stays the same from one launch to the next.
@@ -189,7 +193,9 @@ class MainActivity : ComponentActivity() {
             ): Boolean {
                 val url = request?.url ?: return false
                 // The panel's own routes stay in the window; a link out goes to the browser.
-                if (url.host == "127.0.0.1" || url.host == "localhost") return false
+                // Only this server's port: the secret's cookie goes to any port on the host.
+                if (url.host == "127.0.0.1" && url.port == port) return false
+                if (url.host == "127.0.0.1" || url.host == "localhost") return true
                 runCatching {
                     startActivity(Intent(Intent.ACTION_VIEW, url))
                 }.onFailure { Log.i(TAG, "nothing opens $url") }
@@ -258,7 +264,12 @@ class MainActivity : ComponentActivity() {
         // Everything a session needs loads now, so Start only starts the screen; the splash
         // shows it land. Once: an app already warm opens on the panel.
         PanelWarm.warm(this)
-        view.loadUrl("http://127.0.0.1:$port/" + if (PanelWarm.done) "" else "splash")
+        val origin = "http://127.0.0.1:$port"
+        val first = "$origin/" + if (PanelWarm.done) "" else "splash"
+        // The page loads once the cookie is in the store, so its first call carries it.
+        android.webkit.CookieManager.getInstance().setCookie(origin, LocalServer.cookieFor(token)) {
+            web?.loadUrl(first)
+        }
 
         // Back walks the page's own history -- out of the settings, back to the panel --
         // and leaves the app only when there is nowhere left to go.

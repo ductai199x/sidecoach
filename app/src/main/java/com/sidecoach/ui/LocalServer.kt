@@ -29,6 +29,14 @@ class LocalServer(
     private val assets: AssetManager,
     private val root: String = "web",
     private val api: Api,
+    /**
+     * The launch's secret, as the desktop's sidecar has one (`server.py`, `_bearer`): every
+     * `/api/` route but `/api/health` wants it, as the cookie [COOKIE] (the WebView holds it,
+     * set by the activity) or as `Authorization: Bearer <token>`. Without it any app on the
+     * phone could reach the loopback port and reset the profile, remove games, or point the
+     * coach's server elsewhere to receive the API key. Null serves without one (tests only).
+     */
+    private val token: String? = null,
 ) {
 
     /** What answers `/api/...`; anything else is a file from the asset folder. */
@@ -100,7 +108,8 @@ class LocalServer(
                     serve(client)
                 } catch (_: IOException) {
                     // The page navigated away and dropped the socket: ordinary.
-                } catch (exc: Exception) {
+                } catch (exc: Throwable) {
+                    // An Error too (OutOfMemoryError): one bad request must not end the app.
                     Log.w(TAG, "a connection ended badly: $exc")
                 } finally {
                     runCatching { client.close() }
@@ -116,7 +125,13 @@ class LocalServer(
         // Keep the connection: the page polls four times a second and the panel's assets
         // come in a burst when it loads.
         while (running) {
-            val request = readRequest(input) ?: return
+            val request = try {
+                readRequest(input) ?: return
+            } catch (_: TooLarge) {
+                write(output, Reply(413, "application/json; charset=utf-8", """{"detail":"Request Too Large"}""".toByteArray()))
+                output.flush()
+                return
+            }
             val reply = answer(request)
             write(output, reply)
             output.flush()
@@ -128,6 +143,10 @@ class LocalServer(
         val path: String,
         val query: Map<String, String>,
         val raw: ByteArray,
+        val authorization: String = "",
+        val cookie: String = "",
+        val host: String = "",
+        val origin: String? = null,
     ) {
         val body: String get() = String(raw, Charsets.UTF_8)
     }
@@ -140,14 +159,29 @@ class LocalServer(
         val method = parts[0]
         val target = parts[1]
         var length = 0
+        var authorization = ""
+        var cookie = ""
+        var host = ""
+        var origin: String? = null
+        var headers = 0
         while (true) {
             val header = readLine(input) ?: return null
             if (header.isEmpty()) break
+            if (++headers > MAX_HEADERS) throw TooLarge()
             val colon = header.indexOf(':')
-            if (colon > 0 && header.substring(0, colon).equals("Content-Length", true)) {
-                length = header.substring(colon + 1).trim().toIntOrNull() ?: 0
+            if (colon <= 0) continue
+            val name = header.substring(0, colon)
+            val value = header.substring(colon + 1).trim()
+            when {
+                name.equals("Content-Length", true) -> length = value.toIntOrNull() ?: -1
+                name.equals("Authorization", true) -> authorization = value
+                name.equals("Cookie", true) -> cookie = if (cookie.isEmpty()) value else "$cookie; $value"
+                name.equals("Host", true) -> host = value
+                name.equals("Origin", true) -> origin = value
             }
         }
+        // Never allocate what a header claims beyond the cap: an OutOfMemoryError ends the app.
+        if (length < 0 || length > MAX_BODY) throw TooLarge()
         var body = ByteArray(0)
         if (length > 0) {
             val bytes = ByteArray(length)
@@ -162,7 +196,37 @@ class LocalServer(
         val mark = target.indexOf('?')
         val path = if (mark < 0) target else target.substring(0, mark)
         val query = if (mark < 0) emptyMap() else parseQuery(target.substring(mark + 1))
-        return Request(method, decode(path), query, body)
+        return Request(method, decode(path), query, body, authorization, cookie, host, origin)
+    }
+
+    /** A request over the caps; answered 413 and the connection closed. */
+    private class TooLarge : IOException("request too large")
+
+    /**
+     * Whether the request is addressed to this server by its own name and, when a page sent
+     * it, from this server's own page: a page elsewhere (a browser on the phone, DNS
+     * rebinding) is refused even before the secret is looked at.
+     */
+    private fun ownOrigin(request: Request): Boolean {
+        val names = setOf("127.0.0.1:$port", "localhost:$port")
+        if (request.host !in names) return false
+        val origin = request.origin ?: return true
+        return origin.removePrefix("http://") in names && origin.startsWith("http://")
+    }
+
+    /** Whether [request] carries the launch's secret (always, when the server has none). */
+    private fun authorised(request: Request): Boolean {
+        val secret = token ?: return true
+        val wanted = secret.toByteArray(Charsets.UTF_8)
+        fun same(given: String) =
+            java.security.MessageDigest.isEqual(given.toByteArray(Charsets.UTF_8), wanted)
+        if (request.authorization.startsWith("Bearer ") && same(request.authorization.removePrefix("Bearer "))) {
+            return true
+        }
+        return request.cookie.split(';').any { part ->
+            val pair = part.trim()
+            pair.startsWith("$COOKIE=") && same(pair.removePrefix("$COOKIE="))
+        }
     }
 
     /** A request line or header, up to CRLF; null at the end of the stream. */
@@ -172,6 +236,7 @@ class LocalServer(
             val ch = input.read()
             if (ch < 0) return if (out.isEmpty()) null else out.toString()
             if (ch == '\n'.code) return out.toString().removeSuffix("\r")
+            if (out.length >= MAX_LINE) throw TooLarge()
             out.append(ch.toChar())
         }
     }
@@ -193,6 +258,9 @@ class LocalServer(
 
     private fun answer(request: Request): Reply {
         if (request.path.startsWith("/api/")) {
+            if (request.path != "/api/health" && !(ownOrigin(request) && authorised(request))) {
+                return Reply(401, "application/json; charset=utf-8", """{"ok":false,"error":"unauthorised"}""".toByteArray())
+            }
             val reply = try {
                 api.handle(request.method, request.path, request.query, request.body, request.raw)
             } catch (exc: Exception) {
@@ -283,5 +351,28 @@ class LocalServer(
 
     companion object {
         private const val TAG = "sidecoach.panel"
+
+        /** The cookie the WebView carries the launch's secret in. */
+        const val COOKIE = "sidecoach_token"
+
+        /** The largest body taken: enough for a piece set's images. */
+        const val MAX_BODY = 16 * 1024 * 1024
+
+        /** The longest request line or header, and the most headers, taken. */
+        const val MAX_LINE = 16 * 1024
+        const val MAX_HEADERS = 100
+
+        /** A new secret: 32 random bytes as hex, one per launch. */
+        fun newToken(): String {
+            val bytes = ByteArray(32)
+            java.security.SecureRandom().nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        /**
+         * The Set-Cookie value for [token]: HttpOnly (the page's scripts never see it),
+         * SameSite=Strict, no expiry (it lives as long as the WebView's session).
+         */
+        fun cookieFor(token: String): String = "$COOKIE=$token; Path=/; HttpOnly; SameSite=Strict"
     }
 }

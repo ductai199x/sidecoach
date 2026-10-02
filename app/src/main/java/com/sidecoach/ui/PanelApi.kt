@@ -268,8 +268,11 @@ class PanelApi(
             val id = tag(at)
             val size = wav.getInt(at + 4)
             val start = at + 8
+            // A negative or overlong size walked backwards (-8 looped forever) or off the end.
+            if (size < 0) throw IllegalArgumentException("bad chunk size: $size")
             when (id) {
                 "fmt " -> {
+                    if (size < 16 || start + 16 > raw.size) throw IllegalArgumentException("fmt chunk too short")
                     format = wav.getShort(start).toInt() and 0xffff
                     channels = wav.getShort(start + 2).toInt()
                     rate = wav.getInt(start + 4)
@@ -278,7 +281,9 @@ class PanelApi(
                 "data" -> data = start to minOf(size, raw.size - start)
             }
             if (data != null) break
-            at = start + size + (size and 1)
+            val next = start.toLong() + size + (size and 1)
+            if (next > raw.size) break
+            at = next.toInt()
         }
         if (format != 1) throw IllegalArgumentException("unknown format: $format")
         val (start, length) = data ?: throw IllegalArgumentException("data chunk missing")
