@@ -5030,11 +5030,12 @@ class Coach:
                 # a mating attack" and nothing more.
                 # What the move let them do, from the position it left, when that has
                 # been analysed: the grounded half of "what their move allowed".
-                # Late -- the opponent has replied and the player is thinking again -- what
-                # the move allowed is the threat on the board now, and a question that sends
-                # them to the board is a nudge while they think: "one question that sends
-                # them to find..." asked what the move allowed (the deep prompt review,
-                # 2026-10-01). The lesson is then the better move and what theirs missed.
+                # Late -- the opponent has replied and the player is thinking again -- a
+                # question that sends them to the board is a nudge while they think: "one
+                # question that sends them to find..." asked what the move allowed (the deep
+                # prompt review, 2026-10-01), so the late lesson asks none. What the move
+                # allowed is still said: it has happened on the board, and nothing of the
+                # lesson is held back (Tai, 2026-10-02).
                 now = self._current
                 facing = (
                     now is not None
@@ -5045,7 +5046,7 @@ class Coach:
                 left = self.positions.get(played.ply)
                 allowed = (
                     idea_words.allowed(left.board, left.analysis, played.san)
-                    if left is not None and left.analysis is not None and not facing
+                    if left is not None and left.analysis is not None
                     else None
                 )
                 kind = _cost(assessment.severity, label)
@@ -5077,16 +5078,12 @@ class Coach:
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     "Teach the difference so they spot it next time: why the better move works "
-                    + (
-                        "and what their move missed, "
-                        if facing
-                        else "and what their move missed or allowed, "
-                    )
-                    + "from the sheet of the position they faced -- its goal, its pattern, the "
+                    "and what their move missed or allowed, "
+                    "from the sheet of the position they faced -- its goal, its pattern, the "
                     "tactic when it names one -- as a pattern to remember. "
                     + (
                         "Three sentences at most, no question: they are thinking about their "
-                        "next move now, and what the opponent threatens is theirs to find. "
+                        "next move now. "
                         if facing
                         else "Three sentences at most, then, if you like, one question that "
                         "sends them to find on the board something your reply has not said. "

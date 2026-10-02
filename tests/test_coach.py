@@ -2218,15 +2218,17 @@ def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() ->
 def test_a_late_lesson_asks_nothing_while_they_think() -> None:
     """A verdict landing after the opponent's reply, with the player to move: "one question
     that sends them to find on the board" asked what the move allowed -- the threat they face
-    now, a nudge while they think (the deep prompt review, 2026-10-01). The late lesson is
-    the better move and what theirs missed, no question."""
+    now, a nudge while they think (the deep prompt review, 2026-10-01). The late lesson asks
+    no question. What the move allowed is still said, as in any lesson: it happened on the
+    board, and nothing of the lesson is held back (Tai, 2026-10-02: a late lesson had left it
+    out -- the knight blundered and taken at once, the lesson never said the move hung it)."""
     coach, provider = scripted_coach(["[p=1.0] Qxf7 was mate at once."])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
     board = chess.Board(SCHOLAR)
     plays = []
-    for ply, san in ((7, "Bxf7+"), (8, "Ke7")):
+    for ply, san in ((7, "d3"), (8, "Nxh5")):
         before = board.fen()
         move = board.parse_san(san)
         board.push(move)
@@ -2243,6 +2245,25 @@ def test_a_late_lesson_asks_nothing_while_they_think() -> None:
             ),
             10.0 + ply,
         )
+        if ply == 7:
+            # The engine's look at the position d3 left: the knight takes the queen.
+            reply = chess.Board(board.fen())
+            line = []
+            for step in ("Nxh5", "Nf3", "d6"):
+                found = reply.parse_san(step)
+                line.append(found.uci())
+                reply.push(found)
+            coach.on_event(
+                Analysis(
+                    game_id="g",
+                    fen=board.fen(),
+                    ply=7,
+                    lines=[Line(moves=line, depth=12, expected_score=0.75)],
+                    decisive=False,
+                    only_move=False,
+                ),
+                17.5,
+            )
     verdict = MoveAssessment(
         game_id="g",
         ply=7,
@@ -2255,10 +2276,11 @@ def test_a_late_lesson_asks_nothing_while_they_think() -> None:
     coach.on_event(verdict, 20.0)
     drain(coach)
     directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
-    lesson = next(d for d in directives if "The player just played Bxf7+" in d)
+    lesson = next(d for d in directives if "The player just played d3" in d)
     assert "no question" in lesson
     assert "one question that sends them to find" not in lesson
-    assert "missed or allowed" not in lesson
+    assert "what their move missed or allowed" in lesson
+    assert "What d3 allowed, from the engine's line: after d3, Nxh5 wins your queen" in lesson
 
 
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
