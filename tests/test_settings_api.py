@@ -524,6 +524,29 @@ def test_a_settings_file_the_disk_will_not_take_is_said_never_a_500(
     assert engine.settings.profile.chesscom_user == ""
 
 
+def test_a_number_that_is_not_finite_is_refused_by_its_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: a price of "inf" was taken (the field has no upper bound) and made
+    every cost infinite; the phone, whose settings are JSON, cannot hold it at all. Refused by its
+    field, as the phone refuses it; a file that holds one reads it as its default."""
+    from sidecoach.config import load_settings
+
+    client, engine = _client(tmp_path, monkeypatch)
+    sent = {"settings": {"llm": {"price_prompt_per_m": "inf"}}, "secrets": {}}
+    answer = client.put("/api/settings", json=sent).json()
+    assert answer["ok"] is False
+    assert [(e["loc"], e["type"]) for e in answer["errors"]] == [
+        (["llm", "price_prompt_per_m"], "finite_number")
+    ]
+    assert engine.settings.llm.price_prompt_per_m is None
+    path = tmp_path / "held.toml"
+    path.write_text('[llm]\nprice_prompt_per_m = inf\nmodel = "kept"\n', encoding="utf-8")
+    held = load_settings(path)
+    assert held.llm.price_prompt_per_m is None and held.llm.model == "kept"
+    assert held.unreadable is not None and "llm.price_prompt_per_m" in held.unreadable
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
