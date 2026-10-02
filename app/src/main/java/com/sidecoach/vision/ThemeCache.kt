@@ -3,6 +3,9 @@ package com.sidecoach.vision
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.math.sqrt
 
@@ -181,11 +184,25 @@ class ThemeStore(private val directory: File) {
         return store(model, named)
     }
 
+    /**
+     * Written beside and moved over the old file: written in place, a save cut short (the app
+     * killed, a full disk) left half a file and lost the set it replaced (round 2, finding 9).
+     * A save that fails keeps the old file and returns null (`ThemeCache.save`).
+     */
     private fun store(model: ThemeModel, key: String): String? {
-        directory.mkdirs()
+        val target = path(key)
+        val partial = File(directory, target.name + ".part")
         try {
-            DataOutputStream(path(key).outputStream().buffered()).use { write(it, model) }
+            directory.mkdirs()
+            val file = FileOutputStream(partial)
+            DataOutputStream(file.buffered()).use { out ->
+                write(out, model)
+                out.flush()
+                file.fd.sync()
+            }
+            Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         } catch (e: Exception) {
+            partial.delete()
             return null
         }
         return key
@@ -208,9 +225,13 @@ class ThemeStore(private val directory: File) {
         }
         val found = ArrayList<Pair<String, ThemeModel>>()
         for ((_, file) in near.sortedBy { it.first }) {
+            // Any failure to read is a file not there: a damaged length can ask for more memory
+            // than there is, an Error, not an Exception (round 2, finding 9).
             val model = try {
                 DataInputStream(file.inputStream().buffered()).use { read(it) }
             } catch (e: Exception) {
+                null
+            } catch (e: OutOfMemoryError) {
                 null
             } ?: continue
             found.add(file.name.removePrefix("theme-").removeSuffix(".bin") to model)

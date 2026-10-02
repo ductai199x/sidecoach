@@ -795,7 +795,6 @@ class GamePipeline(
         bottom = side
         model = built
         built.rankLabels = Coordinates.learnRankLabels(frame, geometry, side)
-        cache?.let { it.save(built, learnedSet(it, built, frame, geometry, side)) }
         game.coldSince = null
         game.coldNoticed = false
         forgetClock()
@@ -804,6 +803,15 @@ class GamePipeline(
             it.userSide = side
         }
         bootstraps += 1
+        // Last, and never in the way: an exception here -- a damaged set among the cached ones
+        // -- left the rebuild half done (round 2, finding 9). The theme simply goes unkept.
+        cache?.let {
+            try {
+                it.save(built, learnedSet(it, built, frame, geometry, side))
+            } catch (e: Exception) {
+                // not cached
+            }
+        }
         return true
     }
 

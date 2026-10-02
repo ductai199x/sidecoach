@@ -86,6 +86,46 @@ class ThemeStoreTest {
         directory.deleteRecursively()
     }
 
+    @Test
+    fun aSaveThatFailsKeepsTheSetItWouldReplaceAndDamagedFilesReadAsNothing() {
+        // Round 2, finding 9 (desktop `test_a_save_cut_short_leaves_the_theme_it_replaces`,
+        // `test_a_damaged_theme_file_reads_as_nothing`): a theme file was written in place, so a
+        // save cut short lost the set it replaced.
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val start = Fixtures.all().first { it.name == "start-green" }
+        val geometry = BoardGeometry(Region(start.x, start.y, start.side, start.side), start.cell.toDouble())
+        val directory = File(context.cacheDir, "themes-store-damage").apply { deleteRecursively(); mkdirs() }
+        CellEmbedder.load(context).use { embedder ->
+            val frame = Fixtures.mat(start)
+            val model = checkNotNull(ThemeModel.fromStartPosition(frame, geometry, true, embedder))
+            frame.release()
+            val store = ThemeStore(directory)
+            val key = checkNotNull(store.save(model))
+            val saved = File(directory, "theme-$key.bin")
+            val bytes = saved.readBytes()
+            // The part file cannot be written (a directory stands where it would go): the save
+            // fails, says so, and the set it would replace is whole.
+            File(directory, "theme-$key.bin.part").mkdirs()
+            assertNull("a save that fails says so", store.save(model, key))
+            assertArrayEquals(bytes, saved.readBytes())
+            assertNotNull(ThemeStore(directory).get(model.lightBg, model.darkBg))
+
+            // Cut short or with a byte flipped anywhere, a file reads as a set or as nothing.
+            val damaged = File(context.cacheDir, "themes-store-damaged")
+            val random = java.util.Random(1)
+            val cases = (1 until bytes.size step maxOf(1, bytes.size / 200)).map { bytes.copyOf(it) } +
+                (0 until 200).map { bytes.copyOf().also { b -> val at = random.nextInt(b.size); b[at] = (b[at].toInt() xor 0xFF).toByte() } }
+            for (case in cases) {
+                damaged.deleteRecursively()
+                damaged.mkdirs()
+                File(damaged, "theme-$key.bin").writeBytes(case)
+                ThemeStore(damaged).candidates(model.lightBg, model.darkBg)  // must not throw
+            }
+            damaged.deleteRecursively()
+        }
+        directory.deleteRecursively()
+    }
+
     companion object {
         @JvmStatic
         @BeforeClass
