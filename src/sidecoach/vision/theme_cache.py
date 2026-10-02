@@ -151,9 +151,12 @@ class ThemeCache:
         }
         # Written beside and moved over the old file: written in place, a save cut short
         # (the app killed, a full disk) left half a file and lost the set it replaced
-        # (round 2, finding 9). A save that fails keeps the old file and returns None.
+        # (round 2, finding 9). A save that fails keeps the old file and returns None; one
+        # that fails otherwise (the model would not pickle) raises, to its caller's log.
+        # Either way the part file goes: left behind, nothing ever read or removed it.
         path = self._path(key)
         partial = path.with_name(path.name + ".part")
+        saved = False
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             with partial.open("wb") as handle:
@@ -161,22 +164,27 @@ class ThemeCache:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(partial, path)
+            saved = True
         except OSError as exc:
             log.warning("theme %s not saved: %s", key, exc)
-            with contextlib.suppress(OSError):
-                partial.unlink()
             return None
+        finally:
+            if not saved:
+                with contextlib.suppress(OSError):
+                    partial.unlink()
         return key
 
     @staticmethod
     def _read(path: Path) -> dict | None:
         """A cache payload, or None if it cannot be read: an older format, a truncated
         write, or damaged bytes, which raise whatever the unpickler meets (ValueError,
-        UnicodeDecodeError, ...: round 2, finding 9)."""
+        UnicodeDecodeError, ...: round 2, finding 9). A file that fails to load is logged:
+        `_palette` reads each version of a file once, so once."""
         try:
             with path.open("rb") as handle:
                 payload = pickle.load(handle)  # noqa: S301 - our own local, self-written cache
-        except Exception:  # noqa: BLE001 - any failure to read is a file not there
+        except Exception as exc:  # noqa: BLE001 - any failure to read is a file not there
+            log.warning("theme file %s not read, left out: %r", path.name, exc)
             return None
         if (
             isinstance(payload, dict)

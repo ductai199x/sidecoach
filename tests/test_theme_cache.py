@@ -147,3 +147,45 @@ def test_a_theme_that_cannot_be_saved_still_starts_the_game(tmp_path: Path, monk
         events += pipe.process(synthetic_board(), 0.1 * i)
     assert any(isinstance(e, GameStarted) for e in events)
     assert pipe.model is not None and pipe.bottom == Side.WHITE
+
+
+def test_a_save_that_fails_to_pickle_leaves_no_part_file(tmp_path: Path, monkeypatch) -> None:
+    """Only an OSError removed the part file: a model that would not pickle left its
+    `.part` beside the themes for good, never read and never removed (round 3). Any failure
+    removes it; one that is not the disk's is raised, for the caller to log, and the theme
+    it replaces is kept."""
+    import pickle
+
+    import pytest
+
+    frame = synthetic_board()
+    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
+    assert model is not None and model.light_bg is not None and model.dark_bg is not None
+    cache = ThemeCache(tmp_path)
+    key = cache.save(model)
+    assert key is not None
+
+    def unpicklable(payload: object, handle) -> None:  # noqa: ANN001
+        handle.write(b"\x80\x05half a theme")
+        raise pickle.PicklingError("a lambda in the model")
+
+    monkeypatch.setattr(pickle, "dump", unpicklable)
+    with pytest.raises(pickle.PicklingError):
+        cache.save(model, key=key)
+    monkeypatch.undo()
+    assert [p.name for p in tmp_path.iterdir()] == [f"theme-{key}.pkl"]
+    assert cache.get(model.light_bg, model.dark_bg) is not None
+
+
+def test_a_damaged_theme_file_is_logged_once(tmp_path: Path, caplog) -> None:
+    """A damaged theme file was left out in silence (round 3): it is logged, once while the
+    file stays as it is, however often the cache is asked."""
+    import logging
+
+    (tmp_path / "theme-damaged.pkl").write_bytes(b"cbuiltins\nint\n(S'x'\ntR.")
+    cache = ThemeCache(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="sidecoach.vision.theme_cache"):
+        for _ in range(3):
+            assert cache.candidates(np.array([181, 217, 240.0]), np.array([99, 136, 181.0])) == []
+    said = [r.getMessage() for r in caplog.records if "theme-damaged.pkl" in r.getMessage()]
+    assert len(said) == 1, said
