@@ -41,6 +41,9 @@ class StatsApi(private val files: File) {
     /** `GET /api/stats`: the numbers for the query's filter, each area to work on with its puzzles. `stats_now`. */
     fun stats(query: Map<String, String>, now: Double = System.currentTimeMillis() / 1000.0): JSONObject {
         val numbers = withStore { store ->
+            // A review whose Stats step a kill cut short counts too (no background review here
+            // to catch it up: the review of 2026-10-01).
+            ReviewRoom.keepMissingStats(store)
             Stats.stats(store, filter(query), now).also { drills(it.getJSONArray("work"), files, store) }
         }
         return JSONObject().put("ok", true).put("stats", numbers).put("backlog", JSONObject.NULL)
@@ -51,7 +54,10 @@ class StatsApi(private val files: File) {
      * the figure's selector, `arg` its kind. `stats_positions`.
      */
     fun positions(query: Map<String, String>, now: Double = System.currentTimeMillis() / 1000.0): JSONObject {
-        val found = withStore { Stats.positions(it, filter(query), query["what"] ?: "", query["arg"] ?: "", now) }
+        val found = withStore {
+            ReviewRoom.keepMissingStats(it)
+            Stats.positions(it, filter(query), query["what"] ?: "", query["arg"] ?: "", now)
+        }
         return JSONObject().put("ok", true).put("positions", found)
     }
 

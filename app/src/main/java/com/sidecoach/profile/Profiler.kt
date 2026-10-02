@@ -93,6 +93,8 @@ class Profiler(
         /** The game is over; its review waits for the last verdicts. */
         var end: GameEnded? = null
         var provisional = false  // a position, not yet known to be a game
+        /** Joined from the middle: its clocks say how much time was left, not the time control. */
+        var joined = false
         var endedAt = 0.0
         var reviewed = false
         /** The game's phase so far: a phase reached is never left ([gamePhases]). */
@@ -118,9 +120,13 @@ class Profiler(
     fun onEvent(event: Event, ts: Double): List<Event> {
         if (event is GameStarted) return flush(ts) + start(event, ts)
         if (event is ClockObservation) {
-            clock = event.whiteMs to event.blackMs
+            // A box not read is no news of that side (`clock_observation`): its clock stays as
+            // last read, not set to nothing (the review of 2026-10-01).
+            clock = (event.whiteMs ?: clock.first) to (event.blackMs ?: clock.second)
             val game = game
-            if (game != null && game.timeControl == null && !game.ended) {
+            // A game joined from the middle took the time left for its control (the review of
+            // 2026-10-01): it has none from its clocks.
+            if (game != null && game.timeControl == null && !game.ended && !game.joined) {
                 game.timeControl = timeControlWords(event.whiteMs, event.blackMs)
                 if (game.timeControl != null) store.setGame(game.gameId, mapOf("time_control" to game.timeControl))
             }
@@ -135,6 +141,7 @@ class Profiler(
         if (game.ended && (event is MovePlayed || event is Takeback || event is Resync || event is GameEnded)) {
             return emptyList()
         }
+        if (removed(game)) return emptyList()
         if (event is Analysis && event.gameId != game.gameId) return emptyList()  // the engine's late word
         if (event is MoveAssessment && event.gameId != game.gameId) return emptyList()
         return when (event) {
@@ -174,6 +181,10 @@ class Profiler(
     private fun start(event: GameStarted, ts: Double): List<Event> {
         dropIfProvisional()
         side = event.userSide
+        // The clocks read in the game before are not this one's: an untimed game after a blitz
+        // game finished on 4 seconds had every mistake blamed on the clock (the review of
+        // 2026-10-01).
+        clock = null to null
         if (event.kind != "game") {
             // A puzzle, an analysis board, or a game joined from the middle. A puzzle of the
             // store is followed for its outcome, not as a game; anything else is followed as
@@ -191,6 +202,7 @@ class Profiler(
         game = Game(event.gameId, event.userSide, event.startFen, ts).apply {
             lastFen = event.startFen
             provisional = event.kind != "game"
+            joined = event.kind != "game"
         }
         store.startGame(event.gameId, ts, event.userSide.name.lowercase(), event.startFen, sessionId)
         return emptyList()
@@ -421,12 +433,24 @@ class Profiler(
     }
 
     /**
+     * Whether the player removed the game from their record once it ended (the Games list offers
+     * only finished games): nothing more is kept of it -- the engine's late verdicts, the
+     * coach's words and the review were rows of a game that was gone, and the profile's cells
+     * still counted them (the review of 2026-10-01). It is not reviewed either. `_removed`.
+     */
+    private fun removed(game: Game): Boolean {
+        if (!game.ended || !store.isRemoved("${Store.WATCHED}${game.gameId}")) return false
+        game.reviewed = true
+        return true
+    }
+
+    /**
      * The review of a finished game, once every move of the player's has its verdict or the
      * grace period is up; [force] builds it from what is there.
      */
     private fun maybeReview(game: Game, ts: Double, force: Boolean = false): List<Event> {
         val end = game.end ?: return emptyList()
-        if (game.reviewed) return emptyList()
+        if (game.reviewed || removed(game)) return emptyList()
         val waiting = game.plies.values.any { it.move.byUser && it.assessment == null }
         if (waiting && !force && ts - game.endedAt < REVIEW_GRACE_S) return emptyList()
         game.reviewed = true
@@ -714,10 +738,21 @@ class Profiler(
             return total
         }
 
-        /** The time control from the clock's first reading: "10 min", "3 min", "30 s". */
+        // A clock's first reading this close below a whole minute is that minute ([timeControlWords];
+        // Library.timeClassOf reads the records kept before the same way).
+        const val START_SLACK_MS = 5_000
+
+        /**
+         * The time control from the clock's first reading as a game began: "10 min", "3 min",
+         * "30 s". A reading up to [START_SLACK_MS] short of a whole minute is that minute: the
+         * first reading comes a second or two after the clock started (599000 was "9.98333 min",
+         * a ten-minute game counted as blitz: the review of 2026-10-01). `time_control_words`.
+         */
         fun timeControlWords(whiteMs: Int?, blackMs: Int?): String? {
             val start = listOfNotNull(whiteMs, blackMs).maxOrNull() ?: return null
             if (start <= 0) return null
+            val whole = (start + 59_999) / 60_000
+            if (whole * 60_000 - start <= START_SLACK_MS) return "$whole min"
             if (start >= 60_000) return "${general(start / 60_000.0)} min"
             return "${start / 1000} s"
         }

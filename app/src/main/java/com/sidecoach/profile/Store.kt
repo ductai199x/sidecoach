@@ -138,11 +138,11 @@ class Store(val path: File?) {
         rows("SELECT * FROM games WHERE game_id = ?", gameId, map = ::gameRow).firstOrNull()
     }
 
-    /** The most recent games, newest first. */
-    fun games(limit: Int = 50, finished: Boolean = true): List<GameRow> {
+    /** The most recent games, newest first; every one when [limit] is null. */
+    fun games(limit: Int? = 50, finished: Boolean = true): List<GameRow> {
         val clause = if (finished) "WHERE result IS NOT NULL" else ""
         return lock.withLock {
-            rows("SELECT * FROM games $clause ORDER BY started_at DESC LIMIT $limit", map = ::gameRow)
+            rows("SELECT * FROM games $clause ORDER BY started_at DESC LIMIT ${limit ?: -1}", map = ::gameRow)
         }
     }
 
@@ -407,9 +407,13 @@ class Store(val path: File?) {
         }
     }
 
-    /** The imported games, the latest played first. */
-    fun library(limit: Int = 500): List<LibraryRow> = lock.withLock {
-        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC LIMIT $limit") { libraryRow(it) }
+    /**
+     * Every imported game, the latest played first. Every one: the Games window listed 500 while
+     * Stats counted all (the review of 2026-10-01), and the games past it could not be seen,
+     * opened or removed. `library`.
+     */
+    fun library(): List<LibraryRow> = lock.withLock {
+        rows("SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
     }
 
     fun libraryGame(key: String): LibraryRow? = lock.withLock {
@@ -517,6 +521,19 @@ class Store(val path: File?) {
         rows("SELECT 1 FROM removed WHERE key = ?", key) { true }.isNotEmpty()
     }
 
+    /**
+     * Whether a game (by its library key) is in the player's record: its import in the library,
+     * or Sidecoach's record of the watched game -- gone once removed, or once the profile is
+     * reset. `in_record`.
+     */
+    fun inRecord(key: String): Boolean = lock.withLock {
+        if (key.startsWith(WATCHED)) {
+            rows("SELECT 1 FROM games WHERE game_id = ?", key.removePrefix(WATCHED)) { true }.isNotEmpty()
+        } else {
+            rows("SELECT 1 FROM library WHERE key = ?", key) { true }.isNotEmpty()
+        }
+    }
+
     /** Games the player brought in by hand (a pasted PGN): no longer left out. `unremove`. */
     fun unremove(keys: List<String>) {
         lock.withLock { for (k in keys) exec("DELETE FROM removed WHERE key = ?", k) }
@@ -617,9 +634,14 @@ class Store(val path: File?) {
         }
     }
 
-    /** The reviewed games' facts, each game once: a watched game its import stands for is left out. `stat_games`. */
+    /**
+     * The reviewed games' facts, each game once: a watched game its import stands for is left
+     * out once the import's own facts are kept. Until then the watched game counts (the review of
+     * 2026-10-01: a game whose record differed from its import left Stats the moment the import
+     * came in, until the import was opened and reviewed). `stat_games`.
+     */
     fun statGames(): List<StatGameRow> = lock.withLock {
-        rows("SELECT * FROM stat_games WHERE key NOT IN (SELECT watched FROM twins) ORDER BY played_at") { statGameRow(it) }
+        rows("SELECT * FROM stat_games WHERE key NOT IN ($STOOD_FOR) ORDER BY played_at") { statGameRow(it) }
     }
 
     /** The facts of the games' moves, in order. `stat_moves`. */
@@ -633,12 +655,12 @@ class Store(val path: File?) {
 
     /**
      * Each game's latest review whose facts are not kept yet (a watched game its import stands
-     * for needs none). `reviews_without_stats`.
+     * for needs none once the import's are kept: [statGames]). `reviews_without_stats`.
      */
     fun reviewsWithoutStats(): List<ReviewRow> = lock.withLock {
         rows(
             "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)" +
-                " AND r.key NOT IN (SELECT watched FROM twins)" +
+                " AND r.key NOT IN ($STOOD_FOR)" +
                 " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)",
         ) { reviewRow(it) }
     }
@@ -648,16 +670,25 @@ class Store(val path: File?) {
         rows("SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews) ORDER BY COALESCE(played_at, added_at) DESC") { libraryRow(it) }
     }
 
-    /** A game reviewed whole; its words, if any were prepared for an older review, go. */
-    fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?) {
+    /**
+     * A game reviewed whole; whether it was saved. A review of an older format is replaced, and
+     * its words go with it. One of this format saved already stays: another reviewer finished
+     * first (the review of 2026-10-01: the desktop's background review and a review window on
+     * one game at once -- the window saved first, the player paid for the AI coach's words, and
+     * the background's save wiped them). Nor is a game the player removed meanwhile saved. One
+     * statement, so no other connection's save or removal comes in between. `save_review`.
+     */
+    fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?): Boolean =
         lock.withLock {
             exec(
-                "INSERT OR REPLACE INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
-                    " VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                key, strength, version, reviewedAt, report, summary,
-            )
+                "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
+                    " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS (SELECT 1 FROM removed WHERE key = ?)" +
+                    " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version," +
+                    " reviewed_at = excluded.reviewed_at, report = excluded.report," +
+                    " summary = excluded.summary, words = NULL WHERE reviews.version != excluded.version",
+                key, strength, version, reviewedAt, report, summary, key,
+            ) > 0
         }
-    }
 
     fun review(key: String, strength: String): ReviewRow? = lock.withLock {
         rows("SELECT * FROM reviews WHERE key = ? AND strength = ?", key, strength) { reviewRow(it) }.firstOrNull()
@@ -691,9 +722,20 @@ class Store(val path: File?) {
         ) { it.getString(0) }
     }
 
-    /** A game's review is saved: what any review of it kept part way goes. */
-    fun clearProgress(key: String) {
-        lock.withLock { exec("DELETE FROM review_progress WHERE key = ?", key) }
+    /**
+     * A game's review at [strength] is saved: what a review of it at that strength kept part way
+     * goes -- every strength's when none is named (the game is gone). A Deep review stopped part
+     * way kept its positions only until the game's Standard review was saved or opened, and
+     * started over (the review of 2026-10-01). `clear_progress`.
+     */
+    fun clearProgress(key: String, strength: String? = null) {
+        lock.withLock {
+            if (strength == null) {
+                exec("DELETE FROM review_progress WHERE key = ?", key)
+            } else {
+                exec("DELETE FROM review_progress WHERE key = ? AND strength = ?", key, strength)
+            }
+        }
     }
 
     fun addRecommendation(gameId: String, ts: Double, motif: String, reason: String, level: Int, puzzleIds: List<String>) {
@@ -830,6 +872,9 @@ class Store(val path: File?) {
 
         /** A removed game's rows are kept this long, for Undo (the page offers it for seconds). */
         var UNDO_KEEP_S = 600.0
+
+        /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
+        private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"

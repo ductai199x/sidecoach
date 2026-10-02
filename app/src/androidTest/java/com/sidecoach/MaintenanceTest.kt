@@ -2,21 +2,29 @@ package com.sidecoach
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.GameReview
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.events.GameStarted
+import com.sidecoach.events.Line
 import com.sidecoach.events.MovePlayed
+import com.sidecoach.profile.Library
 import com.sidecoach.profile.Profiler
 import com.sidecoach.profile.PuzzleStore
 import com.sidecoach.profile.Puzzles
 import com.sidecoach.profile.Store
+import com.sidecoach.ui.EngineMaker
 import com.sidecoach.ui.PanelEngine
+import com.sidecoach.ui.ReviewRoom
+import com.sidecoach.ui.SettingsStore
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -141,7 +149,67 @@ class MaintenanceTest {
         }
     }
 
+    /**
+     * The review of 2026-10-01: Reset profile while a game was reviewed emptied the tables under
+     * the review, which then saved itself and its Stats facts for a game no longer in the library
+     * -- Stats counted a game nothing listed and nothing could remove. A game is in the record
+     * while its import or its watched record is; a review saves only such a game. The desktop's
+     * test_a_review_under_way_saves_nothing_for_a_profile_reset_meanwhile (the Pause it keeps is
+     * the desktop's background review's: the phone has none).
+     */
+    @Test
+    fun aReviewUnderWaySavesNothingForAProfileResetMeanwhile() {
+        val files = dir("reset-review")
+        val path = File(files, "profile.sqlite")
+        val row = Library.fromPgn(PGN, listOf("nosegazm")).single()
+        val store = Store(path)
+        store.addLibraryGame(row)
+        store.startGame("w1", 1.0, "black", STARTING_FEN)
+        assertTrue(store.inRecord(row.key) && store.inRecord("watched:w1"))
+        Maintenance.resetProfile(files)
+        assertFalse("reset: no longer in the record", store.inRecord(row.key))
+        assertFalse(store.inRecord("watched:w1"))
+        store.addLibraryGame(row)
+        store.removeGame(row.key)
+        assertFalse("removed: no longer in the record", store.inRecord(row.key))
+        store.close()
+
+        // A review under way when the profile is reset saves nothing. Skipped without the engine.
+        val binary = Engine.binaryIn(app.applicationInfo.nativeLibraryDir)
+        val net = app.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
+        assumeTrue("the engine or its network is missing", binary.exists() && net != null)
+        val other = dir("reset-review-engine")
+        val own = Store(File(other, "profile.sqlite"))
+        own.addLibraryGame(row)
+        var searched = 0
+        val maker = EngineMaker { threads, multipv ->
+            object : Engine(binary, net, threads = threads, hashMb = 64, multipv = multipv) {
+                override fun analyse(
+                    board: Board,
+                    depth: Int?,
+                    timeS: Double?,
+                    multipv: Int?,
+                    pvPlies: Int?,
+                    carryBest: Boolean,
+                    onDepth: ((List<Line>) -> Unit)?,
+                ): List<Line> {
+                    searched += 1
+                    if (searched == 4) Maintenance.resetProfile(other) // pressed while it searches
+                    return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+                }
+            }
+        }
+        val fast = GameReview.STRENGTHS.getValue("fast")
+        assertNull(ReviewRoom.reviewRow(SettingsStore(app), other, row, own, fast, 1, maker))
+        assertNull(own.review(row.key, "fast"))
+        assertTrue(own.statGames().isEmpty())
+        assertTrue(own.progress(row.key, "fast", fast.depth, fast.multipv).isEmpty())
+        own.close()
+    }
+
     private companion object {
+        const val PGN = "[White \"Anakin_737\"]\n[Black \"nosegazm\"]\n[Result \"0-1\"]\n[TimeControl \"600\"]\n\n" +
+            "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. d3 Bc5 5. Nc3 d6 6. h3 Na5 0-1\n"
         const val CSV = "PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,GameUrl,OpeningTags\n" +
             "fork1,r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2,g8f6 f3e5 c6e5," +
             "1000,80,90,500,fork opening short,https://lichess.org/x#3,\n"

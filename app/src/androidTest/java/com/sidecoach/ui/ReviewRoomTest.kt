@@ -16,12 +16,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * A review room on the phone end to end (ui/ReviewRoom.kt), as the page drives it: a game of the
@@ -212,6 +215,179 @@ class ReviewRoomTest {
         assertTrue(reviewed != null)
         assertEquals("the seven positions before the misread move, not searched again", 7, known)
         other.close()
+    }
+
+    /**
+     * The review of 2026-10-01: the desktop's background review and a review window on one game
+     * at once -- the window saved first and the player paid for the AI coach's words; the
+     * background then saved its own review over it, the words with it. The review saved first
+     * stays, words and all; a newer format still replaces it; a removed game is not saved. The
+     * desktop's test_the_review_saved_first_stays_with_the_words_paid_for, test_library.py.
+     */
+    @Test
+    fun theReviewSavedFirstStaysWithTheWordsPaidFor() {
+        val store = Store(null)
+        val row = Library.fromPgn(pgn, listOf("nosegazm")).single()
+        store.addLibraryGame(row)
+        assertTrue(store.saveReview(row.key, "standard", 1, 100.0, "{\"moves\": []}", null))
+        store.setReviewWords(row.key, "standard", "{\"texts\": {\"4\": {\"why\": \"Paid for.\"}}}")
+        val first = store.review(row.key, "standard")
+        assertFalse("a review of this format saved already stays", store.saveReview(row.key, "standard", 1, 150.0, "{}", null))
+        assertEquals("with its words", first, store.review(row.key, "standard"))
+        assertTrue("a newer format replaces it", store.saveReview(row.key, "standard", 2, 200.0, "{}", null))
+        assertNull("its words with it", store.review(row.key, "standard")!!.words)
+        store.removeGame(row.key)
+        assertFalse("removed: not saved", store.saveReview(row.key, "deep", 2, 300.0, "{}", null))
+        assertNull(store.review(row.key, "deep"))
+        store.close()
+
+        // A review finishing second is handed the one saved first.
+        val maker = maker()
+        assumeTrue("the engine or its network is missing", maker != null)
+        val files = File(context.cacheDir, "review-first").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val settings = SettingsStore(context)
+        val fast = GameReview.STRENGTHS.getValue("fast")
+        val own = Store(File(files, "profile.sqlite"))
+        own.addLibraryGame(row)
+        val once = ReviewRoom.reviewRow(settings, files, row, own, fast, 1, maker!!)!!
+        own.setReviewWords(row.key, "fast", "{\"texts\": {}}")
+        val saved = own.review(row.key, "fast")
+        val twice = ReviewRoom.reviewRow(settings, files, row, own, fast, 1, maker)!!
+        assertEquals("the review saved first, and its words", saved, own.review(row.key, "fast"))
+        assertEquals("handed the saved one", once.first.seconds, twice.first.seconds, 0.0)
+        own.close()
+    }
+
+    /** A model whose every answer waits for [go], recording which key moves it was asked about. */
+    private class Held(private val go: CountDownLatch) : LLMProvider {
+        override val name = "held"
+        val asked: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+
+        override fun healthcheck(): Pair<Boolean, String> = true to "held"
+
+        override fun chat(system: String, messages: List<ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean): Completion {
+            asked.add(PLY.find(messages[0].content)?.groupValues?.get(1)?.toInt() ?: -1)
+            go.await(20, TimeUnit.SECONDS)
+            return Completion(
+                text = "### why\nThis gives the opponent time.\n### lesson\nLook at what your opponent can do next.",
+                stats = mapOf("prompt_tokens" to 1000.0, "completion_tokens" to 300.0),
+            )
+        }
+    }
+
+    /**
+     * The review of 2026-10-01: the window closed (the page sends /close as it unloads) while
+     * the AI coach's words were written closed the room's store, and every answer that came
+     * after -- each one paid for -- was thrown away. The room stays open until the words are
+     * saved; opened again meanwhile it goes on, still writing (nothing asked twice), and stays.
+     * No engine: the review is the desktop's, saved (profile/reviews.json). The desktop's
+     * test_the_ai_words_are_kept_when_the_review_closes_while_they_are_written.
+     */
+    @Test
+    fun theAiWordsAreKeptWhenTheReviewClosesWhileTheyAreWritten() {
+        val fixture = JSONObject(InstrumentationRegistry.getInstrumentation().context.assets.open("profile/reviews.json").bufferedReader().use { it.readText() })
+        val games = fixture.getJSONArray("games")
+        val game = (0 until games.length()).map { games.getJSONObject(it) }
+            .first { it.getString("strength") == "fast" && it.getJSONArray("key_plies").length() > 0 }
+        val files = File(context.cacheDir, "review-close-writing").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val storePath = File(files, "profile.sqlite")
+        val row = Library.fromPgn(game.getString("pgn"), listOf("nosegazm")).single()
+        Store(storePath).apply {
+            addLibraryGame(row)
+            assertTrue(saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, game.getJSONObject("reviewed").toString(), game.getJSONObject("summary").toString()))
+        }.close()
+        val settings = SettingsStore(context)
+        val noEngine = EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") }
+
+        fun saved(): JSONObject? = Store(storePath).let { s -> s.review(row.key, "fast").also { s.close() } }
+            ?.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
+
+        var go = CountDownLatch(1)
+        var model = Held(go)
+        val room = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
+        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        assertNull(room.writeWords())
+        room.close()
+        Thread.sleep(1000)
+        assertFalse("open while its words are written", room.closed)
+        assertTrue("opened again: the same room goes on", room.reopen())
+        assertEquals("writing", room.state().getJSONObject("ai").getString("status"))
+        go.countDown()
+        until(room, 20, "words") { it.getJSONObject("ai").getString("status") == "ready" }
+        assertFalse("saved whole", saved()!!.optBoolean("partial", false))
+        val asked = model.asked.size
+        assertEquals("asked once each", game.getJSONArray("key_plies").length(), asked)
+        Thread.sleep(1000)
+        assertFalse("opened again, it stays open", room.closed)
+        room.close()
+        val end = SystemClock.elapsedRealtime() + 5000
+        while (!room.closed && SystemClock.elapsedRealtime() < end) Thread.sleep(50)
+        assertTrue("nothing being written: closed at once", room.closed)
+
+        // Closed while writing, not opened again: open until the words are saved, then closed.
+        Store(storePath).apply { setReviewWords(row.key, "fast", "") }.close()
+        go = CountDownLatch(1)
+        model = Held(go)
+        val again = ReviewRoom(files, settings, row, storePath, "fast", noEngine, model = { model to null })
+        until(again, 10, "loaded again") { it.getString("status") == "ready" }
+        assertNull(again.writeWords())
+        again.close()
+        Thread.sleep(1000)
+        assertFalse(again.closed)
+        go.countDown()
+        val done = SystemClock.elapsedRealtime() + 20_000
+        while (!again.closed && SystemClock.elapsedRealtime() < done) Thread.sleep(50)
+        assertTrue("closed once its words are saved", again.closed)
+        assertFalse("saved whole", saved()!!.optBoolean("partial", false))
+    }
+
+    /**
+     * The review of 2026-10-01: a Deep review stopped part way lost every position it had
+     * measured the moment the game's review at another strength was saved or opened -- what a
+     * review keeps part way went for every strength. Only its own strength's goes. No engine:
+     * the review opened is the desktop's, saved. The desktop's
+     * test_a_deep_review_stopped_part_way_keeps_its_positions_through_standard.
+     */
+    @Test
+    fun aDeepReviewStoppedPartWayKeepsItsPositionsThroughAnotherStrength() {
+        val fixture = JSONObject(InstrumentationRegistry.getInstrumentation().context.assets.open("profile/reviews.json").bufferedReader().use { it.readText() })
+        val games = fixture.getJSONArray("games")
+        val game = (0 until games.length()).map { games.getJSONObject(it) }.first { it.getString("strength") == "fast" }
+        val files = File(context.cacheDir, "review-progress").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val storePath = File(files, "profile.sqlite")
+        val row = Library.fromPgn(game.getString("pgn"), listOf("nosegazm")).single()
+        val deep = GameReview.STRENGTHS.getValue("deep")
+        val fast = GameReview.STRENGTHS.getValue("fast")
+        Store(storePath).apply {
+            addLibraryGame(row)
+            assertTrue(saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, game.getJSONObject("reviewed").toString(), game.getJSONObject("summary").toString()))
+            // Deep stopped part way; a kill between Fast's save and its clearing.
+            addProgress(row.key, "deep", deep.depth, deep.multipv, "a", "{}")
+            addProgress(row.key, "deep", deep.depth, deep.multipv, "b", "{}")
+            addProgress(row.key, "fast", fast.depth, fast.multipv, "c", "{}")
+        }.close()
+        val room = ReviewRoom(files, SettingsStore(context), row, storePath, "fast", EngineMaker { _, _ -> throw AssertionError("a saved review needs no engine") })
+        until(room, 10, "loaded") { it.getString("status") == "ready" }
+        room.close()
+        room.join()
+        val store = Store(storePath)
+        assertEquals("Fast opened: Deep's kept", 2, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        assertEquals("Fast's own gone", 0, store.progress(row.key, "fast", fast.depth, fast.multipv).size)
+        store.clearProgress(row.key, "deep")
+        assertEquals(0, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        store.addProgress(row.key, "deep", deep.depth, deep.multipv, "a", "{}")
+        store.clearProgress(row.key)
+        assertEquals("the game gone: every strength's", 0, store.progress(row.key, "deep", deep.depth, deep.multipv).size)
+        store.close()
     }
 
     companion object {

@@ -72,7 +72,9 @@ class ReviewRoom(
     private val log = DebugLog()
     private val lock = Any()
     private val stop = AtomicBoolean(false)
-    private val stopped = CountDownLatch(1)
+
+    // Counted down by [close]; a room opened again ([reopen]) waits on a new one.
+    @Volatile private var stopped = CountDownLatch(1)
 
     @Volatile var status = "starting" // starting | analysing | ready | failed
         private set
@@ -265,7 +267,12 @@ class ReviewRoom(
             emit("sys", "error", "the AI coach's words failed: $exc")
             return
         }
-        runCatching { store.setReviewWords(key, strength.name, saved.toString()) } // a room closed meanwhile keeps them unsaved
+        // The room stays open while they are written ([run]), so its store is open to keep them.
+        try {
+            store.setReviewWords(key, strength.name, saved.toString())
+        } catch (exc: Exception) { // shown even so; said, never left "writing"
+            emit("sys", "error", "the AI coach's words could not be saved: $exc")
+        }
         synchronized(lock) {
             words = shown
             wordsStatus = "ready"
@@ -358,9 +365,33 @@ class ReviewRoom(
         return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
     }
 
+    /**
+     * The page left. The room closes at its next tick -- once the AI coach's words being written
+     * are saved, if they are ([run]). `close`.
+     */
     fun close() {
-        stop.set(true)
-        stopped.countDown()
+        synchronized(lock) {
+            stop.set(true)
+            stopped.countDown()
+        }
+    }
+
+    /**
+     * Opened again: whether this room goes on. One closed but still open -- its words being
+     * written, or its next tick not come -- stays open; one closed, or whose analysis is
+     * stopping, does not (a new room goes on from what it kept). `reopen`.
+     */
+    fun reopen(): Boolean = synchronized(lock) {
+        when {
+            closed -> false
+            !stop.get() -> true
+            status != "ready" -> false
+            else -> {
+                stop.set(false)
+                stopped = CountDownLatch(1)
+                true
+            }
+        }
     }
 
     fun join(timeoutMs: Long = 5000) = thread.join(timeoutMs)
@@ -379,13 +410,25 @@ class ReviewRoom(
                 }
                 emit("sys", "error", "review failed: $exc")
             }
-            while (!stop.get()) {
-                if (SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS) {
-                    emit("sys", "info", "room idle; closing")
-                    break
-                }
-                stopped.await(TICK_MS, TimeUnit.MILLISECONDS)
+            var halted = false
+            while (true) {
+                val waitOn = synchronized(lock) {
+                    // Closed, or idle, while the AI coach's words are written: open until they are
+                    // saved. Its store closed under them lost every answer that came after, each
+                    // one paid for (the review of 2026-10-01).
+                    val writing = wordsStatus == "writing"
+                    halted = stop.get()
+                    val idle = SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS
+                    if (!writing && (halted || idle)) {
+                        closed = true
+                        null
+                    } else {
+                        stopped
+                    }
+                } ?: break
+                if (halted) Thread.sleep(TICK_MS) else waitOn.await(TICK_MS, TimeUnit.MILLISECONDS)
             }
+            if (!halted) emit("sys", "info", "room idle; closing")
         } finally {
             closed = true
             runCatching { store.close() }
@@ -399,7 +442,8 @@ class ReviewRoom(
         val saved = store.review(key, strength.name) ?: return false
         if (saved.version != REVIEW_VERSION) return false
         val reviewed = ReviewJson.reviewed(saved.report)
-        runCatching { store.clearProgress(key) } // a kill between the save and the clearing
+        runCatching { store.clearProgress(key, strength.name) } // a kill between the save and the clearing
+        runCatching { keepMissingStats(store, key) } // and between the save and its Stats facts
         // Its words ready with it: the page stops asking once the review is. Words the app was
         // closed in the middle of writing are the answers paid for so far, kept to go on from.
         val kept = saved.words?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
@@ -432,7 +476,16 @@ class ReviewRoom(
             makeEngine = makeEngine,
             onProgress = { d, t -> synchronized(lock) { this.done = d; total = t } },
             stop = stop,
-        ) ?: return
+        ) ?: run {
+            if (!stop.get()) { // not stopped: the game went from the record meanwhile
+                synchronized(lock) {
+                    status = "failed"
+                    error = "This game is no longer in your record."
+                }
+                emit("sys", "warn", "$key left the record while it was reviewed")
+            }
+            return
+        }
         val (reviewed, summary) = done
         ready(reviewed, summary)
         emit("sys", "info", "reviewed in ${String.format(Locale.ROOT, "%.1f", reviewed.seconds)}s")
@@ -601,12 +654,15 @@ class ReviewRoom(
                 for (engine in engines) runCatching { engine.close() }
             }
             if (stop != null && stop.get()) return null
-            if (store.isRemoved(row.key)) { // taken out of the player's record while it was reviewed
+            if (!store.inRecord(row.key)) {
+                // Taken out of the player's record while it was reviewed: removed, or the profile
+                // reset (the review of 2026-10-01: a review saved after a reset left Stats a game
+                // that nothing listed and nothing could remove).
                 store.clearProgress(row.key)
                 return null
             }
             val summary = GameSummaries.summarize(reviewed)
-            store.saveReview(
+            val saved = store.saveReview(
                 row.key,
                 strength.name,
                 REVIEW_VERSION,
@@ -614,9 +670,37 @@ class ReviewRoom(
                 ReviewJson.reviewed(reviewed).toString(),
                 ReviewJson.summary(summary).toString(),
             )
-            store.clearProgress(row.key)
+            if (!saved) {
+                // Another review of the game at this strength finished first and stays, with any
+                // words the player paid for on it (the review of 2026-10-01): this one is handed
+                // that one. Null if the game was removed.
+                val kept = store.review(row.key, strength.name)
+                if (kept == null) {
+                    store.clearProgress(row.key)
+                    return null
+                }
+                store.clearProgress(row.key, strength.name)
+                return ReviewJson.reviewed(kept.report) to ReviewJson.summary(kept.summary ?: "{}")
+            }
+            // What this strength's review kept part way goes; another strength's stays, to go on from.
+            store.clearProgress(row.key, strength.name)
             StatFacts.keepStats(store, strength.name, reviewed, row)
             return reviewed to summary
+        }
+
+        /**
+         * Each saved review whose Stats facts are missing -- a kill between saving it and keeping
+         * them -- has them kept now. The desktop's background review catches these up
+         * (`backlog._keep_saved`); the phone has none, so such a game never reached Stats (the
+         * review of 2026-10-01): Stats and a review opened catch it up instead. A review that
+         * no longer reads is left as it is.
+         */
+        fun keepMissingStats(store: Store, key: String? = null) {
+            for (review in store.reviewsWithoutStats()) {
+                if (key != null && review.key != key) continue
+                val row = Library.find(store, review.key) ?: continue
+                runCatching { StatFacts.keepStats(store, review.strength, ReviewJson.reviewed(review.report), row) }
+            }
         }
 
         /**
@@ -656,7 +740,7 @@ class ReviewRoom(
                 was.getJSONObject("start").put("game_id", imported)
                 was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
                 val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: continue
-                store.saveReview(
+                val saved = store.saveReview(
                     imported,
                     old.strength,
                     REVIEW_VERSION,
@@ -664,8 +748,9 @@ class ReviewRoom(
                     ReviewJson.reviewed(reviewed).toString(),
                     ReviewJson.summary(GameSummaries.summarize(reviewed)).toString(),
                 )
+                if (!saved) continue // reviewed meanwhile (that review stays, with its words), or removed
                 old.words?.takeIf { it.isNotEmpty() }?.let { store.setReviewWords(imported, old.strength, it) }
-                store.clearProgress(imported)
+                store.clearProgress(imported, old.strength)
                 StatFacts.keepStats(store, old.strength, reviewed, row)
                 carried.add(imported)
             }
@@ -749,7 +834,7 @@ class ReviewRooms(
 
     fun open(key: String, strength: String = "standard"): ReviewRoom? = synchronized(lock) {
         val room = rooms[key]
-        if (room != null && !room.closed && room.strength.name == strength) return room
+        if (room != null && room.strength.name == strength && room.reopen()) return room
         val row = row(key) ?: return null
         room?.close()
         ReviewRoom(
