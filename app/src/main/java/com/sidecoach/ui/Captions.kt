@@ -39,6 +39,65 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+/** How fast the box goes through words longer than it shows, in characters a second: about the
+ * pace the coach's voice says them (some 15 a second), so the words in view are the ones being
+ * said (Tai, 2026-10-02: a line longer than the box scrolls through it at a reading pace, never
+ * cut off). The desktop's `captions.READ_CPS`. */
+const val READ_CPS = 15.0
+
+/** How often the box looks where the reading is while there are words left to read
+ * (`captions.PACE_TICK_MS`). */
+const val PACE_TICK_MS = 100L
+
+/** The words as laid out in the box: how many rows, and the row a character is on. */
+interface CaptionRows {
+    val count: Int
+    fun rowOf(offset: Int): Int
+}
+
+/**
+ * Where the reader of the box is, in characters, and so which rows it shows (the desktop's
+ * `captions.Pace`). Words longer than the box were shown by their end only: the box jumped to its
+ * foot with every line, and the start of a long one was never on screen (voice finding 18). Now
+ * the row being read is the box's first, and the reading moves on at [cps]; at the end of the words
+ * the box shows its last rows, as before. The time is given by the caller (ms), never read here.
+ */
+class CaptionPace(val cps: Double = READ_CPS) {
+    /** The characters read so far. */
+    var read = 0.0
+        private set
+    private var at = 0L
+
+    /** Everything before [offset] counted as read, at [now]: a box that comes up starts there. */
+    fun from(offset: Int, now: Long) {
+        read = max(0, offset).toDouble()
+        at = now
+    }
+
+    /** The time is [now]: the reading has moved on, never past the [length] of the words. A reader
+     * at the end waits there, so the next words are read from when they come. */
+    fun advance(now: Long, length: Int) {
+        read = min(length.toDouble(), read + max(0L, now - at) * cps / 1000.0)
+        at = now
+    }
+
+    /** The oldest [cut] characters dropped from the words. */
+    fun shift(cut: Int) {
+        read = max(0.0, read - cut)
+    }
+
+    /** Whether everything in [length] characters is read. */
+    fun done(length: Int): Boolean = read >= length
+
+    /** The first row to show, [visible] rows tall: the row being read, never past the last rows. */
+    fun top(rows: CaptionRows, visible: Int, length: Int): Int {
+        val last = max(0, rows.count - visible)
+        if (length <= 0) return last
+        val row = rows.rowOf(min(read.toInt(), length - 1))
+        return max(0, min(row, last))
+    }
+}
+
 /**
  * The coach's words in a box over other apps, the way Live Caption shows speech (Tai,
  * 2026-09-23: "behave like Live Caption"; the desktop's `routes/captions` is its port). While you
@@ -79,6 +138,9 @@ object Captions {
     @Volatile internal var hideAfterMs = HIDE_AFTER_MS
     @Volatile internal var controlsMs = CONTROLS_MS
     private const val TICK_MS = 80L
+
+    /** How long the box takes to glide one row on (the desktop's is the browser's smooth scroll). */
+    private const val GLIDE_MS = 250L
     private const val KEEP_CHARS = 1200
 
     private val main = Handler(Looper.getMainLooper())
@@ -128,6 +190,19 @@ object Captions {
     private var box: Box? = null
     private var target: Target? = null
     private var expanded = false
+
+    /** Where the reader of the box is: a line longer than the box scrolls through it ([CaptionPace]). */
+    private val pace = CaptionPace()
+
+    /** The box looks where the reading is, every [PACE_TICK_MS] while words are left to read; the
+     * last words read, the fade waits its full time from then. */
+    private val paceTick: Runnable = object : Runnable {
+        override fun run() {
+            main.removeCallbacks(this)
+            val view = box ?: return
+            if (!view.follow()) main.postDelayed(this, PACE_TICK_MS) else if (saying.isEmpty()) hideSoon()
+        }
+    }
 
     /** The setting: captions on or off. [ask] opens Android's page to allow the overlay. */
     fun configure(context: Context, enabled: Boolean, ask: Boolean = false) {
@@ -215,7 +290,10 @@ object Captions {
      */
     private fun restore() {
         if (!keep || !on || quitted || box != null) return
-        if (ensureBox()) box?.setText(said.toString())
+        if (ensureBox()) {
+            pace.from(said.length, SystemClock.uptimeMillis()) // back with the last words, as they were left
+            box?.setText(said.toString())
+        }
     }
 
     /**
@@ -239,6 +317,7 @@ object Captions {
         main.post {
             if (quitted || box != null || said.isEmpty()) return@post
             if (ensureBox()) {
+                pace.from(said.length, SystemClock.uptimeMillis())
                 box?.setText(said.toString())
                 hideSoon()
             }
@@ -302,8 +381,15 @@ object Captions {
         // A box fading out went with the line that came during its fade; the sample's box lets
         // every touch through, and kept on screen it stayed untouchable (voice findings 3, 8).
         box?.let { if (it.fading || (!force && !it.touchable)) discardBox() }
+        // Words up already are read on from where the reader is; a box coming up starts at the
+        // new line, the words before it read.
+        val now = SystemClock.uptimeMillis()
+        val reading = box != null
+        if (reading) pace.advance(now, said.length)
         if (said.isNotEmpty()) said.append(if (continues) " " else "\n")
+        val whole = said.length
         trim()
+        if (reading) pace.shift(whole - said.length) else pace.from(said.length, now)
         saying = line(text)
         sayingFrom = SystemClock.uptimeMillis()
         sayingMs = speechMs
@@ -419,7 +505,8 @@ object Captions {
         val view = box ?: return
         // Up while the voice speaks, as the desktop's box is (its poll's `speaking`): a flat five
         // seconds from the line's start faded it under a long line still being said (finding 9).
-        if (view.busy || voiceSpeaking()) {
+        // Words still being gone through keep it up too: it never fades on a line not yet shown.
+        if (view.busy || voiceSpeaking() || !view.readThrough()) {
             hideSoon()
             return
         }
@@ -436,6 +523,7 @@ object Captions {
     /** The box gone at once, the words kept (a fading box, the sample line's untouchable one). */
     private fun discardBox() {
         main.removeCallbacks(hideLater)
+        main.removeCallbacks(paceTick)
         box?.detach()
         box = null
         target?.detach()
@@ -472,6 +560,7 @@ object Captions {
     private fun drop() {
         main.removeCallbacks(tick)
         main.removeCallbacks(hideLater)
+        main.removeCallbacks(paceTick)
         finish()
         // The sample line is no word of the coach's: a box kept on screen does not bring it back.
         if (previewing) said.setLength(0)
@@ -850,12 +939,45 @@ object Captions {
 
         fun setText(text: String) {
             words.text = styled(text, style.fill)
-            words.post {
-                val layout = words.layout ?: return@post
-                val bottom = layout.getLineBottom(max(0, layout.lineCount - 1))
-                words.scrollTo(0, max(0, bottom - words.height))
-            }
+            main.removeCallbacks(paceTick)
+            words.post(paceTick)
         }
+
+        /** The scroll last asked for, -1 before the first: the first jumps, the rest glide. */
+        private var lastTop = -1
+        private var glide: android.animation.ObjectAnimator? = null
+
+        /**
+         * The words in view where the reading is ([CaptionPace]): a line longer than the box goes
+         * through it row by row, gliding, at a reading pace, then the next line; at the end, the
+         * last rows (they were all the box ever showed). True once everything is read.
+         */
+        fun follow(): Boolean {
+            val length = words.text.length
+            pace.advance(SystemClock.uptimeMillis(), length)
+            val layout = words.layout ?: return pace.done(length)
+            val rows = object : CaptionRows {
+                override val count = layout.lineCount
+                override fun rowOf(offset: Int) = layout.getLineForOffset(offset)
+            }
+            val row = pace.top(rows, shownLines(), length)
+            // A row's top, but never further than the words' foot shows (a box sized between rows).
+            val bottom = layout.getLineBottom(max(0, layout.lineCount - 1))
+            val y = min(layout.getLineTop(row), max(0, bottom - words.height))
+            if (y != lastTop) {
+                glide?.cancel()
+                if (lastTop < 0) {
+                    words.scrollTo(0, y)
+                } else {
+                    glide = android.animation.ObjectAnimator.ofInt(words, "scrollY", words.scrollY, y).setDuration(GLIDE_MS).also { it.start() }
+                }
+                lastTop = y
+            }
+            return pace.done(length)
+        }
+
+        /** Whether the words shown are all read. */
+        fun readThrough(): Boolean = pace.done(words.text.length)
 
         private fun setHeightTo(n: Int) {
             words.layoutParams = words.layoutParams.apply { height = lineHeight * n }
