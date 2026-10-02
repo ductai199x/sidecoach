@@ -230,3 +230,26 @@ def test_a_candidate_off_a_board_by_a_fraction_is_refused_though_its_outer_row_i
     gray = to_gray(frame)
     assert fit_score(gray, Region(583, 110, 1088, 1088), 136.0)[0] >= 0.95
     assert fit_score(gray, Region(582, 24, 1090, 1090), 136.2)[0] == 0.0
+
+
+def test_the_ring_cache_stays_within_its_budget() -> None:
+    """A detection on a big board fits many geometries, and the ring cache held up to 64 of
+    them in int64: 71 MB at 1440p, 103 MB at 4K (round 2 finding 10). Indices are int32,
+    the cache keeps the newest used within RING_CACHE_BYTES, and a geometry read again is
+    the same medians."""
+    from sidecoach.vision import board_detect
+
+    board_detect._RING_CACHE.clear()
+    board_detect._ring_cache_bytes = 0
+    frame = synthetic_board(width=2560, height=1440, x0=200, y0=100, cell=150)
+    best = detect_boards(frame)[0]
+    held = sum(i.nbytes for groups in board_detect._RING_CACHE.values() for _, i in groups)
+    assert held <= board_detect.RING_CACHE_BYTES
+    assert held == board_detect._ring_cache_bytes
+    dtypes = {i.dtype for groups in board_detect._RING_CACHE.values() for _, i in groups}
+    assert dtypes == {np.dtype(np.int32)}
+    gray = to_gray(frame)
+    first = board_detect._cells(gray, best.region, best.cell_px)
+    board_detect._RING_CACHE.clear()
+    board_detect._ring_cache_bytes = 0
+    assert np.array_equal(first, board_detect._cells(gray, best.region, best.cell_px), True)
