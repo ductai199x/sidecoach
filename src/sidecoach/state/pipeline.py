@@ -7,6 +7,7 @@ orientation is decided per game.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import MISSING, dataclass, field, fields, replace
 from typing import Literal
 
@@ -54,6 +55,8 @@ from sidecoach.vision.result_badges import Badge, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry, row_col, square_at
 from sidecoach.vision.theme_cache import ThemeCache, same_theme, sample_palette
 from sidecoach.vision.tracker import BoardTracker
+
+log = logging.getLogger(__name__)
 
 # Clocks. A reading is bottom/top relative to the board; the side at the bottom is the user,
 # so the bottom box is the user's clock. chess.com draws white's box light and black's dark,
@@ -811,8 +814,6 @@ class GamePipeline:
         self.bottom = bottom
         self.model = model
         model.rank_labels = learn_rank_labels(frame, geometry, bottom)
-        if self.cache is not None:
-            self.cache.save(model, key=self._learned_set(model, frame, geometry, bottom))
         self._cold_since = None
         self._cold_noticed = False
         self._forget_clock()
@@ -820,6 +821,13 @@ class GamePipeline:
             self.reconciler.bottom = bottom
             self.reconciler.user_side = bottom
         self.bootstraps += 1
+        if self.cache is not None:
+            # Last, and never in the way: an exception here -- a damaged set among the
+            # cached ones, a full disk -- left the rebuild half done (round 2, finding 9).
+            try:
+                self.cache.save(model, key=self._learned_set(model, frame, geometry, bottom))
+            except Exception:  # noqa: BLE001 - the theme simply goes unkept
+                log.warning("the learned theme was not cached", exc_info=True)
         return True
 
     def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> None:

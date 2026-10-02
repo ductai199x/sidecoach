@@ -21,7 +21,10 @@ ignored and the theme relearned.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import logging
+import os
 import pickle
 from pathlib import Path
 
@@ -29,6 +32,8 @@ import numpy as np
 
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.squares import CELL, BoardGeometry, is_light
+
+log = logging.getLogger(__name__)
 
 # 2: exemplars are tone masks; 3: tone is nearer the core than the square; 4: the set's
 # colours are learned, for the drawing rule; 5, 6: the fill is the depth-weighted median.
@@ -138,24 +143,40 @@ class ThemeCache:
             return None
         if key is None:
             key = f"{palette_key(model.light_bg, model.dark_bg)}-{_set_key(model)}"
-        self.directory.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": CACHE_VERSION,
             "model": model,
             "light_bg": model.light_bg,
             "dark_bg": model.dark_bg,
         }
-        with self._path(key).open("wb") as handle:
-            pickle.dump(payload, handle)
+        # Written beside and moved over the old file: written in place, a save cut short
+        # (the app killed, a full disk) left half a file and lost the set it replaced
+        # (round 2, finding 9). A save that fails keeps the old file and returns None.
+        path = self._path(key)
+        partial = path.with_name(path.name + ".part")
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            with partial.open("wb") as handle:
+                pickle.dump(payload, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(partial, path)
+        except OSError as exc:
+            log.warning("theme %s not saved: %s", key, exc)
+            with contextlib.suppress(OSError):
+                partial.unlink()
+            return None
         return key
 
     @staticmethod
     def _read(path: Path) -> dict | None:
-        """A cache payload, or None if it cannot be read (an older format, a truncated write)."""
+        """A cache payload, or None if it cannot be read: an older format, a truncated
+        write, or damaged bytes, which raise whatever the unpickler meets (ValueError,
+        UnicodeDecodeError, ...: round 2, finding 9)."""
         try:
             with path.open("rb") as handle:
                 payload = pickle.load(handle)  # noqa: S301 - our own local, self-written cache
-        except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ImportError):
+        except Exception:  # noqa: BLE001 - any failure to read is a file not there
             return None
         if (
             isinstance(payload, dict)

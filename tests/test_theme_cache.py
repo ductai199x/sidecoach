@@ -96,3 +96,54 @@ def test_a_cached_theme_carries_no_frame(tmp_path: Path) -> None:
     assert light is not None and dark is not None
     again = cache.get(light, dark)
     assert again is not None and again._cells == {}
+
+
+def test_a_save_cut_short_leaves_the_theme_it_replaces(tmp_path: Path, monkeypatch) -> None:
+    """A theme file was written in place: the app killed mid-save left half a file, and the
+    set it replaced was gone (round 2 finding 9). The file is written beside and moved over
+    the old one; a save that fails leaves the old one whole, and says so with None."""
+    import pickle
+
+    frame = synthetic_board()
+    model = ThemeModel.from_start_position(frame, GEOM, Side.WHITE)
+    assert model is not None and model.light_bg is not None and model.dark_bg is not None
+    cache = ThemeCache(tmp_path)
+    key = cache.save(model)
+    assert key is not None
+
+    def cut(payload: object, handle) -> None:  # noqa: ANN001
+        handle.write(b"\x80\x05half a theme")
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(pickle, "dump", cut)
+    assert cache.save(model, key=key) is None
+    monkeypatch.undo()
+    assert cache.get(model.light_bg, model.dark_bg) is not None
+    assert [p.name for p in tmp_path.iterdir()] == [f"theme-{key}.pkl"]
+
+
+def test_a_damaged_theme_file_reads_as_nothing(tmp_path: Path) -> None:
+    """A few damaged bytes in a theme file made the unpickler raise ValueError or
+    UnicodeDecodeError, which escaped into the pipeline (round 2 finding 9): any failure to
+    read is a file not there."""
+    (tmp_path / "theme-damaged.pkl").write_bytes(b"cbuiltins\nint\n(S'x'\ntR.")
+    (tmp_path / "theme-bytes.pkl").write_bytes(b"\x80\x04X\x02\x00\x00\x00\xff\xfe.")
+    cache = ThemeCache(tmp_path)
+    assert cache.candidates(np.array([181, 217, 240.0]), np.array([99, 136, 181.0])) == []
+
+
+def test_a_theme_that_cannot_be_saved_still_starts_the_game(tmp_path: Path, monkeypatch) -> None:
+    """The save at a bootstrap raising (a full disk, a locked file) left the recogniser
+    rebuild half done (round 2 finding 9): the game starts, the theme simply not kept."""
+    from sidecoach.events import GameStarted
+
+    def broken(self, model, key=None):  # noqa: ANN001, ANN202
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(ThemeCache, "save", broken)
+    pipe = GamePipeline(cache=ThemeCache(tmp_path))
+    events = []
+    for i in range(3):
+        events += pipe.process(synthetic_board(), 0.1 * i)
+    assert any(isinstance(e, GameStarted) for e in events)
+    assert pipe.model is not None and pipe.bottom == Side.WHITE
