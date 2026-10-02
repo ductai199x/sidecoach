@@ -157,6 +157,11 @@ def check(command: str) -> str | None:
         name = program(words)
         low = [w.lower() for w in words]
         rest = " ".join(low[1:])
+        if name == "sed" and any(w.startswith("-i") or w == "--in-place" for w in low[1:]):
+            return (
+                "sed -i is banned: it rewrites files without a look (and leaves .bak files on "
+                "Windows). Use the Edit tool."
+            )
         if name in ("pkill", "pgrep", "killall"):
             return f"{name} is banned: find the PID (ps, tasklist, Get-Process) and stop that PID."
         if name == "taskkill" and "/im" in low:
