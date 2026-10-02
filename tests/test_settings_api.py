@@ -497,6 +497,33 @@ def test_a_change_is_never_dropped_for_a_value_already_held(
     assert any("voice.speed" in ln["text"] for ln in engine.poll(0)["lines"])
 
 
+def test_a_settings_file_the_disk_will_not_take_is_said_never_a_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: a write the disk refused (full, read-only) raised out of a mute or
+    a listening switch kept for the next session -- a 500 after the switch had moved -- and out
+    of a Settings save, a 500 the page could only call "not reached". The switch stays moved and
+    the log says it was not kept; the save answers why, and nothing of it is applied."""
+    from sidecoach.ui import settings_api
+
+    client, engine = _client(tmp_path, monkeypatch)
+
+    def disk_full(*_: Any, **__: Any) -> Path:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(settings_api, "save_settings", disk_full)
+    muted = client.post("/api/muted", json={"muted": True})
+    assert muted.status_code == 200 and muted.json()["ok"]
+    lines = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert any("voice.muted: not kept for the next session" in t for t in lines), lines
+    user = {"settings": {"profile": {"chesscom_user": "nosegazm"}}, "secrets": {}}
+    saved = client.put("/api/settings", json=user)
+    assert saved.status_code == 200
+    assert saved.json()["ok"] is False
+    assert saved.json()["error"].startswith("The settings could not be saved")
+    assert engine.settings.profile.chesscom_user == ""
+
+
 def test_record_from_the_debug_menu_is_a_settings_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

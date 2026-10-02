@@ -47,7 +47,7 @@
   let advanced = $state(false);
   let saving = $state(false);
   // The last save that went through, for the status line (what waits for a Start or a restart).
-  let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[] } | null>(null);
+  let result = $state<{ ok: boolean; changed?: string[]; now?: string[]; next?: string[]; restart?: string[]; errors?: { loc: (string | number)[]; msg: string }[]; error?: string } | null>(null);
   // A field the sidecar refused ("llm.temperature" -> why): shown under it, and left out of the
   // saves until it is changed, so one bad value holds up nothing else.
   let fieldErrors = $state<Record<string, string>>({});
@@ -456,7 +456,8 @@
           // so a refusal the page cannot place is said, not sent again and again.
           const rest = sendable(changes(sent, saved));
           if (Object.keys(rest).length && JSON.stringify(rest) !== JSON.stringify(body)) queue.more();
-          failure = refused.length ? "" : "Not saved: Sidecoach refused the change.";
+          // A save the sidecar could not write (the disk) says why (the audit of 2026-10-02).
+          failure = refused.length ? "" : (res?.error ?? "Not saved: Sidecoach refused the change.");
           return;
         }
         for (const name of Object.keys(sec)) {

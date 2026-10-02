@@ -165,6 +165,15 @@ def _in_change(loc: tuple[Any, ...], change: dict[str, Any]) -> bool:
     return len(loc) < 2 or not isinstance(section, dict) or loc[1] in section
 
 
+def _names(change: dict[str, Any]) -> str:
+    """The fields a change sets, `section.field`, for the log."""
+    return ", ".join(
+        f"{section}.{field}" if isinstance(fields, dict) else section
+        for section, fields in change.items()
+        for field in (fields if isinstance(fields, dict) else [None])
+    )
+
+
 def _say(engine: Any, text: str) -> None:
     emit = getattr(engine, "_emit", None)
     if emit is not None:
@@ -228,7 +237,14 @@ def remember(engine: Any, change: dict[str, Any]) -> None:
                 where = ".".join(str(part) for part in error["loc"])
                 _say(engine, f"{where}: not kept for the next session ({error['msg']})")
             return
-        new._source = save_settings(new, engine.settings.source)
+        try:
+            new._source = save_settings(new, engine.settings.source)
+        except OSError as exc:
+            # The disk refusing the write (full, read-only, a folder gone) is said, as a refused
+            # value is: raised, the mute or listening switch, which had moved already, answered
+            # a 500 (the audit of 2026-10-02).
+            _say(engine, f"{_names(change)}: not kept for the next session ({exc})")
+            return
         if hasattr(engine, "adopt_settings"):
             engine.adopt_settings(new)
         else:
@@ -249,7 +265,12 @@ def update(engine: Any, body: SettingsUpdate) -> dict[str, Any]:
         if refused:
             return {"ok": False, "errors": refused}
         old = engine.settings
-        path = save_settings(new, old.source)
+        try:
+            path = save_settings(new, old.source)
+        except OSError as exc:
+            # Said, as a refusal is, and nothing applied: raised, it was a 500 the page could
+            # only call "not reached" (the audit of 2026-10-02). The file is as it was.
+            return {"ok": False, "errors": [], "error": f"The settings could not be saved: {exc}"}
         new._source = path
         changed = _changed(old.model_dump(mode="json"), new.model_dump(mode="json"))
 
