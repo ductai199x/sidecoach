@@ -976,6 +976,29 @@ class CoachCoreTest {
         assertFalse("Your last turn above ended with a question" in directive)
     }
 
+    /**
+     * The fallback's principle was counted as said for every hint asked of the AI, though the
+     * fallback is said only when the reply fails. Offline the template is the answer, and is
+     * counted. `test_a_question_to_the_ai_charges_no_rule_its_fallback_holds`.
+     */
+    @Test
+    fun aQuestionToTheAiChargesNoRuleItsFallbackHolds() {
+        val (coach, _) = scripted(listOf("Their king is nearly out of squares."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("hint", 8.0)
+        assertEquals(listOf("Their king is nearly out of squares."), messages(coach).map { it.text })
+        assertTrue(coach.rules.isEmpty() && coach.lastRule == null)
+        val offline = offlineCoach()
+        playToScholar(offline)
+        offline.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(offline)
+        offline.ask("hint", 8.0)
+        val said = messages(offline).single()
+        assertTrue("their king runs out of squares" in said.text && offline.rules.isNotEmpty())
+    }
+
     /** `said_level`: what a reply said, from its words. */
     @Test
     fun theRungAReplySaidIsReadFromItsWords() {

@@ -520,8 +520,9 @@ class Coach(
      * it was said at: kept across games and puzzles ([RULE_COOLDOWN]).
      */
     internal var messages = 0
-    private val rules = HashMap<String, Int>()
-    private var lastRule: Int? = null
+    internal val rules = HashMap<String, Int>()
+    internal var lastRule: Int? = null
+        private set
 
     /**
      * What the game is (GameStarted.kind): a game from the start, or a position -- a puzzle,
@@ -3454,16 +3455,18 @@ class Coach(
                 fallback = "" // a nod needs no template: nothing, rather than a hint again
             }
         }
+        val (cooled, note) = coolHint(facts, fallback)
         if (!offline) {
             // The keyword branches above wrote the fallback only -- what is said when the model's
             // reply fails a check on the board -- and used rules of thumb as the directive's own:
-            // undone, and the model is given the guidelines instead.
+            // undone, and the model is given the guidelines instead. The fallback's principle
+            // ([coolHint]) is undone too: counted here, every hint asked of the AI held the rules
+            // back for RULE_SPACING messages, said or not.
             rules.clear()
             rules.putAll(rulesBefore.first)
             lastRule = rulesBefore.second
             directive = aiDirective(position, level)
         }
-        val (cooled, note) = coolHint(facts, fallback)
         return "$checks$directive$note" to cooled
     }
 
