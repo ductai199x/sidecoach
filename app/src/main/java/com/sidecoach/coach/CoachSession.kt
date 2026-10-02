@@ -940,7 +940,10 @@ class Coach(
         fun checked() {
             val verdicts = try {
                 checker.check(text, where.board, where.facts)
-            } catch (_: Exception) {
+            } catch (exc: Exception) {
+                // The question is still answered, without the check; the failure is counted and
+                // kept for the log, as every other failure of a question's work is.
+                speaker.noteFailure("claims check", exc)
                 emptyList()
             }
             val found = examined()

@@ -647,8 +647,12 @@ class CoachCoreTest {
         messages(coach)
         coach.ask("Is Qxf7 mate?", 8.0)
         for (thread in Thread.getAllStackTraces().keys) if (thread.name == "sidecoach-claims") thread.join()
-        // The claims check's own failure is caught (no verdicts) and the model answers.
+        // The claims check's own failure is caught (no verdicts) and the model answers; it is
+        // counted and kept for the log, never swallowed
+        // (`test_a_failed_claims_check_is_counted_and_the_question_answered_without_it`).
         assertEquals(listOf("Yes, Qxf7 is mate."), messages(coach).map { it.text })
+        assertEquals(1, coach.speaker.failures)
+        assertEquals("claims check: IllegalStateException: boom", coach.speaker.lastError)
     }
 
     // 8. The pattern and the practice are unprompted too
