@@ -277,6 +277,40 @@ class GamesApiTest {
         store.close()
     }
 
+    /**
+     * The review of 2026-10-01: only the first parse of a copy's saved report was guarded, so a
+     * report that lacks a move's "after" threw out of carrying the reviews and Your games did
+     * not list. The desktop's `_carry_one` returns False when the report does not read: the
+     * games are listed and the review is not carried.
+     */
+    @Test
+    fun aCopysReportThatDoesNotReadLeavesYourGamesListing() {
+        val files = dir("unread-report")
+        val store = Store(File(files, "profile.sqlite"))
+        val pasted = Library.fromPgn(LONGER, listOf("nosegazm")).single()
+        val site = site(LONGER, "chesscom:11")
+        store.addLibraryGame(pasted)
+        store.addLibraryGame(site)
+        val fens = com.sidecoach.analysis.GameReview.positions(Library.gamesIn(LONGER).first()).map { it.fen() }
+        val moves = org.json.JSONArray()
+        for (i in 0 until fens.size - 1) {
+            val move = JSONObject().put("fen_before", fens[i]).put("assessment", JSONObject())
+            if (i != 3) move.put("after", JSONObject().put("fen", fens[i + 1])) // the fourth lacks its "after"
+            moves.put(move)
+        }
+        val report = JSONObject().put("start", JSONObject()).put("moves", moves)
+        val summary = JSONObject().put("white", JSONObject().put("accuracy", 71.5)).put("black", JSONObject().put("accuracy", 83.25))
+        assertTrue(store.saveReview(pasted.key, "deep", ReviewRoom.REVIEW_VERSION, 1.0, report.toString(), summary.toString()))
+        store.close()
+
+        val games = listed(files)
+        assertEquals("the site's record stands for the copy", setOf(site.key), games.keys)
+        Store(File(files, "profile.sqlite")).apply {
+            assertEquals("the report that does not read is not carried", null, review(site.key, "deep"))
+            assertTrue("the copy's own review stays", review(pasted.key, "deep") != null)
+        }.close()
+    }
+
     companion object {
         // tests/test_review_server.py's LONGER: one move misread still leaves twelve to pair on.
         private const val LONGER = "[Event \"Live Chess\"]\n[Site \"Chess.com\"]\n[Date \"2026.09.29\"]\n" +

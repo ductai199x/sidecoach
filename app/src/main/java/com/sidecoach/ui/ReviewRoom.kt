@@ -808,25 +808,30 @@ class ReviewRoom(
         private fun carryOne(store: Store, old: ReviewRow, imported: String, row: LibraryRow): Boolean {
             val games = Library.gamesIn(row.pgn)
             // The report as saved (the desktop's JSON): the import's key, headers and clocks
-            // put in, then read back.
-            val was = runCatching { JSONObject(old.report) }.getOrNull() ?: return false
-            val moves = was.optJSONArray("moves")
-            if (games.isEmpty() || moves == null || moves.length() == 0) return false
-            val game = games[0]
-            val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
-                moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
-            if (seen != GameReview.positions(game).map { it.fen() }) return false
-            val times = GameReview.clocks(game)
-            for (i in 0 until moves.length()) {
-                val move = moves.getJSONObject(i)
-                move.getJSONObject("assessment").put("game_id", imported)
-                move.getJSONObject("after").put("game_id", imported)
-                move.put("clock_ms", times[i].first ?: JSONObject.NULL)
-                move.put("spent_ms", times[i].second ?: JSONObject.NULL)
-            }
-            was.getJSONObject("start").put("game_id", imported)
-            was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
-            val reviewed = runCatching { ReviewJson.reviewed(was) }.getOrNull() ?: return false
+            // put in, then read back. Every read of it is part of the one guarded parse, as the
+            // desktop's model_validate_json: a report that lacks a field (a move's "after", the
+            // start) is not carried, where it threw out of carryTwins and Your games did not
+            // list (the review of 2026-10-01).
+            val reviewed = runCatching {
+                val was = JSONObject(old.report)
+                val moves = was.optJSONArray("moves")
+                if (games.isEmpty() || moves == null || moves.length() == 0) return false
+                val game = games[0]
+                val seen = (0 until moves.length()).map { moves.getJSONObject(it).getString("fen_before") } +
+                    moves.getJSONObject(moves.length() - 1).getJSONObject("after").getString("fen")
+                if (seen != GameReview.positions(game).map { it.fen() }) return false
+                val times = GameReview.clocks(game)
+                for (i in 0 until moves.length()) {
+                    val move = moves.getJSONObject(i)
+                    move.getJSONObject("assessment").put("game_id", imported)
+                    move.getJSONObject("after").put("game_id", imported)
+                    move.put("clock_ms", times[i].first ?: JSONObject.NULL)
+                    move.put("spent_ms", times[i].second ?: JSONObject.NULL)
+                }
+                was.getJSONObject("start").put("game_id", imported)
+                was.put("headers", JSONObject().apply { for ((k, v) in game.headers.items()) put(k, v) })
+                ReviewJson.reviewed(was)
+            }.getOrNull() ?: return false
             val saved = store.saveReview(
                 imported,
                 old.strength,
