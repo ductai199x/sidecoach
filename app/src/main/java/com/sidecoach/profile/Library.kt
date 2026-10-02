@@ -479,8 +479,10 @@ object Library {
 
     private val CONTROL = Regex("^(\\d+)(?:\\+(\\d+))?$")
 
-    // As Sidecoach words the clock it read at a game's start (profile/Profiler.kt): "10 min", "30 s".
+    // As Sidecoach words the clock it read at a game's start (profile/Profiler.kt): "10 min", "30 s";
+    // a reading this close below a whole minute is that minute (Profiler.START_SLACK_MS).
     private val WATCHED_CONTROL = Regex("^(\\d+(?:\\.\\d+)?) (min|s)$")
+    private const val START_SLACK_S = 5.0
 
     /**
      * The time class of a PGN `TimeControl` ("600+5"), or of the clock Sidecoach read ("10
@@ -493,7 +495,15 @@ object Library {
         val watched = WATCHED_CONTROL.matchEntire(control)
         val match = CONTROL.matchEntire(control)
         val seconds = when {
-            watched != null -> watched.groupValues[1].toDouble() * (if (watched.groupValues[2] == "min") 60 else 1)
+            // A few seconds short of a whole minute is that minute, as Profiler.kt words it now:
+            // records kept before say the first reading as read ("9.98333 min", a ten-minute game
+            // counted as blitz; the review of 2026-10-01).
+            watched != null && watched.groupValues[2] == "min" -> {
+                val read = watched.groupValues[1].toDouble() * 60
+                val whole = kotlin.math.ceil(read / 60) * 60.0
+                if (whole - read <= START_SLACK_S) whole else read
+            }
+            watched != null -> watched.groupValues[1].toDouble()
             match != null ->
                 match.groupValues[1].toDouble() + 40 * (match.groupValues[2].ifEmpty { "0" }.toDouble())
             else -> return null

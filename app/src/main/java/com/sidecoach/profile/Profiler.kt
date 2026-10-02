@@ -92,6 +92,8 @@ class Profiler(
         /** The game is over; its review waits for the last verdicts. */
         var end: GameEnded? = null
         var provisional = false  // a position, not yet known to be a game
+        /** Joined from the middle: its clocks say how much time was left, not the time control. */
+        var joined = false
         var endedAt = 0.0
         var reviewed = false
     }
@@ -119,7 +121,9 @@ class Profiler(
             // last read, not set to nothing (the review of 2026-10-01).
             clock = (event.whiteMs ?: clock.first) to (event.blackMs ?: clock.second)
             val game = game
-            if (game != null && game.timeControl == null && !game.ended) {
+            // A game joined from the middle took the time left for its control (the review of
+            // 2026-10-01): it has none from its clocks.
+            if (game != null && game.timeControl == null && !game.ended && !game.joined) {
                 game.timeControl = timeControlWords(event.whiteMs, event.blackMs)
                 if (game.timeControl != null) store.setGame(game.gameId, mapOf("time_control" to game.timeControl))
             }
@@ -195,6 +199,7 @@ class Profiler(
         game = Game(event.gameId, event.userSide, event.startFen, ts).apply {
             lastFen = event.startFen
             provisional = event.kind != "game"
+            joined = event.kind != "game"
         }
         store.startGame(event.gameId, ts, event.userSide.name.lowercase(), event.startFen, sessionId)
         return emptyList()
@@ -730,10 +735,21 @@ class Profiler(
             return total
         }
 
-        /** The time control from the clock's first reading: "10 min", "3 min", "30 s". */
+        // A clock's first reading this close below a whole minute is that minute ([timeControlWords];
+        // Library.timeClassOf reads the records kept before the same way).
+        const val START_SLACK_MS = 5_000
+
+        /**
+         * The time control from the clock's first reading as a game began: "10 min", "3 min",
+         * "30 s". A reading up to [START_SLACK_MS] short of a whole minute is that minute: the
+         * first reading comes a second or two after the clock started (599000 was "9.98333 min",
+         * a ten-minute game counted as blitz: the review of 2026-10-01). `time_control_words`.
+         */
         fun timeControlWords(whiteMs: Int?, blackMs: Int?): String? {
             val start = listOfNotNull(whiteMs, blackMs).maxOrNull() ?: return null
             if (start <= 0) return null
+            val whole = (start + 59_999) / 60_000
+            if (whole * 60_000 - start <= START_SLACK_MS) return "$whole min"
             if (start >= 60_000) return "${general(start / 60_000.0)} min"
             return "${start / 1000} s"
         }

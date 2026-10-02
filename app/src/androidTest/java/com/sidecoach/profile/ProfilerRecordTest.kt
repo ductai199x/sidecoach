@@ -167,6 +167,29 @@ class ProfilerRecordTest {
         assertNull("nor in the session's summary", f.profiler.endSession(f.ts + 2000.0))
     }
 
+    /**
+     * A watched game's time control was its first clock reading as read -- 599000/597500, read
+     * a second or two in, was "9.98333 min": a ten-minute game counted as blitz -- and a game
+     * joined from the middle took the time left for its control. The control is the reading to
+     * the whole minute; a joined game's clocks give none.
+     * `test_the_time_control_is_the_clock_as_the_game_began`.
+     */
+    @Test
+    fun theTimeControlIsTheClockAsTheGameBegan() {
+        val f = Feed()
+        f.send(ClockObservation(599_000, 597_500, Pieces.Side.WHITE))
+        assertEquals("10 min", f.store.game("g")!!.timeControl)
+        assertEquals("rapid", Library.timeClassOf("10 min"))
+        assertEquals("as records kept before say it", "rapid", Library.timeClassOf("9.98333 min"))
+        assertEquals("bullet", Library.timeClassOf("2.5 min"))
+        assertEquals("2.5 min", Profiler.timeControlWords(150_000, null))
+        f.end()
+        // A game joined from the middle: its clocks say how much time was left, not the control.
+        f.nextGame("j", kind = "position", fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+        f.send(ClockObservation(271_000, 244_000, Pieces.Side.WHITE))
+        assertNull(f.store.game("j")!!.timeControl)
+    }
+
     private companion object {
         val FORK = MotifTag("fork", listOf("e5", "c6", "g6"))
     }
