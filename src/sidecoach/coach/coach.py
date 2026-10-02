@@ -1645,9 +1645,14 @@ class Speaker:
                 stats["stream_problems"] = reader.problems or (
                     ["the voice declined"] if reader.declined else ["the stream ended early"]
                 )
+            parsed = _parse_candidates(raw)
+            if reader is not None and reader.declined:
+                # Declined, the stream was closed in the first candidate's first sentence:
+                # that candidate is cut off, and it went out as the text (the deep prompt
+                # review, 2026-10-01). Only candidates the stream finished are read.
+                parsed = parsed[:-1]
             scored = [
-                (prob, candidate, self._problems(candidate, request))
-                for prob, candidate in _parse_candidates(raw)
+                (prob, candidate, self._problems(candidate, request)) for prob, candidate in parsed
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])

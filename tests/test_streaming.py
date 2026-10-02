@@ -168,6 +168,19 @@ def test_the_sink_can_stop_the_stream_when_the_board_moves_on() -> None:
     assert spoken.streamed and spoken.message.text == "One."
 
 
+def test_a_voice_that_declines_the_first_sentence_leaves_no_cut_off_text() -> None:
+    """The voice declined the first sentence, the stream was closed there, and the cut-off
+    candidate still went out as the text (the deep prompt review, 2026-10-01). Only
+    candidates the stream finished are read; with none, the template stands."""
+    reply = "[p=0.6] Taking on f7 wins. It also opens the king for the rook.\n[p=0.4] Other."
+    provider = StreamingProvider(reply, pieces=30)
+    speaker = Speaker(provider)
+    spoken = speaker.speak_now(_request(lambda s: False))
+    assert not spoken.streamed
+    assert spoken.message.text == "Fine.", spoken.message.text
+    assert provider.calls == 1, "no second call about a moment the voice declined"
+
+
 def test_without_a_sink_the_reply_is_sampled_whole_from_the_model_the_request_takes() -> None:
     main = StreamingProvider("[p=1.0] From the main model.")
     routine = StreamingProvider("[p=1.0] From the routine model.")
