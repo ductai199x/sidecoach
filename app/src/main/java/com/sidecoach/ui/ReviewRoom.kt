@@ -625,6 +625,10 @@ class ReviewRoom(
                     store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
                     val row = Library.find(store, key)
                     if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                }.onFailure {
+                    // Said: skipped in silence, nothing told why a review kept its old summary
+                    // (the audit of 2026-10-02).
+                    android.util.Log.w("sidecoach.review", "the saved review of $key ($strength) could not be summed up again: $it")
                 }.isSuccess
                 if (ok) done += 1
             }
