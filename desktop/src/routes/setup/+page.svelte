@@ -22,6 +22,7 @@
   let status = $state<Status | null>(null);
   let picked = $state<Record<string, boolean>>({});
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let gone = false;
 
   const gb = (n: number) => (n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : Math.round(n / 1e3) + " KB");
   const missing = $derived((status?.items ?? []).filter((i) => !i.present));
@@ -43,6 +44,17 @@
   const rate = (bps: number) => (bps >= 1e6 ? (bps / 1e6).toFixed(1) + " MB/s" : Math.round(bps / 1e3) + " KB/s");
 
   async function refresh() {
+    try {
+      await read();
+    } catch {
+      /* a missed read: the next one tries again */
+    }
+    // One loop only: a refresh started while another waited replaces its timer.
+    if (timer) clearTimeout(timer);
+    if (gone) return;
+    timer = setTimeout(refresh, running ? 500 : 3000);
+  }
+  async function read() {
     status = await get<Status>("/api/setup/status");
     for (const i of status.items) if (!(i.id in picked)) picked[i.id] = true;
     if (status.run?.running) {
@@ -57,11 +69,9 @@
       samples = [];
       speed = 0;
     }
-    timer = setTimeout(refresh, running ? 500 : 3000);
   }
   async function start() {
-    await post("/api/setup/start", { ids: chosen.map((i) => i.id) });
-    if (timer) clearTimeout(timer);
+    await post("/api/setup/start", { ids: chosen.map((i) => i.id) }).catch(() => {});
     await refresh();
   }
   async function cancel() {
@@ -76,8 +86,8 @@
   }
 
   onMount(() => {
-    connect().then(refresh);
-    return () => { if (timer) clearTimeout(timer); };
+    connect().then(refresh, () => {});
+    return () => { gone = true; if (timer) clearTimeout(timer); };
   });
 </script>
 
