@@ -1259,3 +1259,32 @@ def test_bringing_in_from_a_site_needs_the_username_first(
     assert not said["ok"] and "chess.com username" in said["error"]
     said = client.post("/api/games/import", json={"source": "lichess"}).json()
     assert not said["ok"] and "Lichess username" in said["error"]
+
+
+def test_a_miss_in_the_pgn_is_marked_by_what_it_cost() -> None:
+    """A miss has no PGN mark of its own; "?" went on every one -- one that lost nothing (a
+    mate let go, still winning) as on a blunder-sized one (the engine review, 2026-10-01). It
+    takes its loss's mark: none, ?!, ? or ??. The other labels keep theirs."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui.review_analysis import pgn
+
+    row = SimpleNamespace(pgn="1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *")
+    rows = [
+        ("miss", "none"),
+        ("miss", "inaccuracy"),
+        ("miss", "mistake"),
+        ("miss", "blunder"),
+        ("mistake", "mistake"),
+        ("great", "none"),
+    ]
+    sans = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"]
+    moves = [
+        {"ply": ply, "san": san, "label": label, "severity": severity, "best_san": None}
+        for ply, (san, (label, severity)) in enumerate(zip(sans, rows, strict=True), start=1)
+    ]
+    text = pgn(row, moves, [])  # type: ignore[arg-type]
+    marked = " ".join(text.split("\n\n", 1)[1].split())
+    # PGN's numbers for them: $6 ?!, $2 ?, $4 ??, $1 !.
+    for san, mark in zip(sans, [" {", " $6 {", " $2 {", " $4 {", " $2 {", " $1 {"], strict=True):
+        assert f"{san}{mark}" in marked, (san, mark, marked)
