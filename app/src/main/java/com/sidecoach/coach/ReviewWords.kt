@@ -716,7 +716,9 @@ object ReviewWords {
      * 2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
      * fails (and none was answered before), the first failure is thrown. [answered]: the answers already paid for (words the
      * app was closed in the middle of), not asked again; [onAnswer] (ply, text, stats) is handed
-     * each new answer the moment it arrives, to keep it. The cost is of the new calls. `write`.
+     * each new answer the moment it arrives, to keep it. [carried]: the key moves that have words
+     * already, paid for on the watched game this one stands for (ReviewRoom.kt), not asked again
+     * (an answer of this game's own stays its own). The cost is of the new calls. `write`.
      */
     fun write(
         game: ReviewedGame,
@@ -728,9 +730,10 @@ object ReviewWords {
         answered: Map<Int, String>? = null,
         onAnswer: ((Int, String, Map<String, Any?>) -> Unit)? = null,
         stop: (() -> Boolean)? = null,
+        carried: Set<Int> = emptySet(),
     ): Words {
         val paid = LinkedHashMap(answered ?: emptyMap())
-        val plies = keyPlies(game)
+        val plies = keyPlies(game).filter { it !in carried || it in paid }
         // `getattr(provider, "model", "")`.
         val words = Words(model = modelOf(provider) ?: "")
         if (plies.isEmpty()) return words
