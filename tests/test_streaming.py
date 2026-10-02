@@ -238,17 +238,21 @@ def test_the_stream_stops_at_the_tasks_length_and_its_slack() -> None:
 
 def test_the_coach_hands_its_sink_to_the_request() -> None:
     """The coach asks its sink factory for each request it makes (`stream_sink`, with the
-    trigger and the ply) and hands the sink it gets to the request, which the Speaker then
-    streams to."""
+    trigger, the ply and whether the moment it was asked for is over) and hands the sink it
+    gets to the request, which the Speaker then streams to."""
     provider = StreamingProvider("[p=1.0] Their king has one square left.")
     coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
     seen: list[tuple[object, int | None]] = []
+    gone: list[Callable[[], bool]] = []
 
     def sink(sentence: str) -> bool:
         return True
 
-    def factory(trigger: Trigger, ply: int | None) -> Callable[[str], bool] | None:
+    def factory(
+        trigger: Trigger, ply: int | None, moved_on: Callable[[], bool]
+    ) -> Callable[[str], bool] | None:
         seen.append((trigger, ply))
+        gone.append(moved_on)
         return sink
 
     coach.stream_sink = factory
@@ -256,6 +260,11 @@ def test_the_coach_hands_its_sink_to_the_request() -> None:
     coach.on_event(mate_analysis(0, decisive=False), 1.0)
     coach.tick(12.0)  # stuck: the idea, unprompted
     assert seen == [(Trigger.STUCK, 0)]
+    # The moment it was asked for: over once a new game, a takeback or a re-read comes, or the
+    # player moves again -- never because of what the opponent plays.
+    assert gone[0]() is False
+    coach.on_event(GameStarted(game_id="h", user_side=Side.WHITE, start_fen=SCHOLAR), 2.0)
+    assert gone[0]() is True
     queued = coach.speaker._requests.get_nowait()
     assert isinstance(queued, _Request) and queued.stream_to is sink
     coach.speaker._requests.put(queued)
@@ -336,7 +345,7 @@ def test_a_tool_rounds_preamble_is_not_said_and_the_answer_is_read_from_its_star
             heard.append(sentence)
             return True
 
-        coach.stream_sink = lambda trigger, ply, sink=sink: sink
+        coach.stream_sink = lambda trigger, ply, moved_on, sink=sink: sink
         play_to_scholar(coach)
         coach.on_event(mate_analysis(6, decisive=False), 7.0)
         drain(coach)

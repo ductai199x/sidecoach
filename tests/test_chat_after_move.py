@@ -92,12 +92,14 @@ def test_chat_is_about_the_players_move_on_the_opponents_turn_and_the_position_o
         (NG5, 7, "what are they threatening?", None, None),
         (NG5, 7, "how did I do this game?", None, None),
         (NG5, 7, "how would this position continue?", None, None),
-        # About the move in so many words.
-        (NG5, 7, "why was my last move bad?", 7, 7),
+        # About the move in so many words: offline only. With a model no keyword decides which
+        # move a question is about (Tai, 2026-10-02): the model reads it from the sheet of both
+        # positions, which `_speak` gives it.
+        (NG5, 7, "why was my last move bad?", 7, None),
         # On the player's own turn their words are about the position...
         (ITALIAN, 3, "I didn't even notice they were aiming for my rook", None, None),
         # ...unless they ask about their move in so many words.
-        (ITALIAN, 3, "why was my last move bad?", 3, 3),
+        (ITALIAN, 3, "why was my last move bad?", 3, None),
     ]
     for ucis, mistake_at, said, offline, with_model in rows:
         for coach, about in ((offline_coach(), offline), (scripted_coach([])[0], with_model)):
@@ -155,10 +157,9 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     coach.ask("I wanted to attack f7 with the knight.", 8.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "They are answering the question you just asked" in directive
-    # The question the answer would otherwise be offered on top (the parity audit,
-    # 2026-09-29: "then one question" was asserted absent, which no directive says).
-    assert "with a question, if that serves" not in directive
+    # The conversation says it, not a keyword: the coach's last turn ended with a question.
+    assert "Your last turn above ended with a question" in directive
+    assert "that closes the question, so ask nothing more" in directive
     # Once answered, the thread is closed: words after the coach's reply answer nothing.
     assert not coach._answering_our_question("ok")
 

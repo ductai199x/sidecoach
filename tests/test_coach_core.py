@@ -188,25 +188,25 @@ def _asked_after_the_reply(reply_ts: float) -> tuple[Coach, ScriptedProvider]:
     return coach, provider
 
 
-def test_that_move_after_an_instant_reply_is_the_players_own_last_move() -> None:
+def test_what_that_means_after_a_reply_is_the_models_to_decide_from_both_positions() -> None:
     """The opponent's reply was last on the board and "why was that bad?" went to the generic
     branch, with no sheet of the position the player faced: the model critiqued the
-    opponent's move. The reply came straight away, so "that" is the player's own move
-    (Tai, 2026-10-01)."""
-    coach, provider = _asked_after_the_reply(10.5)
-    harness = harness_of(sent(provider))
-    assert "The position they faced, before Bxf7+" in harness
-    directive = directive_of(sent(provider))
-    assert "They ask about the move they already played, Bxf7+" in directive
-    assert 'By "that" they mean Bxf7+' in directive and "Kxf7" in directive
-    assert coach.user_to_move
-
-
-def test_that_move_after_a_slow_reply_stays_with_the_model() -> None:
-    """A human's reply a long time after the player's move: the player faced the position in
-    between, and what "that" is is the model's to read from the record."""
-    _, provider = _asked_after_the_reply(40.0)
-    assert "They ask about the move they already played" not in directive_of(sent(provider))
+    opponent's move (Tai, 2026-10-01). Not decided by a threshold of two seconds in code
+    any more (Tai, 2026-10-02: "why does instant mean 2 seconds"): the model gets the sheet
+    of the position the player faced and the one after the reply, and how long the reply
+    took, in the guidelines, fast or slow, and decides what "that" is."""
+    for reply_ts, took in ((10.5, "0.5 seconds"), (40.0, "30.0 seconds")):
+        coach, provider = _asked_after_the_reply(reply_ts)
+        harness = harness_of(sent(provider))
+        assert "The position they faced, before Bxf7+" in harness, reply_ts
+        assert "# Position now" in harness
+        directive = directive_of(sent(provider))
+        assert f"The opponent's last move, Kxf7, came {took} after the player's Bxf7+" in (
+            directive
+        ), reply_ts
+        assert '"That", "it" or "that move" may mean their own last move' in directive
+        assert "They ask about the move they already played" not in directive
+        assert coach.user_to_move
 
 
 # The best moves, and a hint asked once the move was given: real engine analyses
@@ -254,9 +254,12 @@ def test_the_model_is_told_to_read_every_line_and_to_name_the_moves_that_are_fin
     coach.ask("what are the best moves?", 2.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "all of them and not only line 1" in directive
-    assert "all fine: Bc5, Nf6, Be7" in directive
-    assert "name every one" in directive and "No figures" in directive
+    # The AI's guidelines, whatever the words: every line, every move about level named, and the
+    # moves about as good as the facts list them (no keyword picks this).
+    assert "read all of the engine lines" in directive
+    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive
+    assert "name every move about level with the best" in directive
+    assert "no percentages, scores or move numbers" in directive
     harness = harness_of(sent(provider))
     for san in ("Bc5", "Nf6", "Be7"):
         assert san in harness.split("## Engine lines", 1)[1].split("\n\n", 1)[0]
@@ -267,9 +270,9 @@ def test_asked_whether_a_move_is_also_good_the_model_gets_the_fine_moves() -> No
     coach.ask("is Be7 also good?", 2.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "whether another move is also good" in directive
-    assert "all fine: Bc5, Nf6, Be7" in directive
-    assert "all of them and not only line 1" in directive
+    assert "or whether another move works too" in directive
+    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive
+    assert "read all of the engine lines" in directive
 
 
 def test_the_claim_check_accepts_every_move_about_as_good_as_sanctioned() -> None:
@@ -296,8 +299,11 @@ def test_one_clear_best_move_is_named_with_what_goes_wrong_with_the_others() -> 
     coach.ask("what are the best moves?", 2.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "One move stands out: Qxf7#" in directive
-    assert "Qd1 passes up the mate; Qe2 passes up the mate" in directive
+    assert "The moves about equally good here" not in directive, "one clear best"
+    assert "Clearly worse here, and what goes wrong with them: Qd1 passes up the mate" in (
+        directive
+    )
+    assert "Qe2 passes up the mate" in directive
 
 
 def test_the_best_move_asked_in_the_singular_names_the_near_equal_ones_too() -> None:
@@ -308,11 +314,11 @@ def test_the_best_move_asked_in_the_singular_names_the_near_equal_ones_too() -> 
     coach, provider = _coach_at("italian", ["Bc5."])
     coach.ask("what's the best move?", 2.0)
     drain(coach)
-    assert "3 moves are about equally good here (Bc5, Nf6, Be7)" in directive_of(sent(provider))
+    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive_of(sent(provider))
     coach, provider = _coach_at("scholar", ["Qxf7 mates."])
     coach.ask("what's the best move?", 2.0)
     drain(coach)
-    assert "about equally good" not in directive_of(sent(provider)), "one clear best: not said"
+    assert "about equally good here" not in directive_of(sent(provider)), "one clear best"
 
 
 def test_a_hint_asked_after_the_move_was_given_says_why_it_beats_what_is_worse() -> None:
@@ -333,36 +339,43 @@ def test_a_hint_asked_after_the_move_was_given_says_why_it_beats_what_is_worse()
     assert "Qxf7" in said[2].text and "clearly worse" not in said[2].text
     assert "Qd1 is clearly worse: it passes up the mate." in said[3].text
     # And to the model.
-    coach, provider = _coach_at("scholar", ["a", "b", "c", "Qxf7 is mate; Qd1 passes it up."])
+    # And to the model, as a guideline: said by what the reply gave (the third names the move).
+    replies = ["a", "b", "Qxf7 is mate.", "Qxf7 is mate; Qd1 passes it up."]
+    coach, provider = _coach_at("scholar", replies)
     for n in range(4):
         coach.ask("hint", 2.0 + n)
         drain(coach)
     directive = directive_of(sent(provider))
-    assert "has been given already: it is Qxf7#" in directive
-    assert "Clearly worse here, and what goes wrong: Qd1 passes up the mate" in directive
+    assert "has been given already, in your turns above: it is Qxf7#" in directive
+    assert "Clearly worse here, and what goes wrong with them: Qd1 passes up the mate" in directive
     assert "instead of something that looks as good but is clearly worse" in directive
+    assert "has been given already" not in directive_of(sent(provider, 2))
 
 
-# 5, 13. A lesson on a withdrawn move is dropped, and its question was never asked
+# 5, 13. A lesson on a withdrawn move is shown all the same, and is no turn of the game now
 
 
-def test_a_lesson_on_a_withdrawn_move_is_neither_shown_nor_spoken() -> None:
-    """poll() skipped only the recording: the lesson on the move taken back was shown and
-    spoken (the deep coach.py review, 2026-10-01)."""
+def test_a_lesson_on_a_withdrawn_move_is_shown_in_its_place_not_recorded_not_spoken() -> None:
+    """The deep coach.py review (2026-10-01) dropped the lesson on the move taken back. Tai,
+    2026-10-02: "There is no need to drop any replies, the text message should come out in the
+    same correct order. The only thing that might be good is to interrupt the tts": it is
+    shown, marked late (the voice does not say it), and is no turn of the game now."""
     coach = offline_coach()
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
     mate_missed(coach, 10.0)  # the lesson is queued
     coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
-    assert drain(coach) == []
-    assert coach.spoken == [] and len(coach.withdrawn) == 1
-    assert coach.policy.last_reason is not None and "no longer has" in coach.policy.last_reason
+    shown = drain(coach)
+    assert len(shown) == 1 and shown[0].trigger is Trigger.POST_MISTAKE
+    assert coach.spoken[-1].late, "for the voice: not spoken"
+    assert coach._said_since_move() == [], "no turn of the moment now"
 
 
-def test_a_question_that_ends_a_dropped_lesson_is_asked_again_not_marked_asked() -> None:
-    """ "What did you expect?" was marked asked before its lesson went out: a lesson dropped
-    ended the question for the game."""
+def test_a_late_lesson_that_ends_with_a_question_has_asked_it() -> None:
+    """ "What did you expect?" is marked asked when its lesson is queued. The lesson, shown late
+    after a takeback, still asks it: the player reads it, so it was asked (no reply is dropped,
+    Tai, 2026-10-02)."""
     from sidecoach.coach.coach import ELICIT_EVERY
 
     coach = offline_coach()
@@ -373,8 +386,9 @@ def test_a_question_that_ends_a_dropped_lesson_is_asked_again_not_marked_asked()
     mate_missed(coach, 10.0)
     assert coach._elicit_asked is not None, "asked, in the lesson queued"
     coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
-    drain(coach)
-    assert coach._elicit_asked is None, "the lesson was never said: nor was the question"
+    shown = drain(coach)
+    assert shown and shown[0].text.endswith("?")
+    assert coach._elicit_asked is not None, "the lesson was shown: so was the question"
 
 
 # 6. A question does not delete the lesson on a mistake or the review

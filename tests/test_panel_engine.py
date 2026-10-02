@@ -274,7 +274,7 @@ def test_a_coach_message_is_handled_once_across_sessions(
 
     engine = make_panel(record=False)
     said: list[str] = []
-    engine._speak = lambda trigger, text, ply: said.append(text) or "text"  # type: ignore[method-assign]
+    engine._speak = lambda trigger, text, ply, moved_on=False: said.append(text) or "text"  # type: ignore[method-assign]
     coach = Coach(OfflineProvider())
     coaching = SimpleNamespace(coach=coach)
     message = CoachMessage(

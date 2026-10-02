@@ -360,7 +360,10 @@ def test_why_was_that_bad_says_what_the_move_allowed() -> None:
         "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn."
         in directive
     )
-    assert "why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive
+    # The better move and the why are the sheet's and the guidelines' (a move already played).
+    assert "A move they already played: its verdict is in the record" in directive
+    assert "what it missed or allowed, and the better move" in directive
+    assert "the engine preferred 1. Rxa8+" in harness_of(sent(provider))
     assert "Name moves bare" in directive
 
 
@@ -371,8 +374,16 @@ def test_a_figure_in_a_hint_nobody_asked_a_figure_of_is_noted() -> None:
     coach, provider = scripted_coach([reply])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    coach.ask("give me a hint", 8.0)
-    out = drain(coach)
+    out = stuck(coach)  # unasked: nobody asked for a figure
     assert NO_FIGURES in directive_of(sent(provider, 0))
     assert [m.text for m in out] == [reply] and len(provider.prompts) == 1
     assert "a figure in a remark nobody asked for: say it in words" in coach.spoken[-1].notes
+    # Asked of the AI coach a figure may be what they asked for: the guidelines give them when
+    # asked, and no note is made (no keyword decides it).
+    coach, provider = scripted_coach([reply])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("give me a hint", 8.0)
+    drain(coach)
+    assert NO_FIGURES not in directive_of(sent(provider, 0))
+    assert coach.spoken[-1].notes == []

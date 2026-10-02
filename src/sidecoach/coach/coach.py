@@ -733,7 +733,7 @@ AI_GUIDELINES = (
     "line with its score, the candidate moves, the facts, the last move of each side with its "
     "verdict. Some guidelines, not rules:\n"
     "- A hint: one rung up the ladder above, said once, never lower than one already said.\n"
-    "- The move -- \"what should I play\", \"the play here\", \"the move\": give it plainly, "
+    '- The move -- "what should I play", "the play here", "the move": give it plainly, '
     "and why it works, from the sheet's why and pattern. Several moves about as good: say so "
     "and name them.\n"
     "- Which moves are best, good or fine, or whether another move works too: read all of the "
@@ -744,7 +744,7 @@ AI_GUIDELINES = (
     "- A move, square or piece they name: whether it holds up and what it does or allows, from "
     "the engine's word on it where given above -- theirs to hear in full: the score after it, "
     "how far behind the best, the reply, what the move does.\n"
-    "- \"That\", \"it\" or \"that move\" may mean their own last move or the opponent's reply. "
+    '- "That", "it" or "that move" may mean their own last move or the opponent\'s reply. '
     "The sheet gives both positions -- the one they faced before their move and the one after "
     "the reply -- and says how long the reply took when that is known: read the conversation, "
     "take the likelier, and say which move you mean when it could be either.\n"
@@ -4639,8 +4639,7 @@ class Coach:
             # The AI coach: the ladder as it stands, said as a guideline, whatever the words
             # of the question (`Coach._ladder_words`).
             moved = (
-                "The position this is about has been moved from: everything about it may be "
-                "said. "
+                "The position this is about has been moved from: everything about it may be said. "
                 if now_level is not None or past
                 else ""
             )
@@ -5516,11 +5515,11 @@ class Coach:
             # model's reply fails a check on the board -- and used rules of thumb as the
             # directive's own: undone, and the model is given the guidelines instead.
             self._rules, self._last_rule = rules_before
-            directive = self._ai_directive(position, said)
+            directive = self._ai_directive(position, level)
         fallback, note = self._cool_hint(facts, fallback)
         return f"{checks}{directive}{note}", fallback
 
-    def _ai_directive(self, position: _Position, said: str) -> str:
+    def _ai_directive(self, position: _Position, level: DisclosureLevel) -> str:
         """The AI coach's task for a question: the guidelines, and the facts that the state of the
         conversation gives -- never a keyword in the player's words. What the coach has said
         since the last move, the question its last turn ended with, the move already given,
@@ -5536,9 +5535,7 @@ class Coach:
             out += AI_ANSWERING
         best = facts.candidates[0] if facts.candidates else ""
         if len(facts.candidates) > 1:
-            out += (
-                f" The moves about equally good here: {', '.join(facts.candidates)}."
-            )
+            out += f" The moves about equally good here: {', '.join(facts.candidates)}."
         worse = (
             worse_moves(position.board, position.analysis, self.user_colour)
             if position.analysis is not None
@@ -5562,6 +5559,28 @@ class Coach:
             else " On the opponent's move no move they name is rated here: rate one only from "
             "the engine's word on it."
         )
+        # What the board gives of the material and of what the player's last move allowed,
+        # whatever they ask: facts for the model to use if the question is about them.
+        material = self._material_words(level, facts)
+        if material:
+            out += (
+                " The material, if it comes up, is this, in these terms: "
+                f"{material}. Never count the pieces yourself."
+            )
+        own = self._last_own_move(mine=True)
+        if own is not None:
+            left = self.positions.get(own.move.ply)
+            allowed = (
+                idea_words.allowed(left.board, left.analysis, own.move.san)
+                if left is not None and left.analysis is not None
+                else None
+            )
+            if (
+                allowed
+                and own.assessment is not None
+                and own.assessment.severity is not Severity.NONE
+            ):
+                out += f" What {own.move.san} allowed, from the engine's line: {allowed}."
         reply = self._reply_note()
         if reply:
             out += f" {reply}"

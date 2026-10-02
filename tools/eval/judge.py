@@ -433,6 +433,11 @@ REQUEST_REBUILT = frozenset(
         # The moment of the game the request was built in: the coach's record reads it, no
         # check does.
         "epoch",
+        # The player's own moves played when it was built, for the voice's moved-on decision,
+        # and whether the rung and the marks follow the reply (an AI coach's answer): no
+        # check reads either.
+        "own_moves",
+        "rung_by_reply",
         # Whether the lesson ends by asking what the player saw: the coach's record of the
         # question reads it, no check does.
         "elicit",
