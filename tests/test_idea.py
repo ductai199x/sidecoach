@@ -102,8 +102,29 @@ def test_a_trapped_queen_is_trapped_not_loose() -> None:
     fen = "rbb2rk1/1p3ppp/p1n2n2/3p4/3Pp3/P1N1B2P/1qP1BPPN/R2QK2R w KQ - 0 14"
     idea = read(fen, "Na4 Qxa1 Qxa1")
     assert idea.blow is not None and idea.blow.name == "trappedPiece"
-    assert idea_words.target(idea, chess.Board(fen)) == "their queen on b2: it has no safe square"
+    assert (
+        idea_words.target(idea, chess.Board(fen))
+        == "their queen on b2: after your first move, it has no safe square"
+    )
     assert idea.sacrifices == ()
+
+
+def test_the_target_says_when_the_pattern_comes_about() -> None:
+    """The loose piece is loose once the blow is on the board, not now: fxe2 takes the knight
+    that guards the rook on g1 (Lichess 01M89, "nothing defends it" of a guarded rook)."""
+    fen = "8/2p5/1p2B3/p7/5r2/P4p2/1PP1N2k/1K4R1 b - - 2 59"
+    idea = read(fen, "fxe2 Re1 Rf1 Kc1 Rxe1+ Kd2")
+    assert (
+        idea_words.target(idea, chess.Board(fen))
+        == "their rook on g1: after your first move, nothing defends it"
+    )
+    # A fork on the third move comes after the second, not "after your first move" (00SIE).
+    fen = "2k3nr/ppp2ppp/2n5/8/8/1Q2P3/q4rPP/1R2KB1R w K - 0 16"
+    line = "Qxb7+ Kd7 Rd1+ Ke7 Qxc7+ Kf6 Qxc6+ Kg5 h4+ Kh5 g4+ Kxg4 Qe4+ Kh5 Qe5+ f5"
+    idea = read(fen, line)
+    assert idea.blow_at == 3
+    said = idea_words.target(idea, chess.Board(fen))
+    assert said is not None and said.endswith("one move can hit both after your second move")
 
 
 def test_a_pin_is_gone_once_its_pinner_is_taken() -> None:

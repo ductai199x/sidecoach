@@ -28,6 +28,13 @@ PIECE_NAMES = {
     chess.KING: "king",
 }
 _ORDINAL = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+
+
+def _after(n: int) -> str:
+    """The player's `n`-th move, said: "second move"."""
+    return f"{_ORDINAL[n]} move" if n in _ORDINAL else "next few moves"
+
+
 # Counts in words to twenty: a digit is a figure the coach may not quote.
 _NUMBER = {
     1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
@@ -720,7 +727,9 @@ def target(idea: Idea, board: chess.Board) -> str | None:
     if blow is not None and where is not None:
         squares = [chess.parse_square(s) for s in blow.squares]
         theirs = [s for s in squares if (p := where.piece_at(s)) and p.color != board.turn]
-        later = " after your first move" if idea.blow_at > 1 else ""
+        # The pattern is there to play on the player's blow_at-th move: after the move before
+        # it ("after your first move" was said of forks that come on the third, 2026-10-01).
+        later = f" after your {_after(idea.blow_at - 1)}" if idea.blow_at > 1 else ""
         if blow.name == "fork" and idea.blow_move is not None:
             # The first square is where the forking piece lands; the targets follow, and they
             # stand where they are before the fork as after it.
@@ -753,9 +762,13 @@ def target(idea: Idea, board: chess.Board) -> str | None:
                 f"blocking{later}"
             )
         if blow.name in ("trappedPiece", "hangingPiece") and theirs:
+            # The tag reads the board after the blow itself: nothing defends the piece once
+            # the player's blow_at-th move is on the board, not now ("nothing defends it" of
+            # a piece the first move cuts off, 2026-10-01).
             state = "it has no safe square" if blow.name == "trappedPiece" else "nothing defends it"
-            when = "after your first move, " if idea.blow_at > 1 else ""
-            return f"their {_now(idea, board, theirs[0])}: {when}{state}"
+            return (
+                f"their {_now(idea, board, theirs[0])}: after your {_after(idea.blow_at)}, {state}"
+            )
     target_piece = board.piece_at(idea.target) if idea.target is not None else None
     if idea.target is not None and target_piece is not None and target_piece.color != board.turn:
         return f"their {_named(board, idea.target)}"
