@@ -373,6 +373,9 @@ def build(b: Builder, reviews: list[dict[str, Any]], rng: random.Random) -> None
         summary = "not json" if n == 3 else json.dumps({**sides, "shape": shape})
         b.review(key, b.strengths[key], NOW - 400 - n, summary)
     b.setting("puzzle_level", "1300")
+    # The library's classes are as the rule left them: the routes' `refresh` then leaves the rows
+    # (their random classes) as they are, on both sides, whichever test reads the store first.
+    b.setting(library.CLASSES_KEY, str(library.CLASSES))
 
 
 # ---- the routes -----------------------------------------------------------------------------------
