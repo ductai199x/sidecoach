@@ -107,6 +107,28 @@ class StatsReviewTest {
         }
     }
 
+    /**
+     * `test_stats_read_the_store_in_a_few_queries`: the positions read the latest games a batch
+     * at a time until they have enough -- the latest first, as many as before.
+     */
+    @Test
+    fun thePositionsAreTheLatestReadABatchAtATime() {
+        val store = Store(null)
+        try {
+            for (i in 0 until Stats.POSITIONS_BATCH * 3) {
+                store.saveStats("standard", game("g%03d".format(i)).copy(playedAt = now - 3600.0 * (i + 1)), listOf(move(3, label = "blunder", loss = 0.4)))
+            }
+            store.addLibraryGame(LibraryRow("g000", "pgn", 0.0, "1. e4 *", whiteElo = 1500))
+            val found = Stats.positions(store, Stats.Filter(), "gallery", "blunder", now)
+            assertEquals(Stats.POSITIONS_MAX, found.length())
+            assertEquals("the latest first", "g000", found.getJSONObject(0).getString("key"))
+            assertEquals("g059", found.getJSONObject(Stats.POSITIONS_MAX - 1).getString("key"))
+            assertEquals(mapOf("g000" to (1500 to null)), store.libraryElos())
+        } finally {
+            store.close()
+        }
+    }
+
     /** `test_work_on_this_waits_for_several_games`. */
     @Test
     fun workOnThisWaitsForSeveralGamesAndCountsMoves() {

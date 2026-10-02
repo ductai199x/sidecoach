@@ -705,6 +705,20 @@ class Store(val path: File?) {
         ) { statGameRow(it) }
     }
 
+    /** Each imported game's players' ratings, White's and Black's, by its key. `library_elos`. */
+    fun libraryElos(): Map<String, Pair<Int?, Int?>> = lock.withLock {
+        rows("SELECT key, white_elo, black_elo FROM library") { c ->
+            c.getString(0) to ((if (c.isNull(1)) null else c.getInt(1)) to (if (c.isNull(2)) null else c.getInt(2)))
+        }.toMap()
+    }
+
+    /** Each saved review's game shape (its summary's), by the game's key and strength. `review_shapes`. */
+    fun reviewShapes(): Map<Pair<String, String>, String?> = lock.withLock {
+        rows(
+            "SELECT key, strength, json_extract(summary, '$.shape') AS shape FROM reviews WHERE json_valid(summary)",
+        ) { c -> (c.getString(0) to c.getString(1)) to (if (c.isNull(2)) null else c.getString(2)) }.toMap()
+    }
+
     /** The facts of the games' moves, in order. `stat_moves`. */
     fun statMoves(keys: List<String>): List<StatMoveRow> {
         if (keys.isEmpty()) return emptyList()

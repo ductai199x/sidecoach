@@ -167,10 +167,12 @@ object Stats {
              */
             fun of(store: Store, f: Filter, now: Double = clock()): Data {
                 val games = games(store, f, now)
+                // The ratings the games record, in one query, not a library row (and its PGN) a game.
+                val elos = store.libraryElos()
                 val elo = HashMap<String, Int?>()
                 for (g in games) {
-                    val row = store.libraryGame(g.key)
-                    elo[g.key] = if (row == null) null else if (g.userSide == "white") row.whiteElo else row.blackElo
+                    val (white, black) = elos[g.key] ?: (null to null)
+                    elo[g.key] = if (g.userSide == "white") white else black
                 }
                 return Data(games, store.statMoves(games.map { it.key }), elo)
             }
@@ -688,9 +690,9 @@ object Stats {
      */
     private fun shapes(store: Store, d: Data): JSONArray {
         val counts = HashMap<String, IntArray>() // games, won, drawn, lost
+        val shapes = store.reviewShapes()
         for (g in d.games) {
-            val summary = store.review(g.key, g.strength)?.summary ?: continue
-            val shape = runCatching { JSONObject(summary).let { if (it.isNull("shape")) null else it.optString("shape") } }.getOrNull()
+            val shape = shapes[g.key to g.strength]
             if (shape.isNullOrEmpty()) continue
             val c = counts.getOrPut(shape) { IntArray(4) }
             c[0] += 1
@@ -737,15 +739,31 @@ object Stats {
     )
     const val POSITIONS_MAX = 60
 
+    // The games read at a time for them ([positions]).
+    const val POSITIONS_BATCH = 50
+
     /**
      * The player's moves behind a figure, the latest first: [what] a selector of `_SELECT`, [arg]
      * its kind (a tactic's, an endgame's, a structure, a gallery's label). `positions`.
      */
     fun positions(store: Store, f: Filter, what: String, arg: String = "", now: Double = clock()): JSONArray {
         val select = SELECT[what] ?: return JSONArray()
-        val d = Data.of(store, f, now)
+        // The games read newest first, a batch at a time, until there are enough: every game's
+        // moves were read for each area's positions, a second and more at a thousand games (the
+        // review of 2026-10-01).
+        val games = games(store, f, now).asReversed()
         val out = ArrayList<JSONObject>()
-        for (g in d.games.asReversed()) {
+        for (batch in games.chunked(POSITIONS_BATCH)) {
+            if (out.size >= POSITIONS_MAX) break
+            val d = Data(batch, store.statMoves(batch.map { it.key }))
+            positionsIn(d, what, arg, select, out)
+        }
+        return JSONArray(out.take(POSITIONS_MAX))
+    }
+
+    /** `_positions`: [positions] over [d]'s games, in their order, added to [out]. */
+    private fun positionsIn(d: Data, what: String, arg: String, select: (StatMoveRow, String) -> Boolean, out: MutableList<JSONObject>) {
+        for (g in d.games) {
             val limit = PRESSURE_MS[g.timeClass ?: ""]
             for (m in d.mine(g.key)) {
                 if (what == "time.pressure" && (limit == null || m.clockMs == null || m.clockMs >= limit)) continue
@@ -766,7 +784,6 @@ object Stats {
             }
             if (out.size >= POSITIONS_MAX) break
         }
-        return JSONArray(out.take(POSITIONS_MAX))
     }
 
     // ---- Python's float means ----------------------------------------------------------------------
