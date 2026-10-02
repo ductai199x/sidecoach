@@ -37,7 +37,7 @@ TOOL_ROUNDS = 3
 TOOL_WORDS = (
     "You can ask the engine yourself, with the tools: the position after any moves you give "
     "it (who stands better, its best lines, what each move does) and what attacks a square. "
-    "Ask it for what the messages above do not show -- what comes after the end of a line, "
+    "Ask it for what the sections above do not show -- what comes after the end of a line, "
     "a move they propose, whose piece a move takes, whether a square is safe -- before you "
     "answer, and say only what it returns."
 )
@@ -140,8 +140,22 @@ class EngineTools:
 
     def run(self, name: str, arguments: dict[str, Any]) -> str:
         """The tool's answer, as text for the model; a bad call is told what was wrong."""
-        moves = _tokens(arguments.get("moves") or [])
+        if "_raw" in arguments:
+            # Arguments that were no JSON object were analysed silently as the board now, and
+            # the model never knew (the deep prompt review, 2026-10-01).
+            self.log.append(f"{name}(unreadable arguments)")
+            return (
+                f"The arguments were not a JSON object ({str(arguments['_raw'])[:80]!r}), so "
+                'nothing was analysed: call again with e.g. {"moves": ["Nf3"], "start": "now"}.'
+            )
         start = str(arguments.get("start") or "now")
+        if start not in ("now", "before_last_move"):
+            self.log.append(f"{name}(unknown start {start!r})")
+            return (
+                f'No start named {start!r}, so nothing was analysed: start is "now" or '
+                '"before_last_move".'
+            )
+        moves = _tokens(arguments.get("moves") or [])
         square = str(arguments.get("square") or "")
         self.log.append(
             f"{name}({' '.join(moves)}"

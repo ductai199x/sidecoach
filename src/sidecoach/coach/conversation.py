@@ -404,7 +404,7 @@ class Conversation:
             f"Takeback: {names} withdrawn. The game is back at the position after "
             f"{self._last_active_name()}, {self._turn_text(board)}:\n"
             f"{position_text(board, legal=False)}\n"
-            "Play continues from here; the next message is the replacement move."
+            "Play continues from here; the next move in the record replaces it."
         )
         self.entries.append(Entry("user", "takeback", text))
 
@@ -482,10 +482,20 @@ class Conversation:
         if self.summary:
             game.append(f"Earlier dialogue, summarised: {self.summary}")
         stale_nods = self._stale_nods() if self.compact_record else set()
+        moved = False  # a move, takeback or re-read seen yet
+        headed = False
         for i, entry in enumerate(self.entries):
             if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
             sink = said if i > reached and not entry.past else game
+            if entry.kind in ("ply", "takeback", "resync"):
+                moved = True
+            elif sink is game and not moved and not headed:
+                headed = True
+                # What was said before any move hung under "Game so far" with no position:
+                # read as said after a move that was never made (the deep prompt review,
+                # 2026-10-01). It belongs to the start position, given in the Setting.
+                game.append("At the start position, before any move:")
             if entry.kind == "ply":
                 assert entry.record is not None
                 if i == reached:
@@ -1132,7 +1142,14 @@ class Conversation:
                 # The king's free squares as it stands: taken as what a move left them ("Qb4
                 # leaves only e4 and e5" where Qb4 took e4 away: the test audit, 2026-09-26).
                 said = third_person(str(value), side=side)
-                out.append(f"{name}: {said} (as it stands, before any move)")
+                # Of a past position, "as it stands" read as the board now, whose free squares
+                # are not those (the deep prompt review, 2026-10-01).
+                when = (
+                    "in that position, before the move the player made there"
+                    if past
+                    else "as it stands, before any move"
+                )
+                out.append(f"{name}: {said} ({when})")
             else:
                 out.append(f"{name}: {third_person(str(value), side=side)}")
         return out

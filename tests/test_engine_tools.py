@@ -4,7 +4,7 @@ engine"): the tools' answers, and the Speaker's rounds of calls."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import chess
@@ -156,6 +156,7 @@ class ToolModel:
 def _at_scholar(model: Any) -> Coach:
     """The coach with `model` and the engine, the player to move at SCHOLAR, analysed."""
     coach = Coach(model, policy=_policy(), engine=FirstLegal())
+    coach.sync_claims = True  # the request exists when ask() returns
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     drain(coach)
@@ -247,3 +248,36 @@ def test_a_server_that_refuses_the_tools_is_asked_without_them() -> None:
 # A provider that takes no tools (no `tools_ok`) is never sent them: tests/test_coach.py's
 # test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach asks a question with
 # the engine there of a ScriptedProvider, whose `chat` takes no `tools`.
+
+
+def test_a_question_s_engine_searches_run_off_the_callers_thread() -> None:
+    """The engine's searches for a question -- the move named, the line's end -- ran inside
+    ask(), on the panel's loop: up to seconds each, and the vision stalled (the deep prompt
+    review, 2026-10-01). ask() hands that work to the coach's spawner and returns; here the
+    spawner keeps it, and the test runs it after."""
+    engine = FirstLegal()
+    coach = Coach(ToolModel([], "Bxf7+ gives a pawn for little."), policy=_policy(), engine=engine)
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    engine.seen.clear()
+    coach.ask("is Bxf7+ good?", 8.0)
+    assert engine.seen == [], "no search on the caller's thread"
+    assert [name for _, name in spawned] == ["sidecoach-ask"]
+    spawned[0][0]()
+    assert engine.seen, "the move named was examined by the work handed off"
+    assert [m.text for m in drain(coach)] == ["Bxf7+ gives a pawn for little."]
+
+
+def test_a_call_the_tools_cannot_read_is_told_so_never_analysed_as_now() -> None:
+    """Arguments that were no JSON object, or an unknown start, were analysed silently as
+    the board now (the deep prompt review, 2026-10-01): the model is told instead."""
+    engine = FirstLegal()
+    tools = EngineTools(chess.Board(AFTER_RXF1), None, engine, chess.BLACK)
+    out = tools.run("analyse", {"_raw": "moves: Kg2"})
+    assert out.startswith("The arguments were not a JSON object ('moves: Kg2')"), out
+    out = tools.run("analyse", {"moves": ["Kg2"], "start": "before"})
+    assert out.startswith("No start named 'before'"), out
+    assert engine.seen == [], "nothing was analysed"

@@ -40,6 +40,30 @@ _NOT_VERBS = frozenset(
         "in", "at", "by", "for", "with", "from", "up", "down", "back", "both", "each", "all",
     }
 )  # fmt: skip
+# Words after "you" that are never its verb: "it gives you a pawn instead", "costs you
+# twice" became "the player insteads", "the player twices" (the deep prompt review, 2026-10-01).
+_NOT_VERBS |= frozenset(
+    {
+        "instead", "twice", "better", "worse", "more", "less", "too", "again", "first", "here",
+        "there", "nothing", "something", "enough", "time", "tempo", "material", "trouble",
+        "much", "little", "plenty", "room", "options", "chances", "any", "some", "no", "one",
+        "two", "three", "an", "extra", "free", "away", "out", "over", "into", "onto", "off",
+    }
+)  # fmt: skip
+# The word before "you" that makes it an object: a preposition, or a verb taking one --
+# "it attacks you twice", "this leaves you a pawn down".
+_OBJECT_AFTER = frozenset(
+    {
+        "to", "for", "with", "against", "than", "from", "at", "on", "by", "of", "into",
+        "onto", "toward", "towards", "behind", "past", "around", "near", "beside", "like",
+        "give", "gives", "leave", "leaves", "let", "lets", "cost", "costs", "get", "gets",
+        "make", "makes", "offer", "offers", "hand", "hands", "show", "shows", "tell", "tells",
+        "ask", "asks", "attack", "attacks", "hit", "hits", "check", "checks", "pin", "pins",
+        "fork", "forks", "threaten", "threatens", "help", "helps", "allow", "allows",
+        "force", "forces", "beat", "beats", "hurt", "hurts", "trap", "traps", "keep", "keeps",
+        "put", "puts", "send", "sends", "stop", "stops", "deny", "denies", "answer", "answers",
+    }
+)  # fmt: skip
 # Verbs ending in -ed that are present tense, not past.
 _PRESENT_ED = frozenset({"need", "succeed", "proceed", "exceed", "feed", "bleed", "speed", "shed"})
 
@@ -91,8 +115,11 @@ def third_person(text: str, *, side: str = "player") -> str:
         out = subject
         if adverb:
             out += f" {adverb}"
+        before = re.search(r"([A-Za-z']+)[^A-Za-z']*$", match.string[: match.start()])
+        is_object = before is not None and before.group(1).lower() in _OBJECT_AFTER
         if verb:
-            out += " " + (verb if verb.lower() in _NOT_VERBS else _conjugate(verb))
+            kept = verb.lower() in _NOT_VERBS or is_object
+            out += " " + (verb if kept else _conjugate(verb))
         return out
 
     out = _PRONOUNS.sub(rewrite, text)

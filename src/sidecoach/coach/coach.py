@@ -629,10 +629,10 @@ def _lesson_data(board: chess.Board | None, best: str, played: str | None, rule:
 # the board (Tai, 2026-09-24), and only the answer is kept back (Tai, 2026-09-26: a vague
 # coach is worse than one that says a little too much).
 IDEA_LEVEL_WORDS = (
-    "the idea: what is at stake and the key fact, with every piece, square and move of "
-    "theirs the sheet names, the target's square included. Keep back only the answer: the "
-    "player's move, the square it goes to (unless the target stands there), and which of "
-    "their pieces makes it"
+    "the idea: what is at stake and the key fact, with every piece, square and move of the "
+    "opponent's the sheet names, the target's square included. Keep back only the answer: "
+    "the player's move, the square it goes to (unless the target stands there), and which of "
+    "the player's pieces makes it"
 )
 SEE_ALL_WORDS = (
     "You see the answer so that the hint can be precise and true; a hint that gives a little "
@@ -689,6 +689,16 @@ MOVE_DIRECTIVE = (
     "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two "
     "sentences, no question."
 )
+MOVE_GIVEN = (
+    "They asked for another hint, and the move has been given already: it is {move}. Say so "
+    "plainly, with what it does from the fact sheet's why, in other words than before. One or "
+    "two sentences, no question."
+)
+FOCUS_KING = (
+    "Here the move is castling: the piece is the king, and what it goes after is its own "
+    "safety and the rook's way into the game, as the sheet gives them -- never a piece of "
+    "theirs."
+)
 
 
 def vs_directive(candidates: int = VS_CANDIDATES) -> str:
@@ -740,6 +750,16 @@ _SAYS_COST = re.compile(
 _CLAUSE = re.compile(r"(?<=[.;:!?])\s+|\s+--\s+|,\s+(?:but|though|while)\s+")
 # A clause about the move just played without naming it: "That was ...", "It cost ...".
 _ABOUT_IT = re.compile(r"^\W*(?:that|it|this|your (?:last )?move)\b", re.IGNORECASE)
+# Such a clause calling the move something: "That was a blunder", "It is the best move", "it's
+# not the strongest" -- not "It is best to ...", "It avoids the mistake of ...".
+_CALLED_IT = re.compile(
+    r"^\W*(?:that|it|this|your (?:last )?move)(?:'s|\s+(?:was|is|were))\s+(?:not\s+)?"
+    r"(?:(?:just|really|clearly|simply|actually|definitely|probably|also|still|truly)\s+)*"
+    r"(?:(?:a|an|the|your)\s+)?(?:(?:big|small|real|clear|serious|slight|costly|tiny|minor|"
+    r"bad|huge)\s+)?(?:blunder|mistake|inaccuracy|miss|best|strongest|top|engine's)\b"
+    r"(?!\s+to\b)",
+    re.IGNORECASE,
+)
 
 
 def _verdict_problems(text: str, request: _Request) -> list[str]:
@@ -760,11 +780,16 @@ def _verdict_problems(text: str, request: _Request) -> list[str]:
     best_ok = label in ("best", "excellent") or a.expected_loss < 0.005
     problems: list[str] = []
     for clause in _CLAUSE.split(text):
-        if not (names_it.search(clause) or _ABOUT_IT.match(clause)):
+        named = names_it.search(clause) is not None
+        if not (named or _ABOUT_IT.match(clause)):
             continue
+        # Unnamed, the clause speaks of the move only where it calls it so: "It avoids the
+        # mistake of ..." and "It is best to develop" were refused (the deep prompt review).
+        said_of_it = named or _CALLED_IT.match(clause) is not None
         others = [m for m in _SAN.findall(clause) if m.rstrip("+#") != core]
         if (
             not others
+            and said_of_it
             and not best_ok
             and _SAYS_BEST.search(clause)
             and not re.search(
@@ -776,6 +801,7 @@ def _verdict_problems(text: str, request: _Request) -> list[str]:
             problems.append(f"called {played} the best move; its verdict is {label}")
         if (
             a.severity is Severity.NONE
+            and said_of_it
             and _SAYS_SLIP.search(clause)
             and not re.search(
                 r"\bnot (?:a )?(?:blunder|mistake)\b|\bno (?:blunder|mistake)\b", clause, re.I
@@ -925,6 +951,11 @@ def _json_object(text: str) -> object:
         return None
 
 
+def _spawn_daemon(work: Callable[[], None], name: str) -> None:
+    """`work` on a daemon thread of its own, named `name`."""
+    threading.Thread(target=work, name=name, daemon=True).start()
+
+
 def _sample_reply(passed: list[tuple[float, str]]) -> str:
     """Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance."""
     weights = [max(prob, 0.01) for prob, _ in passed]
@@ -1022,6 +1053,45 @@ class _FirstCandidate:
         text, _ = self._candidate()
         if text:
             self._offer(text, final=True)
+
+    def new_round(self) -> None:
+        """The model called the engine, and writes its reply again from the start: the next
+        round's text is read from its own start. Sliced with the last round's spoken length,
+        the voice said "ith the queen is mate" (the deep prompt review, 2026-10-01). A round
+        that already spoke ends the reading: what was said stands."""
+        self.buffer = ""
+        if self.spoken:
+            self.done = True
+
+
+class _RoundGate:
+    """A tool round's text held back from the voice: a model calling the engine writes a
+    preamble first ("Let me check that with the engine."), in the same turn as its calls, and
+    it was spoken. The text goes on once a candidate's marker is seen -- a preamble has none --
+    or whole at the round's end when the round calls nothing; a round that calls the engine
+    is dropped, and the reader starts over (`_FirstCandidate.new_round`)."""
+
+    def __init__(self, on_delta: Callable[[str], bool]) -> None:
+        self.on_delta = on_delta
+        self.held = ""
+        self.open = False
+        self.going = True  # what the reader last said: False closes the stream
+
+    def feed(self, delta: str) -> bool:
+        if self.open:
+            self.going = self.on_delta(delta)
+            return self.going
+        self.held += delta
+        if _VS_MARKER.search(_THINK_BLOCK.sub("", self.held)):
+            self.open = True
+            self.going = self.on_delta(self.held)
+            return self.going
+        return True
+
+    def end(self, called: bool) -> None:
+        """The round is over; `called`: it called the engine."""
+        if not called and not self.open and self.held:
+            self.going = self.on_delta(self.held)
 
 
 @dataclass
@@ -1652,7 +1722,11 @@ class Speaker:
             failed: Exception | None = None
             try:
                 completion = self._complete(
-                    provider, request, messages, reader.feed if reader is not None else None
+                    provider,
+                    request,
+                    messages,
+                    reader.feed if reader is not None else None,
+                    reader.new_round if reader is not None else None,
                 )
                 raw = completion.text
                 stats = dict(completion.stats)
@@ -1688,9 +1762,14 @@ class Speaker:
                 if wait is None or self.pause(wait):
                     break
                 continue
+            parsed = _parse_candidates(raw)
+            if reader is not None and reader.declined:
+                # Declined, the stream was closed in the first candidate's first sentence:
+                # that candidate is cut off, and it went out as the text (the deep prompt
+                # review, 2026-10-01). Only candidates the stream finished are read.
+                parsed = parsed[:-1]
             scored = [
-                (prob, candidate, self._problems(candidate, request))
-                for prob, candidate in _parse_candidates(raw)
+                (prob, candidate, self._problems(candidate, request)) for prob, candidate in parsed
             ]
             passed = [(prob, candidate) for prob, candidate, faults in scored if not faults]
             given = "\n\n---\n\n".join(str(m["content"]) for m in messages[-2:])
@@ -1722,7 +1801,7 @@ class Speaker:
                     else f"{_NUMBER_WORDS.get(request.candidates, request.candidates)} "
                     "fresh, varied replies that avoid those"
                 )
-                + ", keeping to the messages above."
+                + ", keeping to what the sections above say."
             )
             messages = [*messages[:-1], retry]  # type: ignore[list-item]
         if problems and not streamed:
@@ -1763,6 +1842,7 @@ class Speaker:
         request: _Request,
         messages: list[ChatMessage],
         on_delta: Callable[[str], bool] | None,
+        new_round: Callable[[], None] | None = None,
     ) -> Completion:
         """The model's reply, streamed to `on_delta` when given. With engine tools on the
         request and a model that takes them, the engine calls it makes are answered and it is
@@ -1777,10 +1857,13 @@ class Speaker:
         round_ = 0
         while True:
             extra: dict[str, Any] = {}
+            gate: _RoundGate | None = None
             if tools is not None:
                 extra = {"tools": tools.specs, "turns": turns}
                 if round_ == TOOL_ROUNDS:
                     extra["tool_choice"] = "none"
+                elif on_delta is not None:
+                    gate = _RoundGate(on_delta)  # a round that may call the engine
             try:
                 if on_delta is not None:
                     completion = provider.chat_stream(  # type: ignore[attr-defined]
@@ -1788,9 +1871,14 @@ class Speaker:
                         messages,
                         max_tokens=VS_MAX_TOKENS,
                         temperature=VS_TEMPERATURE,
-                        on_delta=on_delta,
+                        on_delta=gate.feed if gate is not None else on_delta,
                         **extra,
                     )
+                    calling = tools is not None and bool(completion.tool_calls)
+                    if gate is not None:
+                        gate.end(calling and round_ < TOOL_ROUNDS)
+                    if calling and round_ < TOOL_ROUNDS and new_round is not None:
+                        new_round()
                 else:
                     completion = provider.chat(
                         request.system,
@@ -2354,6 +2442,9 @@ class Coach:
         # Run the claims check on the caller's thread (replay and evaluation) instead of a
         # worker: live it is threaded so a button press never stalls the pipeline.
         self.sync_claims = False
+        # How a question's work is started off the caller's thread: a daemon thread, named.
+        # A test hands its own, and runs the work when it chooses.
+        self.spawn: Callable[[Callable[[], None], str], None] = _spawn_daemon
         # The same for the dialogue summary: live it folds in the background, a few seconds
         # after the move; in evaluation it folds before the next moment, so runs repeat.
         self.sync_summaries = False
@@ -2701,11 +2792,21 @@ class Coach:
         # can play next" (Tai's puzzle, 2026-09-28).
         tools = self.engine is not None and not offline
         if self.claims is None or tools or not may_carry_claims(text):
-            verdicts = examined() if may_carry_claims(text) else []
-            if not shown_examination:  # offline, the engine's word on it was the answer
-                self._speak(
-                    Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
-                )
+
+            def answered() -> None:
+                verdicts = examined() if may_carry_claims(text) else []
+                if not shown_examination:  # offline, the engine's word on it was the answer
+                    self._speak(
+                        Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
+                    )
+
+            if tools and not self.sync_claims:
+                # The engine's searches -- the moves named, the line's end -- take up to
+                # seconds each: on the caller's thread (the panel's loop) they stalled the
+                # vision (the deep prompt review, 2026-10-01).
+                self.spawn(answered, "sidecoach-ask")
+            else:
+                answered()
             return
 
         def checked() -> None:
@@ -2728,7 +2829,7 @@ class Coach:
         if self.sync_claims:
             checked()  # replay and evaluation: the request must exist when ask() returns
         else:
-            threading.Thread(target=checked, name="sidecoach-claims", daemon=True).start()
+            self.spawn(checked, "sidecoach-claims")
 
     def _ask_profile(self, text: str, ts: float) -> None:
         """A question about the player over their games: answered from the record by the
@@ -2759,7 +2860,7 @@ class Coach:
             self.profile_answers.append(("answer", answer))
             self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True)
 
-        threading.Thread(target=run, name="profile-ask", daemon=True).start()
+        self.spawn(run, "profile-ask")
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
@@ -4132,7 +4233,7 @@ class Coach:
 
         if trigger is Trigger.REVIEW:
             return (
-                "The game is over. Sum it up from the review in the last message and the "
+                "The game is over. Sum it up from the review in the record above and the "
                 "verdicts on the moves above, and from nothing else: the result, what went "
                 "well, and the one thing to work on. When the review says what they kept "
                 "missing, that is the thing: the pattern in plain words and the habit that "
@@ -4183,10 +4284,22 @@ class Coach:
                 # a mating attack" and nothing more.
                 # What the move let them do, from the position it left, when that has
                 # been analysed: the grounded half of "what their move allowed".
+                # Late -- the opponent has replied and the player is thinking again -- what
+                # the move allowed is the threat on the board now, and a question that sends
+                # them to the board is a nudge while they think: "one question that sends
+                # them to find..." asked what the move allowed (the deep prompt review,
+                # 2026-10-01). The lesson is then the better move and what theirs missed.
+                now = self._current
+                facing = (
+                    now is not None
+                    and now.ply > position.ply
+                    and now.board.turn == self.user_colour
+                    and not now.board.is_game_over()
+                )
                 left = self.positions.get(played.ply)
                 allowed = (
                     idea_words.allowed(left.board, left.analysis, played.san)
-                    if left is not None and left.analysis is not None
+                    if left is not None and left.analysis is not None and not facing
                     else None
                 )
                 kind = _cost(assessment.severity, label)
@@ -4218,11 +4331,21 @@ class Coach:
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     "Teach the difference so they spot it next time: why the better move works "
-                    "and what their move missed or allowed, from the sheet of the position they "
-                    "faced -- its goal, its pattern, the tactic when it names one -- as a "
-                    "pattern to remember. Three sentences at most, then, if you like, one "
-                    "question that sends them to find on the board something your reply has "
-                    f"not said. {TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
+                    + (
+                        "and what their move missed, "
+                        if facing
+                        else "and what their move missed or allowed, "
+                    )
+                    + "from the sheet of the position they faced -- its goal, its pattern, the "
+                    "tactic when it names one -- as a pattern to remember. "
+                    + (
+                        "Three sentences at most, no question: they are thinking about their "
+                        "next move now, and what the opponent threatens is theirs to find. "
+                        if facing
+                        else "Three sentences at most, then, if you like, one question that "
+                        "sends them to find on the board something your reply has not said. "
+                    )
+                    + f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
                 )
                 if elicit:
                     # Sparingly: what they saw at that moment, for the profile's record
@@ -4277,7 +4400,7 @@ class Coach:
                 instruction = (
                     f"The player just played {played.san}: {label} -- {meaning}. Show some "
                     "delight, in your own voice, in one or two sentences: name what makes it "
-                    f"the move -- {reason}, and the idea it serves -- from the messages above, "
+                    f"the move -- {reason}, and the idea it serves -- from the sections above, "
                     "nothing invented. No question, no advice, and not the same words as your "
                     "last such sentence. "
                     f"{NOT_THE_MOVE} {NO_FIGURES}"
@@ -4402,6 +4525,13 @@ class Coach:
                     fallback = "It's their move. See what they do about yours, then ask again."
             else:
                 fallback = "Give me a moment; I am still reading this position."
+        # Asked about a move, square or piece, a refused reply falls back to the engine's word
+        # on it, as the offline coach says it: "is Bxf7+ good?" got the mate-in-one hint (the
+        # deep prompt review, 2026-10-01). A branch with its own answer replaces it below.
+        # Moves only: a piece named in passing is not read out (the offline coach's rule).
+        scored = [f for f in engine_words if "the expected score is" in f]
+        if scored:
+            fallback = " ".join(spoken_examination(f) for f in scored)
         # A question about a fact that is never withheld -- the material, the opening, who
         # stands better -- falls back to that fact, not to the hint for the position.
         material = (
@@ -4454,8 +4584,8 @@ class Coach:
             # that they had been a queen down.
             directive = (
                 "They asked how they did overall. Answer from the engine's verdicts on their "
-                "moves in the messages above -- the labels, the tally in their last move's "
-                "message, where they lost ground, how the material went -- and from nothing "
+                "moves in the record above -- the labels, the tally under their last move, "
+                "where they lost ground, how the material went -- and from nothing "
                 "else: do not infer the course of the game from the position on the board. "
                 "Two or three sentences: what went well -- how many of their moves were strong, "
                 "and their slips by kind, in the tally's numbers -- and the one thing to work "
@@ -4490,12 +4620,40 @@ class Coach:
                     "question."
                 )
             elif level >= DisclosureLevel.MOVE:
-                directive = aim + MOVE_DIRECTIVE
+                best_san = facts.candidates[0] if facts.candidates else ""
+                given = bool(best_san) and any(
+                    best_san.rstrip("+#") in s for s in self._said_since_move()
+                )
+                # Asked again once the move was given, "The next hint is the answer" said
+                # it was still to come (the deep prompt review, 2026-10-01).
+                directive = aim + (MOVE_GIVEN.format(move=best_san) if given else MOVE_DIRECTIVE)
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE
+                best_san = facts.candidates[0] if facts.candidates else ""
+                if best_san.startswith("O-O"):
+                    # "The piece to use and what it goes after", the piece being the king,
+                    # invited "your king goes after their queen" (the deep prompt review).
+                    directive += f" {FOCUS_KING}"
             else:
                 directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += f" {NO_FIGURES} Do not comment on anything said earlier."
+        elif (
+            position.board.turn != self.user_colour
+            and not position.board.is_game_over()
+            and (_ASK_LINE.search(said) or _ASK_MOVE.search(said))
+        ):
+            # On the opponent's move the engine's line and best move are the OPPONENT's: "what
+            # should I play?" there told the model to give the player the opponent's best move
+            # as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
+            fallback = their_move_now(position.board, facts)
+            asked = "to see the line" if _ASK_LINE.search(said) else "what to play"
+            directive = (
+                f"They asked {asked}, and it is the opponent's move, not theirs: there is no "
+                "move of theirs to play yet. Say so, then what the opponent threatens now -- "
+                "their best move and what it does, from the engine lines (the opponent's "
+                "move) -- and what the player should be ready for once it is played. One or two "
+                f"sentences, no question. {NO_FIGURES}"
+            )
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             # The line move by move, computed: the only reasons a move of it may be given
             # (4 of the 5 false claims the bench's labellers found were in these answers).
@@ -4767,8 +4925,17 @@ class Coach:
                 "propose a move, or name a square or piece, say plainly whether it holds up and "
                 "what it does or allows, from the engine's word on it where given above -- "
                 "theirs to hear in full: the score after it, how far behind the best, the reply, "
-                "what the move does; when the engine does not rate their move, say it is not the "
-                "strongest and, in general terms, why. Of the position they face, keep back only "
+                "what the move does; "
+                + (
+                    "when the engine does not rate their move, say it is not the strongest and, "
+                    "in general terms, why. "
+                    if position.board.turn == self.user_colour
+                    # On the opponent's move a move they name is not examined (`analyse_named`):
+                    # "not rated" there means nothing (the deep prompt review, 2026-10-01).
+                    else "on the opponent's move no move they name is rated here: rate one only "
+                    "from the engine's word on it. "
+                )
+                + "Of the position they face, keep back only "
                 "what the level line does, and point them toward the right idea"
                 + (
                     " in words."

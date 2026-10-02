@@ -109,6 +109,16 @@ def test_the_facts_are_reworded_in_the_third_person_for_the_side_to_move() -> No
         "the player wins a pawn; the opponent is worse; the player needs to castle"
     )
     assert third_person("yours is the better bishop") == "the player's is the better bishop"
+    # "you" as an object takes no verb: "insteads", "twices" (the deep prompt review).
+    assert third_person("it gives you a pawn instead; it hits you twice") == (
+        "it gives the player a pawn instead; it hits the player twice"
+    )
+    assert third_person("castling gives you better chances") == (
+        "castling gives the player better chances"
+    )
+    assert third_person("this leaves you instead of them with the pawn") == (
+        "this leaves the player instead of the opponent with the pawn"
+    )
 
 
 def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do() -> None:
@@ -496,3 +506,35 @@ def test_the_prompt_check_names_what_is_wrong() -> None:
     )
     with_facts = read.replace("\n\n## On the board", "\n\n## Facts (the player to move)\nphase: x")
     assert harness_problem(with_facts, board, Side.BLACK, lines=True, facts=True) is None
+
+
+def test_a_past_positions_free_squares_are_said_of_that_position() -> None:
+    """The sheet of the position they faced said the king's free squares "(as it stands,
+    before any move)": read as the board now, where they are no longer free (the deep prompt
+    review, 2026-10-01)."""
+    convo = _conversation()
+    board = chess.Board()
+    target = "their king on e8, with one free square: d8"
+    now = convo._fact_lines({"target": target}, board, "player")
+    past = convo._fact_lines({"target": target}, board, "player", past=True)
+    assert now[0].endswith("(as it stands, before any move)"), now
+    assert past[0].endswith("(in that position, before the move the player made there)"), past
+
+
+def test_what_was_said_before_any_move_is_said_at_the_start_position() -> None:
+    """At a puzzle, what was said before the first move hung under "Game so far" with no
+    position, read as said after a move never made (the deep prompt review, 2026-10-01)."""
+    convo = _conversation()
+    convo.user_said("hint")
+    convo.coach_said("Look at the f-file.")
+    _move(convo, chess.Board(), 1, "e4", by_user=True)
+    _move(
+        convo,
+        chess.Board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+        2,
+        "e5",
+        by_user=False,
+    )
+    record = convo.render().split("# Game so far\n", 1)[1]
+    head = 'At the start position, before any move:\n    PLAYER said: "hint"'
+    assert record.startswith(head), record

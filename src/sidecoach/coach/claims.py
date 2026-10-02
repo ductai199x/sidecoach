@@ -1226,6 +1226,34 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     return None
 
 
+# A piece placed at another moment than now: a plan ("aim to get a rook on c8"), a wish ("a
+# knight on d5 would be a monster"), a future ("your king on g8 will be safe after
+# castling", "castle, and the king on g1 covers g2"). Refused as false placements (the deep
+# prompt review, 2026-10-01).
+_ELSEWHERE = re.compile(
+    r"\b(?:would|could|might|will|shall|if|aim|aims|aiming|(?<!at\s)once|after|belongs?|one\s+day|"
+    r"eventually|later|someday|dream|ideal|imagine|suppose|wants?\s+to|get\s+(?:a|an|your)|"
+    r"bring|reroute|heading)\b"
+    r"|\b(?:a|an)\s+(?:king|queen|rook|bishop|knight|pawn)\s+(?:on|at)\s+[a-h][1-8]\b",
+    re.IGNORECASE,
+)
+
+
+# Castling said: the king and rook it puts on their squares are there afterwards.
+_CASTLING_SAID = re.compile(r"\bcastl\w*|O-O", re.IGNORECASE)
+
+
+def _elsewhere(text: str, at: int, piece: str = "") -> bool:
+    """Whether the sentence holding position `at` of `text` is about another moment (for a
+    king or rook, castling's)."""
+    start = max(text.rfind(stop, 0, at) for stop in (". ", "! ", "? ", "; ")) + 1
+    ends = [i for i in (text.find(stop, at) for stop in (". ", "! ", "? ", "; ")) if i >= 0]
+    sentence = text[start : min(ends) if ends else len(text)]
+    if piece.lower() in ("king", "rook") and _CASTLING_SAID.search(sentence):
+        return True
+    return bool(_ELSEWHERE.search(sentence))
+
+
 def check_draft(
     text: str,
     board: chess.Board,
@@ -1270,7 +1298,7 @@ def check_draft(
                 )
                 for frame in frames
             ]
-            if all(reasons):
+            if all(reasons) and not _elsewhere(text, match.start(), match.group("piece")):
                 add(match.group(0), reasons[0] or "")
 
     for match in [*_TACTIC.finditer(text), *_STATE_FIRST.finditer(text)]:
@@ -1304,6 +1332,10 @@ def check_draft(
     for phrase, reason in _strategic_problems(text, board, us):
         add(phrase, reason)
     for phrase, reason in _line_problems(text, frames, us):
+        add(phrase, reason)
+    for phrase, reason in _relation_problems(text, frames, us):
+        add(phrase, reason)
+    for phrase, reason in _mate_problems(text, frames):
         add(phrase, reason)
     return problems
 
@@ -1369,6 +1401,270 @@ _ONLY_MOVE = re.compile(
 _SAN_CHECK = re.compile(
     r"\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\+"
 )
+
+
+# A relation said of a piece in the present: "your knight on f6 attacks their queen on d1",
+# "the queen on g5 forks your knight on e5 and the pawn on g2", "the bishop on c4 pins the
+# pawn on f7". Never checked before: the deep prompt review (2026-10-01) let these through.
+_PIECE_AT = (
+    rf"(?:(?:the|a|an|{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?(?:{_PIECE_WORD})s?"
+    r"\s+(?:on|at)\s+[a-h][1-8]\b"
+)
+_RELATION = re.compile(
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?(?P<piece>{_PIECE_WORD})"
+    r"\s+(?:on|at)\s+(?P<square>[a-h][1-8])\s+(?:(?:now|already|also|still|directly)\s+)?"
+    r"(?:is\s+(?:now\s+|already\s+|also\s+|still\s+)?(?P<ing>attacking|hitting|defending|"
+    r"protecting|guarding|pinning|forking)|(?P<verb>attacks|hits|defends|protects|guards|"
+    r"covers|pins|forks))\s+(?P<objects>[^.;:!?]*)",
+    re.IGNORECASE,
+)
+# The same said the other way round: "your knight on e5 is defended by the pawn on d4".
+_RELATION_BY = re.compile(
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?(?P<piece>{_PIECE_WORD})"
+    r"\s+(?:on|at)\s+(?P<square>[a-h][1-8])\s+(?:is|was)\s+(?:now\s+|already\s+|also\s+|still\s+)?"
+    r"(?P<verb>attacked|defended|protected|guarded|pinned|forked)\s+by\s+"
+    rf"(?:(?:the|a|an|(?P<bycolour>{_COLOUR_WORDS}))\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?"
+    rf"(?P<bypiece>{_PIECE_WORD})\s+(?:on|at)\s+(?P<bysquare>[a-h][1-8])\b",
+    re.IGNORECASE,
+)
+_OBJECT = re.compile(
+    rf"(?:(?:the|a|an|(?P<colour>{_COLOUR_WORDS}))\s+)?{_PIECE_ADJECTIVES}(?:[a-h]-)?"
+    rf"(?P<piece>{_PIECE_WORD})s?\s+(?:on|at)\s+(?P<square>[a-h][1-8])\b",
+    re.IGNORECASE,
+)
+# Where the objects of a relation end: the next clause is about something else.
+_CLAUSE_END = re.compile(
+    r",(?!\s*(?:and\s+)?(?:the|a|an|your|their|white's|black's|white|black)\s)|\s(?:so|which|"
+    r"while|but|because|since|if|when|after|before|until|then|that|who|where|whereas)\b",
+    re.IGNORECASE,
+)
+# What makes a sentence about a moment that is not on the board, or about a line: a plan, a
+# hope, a condition, a future ("once", "after", "would", "will"), an x-ray ("through").
+_NOT_PRESENT = re.compile(
+    r"\b(?:would|could|might|may|will|shall|should|can|cannot|can't|won't|wouldn't|if|once|"
+    r"after|when|whenever|until|unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|"
+    r"trying|soon|later|eventually|next|then|imagine|suppose|once|through|x-ray|x-rays|behind|"
+    r"line|lines|afterwards|ready|about to|going to|set to)\b",
+    re.IGNORECASE,
+)
+# A move said to mate now: "Qxf7 is mate", "Qxf7 mates", "Qxf7 gives checkmate".
+_MATE_SAID = re.compile(
+    rf"(?<![\w=])(?P<san>{_SAN})(?![\w=])\s+(?:is|gives|delivers)\s+(?:check)?mate\b"
+    rf"|(?<![\w=])(?P<san2>{_SAN})(?![\w=])\s+(?:checkmates|mates)\b",
+)
+# A mate in one said to be on the board: "there is mate in one", "you have a mate in one".
+_MATE_IN_ONE = re.compile(
+    r"\b(?:there(?:'s|\s+is)|you\s+have|they\s+have|(?:white|black)\s+has)\s+(?:a\s+)?"
+    r"mate\s+in\s+(?:one|1)\b",
+    re.IGNORECASE,
+)
+# What else puts a mate at another moment than now: what a move stops, allows or prepares.
+_NOT_NOW = re.compile(
+    r"\b(?:otherwise|unless|else|allow\w*|stop\w*|prevent\w*|avoid\w*|threat\w*|prepar\w*|"
+    r"follow\w*|before|instead|missed|was|were|had)\b",
+    re.IGNORECASE,
+)
+
+
+def _on(frame: chess.Board, colour: str | None, piece: str, square: str, us: chess.Color) -> bool:
+    return _placement_problem(frame, colour, piece, square, us) is None
+
+
+def _pins_it(board: chess.Board, attacker: chess.Square, front: chess.Square) -> bool:
+    """Whether the slider on `attacker` pins the piece on `front`, by `_pin_line`'s rule: the
+    piece behind, on the same line, is its side's and worth more, and would be won."""
+    if board.piece_type_at(attacker) not in _SLIDERS or front not in board.attacks(attacker):
+        return False
+    piece = board.piece_at(front)
+    behind = _beyond(board, attacker, front)
+    occupant = board.piece_at(behind) if behind is not None else None
+    return (
+        piece is not None
+        and behind is not None
+        and occupant is not None
+        and occupant.color == piece.color
+        and piece.color != board.color_at(attacker)
+        and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
+        and _wins(board, attacker, behind, without=front)
+    )
+
+
+def _relation_holds(
+    board: chess.Board, kind: str, subject: chess.Square, objects: Sequence[chess.Square]
+) -> bool:
+    if kind == "pin":
+        return all(_pins_it(board, subject, o) for o in objects)
+    # Attack and defence as python-chess has them: the squares the piece bears on, a pinned
+    # piece's included (a coach says a pinned knight still defends).
+    return all(o in board.attacks(subject) for o in objects)
+
+
+_KIND = {
+    "attack": "attack",
+    "hit": "attack",
+    "defend": "defend",
+    "protect": "defend",
+    "guard": "defend",
+    "cover": "defend",
+    "pin": "pin",
+    "fork": "attack",
+}
+
+
+def _verb_kind(verb: str) -> str:
+    word = verb.lower()
+    for stem, kind in _KIND.items():
+        if word.startswith(stem):
+            return kind
+    return "attack"
+
+
+_JOIN = re.compile(r"\s*(?:,\s*(?:and\s+)?|and\s+|as\s+well\s+as\s+)", re.IGNORECASE)
+
+
+def _objects_first(rest: str) -> list[tuple[str | None, str, str]]:
+    """The pieces named right after the verb, one after another ("your knight on e5 and the
+    pawn on g2"): "attacks it and left the queen on c2 active" names no object of the verb."""
+    found: list[tuple[str | None, str, str]] = []
+    rest = rest.lstrip()
+    pos = 0
+    while True:
+        match = _OBJECT.match(rest, pos)
+        if match is None:
+            break
+        found.append((match.group("colour"), match.group("piece"), match.group("square")))
+        join = _JOIN.match(rest, match.end())
+        if join is None:
+            break
+        pos = join.end()
+    return found
+
+
+def _relation_problems(
+    text: str, frames: Sequence[chess.Board], us: chess.Color
+) -> list[tuple[str, str]]:
+    """Relations said of pieces in the present that no frame bears out: an attack, a defence,
+    a pin or a fork. Only a sentence about the present is read (no plan, condition, future,
+    line or x-ray), only pieces named with their squares, and only where some frame has
+    every named piece on its square: elsewhere the placement check speaks."""
+    problems: list[tuple[str, str]] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        relations: list[tuple[str, str, str | None, str, str, list[tuple[str | None, str, str]]]]
+        relations = []
+        for match in _RELATION.finditer(sentence):
+            if _NOT_PRESENT.search(sentence[: match.start()]) or _NOT_PRESENT.search(
+                sentence[match.start() : match.end("objects") - len(match.group("objects"))]
+            ):
+                continue
+            verb = match.group("ing") or match.group("verb")
+            rest = match.group("objects")
+            cut = _CLAUSE_END.search(rest)
+            rest = rest[: cut.start()] if cut else rest
+            kind = _verb_kind(verb)
+            if kind == "pin":
+                # "pins the knight on f6 to the queen on d8": the pinned piece is the first.
+                rest = re.split(r"\bto\b", rest, maxsplit=1)[0]
+            if _NOT_PRESENT.search(rest):
+                continue
+            objects: list[tuple[str | None, str, str]] = _objects_first(rest)
+            if not objects and kind == "defend":
+                bare = re.match(r"\s*(?:the\s+)?([a-h][1-8])\b(?!\s*-)", rest)
+                if bare:
+                    objects = [(None, "", str(bare.group(1)))]
+            if not objects:
+                continue
+            relations.append(
+                (
+                    match.group(0).strip(),
+                    kind,
+                    match.group("colour"),
+                    match.group("piece"),
+                    match.group("square"),
+                    objects,
+                )
+            )
+        for match in _RELATION_BY.finditer(sentence):
+            if _NOT_PRESENT.search(sentence[: match.start()]):
+                continue
+            kind = _verb_kind(match.group("verb"))
+            relations.append(
+                (
+                    match.group(0).strip(),
+                    kind,
+                    match.group("bycolour"),
+                    match.group("bypiece"),
+                    match.group("bysquare"),
+                    [(match.group("colour"), match.group("piece"), match.group("square"))],
+                )
+            )
+        for phrase, kind, colour, piece, square, objects in relations:
+            subject = chess.parse_square(square.lower())
+            placed = [
+                frame
+                for frame in frames
+                if _on(frame, colour, piece, square, us)
+                and all(not op or _on(frame, oc, op, sq, us) for oc, op, sq in objects)
+            ]
+            if not placed:
+                continue
+            targets = [chess.parse_square(sq.lower()) for _, _, sq in objects]
+            if any(_relation_holds(frame, kind, subject, targets) for frame in placed):
+                continue
+            name = piece.lower()
+            said = " and ".join(sq.lower() for _, _, sq in objects)
+            verb = {"attack": "attack", "defend": "defend", "pin": "pin"}[kind]
+            problems.append((phrase, f"the {name} on {square.lower()} does not {verb} {said}"))
+    return problems
+
+
+def _mate_problems(text: str, frames: Sequence[chess.Board]) -> list[tuple[str, str]]:
+    """A move said to be mate that mates on no frame where it can be played, and "mate in
+    one" where no frame has one for either side."""
+    problems: list[tuple[str, str]] = []
+    # Only a sentence about the present: a mate named in a line, a threat or a plan ("stops
+    # Qxg2#", "after Kf7, Ra7 is mate", "then Qa8 would be mate") is about a later moment,
+    # and checked so, 20 of 21 flags over the stored replies were true claims (2026-10-01).
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        if _NOT_PRESENT.search(sentence) or _NOT_NOW.search(sentence):
+            continue
+        for match in _MATE_SAID.finditer(sentence):
+            core = _TRAILING_MARKS.sub("", match.group("san") or match.group("san2"))
+            played = mates = False
+            for frame in frames:
+                for side_board in _both_sides(frame):
+                    move, _ = _parse_move(side_board, core)
+                    if move is None:
+                        continue
+                    played = True
+                    after = side_board.copy(stack=False)
+                    after.push(move)
+                    mates = mates or after.is_checkmate()
+            if played and not mates:
+                problems.append((match.group(0), f"{core} is not mate"))
+        said = _MATE_IN_ONE.search(sentence)
+        if said and not any(_has_mate_in_one(b) for f in frames for b in _both_sides(f)):
+            problems.append((said.group(0), "no mate in one is on the board"))
+    return problems
+
+
+def _both_sides(frame: chess.Board) -> list[chess.Board]:
+    """The frame, and the frame with the other side to move when it is not in check (a
+    threat is a move after a pass)."""
+    if frame.is_check():
+        return [frame]
+    passed = frame.copy(stack=False)
+    passed.push(chess.Move.null())
+    return [frame, passed]
+
+
+def _has_mate_in_one(board: chess.Board) -> bool:
+    for move in board.legal_moves:
+        board.push(move)
+        mate = board.is_checkmate()
+        board.pop()
+        if mate:
+            return True
+    return False
 
 
 def straight_quotes(text: str) -> str:

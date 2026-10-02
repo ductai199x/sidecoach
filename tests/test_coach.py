@@ -978,7 +978,7 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
 
 
 def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any() -> None:
-    import threading
+    from collections.abc import Callable
 
     from sidecoach.coach.coach import may_carry_claims
 
@@ -990,28 +990,26 @@ def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any()
     assert may_carry_claims("can I castle")
 
     calls: list[str] = []
-    started, release = threading.Event(), threading.Event()
 
-    def slow_claims(text: str, board: chess.Board, facts: object) -> list[str]:
-        calls.append(threading.current_thread().name)
-        started.set()
-        release.wait(5.0)  # held until the test has seen the caller come back
+    def claims(text: str, board: chess.Board, facts: object) -> list[str]:
+        calls.append(text)
         return ["'Nf3 is good': not the strongest, Qxf7# mates"]
 
     provider = ScriptedProvider(["Not quite. What is your most active piece already eyeing?"])
     coach = Coach(
-        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=slow_claims
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=claims
     )
+    # The work handed off is kept, and run when the test chooses: no threads, no waits
+    # (rewritten from Events and timed joins, Tai's rule of 2026-10-01).
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    # ask() comes back while the check is still held: the caller never waits on it.
+    # ask() comes back with the check not yet run: the caller never waits on it.
     coach.ask("is Nf3 good here", 8.0)
-    assert started.wait(5.0)
-    assert calls == ["sidecoach-claims"] and calls[0] != threading.main_thread().name
-    release.set()
-    for thread in threading.enumerate():
-        if thread.name == "sidecoach-claims":
-            thread.join(5.0)
+    assert calls == [] and [name for _, name in spawned] == ["sidecoach-claims"]
+    spawned.pop()[0]()
+    assert calls == ["is Nf3 good here"]
     out = drain(coach)
     assert [m.text for m in out] == ["Not quite. What is your most active piece already eyeing?"]
     assert "Their claims, checked against the board" in provider.prompts[0][1][-1]["content"]
@@ -1351,6 +1349,7 @@ def test_a_named_move_is_analysed_by_the_engine_and_put_before_the_coach() -> No
         ["[p=1.0] Bc4 is fine: a little behind the best. What does it aim at?"]
     )
     coach.engine = _ItalianEngine()
+    coach.sync_claims = True  # a question with the engine runs on a worker otherwise
     _italian(coach)
     coach.ask("what about Bc4?", 6.0)
     out = drain(coach)
@@ -1384,6 +1383,7 @@ def test_a_move_proposed_in_a_statement_is_examined_and_nothing_is_said_twice() 
     already said since the last move is not said again."""
     coach, provider = scripted_coach(["[p=1.0] Fine."])
     coach.engine = _ItalianEngine()
+    coach.sync_claims = True  # a question with the engine runs on a worker otherwise
     _italian(coach)
     coach.ask("I'll play Bc4 and aim at f7.", 6.0)
     assert [m.text for m in drain(coach)] == ["Fine."]
@@ -1556,7 +1556,7 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     """The record's answerer is asked off the coach's thread; the answer is spoken as the
     coach's turn, the player's words and a note of the lookup join the conversation, and
     the queries are kept for the log. Questions about this game stay with the game."""
-    import threading
+    from collections.abc import Callable
 
     from sidecoach.profile.ask import Answer, Exchange
 
@@ -1574,12 +1574,13 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
         )
 
     coach.profile_ask = lookup
+    # Off the coach's thread: the work handed off, run here when the test chooses (rewritten
+    # from a sleep-and-poll loop, Tai's rule of 2026-10-01).
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
     coach.ask("why am I always losing in the middlegame?", 7.0)
-    # The lookup runs on its own thread: wait for that thread to end, not for a time (polling
-    # the answers list raced the queued words, which come after it).
-    for thread in threading.enumerate():
-        if thread.name == "profile-ask":
-            thread.join()
+    assert asked == [] and [name for _, name in spawned] == ["profile-ask"]
+    spawned.pop()[0]()
     said = drain(coach)
     assert asked == ["why am I always losing in the middlegame?"]
     assert (
@@ -1956,6 +1957,18 @@ def test_the_verdict_words_are_checked_clause_by_clause() -> None:
     ]
     assert _verdict_problems("O-O was the best move here, though Ba4 was close.", good)
     assert _verdict_problems("Fine, but Ba4 was the best move here.", good) == []
+    # A clause opening with "it" or "that" is about the move only where the verdict word is
+    # said of it: these true sentences were refused (the deep prompt review, 2026-10-01).
+    for said in (
+        "It avoids the mistake of locking your bishop in.",
+        "That keeps you clear of the classic blunder of moving the f-pawn.",
+        "It was not a blunder, but Ba4 was a touch better.",
+        "It is best to develop a piece before you push pawns.",
+        "This is a position where the best move is quiet.",
+    ):
+        assert _verdict_problems(said, good) == [], said
+    assert _verdict_problems("It was a clear mistake; Ba4 was better.", good)
+    assert _verdict_problems("That is the best move here.", good)
 
 
 def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_is_heard_as_one() -> None:
@@ -2034,6 +2047,98 @@ def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None
     assert "it is the opponent's move" in directive
     assert "Give the first hint" not in directive and "Keep back only the answer" not in directive
     assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
+
+
+def test_what_to_play_on_their_turn_never_gives_their_move_as_the_players() -> None:
+    """On the opponent's move the engine's best move and line are the opponent's: "what should
+    I play?" told the model "tell them plainly it is Qxf7#", the opponent's mate given as the
+    player's move (the deep prompt review, 2026-10-01)."""
+    for said in ("what should I play?", "what is the best move?", "show me the line"):
+        coach, provider = scripted_coach(["", "", ""])
+        start_game(coach, Side.BLACK)
+        play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        for ts in range(3):  # climb to the move rung
+            coach.ask(said, 9.0 + ts)
+        out = drain(coach)
+        for i in range(len(provider.calls)):
+            directive = directive_of(sent(provider, i))
+            assert "it is the opponent's move" in directive, (said, directive)
+            assert "tell them plainly it is" not in directive
+            assert "They asked to see the line: give it" not in directive
+        texts = [m.text for m in out if getattr(m, "text", None)]
+        assert texts and texts[0].startswith("It's their move"), texts  # the empty reply's
+
+
+def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() -> None:
+    """Both drafts refused, "is Bxf7+ good?" got the mate-in-one hint, about another move
+    (the deep prompt review, 2026-10-01). The fallback is the engine's word on Bxf7+."""
+    from sidecoach.cli import _draft_check
+    from tests.coaching import _policy
+    from tests.test_engine_tools import FirstLegal
+
+    bad = "[p=0.6] Your queen on e8 is in danger here. [p=0.4] Their bishop on h5 is loose."
+    coach = Coach(
+        ScriptedProvider([bad, bad]),
+        policy=_policy(),
+        draft_check=_draft_check(),
+        engine=FirstLegal(),
+    )
+    coach.sync_claims = True
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("is Bxf7+ good?", 8.0)
+    texts = [m.text for m in drain(coach) if getattr(m, "text", None)]
+    assert coach.spoken[-1].problems, "both drafts were refused"
+    assert texts and "after 4. Bxf7+" in texts[-1], texts
+    assert "Qxf7" not in texts[-1], texts
+
+
+def test_a_late_lesson_asks_nothing_while_they_think() -> None:
+    """A verdict landing after the opponent's reply, with the player to move: "one question
+    that sends them to find on the board" asked what the move allowed -- the threat they face
+    now, a nudge while they think (the deep prompt review, 2026-10-01). The late lesson is
+    the better move and what theirs missed, no question."""
+    coach, provider = scripted_coach(["[p=1.0] Qxf7 was mate at once."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    board = chess.Board(SCHOLAR)
+    plays = []
+    for ply, san in ((7, "Bxf7+"), (8, "Ke7")):
+        before = board.fen()
+        move = board.parse_san(san)
+        board.push(move)
+        plays.append(move)
+        coach.on_event(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=ply == 7,
+            ),
+            10.0 + ply,
+        )
+    verdict = MoveAssessment(
+        game_id="g",
+        ply=7,
+        uci=plays[0].uci(),
+        expected_loss=0.45,
+        severity=Severity.BLUNDER,
+        best=["h5f7"],
+        label=Label.MISS,
+    )
+    coach.on_event(verdict, 20.0)
+    drain(coach)
+    directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
+    lesson = next(d for d in directives if "The player just played Bxf7+" in d)
+    assert "no question" in lesson
+    assert "one question that sends them to find" not in lesson
+    assert "missed or allowed" not in lesson
 
 
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
@@ -2419,3 +2524,67 @@ def test_an_inaccuracy_is_never_called_sound() -> None:
         if provider is not None:
             directive = directive_of(sent(provider, 0))
             assert "which was an inaccuracy" in directive and "sound" not in directive
+
+
+def test_a_hint_after_the_move_was_given_does_not_promise_it_again() -> None:
+    """A fourth "hint" was told "The next hint is the answer" after the move had been given
+    (the deep prompt review, 2026-10-01)."""
+    coach, provider = scripted_coach(
+        ["[p=1.0] Look at f7.", "[p=1.0] Your queen and f7.", "[p=1.0] Qxf7# is mate.", ""]
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    for ts in range(4):
+        coach.ask("hint", 8.0 + ts)
+        drain(coach)
+    directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
+    assert "The next hint is the answer" in directives[2], directives[2]
+    assert "The next hint is the answer" not in directives[3], directives[3]
+    assert "the move has been given already: it is Qxf7#" in directives[3]
+
+
+def test_the_second_hint_for_castling_says_what_the_king_goes_after() -> None:
+    """The second hint's "the piece to use and what it goes after", the piece being the king
+    and the answer O-O, invited "your king goes after their queen" (the deep prompt review)."""
+    from sidecoach.events import Analysis, Line
+
+    coach, provider = scripted_coach(["[p=1.0] One.", "[p=1.0] Two."])
+    start_game(coach)
+    board = play(coach, ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"])
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=6,
+            lines=[Line(moves=["e1g1", "g8f6"], depth=12, expected_score=0.55)],
+            decisive=False,
+            only_move=False,
+            tags=[],
+        ),
+        7.0,
+    )
+    drain(coach)
+    coach.ask("hint", 8.0)
+    drain(coach)
+    coach.ask("hint", 9.0)
+    drain(coach)
+    directive = directive_of(sent(provider, len(provider.calls) - 1))
+    assert "Name the piece to use" in directive, directive
+    assert "Here the move is castling" in directive
+
+
+def test_a_move_named_on_their_turn_is_not_called_unrated() -> None:
+    """On the opponent's move a move the player names is never examined, yet the directive
+    said "when the engine does not rate their move, say it is not the strongest" (the deep
+    prompt review, 2026-10-01)."""
+    coach, provider = scripted_coach(["[p=1.0] Fine.", "[p=1.0] Fine."])
+    start_game(coach, Side.BLACK)
+    play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("what about Qxf7?", 8.0)
+    drain(coach)
+    directive = directive_of(sent(provider, len(provider.calls) - 1))
+    assert "say it is not the strongest" not in directive, directive
+    assert "rate one only from the engine's word on it" in directive
