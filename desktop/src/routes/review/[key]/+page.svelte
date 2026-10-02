@@ -23,7 +23,7 @@
   import AnalysisPane from "$lib/review/AnalysisPane.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
-  import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
+  import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, moveLabel, moveNumber, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
   import { motifWords } from "$lib/chess";
 
   const key = decodeURIComponent(page.params.key ?? "");
@@ -111,7 +111,9 @@
   // The moves the review stops at: every side's, or the one side the settings name; and the
   // last book move for both, where the game leaves known theory (Tai, 2026-09-30).
   const keyMoments = $derived(
-    (summary?.key_moments ?? []).filter((k) => k.kind === "book" || look.keys === "both" || k.side === look.keys),
+    (summary?.key_moments ?? [])
+      .filter((k) => k.kind === "book" || look.keys === "both" || k.side === look.keys)
+      .map((k) => ({ ...k, move: moves[k.ply - 1] ? moveLabel(moves[k.ply - 1].fen_before) : undefined })),
   );
 
   // While the game is analysed the board plays it out as the progress goes, as chess.com's review
@@ -556,7 +558,7 @@
   const rows = $derived.by(() => {
     const out: { n: number; white: ReviewMove | null; black: ReviewMove | null }[] = [];
     for (const m of moves) {
-      const n = Math.ceil(m.ply / 2);
+      const n = moveNumber(m.fen_before).n;
       if (!out.length || out[out.length - 1].n !== n) out.push({ n, white: null, black: null });
       out[out.length - 1][m.side] = m;
     }
@@ -1140,7 +1142,7 @@
                 <div class="rv-tries">
                   <span></span><span class="head">You played</span><span class="head">New move</span>
                   {#each improvedMoves as m (m.ply)}
-                    <span class="muted">{Math.ceil(m.ply / 2)}{m.side === 'white' ? '.' : '...'}</span>
+                    <span class="muted">{moveLabel(m.fen_before)}</span>
                     <span class="cls-text {m.label ?? ''}"><Badge kind={m.label} /> {m.san}</span>
                     <span class="cls-text {retried[m.ply].label ?? ''}"><Badge kind={retried[m.ply].label} /> {retried[m.ply].san}</span>
                   {/each}

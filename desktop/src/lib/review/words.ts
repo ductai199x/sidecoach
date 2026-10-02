@@ -20,6 +20,18 @@ export const openingName = (o: string): string => o.replace(/^[A-E]\d\d\s+/, "")
  *  castling), or nothing the player can use (a quiet move). */
 const UNSAID = new Set(["quietMove", "capture", "check", "castling"]);
 
+/** A move's number in a move list, from the FEN it is played from: "23." for White's, "23..."
+ *  for Black's. Never from the ply: a game set up from a position starts at its own number, with
+ *  either side to move (the review of 2026-10-01). */
+export function moveNumber(fen: string): { n: number; white: boolean } {
+  const fields = fen.split(" ");
+  return { n: +fields[5] || 1, white: fields[1] !== "b" };
+}
+export function moveLabel(fen: string): string {
+  const { n, white } = moveNumber(fen);
+  return `${n}${white ? "." : "..."}`;
+}
+
 /** A line's moves as a move list writes them: "11. Qd3 h6 12. O-O", or "11... h6" when
  *  Black moves first; the numbers from the FEN the line starts from. */
 export function numbered(from: string, sans: string[]): string[] {

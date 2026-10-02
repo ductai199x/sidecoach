@@ -329,9 +329,13 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _rated(moves: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Moves as the rating model reads them: the plies before each (the store counts White's
-    first move as ply 1), the loss, the mover's expected score."""
-    return [{"ply": m["ply"] - 1, "loss": m["loss"], "score": m["score"]} for m in moves]
+    """Moves as the rating model reads them: the plies before each (by the position it was
+    played from: a game set up from a position starts at its own move), the loss, the mover's
+    expected score."""
+    return [
+        {"ply": performance.plies_before(m["fen"]), "loss": m["loss"], "score": m["score"]}
+        for m in moves
+    ]
 
 
 def _site(d: _Data) -> str | None:
@@ -426,7 +430,7 @@ def _game_rating(game: dict[str, Any], moves: list[dict[str, Any]]) -> int | Non
     game's site."""
     if len(moves) < performance.MIN_MOVES:
         return None
-    played = [{"ply": m["ply"] - 1, "loss": m["loss"], "score": m["score"]} for m in moves]
+    played = _rated(moves)
     site = "lichess" if game["source"] == "lichess" else None
     return performance.for_site(performance.estimate(played).rating, site)
 

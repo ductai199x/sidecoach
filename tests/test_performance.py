@@ -15,6 +15,20 @@ def test_a_move_falls_in_a_bucket_by_its_cost_and_a_context_by_where_it_was_play
     assert performance.context(20, 0.9) == 5
 
 
+def test_a_game_set_up_from_a_position_is_rated_from_where_it_starts() -> None:
+    """A game set up from a position (Black to move at move 23) counted its first moves as the
+    opening's, by their place in the game, for the summary's rating and Stats' (the review of
+    2026-10-01): the plies before a move are its position's."""
+    import chess
+
+    from sidecoach.profile.stats import _rated
+
+    fen = "4k3/8/8/8/8/8/4P3/4K3 b - - 0 23"
+    assert performance.plies_before(fen) == 45
+    assert performance.plies_before(chess.STARTING_FEN) == 0
+    assert _rated([{"ply": 1, "fen": fen, "loss": 0.0, "score": 0.5}])[0]["ply"] == 45
+
+
 def _side(blunders: int, moves: int = 30) -> list[dict[str, float]]:
     """A side's moves after the opening from a level position: all best but `blunders`."""
     return [

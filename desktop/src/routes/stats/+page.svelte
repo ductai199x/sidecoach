@@ -12,7 +12,7 @@
   import Board from "$lib/Board.svelte";
   import { edgeFade } from "$lib/fade";
   import { prefs } from "$lib/panel.svelte";
-  import { className } from "$lib/review/words";
+  import { className, moveLabel } from "$lib/review/words";
   import { inShell, onAnnounce, openWindow } from "$lib/shell.svelte";
   import Sparkline from "$lib/stats/Sparkline.svelte";
   import TrendChart from "$lib/stats/TrendChart.svelte";
@@ -150,7 +150,7 @@
   const NO_GRADE_FLAT = "No grade: players of every level score much alike here, so it says little about strength";
   const small = (n: number | undefined) => (n ?? 0) < SMALL;
   const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "");
-  const moveNo = (p: StatPosition) => `${Math.ceil(p.ply / 2)}${p.side === "white" ? "." : "..."}`;
+  const moveNo = (p: StatPosition) => moveLabel(p.fen);
 
   // The rating now (the last ten games' moves pooled, the trend's last point) and how it moved
   // against the ten games before them (said only once there are twenty).

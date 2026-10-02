@@ -137,7 +137,11 @@ def summarize(game: ReviewedGame) -> GameSummary:
         per_side[move.side].append((phase, move.assessment.accuracy or 0.0, label))
         standing = graph[-1] if move.side is Side.WHITE else 1.0 - graph[-1]
         played[move.side].append(
-            {"ply": move.ply - 1, "loss": move.assessment.expected_loss, "score": standing}
+            {
+                "ply": performance.plies_before(move.fen_before),
+                "loss": move.assessment.expected_loss,
+                "score": standing,
+            }
         )
         if label is Label.BOOK:
             last_book = move.ply
