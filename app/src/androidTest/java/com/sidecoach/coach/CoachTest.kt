@@ -1901,6 +1901,8 @@ class CoachTest {
             "ok and after that?" to Unlock.ASK_LINE,
             "how would this position continues?" to Unlock.ASK_LINE,
             "which move should I play?" to Unlock.ASK_MOVE,
+            "which move?" to Unlock.ASK_MOVE, // bare, the whole question (desktop 9416b99, 0da008b)
+            "ok, which move ?" to Unlock.ASK_MOVE,
             "which move is best?" to Unlock.ASK_MOVE,
             "just tell me the answer" to Unlock.ASK_MOVE,
             "what's the answer to their threat?" to Unlock.ASK_MOVE,
@@ -2746,18 +2748,39 @@ class CoachTest {
             assertTrue(change, coach.conversation.entries.none { it.kind == "coach" })
             assertFalse(change, out[0].text in coach.conversation.render())
         }
-        val coach = Coach(
-            ScriptedProvider(emptyList()),
-            policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
-            lessonWaitS = LESSON_WAIT_S,
-        )
-        playToScholar(coach)
-        coach.onEvent(mateAnalysis(6), 7.0)
-        judgedAtScholar(coach, "Bxf7+", 0.45, Severity.BLUNDER, Label.MISS, 10.0)
-        assertEquals("held for the analysis of the position it left", emptyList<CoachMessage>(), messages(coach))
-        start(coach)
-        coach.tick(12.0 + LESSON_WAIT_S)
-        assertEquals("the last game's lesson", emptyList<CoachMessage>(), messages(coach))
+        // A lesson held for the analysis of the position its move left is no exception: when the
+        // moment ends first it is said in its own moment, shown, late for the voice, and never a
+        // turn of the moment after. Dropped, the lesson on a mistake taken back at once was never
+        // seen (Tai, 2026-10-02: no reply or lesson is dropped because its moment passed).
+        val lesson = "The queen mates on f7 at once."
+        for (change in listOf("takeback", "re-read", "new game")) {
+            val coach = Coach(
+                ScriptedProvider(listOf("[p=1.0] $lesson")),
+                policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+                lessonWaitS = LESSON_WAIT_S,
+            )
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 7.0)
+            judgedAtScholar(coach, "Bxf7+", 0.45, Severity.BLUNDER, Label.MISS, 10.0)
+            assertEquals(
+                "held for the analysis of the position it left",
+                emptyList<CoachMessage>(),
+                messages(coach),
+            )
+            when (change) {
+                "takeback" -> coach.onEvent(Takeback("g", 1, SCHOLAR), 12.0)
+                "re-read" -> coach.onEvent(Resync("g", SCHOLAR, "re-read"), 12.0)
+                else -> start(coach)
+            }
+            val out = messages(coach)
+            assertEquals(change, listOf(lesson), out.map { it.text })
+            assertEquals(change, Trigger.POST_MISTAKE, out[0].trigger)
+            assertTrue(change, coach.spoken.last().late)
+            assertFalse(change, lesson in coach.conversation.render())
+            assertEquals(change, emptyList<String>(), coach.saidSinceMove())
+            coach.tick(12.0 + LESSON_WAIT_S)
+            assertEquals("$change: said once", emptyList<CoachMessage>(), messages(coach))
+        }
     }
 
     /**

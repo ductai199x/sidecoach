@@ -589,7 +589,7 @@ class CoachCoreTest {
     }
 
     @Test
-    fun aQuestionOvertakesARemarkButNotTheLessonOrTheReview() {
+    fun aQuestionDropsNothingQueued() {
         val coach = offlineCoach()
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
@@ -599,11 +599,17 @@ class CoachCoreTest {
         )) {
             speaker.submit(request)
         }
-        assertEquals(2, speaker.dropped)
-        assertEquals(3, speaker.pending)
+        // Nothing is dropped (Tai, 2026-10-02); the stuck hint, said first, stays first.
+        assertEquals(5, speaker.pending)
         speaker.runPending()
         assertEquals(
-            listOf(Trigger.USER_ASK, Trigger.POST_MISTAKE, Trigger.REVIEW),
+            listOf(
+                Trigger.STUCK,
+                Trigger.USER_ASK,
+                Trigger.POST_MISTAKE,
+                Trigger.REVIEW,
+                Trigger.POST_MOVE,
+            ),
             speaker.poll().map { it.message.trigger },
         )
     }
@@ -641,8 +647,12 @@ class CoachCoreTest {
         messages(coach)
         coach.ask("Is Qxf7 mate?", 8.0)
         for (thread in Thread.getAllStackTraces().keys) if (thread.name == "sidecoach-claims") thread.join()
-        // The claims check's own failure is caught (no verdicts) and the model answers.
+        // The claims check's own failure is caught (no verdicts) and the model answers; it is
+        // counted and kept for the log, never swallowed
+        // (`test_a_failed_claims_check_is_counted_and_the_question_answered_without_it`).
         assertEquals(listOf("Yes, Qxf7 is mate."), messages(coach).map { it.text })
+        assertEquals(1, coach.speaker.failures)
+        assertEquals("claims check: IllegalStateException: boom", coach.speaker.lastError)
     }
 
     // 8. The pattern and the practice are unprompted too
@@ -933,6 +943,62 @@ class CoachCoreTest {
         assertTrue("PLAYER said: \"what's the plan here?\"" in harnessOf(provider))
     }
 
+    /**
+     * A reply asked for before the player moved and landing after it is shown (late), and it is
+     * this game's -- but about the position they moved from: written in the record, not said at
+     * the position now. Recorded there, the next question was told "do not repeat the verdict",
+     * and its "?" made the next words its answer.
+     * `test_a_reply_that_lands_after_the_players_move_is_the_records_not_said_here`.
+     */
+    @Test
+    fun aReplyThatLandsAfterThePlayersMoveIsTheRecordsNotSaidHere() {
+        val reply = "Look at f7: what does their king have left?"
+        val (coach, provider) = scripted(listOf(reply, "The bishop check gave the king a square."))
+        playToScholar(coach)
+        coach.quiet = true // no word on the move: the late reply is the only coach turn
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("what should I aim for?", 8.0) // built; the model has not answered yet
+        mateMissed(coach, 9.0) // the player moves first
+        val board = Board(SCHOLAR)
+        board.push(board.parseSan("Bxf7+")!!)
+        looked(coach, board, 7, listOf("e8e7"), 9.5)
+        val out = messages(coach).filter { it.trigger == Trigger.USER_ASK }
+        assertEquals("shown, in its place", listOf(reply), out.map { it.text })
+        assertTrue(coach.spoken.first().late)
+        assertEquals("not said at the position now", emptyList<String>(), coach.saidSinceMove())
+        assertFalse(coach.lastTurnAsked() || coach.answeringOurQuestion("the king"))
+        assertTrue("in the record", reply in coach.conversation.render().substringBefore("# Position now"))
+        coach.ask("why was that bad?", 10.0)
+        messages(coach)
+        val directive = directiveOf(provider)
+        assertFalse("You have spoken since the last move already" in directive)
+        assertFalse("Your last turn above ended with a question" in directive)
+    }
+
+    /**
+     * The fallback's principle was counted as said for every hint asked of the AI, though the
+     * fallback is said only when the reply fails. Offline the template is the answer, and is
+     * counted. `test_a_question_to_the_ai_charges_no_rule_its_fallback_holds`.
+     */
+    @Test
+    fun aQuestionToTheAiChargesNoRuleItsFallbackHolds() {
+        val (coach, _) = scripted(listOf("Their king is nearly out of squares."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(coach)
+        coach.ask("hint", 8.0)
+        assertEquals(listOf("Their king is nearly out of squares."), messages(coach).map { it.text })
+        assertTrue(coach.rules.isEmpty() && coach.lastRule == null)
+        val offline = offlineCoach()
+        playToScholar(offline)
+        offline.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        messages(offline)
+        offline.ask("hint", 8.0)
+        val said = messages(offline).single()
+        assertTrue("their king runs out of squares" in said.text && offline.rules.isNotEmpty())
+    }
+
     /** `said_level`: what a reply said, from its words. */
     @Test
     fun theRungAReplySaidIsReadFromItsWords() {
@@ -946,6 +1012,13 @@ class CoachCoreTest {
         assertEquals(DisclosureLevel.SILENT, saidLevel("Look for a check.", facts))
         val long = facts.copy(line = listOf("Qxf7#", "Kd8"))
         assertEquals(DisclosureLevel.LINE, saidLevel("Qxf7 and then Kd8 is forced.", long))
+        // A pawn move is named only as a whole move: "e4" is not named by "Nxe4" or "Qe4" (the
+        // phone read it as a square and rated such replies MOVE; the round-3 parity audit).
+        val pawn = facts.copy(target = null, piece = null, candidates = listOf("e4"), line = listOf("e4", "e5"))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Nxe4 wins a pawn.", pawn))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Qe4 is fine.", pawn))
+        assertEquals(DisclosureLevel.MOVE, saidLevel("e4 grabs the centre.", pawn))
+        assertEquals(DisclosureLevel.LINE, saidLevel("After e4 e5 it is level.", pawn))
         val disclosure = Disclosure()
         assertEquals(DisclosureLevel.IDEA, disclosure.said(DisclosureLevel.IDEA))
         assertEquals(null, disclosure.said(DisclosureLevel.IDEA))

@@ -283,7 +283,6 @@ class Script:
         )
         step["fallbacks"] = self.coach.speaker.fallbacks
         step["failures"] = self.coach.speaker.failures
-        step["dropped"] = self.coach.speaker.dropped
         step["last_reason"] = self.coach.policy.last_reason
         step["level"] = int(self.coach.conversation.level)
         step["draws"] = _counter.n

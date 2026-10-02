@@ -308,6 +308,59 @@ internal val ASK_ALSO = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/**
+ * The moves besides the one the player already played: "what else could I have played?" --
+ * alternatives on their last turn ([Coach.facedAlternatives]). `coach._ASK_OTHER_PAST`.
+ */
+internal val ASK_OTHER_PAST = Regex(
+    "\\bwhat else (?:could|should|might|would|can) i have (?:played|done|tried|gone for)\\b" +
+        "|\\b(?:other|another|alternative|better) (?:moves?|options?) (?:could|should|might) i have " +
+        "(?:played|made|tried)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * The opponent's move or plan asked about: "what is their best move?", "what are they planning?"
+ * -- the opponent's, never the moves besides the player's last (Tai, 2026-10-02: "this is diff
+ * from you asking like what is their best move or what is their plans"). `coach._ASK_THEIR_MOVE`.
+ */
+internal val ASK_THEIR_MOVE = Regex(
+    "\\b(?:their|his|her|the opponent'?s|my opponent'?s) (?:best |next |main )?" +
+        "(?:moves?|plans?|ideas?|reply|replies|answer|options?)\\b" +
+        "|\\bwhat (?:are|is|will) (?:they|he|she|the opponent|my opponent) " +
+        "(?:planning|going to (?:play|do))\\b" +
+        "|\\bwhat (?:should|will|would|might|can|could) (?:they|he|she|the opponent|my opponent) " +
+        "play\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/** Whose move "that" is, said so: the opponent's, or the player's own. `coach._THEIR_WORDS`. */
+private val THEIR_WORDS = Regex(
+    "\\b(?:they|he|she|their|theirs|his|her|the opponent'?s?|my opponent'?s?|the reply)\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val MINE_WORDS = Regex("\\b(?:mine|my|i|me|myself)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * "That" asked about as a move that went wrong: the one of the last two that did is the likelier.
+ * `coach._ASK_WENT_WRONG`, `coach._THAT`.
+ */
+private val ASK_WENT_WRONG = Regex(
+    "\\b(?:bad|wrong|mistakes?|blunder(?:ed)?|inaccura\\w*|miss(?:ed)?|cost|weak|dubious)\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val THAT = Regex(
+    "\\b(?:that|it|this)(?: move)?\\b|\\b(?:my|their|his|her|the opponent'?s) (?:last )?move\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val MY_OPPONENT = Regex("\\bmy opponent'?s?\\b", RegexOption.IGNORE_CASE)
+
+/** A judged move's label, or its severity when it has none. `coach._label_of`. */
+internal fun labelOf(record: PlyRecord): String {
+    val verdict = record.assessment!!
+    return verdict.label?.name?.lowercase() ?: verdict.severity.name.lowercase()
+}
+
 /** "I am not stuck, just thinking" is no request for a hint. `coach._NOT_STUCK`. */
 private val NOT_STUCK = Regex("(?:\\bnot|n't|\\bnever)\\s+(?:\\w+\\s+)?stuck\\b", RegexOption.IGNORE_CASE)
 /**
@@ -520,8 +573,9 @@ class Coach(
      * it was said at: kept across games and puzzles ([RULE_COOLDOWN]).
      */
     internal var messages = 0
-    private val rules = HashMap<String, Int>()
-    private var lastRule: Int? = null
+    internal val rules = HashMap<String, Int>()
+    internal var lastRule: Int? = null
+        private set
 
     /**
      * What the game is (GameStarted.kind): a game from the start, or a position -- a puzzle,
@@ -575,6 +629,12 @@ class Coach(
      * answered the moment the analysis lands (see [ask]).
      */
     private var pendingAsks = ArrayList<Pair<String, Double>>()
+
+    /**
+     * The offline coach asked which move "that" was ([thatMove]): the question, the moment and
+     * the ply it was asked at, for the words that answer it ([picked]).
+     */
+    internal var clarifying: Triple<String, Moment, Int>? = null
 
     /**
      * The moment of the game: a new game, a takeback and a re-read each start another. A reply
@@ -640,11 +700,16 @@ class Coach(
             is MoveAssessment -> onAssessment(event, ts)
             is ClockObservation -> onClock(event, ts)
             is Takeback -> {
-                heldLesson = null // the move it was on is gone
+                // A lesson held for its analysis is said now, in the moment it was about, before
+                // the takeback starts another: shown in its place, not spoken, no turn of the
+                // moment after ([poll]). Dropped, the lesson on a mistake taken back at once was
+                // never seen (Tai, 2026-10-02: no reply or lesson is dropped because its moment
+                // passed).
+                releaseLesson(ts)
                 onTakeback(event, ts)
             }
             is Resync -> {
-                heldLesson = null
+                releaseLesson(ts) // as at a takeback
                 onResync(event, ts)
             }
             is GameEnded -> {
@@ -780,6 +845,10 @@ class Coach(
             level = DisclosureLevel.LINE
         }
         synchronized(lock) { conversation.userSaid(text) }
+        // Words that answer the coach's "your move, or theirs?" are read with the question they
+        // answer; recorded as said.
+        @Suppress("NAME_SHADOWING")
+        val text = if (offline) picked(text) else text
         val own = askedOwnMove(text)
         if (own != null) {
             // About the move they already played: spoken from the position it was played from,
@@ -935,7 +1004,10 @@ class Coach(
         fun checked() {
             val verdicts = try {
                 checker.check(text, where.board, where.facts)
-            } catch (_: Exception) {
+            } catch (exc: Exception) {
+                // The question is still answered, without the check; the failure is counted and
+                // kept for the log, as every other failure of a question's work is.
+                speaker.noteFailure("claims check", exc)
                 emptyList()
             }
             val found = examined()
@@ -1065,12 +1137,16 @@ class Coach(
             // A turn of the conversation only in the moment it was asked for: a reply about the
             // game before, or about a move taken back, is shown but never part of the history of
             // the game now (what the model reads of it, the follow-up it makes of the player's
-            // next words).
+            // next words). One asked before the player's last move is this game's, but about the
+            // position they moved from: written in the record, not under what was said at the
+            // position now -- there it was a turn since the move ("do not repeat the verdict"),
+            // and a question it ended with made their next words its answer.
             if (!one.recorded && one.epoch == epoch) {
                 synchronized(lock) {
                     conversation.coachSaid(
                         one.message.text,
                         nod = one.message.trigger == Trigger.POST_MOVE,
+                        past = one.late,
                     )
                 }
             }
@@ -1125,10 +1201,13 @@ class Coach(
     }
 
     private fun newGame(event: GameStarted, ts: Double) {
+        // A lesson held for its analysis is the last game's: said now, in that game's moment,
+        // before this one starts -- shown in its place, not spoken, and no turn of this game
+        // ([poll]). Kept, the next tick said it in this one, over its first position (the coach
+        // review, 2026-10-01); dropped, it was never seen (Tai, 2026-10-02: no reply or lesson
+        // is dropped because its moment passed).
+        releaseLesson(ts)
         epoch += 1
-        // A lesson held for its analysis is the last game's: kept, the next tick said it in this
-        // one, over this one's first position (the coach review, 2026-10-01).
-        heldLesson = null
         gameId = event.gameId
         userSide = event.userSide
         kind = event.kind
@@ -1852,7 +1931,7 @@ class Coach(
         val out = ArrayList<String>()
         for (entry in entries.asReversed()) {
             if (entry.kind == "ply" || entry.kind == "takeback" || entry.kind == "resync") break
-            if (entry.kind == "coach") out.add(entry.text)
+            if (entry.kind == "coach" && !entry.past) out.add(entry.text) // a late reply: the record's
         }
         return out
     }
@@ -1875,6 +1954,7 @@ class Coach(
         // Their words themselves, when ask() has recorded them already, are not the thread.
         if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
         for (entry in entries.asReversed()) {
+            if (entry.past) continue // about a position left: no turn of the one now
             if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
             if (entry.kind != "note") return false
         }
@@ -1922,12 +2002,18 @@ class Coach(
      */
     internal fun askedOwnMove(text: String, rules: Boolean = false): PlyRecord? {
         if (!(offline || rules)) return null
+        val that = thatMove(text)
+        if (that != null) {
+            // On their move right after the opponent's reply: whose "that" is ([thatMove]).
+            return if (that.first == "own") that.second else null
+        }
         if (ASK_LAST_MOVE.containsMatchIn(text) || ASK_COST.containsMatchIn(text)) {
             return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
         }
         if (finished || userToMove || !offline) return null
         val elsewhere = listOf(
-            ASK_THREAT, ASK_OPPONENT_MOVE, ASK_LINE, ASK_MATERIAL, ASK_OPENING, ASK_EVAL, ASK_REVIEW,
+            ASK_THREAT, ASK_OPPONENT_MOVE, ASK_THEIR_MOVE, ASK_LINE, ASK_MATERIAL, ASK_OPENING, ASK_EVAL,
+            ASK_REVIEW,
         )
         if (elsewhere.any { it.containsMatchIn(text) }) return null
         return lastOwnMove()
@@ -2071,11 +2157,17 @@ class Coach(
      * the engine's lines ([worseMoves]). Asked whether a move is also good, the answer is the same
      * set and the move they name among it or not. `Coach._alternatives_answer`.
      */
-    private fun alternativesAnswer(position: CoachPosition, facts: PositionFacts, said: String): Pair<String, String> {
+    private fun alternativesAnswer(
+        position: CoachPosition,
+        facts: PositionFacts,
+        said: String,
+        played: PlyRecord? = null,
+    ): Pair<String, String> {
         val fine = facts.candidates
         val analysis = position.analysis
         val worse = if (analysis != null) worseMoves(position.board, analysis, userColour) else emptyList()
         val also = ASK_ALSO.containsMatchIn(said) && !ASK_OTHER_MOVES.containsMatchIn(said)
+        val past = played != null
         val levelPart = if (fine.size > 1) {
             "The moves about level with the best, all fine: ${fine.joinToString(", ")}. Say they " +
                 "are about equally good, and name every one."
@@ -2088,27 +2180,171 @@ class Coach(
         } else {
             ""
         }
-        val askPart = if (also) {
-            "They ask whether another move is also good: say yes plainly when the move they name " +
-                "is among the fine ones, and what it does; when it is not, say it is weaker than " +
-                "the best, and what goes wrong with it when the sheet says."
-        } else {
-            "They ask about the good moves here, not only the best one."
+        val askPart = when {
+            played != null ->
+                "It is the opponent's move, so they ask about the moves they could have played " +
+                    "instead of ${played.move.san}, their last, from the position they faced before " +
+                    "it (its sheet is above): " +
+                    (
+                        if (also) {
+                            "whether the move they name would also have been good -- yes plainly when it " +
+                                "is among the fine ones, and what it does; when it is not, that it was weaker " +
+                                "than the best, and what goes wrong with it when the sheet says."
+                        } else {
+                            "the good moves there, not only the best one."
+                        }
+                        ) +
+                    " And say how ${played.move.san} compares: ${compared(played, fine)}."
+            also ->
+                "They ask whether another move is also good: say yes plainly when the move they name " +
+                    "is among the fine ones, and what it does; when it is not, say it is weaker than " +
+                    "the best, and what goes wrong with it when the sheet says."
+            else -> "They ask about the good moves here, not only the best one."
         }
         val directive = "$askPart $ALTERNATIVES_READ $levelPart$worsePart Say it in words. " +
             "$NO_FIGURES Two or three sentences, no question."
-        var text = fineSaid(fine)
+        var text = fineSaid(fine, past)
         val bare = fine.map { it.trimEnd('+', '#') }
         val named = SAN.findAll(said).map { it.groupValues[1] }.filter { it.trimEnd('+', '#') in bare }.toList()
         if (also && named.isNotEmpty()) {
-            text = if (named[0].trimEnd('+', '#') == bare[0]) {
-                "${named[0]} is the engine's top choice."
+            text = if (past) {
+                if (named[0].trimEnd('+', '#') == bare[0]) {
+                    "${named[0]} was the engine's top choice there."
+                } else {
+                    "Yes, ${named[0]} would have been fine too -- about as good as ${fine[0]}."
+                }
             } else {
-                "Yes, ${named[0]} is fine too -- about as good as ${fine[0]}."
+                if (named[0].trimEnd('+', '#') == bare[0]) {
+                    "${named[0]} is the engine's top choice."
+                } else {
+                    "Yes, ${named[0]} is fine too -- about as good as ${fine[0]}."
+                }
             }
-            if (fine.size > 1) text += " " + fineSaid(fine)
+            if (fine.size > 1) text += " " + fineSaid(fine, past)
         }
-        return directive to "$text ${worseSaid(worse)}".trim()
+        if (played != null) text += " Yours, ${played.move.san}, ${compared(played, fine)}."
+        return directive to "$text ${worseSaid(worse, past)}".trim()
+    }
+
+    /**
+     * How the player's move compares with the moves about as good as the best there: one of
+     * them, or its verdict. `Coach._compared`.
+     */
+    private fun compared(played: PlyRecord, fine: List<String>): String {
+        if (played.move.san.trimEnd('+', '#') in fine.map { it.trimEnd('+', '#') }) return "was one of them"
+        if (played.assessment == null) return "was not among them"
+        return "was ${rated(labelOf(played))}"
+    }
+
+    /**
+     * The position the player faced before their last move, and that move, when the words ask
+     * for the moves besides it: on the opponent's move the player has just moved, so "any other
+     * good moves?", "is Nf3 also good?" are about what they could have played instead (Tai,
+     * 2026-10-02: "since they have not made a move yet (else it would have been your turn), that
+     * question should have been about other alternatives moves you could have taken during your
+     * previous turn"); "what else could I have played?" is about it on any turn. What the
+     * opponent's best move or plan is stays the opponent's. Null when the words ask none of
+     * these, or the move or its position's analysis is not known. `Coach._faced_alternatives`.
+     */
+    private fun facedAlternatives(position: CoachPosition, said: String): Pair<CoachPosition, PlyRecord>? {
+        val other = ASK_OTHER_MOVES.containsMatchIn(said) ||
+            (ASK_ALSO.containsMatchIn(said) && !ASK_LAST_MOVE.containsMatchIn(said))
+        val pastWords = ASK_OTHER_PAST.containsMatchIn(said)
+        val own = lastOwnMove(mine = true)
+        if (own == null || !(other || pastWords) || ASK_THEIR_MOVE.containsMatchIn(said)) return null
+        val faced = positions[own.move.ply - 1] ?: return null
+        val facts = faced.facts ?: return null
+        if (faced.analysis == null || facts.candidates.isEmpty()) return null
+        val theirs = position.board.turn != userColour && !position.board.isGameOver()
+        return if (position === faced || pastWords || (theirs && position.ply >= own.move.ply)) {
+            faced to own
+        } else {
+            null
+        }
+    }
+
+    /**
+     * For the AI coach, when the player's own move is the last or the one before the opponent's
+     * reply: the moves about as good as the best in the position they faced before it, the
+     * clearly worse ones, and how theirs compares -- what "any other good moves?" or "what else
+     * could I have played?" asks about on the opponent's move (Tai, 2026-10-02). "" when that
+     * move or its position's analysis is not known. `Coach._faced_alternatives_words`.
+     */
+    private fun facedAlternativesWords(position: CoachPosition): String {
+        val own = lastOwnMove(mine = true) ?: return ""
+        if (own.move.ply != position.ply && own.move.ply != position.ply - 1) return ""
+        val faced = positions[own.move.ply - 1] ?: return ""
+        val facts = faced.facts ?: return ""
+        val analysis = faced.analysis ?: return ""
+        val fine = facts.candidates
+        if (fine.isEmpty()) return ""
+        val san = own.move.san
+        var out = " Before $san, the player's last move, the moves about equally good were: " +
+            "${fine.joinToString(", ")}; $san ${compared(own, fine)}."
+        val worse = worseMoves(faced.board, analysis, userColour)
+        if (worse.isNotEmpty()) {
+            out += " Clearly worse there, and what goes wrong with them: ${worseText(worse)}."
+        }
+        return out
+    }
+
+    /**
+     * The offline coach's (and the AI's fallback's) reading of "that" in a question about a move
+     * going wrong, on the player's move right after the opponent's reply to theirs: "why was that
+     * bad?" may mean either. The words decide when they say whose ("my", "their") or name the
+     * move; else the one of the two that went wrong. ("own" | "theirs", their move, the reply);
+     * ("ask", ...) when both went wrong -- the readings get different answers and nothing settles
+     * it, so the coach asks which; ("neither", ...) when neither did. Null when the words ask no
+     * such thing, or the two moves and their verdicts are not known. `Coach._that_move`.
+     */
+    internal fun thatMove(said: String): Triple<String, PlyRecord, PlyRecord>? {
+        if (finished || !userToMove) return null
+        val records = synchronized(lock) { conversation.activeRecords().toList() }
+        if (records.size < 2) return null
+        val own = records[records.size - 2]
+        val reply = records.last()
+        if (!own.move.byUser || reply.move.byUser || own.assessment == null || reply.assessment == null) {
+            return null
+        }
+        val words = MY_OPPONENT.replace(said, "their")
+        val named = SAN.findAll(words).map { it.groupValues[1].trimEnd('+', '#') }.toSet()
+        val mineSan = own.move.san.trimEnd('+', '#')
+        val theirSan = reply.move.san.trimEnd('+', '#')
+        if (named.isNotEmpty()) {
+            if (mineSan in named && theirSan !in named) return Triple("own", own, reply)
+            if (theirSan in named && mineSan !in named) return Triple("theirs", own, reply)
+            return null // another move named: not "that"
+        }
+        if (!(
+                ASK_LAST_MOVE.containsMatchIn(words) || ASK_COST.containsMatchIn(words) ||
+                    (THAT.containsMatchIn(words) && ASK_WENT_WRONG.containsMatchIn(words))
+                )
+        ) {
+            return null
+        }
+        val theirsSaid = THEIR_WORDS.containsMatchIn(words)
+        val mineSaid = MINE_WORDS.containsMatchIn(words)
+        if (theirsSaid != mineSaid) return Triple(if (theirsSaid) "theirs" else "own", own, reply)
+        val erred = listOf(own, reply).filter { it.assessment!!.severity != Severity.NONE }
+        if (erred.size == 1) return Triple(if (erred[0] === own) "own" else "theirs", own, reply)
+        return Triple(if (erred.isNotEmpty()) "ask" else "neither", own, reply)
+    }
+
+    /**
+     * The words that answer the coach's question of which move "that" was ([thatMove]), read with
+     * the question they answer: "why was that bad? -- mine". The words alone when they answer no
+     * such question, or pick neither move. `Coach._picked`.
+     */
+    private fun picked(text: String): String {
+        val held = clarifying
+        clarifying = null
+        if (held == null || QUESTION_START.containsMatchIn(text.trim())) return text // its own question
+        val (original, moment, ply) = held
+        val now = current
+        if (moment != currentMoment() || now == null || now.ply != ply) return text
+        val combined = "$original -- $text"
+        val that = thatMove(combined)
+        return if (that != null && (that.first == "own" || that.first == "theirs")) combined else text
     }
 
     private fun speak(
@@ -3043,6 +3279,9 @@ class Coach(
         var directive: String
         val lastOpponent = lastOpponentMove()
         val lastOwn = askedOwnMove(said, rules = true)
+        // Whose move "that" is, right after the opponent's reply ([thatMove]).
+        val that = thatMove(said)
+        val instead = facedAlternatives(position, said)
         if (ASK_REVIEW.containsMatchIn(said)) {
             // An overall verdict comes from the tally in "Game so far", never from an
             // impression of the last position: the first review told a player a queen up that
@@ -3110,9 +3349,47 @@ class Coach(
                 }
                 else -> aim.ifEmpty { "They asked for a hint. " } + IDEA_DIRECTIVE
             } + " $NO_FIGURES Do not comment on anything said earlier."
+        } else if (that != null && (that.first == "ask" || that.first == "neither")) {
+            // "Why was that bad?" right after the opponent's reply, the two moves both gone wrong
+            // or neither: which "that" is, the words and the verdicts do not settle.
+            val (kind, ownRecord, replyRecord) = that
+            val mine = ownRecord.move.san
+            val theirsSan = replyRecord.move.san
+            if (kind == "ask") {
+                // The readings get different answers: asked, in one short question, and the words
+                // that answer it are read with it ([picked]).
+                fallback = "Your $mine, or their $theirsSan?"
+                directive = "Both their $mine and the opponent's reply $theirsSan went wrong, and " +
+                    "their words do not say which they mean: ask which, in one short question " +
+                    "naming both, and nothing else."
+                val now = current
+                if (offline && now != null) clarifying = Triple(said, currentMoment(), now.ply)
+            } else {
+                // Both readings get the same answer: said for both, no question.
+                fallback = "Neither was a mistake: your $mine was ${rated(labelOf(ownRecord))}, and " +
+                    "their $theirsSan was ${rated(labelOf(replyRecord))}."
+                directive = "Neither their $mine nor the opponent's reply $theirsSan went wrong: say " +
+                    "so of both, plainly, in one or two sentences, no question."
+            }
+        } else if (instead != null) {
+            // The moves they could have played instead of their last one, from the position they
+            // faced before it, and how theirs compares (Tai, 2026-10-02).
+            val (faced, own) = instead
+            val (asked, alternatives) = alternativesAnswer(faced, faced.facts!!, said, played = own)
+            directive = asked
+            // A move they name, rated by the engine, is that word's to say.
+            if (engineWords.none { "the expected score is" in it }) fallback = alternatives
         } else if (position.board.turn != userColour && !position.board.isGameOver() &&
-            (ASK_LINE.containsMatchIn(said) || ASK_MOVE.containsMatchIn(said))
+            (
+                ASK_LINE.containsMatchIn(said) || ASK_MOVE.containsMatchIn(said) ||
+                    ASK_OTHER_MOVES.containsMatchIn(said) ||
+                    (ASK_ALSO.containsMatchIn(said) && !ASK_LAST_MOVE.containsMatchIn(said))
+                )
         ) {
+            // The moves about as good asked for on the opponent's move are the player's last
+            // turn's (the branch above); with that move or its position unknown -- a game joined
+            // on their move -- they too are answered here, never with the opponent's near-equal
+            // moves named as the player's fine ones (the round-3 parity audit).
             // On the opponent's move the engine's line and best move are the OPPONENT's: "what
             // should I play?" there told the model to give the player the opponent's best move
             // as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
@@ -3178,7 +3455,13 @@ class Coach(
                     ).trim()
             }
             directive = asked
-        } else if (ASK_OPPONENT_MOVE.containsMatchIn(said) && lastOpponent != null) {
+        } else if (
+            (
+                (ASK_OPPONENT_MOVE.containsMatchIn(said) && !(that != null && that.first == "own")) ||
+                    (that != null && that.first == "theirs")
+                ) &&
+            lastOpponent != null
+        ) {
             val theirs = lastOpponent.assessment!!
             val san = lastOpponent.move.san
             val label = theirs.label?.name?.lowercase() ?: theirs.severity.name.lowercase()
@@ -3438,16 +3721,18 @@ class Coach(
                 fallback = "" // a nod needs no template: nothing, rather than a hint again
             }
         }
+        val (cooled, note) = coolHint(facts, fallback)
         if (!offline) {
             // The keyword branches above wrote the fallback only -- what is said when the model's
             // reply fails a check on the board -- and used rules of thumb as the directive's own:
-            // undone, and the model is given the guidelines instead.
+            // undone, and the model is given the guidelines instead. The fallback's principle
+            // ([coolHint]) is undone too: counted here, every hint asked of the AI held the rules
+            // back for RULE_SPACING messages, said or not.
             rules.clear()
             rules.putAll(rulesBefore.first)
             lastRule = rulesBefore.second
             directive = aiDirective(position, level)
         }
-        val (cooled, note) = coolHint(facts, fallback)
         return "$checks$directive$note" to cooled
     }
 
@@ -3499,9 +3784,18 @@ class Coach(
         if (spokenSince.isNotEmpty()) out += AI_FOLLOW_UP
         if (lastTurnAsked()) out += AI_ANSWERING
         val best = facts.candidates.firstOrNull() ?: ""
+        val theirs = position.board.turn != userColour && !position.board.isGameOver()
         if (facts.candidates.size > 1) {
-            out += " The moves about equally good here: ${facts.candidates.joinToString(", ")}."
+            // On the opponent's move these are the opponent's: named so, or they read as the
+            // player's fine moves.
+            out += if (theirs) {
+                " The opponent's own options now, about equally good (for a question about " +
+                    "their move): ${facts.candidates.joinToString(", ")}."
+            } else {
+                " The moves about equally good here: ${facts.candidates.joinToString(", ")}."
+            }
         }
+        out += facedAlternativesWords(position)
         val analysis = position.analysis
         val worse = if (analysis != null) worseMoves(position.board, analysis, userColour) else emptyList()
         if (worse.isNotEmpty()) {
@@ -3526,7 +3820,7 @@ class Coach(
         // What the board gives of the material and of what the player's last move allowed,
         // whatever they ask: facts for the model to use if the question is about them.
         val material = materialWords(level, facts)
-        if (material != null) {
+        if (!material.isNullOrEmpty()) {
             out += " The material, if it comes up, is this, in these terms: " +
                 "$material. Never count the pieces yourself."
         }
@@ -3553,11 +3847,12 @@ class Coach(
      * Whether the coach's last turn, since the player's last move, ended with a question and
      * nothing but notes came between: their words may be its answer. `Coach._last_turn_asked`.
      */
-    private fun lastTurnAsked(): Boolean {
+    internal fun lastTurnAsked(): Boolean {
         var entries = synchronized(lock) { conversation.entries.toList() }
         // Their words themselves, when ask() has recorded them already, are not the thread.
         if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
         for (entry in entries.asReversed()) {
+            if (entry.past) continue // about a position left: no turn of the one now
             if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
             if (entry.kind != "note") return false
         }

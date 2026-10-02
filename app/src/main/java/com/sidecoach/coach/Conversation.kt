@@ -419,8 +419,13 @@ class Conversation {
         entries.add(Entry("user", "ask", body))
     }
 
-    fun coachSaid(text: String, nod: Boolean = false) {
-        entries.add(Entry("assistant", "coach", text, nod = nod))
+    /**
+     * The coach's turn. [past]: it was asked for a position the player has since moved from,
+     * and lands after their move -- written in the record, never under what was said at the
+     * position now.
+     */
+    fun coachSaid(text: String, nod: Boolean = false, past: Boolean = false) {
+        entries.add(Entry("assistant", "coach", text, nod = nod, past = past))
     }
 
     // ---- rendering ---------------------------------------------------------------------

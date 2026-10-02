@@ -658,40 +658,57 @@ fun saidWords(level: DisclosureLevel): String = when (level) {
 const val AI_GUIDELINES =
     "Answer them as their coach. What they ask is yours to read from their words, the " +
         "conversation above and the position; all of the sheet is yours to use -- every engine " +
-        "line with its score, the candidate moves, the facts, the last move of each side with its " +
-        "verdict. Some guidelines, not rules:\n" +
-        "- A hint: one rung up the ladder above, said once, never lower than one already said.\n" +
-        "- The move -- \"what should I play\", \"the play here\", \"the move\": give it plainly, " +
-        "and why it works, from the sheet's why and pattern. Several moves about as good: say so " +
+        "line with its score, the candidate moves, the facts, the last move of each side with " +
+        "its verdict. Some guidelines, not rules:\n" +
+        "- First, what the words refer to. Some can mean two things here: which move \"that\" or " +
+        "\"it\" is (their move, the opponent's reply, a move withdrawn, one of several named " +
+        "above), a move now or one instead of the move they just played, this position or the " +
+        "whole game. Let the conversation and the position decide -- what was just said or " +
+        "named, whose move it is, which move was the mistake -- and when they do, answer that " +
+        "reading and say in a few words which it is. When they do not -- \"that\" when their " +
+        "move and the reply both went wrong, \"it\" after several moves were named -- and the " +
+        "readings would get different answers, do not guess: reply with one short question " +
+        "that names the readings (\"Instead of Bc4, which you just played, or as your next " +
+        "move?\") and nothing else. Never ask when every reading gets the same answer.\n" +
+        "- A hint: one rung up the ladder above, said once, never lower than one already " +
+        "said.\n" +
+        "- The move -- \"what should I play\", \"the play here\", \"the move\": give it plainly, and " +
+        "why it works, from the sheet's why and pattern. Several moves about as good: say so " +
         "and name them.\n" +
-        "- Which moves are best, good or fine, or whether another move works too: read all of the " +
-        "engine lines, name every move about level with the best, and say which are clearly worse " +
-        "and what goes wrong with them.\n" +
+        "- Which moves are best, good or fine, or whether another move works too: read all of " +
+        "the engine lines, name every move about level with the best, and say which are " +
+        "clearly worse and what goes wrong with them. On the opponent's move the player has " +
+        "just moved, so 'any other good moves?', 'is X also good?' or 'what else could I have " +
+        "played?' are about what they could have played instead of their last move, not about " +
+        "the opponent's options: answer from the position they faced before it -- the moves " +
+        "about as good there and the clearly worse ones, given below -- and say how their move " +
+        "compares. The opponent's best move or plan is another question, asked of the " +
+        "opponent.\n" +
         "- The line, or what happens next: the engine's line move by move, and the idea behind " +
         "it; once given, what comes after its end.\n" +
-        "- A move, square or piece they name: whether it holds up and what it does or allows, from " +
-        "the engine's word on it where given above -- theirs to hear in full: the score after it, " +
-        "how far behind the best, the reply, what the move does.\n" +
+        "- A move, square or piece they name: whether it holds up and what it does or allows, " +
+        "from the engine's word on it where given above -- theirs to hear in full: the score " +
+        "after it, how far behind the best, the reply, what the move does.\n" +
         "- \"That\", \"it\" or \"that move\" may mean their own last move or the opponent's reply. " +
-        "The sheet gives both positions -- the one they faced before their move and the one after " +
-        "the reply -- and says how long the reply took when that is known: read the conversation, " +
-        "take the likelier, and say which move you mean when it could be either.\n" +
-        "- The opponent's move or threat: from the last move and its verdict and the threats the " +
-        "facts list. When it is the opponent's move there is no move of theirs to find: say what " +
-        "they threaten and what to be ready for.\n" +
+        "The sheet gives both positions -- the one they faced before their move and the one " +
+        "after the reply -- and says how long the reply took when that is known.\n" +
+        "- The opponent's move or threat: from the last move and its verdict and the threats " +
+        "the facts list. When it is the opponent's move there is no move of theirs to find: " +
+        "say what they threaten and what to be ready for.\n" +
         "- How they stand, the material, the opening: from the Standing, the material and the " +
         "record -- the opening by the name the record gives it -- never counted or guessed " +
-        "yourself. How they did overall: from the verdicts and " +
-        "the tally in the record, nothing inferred from the position on the board.\n" +
-        "- A move they already played: its verdict is in the record and all of it may be said -- " +
-        "what it missed or allowed, and the better move -- from the sheet of the position they " +
-        "faced, inventing no fault in a sound move.\n" +
-        "- What they state or take for granted: take it as they meant it, say what in it is right " +
-        "as plainly as what is wrong, and credit them with nothing they did not say -- a question " +
-        "states nothing to agree with. What you already said in this position is under 'Said " +
-        "here': do not say it again in other words; give them something it did not.\n" +
-        "Say it in words: no percentages, scores or move numbers unless they ask for the number. " +
-        "Name moves bare. Two or three sentences, then, if you like, one question."
+        "yourself. How they did overall: from the verdicts and the tally in the record, " +
+        "nothing inferred from the position on the board.\n" +
+        "- A move they already played: its verdict is in the record and all of it may be said " +
+        "-- what it missed or allowed, and the better move -- from the sheet of the position " +
+        "they faced, inventing no fault in a sound move.\n" +
+        "- What they state or take for granted: take it as they meant it, say what in it is " +
+        "right as plainly as what is wrong, and credit them with nothing they did not say -- a " +
+        "question states nothing to agree with. What you already said in this position is " +
+        "under 'Said here': do not say it again in other words; give them something it did " +
+        "not.\n" +
+        "Say it in words: no percentages, scores or move numbers unless they ask for the " +
+        "number. Name moves bare. Two or three sentences, then, if you like, one question."
 
 /** Said of what the coach has said since the last move, so a follow-up gets only what it asks. `AI_FOLLOW_UP`. */
 const val AI_FOLLOW_UP =
@@ -700,9 +717,11 @@ const val AI_FOLLOW_UP =
 
 /** The coach's last turn ended with a question. `AI_ANSWERING`. */
 const val AI_ANSWERING =
-    " Your last turn above ended with a question: if their words answer it, say first, plainly " +
-        "and from the facts, whether they have it right, and give the answer yourself in a sentence " +
-        "when they do not; that closes the question, so ask nothing more."
+    " Your last turn above ended with a question: if their words answer it, say first, " +
+        "plainly and from the facts, whether they have it right, and give the answer yourself " +
+        "in a sentence when they do not; that closes the question, so ask nothing more. If it " +
+        "asked which of two things they meant, their words pick one: answer their earlier " +
+        "question on that reading."
 
 /**
  * A hint asked after the move was given: the move again, with why it beats clearly worse moves
@@ -1412,8 +1431,13 @@ fun boardBack(board: Board, fen: String): Board {
 const val FAST_PACE_S = 6.0
 const val PACE_MOVES = 4
 
-/** What a player's question makes stale while it waits unstarted: a word on a move, a nudge. */
-internal val STALE_BY_AN_ASK = setOf(Trigger.POST_MOVE, Trigger.STUCK, Trigger.DECISIVE_QUESTION)
+/**
+ * The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
+ * The hint was said first -- the ladder and the policy count it already -- and the answer, at
+ * the next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a
+ * higher (Tai, 2026-09-29: "if the level higher was said then the lower one can't be said").
+ */
+internal val UNASKED_HINTS = setOf(Trigger.STUCK, Trigger.DECISIVE_QUESTION)
 
 /** How many plies back the coach keeps a position and its facts. */
 const val POSITIONS_KEPT = 40
@@ -1797,9 +1821,6 @@ class Speaker(
     var fallbacks = 0
         internal set
 
-    /** Unprompted requests an ask overtook before they started. */
-    var dropped = 0
-        internal set
     var lastError: String? = null
 
     private val requests = LinkedBlockingQueue<Any>()
@@ -1890,12 +1911,13 @@ class Speaker(
     }
 
     /**
-     * Queue a request. An ask goes ahead of any unprompted request still waiting: the player
-     * is waiting for this one, and a post-move remark or a nudge that has not started yet
-     * would only be stale by the time the answer came out. A lesson on a mistake and the review
-     * are no remark: the player's question does not make them stale, and dropped, the rule they
-     * were charged against and the question they were to end with ([CoachSession.elicitDue])
-     * went unsaid -- they wait for the answer instead.
+     * Queue a request. An ask goes ahead of a word on a move, a lesson and the review still
+     * waiting: the player is waiting for this one, and they wait for the answer and go after it.
+     * Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message should
+     * come out in the same correct order"): a remark dropped here was never seen, and a lesson
+     * dropped took the rule it was charged against and the question it was to end with
+     * ([CoachSession.elicitDue]) with it. A hint said unasked keeps its place ahead of the ask
+     * ([UNASKED_HINTS]).
      */
     fun submit(request: CoachRequest) {
         if (request.trigger != Trigger.USER_ASK) {
@@ -1904,13 +1926,13 @@ class Speaker(
         }
         val waiting = ArrayList<Any>()
         while (true) waiting.add(requests.poll() ?: break)
-        val ahead = ArrayList<Any>() // said already, and the asks before this one
+        val ahead = ArrayList<Any>() // said already, the asks before this one, the hints
         val behind = ArrayList<Any>()
         for (item in waiting) {
-            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK) {
+            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK ||
+                item.trigger in UNASKED_HINTS
+            ) {
                 ahead.add(item)
-            } else if (item.trigger in STALE_BY_AN_ASK) {
-                dropped += 1
             } else {
                 behind.add(item)
             }
