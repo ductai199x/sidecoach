@@ -436,7 +436,7 @@ def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(overlay:
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
-    look = {"style": "staunty", "theme": "green"}
+    look: dict[str, Any] = {"style": "staunty", "theme": "green"}
     for _ in range(3):
         pipe.process(synthetic_board(board=board, **look), ts)
         ts += 0.1

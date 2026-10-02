@@ -110,26 +110,6 @@ def _fit(readings: Readings) -> float:
     return sum(margins) / len(margins) if margins else 0.0
 
 
-def _misreads(readings: Readings, position: chess.Board, bottom: Side) -> int:
-    """How many cells `readings` cannot show `position` on: unknown, empty where a piece
-    stands, a piece where none does, or a piece of another known kind."""
-    count = 0
-    for r in range(8):
-        for c in range(8):
-            reading = readings[r][c]
-            piece = position.piece_at(square_at(r, c, bottom))
-            if reading.kind == "unknown":
-                count += 1
-            elif piece is None:
-                count += int(reading.kind == "piece")
-            else:
-                count += int(
-                    reading.kind == "empty"
-                    or (reading.symbol is not None and reading.symbol != piece.symbol())
-                )
-    return count
-
-
 def _unlanded(readings: Readings) -> bool:
     """Whether a kind of which two or more pieces stand on the board reads every one of them
     off its square (unsettled): what a new piece set the recogniser still names right looks
