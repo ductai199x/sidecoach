@@ -404,7 +404,7 @@ class Conversation:
             f"Takeback: {names} withdrawn. The game is back at the position after "
             f"{self._last_active_name()}, {self._turn_text(board)}:\n"
             f"{position_text(board, legal=False)}\n"
-            "Play continues from here; the next message is the replacement move."
+            "Play continues from here; the next move in the record replaces it."
         )
         self.entries.append(Entry("user", "takeback", text))
 

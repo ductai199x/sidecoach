@@ -1679,7 +1679,7 @@ class Speaker:
                     else f"{_NUMBER_WORDS.get(request.candidates, request.candidates)} "
                     "fresh, varied replies that avoid those"
                 )
-                + ", keeping to the messages above."
+                + ", keeping to what the sections above say."
             )
             messages = [*messages[:-1], retry]  # type: ignore[list-item]
         if problems and not streamed:
@@ -4110,7 +4110,7 @@ class Coach:
 
         if trigger is Trigger.REVIEW:
             return (
-                "The game is over. Sum it up from the review in the last message and the "
+                "The game is over. Sum it up from the review in the record above and the "
                 "verdicts on the moves above, and from nothing else: the result, what went "
                 "well, and the one thing to work on. When the review says what they kept "
                 "missing, that is the thing: the pattern in plain words and the habit that "
@@ -4276,7 +4276,7 @@ class Coach:
                 instruction = (
                     f"The player just played {played.san}: {label} -- {meaning}. Show some "
                     "delight, in your own voice, in one or two sentences: name what makes it "
-                    f"the move -- {reason}, and the idea it serves -- from the messages above, "
+                    f"the move -- {reason}, and the idea it serves -- from the sections above, "
                     "nothing invented. No question, no advice, and not the same words as your "
                     "last such sentence. "
                     f"{NOT_THE_MOVE} {NO_FIGURES}"
@@ -4458,8 +4458,8 @@ class Coach:
             # that they had been a queen down.
             directive = (
                 "They asked how they did overall. Answer from the engine's verdicts on their "
-                "moves in the messages above -- the labels, the tally in their last move's "
-                "message, where they lost ground, how the material went -- and from nothing "
+                "moves in the record above -- the labels, the tally under their last move, "
+                "where they lost ground, how the material went -- and from nothing "
                 "else: do not infer the course of the game from the position on the board. "
                 "Two or three sentences: what went well -- how many of their moves were strong, "
                 "and their slips by kind, in the tally's numbers -- and the one thing to work "

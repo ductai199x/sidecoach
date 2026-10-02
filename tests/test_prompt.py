@@ -100,3 +100,36 @@ def test_the_shipped_corrections_file_exists_and_is_read() -> None:
     assert prompt.CORRECTIONS_PATH.exists()
     prompt.corrections.cache_clear()
     assert prompt.corrections() == prompt.CORRECTIONS_PATH.read_text(encoding="utf-8").strip()
+
+
+def test_the_model_is_never_told_of_messages_it_does_not_get() -> None:
+    """The model gets one message, in sections (the contract); "the next message is the
+    replacement move", "the review in the last message" and "the messages above" were left
+    from the days of many (the deep prompt review, 2026-10-01). Read from the string literals
+    (not the docstrings) of the modules that write what the model sees."""
+    import ast
+
+    import sidecoach.coach.coach as coach_module
+    import sidecoach.coach.conversation as conversation_module
+    import sidecoach.coach.engine_tools as tools_module
+
+    stale = re.compile(r"messages above|next message|last message|move's message", re.I)
+    found = []
+    for module in (coach_module, conversation_module, tools_module, prompt):
+        tree = ast.parse(Path(str(module.__file__)).read_text(encoding="utf-8"))
+        docs = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef)
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docs
+                and stale.search(node.value)
+            ):
+                found.append((module.__name__, node.value[:80]))
+    assert not found, found

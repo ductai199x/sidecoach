@@ -36,7 +36,7 @@ TOOL_ROUNDS = 3
 TOOL_WORDS = (
     "You can ask the engine yourself, with the tools: the position after any moves you give "
     "it (who stands better, its best lines, what each move does) and what attacks a square. "
-    "Ask it for what the messages above do not show -- what comes after the end of a line, "
+    "Ask it for what the sections above do not show -- what comes after the end of a line, "
     "a move they propose, whose piece a move takes, whether a square is safe -- before you "
     "answer, and say only what it returns."
 )
