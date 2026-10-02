@@ -222,6 +222,47 @@ class SettingsPhoneTest {
         }
     }
 
+    /**
+     * The page closing (on the phone, hidden at every app switch) sends what changed since in a
+     * save of its own beside the one on its way; the two could land in either order, and the
+     * older one, last, put back what the later one changed (the audit of 2026-10-02). Each page
+     * numbers its saves; one older than the last applied is answered and not applied. Another
+     * page's saves are its own. The desktop's
+     * test_an_older_save_of_a_page_landing_after_a_later_one_is_not_applied.
+     */
+    @Test
+    fun anOlderSaveOfAPageLandingAfterALaterOneIsNotApplied() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        val page = "page-${System.nanoTime()}"
+        fun save(page: String, seq: Long, stuck: Int): JSONObject = api.update(
+            JSONObject()
+                .put("settings", JSONObject().put("coach", JSONObject().put("stuck_seconds", stuck)))
+                .put("page", page)
+                .put("seq", seq),
+        )
+        fun stuck(): Double = store.values().getJSONObject("coach").getDouble("stuck_seconds")
+        try {
+            assertTrue(save(page, 2, 47).getBoolean("ok")) // the save sent as the page closed lands first
+            val older = save(page, 1, 35)
+            assertTrue(older.toString(), older.getBoolean("ok") && older.getBoolean("superseded"))
+            assertEquals(0, older.getJSONArray("changed").length())
+            assertEquals(47.0, stuck(), 0.0)
+            assertTrue("another page counts its own", save("$page-other", 1, 55).getBoolean("ok"))
+            assertEquals(55.0, stuck(), 0.0)
+            assertEquals(
+                listOf("coach.stuck_seconds"),
+                save(page, 3, 65).getJSONArray("changed").let { a -> (0 until a.length()).map { a.getString(it) } },
+            )
+            val plain = JSONObject().put("settings", JSONObject().put("coach", JSONObject().put("stuck_seconds", 75)))
+            assertTrue("a save with no number", api.update(plain).getBoolean("ok"))
+            assertEquals(75.0, stuck(), 0.0)
+        } finally {
+            store.save(saved)
+        }
+    }
+
     @Test
     fun aSaveOfOneFieldKeepsEveryOther() {
         val store = SettingsStore(app)

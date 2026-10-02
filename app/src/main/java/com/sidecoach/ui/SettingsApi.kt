@@ -66,6 +66,15 @@ class SettingsApi(
          * remembering. `settings_api.saving`.
          */
         val SAVING = Any()
+
+        /**
+         * Each Settings page's latest save applied, by its count, guarded by [SAVING]. The page
+         * sends a save as it closes (the phone hides it at every app switch) beside the one on its
+         * way; the two can land in either order, and the older one, landing last, put back what
+         * the later one changed (the audit of 2026-10-02). The later save carries every change
+         * since the last acknowledged, so the older one has nothing it lacks. `_applied`.
+         */
+        val APPLIED = HashMap<String, Long>()
     }
 
     fun describe(): JSONObject = JSONObject().apply {
@@ -98,7 +107,23 @@ class SettingsApi(
             put("errors", JSONArray().put(JSONObject().put("msg", "no settings in the request")))
         }
         val stored = JSONObject()
+        // The Settings page that sent it and its count of saves (`SettingsUpdate.page`, `seq`).
+        val page = if (body.isNull("page")) null else body.optString("page", "").ifEmpty { null }
+        val seq = if (body.isNull("seq") || !body.has("seq")) null else body.optLong("seq")
         val (after, changed) = synchronized(SAVING) {
+            if (page != null && seq != null && seq <= (APPLIED[page] ?: 0L)) {
+                // An older save of the page, landing after a later one: the later one had it all.
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("path", store.values().optString("data_dir"))
+                    put("changed", JSONArray())
+                    put("now", JSONArray())
+                    put("next", JSONArray())
+                    put("restart", JSONArray())
+                    put("secrets", JSONObject())
+                    put("superseded", true)
+                }
+            }
             val before = store.values()
             // What changed, laid over the settings as they are now (`settings_api.update`'s
             // `_merged`): the page sends only what changed, and laid over the defaults that reset
@@ -130,6 +155,7 @@ class SettingsApi(
                 // Not kept: said to the page, never a crash (`settings_api.update`'s OSError).
                 return JSONObject().put("ok", false).put("error", "The settings could not be saved: ${e.message}")
             }
+            if (page != null && seq != null) APPLIED[page] = seq
             val after = store.values()
             val changed = changed(before, after)
 
