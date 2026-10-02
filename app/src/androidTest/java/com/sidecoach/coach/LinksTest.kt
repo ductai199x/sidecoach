@@ -469,7 +469,10 @@ class LinksTest {
             directive,
             "What Qxd5 allowed, from the engine's line: after Qxd5, Rxa1+ wins a rook for a pawn." in directive,
         )
-        assertTrue(directive, "why, concretely: what Rxa8+ does, and what Qxd5 missed or allowed" in directive)
+        // The better move and the why are the sheet's and the guidelines' (a move already played).
+        assertTrue(directive, "A move they already played: its verdict is in the record" in directive)
+        assertTrue(directive, "what it missed or allowed, and the better move" in directive)
+        assertTrue(harness(given(provider)), "the engine preferred 1. Rxa8+" in harness(given(provider)))
         assertTrue(directive, "Name moves bare" in directive)
     }
 
@@ -487,12 +490,24 @@ class LinksTest {
             move(coach, board, i + 1, san, byUser = (i + 1) % 2 == 1, ts = (i + 1).toDouble())
         }
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
-        coach.ask("give me a hint", 8.0)
-        val out = messages(coach)
+        val out = stuck(coach) // unasked: nobody asked for a figure
         assertTrue(NO_FIGURES in directive(given(provider, 0)))
         assertTrue(out.map { it.text }.toString(), out.map { it.text } == listOf(reply) && provider.prompts.size == 1)
         val notes = coach.spoken.last().notes
         assertTrue(notes.toString(), "a figure in a remark nobody asked for: say it in words" in notes)
+        // Asked of the AI coach a figure may be what they asked for: the guidelines give them when
+        // asked, and no note is made (no keyword decides it).
+        val (asked, askedProvider) = coach(listOf(reply))
+        start(asked)
+        val askedBoard = Board()
+        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+            move(asked, askedBoard, i + 1, san, byUser = (i + 1) % 2 == 1, ts = (i + 1).toDouble())
+        }
+        asked.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        asked.ask("give me a hint", 8.0)
+        messages(asked)
+        assertTrue(NO_FIGURES !in directive(given(askedProvider, 0)))
+        assertEquals(emptyList<String>(), asked.spoken.last().notes)
     }
 
     companion object {

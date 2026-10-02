@@ -305,7 +305,11 @@ class CoachRunner(
                 } else if (one.problems.isNotEmpty()) {
                     meta.add("cut short: " + one.problems.joinToString("; "))
                 }
-                val action = if (one.streamed) "streamed" else PanelVoice.speak(message.trigger.slug, message.text, message.ply)
+                val action = if (one.streamed) {
+                    "streamed"
+                } else {
+                    PanelVoice.speak(message.trigger.slug, message.text, message.ply, movedOn = one.late)
+                }
                 when (action) {
                     "streamed" -> meta.add("streamed")
                     "stale" -> meta.add("not spoken: board moved on")
@@ -313,6 +317,7 @@ class CoachRunner(
                     "text" -> meta.add("text: fast game")
                     "supersede" -> meta.add("cut in")
                 }
+                if (one.late) meta.add("late: asked for a moment that is over") // shown in its place
                 PanelEngine.said(message, one, meta.joinToString(" · "), action)
             }
             for ((index, call) in one.calls.withIndex()) {

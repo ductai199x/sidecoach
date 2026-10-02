@@ -241,8 +241,10 @@ class SpeakerTest {
         val coach = Coach(provider, policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
         val seen = ArrayList<Pair<Trigger, Int?>>()
         val heard = ArrayList<String>()
-        coach.streamSink = { trigger, ply ->
+        val gone = ArrayList<() -> Boolean>()
+        coach.streamSink = { trigger, ply, movedOn ->
             seen.add(trigger to ply)
+            gone.add(movedOn)
             val sink: (String) -> Boolean = { sentence -> heard.add(sentence); true }
             sink
         }
@@ -264,6 +266,11 @@ class SpeakerTest {
         )
         coach.tick(12.0) // stuck: the idea, unprompted
         assertEquals(listOf(Trigger.STUCK to 0), seen)
+        // The moment it was asked for: over once a new game, a takeback or a re-read comes, or the
+        // player moves again -- never because of what the opponent plays.
+        assertFalse(gone[0]())
+        coach.onEvent(GameStarted(gameId = "h", userSide = Pieces.Side.WHITE, startFen = FEN), 2.0)
+        assertTrue(gone[0]())
         coach.speaker.runPending()
         assertEquals("the reply was streamed to the sink", 1, provider.streamedCalls)
         assertEquals(listOf("Their king has one square left."), heard)

@@ -290,7 +290,7 @@ object PanelWarm {
         ).also {
             coaching = it
             // The voice takes a model reply sentence by sentence as it is written.
-            it.coach?.streamSink = { trigger, ply -> PanelVoice.streamSink(trigger, ply) }
+            it.coach?.streamSink = { trigger, ply, movedOn -> PanelVoice.streamSink(trigger, ply, movedOn) }
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "coach: ${it.detail}")
         }
         PanelVoice.coach = coach.coach

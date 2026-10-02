@@ -41,6 +41,12 @@ enum class Unlock(val slug: String) {
     ASK_LINE("ask_line"),
     USER_NAMED_MOVE("user_named_move"),
     MOVE_PLAYED("move_played"),
+
+    /**
+     * What the AI coach's reply to a question actually said ([saidLevel]): the ladder follows
+     * the words, not a guess at what the question meant. `Unlock.REPLY`.
+     */
+    REPLY("reply"),
 }
 
 /** Everything analysis knows about one position, before filtering. */
@@ -235,10 +241,22 @@ class Disclosure(var level: DisclosureLevel = DisclosureLevel.SILENT) {
                 level = DisclosureLevel.of(maxOf(level.value, DisclosureLevel.MOVE.value))
             Unlock.ASK_LINE, Unlock.MOVE_PLAYED ->
                 level = DisclosureLevel.LINE
+            Unlock.REPLY -> Unit // carries no level: [said] does
         }
         if (level == before) return null
         history.add(unlock to level)
         return level
+    }
+
+    /**
+     * A reply to the player's question said up to [said] ([saidLevel]): the ladder climbs to it
+     * and never falls. Returns the new level, or null when nothing climbed. `Disclosure.said`.
+     */
+    fun said(said: DisclosureLevel): DisclosureLevel? {
+        if (said.value <= level.value) return null
+        level = said
+        history.add(Unlock.REPLY to said)
+        return said
     }
 
     /**
@@ -630,3 +648,42 @@ private val PIECE_WORD = Regex(PIECE_RE)
 
 /** `re.findall(rf"({_PIECE})s? on ([a-h][1-8])", ...)`: a piece word and its square. */
 private val PIECE_ON_SQUARE = Regex("($PIECE_RE)s? on ([a-h][1-8])")
+
+private val LONG_WORD = Regex("[a-z]{6,}")
+
+/**
+ * The rung a reply of the AI coach carried, from what it says: the first two moves of the
+ * engine's line (LINE), a move the sheet lists as a candidate (MOVE), a square of the target,
+ * the piece or the squares that carry the theme (FOCUS), a square or a threat of the key fact or
+ * the words of the idea (IDEA), else SILENT -- nothing of the ladder was said.
+ *
+ * The ladder of hints (each rung said once, none below one already said) follows this, not a
+ * guess from the question's words: with the AI on, the model reads the question and decides what
+ * it answers (Tai, 2026-10-02). `disclosure.said_level` (its `_names_move` is [names]).
+ */
+fun saidLevel(text: String, facts: PositionFacts): DisclosureLevel {
+    val movesText = if (mayNumberMoves(text)) NUMBERED_MOVE.replace(text, " ") else text
+    val line = facts.line.filter { it.isNotEmpty() }
+    if (line.size >= 2 && names(movesText, line[0]) && names(movesText, line[1])) {
+        return DisclosureLevel.LINE
+    }
+    val answers = facts.candidates + line.take(1)
+    if (answers.any { names(movesText, it) }) return DisclosureLevel.MOVE
+    val squares = squaresIn(text)
+    val focus = listOfNotNull(facts.target, facts.piece, *facts.focus.toTypedArray())
+        .filter { it.isNotEmpty() }.joinToString(" ")
+    val focusSquares = squaresIn(focus)
+    if (squares.any { it in focusSquares }) return DisclosureLevel.FOCUS
+    val idea = listOfNotNull(facts.key, facts.stakes, facts.situation, facts.trap)
+        .filter { it.isNotEmpty() }.joinToString(" ")
+    val ideaSquares = squaresIn(idea)
+    if (squares.any { it in ideaSquares } || facts.threats.any { names(movesText, it) }) {
+        return DisclosureLevel.IDEA
+    }
+    val words = listOfNotNull(facts.goal, facts.theme, facts.plan, facts.mechanism, facts.stakes)
+        .filter { it.isNotEmpty() }.joinToString(" ").lowercase()
+    val mine = LONG_WORD.findAll(text.lowercase()).map { it.value }.toSet()
+    val ideaWords = LONG_WORD.findAll(words).map { it.value }.toSet()
+    if ((mine intersect ideaWords).size >= 2) return DisclosureLevel.IDEA
+    return DisclosureLevel.SILENT
+}
