@@ -120,7 +120,20 @@ open class Engine(
             .directory(binary.parentFile)
             .start()
 
+    /**
+     * Closed by its owner: a search under way (a request's next one, a crash's restart) does
+     * not start another process nobody would close. [open] opens it again. `engine._closed`.
+     */
+    @Volatile
+    private var closedByOwner = false
+
     fun open() {
+        closedByOwner = false
+        start()
+    }
+
+    private fun start() {
+        if (closedByOwner) throw EngineUnavailable("the engine was closed")
         if (process != null) return
         if (!binary.exists()) throw EngineUnavailable("no engine at $binary")
         val started = try {
@@ -174,6 +187,12 @@ open class Engine(
     }
 
     override fun close() {
+        closedByOwner = true
+        drop()
+    }
+
+    /** The process gone (a crash's restart starts another; [close] does not). */
+    private fun drop() {
         val current = process ?: return
         // A stopped process reads nothing, `quit` included: it is let go on first.
         synchronized(clock) {
@@ -393,11 +412,11 @@ open class Engine(
         onDepth: ((List<Info>) -> Unit)? = null,
     ): List<Info> {
         for (attempt in 1..2) {
-            open()
+            start()
             try {
                 return search(board, depth, timeS, multipv, onDepth)
             } catch (exc: IOException) {
-                close()
+                drop()
                 if (attempt == 2) throw EngineUnavailable("engine died twice on ${board.fen()}: $exc")
             }
         }
