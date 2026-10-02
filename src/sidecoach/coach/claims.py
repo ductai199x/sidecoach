@@ -1226,6 +1226,34 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     return None
 
 
+# A piece placed at another moment than now: a plan ("aim to get a rook on c8"), a wish ("a
+# knight on d5 would be a monster"), a future ("your king on g8 will be safe after
+# castling", "castle, and the king on g1 covers g2"). Refused as false placements (the deep
+# prompt review, 2026-10-01).
+_ELSEWHERE = re.compile(
+    r"\b(?:would|could|might|will|shall|if|aim|aims|aiming|(?<!at\s)once|after|belongs?|one\s+day|"
+    r"eventually|later|someday|dream|ideal|imagine|suppose|wants?\s+to|get\s+(?:a|an|your)|"
+    r"bring|reroute|heading)\b"
+    r"|\b(?:a|an)\s+(?:king|queen|rook|bishop|knight|pawn)\s+(?:on|at)\s+[a-h][1-8]\b",
+    re.IGNORECASE,
+)
+
+
+# Castling said: the king and rook it puts on their squares are there afterwards.
+_CASTLING_SAID = re.compile(r"\bcastl\w*|O-O", re.IGNORECASE)
+
+
+def _elsewhere(text: str, at: int, piece: str = "") -> bool:
+    """Whether the sentence holding position `at` of `text` is about another moment (for a
+    king or rook, castling's)."""
+    start = max(text.rfind(stop, 0, at) for stop in (". ", "! ", "? ", "; ")) + 1
+    ends = [i for i in (text.find(stop, at) for stop in (". ", "! ", "? ", "; ")) if i >= 0]
+    sentence = text[start : min(ends) if ends else len(text)]
+    if piece.lower() in ("king", "rook") and _CASTLING_SAID.search(sentence):
+        return True
+    return bool(_ELSEWHERE.search(sentence))
+
+
 def check_draft(
     text: str,
     board: chess.Board,
@@ -1270,7 +1298,7 @@ def check_draft(
                 )
                 for frame in frames
             ]
-            if all(reasons):
+            if all(reasons) and not _elsewhere(text, match.start(), match.group("piece")):
                 add(match.group(0), reasons[0] or "")
 
     for match in [*_TACTIC.finditer(text), *_STATE_FIRST.finditer(text)]:

@@ -773,6 +773,23 @@ DRAFT = [
         "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
         "Bxf7 is mate.", W, (), ("Bxf7 is not mate",), id="false-mate",
     ),
+    # A piece placed in a plan, a wish or a future is not said to be there now: these true
+    # sentences were refused as false placements (the deep prompt review, 2026-10-01).
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "A knight on d5 would be a monster here. Aim to get a rook on c8. Your king on g8 "
+        "will be safe after castling.", B, (), (), id="plans-and-futures",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Castle, and the king on g1 covers g2. If you play Nc3, your knight on c3 defends the "
+        "pawn on e4.", W, (), (), id="castle-and-if",
+    ),
+    pytest.param(
+        "r1b1kbnr/pppp1ppp/8/4N1q1/2BnP3/8/PPPP1PPP/RNBQK2R w KQkq - 1 5",
+        "Look at your knight on g5 at once.", W, (), ("g5 holds their queen",),
+        id="at-once-is-now",
+    ),
     # A plan, a condition or a line is about another moment, and left alone.
     pytest.param(
         "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
