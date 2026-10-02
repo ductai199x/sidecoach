@@ -109,6 +109,16 @@ def test_a_trapped_queen_is_trapped_not_loose() -> None:
     assert idea.sacrifices == ()
 
 
+def test_a_piece_given_for_nothing_is_no_sacrifice() -> None:
+    """In check and lost, Qxf6 Qxf6 gives the queen for a knight and nothing comes back:
+    "your queen on e5 -- the piece you give up" (Fischer-Benko)."""
+    fen = "r1b2rk1/p4p1p/4pN1Q/4qp2/1p3p2/1n6/PPP3PP/3R1R1K b - - 0 22"
+    line = "Qxf6 Qxf6 Nc5 Rxf4 Ne4 Rxe4 fxe4 h3 Bb7 Rf1 Ba6 Qg5+ Kh8 Qe5+ Kg8 Rf4"
+    idea = read(fen, line, score=0.07)
+    assert idea.sacrifices == ()
+    assert "give up" not in (idea_words.piece(idea, chess.Board(fen)) or "")
+
+
 def test_the_target_says_when_the_pattern_comes_about() -> None:
     """The loose piece is loose once the blow is on the board, not now: fxe2 takes the knight
     that guards the rook on g1 (Lichess 01M89, "nothing defends it" of a guarded rook)."""
