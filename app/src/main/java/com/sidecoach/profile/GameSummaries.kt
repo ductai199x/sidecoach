@@ -62,8 +62,9 @@ object GameSummaries {
 
     /**
      * The game's shape, chess.com's "game shapes" read off White's expected score after each
-     * ply: wild, intense, giveaway, sudden, smooth, sharp, balanced. Too short a game (under 10
-     * plies) has no shape. `shape_of`.
+     * ply: wild, intense, giveaway, sudden, smooth, sharp (big swings that never changed who led,
+     * the leader winning), balanced. Too short a game (under 10 plies), or one no shape fits, has
+     * none. `shape_of`.
      */
     fun shapeOf(graph: List<Double>, result: String?): String? {
         if (graph.size < 11) return null
@@ -86,7 +87,10 @@ object GameSummaries {
             return if (swings > 2.0) "sharp" else "smooth"
         }
         if (close.count { it } >= 0.7 * graph.size) return "balanced"
-        return "sharp"
+        // None of the shapes: the lead changed once, or a side led and did not win. It was
+        // "sharp", and the summary said the winner "kept the upper hand" of a game they came
+        // back in (the review of 2026-10-01).
+        return null
     }
 
     /**

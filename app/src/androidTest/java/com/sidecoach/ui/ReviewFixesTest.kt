@@ -47,4 +47,15 @@ class ReviewFixesTest {
             store.close()
         }
     }
+
+    /** `test_no_shape_says_a_side_kept_the_upper_hand_it_lost`, test_game_summary.py. */
+    @Test
+    fun noShapeSaysASideKeptTheUpperHandItLost() {
+        val once = listOf(0.5, 0.55, 0.6, 0.7, 0.75, 0.74, 0.72, 0.6, 0.5, 0.4, 0.3, 0.25, 0.26, 0.25, 0.3, 0.27)
+        assertEquals(null, GameSummaries.shapeOf(once, "0-1"))
+        val led = listOf(0.5, 0.6, 0.72, 0.72, 0.73, 0.72, 0.71, 0.72, 0.72, 0.72, 0.6, 0.55)
+        assertEquals(null, GameSummaries.shapeOf(led, "0-1"))
+        val sharp = listOf(0.5, 0.75, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 1.0)
+        assertEquals("sharp", GameSummaries.shapeOf(sharp, "1-0"))
+    }
 }
