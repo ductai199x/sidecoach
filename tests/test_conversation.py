@@ -109,6 +109,16 @@ def test_the_facts_are_reworded_in_the_third_person_for_the_side_to_move() -> No
         "the player wins a pawn; the opponent is worse; the player needs to castle"
     )
     assert third_person("yours is the better bishop") == "the player's is the better bishop"
+    # "you" as an object takes no verb: "insteads", "twices" (the deep prompt review).
+    assert third_person("it gives you a pawn instead; it hits you twice") == (
+        "it gives the player a pawn instead; it hits the player twice"
+    )
+    assert third_person("castling gives you better chances") == (
+        "castling gives the player better chances"
+    )
+    assert third_person("this leaves you instead of them with the pawn") == (
+        "this leaves the player instead of the opponent with the pawn"
+    )
 
 
 def test_the_verdict_says_what_the_move_does_and_what_the_better_move_would_do() -> None:
