@@ -218,14 +218,19 @@ object Lanes {
      * it was full and the collector ran without end -- BoardTrackerLostBoardTest took 45 s where
      * it takes 4 alone, beside PipelineTest, VisionParityTest and StatsParityTest (2026-10-02).
      */
-    private const val HUNGRY_HEAP_MB = 100
+    private const val HUNGRY_HEAP_MB = 85
 
     /** Whether [runner]'s class held [HUNGRY_HEAP_MB] of the heap or more alone (or is not known). */
     private fun hungry(runner: Runner, costs: Map<String, Cost>): Boolean =
         (costs[runner.description.className]?.heapMb ?: Int.MAX_VALUE) >= HUNGRY_HEAP_MB
 
-    /** Hungry classes side by side: one per 96 MB of the heap's limit (two on 192 MB). */
-    private val heapSlots = java.util.concurrent.Semaphore((heapMb / 96).toInt().coerceAtLeast(1), true)
+    /**
+     * Hungry classes side by side: one per 192 MB of the heap's limit (one on the emulator). Two at
+     * once still made the collector run without end: PipelineTest took 99 s beside
+     * BoardTrackerLostBoardTest and 137 s beside VisionParityTest, 45 s alone; one at a time, 52 s
+     * (2026-10-02, measured on emulator-5556).
+     */
+    private val heapSlots = java.util.concurrent.Semaphore((heapMb / 192).toInt().coerceAtLeast(1), true)
 
     /**
      * A pool's classes, longest first, each handed to the first of the pool's threads to ask for
