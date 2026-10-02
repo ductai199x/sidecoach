@@ -528,6 +528,35 @@ def test_a_net_that_fails_on_the_gpu_falls_back_to_the_cpu() -> None:
         embedder.embed([np.full((96, 96, 3), 7, dtype=np.uint8)])
 
 
+def test_the_net_runs_at_one_batch_size_on_the_gpu() -> None:
+    """On CUDA every change of batch size cost 30 to 70 ms against 2 to 8 for a run at the
+    size before, and a frame's batch is however many cells are new (round 2 finding 8). On
+    the GPU the net runs only at GPU_BATCH, in pieces, the last padded, and each crop gets
+    its own vector; the CPU runs a batch as it is."""
+    from sidecoach.vision.embedding import GPU_BATCH
+    from sidecoach.voice.runtime import Device
+
+    embedder = CellEmbedder(device="cpu")
+    real = embedder.session
+    shapes: list[int] = []
+
+    class _Recording:
+        def run(self, names: object, feed: dict[str, np.ndarray]) -> object:
+            shapes.append(len(feed["cells"]))
+            return real.run(names, feed)  # type: ignore[arg-type]
+
+    embedder.session, embedder.device = _Recording(), Device("cuda", "cuda")
+    crops = [np.full((96, 96, 3), 3 * i, dtype=np.uint8) for i in range(GPU_BATCH + 3)]
+    vectors = embedder.embed(crops)
+    assert shapes == [GPU_BATCH, GPU_BATCH]
+    alone = CellEmbedder(device="cpu").embed(crops)
+    assert float((vectors * alone).sum(axis=1).min()) > 0.999
+    shapes.clear()
+    embedder.device = Device("cpu", "cpu")
+    embedder.embed([np.full((96, 96, 3), 250, dtype=np.uint8)])
+    assert shapes == [1]
+
+
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
     """641 px for eight squares is 80.125 a square: the edges fall between pixels and the
     straddling pixels blend the two square colours. Rounding the crop to the nearest pixel
