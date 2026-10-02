@@ -233,6 +233,8 @@ def test_naming_the_move_yourself_earns_the_move_level() -> None:
         ("ok and after that?", Unlock.ASK_LINE),
         ("how would this position continues?", Unlock.ASK_LINE),
         ("which move should I play?", Unlock.ASK_MOVE),
+        ("which move?", Unlock.ASK_MOVE),  # bare, the whole question (9416b99, 0da008b)
+        ("ok, which move ?", Unlock.ASK_MOVE),
         ("which move is best?", Unlock.ASK_MOVE),
         ("just tell me the answer", Unlock.ASK_MOVE),
         ("what's the answer to their threat?", Unlock.ASK_MOVE),
