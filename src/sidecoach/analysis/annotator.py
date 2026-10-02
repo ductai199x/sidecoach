@@ -105,7 +105,7 @@ class Measured:
     traps: list[Line] = field(default_factory=list)
     defences: list[Line] = field(default_factory=list)
     threatens: list[Line] = field(default_factory=list)
-    # What it is cached by (`position_key`): the FEN, and the moves since the last capture
+    # What it is cached by (`cache_key`): the FEN, and the moves since the last capture
     # or pawn move when there are any. Empty in a record kept before it had one.
     key: str = ""
 
@@ -115,7 +115,7 @@ class Measured:
         return self.lines[0].depth if self.lines else 0
 
 
-def position_key(board: chess.Board) -> str:
+def cache_key(board: chess.Board) -> str:
     """What a position is cached by: its FEN, and the moves since the last capture or pawn
     move, the ones a repetition can reach back over. The engine is told the moves that led to
     a position and scores a repetition as the draw it is, so the same placement after
@@ -182,7 +182,7 @@ class GameAnnotator:
         """A position the game may reach, measured whole before it does, as the game's own
         positions are, and cached with them. Inside `Engine.interruptible` a search stopped
         raises `Interrupted`, and nothing is cached."""
-        cached = self._cache.get(position_key(board))
+        cached = self._cache.get(cache_key(board))
         if cached is not None:
             return cached
         measured = self.measure(board)
@@ -192,7 +192,7 @@ class GameAnnotator:
     def _cached(self, board: chess.Board) -> Measured | None:
         """The position measured whole, counting a position measured ahead reached. A
         position adopted without a key (`adopt`) is found by its FEN."""
-        key = position_key(board)
+        key = cache_key(board)
         measured = self._cache.get(key)
         if measured is None:
             measured = self._cache.get(board.fen())
@@ -207,7 +207,7 @@ class GameAnnotator:
         cost. When the engine is behind a fast game, this is all a stale ply gets
         (2026-09-22: a queen ending played at two seconds a move ran the analyser forty
         plies behind, and every word on a move came after the board had moved on)."""
-        key = position_key(board)
+        key = cache_key(board)
         whole = self._cached(board)
         if whole is not None:
             return whole
@@ -304,7 +304,7 @@ class GameAnnotator:
                 if searched
                 else []
             ),
-            key=position_key(board),
+            key=cache_key(board),
         )
 
     def analysis_event(
@@ -378,7 +378,7 @@ class GameAnnotator:
 
     def _cached_quietly(self, board: chess.Board) -> Measured | None:
         """`_cached` without counting a position measured ahead as reached."""
-        return self._cache.get(position_key(board)) or self._cache.get(board.fen())
+        return self._cache.get(cache_key(board)) or self._cache.get(board.fen())
 
     def assess(
         self, game_id: str, before: chess.Board, move: chess.Move, ply: int
