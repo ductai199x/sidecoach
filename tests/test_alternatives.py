@@ -8,15 +8,22 @@ from pathlib import Path
 
 import chess
 
+from sidecoach.analysis.score import (
+    DEFAULT_THRESHOLDS,
+    about_as_good,
+    clearly_worse,
+    graded_good,
+    label_move,
+)
 from sidecoach.coach.alternatives import (
-    WORSE_MARGIN,
     fine_said,
+    good_said,
     worse_moves,
     worse_said,
     worse_text,
 )
-from sidecoach.coach.facts import CANDIDATE_MARGIN, facts_from_analysis
-from sidecoach.events import Analysis
+from sidecoach.coach.facts import facts_from_analysis
+from sidecoach.events import Analysis, Label
 
 FIXTURES = Path(__file__).parent / "fixtures" / "alternatives"
 
@@ -26,20 +33,46 @@ def load(name: str) -> tuple[chess.Board, Analysis]:
     return chess.Board(analysis.fen), analysis
 
 
-def test_a_quiet_position_has_several_moves_about_as_good_and_none_clearly_worse() -> None:
-    """Black after 1.e4 e5 2.Nf3 Nc6 3.Bc4: Bc5, Nf6 and Be7 are within a few hundredths of
-    the best line's score. The facts name all three, and nothing is clearly worse among the
-    six lines (nothing the board says of a move, then, is said)."""
+def _label(loss: float) -> Label:
+    """The label the review gives a move this far behind the best, all else plain."""
+    return label_move(
+        loss,
+        DEFAULT_THRESHOLDS,
+        is_best=loss == 0.0,
+        in_book=False,
+        decisive=False,
+        sacrifice=False,
+        before_score=0.5,
+        opponent_blundered=False,
+    )
+
+
+def test_a_quiet_position_has_moves_about_as_good_good_ones_and_none_clearly_worse() -> None:
+    """Black after 1.e4 e5 2.Nf3 Nc6 3.Bc4. "About equally good" is what the move labels grade
+    Best or Excellent, "good" what they grade Good (Tai, 2026-10-02: the grading bands, not
+    0.03 of our own): Bc5 and Nf6 are about as good as each other; Be7, 0.029 behind, and d6
+    are good, a little behind; h6 is an inaccuracy. Nothing is clearly worse among the six
+    lines (nothing the board says of a move, then, is said)."""
     board, analysis = load("italian")
     facts = facts_from_analysis(board, analysis, last_move=None, user=board.turn)
-    assert facts.candidates == ["Bc5", "Nf6", "Be7"]
+    assert facts.candidates == ["Bc5", "Nf6"]
+    assert facts.good == ["Be7", "d6"]
     top = analysis.lines[0].expected_score
-    assert all(top - line.expected_score <= CANDIDATE_MARGIN for line in analysis.lines[:3])
-    assert top - analysis.lines[3].expected_score > CANDIDATE_MARGIN, "the fourth is not fine"
+    labels = [_label(top - line.expected_score) for line in analysis.lines]
+    assert labels[:4] == [Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD]
+    assert labels[4] is Label.INACCURACY
+    for line, label in zip(analysis.lines, labels, strict=True):
+        loss = top - line.expected_score
+        assert about_as_good(loss) == (label in (Label.BEST, Label.EXCELLENT))
+        assert graded_good(loss) == (label in (Label.BEST, Label.EXCELLENT, Label.GOOD))
     assert worse_moves(board, analysis, board.turn) == []
-    assert (
-        fine_said(facts.candidates) == "Bc5, Nf6 and Be7 are all fine here -- about equally good."
-    )
+    assert fine_said(facts.candidates) == "Bc5 and Nf6 are both fine here -- about equally good."
+    assert good_said(facts.good) == "Be7 and d6 are good too, a little behind."
+
+
+def test_clearly_worse_is_a_mistake_or_worse_as_the_labels_grade_it() -> None:
+    for loss in (0.0, 0.03, 0.05, 0.0999, 0.10, 0.2, 0.5):
+        assert clearly_worse(loss) == (_label(loss) in (Label.MISTAKE, Label.BLUNDER)), loss
 
 
 def test_one_clear_best_move_is_the_only_fine_one_and_the_others_pass_up_the_mate() -> None:
@@ -50,7 +83,7 @@ def test_one_clear_best_move_is_the_only_fine_one_and_the_others_pass_up_the_mat
     worse = worse_moves(board, analysis, board.turn)
     assert [w.san for w in worse] == ["Qd1", "Qe2"], "the two nearest the best, the tempting ones"
     assert all(w.wrong == "passes up the mate" for w in worse)
-    assert all(w.drop >= WORSE_MARGIN for w in worse)
+    assert all(clearly_worse(w.drop) for w in worse)
     assert worse_text(worse) == "Qd1 passes up the mate; Qe2 passes up the mate"
     assert worse_said(worse) == (
         "Qd1 is clearly worse: it passes up the mate. Qe2 is clearly worse: it passes up the mate."

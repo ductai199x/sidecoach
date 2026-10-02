@@ -231,9 +231,10 @@ def _coach_at(name: str, replies: list[str] | None = None) -> tuple[Coach, Scrip
 
 
 def test_asked_for_the_best_moves_every_move_about_as_good_is_named() -> None:
-    """Three moves are within a few hundredths of the best line (Bc5, Nf6, Be7): "what are the
-    best moves?", "any other good moves?", "what else works?" and "which moves are fine here?"
-    were answered with line 1, or with a hint (Tai, 2026-10-01)."""
+    """ "what are the best moves?", "any other good moves?", "what else works?" and "which moves
+    are fine here?" were answered with line 1, or with a hint (Tai, 2026-10-01). Graded as the
+    move labels grade them (Tai, 2026-10-02): Bc5 and Nf6 about as good as each other (Best,
+    Excellent), Be7 and d6 good, a little behind (Good) -- each named for what it is."""
     for said in (
         "what are the best moves?",
         "any other good moves?",
@@ -245,19 +246,23 @@ def test_asked_for_the_best_moves_every_move_about_as_good_is_named() -> None:
         coach.ask(said, 2.0)
         answer = drain(coach)
         assert len(answer) == 1, said
-        assert "Bc5, Nf6 and Be7 are all fine here -- about equally good." in answer[0].text, said
+        assert answer[0].text == (
+            "Bc5 and Nf6 are both fine here -- about equally good. "
+            "Be7 and d6 are good too, a little behind."
+        ), said
         assert answer[0].level is DisclosureLevel.MOVE
 
 
 def test_the_model_is_told_to_read_every_line_and_to_name_the_moves_that_are_fine() -> None:
-    coach, provider = _coach_at("italian", ["Bc5, Nf6 and Be7 are all fine."])
+    coach, provider = _coach_at("italian", ["Bc5 and Nf6 are both fine."])
     coach.ask("what are the best moves?", 2.0)
     drain(coach)
     directive = directive_of(sent(provider))
     # The AI's guidelines, whatever the words: every line, every move about level named, and the
     # moves about as good as the facts list them (no keyword picks this).
     assert "read all of the engine lines" in directive
-    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive
+    assert "The moves about equally good here: Bc5, Nf6." in directive
+    assert "Good too, a little behind the best: Be7, d6." in directive
     assert "name every move about level with the best" in directive
     assert "no percentages, scores or move numbers" in directive
     harness = harness_of(sent(provider))
@@ -266,25 +271,57 @@ def test_the_model_is_told_to_read_every_line_and_to_name_the_moves_that_are_fin
 
 
 def test_asked_whether_a_move_is_also_good_the_model_gets_the_fine_moves() -> None:
-    coach, provider = _coach_at("italian", ["Yes, Be7 is fine too."])
+    coach, provider = _coach_at("italian", ["Yes, Be7 is good too."])
     coach.ask("is Be7 also good?", 2.0)
     drain(coach)
     directive = directive_of(sent(provider))
     assert "or whether another move works too" in directive
-    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive
+    assert "The moves about equally good here: Bc5, Nf6." in directive
+    assert "Good too, a little behind the best: Be7, d6." in directive
     assert "read all of the engine lines" in directive
+    # Offline, at the move level, the template says what it is: good, a little behind.
+    coach, _ = _coach_at("italian")
+    coach.ask("what are the best moves?", 2.0)
+    drain(coach)
+    coach.ask("is Be7 also good?", 3.0)
+    [said] = drain(coach)
+    assert said.text == "Yes, Be7 is good too, a little behind Bc5.", said.text
 
 
-def test_the_claim_check_accepts_every_move_about_as_good_as_sanctioned() -> None:
-    """Be7 is 0.029 behind the best line: "is Be7 a good move?" was refused as not among the
-    engine's best moves while the same coach was asked to name it."""
+def test_the_claim_check_says_a_good_move_is_good_and_not_the_best() -> None:
+    """Be7 is 0.029 behind the best line, graded Good: "is Be7 a good move?" was refused as not
+    among the engine's best moves while the same coach was asked to name it. It is a good move
+    -- and called the best, it is not (Tai, 2026-10-02: the grading bands, one source)."""
     from sidecoach.coach.claims import Claim, ClaimKind, verify_claims
     from sidecoach.coach.facts import facts_from_analysis
 
     board, analysis = load("italian")
     facts = facts_from_analysis(board, analysis, last_move=None, user=board.turn)
+
+    def verdict(move: str, text: str) -> tuple[str, str]:
+        [v] = verify_claims([Claim(ClaimKind.BEST, None, None, move, text)], board, facts=facts)
+        return v.result, v.reason
+
+    assert verdict("Nf6", "Nf6 is a good move")[0] == "true"
+    good = verdict("Be7", "Be7 is a good move")
+    assert good == (
+        "true",
+        "Be7 is a good move here, a little behind the engine's best (Bc5 and Nf6).",
+    )
+    best = verdict("Be7", "Be7 is the best move")
+    assert best[0] == "false" and "is a good move here, a little behind" in best[1]
+    assert verdict("d6", "d6 is a good move")[0] == "true"
+    assert verdict("h6", "h6 is a good move")[0] == "false", "an inaccuracy is no good move"
+
+    class Lines:
+        """The engine, asked when the facts are not this position's: the fixture's lines."""
+
+        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+            return list(reversed(analysis.lines))  # in any order: graded from the best
+
     claim = Claim(ClaimKind.BEST, None, None, "Be7", "Be7 is a good move")
-    assert [v.result for v in verify_claims([claim], board, facts=facts)] == ["true"]
+    [v] = verify_claims([claim], board, engine=Lines())
+    assert (v.result, v.reason) == good
 
 
 def test_one_clear_best_move_is_named_with_what_goes_wrong_with_the_others() -> None:
@@ -310,11 +347,11 @@ def test_the_best_move_asked_in_the_singular_names_the_near_equal_ones_too() -> 
     coach, _ = _coach_at("italian")
     coach.ask("what's the best move?", 2.0)
     text = drain(coach)[0].text
-    assert "Bc5" in text and "Nf6 and Be7 are about as good." in text
+    assert "Bc5" in text and "Nf6 is about as good." in text and "Be7" not in text
     coach, provider = _coach_at("italian", ["Bc5."])
     coach.ask("what's the best move?", 2.0)
     drain(coach)
-    assert "The moves about equally good here: Bc5, Nf6, Be7" in directive_of(sent(provider))
+    assert "The moves about equally good here: Bc5, Nf6." in directive_of(sent(provider))
     coach, provider = _coach_at("scholar", ["Qxf7 mates."])
     coach.ask("what's the best move?", 2.0)
     drain(coach)
@@ -447,6 +484,36 @@ def test_a_question_drops_nothing_queued() -> None:
         Trigger.REVIEW,
         Trigger.POST_MOVE,
     ]
+
+
+def test_a_stuck_hint_a_question_came_behind_is_shown_first_and_not_spoken() -> None:
+    """Tai, 2026-10-02 (T8): "the stuck hint does not need to be voiced but the order should
+    still be preserved". The hint waiting when the question comes is shown first, in its place,
+    and the voice goes to the answer: its sink reads it as not to be spoken, and the panel is
+    told so (`Spoken.unvoiced`). A hint with no question behind it is spoken as ever."""
+    coach = Coach(
+        ScriptedProvider(["Look at f7.", "Qxf7 is mate."]),
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+    )
+    sinks: dict[Trigger, Callable[[], bool]] = {}
+
+    def stream_sink(trigger: Trigger, ply: int | None, moved_on: Callable[[], bool]) -> None:
+        sinks[trigger] = moved_on  # what the voice will ask when the first sentence comes
+
+    coach.stream_sink = stream_sink  # type: ignore[assignment]
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    since = coach.policy.stuck_from
+    assert since is not None
+    coach.tick(since + coach.policy.stuck_threshold())  # the stuck hint, queued, not yet run
+    assert sinks[Trigger.STUCK]() is False, "nothing behind it yet: spoken"
+    coach.ask("what should I play?", since + coach.policy.stuck_threshold() + 1)
+    assert sinks[Trigger.STUCK]() is True, "a question came behind it: not spoken"
+    assert sinks[Trigger.USER_ASK]() is False, "the answer is spoken"
+    out = drain(coach)
+    assert [m.trigger for m in out] == [Trigger.STUCK, Trigger.USER_ASK], "in order, none dropped"
+    hint, answer = coach.spoken[-2:]
+    assert hint.unvoiced and not answer.unvoiced
 
 
 # 7. A failure while answering is counted, and the question is answered

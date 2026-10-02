@@ -36,7 +36,13 @@ import chess
 from sidecoach.analysis.computed import position_key
 from sidecoach.analysis.exchange import VALUE, defenders
 from sidecoach.coach import draft_claims, idea_words, situation
-from sidecoach.coach.alternatives import fine_said, worse_moves, worse_said, worse_text
+from sidecoach.coach.alternatives import (
+    fine_said,
+    good_said,
+    worse_moves,
+    worse_said,
+    worse_text,
+)
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
 from sidecoach.coach.conversation import Conversation, PlyRecord, hands, harness_problem, ways
@@ -1269,6 +1275,9 @@ class Spoken:
     # The lesson ends by asking what the player saw (`Coach._elicit_due`): when it is dropped
     # unsaid, the question was never asked.
     elicit: bool = False
+    # A hint said unasked that a question came behind while it waited (`Speaker.submit`): shown
+    # first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
+    unvoiced: bool = False
 
 
 @dataclass
@@ -1406,6 +1415,9 @@ class _Request:
     # the reply carries, and the marks on the board, follow what it said (`said_level`).
     rung_by_reply: bool = False
     elicit: bool = False
+    # Set by `Speaker.submit` on a hint said unasked when a question is queued behind it: its
+    # text comes first, as it was said first, and the voice does not say it (`Spoken.unvoiced`).
+    unvoiced: bool = False
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1646,6 +1658,19 @@ def _retry_wait(exc: Exception, provider: object, elapsed: float) -> float | Non
     return RATE_BACKOFF_S
 
 
+# Said for a question whose reply failed and whose template is empty: a failed reply to the
+# player never ends in silence (Tai, 2026-10-02).
+NOT_ANSWERED = "I could not put an answer together just now; ask me again in a moment."
+
+
+def _said_for(request: _Request) -> str:
+    """What is said when the model's reply failed: the template, or for a question with none,
+    a short honest line."""
+    if not request.fallback and request.trigger is Trigger.USER_ASK:
+        return NOT_ANSWERED
+    return request.fallback
+
+
 # The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
 # The hint was said first -- the ladder and the policy count it already -- and the answer, at the
 # next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a higher
@@ -1780,7 +1805,9 @@ class Speaker:
         should come out in the same correct order"): a remark dropped here was never seen, and
         a lesson dropped took the rule it was charged against and the question it was to end
         with (`Coach._elicit_due`) with it. A hint said unasked keeps its place ahead of the
-        ask (`_UNASKED_HINTS`)."""
+        ask (`_UNASKED_HINTS`), and is not spoken: the voice goes to the answer (Tai,
+        2026-10-02: "the stuck hint does not need to be voiced but the order should still be
+        preserved")."""
         if request.trigger is not Trigger.USER_ASK:
             self._requests.put(request)
             return
@@ -1793,6 +1820,8 @@ class Speaker:
         ahead: list[_Request | Spoken | None] = []  # said already, the asks before, the hints
         behind: list[_Request | Spoken | None] = []
         for item in waiting:
+            if isinstance(item, _Request) and item.trigger in _UNASKED_HINTS:
+                item.unvoiced = True
             if (
                 not isinstance(item, _Request)
                 or item.trigger is Trigger.USER_ASK
@@ -1834,10 +1863,11 @@ class Speaker:
             return self.speak_now(request)
         except Exception as exc:  # noqa: BLE001
             self.note_failure("reply", exc)
-            level, rung, marks = self._shaped(request, request.fallback)
+            said = _said_for(request)
+            level, rung, marks = self._shaped(request, said)
             return Spoken(
                 message=CoachMessage(
-                    text=request.fallback,
+                    text=said,
                     level=level,
                     trigger=request.trigger,
                     game_id=request.game_id,
@@ -1852,6 +1882,7 @@ class Speaker:
                 own_moves=request.own_moves,
                 rung=rung,
                 elicit=request.elicit,
+                unvoiced=request.unvoiced,
             )
 
     @staticmethod
@@ -1865,10 +1896,10 @@ class Speaker:
         marks = [*request.annotations, *mentions_in(text, request.board)]
         if not request.rung_by_reply:
             return request.level, None, marks
-        # An answer says at least the idea of the position, as a first hint does -- a quiet one
-        # names no square the words could be matched on -- so the ladder never offers the idea
-        # again after an answer was given.
-        level = max(said_level(text, request.facts), DisclosureLevel.IDEA)
+        # Only what the reply names climbs the ladder: an answer to "am I winning?" that names
+        # nothing of the idea moves nothing, and the stuck hint after it is still the idea
+        # (Tai, 2026-10-02: an answer raised the ladder to the idea whatever it said).
+        level = said_level(text, request.facts)
         if request.level >= DisclosureLevel.LINE:
             level = request.level  # a game that is over withholds nothing
         base = annotations_for(request.facts, level, request.board, trigger=request.trigger)
@@ -1924,6 +1955,7 @@ class Speaker:
                 epoch=request.epoch,
                 own_moves=request.own_moves,
                 elicit=request.elicit,
+                unvoiced=request.unvoiced,
             )
         while attempts < 2 and not (attempts and self._closed.is_set()):
             attempts += 1
@@ -2032,7 +2064,7 @@ class Speaker:
             messages = [*messages[:-1], retry]  # type: ignore[list-item]
         if problems and not streamed:
             self.fallbacks += 1
-            text = request.fallback
+            text = _said_for(request)
             leaks: list[str] = []
             notes: list[str] = []
         else:
@@ -2064,6 +2096,7 @@ class Speaker:
             own_moves=request.own_moves,
             rung=rung,
             elicit=request.elicit,
+            unvoiced=request.unvoiced,
         )
 
     @staticmethod
@@ -4277,6 +4310,7 @@ class Coach:
         `position` is the one the player faced before that move, their last: the moves they
         could have played instead, and how theirs compares (`_faced_alternatives`)."""
         fine = list(facts.candidates)
+        good = list(facts.good)
         analysis = position.analysis
         worse = worse_moves(position.board, analysis, self.user_colour) if analysis else []
         also = bool(_ASK_ALSO.search(said)) and not _ASK_OTHER_MOVES.search(said)
@@ -4286,8 +4320,14 @@ class Coach:
                 f"The moves about level with the best, all fine: {', '.join(fine)}. Say they are "
                 "about equally good, and name every one."
             )
+        elif good:
+            level_part = f"One move stands out: {fine[0]}."
         else:
-            level_part = f"One move stands out: {fine[0]}. Say the others are clearly worse."
+            # Weaker, not "clearly worse": an inaccuracy is not (`score.clearly_worse`).
+            level_part = f"One move stands out: {fine[0]}. Say the others are weaker."
+        if good:
+            # Graded Good, a little behind the best: good moves, said so (Tai, 2026-10-02).
+            level_part += f" Good too, a little behind: {', '.join(good)}."
         worse_part = (
             f" Clearly worse, and what goes wrong with them, true of the board: "
             f"{worse_text(worse)}. Say which, and why, in a few words."
@@ -4302,7 +4342,8 @@ class Coach:
                 "it (its sheet is above): "
                 + (
                     "whether the move they name would also have been good -- yes plainly when it "
-                    "is among the fine ones, and what it does; when it is not, that it was weaker "
+                    "is among the fine ones, and what it does; good, a little behind the best, "
+                    "when it is among the good ones; when it is neither, that it was weaker "
                     "than the best, and what goes wrong with it when the sheet says."
                     if also
                     else "the good moves there, not only the best one."
@@ -4312,7 +4353,8 @@ class Coach:
         elif also:
             ask_part = (
                 "They ask whether another move is also good: say yes plainly when the move they "
-                "name is among the fine ones, and what it does; when it is not, say it is weaker "
+                "name is among the fine ones, and what it does; that it is good, a little behind "
+                "the best, when it is among the good ones; when it is neither, say it is weaker "
                 "than the best, and what goes wrong with it when the sheet says."
             )
         else:
@@ -4321,9 +4363,11 @@ class Coach:
             f"{ask_part} {ALTERNATIVES_READ} {level_part}{worse_part} Say it in words. "
             f"{NO_FIGURES} Two or three sentences, no question."
         )
-        text = fine_said(fine, past=past)
+        text = " ".join(x for x in (fine_said(fine, past=past), good_said(good, past=past)) if x)
         bare = [f.rstrip("+#") for f in fine]
+        bare_good = [g.rstrip("+#") for g in good]
         named = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare]
+        named_good = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare_good]
         if also and named:
             if past:
                 text = (
@@ -4339,6 +4383,12 @@ class Coach:
                 )
             if len(fine) > 1:
                 text += " " + fine_said(fine, past=past)
+        elif also and named_good:
+            text = (
+                f"Yes, {named_good[0]} would have been good too, a little behind {fine[0]}."
+                if past
+                else f"Yes, {named_good[0]} is good too, a little behind {fine[0]}."
+            )
         if past:
             assert played is not None
             text += f" Yours, {played.move.san}, {self._compared(played, fine)}."
@@ -4410,9 +4460,17 @@ class Coach:
         must_name = self._must_name(
             trigger, position, level, fallback, assessment, played, user_text
         )
-        if trigger is Trigger.USER_ASK and fallback and fallback in self._said_since_move():
-            # Nothing the coach said since the last move is said again word for word: a
-            # student's answer to the hint got the same hint back, three times (round 5).
+        if (
+            self._offline
+            and trigger is Trigger.USER_ASK
+            and fallback
+            and fallback in self._said_since_move()
+        ):
+            # Offline, where the template is the answer, nothing the coach said since the last
+            # move is said again word for word: a student's answer to the hint got the same hint
+            # back, three times (round 5). With the AI on the fallback is said only when the
+            # reply failed, and then it stands: a failed reply never ends in silence (Tai,
+            # 2026-10-02).
             fallback = ""
         # A reply about a position already moved from -- the lesson on a move, an answer
         # about it -- is rendered at the level of the position on the board now, and must not
@@ -4642,11 +4700,6 @@ class Coach:
             played=self._record_moves(),
             played_san=played.san if played else None,
             assessment=assessment,
-            stream_to=self.stream_sink(
-                trigger, position.ply, lambda: self.moved_on((epoch, game_id, own_moves))
-            )
-            if self.stream_sink
-            else None,
             routine=routine,
             # A fast game gets the template, not a model reply; what the player asks, and
             # the review of a game that is over, always get the model.
@@ -4662,6 +4715,14 @@ class Coach:
             rung_by_reply=ai_ask,
             elicit=elicit,
         )
+        if self.stream_sink:
+            # Not spoken once its moment is over, nor when a question came behind it while it
+            # waited (`Speaker.submit` sets `unvoiced`): read when its first sentence comes.
+            request.stream_to = self.stream_sink(
+                trigger,
+                position.ply,
+                lambda: request.unvoiced or self.moved_on((epoch, game_id, own_moves)),
+            )
         self.speaker.submit(request)
 
     def _must_name(
@@ -5030,11 +5091,12 @@ class Coach:
                 # a mating attack" and nothing more.
                 # What the move let them do, from the position it left, when that has
                 # been analysed: the grounded half of "what their move allowed".
-                # Late -- the opponent has replied and the player is thinking again -- what
-                # the move allowed is the threat on the board now, and a question that sends
-                # them to the board is a nudge while they think: "one question that sends
-                # them to find..." asked what the move allowed (the deep prompt review,
-                # 2026-10-01). The lesson is then the better move and what theirs missed.
+                # Late -- the opponent has replied and the player is thinking again -- a
+                # question that sends them to the board is a nudge while they think: "one
+                # question that sends them to find..." asked what the move allowed (the deep
+                # prompt review, 2026-10-01), so the late lesson asks none. What the move
+                # allowed is still said: it has happened on the board, and nothing of the
+                # lesson is held back (Tai, 2026-10-02).
                 now = self._current
                 facing = (
                     now is not None
@@ -5045,7 +5107,7 @@ class Coach:
                 left = self.positions.get(played.ply)
                 allowed = (
                     idea_words.allowed(left.board, left.analysis, played.san)
-                    if left is not None and left.analysis is not None and not facing
+                    if left is not None and left.analysis is not None
                     else None
                 )
                 kind = _cost(assessment.severity, label)
@@ -5077,16 +5139,12 @@ class Coach:
                     f"The player just played {played.san}, which was {_rated(label)}: it cost "
                     f"{loss:.0%} of the game. The better move was {best} ({better_words}). "
                     "Teach the difference so they spot it next time: why the better move works "
-                    + (
-                        "and what their move missed, "
-                        if facing
-                        else "and what their move missed or allowed, "
-                    )
-                    + "from the sheet of the position they faced -- its goal, its pattern, the "
+                    "and what their move missed or allowed, "
+                    "from the sheet of the position they faced -- its goal, its pattern, the "
                     "tactic when it names one -- as a pattern to remember. "
                     + (
                         "Three sentences at most, no question: they are thinking about their "
-                        "next move now, and what the opponent threatens is theirs to find. "
+                        "next move now. "
                         if facing
                         else "Three sentences at most, then, if you like, one question that "
                         "sends them to find on the board something your reply has not said. "
@@ -5687,8 +5745,11 @@ class Coach:
                     )
                     + f" {TIE_TO_THE_GAME}"
                 )
-            if followup and not asks:
-                fallback = ""  # a nod needs no template: nothing, rather than the verdict again
+            if followup and not asks and self._offline:
+                # Offline a nod needs no template: nothing, rather than the verdict again. With
+                # the AI on the fallback stands for a failed reply: never silence (Tai,
+                # 2026-10-02: no pattern blanks a fallback).
+                fallback = ""
         elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question
             # back (the generic answer's "point them ... with a question" asked one).
@@ -5786,8 +5847,10 @@ class Coach:
                     else ""
                 )
             )
-            if followup and not asks and not engine_words:
-                fallback = ""  # a nod needs no template: nothing, rather than a hint again
+            if followup and not asks and not engine_words and self._offline:
+                # Offline a nod needs no template: nothing, rather than a hint again (with the
+                # AI on, the fallback stands for a failed reply).
+                fallback = ""
         fallback, note = self._cool_hint(facts, fallback)
         if not self._offline:
             # The keyword branches above wrote the fallback only -- what is said when the
@@ -5825,6 +5888,10 @@ class Coach:
                 )
             else:
                 out += f" The moves about equally good here: {', '.join(facts.candidates)}."
+        if facts.good and not theirs:
+            # Graded Good, a little behind the best: good moves, said so when they ask (Tai,
+            # 2026-10-02: "is Be7 a good move?" a move 0.029 behind).
+            out += f" Good too, a little behind the best: {', '.join(facts.good)}."
         out += self._faced_alternatives_words(position)
         worse = (
             worse_moves(position.board, position.analysis, self.user_colour)
@@ -5896,6 +5963,8 @@ class Coach:
             f" Before {san}, the player's last move, the moves about equally good were: "
             f"{', '.join(fine)}; {san} {self._compared(own, fine)}."
         )
+        if faced.facts.good:
+            out += f" Good too there, a little behind: {', '.join(faced.facts.good)}."
         worse = worse_moves(faced.board, faced.analysis, self.user_colour)
         if worse:
             out += f" Clearly worse there, and what goes wrong with them: {worse_text(worse)}."
