@@ -259,6 +259,25 @@ _RANK = (
 # The watched games Stats leaves out: those whose import's facts are kept (the import counts).
 _STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
+# Raised by every review saved or summed up again, by any store of this process (a review
+# window's, the background review's): what was read of the reviews is stale once it moves
+# (`reviews_revision`).
+_reviews_saved = 0
+_reviews_lock = threading.Lock()
+
+
+def reviews_revision() -> int:
+    """A count raised with every review saved, or summed up again, in this process: the panel
+    reads the reviews again once it moves (the end-of-game card's accuracy, ui/panel.py)."""
+    return _reviews_saved
+
+
+def reviews_touched() -> None:
+    """A review was saved or summed up again: `reviews_revision` moves."""
+    global _reviews_saved
+    with _reviews_lock:
+        _reviews_saved += 1
+
 
 class QueryRefused(ValueError):
     """A query that is not a single read-only statement, or that ran too long."""
@@ -401,6 +420,15 @@ class SessionRow:
     ended_at: float | None
     games: int
     summary: str | None
+
+
+def _held(key: str) -> tuple[str, str]:
+    """Whether the player's record holds a game (by its library key), as an SQL condition of one
+    parameter, and that parameter (`Store.in_record`): its import in the library, or Sidecoach's
+    record of the watched game."""
+    if key.startswith(WATCHED):
+        return "EXISTS (SELECT 1 FROM games WHERE game_id = ?)", key[len(WATCHED) :]
+    return "EXISTS (SELECT 1 FROM library WHERE key = ?)", key
 
 
 def _tags(value: str | None) -> list[str]:
@@ -1075,13 +1103,10 @@ class Store:
         """Whether a game (by its library key) is in the player's record: its import in the
         library, or Sidecoach's record of the watched game -- gone once removed, or once the
         profile is reset."""
-        if key.startswith(WATCHED):
-            table, column, value = "games", "game_id", key[len(WATCHED) :]
-        else:
-            table, column, value = "library", "key", key
+        held, value = _held(key)
         with self._lock:
-            row = self._db.execute(f"SELECT 1 FROM {table} WHERE {column} = ?", (value,)).fetchone()
-        return row is not None
+            row = self._db.execute(f"SELECT {held}", (value,)).fetchone()
+        return bool(row[0])
 
     def unremove(self, keys: Sequence[str]) -> None:
         """Games the player brought in by hand (a pasted PGN): no longer left out."""
@@ -1141,9 +1166,19 @@ class Store:
 
     # ---- Stats: a reviewed game's facts (profile/stat_facts.py) --------------------------------
 
-    def save_stats(self, strength: str, game: dict[str, Any], moves: list[dict[str, Any]]) -> None:
+    def save_stats(
+        self,
+        strength: str,
+        game: dict[str, Any],
+        moves: list[dict[str, Any]],
+        *,
+        held: bool = False,
+    ) -> None:
         """A game's facts from its review at `strength`, in place of any before from a review
-        no stronger: Stats keeps the strongest review's facts."""
+        no stronger: Stats keeps the strongest review's facts. `held`: only while the game is in
+        the player's record, asked in the same transaction (a review just saved: a profile reset
+        landing between that save and this one left Stats a game nothing listed; the audit of
+        2026-10-02)."""
         with self._lock:
             key = game["key"]
             kept = self._db.execute(
@@ -1152,13 +1187,18 @@ class Store:
             if kept is not None and kept["rank"] > STRENGTH_RANK.get(strength, 0):
                 return
             self._db.execute("DELETE FROM stat_moves WHERE key = ?", (key,))
-            self._db.execute(
+            condition, value = _held(key) if held else ("1", None)
+            saved = self._db.execute(
                 "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at,"
-                " user_side, bot, result, opening, termination) VALUES"
-                " (:key, :strength, :source, :time_class, :played_at, :user_side, :bot, :result,"
-                " :opening, :termination)",
-                {**game, "strength": strength, "bot": int(game["bot"])},
+                " user_side, bot, result, opening, termination) SELECT"
+                " :key, :strength, :source, :time_class, :played_at, :user_side, :bot, :result,"
+                f" :opening, :termination WHERE {condition.replace('?', ':held')}",
+                {**game, "strength": strength, "bot": int(game["bot"]), "held": value},
             )
+            if saved.rowcount == 0:
+                # Out of the record: nothing of it is kept (the DELETE above goes too).
+                self._db.rollback()
+                return
             self._db.executemany(
                 "INSERT INTO stat_moves (key, ply, side, fen, uci, san, phase, loss, label,"
                 " accuracy, score, chance, found, allowed, structure, themes, endgame, spent_ms,"
@@ -1267,20 +1307,25 @@ class Store:
         and its words go with it. One of this format saved already stays: another reviewer
         finished first (the review of 2026-10-01: the background review and a review window on
         one game at once -- the window saved first, the player paid for the AI coach's words,
-        and the background's save wiped them). Nor is a game the player removed meanwhile
-        saved. One statement, so no other connection's save or removal comes in between."""
+        and the background's save wiped them). Nor is a game saved that is no longer in the
+        player's record (`in_record`): removed meanwhile, or the profile reset between the
+        reviewer's own look and this save (the audit of 2026-10-02). One statement, so no other
+        connection's save, removal or reset comes in between."""
+        held, value = _held(key)
         with self._lock:
             cursor = self._db.execute(
                 "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)"
                 " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS"
-                " (SELECT 1 FROM removed WHERE key = ?)"
+                f" (SELECT 1 FROM removed WHERE key = ?) AND {held}"
                 " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version,"
                 " reviewed_at = excluded.reviewed_at, report = excluded.report,"
                 " summary = excluded.summary, words = NULL"
                 " WHERE reviews.version != excluded.version",
-                (key, strength, version, reviewed_at, report, summary, key),
+                (key, strength, version, reviewed_at, report, summary, key, value),
             )
             self._db.commit()
+        if cursor.rowcount > 0:
+            reviews_touched()
         return cursor.rowcount > 0
 
     def review(self, key: str, strength: str) -> ReviewRow | None:
@@ -1312,6 +1357,7 @@ class Store:
                 (summary, key, strength),
             )
             self._db.commit()
+        reviews_touched()
 
     def stat_strengths(self) -> dict[str, str]:
         """The strength of the review each game's Stats facts come from, by its key."""

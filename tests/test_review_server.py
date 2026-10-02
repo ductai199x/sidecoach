@@ -433,7 +433,6 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
         asked.append(told)
         return ReviewWords(
             texts={4: {"why": "Your knight on c6 guards your pawn on e5."}},
-            reveals={4},
             model=model.model,
             cost=0.0,
         )
@@ -470,7 +469,6 @@ def test_the_ai_coachs_words_are_written_only_when_asked_and_kept(
         "model": "local-model",
         "cost": 0.0,
         "texts": {"4": {"why": why}},
-        "reveals": [4],
         # Shown with its links to the board (coach/review_links.py).
         "links": {
             "4": {
@@ -749,6 +747,176 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
     store.close()
 
 
+def test_the_words_paid_on_a_watched_game_show_in_its_imports_review(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For Tai #9 (decided 2026-10-02): the AI coach's words paid for on a watched game's review
+    whose record differs from its import (4. d3 read as d4) were kept but shown nowhere once the
+    import stood for the game. They show in the import's review on the moves the two share -- the
+    same position, the same move -- and are not asked (paid) again; the words on moves the import
+    does not have stay with the watched review, which keeps every word it had. Nothing is lost
+    and nothing is shown, saved or paid twice."""
+    from sidecoach.events import Line
+    from sidecoach.llm import factory
+    from sidecoach.llm.base import Completion
+    from sidecoach.llm.usage import Usage
+    from sidecoach.ui import review_room
+
+    searched = FakeEngine.analyse
+
+    def legal(self: FakeEngine, board: Any, **kwargs: Any) -> list[Any]:
+        """Lines of a legal move, as the words' facts and checks play them out."""
+        searched(self, board, **kwargs)
+        first = next(iter(board.legal_moves), None)
+        return [Line(moves=[first.uci()], depth=14, expected_score=0.5)] if first else []
+
+    monkeypatch.setattr(FakeEngine, "analyse", legal)
+    misread = [*SANS[:6], "d4", *SANS[7:]]
+    client, _engine, store, key, watched, _made = _watched_and_imported(
+        make_panel, monkeypatch, misread
+    )
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    # Plies 3 (Nf3) and 5 (Bc4) are the key moves; 7 is the misread move, 9 comes after it.
+    monkeypatch.setattr(review_room.review_words, "key_plies", lambda _game: [3, 5])
+    paid = {
+        "model": "luna",
+        "cost": 0.02,
+        "texts": {
+            "3": {"why": "Paid for on Nf3."},
+            "7": {"why": "Paid for on d4."},
+            "9": {"why": "Paid for on Nc3."},
+        },
+    }
+    store.set_review_words(watched, "standard", json.dumps(paid))
+    assert client.get("/api/games").json()["games"], "listed: the import stands for it now"
+    assert store.twins() == {watched: key}
+
+    asked: list[int] = []
+
+    class Model:
+        model = "local-model"
+        usage = Usage()
+
+        def chat(self, _system: str, messages: Any, **_: Any) -> Completion:
+            ply = json.loads(messages[0]["content"])["key move"]["ply"]
+            asked.append(ply)
+            return Completion(text=f"### why\nOwn words on ply {ply}.", stats={})
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    assert client.put("/api/settings", json={"settings": {"llm": {"provider": "local"}}}).json()[
+        "ok"
+    ]
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    ai = _until_ready(client, key)["state"]["ai"]
+    assert ai["words"]["texts"] == {"3": {"why": "Paid for on Nf3."}}, "where the moves match"
+    assert ai["status"] == "none", "the key move with no words is there to ask for"
+
+    assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
+    ai = _until_written(client, key)
+    assert asked == [5], "the move with words paid for is not asked again"
+    assert ai["status"] == "ready", ai["error"]
+    assert ai["words"]["texts"] == {
+        "3": {"why": "Paid for on Nf3."},
+        "5": {"why": "Own words on ply 5."},
+    }
+    own = store.review(key, "standard")
+    assert own is not None and json.loads(own.words or "{}")["texts"] == {
+        "5": {"why": "Own words on ply 5."}
+    }, "the import saves its own words only: none saved twice"
+    kept = store.review(watched, "standard")
+    assert kept is not None and json.loads(kept.words or "{}") == paid, "the watched keeps all"
+
+    _close(client, key)
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    again = _until_ready(client, key)["state"]["ai"]
+    assert (again["status"], again["words"]["texts"]) == ("ready", ai["words"]["texts"])
+    assert asked == [5], "opened again: nothing asked"
+    _close(client, key)
+    store.close()
+
+
+def test_the_end_of_game_card_says_the_reviews_accuracy_once_it_is_done(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For Tai #11 (decided 2026-10-02): the card said 78.0 and Game Review 78.3 -- the live
+    verdicts and the review's own analysis. The card says the live accuracy while the game's
+    review is not done, then Game Review's, as the server's poll carries it: read again when a
+    review is saved (by any store: the review window's, the background review's), and not asked
+    of the store between changes."""
+    from types import SimpleNamespace
+
+    from sidecoach.events import GameReview, Side
+    from sidecoach.profile.store import Store
+
+    engine = make_panel()
+    path = engine.settings.data_dir / "profile.sqlite"
+    store = Store(path)
+    watched = _watch(store, "g1", SANS, 1_790_000_000.0)
+
+    class Ends:
+        """The profiler as the game ends: its review, live."""
+
+        def __init__(self) -> None:
+            self.store = store
+
+        def on_event(self, _event: Any, _now: float) -> list[Any]:
+            return [GameReview(game_id="g1", user_side=Side.BLACK, result="0-1", accuracy=78.0)]
+
+    engine._profile(Ends(), [SimpleNamespace()])
+    card = next(line for line in engine.poll()["lines"] if (line.get("data") or {}).get("review"))
+    assert card["data"]["review_key"] == watched and card["data"]["review"]["accuracy"] == 78.0
+    assert engine.poll()["state"]["review_accuracy"] == {}, "not reviewed: the live accuracy"
+
+    read: list[str] = []
+    best = Store.best_review
+    monkeypatch.setattr(Store, "best_review", lambda self, key: read.append(key) or best(self, key))
+    engine.poll()
+    assert read == [], "nothing changed: the store is not asked"
+
+    other = Store(path)  # the review window's own store
+    summary = {"white": {"accuracy": 90.1}, "black": {"accuracy": 78.3}}
+    assert other.save_review(watched, "standard", 1, 1.0, "{}", json.dumps(summary))
+    other.close()
+    assert engine.poll()["state"]["review_accuracy"] == {watched: 78.3}, "Game Review's"
+    assert read == [watched]
+    engine.poll()
+    assert read == [watched], "read once for the change"
+    store.close()
+
+
+def test_words_go_by_position_and_move_whatever_the_move_numbers(tmp_path: Path) -> None:
+    """A watched game joined late counts its moves from another number: its FENs' clocks differ
+    from the import's, its positions do not. Each word goes to the import's move played from the
+    same position with the same move, the n-th such move to the n-th."""
+    import chess
+
+    from sidecoach.profile.store import LibraryRow, Store
+    from sidecoach.ui import review_room
+    from tests.test_review_words import _game
+
+    store = Store(tmp_path / "profile.sqlite")
+    imported = _game()
+    moves = []
+    for move in imported.moves:
+        fields = move.fen_before.split()
+        fields[5] = str(int(fields[5]) + 20)  # joined at move 21
+        moves.append(move.model_copy(update={"fen_before": " ".join(fields)}))
+    watched = imported.model_copy(update={"moves": moves})
+    store.start_game("w", 1.0, "black", chess.STARTING_FEN)
+    store.add_library_game(LibraryRow("pgn:i", "pgn", 0.0, "*"))
+    assert store.save_review("watched:w", "fast", 1, 1.0, watched.model_dump_json(), None)
+    store.set_review_words(
+        "watched:w", "fast", json.dumps({"model": "m", "texts": {"4": {"why": "W"}}})
+    )
+    store.add_twin("watched:w", "pgn:i")
+    assert review_room.carried_words(store, "pgn:i", imported, "standard") == (
+        {4: {"why": "W"}},
+        "m",
+    )
+    assert review_room.carried_words(store, "watched:w", watched, "fast") == ({}, ""), "one way"
+    store.close()
+
+
 def test_a_removed_game_stays_out_until_undone_or_pasted_again(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1018,10 +1186,11 @@ def test_a_saved_review_that_cannot_be_summed_up_again_is_said(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The audit of 2026-10-02: a saved review rederive could not read was skipped in silence."""
-    from sidecoach.profile.store import Store
+    from sidecoach.profile.store import LibraryRow, Store
     from sidecoach.ui import review_room
 
     store = Store(tmp_path / "profile.sqlite")
+    store.add_library_game(LibraryRow("pgn:1", "pgn", 0.0, "*"))  # a review is of a listed game
     store.save_review("pgn:1", "fast", review_room.REVIEW_VERSION, 1.0, "not a report", None)
     store.set_setting(review_room.DERIVED_KEY, "1")
     assert review_room.rederive(store) == 0
@@ -1053,7 +1222,7 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
         return FakeEngine()
 
     assert review_room.review_row(settings, row, store, standard, workers=1, make_engine=engines)
-    words = {"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}, "reveals": []}
+    words = {"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}}
     store.set_review_words(row.key, "standard", json.dumps(words))
     saved = store.review(row.key, "standard")
     # The background review, begun before the window saved, finishes now.

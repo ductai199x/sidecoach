@@ -248,10 +248,6 @@
     if (retry?.solved) reveal(retry.ply);
   });
   const betterOut = (m: ReviewMove): boolean => look.arrow || !!revealed[m.ply];
-  function answerOut(m: ReviewMove): boolean {
-    const own = !room?.game.user_side || m.side === room.game.user_side;
-    return !own || betterOut(m);
-  }
   const said = $derived(move && ai?.words ? (ai.words.texts[String(move.ply)] ?? null) : null);
   // Each part of it as its links to the board (the text whole when it has none).
   const saidLinks = $derived(move && ai?.words ? (ai.words.links?.[String(move.ply)] ?? {}) : {});
@@ -272,9 +268,8 @@
     void card;
     hovered = pinned = null;
   });
-  // The AI's "why" once it may be read: one that names the better move waits for the answer, the
-  // review's own sentence standing in.
-  const aiWhy = $derived(move && said?.why && (!ai?.words?.reveals.includes(move.ply) || answerOut(move)) ? said.why : null);
+  // The AI's "why", as written (Tai, 2026-10-02: no rule over its words holds one back).
+  const aiWhy = $derived(move && said?.why ? said.why : null);
   const aiCount = $derived(Object.keys(ai?.words?.texts ?? {}).length);
 
   /** Dollars as the card says them: "about 2¢", "under 1¢"; spent, to a tenth: "1.7¢". */

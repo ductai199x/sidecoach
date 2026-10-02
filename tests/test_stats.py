@@ -65,6 +65,13 @@ def _game(key: str, **fields: Any) -> dict[str, Any]:
     return {**game, **fields}
 
 
+def _listed(store: Store, *keys: str) -> None:
+    """The games in the player's record (a review is saved only for one: Store.save_review), as
+    bare library rows: their side and class stay their facts' own."""
+    for key in keys:
+        store.add_library_game(LibraryRow(key, "chesscom", 0.0, "*"))
+
+
 def _store(tmp_path: Path) -> Store:
     store = Store(tmp_path / "profile.sqlite")
     # A rapid win against a person: a fork found, a pin missed, an endgame entered better.
@@ -125,6 +132,7 @@ def test_the_games_are_counted_by_their_shape(tmp_path: Path) -> None:
     the shapes come in game_summary's order."""
     store = _store(tmp_path)
     summary = {"white": {"side": "white"}, "black": {"side": "black"}}
+    _listed(store, "a", "b", "c")
     store.save_review("a", "standard", 1, 1.0, "{}", json.dumps({**summary, "shape": "sudden"}))
     store.save_review("b", "standard", 1, 1.0, "{}", json.dumps({**summary, "shape": "smooth"}))
     store.save_stats("standard", _game("c", result="1/2-1/2"), [_move(1, "white")])
@@ -358,6 +366,7 @@ def test_the_facts_kept_for_stats_are_the_strongest_reviews(tmp_path: Path) -> N
     assert store.stat_moves(["a"])[0]["loss"] == 0.0
     store.save_stats("deep", _game("a"), [_move(1, "white", loss=0.1, label="inaccuracy")])
     assert store.stat_moves(["a"])[0]["loss"] == 0.1, "as strong: replaced"
+    _listed(store, "b")
     for strength, at in (("deep", 1.0), ("fast", 2.0)):
         store.save_review("b", strength, 1, at, "{}", None)
     assert [(r.key, r.strength) for r in store.reviews_without_stats()] == [("b", "deep")]

@@ -308,13 +308,11 @@ export type RetryPosition = { ply: number; fen: string; side: "white" | "black";
 export type Tried = { ply: number; uci: string; san: string; fen: string; label: string | null; loss: number; accuracy: number | null; only: boolean };
 
 /** The AI coach's words on a review's key moves (coach/review_words.py), by ply: why the move
- * mattered, a lesson, and for a bad move the better one; `reveals` the plies whose "why" names
- * the better move, shown only once the answer is out. */
+ * mattered, a lesson, and for a bad move the better one, shown as written. */
 export type ReviewWords = {
   model: string;
   cost: number | null;
   texts: Record<string, { why?: string; better?: string; lesson?: string }>;
-  reveals: number[];
   /** Each paragraph as its links to the board, by ply then part (coach/review_links.py). */
   links: Record<string, Record<string, AiPiece[]>>;
 };
@@ -576,6 +574,9 @@ export type PanelState = {
   captions?: Captions;
   /** Raised by every change the server makes to the settings or a piece set. */
   settings_version?: number;
+  /** Game Review's accuracy of each game whose end-of-game card was shown, by its review key,
+   * once the game's review is done: the card's live accuracy until then. */
+  review_accuracy?: Record<string, number>;
   caption_lines?: [number, string, boolean?][];
   caption_again?: number;
   speaking?: boolean;

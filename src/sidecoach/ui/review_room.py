@@ -123,6 +123,10 @@ class ReviewRoom:
         # after the app was closed in the middle of them: kept, and never asked again.
         self._answered: dict[int, str] = {}
         self._spent = 0.0
+        # The words paid for on the watched game this one stands for, by this review's plies
+        # (`carried_words`): shown with this game's own, never asked again.
+        self._carried: dict[int, dict[str, str]] = {}
+        self._carried_model = ""
         # The words' cost as the button says it, by model name and the moves answered already.
         self._estimated: tuple[tuple[str | None, frozenset[int]], float | None] | None = None
         self._playback = playback(row.pgn)
@@ -193,7 +197,7 @@ class ReviewRoom:
         name = getattr(model, "model", None)
         if model is None or self.reviewed is None:
             return None
-        answered = frozenset(self._answered)
+        answered = frozenset(self._answered) | frozenset(self._carried)
         if self._estimated is None or self._estimated[0] != (name, answered):
             opening = _opening(self.reviewed)
             prices = prices_for(self.settings, name)
@@ -242,6 +246,7 @@ class ReviewRoom:
         prices = prices_for(self.settings, getattr(model, "model", None))
         with self._lock:
             answered, spent_before = dict(self._answered), self._spent
+            carried = frozenset(self._carried)
 
         def keep(ply: int, text: str, stats: dict[str, Any]) -> None:
             # Each answer kept the moment it is paid for: the app closed now loses none of them.
@@ -269,6 +274,7 @@ class ReviewRoom:
                 answered=answered,
                 on_answer=keep,
                 stop=lambda: not self.store.in_record(self.key),
+                carried=carried,
             )
             if not self.store.in_record(self.key):
                 raise RuntimeError(GONE)
@@ -291,7 +297,6 @@ class ReviewRoom:
                 "model": words.model,
                 "cost": cost,
                 "texts": {str(ply): parts for ply, parts in words.texts.items()},
-                "reveals": sorted(words.reveals),
             }
             shown = self._shown(saved, reviewed)
         except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"
@@ -325,10 +330,33 @@ class ReviewRoom:
             self._emit("sys", "warn", f"AI words on ply {ply} dropped: {why}")
 
     def _shown(self, saved: dict[str, Any], reviewed: ReviewedGame) -> dict[str, Any]:
-        """The saved words as the page draws them: each paragraph also as its links to the
-        board (coach/review_links.py), made on showing so they follow the linking's rules."""
-        links = review_links.linked(saved.get("texts", {}), reviewed, self.row.user_side)
-        return {**saved, "links": links}
+        """The saved words as the page draws them, with the words carried from the watched game
+        this one stands for on the moves that have none of their own: each paragraph also as its
+        links to the board (coach/review_links.py), made on showing so they follow the linking's
+        rules."""
+        own = saved.get("texts", {})
+        carried = {str(p): parts for p, parts in self._carried.items() if str(p) not in own}
+        texts = (
+            dict(sorted({**carried, **own}.items(), key=lambda t: int(t[0]))) if carried else own
+        )
+        links = review_links.linked(texts, reviewed, self.row.user_side)
+        return {**saved, "texts": texts, "links": links}
+
+    def _carry(self, reviewed: ReviewedGame) -> dict[str, Any] | None:
+        """The words paid for on the watched game this one stands for, by this review's plies,
+        kept for showing and for the calls not to ask again; shown as the words when this game
+        has none of its own yet (None when there are none)."""
+        try:
+            carried, model = carried_words(self.store, self.key, reviewed, self.strength.name)
+        except Exception as exc:  # noqa: BLE001 - the review stands without them; said
+            self._emit("sys", "error", f"the watched game's AI words could not be read: {exc!r}")
+            carried, model = {}, ""
+        with self._lock:
+            self._carried, self._carried_model = carried, model
+        if not carried:
+            return None
+        self._emit("sys", "info", f"AI words on {len(carried)} moves carried from the watched game")
+        return self._shown({"model": model, "cost": None, "texts": {}}, reviewed)
 
     # ---- analysis (ui/review_analysis.py): the engine's lines for the board, the explorer, the
     # game as a PGN ---------------------------------------------------------------------------
@@ -470,7 +498,7 @@ class ReviewRoom:
             self._answered = {int(p): str(t) for p, t in kept.get("answers", {}).items()}
             self._spent = float(kept.get("cost") or 0.0)
         elif kept:
-            words = self._shown(kept, reviewed)
+            words = kept
         self._ready(reviewed, GameSummary.model_validate_json(saved.summary or "{}"), words)
         self._emit("sys", "info", f"review of {self.key} loaded ({self.strength.name})")
         return True
@@ -538,10 +566,17 @@ class ReviewRoom:
             puzzles.close()
 
     def _ready(
-        self, reviewed: ReviewedGame, summary: GameSummary, words: dict[str, Any] | None = None
+        self, reviewed: ReviewedGame, summary: GameSummary, saved: dict[str, Any] | None = None
     ) -> None:
+        """The review ready, with its saved words (`saved`) as the page draws them, and the words
+        carried from the watched game it stands for: the words are done once every key move has
+        some, else the rest are there to ask for."""
         moves = move_views(reviewed)
         practice = self._practice(reviewed)
+        carried = self._carry(reviewed)
+        words = self._shown(saved, reviewed) if saved is not None else carried
+        every = set(review_words.key_plies(reviewed)) <= set(self._carried)
+        done = saved is not None or (carried is not None and every)
         retries = Retries(
             self.settings,
             reviewed,
@@ -554,7 +589,9 @@ class ReviewRoom:
             self.practice = practice
             self.retries = retries
             if words is not None:
-                self.words, self.words_status = words, "ready"
+                self.words = words
+            if done:
+                self.words_status = "ready"
             self.status = "ready"
             self.done = self.total = len(reviewed.moves) + 1
 
@@ -683,7 +720,7 @@ def review_row(
         )
     # What this strength's review kept part way goes; another strength's stays, to go on from.
     store.clear_progress(row.key, strength.name)
-    keep_stats(store, strength.name, reviewed, row)
+    keep_stats(store, strength.name, reviewed, row, held=True)
     return reviewed, summary
 
 
@@ -706,7 +743,7 @@ def rederive(store: Store) -> int:
             store.set_review_summary(key, strength, summarize(reviewed).model_dump_json())
             row = library.find(store, key)
             if counted.get(key) == strength and row is not None:
-                keep_stats(store, strength, reviewed, row)
+                keep_stats(store, strength, reviewed, row, held=True)
         except Exception as exc:  # noqa: BLE001 - a review that cannot be read is left as it is
             log.warning(
                 "the saved review of %s (%s) could not be summed up again: %r", key, strength, exc
@@ -715,6 +752,56 @@ def rederive(store: Store) -> int:
         done += 1
     store.set_setting(DERIVED_KEY, str(DERIVED))
     return done
+
+
+def carried_words(
+    store: Store, key: str, reviewed: ReviewedGame, strength: str
+) -> tuple[dict[int, dict[str, str]], str]:
+    """The AI coach's words paid for on the games this one stands for (a watched game its import
+    stands for, whose record differs from it, so its review was not carried whole), by this
+    review's plies, and the model that wrote them. A word goes to the move played from the same
+    position (the FEN's board, side, castling and en passant: a game joined late counts its
+    moves from another number) with the same move; the n-th time a position and move come in
+    one game, to their n-th time in the other. Words on moves the two games do not share stay
+    with the watched game's own review, where they were saved: nothing is moved or deleted (Tai,
+    2026-10-02). The review at this strength first, then the strongest; a move's first words
+    found stand."""
+    sources = [watched for watched, imported in store.twins().items() if imported == key]
+    if not sources:
+        return {}, ""
+    plies: dict[tuple[str, str], list[int]] = {}
+    for move in reviewed.moves:
+        plies.setdefault((_position(move.fen_before), move.assessment.uci), []).append(move.ply)
+    out: dict[int, dict[str, str]] = {}
+    model = ""
+    for source in sources:
+        reviews = store.reviews_of(source)
+        reviews.sort(key=lambda r: r.strength != strength)  # this strength first, stable
+        for old in reviews:
+            try:
+                words = json.loads(old.words) if old.words else None
+                if not words or words.get("partial") or not words.get("texts"):
+                    continue
+                was = ReviewedGame.model_validate_json(old.report)
+            except ValueError:
+                continue  # a review or words that no longer read give nothing
+            texts = words["texts"]
+            seen: dict[tuple[str, str], int] = {}
+            for move in was.moves:
+                at = (_position(move.fen_before), move.assessment.uci)
+                nth = seen.get(at, 0)
+                seen[at] = nth + 1
+                said = texts.get(str(move.ply))
+                mine = plies.get(at, [])
+                if said and nth < len(mine) and mine[nth] not in out:
+                    out[mine[nth]] = dict(said)
+                    model = model or str(words.get("model") or "")
+    return out, model
+
+
+def _position(fen: str) -> str:
+    """A FEN's position: the board, the side to move, castling and en passant."""
+    return " ".join(fen.split()[:4])
 
 
 def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
@@ -804,7 +891,7 @@ def _carry_one(store: Store, old: ReviewRow, imported: str, row: LibraryRow) -> 
     if old.words:
         store.set_review_words(imported, old.strength, old.words)
     store.clear_progress(imported, old.strength)
-    keep_stats(store, old.strength, reviewed, row)
+    keep_stats(store, old.strength, reviewed, row, held=True)
     return True
 
 
