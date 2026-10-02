@@ -388,21 +388,56 @@ def test_a_still_tick_on_a_verified_lock_reads_nothing(monkeypatch) -> None:
     whole frame grey and validated the lock again, nearly all of a still tick's cost: 10 ms
     at 1440p (round 2 finding 7). A verified lock stands unread; a lock in doubt is still
     checked."""
-    from sidecoach.vision import tracker as tracker_module
+    from sidecoach.vision.board_detect import GrayBuffer
 
     tracker = BoardTracker()
     frame = synthetic_board()
     locked = tracker.update(frame)
     assert locked is not None and tracker.verified
     calls = []
-    real = tracker_module.to_gray
-    monkeypatch.setattr(tracker_module, "to_gray", lambda f: calls.append(1) or real(f))
+    real = GrayBuffer.convert
+    monkeypatch.setattr(GrayBuffer, "convert", lambda s, f: calls.append(1) or real(s, f))
     for _ in range(5):
         assert tracker.update(frame, changed=False) is locked
     assert calls == []
     tracker.misses = 1  # in doubt: read even on a still tick
     tracker.update(frame, changed=False)
     assert calls == [1]
+
+
+def test_a_still_board_is_not_refitted_again_on_the_same_pixels(monkeypatch) -> None:
+    """The periodic re-fit still came every tenth still tick, on pixels a re-fit had already
+    read and left the lock on: 30 ms at 4K each for nothing (round 3). Once a re-fit has run on
+    the last changed frame's pixels and kept the lock, still ticks re-fit no more; a changed
+    frame re-fits on its schedule again, and a re-fit that moved the lock is run again on the
+    still pixels until one keeps it."""
+    from sidecoach.vision import tracker as tracker_module
+
+    tracker = BoardTracker()
+    frame = synthetic_board()
+    locked = tracker.update(frame)
+    assert locked is not None and tracker.verified
+    refits = []
+    real = tracker_module.refine
+    monkeypatch.setattr(tracker_module, "refine", lambda *a, **k: refits.append(1) or real(*a, **k))
+    for _ in range(10):  # changed ticks: one re-fit, on the tenth, keeps the lock
+        tracker.update(frame)
+    assert refits == [1]
+    for _ in range(40):
+        assert tracker.update(frame, changed=False) is not None and tracker.verified
+    assert refits == [1]  # not again on the same pixels
+    for _ in range(10):
+        tracker.update(frame)
+    assert refits == [1, 1]  # changed pixels: the schedule again
+    # A board nudged two cells' worth of pixels at rest: the re-fit moves the lock, and the
+    # still ticks after it re-fit until one keeps it.
+    nudged = synthetic_board(x0=306)
+    tracker.update(nudged)
+    before = len(refits)
+    for _ in range(25):
+        tracker.update(nudged, changed=False)
+    assert tracker.board is not None and abs(tracker.board.region.x - 306) <= 2
+    assert len(refits) - before >= 1
 
 
 def test_a_board_moved_at_its_size_is_relocked_by_the_near_search() -> None:
@@ -474,6 +509,7 @@ def test_a_lock_keeps_its_board_s_pixels_not_the_frame() -> None:
     pixels, placed = tracker._seen
     assert pixels.shape == (board.region.h, board.region.w)
     whole = board_occupancy(to_gray(frame), board.region, board.cell_px)
-    kept = board_occupancy(pixels, placed.region, placed.cell_px)
+    assert pixels.dtype == np.uint8  # the grey levels as bytes: a quarter of the float image
+    kept = board_occupancy(pixels.astype(np.float32), placed.region, placed.cell_px)
     assert whole is not None and kept is not None and whole.any()
     assert np.array_equal(whole, kept)

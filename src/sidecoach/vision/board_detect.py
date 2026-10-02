@@ -32,7 +32,10 @@ cells of evidence, so they lower the scores a little and do not move the result.
 
 from __future__ import annotations
 
+import os
+import weakref
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
@@ -243,14 +246,19 @@ def coarse_search(
     """
     height, width = gray.shape
     limit = max_cell if max_cell is not None else min(height, width) // 8
-    found: list[BoardCandidate] = []
+    sizes: list[float] = []
     size = float(min_cell)
     while size <= limit:
+        sizes.append(size)
+        size *= scale_step
+
+    def at_scale(size: float) -> list[BoardCandidate]:
         # Every caller searches from well above the work cell, so the frame always shrinks.
         factor = work_cell / size
         small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
         cell = work_cell
         score, contrast = _checker_response(small, cell, min_contrast=min_contrast)
+        found: list[BoardCandidate] = []
         if score.size:
             mask = (score >= min_score) & (contrast >= min_contrast)
             full_cell = cell / factor
@@ -260,24 +268,42 @@ def coarse_search(
                 found.append(
                     BoardCandidate(region, full_cell, float(score[y, x]), float(contrast[y, x]))
                 )
-        size *= scale_step
+        return found
+
+    # The scales are searched side by side, each on its own thread (OpenCV and numpy let go
+    # of the interpreter for the frame-sized passes), and their boards gathered in scale
+    # order, as they were one after another: the same boards, in a fraction of the time
+    # (round 3: a full search at 4K was 0.6 s, each scale's shrunk frame 5 ms of it).
+    found = [board for scale in _SCALES.map(at_scale, sizes) for board in scale]
     return _nms(found, "score")
 
 
-def _gradient_profile(gray: np.ndarray, axis: int, weight: np.ndarray) -> np.ndarray:
+# The threads `coarse_search` searches its scales on.
+_SCALES = ThreadPoolExecutor(max_workers=max(1, min(8, (os.cpu_count() or 2) - 1)))
+
+
+def _gradient_profile(gray8: np.ndarray, axis: int, mask: np.ndarray) -> np.ndarray:
     """The summed step across every pixel edge; axis=1 gives a profile along x.
 
     Entry k is the edge between pixels k - 1 and k, where a board whose cells start at pixel
     k has its boundary, so a tooth lands on the boundary itself and not half a pixel to one
     side (entry 0 reads nothing). A step counts only where both its pixels take part
-    (`weight`): the mask leaves out the cells' middles, where the pieces are, and within the
-    board whatever is not the square's own colour.
+    (`mask`, 255 where a pixel does): the mask leaves out the cells' middles, where the
+    pieces are, and within the board whatever is not the square's own colour.
+
+    In whole grey levels (`gray8`, the grey image's own values) and OpenCV's passes: every
+    step and every sum is a whole number, so these are the sums the float passes made, to
+    the last bit, at a sixth of the cost -- the float passes, a temporary image each, were
+    38 ms of a 4K re-fit's 83 (round 3).
     """
     if axis == 1:
-        step = np.abs(np.diff(gray, axis=1)) * (weight[:, 1:] * weight[:, :-1])
-        return np.concatenate([[0.0], step.sum(axis=0)])
-    step = np.abs(np.diff(gray, axis=0)) * (weight[1:] * weight[:-1])
-    return np.concatenate([[0.0], step.sum(axis=1)])
+        step = cv2.absdiff(gray8[:, 1:], gray8[:, :-1])
+        both = cv2.bitwise_and(mask[:, 1:], mask[:, :-1])
+    else:
+        step = cv2.absdiff(gray8[1:], gray8[:-1])
+        both = cv2.bitwise_and(mask[1:], mask[:-1])
+    sums = cv2.reduce(cv2.bitwise_and(step, both), 1 - axis, cv2.REDUCE_SUM, dtype=cv2.CV_32S)
+    return np.concatenate([[0.0], sums.ravel().astype(np.float64)])
 
 
 # The comb's teeth: the seven boundaries between a board's cells, in cells from its edge.
@@ -287,8 +313,7 @@ _TEETH = np.arange(1, 8, dtype=np.float64)
 def _comb_strength(profile: np.ndarray, offset: float, pitch: float) -> float:
     """Summed profile at the teeth of a board whose first cell starts at `offset`; a tooth
     past either end of the profile reads nothing."""
-    xs = np.arange(len(profile), dtype=np.float64)
-    return float(np.interp(offset + pitch * _TEETH, xs, profile, left=0.0, right=0.0).sum())
+    return float(_on_grid(offset + pitch * _TEETH, profile).sum())
 
 
 def _comb_fit(
@@ -319,19 +344,21 @@ def _comb_fit(
     to one on the pieces' edges, and the re-fit settled seven percent short (lock_bench,
     2026-09-27); the fine pass's, a pixel.
     """
-    xs = np.arange(len(profile), dtype=np.float64)
     step = max(0.25, pitch * 0.01)
 
     def best_over(
         seen: np.ndarray, pitches: np.ndarray, offsets: np.ndarray
     ) -> tuple[float, float, float]:
+        # Every pitch at once, one interpolation (the same numbers as a pass a pitch); the
+        # first strongest pitch wins, as it did a pitch at a time.
         best = (start, pitch, 0.0)
-        for p in pitches:
-            positions = offsets[:, None] + p * _TEETH[None, :]
-            strength = np.interp(positions, xs, seen, left=0.0, right=0.0).sum(axis=1)
-            i = int(np.argmax(strength))
-            if strength[i] > best[2]:
-                best = (float(offsets[i]), float(p), float(strength[i]))
+        positions = offsets[None, :, None] + pitches[:, None, None] * _TEETH[None, None, :]
+        strengths = _on_grid(positions, seen).sum(axis=2)
+        at = strengths.argmax(axis=1)
+        for k, p in enumerate(pitches):
+            i = int(at[k])
+            if strengths[k, i] > best[2]:
+                best = (float(offsets[i]), float(p), float(strengths[k, i]))
         return best
 
     reach = pitch * offset_cells
@@ -347,6 +374,21 @@ def _comb_fit(
         np.arange(o - span, o + span + 0.01, 0.25),
     )
     return o - p * round((o - start) / p), p
+
+
+def _on_grid(positions: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """`np.interp(positions, arange(len(values)), values, left=0, right=0)`, computed as it
+    computes it -- the slope times the distance from the pixel below, plus that pixel's value;
+    the last pixel's own value at it; nothing off either end -- without its search for each
+    position's pixel, which a grid of whole pixels does not need: the same numbers, a third
+    of the time (round 3: the comb's interpolation was 11 ms of a 4K re-fit's 36)."""
+    last = len(values) - 1
+    below = np.floor(positions).astype(np.intp)
+    np.clip(below, 0, last - 1, out=below)
+    out = (values[below + 1] - values[below]) * (positions - below) + values[below]
+    out[positions == last] = values[last]
+    out[(positions < 0) | (positions > last)] = 0.0
+    return out
 
 
 def _blurred(profile: np.ndarray, half: int) -> np.ndarray:
@@ -387,9 +429,20 @@ def _ring_indices(
             cx0, cy0, cx1, cy1 = max(0, x0), max(0, y0), min(width, x1), min(height, y1)
             if 2 * (cx1 - cx0) < x1 - x0 or 2 * (cy1 - cy0) < y1 - y0:
                 continue
-            ys, xs = np.mgrid[cy0:cy1, cx0:cx1]
-            on_ring = (ys < y0 + band) | (ys >= y1 - band) | (xs < x0 + band) | (xs >= x1 - band)
-            flat = (ys * width + xs)[on_ring].astype(_RING_INDEX)
+            # The ring's rows of the band whole, and the other rows' band columns: the same
+            # pixels as a mask over the whole cell, in another order a median does not see,
+            # without the cell's every pixel twice over (a 4K re-fit's new geometry built
+            # its rings in 73 ms that way: round 3).
+            ys = np.arange(cy0, cy1, dtype=_RING_INDEX)
+            xs = np.arange(cx0, cx1, dtype=_RING_INDEX)
+            band_rows = (ys < y0 + band) | (ys >= y1 - band)
+            band_cols = (xs < x0 + band) | (xs >= x1 - band)
+            flat = np.concatenate(
+                [
+                    (ys[band_rows, None] * width + xs[None, :]).ravel(),
+                    (ys[~band_rows, None] * width + xs[None, band_cols]).ravel(),
+                ]
+            )
             cells, rows = groups.setdefault(flat.size, ([], []))
             cells.append(r * side + c)
             rows.append(flat)
@@ -399,22 +452,55 @@ def _ring_indices(
 # The ring indices' type. numpy indexes with intp and casts int32 indices to it on every
 # read: a lock's two reads a tick took 1 ms longer at 1440p and 2 ms at 4K (round 3).
 _RING_INDEX = np.intp
-# The rings by geometry, the least recently read dropped past RING_CACHE_KEYS. What a lock
-# reads again comes within eight other geometries read (99.3% of its re-reads in the
-# geometry sweep, seeds 1-20; a still lock reads four in all, its own two and a re-fit's
-# two), so its rings stay; a detection's forty geometries, read once, pass through. A
-# 24 MB budget held three of a 4K board's and every re-fit dropped the lock's own and
-# built them again, 35-43 ms each, and the old bound of 64 geometries held 445 MB at
-# 1440p and 991 MB at 4K of a board dragged larger for 30 frames (round 3, finding 10).
-RING_CACHE_KEYS = 8
+# The rings by geometry, the least recently read dropped past RING_CACHE_KEYS: latency
+# first, memory second (Tai, 2026-10-02). Over the geometry sweep's seeds 1-20, 64 keeps
+# every geometry a search reads again (8 kept 187 of 274) and all but one of 5009 a lock
+# does (8: 99.3%); a still lock reads four in all. At most 64 geometries: 445 MB at 1440p
+# and 991 MB at 4K once a board has been dragged larger for 30 frames, a few MB a geometry
+# otherwise. A 24 MB budget held three of a 4K board's, and every re-fit built the lock's
+# own again, 35-43 ms each (round 3, finding 10).
+RING_CACHE_KEYS = 64
 _RING_CACHE: OrderedDict[
     tuple[tuple[int, ...], Region, float, int], list[tuple[list[int], np.ndarray]]
 ] = OrderedDict()
 
 
+# The medians read from the last grey image, by geometry, with the most rings read there: a
+# tick reads one geometry several times -- the lock's fit, its readable cells, its square
+# colours, a re-fit's cells and its phases -- and each read was the whole median pass again,
+# 6 ms at 4K (round 3). A geometry read with more rings around it holds the fewer. Kept for one
+# image (by a weak reference, so an image let go is not held); `forget_medians` when an image
+# is written over in place.
+_Memo = tuple["weakref.ref[np.ndarray]", dict[tuple[Region, float], tuple[int, np.ndarray]]]
+_MEDIANS: _Memo | None = None
+
+
+def forget_medians(gray: np.ndarray) -> None:
+    """The medians read from `gray` are of pixels no longer there: it was written over."""
+    global _MEDIANS
+    memo = _MEDIANS
+    if memo is not None and memo[0]() is gray:
+        _MEDIANS = None
+
+
 def _cells(gray: np.ndarray, region: Region, cell: float, pad: int = 1) -> np.ndarray:
     """The border-ring medians of a board's cells and of `pad` rings of cells around it, an
     (8 + 2 pad)-square grid; NaN where the frame shows less than half a cell."""
+    global _MEDIANS
+    memo = _MEDIANS
+    if memo is None or memo[0]() is not gray:
+        memo = _MEDIANS = (weakref.ref(gray), {})
+    held = memo[1].get((region, cell))
+    if held is not None and held[0] >= pad:
+        skip = held[0] - pad
+        side = 8 + 2 * pad
+        return held[1][skip : skip + side, skip : skip + side].copy()
+    medians = _read_cells(gray, region, cell, pad)
+    memo[1][(region, cell)] = (pad, medians)
+    return medians.copy()
+
+
+def _read_cells(gray: np.ndarray, region: Region, cell: float, pad: int) -> np.ndarray:
     key = (gray.shape, region, cell, pad)
     groups = _RING_CACHE.get(key)
     if groups is None:
@@ -425,10 +511,24 @@ def _cells(gray: np.ndarray, region: Region, cell: float, pad: int = 1) -> np.nd
         _RING_CACHE.move_to_end(key)
     side = 8 + 2 * pad
     medians = np.full(side * side, np.nan)
-    flat = gray.reshape(-1)
+    # Read from the image's bytes when it has them (`GrayBuffer`): the same whole levels and
+    # so the same medians, from a quarter of the memory -- the float read was 45% slower.
+    twin = _bytes_of(gray)
+    flat = (gray if twin is None else twin).reshape(-1)
     for cells, indices in groups:
         medians[cells] = np.median(flat[indices], axis=1)
     return medians.reshape(side, side)
+
+
+# The bytes of the grey images `GrayBuffer` keeps, by the image's id (checked by a weak
+# reference): the image's own whole levels as uint8.
+_BYTES: dict[int, tuple[weakref.ref[np.ndarray], np.ndarray]] = {}
+
+
+def _bytes_of(gray: np.ndarray) -> np.ndarray | None:
+    """The uint8 twin of a grey image `GrayBuffer` keeps, or None."""
+    twin = _BYTES.get(id(gray))
+    return twin[1] if twin is not None and twin[0]() is gray else None
 
 
 # A board is read only when the frame shows it, to within this many pixels a side: a board
@@ -643,15 +743,15 @@ def board_occupancy(gray: np.ndarray, region: Region, cell: float) -> np.ndarray
 
 
 def _boundary_weight(
-    crop: np.ndarray,
+    crop8: np.ndarray,
     origin: tuple[int, int],
     board: BoardCandidate,
     medians: np.ndarray,
     colours: Colours | None,
     band: int,
 ) -> np.ndarray:
-    """Which pixels of `crop` (whose top-left is `origin` in the frame) take part in the
-    boundary fit around `board`, as a weight of 0 or 1.
+    """Which pixels of `crop8` (whose top-left is `origin` in the frame, in whole grey
+    levels) take part in the boundary fit around `board`, as a mask of 0 or 255.
 
     Only the strips around the cell boundaries take part, and in them only the pixels of
     the square's own colour. Pieces sit in the middle of their squares and their outlines
@@ -679,43 +779,65 @@ def _boundary_weight(
     pieces' edges do not, and that pass finds the boundaries near enough for the next to lay
     the mask.
     """
+    # Whole grey levels against the colours' bounds: a level is within a tolerance of a
+    # colour when it lies between the bounds rounded inward, which OpenCV's inRange reads in
+    # one pass a cell (round 3: the float comparisons, a temporary image each, were 17 ms of a
+    # 4K re-fit).
     x_lo, y_lo = origin
     region, cell = board.region, board.cell_px
-    weight = np.ones(crop.shape, dtype=np.float32)
+    height, width = crop8.shape
+    mask = np.full(crop8.shape, 255, dtype=np.uint8)
     if colours is None:
-        return weight
+        return mask
     readable = readable_against(medians, colours)
     if readable.sum() < MIN_READABLE_CELLS:
-        return weight
+        return mask
     light, dark, tolerance = colours
-    own = np.zeros(crop.shape, dtype=bool)
-    for r in range(8):
-        for c in range(8):
-            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
-            x0, y0 = max(0, x0 - x_lo), max(0, y0 - y_lo)
-            x1, y1 = min(crop.shape[1], x1 - x_lo), min(crop.shape[0], y1 - y_lo)
-            if x1 > x0 and y1 > y0:
-                own[y0:y1, x0:x1] = np.abs(crop[y0:y1, x0:x1] - medians[r, c]) <= tolerance
-    in_range = (crop >= min(light, dark) - tolerance) & (crop <= max(light, dark) + tolerance)
-    lines = np.zeros(crop.shape, dtype=bool)
-    for k in range(1, 8):
-        gx = int(round(region.x - x_lo + k * cell))
-        gy = int(round(region.y - y_lo + k * cell))
-        lines[:, max(0, gx - band) : gx + band + 1] = True
-        lines[max(0, gy - band) : gy + band + 1, :] = True
     x0, y0 = max(0, region.x - x_lo), max(0, region.y - y_lo)
-    x1 = min(crop.shape[1], region.x - x_lo + int(round(8 * cell)))
-    y1 = min(crop.shape[0], region.y - y_lo + int(round(8 * cell)))
-    weight[y0:y1, x0:x1] = (own | (in_range & lines))[y0:y1, x0:x1]
+    x1 = min(width, region.x - x_lo + int(round(8 * cell)))
+    y1 = min(height, region.y - y_lo + int(round(8 * cell)))
+    if x1 > x0 and y1 > y0:
+        board8 = crop8[y0:y1, x0:x1]
+        own = np.zeros(board8.shape, dtype=np.uint8)
+        for r in range(8):
+            for c in range(8):
+                median = float(medians[r, c])
+                if np.isnan(median):
+                    continue
+                cx0, cy0, cx1, cy1 = cell_bounds(region, cell, r, c)
+                cx0, cy0 = max(0, cx0 - x_lo) - x0, max(0, cy0 - y_lo) - y0
+                cx1 = min(width, cx1 - x_lo) - x0
+                cy1 = min(height, cy1 - y_lo) - y0
+                cx0, cy0, cx1, cy1 = max(0, cx0), max(0, cy0), min(x1 - x0, cx1), min(y1 - y0, cy1)
+                if cx1 > cx0 and cy1 > cy0:
+                    own[cy0:cy1, cx0:cx1] = _between(
+                        board8[cy0:cy1, cx0:cx1], median - tolerance, median + tolerance
+                    )
+        lines = np.zeros(board8.shape, dtype=np.uint8)
+        for k in range(1, 8):
+            gx = int(round(region.x - x_lo + k * cell)) - x0
+            gy = int(round(region.y - y_lo + k * cell)) - y0
+            lines[:, max(0, gx - band) : max(0, gx + band + 1)] = 255
+            lines[max(0, gy - band) : max(0, gy + band + 1), :] = 255
+        in_range = _between(board8, min(light, dark) - tolerance, max(light, dark) + tolerance)
+        mask[y0:y1, x0:x1] = cv2.bitwise_or(own, cv2.bitwise_and(in_range, lines))
     for r in range(8):
         for c in range(8):
             inset = int(round(cell * (0.2 if readable[r, c] else 0.08)))
-            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
-            x0, y0 = x0 - x_lo + inset, y0 - y_lo + inset
-            x1, y1 = x1 - x_lo - inset, y1 - y_lo - inset
-            if x1 > x0 and y1 > y0:
-                weight[max(0, y0) : y1, max(0, x0) : x1] = 0.0
-    return weight
+            ix0, iy0, ix1, iy1 = cell_bounds(region, cell, r, c)
+            ix0, iy0 = ix0 - x_lo + inset, iy0 - y_lo + inset
+            ix1, iy1 = ix1 - x_lo - inset, iy1 - y_lo - inset
+            if ix1 > ix0 and iy1 > iy0:
+                mask[max(0, iy0) : iy1, max(0, ix0) : ix1] = 0
+    return mask
+
+
+def _between(levels: np.ndarray, low: float, high: float) -> np.ndarray:
+    """255 where a whole grey level lies within [low, high], else 0."""
+    lo, hi = int(np.ceil(low)), int(np.floor(high))
+    if hi < lo or hi < 0 or lo > 255:
+        return np.zeros(levels.shape, dtype=np.uint8)
+    return cv2.inRange(levels, max(0, lo), min(255, hi))
 
 
 # The placements a cell apart that `refine` weighs, the comb's own first so a tie keeps it.
@@ -760,6 +882,9 @@ def refine(
     crop = gray[y_lo:y_hi, x_lo:x_hi]
     if crop.size == 0:
         return Refinement(cand, 0.0, 0.0)
+    # The grey image holds whole levels (`to_gray`): the boundary fit runs on them as bytes.
+    twin = _bytes_of(gray)
+    crop8 = crop.astype(np.uint8) if twin is None else twin[y_lo:y_hi, x_lo:x_hi]
     fitted = cand
     origin = (float(cand.region.x), float(cand.region.y))
     profile_x = profile_y = np.zeros(0)
@@ -771,9 +896,9 @@ def refine(
         # the window; the passes after it know to a few pixels.
         band = 3 if attempt else int(round(cell * offset_cells)) + 3
         read = colours or palette(medians)
-        weight = _boundary_weight(crop, (x_lo, y_lo), fitted, medians, read, band)
-        profile_x = _gradient_profile(crop, 1, weight)
-        profile_y = _gradient_profile(crop, 0, weight)
+        mask = _boundary_weight(crop8, (x_lo, y_lo), fitted, medians, read, band)
+        profile_x = _gradient_profile(crop8, 1, mask)
+        profile_y = _gradient_profile(crop8, 0, mask)
         ox, px = _comb_fit(profile_x, fitted.region.x - x_lo, cell, offset_cells)
         oy, py = _comb_fit(profile_y, fitted.region.y - y_lo, cell, offset_cells)
         pitch = (px + py) / 2.0
@@ -829,6 +954,41 @@ def refine(
 
 def to_gray(frame_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+
+class GrayBuffer:
+    """`to_gray` into images kept from one frame to the next: the same grey values, without
+    allocating a whole frame twice a tick -- at 4K a new image cost 6 ms, written over one
+    kept 2 (round 3). Each frame overwrites the last, so the medians read from it are forgotten
+    (`forget_medians`), and what must outlive the tick is copied out of it."""
+
+    def __init__(self) -> None:
+        self._grey: np.ndarray | None = None
+        self._image: np.ndarray | None = None
+
+    @property
+    def image(self) -> np.ndarray | None:
+        """The last frame converted, or None."""
+        return self._image
+
+    @property
+    def bytes(self) -> np.ndarray | None:
+        """The last frame converted, as its uint8 grey levels, or None."""
+        return self._grey
+
+    def convert(self, frame_bgr: np.ndarray) -> np.ndarray:
+        shape = frame_bgr.shape[:2]
+        if self._image is None or self._image.shape != shape or self._grey is None:
+            self._grey = np.empty(shape, dtype=np.uint8)
+            self._image = np.empty(shape, dtype=np.float32)
+            for key, (image, _bytes) in list(_BYTES.items()):
+                if image() is None:
+                    del _BYTES[key]
+            _BYTES[id(self._image)] = (weakref.ref(self._image), self._grey)
+        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._grey)
+        np.copyto(self._image, self._grey)
+        forget_medians(self._image)
+        return self._image
 
 
 def detect_boards(

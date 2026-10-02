@@ -144,8 +144,10 @@ def _reads_landed(readings: Readings, position: chess.Board, bottom: Side) -> bo
 
 def _on_its_board(frame: np.ndarray, board: BoardCandidate, tracker: BoardTracker) -> bool:
     """Whether a re-fit of the lock finds the board where the lock is, to within the
-    tracker's deadband, with the fit the tracker asks of a lock."""
-    refit = refine(to_gray(frame), board).board
+    tracker's deadband, with the fit the tracker asks of a lock. Read from the tracker's own
+    grey image of the frame, as the phone does (`lastGray`), not converted again."""
+    gray = tracker.gray
+    refit = refine(to_gray(frame) if gray is None else gray, board).board
     shift = max(
         abs(refit.region.x - board.region.x),
         abs(refit.region.y - board.region.y),

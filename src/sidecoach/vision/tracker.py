@@ -25,13 +25,13 @@ from sidecoach.vision.board_detect import (
     MIN_CELL_PX,
     BoardCandidate,
     Colours,
+    GrayBuffer,
     board_occupancy,
     detect_boards_gray,
     fit_score,
     readable_cells,
     refine,
     square_colours,
-    to_gray,
 )
 
 
@@ -134,6 +134,17 @@ class BoardTracker:
         # lost: of the boards found then, the one whose pieces are nearest those is taken.
         self._seen: tuple[np.ndarray, BoardCandidate] | None = None
         self._lost: np.ndarray | None = None
+        # The grey image of the last frame read, written over by the next (`GrayBuffer`).
+        self._gray = GrayBuffer()
+        # Whether a re-fit ran on the pixels of the last changed frame and left the lock
+        # where it is: a still tick then needs none.
+        self._refit_settled = False
+
+    @property
+    def gray(self) -> np.ndarray | None:
+        """The grey image of the last frame the tracker read -- on a still tick, the pixels
+        that are still there -- until the next frame is read; None before the first."""
+        return self._gray.image
 
     @property
     def locked(self) -> bool:
@@ -155,12 +166,19 @@ class BoardTracker:
         finding 7) -- but for the periodic re-fit, which still comes every `refine_every`
         ticks: a board that slid a few pixels as it came to rest validates where the lock
         is, and only the re-fit finds it (skipped on still ticks, the lock stayed off for
-        good: the gated geometry sweep, seeds 15, 17, 35 and more)."""
-        if not changed and self.verified and self._frames_since_refine + 1 < self.refine_every:
+        good: the gated geometry sweep, seeds 15, 17, 35 and more). A re-fit that already ran
+        on these pixels and left the lock where it was would do so again: it is not run again
+        until they change (round 3: a still 4K board re-fitted every tenth tick for nothing,
+        30 ms each)."""
+        if not changed and self.verified:
             assert self.board is not None
-            self._frames_since_refine += 1
-            return self.board
-        gray = to_gray(frame_bgr)
+            due = self._frames_since_refine + 1 >= self.refine_every
+            if not due or self._refit_settled:
+                self._frames_since_refine = 0 if due else self._frames_since_refine + 1
+                return self.board
+        if changed:
+            self._refit_settled = False
+        gray = self._gray.convert(frame_bgr)
         if self.board is None:
             # Without a board on screen, searching every frame would stall capture. The
             # search near the last cell size is cheap and runs every few frames, so a
@@ -181,7 +199,8 @@ class BoardTracker:
             self.board = None
             self.colours = None
             if self._seen is not None:
-                seen_gray, seen = self._seen
+                seen_levels, seen = self._seen
+                seen_gray = seen_levels.astype(np.float32)  # the grey image's own values
                 self._lost = board_occupancy(seen_gray, seen.region, seen.cell_px)
                 self._seen = None
             return self._search(gray, frame_bgr, True)
@@ -202,12 +221,15 @@ class BoardTracker:
         return self.board
 
     def _keep_seen(self, gray: np.ndarray, board: BoardCandidate) -> None:
-        """The board's region of this frame, copied, with the board placed in it."""
+        """The board's region of this frame, copied as whole grey levels (a quarter of the
+        float image's bytes, the same values), with the board placed in it."""
         x0, y0 = max(0, board.region.x), max(0, board.region.y)
         x1 = min(gray.shape[1], board.region.x + board.region.w)
         y1 = min(gray.shape[0], board.region.y + board.region.h)
         region = board.region._replace(x=board.region.x - x0, y=board.region.y - y0)
-        self._seen = (gray[y0:y1, x0:x1].copy(), replace(board, region=region))
+        levels = self._gray.bytes if self._gray.image is gray else None
+        source = gray if levels is None else levels
+        self._seen = (source[y0:y1, x0:x1].astype(np.uint8), replace(board, region=region))
 
     def _check(self, gray: np.ndarray) -> tuple[BoardCandidate, float, float]:
         """The lock on this frame: its geometry, fit and contrast. Re-fitted when due, and
@@ -236,10 +258,13 @@ class BoardTracker:
             # never costs the lock; the region and the fit it measured itself stand.
             refined = refit.board
             moved = _edge_shift(candidate.region, refined.region) > self.refit_deadband_px
-            if self._passes(refined.fit, refined.contrast) and (
+            adopted = self._passes(refined.fit, refined.contrast) and (
                 not self._passes(fit, contrast)
                 or (moved and refit.strength > self.refit_gain * refit.reference)
-            ):
+            )
+            # On these pixels, at this lock, a re-fit changes nothing: until they change.
+            self._refit_settled = not adopted and self._passes(fit, contrast)
+            if adopted:
                 if moved:
                     # The board is moving: it is re-fitted the next frame too, until a
                     # re-fit finds it where the lock is. Fitted once mid-slide and left, the
@@ -292,6 +317,7 @@ class BoardTracker:
         """A lock taken (or none): what it reads is its measure, and the probe starts fresh."""
         self.misses = 0
         self._frames_since_refine = 0
+        self._refit_settled = False
         self.board = board
         self.colours = colours
         if board is not None:
