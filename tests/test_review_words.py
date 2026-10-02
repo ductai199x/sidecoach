@@ -305,6 +305,11 @@ def test_the_better_move_waits_for_the_answer() -> None:
     assert review_words.names_the_answer("Bc4 was the move.", game, 3), "side unknown: kept back"
     assert not review_words.names_the_answer("Developing the bishop first was better.", game, 3)
     assert not review_words.names_the_answer("Nc6 defends e5.", game, 4), "a great move is named"
+    # In words too: "the knight to e4" gave the answer before it was asked for (the review of
+    # 2026-10-01).
+    assert review_words.names_the_answer("Bringing the bishop out to c4 was better.", game, 3)
+    assert review_words.names_the_answer("The Bishop to c4 first.", game, 3)
+    assert not review_words.names_the_answer("The bishop belonged on the long diagonal.", game, 3)
 
 
 def test_a_lesson_is_general_advice() -> None:

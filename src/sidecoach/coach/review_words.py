@@ -590,8 +590,21 @@ def names_the_answer(text: str, game: ReviewedGame, ply: int, user: str | None =
     if label not in BAD or not move.assessment.best or theirs:
         return False
     board = chess.Board(move.fen_before)
-    best = board.san(chess.Move.from_uci(move.assessment.best[0])).rstrip("+#")
-    return re.search(rf"(?<![\w]){re.escape(best)}(?![\w])", text) is not None
+    answer = chess.Move.from_uci(move.assessment.best[0])
+    best = board.san(answer).rstrip("+#")
+    if re.search(rf"(?<![\w]){re.escape(best)}(?![\w])", text) is not None:
+        return True
+    # In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
+    # castling. Notation alone was caught, and "the knight to e4" showed the answer before it
+    # was asked for (the review of 2026-10-01).
+    if board.is_castling(answer):
+        return re.search(r"\bcastl(?:e|es|ed|ing)\b", text, re.I) is not None
+    piece = board.piece_type_at(answer.from_square)
+    name = chess.piece_name(piece) if piece is not None else "piece"
+    square = chess.square_name(answer.to_square)
+    verbs = r"(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
+    found = rf"\b{name}s?\b(?:\s+\w+){{0,2}}\s+{verbs}\s+{square}\b"
+    return re.search(found, text, re.I) is not None
 
 
 def problems(part: str, paragraph: str, game: ReviewedGame, ply: int) -> str:
