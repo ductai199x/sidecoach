@@ -489,7 +489,10 @@ class PanelEngine:
                 self._warm_engines()
                 if assessing.on:
                     self._stage("engine", "done", assessing.detail)
-                self._warm_model()
+                # In the background: a local model's first load took up to a minute, and
+                # the splash waited on it (setup finding 18). The coach is ready to be
+                # asked; its first answer waits for the model, as without a warm-up.
+                threading.Thread(target=self._warm_model, name="warm-model", daemon=True).start()
                 if coaching.on:
                     self._stage("coach", "done", coaching.detail)
                 self._stage("ready", "done")

@@ -705,3 +705,37 @@ def test_a_game_ended_by_the_next_one_is_not_offered_to_end_game(
     kept = GameEnded(game_id="k", result="*", reason="abandoned", pgn=None, final_fen=None)
     engine._dispatch_game(kept, Glue(), chess, followed="k")
     assert engine.poll(0)["lines"][-1]["text"].endswith("End game… can set it")
+
+
+def test_the_splash_never_waits_for_the_local_model(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup finding 18: the warm-up's one request to a local model server waited for the
+    model's first load (up to a minute), and the splash with it. It runs on its own now."""
+    import threading
+    import time
+
+    import sidecoach.vision.pieces as pieces
+
+    engine = make_panel(record=False)
+    released = threading.Event()
+    asked = threading.Event()
+
+    def slow_model() -> None:
+        asked.set()
+        released.wait(10)
+
+    monkeypatch.setattr(pieces, "embedder", lambda: None)
+    monkeypatch.setattr(engine, "_warm_voice", lambda: None)
+    monkeypatch.setattr(engine, "_warm_pipeline", lambda: None)
+    monkeypatch.setattr(engine, "_warm_engines", lambda: None)
+    monkeypatch.setattr(engine, "_warm_model", slow_model)
+    begun = time.monotonic()
+    try:
+        engine.warm(background=False)
+        assert time.monotonic() - begun < 5.0
+        assert engine.warm_status()["done"] is True
+        assert asked.wait(5), "the model is still warmed, in the background"
+    finally:
+        released.set()
+        engine.close()
