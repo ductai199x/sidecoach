@@ -16,7 +16,9 @@ orientation is read from (`coordinates=True`), clocks, and dialogs (test_occlusi
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import os
+from collections import OrderedDict
+from collections.abc import Callable, Hashable, Iterator
 from dataclasses import dataclass
 
 import chess
@@ -872,7 +874,50 @@ def blend_outline(
     blend_rect(frame, c - thickness, b + thickness, c, d - thickness, colour, alpha)
 
 
+class Kept:
+    """The last `size` frames a renderer drew, by the arguments that drew them: the
+    renderers here are pure (every random number comes from the `seed` argument), so the
+    same arguments are the same pixels, and a frame asked for again is copied, not drawn
+    again. Measured 2026-10-02: 57% of the suite's 4,840 boards and 98% of its 5,034
+    backgrounds were drawn before, in the same process, mostly a test or two earlier (a
+    frame shown for several ticks; a start position at every learning). Each caller gets
+    its own copy to draw on; the kept one is read-only. `SIDECOACH_TEST_CACHE=0` (read at
+    import, or `Kept.enabled` set by a test) draws every frame afresh."""
+
+    enabled = os.environ.get("SIDECOACH_TEST_CACHE", "1") != "0"
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self.frames: OrderedDict[Hashable, np.ndarray] = OrderedDict()
+        self.hits = self.misses = 0
+
+    def get(self, key: Hashable | None, draw: Callable[[], np.ndarray]) -> np.ndarray:
+        if key is None or not Kept.enabled:
+            return draw()
+        kept = self.frames.get(key)
+        if kept is None:
+            self.misses += 1
+            kept = draw()
+            kept.flags.writeable = False
+            self.frames[key] = kept
+            while len(self.frames) > self.size:
+                self.frames.popitem(last=False)
+        else:
+            self.hits += 1
+            self.frames.move_to_end(key)
+        return kept.copy()
+
+
+_BACKGROUNDS = Kept(8)
+_BOARDS = Kept(16)
+
+
 def busy_background(width: int, height: int, seed: int) -> np.ndarray:
+    """A desktop's clutter: coarse colour noise and thirty rectangles, from `seed`."""
+    return _BACKGROUNDS.get((width, height, seed), lambda: _draw_background(width, height, seed))
+
+
+def _draw_background(width: int, height: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     coarse = rng.integers(40, 220, (height // 40 + 1, width // 40 + 1, 3), dtype=np.uint8)
     frame = cv2.resize(coarse, (width, height), interpolation=cv2.INTER_CUBIC)
@@ -924,40 +969,47 @@ def synthetic_board(
     theme_light, theme_dark = THEMES[theme]
     light = theme_light if light is None else light
     dark = theme_dark if dark is None else dark
-    frame = busy_background(width, height, seed)
     position = board if board is not None else (chess.Board() if pieces else chess.Board(None))
-    render_board(
-        frame,
-        x0,
-        y0,
-        cell,
-        position,
-        bottom,
-        light=light,
-        dark=dark,
-        highlight=highlight,
-        red_marks=red_marks,
-        dragging=dragging,
-        premoves=premoves,
-        arrows=arrows,
-        badge=badge,
-        coordinates=coordinates,
-        style=PIECE_STYLES[style],
-        highlight_colour=HIGHLIGHTS[highlight_colour],
-        arrow_colour=ARROWS[arrow_colour],
-        arrow_width=arrow_width,
-        texture=theme in TEXTURED,
-        seed=seed,
-        selected=selected,
-        check=check,
-        animating=animating,
-        result=result,
-        labels=labels,
-        dialog=dialog,
-        badges=badges,
-        drag_outline=drag_outline,
-    )
-    return frame
+    # Everything the pixels depend on, as drawn: the position by its FEN (the pieces, and
+    # the side to move and the rights a check glow or the hint dots read), the colours and
+    # the set as looked up now.
+    drawn = {
+        "light": light,
+        "dark": dark,
+        "highlight": highlight,
+        "red_marks": red_marks,
+        "dragging": dragging,
+        "premoves": premoves,
+        "arrows": arrows,
+        "badge": badge,
+        "coordinates": coordinates,
+        "style": PIECE_STYLES[style],
+        "highlight_colour": HIGHLIGHTS[highlight_colour],
+        "arrow_colour": ARROWS[arrow_colour],
+        "arrow_width": arrow_width,
+        "texture": theme in TEXTURED,
+        "seed": seed,
+        "selected": selected,
+        "check": check,
+        "animating": animating,
+        "result": result,
+        "labels": labels,
+        "dialog": dialog,
+        "badges": badges,
+        "drag_outline": drag_outline,
+    }
+
+    def draw() -> np.ndarray:
+        frame = busy_background(width, height, seed)
+        render_board(frame, x0, y0, cell, position, bottom, **drawn)  # type: ignore[arg-type]
+        return frame
+
+    key: Hashable | None = (width, height, x0, y0, cell, position.fen(), bottom, *drawn.items())
+    try:
+        hash(key)
+    except TypeError:  # a list where a tuple was meant: drawn, not kept
+        key = None
+    return _BOARDS.get(key, draw)
 
 
 def with_overlays(frame: np.ndarray, x0: int, y0: int, cell: int) -> np.ndarray:

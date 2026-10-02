@@ -13,6 +13,8 @@ wheels/
 data/
 tools/stockfish/
 tools/eval/.cache/
+# The suite's kept outputs of the embedding net (tests/netcache.py).
+tests/.cache/
 sidecoach.toml
 .env
 *.log
