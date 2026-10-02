@@ -60,6 +60,8 @@ before a resync. Reading more slowly stretches all of them.
 
 ## Building and testing
 
+How to write a test (the budget, logic never timing, where a test goes): `docs/testing.md`.
+
 The SDK is the one Android Studio installs (`%LOCALAPPDATA%\Android\Sdk`); `local.properties`
 points at it and is not committed. JDK 17.
 
