@@ -139,7 +139,7 @@ class PanelEngineTest {
             .getJSONArray("runs").let { runs -> (0 until runs.length()).map { runs.getJSONObject(it) } }
             .first { it.getString("name") == "repetition-green" }
         val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
-        CellEmbedder.load(app).use { net ->
+        CellEmbedder.load(app, threads = TestNets.THREADS).use { net ->
             val watcher = GameWatcher(app, null, net, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
             val frames = run.getJSONArray("frames")
             val bitmaps = HashMap<String, android.graphics.Bitmap>()
@@ -334,7 +334,11 @@ class PanelEngineTest {
     fun aDumpWritesTheFramesAndTheLog() {
         assertTrue(OpenCVLoader.initLocal())
         val frame = Mat(80, 100, CvType.CV_8UC3, Scalar(40.0, 120.0, 200.0))
-        PanelEngine.frames.push(12.3456, frame)
+        // The ring filled with this test's own frames, each its own time: the ring is the app's,
+        // and the frames other tests' replays left in it share their fixtures' times -- two
+        // frames of one time are one file, and the count told nothing of the dump (main's
+        // repetition test, 2026-10-02: 32 held, 22 files). The ring keeps its last 150.
+        repeat(150) { i -> PanelEngine.frames.push(12.3456 + i, frame) }
         frame.release()
         val root = File(app.cacheDir, "dump-test").apply { deleteRecursively() }
         val held = PanelEngine.frames.size
