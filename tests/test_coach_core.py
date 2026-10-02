@@ -415,10 +415,13 @@ def _requests(coach: Coach, *triggers: Trigger) -> list:
     ]
 
 
-def test_a_question_overtakes_a_remark_but_not_the_lesson_or_the_review() -> None:
+def test_a_question_drops_nothing_queued() -> None:
     """Any question deleted the queued lessons and the review (the noise budget was charged
-    for a lesson never said). A remark or a nudge is stale; a lesson and the review wait for
-    the answer, and go after it."""
+    for a lesson never said), and then the remark and the nudge still: never seen (Tai,
+    2026-10-02: "no need to drop any replies, the text message should come out in the same
+    correct order"). The hint said unasked keeps its place ahead of the answer -- said first,
+    counted by the ladder, and after the answer it would be a lower rung after a higher; the
+    remark, the lesson and the review wait for the answer and go after it, in their order."""
     from sidecoach.coach.coach import Speaker
     from sidecoach.llm.offline import OfflineProvider
 
@@ -435,12 +438,14 @@ def test_a_question_overtakes_a_remark_but_not_the_lesson_or_the_review() -> Non
         Trigger.USER_ASK,
     ):
         speaker.submit(request)
-    assert speaker.dropped == 2 and speaker.pending == 3
+    assert speaker.pending == 5
     speaker.run_pending()
     assert [s.message.trigger for s in speaker.poll()] == [
+        Trigger.STUCK,
         Trigger.USER_ASK,
         Trigger.POST_MISTAKE,
         Trigger.REVIEW,
+        Trigger.POST_MOVE,
     ]
 
 

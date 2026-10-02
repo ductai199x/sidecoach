@@ -1623,8 +1623,11 @@ def _retry_wait(exc: Exception, provider: object, elapsed: float) -> float | Non
     return RATE_BACKOFF_S
 
 
-# What a player's question makes stale while it waits unstarted: a word on a move, a nudge.
-_STALE_BY_AN_ASK = frozenset({Trigger.POST_MOVE, Trigger.STUCK, Trigger.DECISIVE_QUESTION})
+# The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
+# The hint was said first -- the ladder and the policy count it already -- and the answer, at the
+# next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a higher
+# (Tai, 2026-09-29: "if the level higher was said then the lower one can't be said").
+_UNASKED_HINTS = frozenset({Trigger.STUCK, Trigger.DECISIVE_QUESTION})
 
 
 class Speaker:
@@ -1663,7 +1666,6 @@ class Speaker:
         self.verifier = verifier
         self.failures = 0
         self.fallbacks = 0
-        self.dropped = 0  # unprompted requests an ask overtook before they started
         self.last_error: str | None = None
         self._requests: queue.Queue[_Request | Spoken | None] = queue.Queue()
         self._results: queue.SimpleQueue[Spoken] = queue.SimpleQueue()
@@ -1749,12 +1751,13 @@ class Speaker:
                 getattr(p, "close", lambda: None)()
 
     def submit(self, request: _Request) -> None:
-        """Queue a request. An ask goes ahead of any unprompted request still waiting: the
-        player is waiting for this one, and a post-move remark or a nudge that has not
-        started yet would only be stale by the time the answer came out. A lesson on a
-        mistake and the review are no remark: the player's question does not make them stale,
-        and dropped, the rule they were charged against and the question they were to end
-        with (`Coach._elicit_due`) went unsaid -- they wait for the answer instead."""
+        """Queue a request. An ask goes ahead of a word on a move, a lesson and the review still
+        waiting: the player is waiting for this one, and they wait for the answer and go after
+        it. Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message
+        should come out in the same correct order"): a remark dropped here was never seen, and
+        a lesson dropped took the rule it was charged against and the question it was to end
+        with (`Coach._elicit_due`) with it. A hint said unasked keeps its place ahead of the
+        ask (`_UNASKED_HINTS`)."""
         if request.trigger is not Trigger.USER_ASK:
             self._requests.put(request)
             return
@@ -1764,13 +1767,15 @@ class Speaker:
                 waiting.append(self._requests.get_nowait())
             except queue.Empty:
                 break
-        ahead: list[_Request | Spoken | None] = []  # said already, and the asks before this
+        ahead: list[_Request | Spoken | None] = []  # said already, the asks before, the hints
         behind: list[_Request | Spoken | None] = []
         for item in waiting:
-            if not isinstance(item, _Request) or item.trigger is Trigger.USER_ASK:
+            if (
+                not isinstance(item, _Request)
+                or item.trigger is Trigger.USER_ASK
+                or item.trigger in _UNASKED_HINTS
+            ):
                 ahead.append(item)
-            elif item.trigger in _STALE_BY_AN_ASK:
-                self.dropped += 1
             else:
                 behind.append(item)
         for item in [*ahead, request, *behind]:
@@ -2794,10 +2799,14 @@ class Coach:
         elif isinstance(event, ClockObservation):
             self._on_clock(event, ts)
         elif isinstance(event, Takeback):
-            self._held_lesson = None  # the move it was on is gone
+            # A lesson held for its analysis is said now, in the moment it was about, before
+            # the takeback starts another: shown in its place, not spoken, no turn of the moment
+            # after (`poll`). Dropped, the lesson on a mistake taken back at once was never seen
+            # (Tai, 2026-10-02: no reply or lesson is dropped because its moment passed).
+            self._release_lesson(ts)
             self._on_takeback(event, ts)
         elif isinstance(event, Resync):
-            self._held_lesson = None
+            self._release_lesson(ts)  # as at a takeback
             self._on_resync(event, ts)
         elif isinstance(event, GameEnded):
             self._release_lesson(ts)
@@ -3245,10 +3254,13 @@ class Coach:
         self.strong_player = rating is not None and rating[0] >= STRONG_FROM
 
     def _new_game(self, event: GameStarted, ts: float) -> None:
+        # A lesson held for its analysis is the last game's: said now, in that game's moment,
+        # before this one starts -- shown in its place, not spoken, and no turn of this game
+        # (`poll`). Kept, the next tick said it in this one, over its first position (the coach
+        # review, 2026-10-01); dropped, it was never seen (Tai, 2026-10-02: no reply or lesson
+        # is dropped because its moment passed).
+        self._release_lesson(ts)
         self._epoch += 1
-        # A lesson held for its analysis is the last game's: kept, the next tick said it in
-        # this one, over this one's first position (the coach review, 2026-10-01).
-        self._held_lesson = None
         self.game_id = event.game_id
         self.user_side = event.user_side
         self.kind = event.kind
