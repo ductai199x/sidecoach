@@ -446,6 +446,9 @@ object PanelListen {
      */
     internal fun onSpeechStart() {
         if (!hearTestOn) dictationHold()
+        // A reply still being written says nothing more, even between two sentences, when the
+        // voice is briefly idle: the voice never talks over the player.
+        PanelVoice.hushed += 1
         val voice = PanelVoice.voiceOut()
         if (voice != null && voice.busy) {
             voice.stop()

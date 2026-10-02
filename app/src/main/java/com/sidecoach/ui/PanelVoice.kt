@@ -68,6 +68,10 @@ object PanelVoice {
     /** What is being spoken now: its trigger and ply (`panel._voicing`). */
     @Volatile internal var voicing: Pair<String, Int?>? = null
 
+    /** Counts the times the voice was cut off by the player (a barge-in, a mute): a reply being
+     * written sentence by sentence says nothing more once it moves (`panel._hushed`). */
+    @Volatile internal var hushed = 0
+
     /** A word held back for pace (`panel._held_word`): trigger, text, ply, since. */
     private data class Held(val trigger: String, val text: String, val ply: Int?, val since: Double)
     @Volatile private var heldWord: Held? = null
@@ -163,7 +167,10 @@ object PanelVoice {
         muted = on
         PanelEngine.set("muted" to on)
         Captions.muted(on)
-        if (on) voiceOut()?.stop()
+        if (on) {
+            hushed += 1
+            voiceOut()?.stop()
+        }
         PanelEngine.emit("voice", "info", if (on) "muted" else "unmuted")
     }
 
@@ -256,11 +263,20 @@ object PanelVoice {
         if (muted) return null
         val name = trigger.slug
         var started = false
+        var hushedAt = hushed
         return sink@{ sentence ->
+            val continues = started
+            if (started && (muted || hushed != hushedAt)) {
+                // Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is still
+                // the reply -- in the chat, the record and the captions -- only silent.
+                // Declining here cut the reply's text at what had been said.
+                Captions.show(sentence, true)
+                return@sink true
+            }
             if (muted) return@sink false
             val speaker = voiceOut() ?: return@sink false
-            val continues = started
             if (!started) {
+                hushedAt = hushed
                 val action = voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
                 if (action == "supersede") speaker.stop()
                 if (action != "speak" && action != "supersede") return@sink false

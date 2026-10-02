@@ -178,6 +178,31 @@ class PanelVoicePolicyTest {
     }
 
     /**
+     * A mute or a barge-in while a reply is written sentence by sentence: silent from there, the
+     * reply's later sentences still taken (the chat keeps the whole reply), none said
+     * (`test_voice_hush.py`, voice findings 1 and 2).
+     */
+    @Test
+    fun aMuteOrABargeInMidReplySilencesTheRestAndKeepsTheReplyWhole() {
+        for (cut in listOf("mute", "barge")) {
+            val fake = FakeTts()
+            PanelVoice.speaker = fake
+            PanelVoice.voicing = null
+            val sink = PanelVoice.streamSink(Trigger.USER_ASK, null)
+            assertNotNull(sink)
+            assertTrue(sink!!("Your knight on f5 is loose."))
+            fake.busy = true
+            if (cut == "mute") PanelVoice.setMuted(true) else PanelListen.onSpeechStart()
+            assertTrue(cut, sink("That check forks the king and the knight."))
+            assertTrue(cut, sink("Then look at Nh4."))
+            val said = fake.calls.filter { it.startsWith("say:") }
+            assertEquals(cut, listOf("say:Your knight on f5 is loose."), said)
+            assertEquals(cut, "stop", fake.calls.last())
+            PanelVoice.setMuted(false)
+        }
+    }
+
+    /**
      * A word the fast game kept on the page is said once the player has been thinking in that
      * position as long as the pace allows (`_say_held_word`); one about a position the board
      * has left, or after the game is over, is dropped
