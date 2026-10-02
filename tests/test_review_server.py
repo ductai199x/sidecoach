@@ -321,6 +321,14 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     assert [h for h in voice.heard if h.startswith("say")] == []
     assert "Nf3 is best." in [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
     engine.set_muted(False)
+    # The push-to-talk key held: the player is talking, the card is captioned, not said (Tai,
+    # 2026-10-01: "if push to talk is on then the coach must be muted"; round 3 audit).
+    engine._set(ptt=True)
+    voice.heard.clear()
+    assert client.post(f"/api/review/{key}/say", json={"text": "Rc1 next."}).json()["ok"]
+    assert [h for h in voice.heard if h.startswith("say")] == []
+    assert "Rc1 next." in [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
+    engine._set(ptt=False)
     # Hushed, and closing the review silences it too.
     assert client.post(f"/api/review/{key}/say", json={"text": "Qd2 holds."}).json()["ok"]
     assert client.post(f"/api/review/{key}/hush").json()["ok"]
