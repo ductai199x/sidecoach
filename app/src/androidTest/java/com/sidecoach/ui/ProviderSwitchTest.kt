@@ -86,6 +86,11 @@ class ProviderSwitchTest {
             assertTrue(api.update(JSONObject().put("settings", JSONObject().put("llm", llm))).getBoolean("ok"))
         fun llm() = store.values().getJSONObject("llm")
         try {
+            // From the default AI settings, as the desktop's test starts from a fresh settings
+            // file: the app's own store keeps the models a test before this one left (the
+            // service switches of aNewServiceDoesNotTakeTheOldOnesModel), and the set asserted
+            // below is of this test's switches alone.
+            store.save(JSONObject(saved.toString()).put("llm", store.defaults().getJSONObject("llm")))
             save(JSONObject().put("provider", "openai").put("model", "gpt-5.6-luna"))
             save(JSONObject().put("provider", "local")) // the page sends the service alone
             assertTrue(llm().isNull("model")) // never seen: its default
