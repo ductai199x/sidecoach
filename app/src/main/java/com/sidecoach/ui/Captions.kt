@@ -70,18 +70,40 @@ object Captions {
     /** How long the moves a tap shows stay, after the tap or the last touch on them. */
     internal const val CONTROLS_MS = 4000L
 
-    /**
-     * [HIDE_AFTER_MS] and [CONTROLS_MS] as the box keeps them. Only a test changes them: one
-     * about the box under a finger, not about its fade, whose slow emulator took longer than
-     * the five seconds between showing the words and touching them, and touched the home
-     * screen the faded box had left (CaptionsGestureTest, 2026-09-27).
-     */
-    @Volatile internal var hideAfterMs = HIDE_AFTER_MS
-    @Volatile internal var controlsMs = CONTROLS_MS
     private const val TICK_MS = 80L
     private const val KEEP_CHARS = 1200
 
     private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * When the box's delayed steps run -- its fade [HIDE_AFTER_MS] after the words, its moves'
+     * timeout [CONTROLS_MS] after a touch, the words' reveal at the voice's pace -- and what
+     * time it is for them. The app's is the main thread's own ([MainClock]); a test hands in
+     * one that moves only when the test moves it, and runs each step on the main thread as
+     * this one does: the fade and the timeout are then checked at their shipped lengths to the
+     * millisecond, never waited out, and never come early under a test's gestures however slow
+     * the emulator (a starved one took longer than the five seconds between showing the words
+     * and touching them, CaptionsGestureTest 2026-09-27).
+     */
+    internal interface Clock {
+        fun now(): Long
+
+        fun post(step: Runnable, delayMs: Long)
+
+        fun cancel(step: Runnable)
+    }
+
+    private object MainClock : Clock {
+        override fun now(): Long = SystemClock.uptimeMillis()
+
+        override fun post(step: Runnable, delayMs: Long) {
+            main.postDelayed(step, delayMs)
+        }
+
+        override fun cancel(step: Runnable) = main.removeCallbacks(step)
+    }
+
+    @Volatile internal var clock: Clock = MainClock
     private var app: Context? = null
 
     @Volatile private var on = false
@@ -160,7 +182,7 @@ object Captions {
         keep = stay
         main.post {
             if (stay) {
-                main.removeCallbacks(hideLater)
+                clock.cancel(hideLater)
                 restore()
             } else if (front) {
                 drop()
@@ -190,7 +212,7 @@ object Captions {
 
     /**
      * A fresh start, as when the app starts: not quit, the panel not in front, nothing kept, no
-     * words and no box, the fade's timings as shipped. For tests, which share one process: one
+     * words and no box, the main thread's clock. For tests, which share one process: one
      * that closed the panel (a scenario's MainActivity, a session's service stopping, [quit]) left
      * the box unable to come up for the caption tests after it -- they failed only in the full run.
      */
@@ -199,8 +221,7 @@ object Captions {
         front = false
         keep = false
         board = null
-        hideAfterMs = HIDE_AFTER_MS
-        controlsMs = CONTROLS_MS
+        clock = MainClock
         main.post {
             drop()
             said.setLength(0)
@@ -305,15 +326,15 @@ object Captions {
         if (said.isNotEmpty()) said.append(if (continues) " " else "\n")
         trim()
         saying = line(text)
-        sayingFrom = SystemClock.uptimeMillis()
+        sayingFrom = clock.now()
         sayingMs = speechMs
         // A preview over Sidecoach's own page lets every tap through, Save included.
         if (!ensureBox(touchable = !force)) {
             finish()
             return
         }
-        main.removeCallbacks(hideLater)
-        main.removeCallbacks(tick)
+        clock.cancel(hideLater)
+        clock.cancel(tick)
         box?.let { if (it.movesShown) it.showMoves() }
         tick.run()
     }
@@ -356,7 +377,7 @@ object Captions {
         if (saying.isEmpty()) return
         said.append(saying)
         saying = ""
-        main.removeCallbacks(tick)
+        clock.cancel(tick)
     }
 
     private fun trim() {
@@ -377,10 +398,10 @@ object Captions {
     private val tick: Runnable = object : Runnable {
         override fun run() {
             val view = box ?: return
-            val n = revealed(saying, SystemClock.uptimeMillis() - sayingFrom, sayingMs)
+            val n = revealed(saying, clock.now() - sayingFrom, sayingMs)
             view.setText(said.toString() + saying.substring(0, n))
             if (n < saying.length) {
-                main.postDelayed(this, TICK_MS)
+                clock.post(this, TICK_MS)
             } else {
                 finish()
                 hideSoon()
@@ -391,9 +412,9 @@ object Captions {
     private val hideLater = Runnable { hide() }
 
     private fun hideSoon(speaking: Long = 0) {
-        main.removeCallbacks(hideLater)
+        clock.cancel(hideLater)
         if (keep && !previewing) return
-        main.postDelayed(hideLater, speaking + hideAfterMs)
+        clock.post(hideLater, speaking + HIDE_AFTER_MS)
     }
 
     /** A touch on the box ends: the fade waits its full time again, once the words are out. */
@@ -435,7 +456,7 @@ object Captions {
 
     /** The box gone at once, the words kept (a fading box, the sample line's untouchable one). */
     private fun discardBox() {
-        main.removeCallbacks(hideLater)
+        clock.cancel(hideLater)
         box?.detach()
         box = null
         target?.detach()
@@ -463,6 +484,12 @@ object Captions {
     /** Whether the box up now takes touches, for the tests; null when it is not shown. */
     internal fun touchable(): Boolean? = box?.touchable
 
+    /** Whether the box up now is fading out, for the tests; null when it is not shown. */
+    internal fun fading(): Boolean? = box?.fading
+
+    /** Whether a finger is moving the box now (a hold or a drag took it), for the tests. */
+    internal fun moving(): Boolean = box?.moving ?: false
+
     /** The words the box shows, for the tests; null when it is not shown. */
     internal fun wordsShown(): String? = box?.shownText()
 
@@ -470,8 +497,8 @@ object Captions {
     internal val enabled: Boolean get() = on
 
     private fun drop() {
-        main.removeCallbacks(tick)
-        main.removeCallbacks(hideLater)
+        clock.cancel(tick)
+        clock.cancel(hideLater)
         finish()
         // The sample line is no word of the coach's: a box kept on screen does not bring it back.
         if (previewing) said.setLength(0)
@@ -599,7 +626,8 @@ object Captions {
             frames++
         }
 
-        private var moving = false
+        var moving = false
+            private set
 
         /** The finger has travelled past the touch slop since it came down. */
         private var dragged = false
@@ -660,9 +688,9 @@ object Captions {
             strip.setOnTouchListener { _, event ->
                 // Swiping through the moves keeps them up.
                 when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> main.removeCallbacks(hideMoves)
+                    MotionEvent.ACTION_DOWN -> clock.cancel(hideMoves)
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        main.postDelayed(hideMoves, controlsMs)
+                        clock.post(hideMoves, CONTROLS_MS)
                         rest()
                     }
                 }
@@ -934,13 +962,13 @@ object Captions {
         }
 
         private fun toggleMoves() {
-            main.removeCallbacks(hideMoves)
+            clock.cancel(hideMoves)
             if (movesShown) {
                 strip.visibility = GONE
                 reflow()
             } else {
                 showMoves()
-                main.postDelayed(hideMoves, controlsMs)
+                clock.post(hideMoves, CONTROLS_MS)
             }
             rest()
         }

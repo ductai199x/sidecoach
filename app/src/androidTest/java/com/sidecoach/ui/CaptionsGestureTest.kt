@@ -17,6 +17,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * The caption box under a finger: its touches injected as the screen would send them, the
@@ -25,6 +27,12 @@ import java.io.File
  * shows the game's moves, and left alone they go after their four seconds; touch, hold and drag
  * moves the box, and dropping it on the cross turns captions off.
  * Each state is screenshotted into the app's files (`captions/`) for a person to look at.
+ *
+ * The box's own time is the test's ([StepClock]): nothing fades or times out while the gestures
+ * run, and the moves' timeout is checked at its shipped [Captions.CONTROLS_MS] to the
+ * millisecond. Android's own gesture timing -- a long press, the double-tap window -- is real,
+ * and the test waits for what it decides (the box taken up by a hold, a tap confirmed), not for
+ * a guess at how long that takes.
  */
 @RunWith(AndroidJUnit4::class)
 class CaptionsGestureTest {
@@ -33,6 +41,9 @@ class CaptionsGestureTest {
     private val app = instrumentation.targetContext
     private val automation = instrumentation.uiAutomation
     private val shots = File(app.getExternalFilesDir(null), "captions").apply { mkdirs() }
+
+    /** The screenshots' PNGs, written while the test goes on: a dozen of them took seconds. */
+    private val writer = Executors.newSingleThreadExecutor()
 
     private fun touch(action: Int, x: Int, y: Int, down: Long) {
         val event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x.toFloat(), y.toFloat(), 0)
@@ -63,18 +74,25 @@ class CaptionsGestureTest {
 
     private fun doubleTap(x: Int, y: Int) = taps(x, y, 2)
 
-    /** One touch event at [at], queued for the screen without waiting for the app. */
-    private fun send(action: Int, x: Int, y: Int, down: Long, at: Long) {
+    /**
+     * One touch event at [at], queued for the screen without waiting for the app; or, [handled],
+     * returning once the app has handled it (and so every event queued before it).
+     */
+    private fun send(action: Int, x: Int, y: Int, down: Long, at: Long, handled: Boolean = false) {
         val event = MotionEvent.obtain(down, at, action, x.toFloat(), y.toFloat(), 0)
         event.source = InputDevice.SOURCE_TOUCHSCREEN
-        automation.injectInputEvent(event, false)
+        automation.injectInputEvent(event, handled)
         event.recycle()
     }
 
+    /** The screen as it is now, for a person to look at; its PNG is written meanwhile. */
     private fun shot(name: String) {
         val image = automation.takeScreenshot() ?: return
-        File(shots, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        Log.i(TAG, "screenshot $name")
+        writer.execute {
+            File(shots, "$name.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            image.recycle()
+            Log.i(TAG, "screenshot $name")
+        }
     }
 
     /**
@@ -100,6 +118,15 @@ class CaptionsGestureTest {
     }
 
     /**
+     * The box at rest: what the main thread was given is done (a layout, a fade-in, a drag's
+     * last move), and the window is where it asked to be.
+     */
+    private fun still(what: String) {
+        instrumentation.waitForIdleSync()
+        assertTrue("$what: the box is not where it asked to be", waitFor { settled() })
+    }
+
+    /**
      * Whether [what] comes true within [ms]: a state the box is to reach, never a bound on
      * how soon. Ten seconds, since the box answers on its own thread, and an emulator starved
      * by its host answered a tap three to four seconds late (2026-09-27, its four cores kept
@@ -109,42 +136,67 @@ class CaptionsGestureTest {
         val until = SystemClock.uptimeMillis() + ms
         while (SystemClock.uptimeMillis() < until) {
             if (what()) return true
-            Thread.sleep(50)
+            SystemClock.sleep(20)
         }
         return what()
     }
 
     /**
-     * Hold at [from] for [holdMs] -- a real finger drifting a few pixels meanwhile when
-     * [drift] -- then drag in steps to [to]; [before] runs with the finger still down.
+     * A tap's double-tap window over: the main thread has handled the touches, then Android's
+     * double-tap timeout has passed and what it posted for it (a single tap confirmed) has run.
+     * Only then can the test say a tap was not taken for half of a double-tap, or the next tap
+     * not make one with it.
+     */
+    private fun windowOver() {
+        instrumentation.waitForIdleSync()
+        SystemClock.sleep(ViewConfiguration.getDoubleTapTimeout().toLong())
+        instrumentation.waitForIdleSync()
+    }
+
+    private fun moving(): Boolean {
+        var now = false
+        instrumentation.runOnMainSync { now = Captions.moving() }
+        return now
+    }
+
+    /**
+     * Hold at [from] until the box is taken up by the hold -- Android's long press, a real
+     * finger drifting a few pixels meanwhile when [drift] -- then drag in steps to [to]; [before]
+     * runs with the finger still down and the box under it. Without [hold], a plain drag: the
+     * finger moves at once.
      */
     private fun holdAndDrag(
         from: Pair<Int, Int>,
         to: Pair<Int, Int>,
-        holdMs: Long = ViewConfiguration.getLongPressTimeout() + 300L,
+        hold: Boolean = true,
         drift: Boolean = false,
         before: () -> Unit = {},
     ) {
         val down = SystemClock.uptimeMillis()
         touch(MotionEvent.ACTION_DOWN, from.first, from.second, down)
-        if (drift) {
-            for (i in 1..(holdMs / 50).toInt()) {
-                touch(MotionEvent.ACTION_MOVE, from.first + (i % 3) * 4, from.second + (i % 2) * 5, down)
-                Thread.sleep(50)
-            }
-        } else {
-            Thread.sleep(holdMs)
+        if (hold) {
+            var i = 0
+            assertTrue("a hold did not take the box up", waitFor {
+                if (drift) {
+                    i++
+                    touch(MotionEvent.ACTION_MOVE, from.first + (i % 3) * 4, from.second + (i % 2) * 5, down)
+                }
+                moving()
+            })
         }
+        // The drag at a finger's pace, a frame between moves, stamped with those times as the
+        // touchscreen stamps them and queued without waiting on the app, as [taps] sends a tap.
         val steps = 20
+        val moved = SystemClock.uptimeMillis()
         for (i in 1..steps) {
             val x = from.first + (to.first - from.first) * i / steps
             val y = from.second + (to.second - from.second) * i / steps
-            touch(MotionEvent.ACTION_MOVE, x, y, down)
-            Thread.sleep(16)
+            send(MotionEvent.ACTION_MOVE, x, y, down, moved + i * FRAME_MS)
         }
-        Thread.sleep(300)
+        instrumentation.waitForIdleSync()
+        if (from != to) assertTrue("the box did not follow the finger", waitFor { moving() && settled() })
         before()
-        touch(MotionEvent.ACTION_UP, to.first, to.second, down)
+        send(MotionEvent.ACTION_UP, to.first, to.second, down, maxOf(SystemClock.uptimeMillis(), moved + (steps + 1) * FRAME_MS), handled = true)
     }
 
     /** A shell command's output, as the shell user runs it. */
@@ -163,34 +215,28 @@ class CaptionsGestureTest {
         // the setting goes back after.
         val power = app.getSystemService(android.os.PowerManager::class.java)
         val keyguard = app.getSystemService(android.app.KeyguardManager::class.java)
-        val awake = SystemClock.uptimeMillis() + 20_000
-        while (!(power.isInteractive && !keyguard.isKeyguardLocked) && SystemClock.uptimeMillis() < awake) {
-            shell("input keyevent KEYCODE_WAKEUP")
-            shell("wm dismiss-keyguard")
-            Thread.sleep(1000)
-        }
+        fun awake() = power.isInteractive && !keyguard.isKeyguardLocked
+        var asked = 0L
+        assertTrue("the screen did not wake and unlock", waitFor(20_000) {
+            if (!awake() && SystemClock.uptimeMillis() - asked >= 1000) {
+                shell("input keyevent KEYCODE_WAKEUP")
+                shell("wm dismiss-keyguard")
+                asked = SystemClock.uptimeMillis()
+            }
+            awake()
+        })
         assertTrue(
             "the screen is not awake and unlocked (interactive ${power.isInteractive}, " +
                 "locked ${keyguard.isKeyguardLocked})",
-            power.isInteractive && !keyguard.isKeyguardLocked,
+            awake(),
         )
         val hidden = shell("settings get global hide_error_dialogs")
         shell("settings put global hide_error_dialogs 1")
         shell("am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS")
-        // The box fades five seconds after the words are out, and its moves go four seconds
-        // after a tap: this test is about the box under a finger, and a starved emulator took
-        // longer than that between showing the words and the double-tap (5.7 and 10 s with its
-        // four cores kept busy, 2026-09-27: the box had faded, the taps went to the home screen,
-        // and the double-tap "showed no more lines"). So the box and its moves stay while the
-        // gestures run; the fade is CaptionsKeepTest's, and the moves' own timeout is checked
-        // below at its real length.
-        Captions.hideAfterMs = LONG_MS
-        Captions.controlsMs = LONG_MS
         try {
             answersTapsDoubleTapsAndADrag()
         } finally {
-            Captions.hideAfterMs = Captions.HIDE_AFTER_MS
-            Captions.controlsMs = Captions.CONTROLS_MS
+            Captions.reset()
             // The move list this test put on the page is no game's.
             PanelEngine.set("moves" to emptyList<String>(), "labels" to emptyMap<String, String>())
             if (hidden == "null" || hidden.isEmpty()) {
@@ -198,19 +244,26 @@ class CaptionsGestureTest {
             } else {
                 shell("settings put global hide_error_dialogs $hidden")
             }
+            writer.shutdown()
+            assertTrue("the screenshots were not written", writer.awaitTermination(60, TimeUnit.SECONDS))
         }
     }
 
     private fun answersTapsDoubleTapsAndADrag() {
         automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
-        automation.executeShellCommand("input keyevent KEYCODE_HOME").close()
-        Thread.sleep(1500)
+        Launcher.inFront(instrumentation)
         app.getSharedPreferences("captions", 0).edit().clear().commit()
-        // A fresh start: a test before this one may have closed the panel (Captions.quit). Its
-        // long fade, set by the caller, stays.
+        // A fresh start: a test before this one may have closed the panel (Captions.quit).
         Captions.reset()
-        Captions.hideAfterMs = LONG_MS
-        Captions.controlsMs = LONG_MS
+        instrumentation.waitForIdleSync()
+        // The box's clock is the test's: the box fades five seconds after the words are out, and
+        // its moves go four seconds after a tap, and a starved emulator took longer than that
+        // between showing the words and the double-tap (5.7 and 10 s with its four cores kept
+        // busy, 2026-09-27: the box had faded, the taps went to the home screen, and the
+        // double-tap "showed no more lines"). Its time moves only where the moves' timeout is
+        // checked; the fade is CaptionsKeepTest's.
+        val clock = StepClock(instrumentation)
+        Captions.clock = clock
         Captions.configure(app, true)
         Captions.show(
             "Spot on -- rooks belong on open files. Your rook now looks straight down the file at " +
@@ -237,8 +290,7 @@ class CaptionsGestureTest {
             image.recycle()
             pixel and 0xFFFFFF != 0
         })
-        Thread.sleep(400)
-        assertTrue("the box is not where it asked to be", waitFor { settled() })
+        still("shown")
         val first = box()!!
         shot("1_shown")
         // The buttons up with the words, no tap needed (Tai, 2026-09-29: "they are handy").
@@ -253,9 +305,9 @@ class CaptionsGestureTest {
         assertNotNull("the box went before the double-tap, ${SystemClock.uptimeMillis() - shownAt} ms after the line", box())
         doubleTap(cx, cy)
         // Taller with more lines, and no moves: two single taps would make it taller too, for a
-        // moment, with the moves a tap shows.
+        // moment, with the moves a tap shows -- so the double-tap window is let close first.
         val grew = waitFor { (box()?.height() ?: 0) > first.height() } &&
-            run { Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 200L); true } &&
+            run { windowOver(); true } &&
             (box()?.height() ?: 0) > first.height() && !movesShown()
         if (!grew) shot("1b_no_more_lines")
         assertTrue(
@@ -265,14 +317,13 @@ class CaptionsGestureTest {
                 "focus ${focus()})",
             grew,
         )
-        assertTrue("the taller box is not where it asked to be", waitFor { settled() })
-        Thread.sleep(300)
+        still("taller")
         val tall = box()!!
         assertTrue("it grew downward: $first -> $tall", tall.bottom <= first.bottom + 2)
         shot("2_expanded")
         doubleTap(tall.centerX(), tall.centerY())
         val fewer = waitFor { (box()?.height() ?: 0) == first.height() } &&
-            run { Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 200L); true } &&
+            run { windowOver(); true } &&
             (box()?.height() ?: 0) == first.height() && !movesShown()
         if (!fewer) shot("2b_kept_lines")
         assertTrue(
@@ -285,12 +336,11 @@ class CaptionsGestureTest {
             "moves" to listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Nc3", "Nxe4", "O-O"),
             "labels" to mapOf("1" to "book", "3" to "book", "5" to "best", "7" to "best", "9" to "best", "11" to "inaccuracy", "13" to "mistake", "15" to "brilliant"),
         )
-        Thread.sleep(400)
+        instrumentation.waitForIdleSync()
         tap(cx, cy)
         val movesFrom = SystemClock.uptimeMillis()
         assertTrue("a tap showed no moves", waitFor { movesShown() && (box()?.height() ?: 0) > first.height() })
-        assertTrue("the box with its moves is not where it asked to be", waitFor { settled() })
-        Thread.sleep(300)
+        still("with its moves")
         val withMoves = box()!!
         assertTrue("the moves grew it downward: $first -> $withMoves", withMoves.bottom <= first.bottom + 2)
         shot("3_moves")
@@ -302,7 +352,7 @@ class CaptionsGestureTest {
         val wasRunning = PanelEngine.running
         PanelEngine.commands.clear()
         PanelEngine.set("running" to true)
-        val asked = mutableListOf<String>()
+        val pills = mutableListOf<String>()
         try {
             for (name in listOf("hint", "move", "line")) {
                 val at = buttons.getValue(name)
@@ -310,11 +360,11 @@ class CaptionsGestureTest {
                 instrumentation.runOnMainSync { shown = Captions.buttonsAt() }
                 Log.i(TAG, "pill $name ${SystemClock.uptimeMillis() - movesFrom} ms after the moves were asked for; row ${shown[name]}")
                 tap(at.centerX(), at.centerY())
-                Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+                windowOver()
             }
-            assertTrue("the pills asked $asked", waitFor {
-                while (true) asked.add(PanelEngine.commands.poll()?.second?.toString() ?: break)
-                asked == listOf("hint", "what should I play", "show me the line")
+            assertTrue("the pills asked $pills", waitFor {
+                while (true) pills.add(PanelEngine.commands.poll()?.second?.toString() ?: break)
+                pills == listOf("hint", "what should I play", "show me the line")
             })
         } finally {
             PanelEngine.set("running" to wasRunning)
@@ -324,8 +374,9 @@ class CaptionsGestureTest {
         val speaker = buttons.getValue("mute")
         tap(speaker.centerX(), speaker.centerY())
         assertTrue("the icon did not mute", waitFor { PanelVoice.muted != wasMuted })
-        Thread.sleep(300)
+        instrumentation.waitForIdleSync()
         shot("3b_muted")
+        windowOver()
         tap(speaker.centerX(), speaker.centerY())
         assertTrue("the icon did not unmute", waitFor { PanelVoice.muted == wasMuted })
         // The voice's state after the last press, not the setting before the first: a test
@@ -333,7 +384,7 @@ class CaptionsGestureTest {
         // muted this failed once and passed after (the settings review, 2026-10-01).
         assertTrue("the setting is the last press's", waitFor { SettingsStore(app).muted() == wasMuted })
         assertTrue("the moves went while the buttons were used", movesShown())
-        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        windowOver()
         val withRow = box()!!
         tap(withRow.left + withRow.width() * 3 / 4, withRow.bottom - 40)
         val hid = SystemClock.uptimeMillis()
@@ -346,44 +397,38 @@ class CaptionsGestureTest {
         )
         assertTrue("the buttons went with the moves", buttonsShown())
 
-        // Left alone, the moves go by themselves after their time ([MOVES_MS] here, the timer
-        // the box keeps, shorter than the four seconds it ships with): not before (the tap is
-        // handled after it is sent, so they last at least that long from here), and not long
-        // after, however slow the emulator.
-        Captions.controlsMs = MOVES_MS
-        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
-        val tapped = SystemClock.uptimeMillis()
+        // Left alone, the moves go by themselves after their shipped four seconds of the box's
+        // clock: still up a millisecond before, gone at them. Nothing a finger does after the tap
+        // counts from any other time: the tap is the last touch.
+        windowOver()
         tap(cx, cy)
-        assertTrue("a tap showed no moves again", waitFor { (box()?.height() ?: 0) > first.height() })
-        val early = MOVES_MS - 500 - (SystemClock.uptimeMillis() - tapped)
-        if (early > 0) Thread.sleep(early)
-        assertTrue(
-            "the moves went within ${SystemClock.uptimeMillis() - tapped} ms of the tap",
-            (box()?.height() ?: 0) > first.height(),
-        )
-        assertTrue("the moves did not go by themselves", waitFor(15_000) { (box()?.height() ?: 0) == first.height() })
-        Log.i(TAG, "the moves went by themselves ${SystemClock.uptimeMillis() - tapped} ms after the tap")
-        Captions.controlsMs = LONG_MS
+        assertTrue("a tap showed no moves again", waitFor { movesShown() && (box()?.height() ?: 0) > first.height() })
+        windowOver()
+        clock.advance(Captions.CONTROLS_MS - 1)
+        assertTrue("the moves went before their time", movesShown())
+        clock.advance(1)
+        assertTrue("the moves did not go at their time", waitFor { !movesShown() && (box()?.height() ?: 0) == first.height() })
 
         // A touch held and let go where it is: the box stays, and so do the captions. With the
         // cross's reach at 110 dp the box's first place was within it, and a hold alone turned
         // them off.
-        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        windowOver()
+        still("before the hold")
         val still = box()!!
         holdAndDrag(still.centerX() to still.centerY(), still.centerX() to still.centerY())
-        Thread.sleep(300)
+        instrumentation.waitForIdleSync()
         assertTrue("a hold let go in place turned captions off", Captions.enabled && box() != null)
 
         // Touch, hold and drag: the box goes where it is let go, and stays there.
-        Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 100L)
+        windowOver()
+        still("before the drag")
         val here = box()!!
         val screen = app.resources.displayMetrics
         holdAndDrag(here.centerX() to here.centerY(), screen.widthPixels / 2 to screen.heightPixels / 3) {
             shot("4_dragging")
         }
         assertTrue("the box did not move", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < screen.heightPixels / 2 })
-        assertTrue("the moved box is not where it asked to be", waitFor { settled() })
-        Thread.sleep(300)
+        still("moved")
         shot("5_moved")
         val moved = box()!!
         val saved = app.getSharedPreferences("captions", 0)
@@ -391,14 +436,13 @@ class CaptionsGestureTest {
 
         // A finger that just drags, and one that drifts while it holds: both move the box
         // (on the Pixel a real finger's drift lost the hold, and with it the drag).
-        holdAndDrag(moved.centerX() to moved.centerY(), moved.centerX() to moved.centerY() + 300, holdMs = 0)
+        holdAndDrag(moved.centerX() to moved.centerY(), moved.centerX() to moved.centerY() + 300, hold = false)
         assertTrue("a plain drag did not move the box", waitFor { (box()?.centerY() ?: 0) > moved.centerY() + 200 })
-        assertTrue("the dragged box is not where it asked to be", waitFor { settled() })
+        still("dragged")
         val dragged = box()!!
         holdAndDrag(dragged.centerX() to dragged.centerY(), dragged.centerX() to dragged.centerY() - 300, drift = true)
         assertTrue("a drifting hold did not move the box", waitFor { (box()?.centerY() ?: Int.MAX_VALUE) < dragged.centerY() - 200 })
-        assertTrue("the box held and dragged is not where it asked to be", waitFor { settled() })
-        Thread.sleep(300)
+        still("held and dragged")
         val back = box()!!
 
         // Low on the screen, just above the cross: moved there, captions still on (the reach
@@ -406,18 +450,16 @@ class CaptionsGestureTest {
         val (crossX, crossY) = Captions.crossCentre(app)
         val above = (90 * screen.density).toInt()
         holdAndDrag(back.centerX() to back.centerY(), crossX to crossY - above)
-        assertTrue("a box let go above the cross turned captions off", waitFor { settled() })
+        still("let go above the cross")
         assertTrue("captions went off above the cross", Captions.enabled && box() != null)
-        Thread.sleep(300)
         val low = box()!!
 
         // All the way down, beside the cross: the box parked at the very foot of the screen,
         // captions still on -- the finger let go away from the cross, whatever the box covers
         // (Tai, 2026-09-29: "the dismiss thing is STILL TOO FAR UP").
         holdAndDrag(low.centerX() to low.centerY(), screen.widthPixels / 5 to screen.heightPixels - (8 * screen.density).toInt())
-        assertTrue("a box parked at the foot is not where it asked to be", waitFor { settled() })
+        still("parked at the foot")
         assertTrue("captions went off with the box parked at the foot", Captions.enabled && box() != null)
-        Thread.sleep(300)
         val foot = box()!!
         assertTrue("the box did not go to the foot: $foot", foot.bottom > screen.heightPixels - (140 * screen.density).toInt())
 
@@ -432,7 +474,7 @@ class CaptionsGestureTest {
             waitFor { !SettingsStore(app).captions() },
         )
         assertNull(box())
-        Thread.sleep(300)
+        instrumentation.waitForIdleSync()
         shot("7_off")
 
         // The settings page's switch puts them back, in the look the settings give.
@@ -441,8 +483,7 @@ class CaptionsGestureTest {
         Captions.style(Captions.Style(text = 0xFFFFE066.toInt(), background = 0xFF0B2A4A.toInt(), opacityPercent = 70, sizeSp = 22f))
         Captions.show("Bigger, yellow words on a see-through blue box: the settings' look.")
         assertTrue("no styled box", waitFor { box() != null })
-        assertTrue("the styled box is not where it asked to be", waitFor { settled() })
-        Thread.sleep(400)
+        still("styled")
         assertTrue("bigger words did not make a taller box", box()!!.height() > first.height())
         shot("8_styled")
 
@@ -450,12 +491,9 @@ class CaptionsGestureTest {
         Captions.panelInFront(true)
         assertTrue("the box stayed over the panel", waitFor { box() == null })
         Captions.style(Captions.Style())
-        // The real fade again, so the sample line leaves the screen as it does in use.
-        Captions.hideAfterMs = Captions.HIDE_AFTER_MS
-        Captions.controlsMs = Captions.CONTROLS_MS
         Captions.preview()
         assertTrue("no preview over the settings page", waitFor { box() != null })
-        Thread.sleep(400)
+        instrumentation.waitForIdleSync()
         shot("9_preview")
         Captions.panelInFront(false)
         assertNotNull(Captions)
@@ -488,10 +526,7 @@ class CaptionsGestureTest {
         /** Between a double-tap's two taps, up to down. */
         private const val GAP_MS = 80L
 
-        /** The box's fade and its moves' timeout while the gestures run: longer than any run. */
-        private const val LONG_MS = 600_000L
-
-        /** The moves' own timeout where it is checked: long enough to be told from a tap's. */
-        private const val MOVES_MS = 1500L
+        /** Between two moves of a dragging finger: a frame. */
+        private const val FRAME_MS = 16L
     }
 }
