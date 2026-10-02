@@ -572,6 +572,71 @@ def test_the_net_runs_at_one_batch_size_on_the_gpu() -> None:
     assert shapes == [1]
 
 
+def test_the_gpu_is_tried_again_a_minute_after_it_failed_and_kept_once_it_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 3 audit E9 (Tai, 2026-10-02): after one GPU error the net stayed on the CPU until
+    a restart. It is tried on the GPU again GPU_RETRY_S later -- never at every frame -- off the
+    frame's path, and kept there once it works; a GPU still failing waits another minute. The
+    clock is the test's; the try runs in place of its thread."""
+    import sidecoach.vision.embedding as emb
+    import sidecoach.voice.runtime as runtime
+    from sidecoach.voice.runtime import Device
+    from tests.fakes import ManualClock
+
+    clock = ManualClock()
+    monkeypatch.setattr(emb, "time", clock.time_module())
+    made = runtime.session
+    gpu = {"healthy": False, "loads": 0, "runs": 0}
+
+    class _Gpu:
+        """The GPU's session: failing until the driver is back, then the CPU's numbers."""
+
+        def __init__(self, cpu: Any) -> None:
+            self.cpu = cpu
+
+        def run(self, names: Any, feed: dict[str, np.ndarray]) -> Any:
+            if not gpu["healthy"]:
+                raise RuntimeError("CUDA failure 999: unknown error")
+            gpu["runs"] += 1
+            return self.cpu.run(names, feed)
+
+    def session(path: Any, device: str, **options: Any) -> tuple[Any, Device]:
+        cpu, where = made(path, "cpu", **options)
+        if device == "cpu":
+            return cpu, where
+        gpu["loads"] += 1
+        return _Gpu(cpu), Device("cuda", "cuda")
+
+    monkeypatch.setattr(runtime, "session", session)
+    embedder = CellEmbedder(device="cpu")
+    embedder.session, embedder.device = _Gpu(embedder.session), Device("cuda", "cuda")
+    embedder.spawn = lambda work: work()
+    shade = iter(range(30, 250))
+
+    def frame() -> str:
+        """A frame's new cells read, and the device the net is on after it."""
+        embedder.embed([np.full((96, 96, 3), next(shade), dtype=np.uint8)])
+        return embedder.device.name
+
+    began = clock.now
+    assert frame() == "cpu", "the failed GPU's batch run on the CPU"
+    assert [frame() for _ in range(5)] == ["cpu"] * 5 and gpu["loads"] == 0, "not every frame"
+    clock.advance_to(began + emb.GPU_RETRY_S - 0.01)
+    assert frame() == "cpu" and gpu["loads"] == 0
+    clock.advance_to(began + emb.GPU_RETRY_S)
+    assert frame() == "cpu" and gpu["loads"] == 1, "tried again at a minute: still failing"
+    assert [frame() for _ in range(5)] == ["cpu"] * 5 and gpu["loads"] == 1, "not every frame"
+    gpu["healthy"] = True  # the driver is back
+    clock.advance(emb.GPU_RETRY_S - 0.01)
+    assert frame() == "cpu" and gpu["loads"] == 1, "a minute after the last try, not before"
+    clock.advance(0.01)
+    frame()  # the try starts at this frame (in the app on its own thread)
+    assert gpu["loads"] == 2 and embedder.device.name == "cuda", "back on the GPU"
+    runs = gpu["runs"]
+    assert frame() == "cuda" and gpu["runs"] > runs, "the next frame's cells on the GPU"
+
+
 def test_a_fractional_cell_never_wears_a_phantom_hover_outline() -> None:
     """641 px for eight squares is 80.125 a square: the edges fall between pixels and the
     straddling pixels blend the two square colours. Rounding the crop to the nearest pixel
