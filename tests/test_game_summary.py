@@ -214,3 +214,16 @@ def test_the_shape_of_a_game_from_its_graph() -> None:
     assert shape_of(intense, "1-0") == "intense"
     # Too short to have a shape.
     assert shape_of([0.5] * 6, "1-0") is None
+    # Big swings that never changed who led, the leader winning: sharp.
+    sharp = [0.5, 0.75, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 0.99, 0.71, 1.0]
+    assert shape_of(sharp, "1-0") == "sharp"
+
+
+def test_no_shape_says_a_side_kept_the_upper_hand_it_lost() -> None:
+    """ "A sharp game with big swings, and Black kept the upper hand" of a game whose lead
+    went from White to Black (the review of 2026-10-01): "sharp" was the shape of every game no
+    other shape fitted. A game no shape fits has none, and its summary says only who won."""
+    once = [0.5, 0.55, 0.6, 0.7, 0.75, 0.74, 0.72, 0.6, 0.5, 0.4, 0.3, 0.25, 0.26, 0.25, 0.3, 0.27]
+    assert shape_of(once, "0-1") is None
+    led = [0.5, 0.6, 0.72, 0.72, 0.73, 0.72, 0.71, 0.72, 0.72, 0.72, 0.6, 0.55]
+    assert shape_of(led, "0-1") is None

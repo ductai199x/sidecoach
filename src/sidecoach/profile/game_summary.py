@@ -72,8 +72,8 @@ def shape_of(graph: Sequence[float], result: str | None) -> str | None:
     ply: **wild**, both sides winning by turns three times or more; **intense**, twice;
     **giveaway**, one side clearly winning and then not winning; **sudden**, close for three
     quarters of the game and decided late; **smooth**, one side took the lead and kept it;
-    **sharp**, big swings that did not change who led; **balanced**, close throughout.
-    Too short a game (under 10 plies) has no shape."""
+    **sharp**, big swings that did not change who led, the leader winning; **balanced**, close
+    throughout. Too short a game (under 10 plies), or one no shape fits, has none."""
     if len(graph) < 11:
         return None
     leaders: list[int] = []  # +1 White winning, -1 Black, in order of the changes
@@ -99,7 +99,10 @@ def shape_of(graph: Sequence[float], result: str | None) -> str | None:
         return "sharp" if swings > 2.0 else "smooth"
     if sum(close) >= 0.7 * len(graph):
         return "balanced"
-    return "sharp"
+    # None of the shapes: the lead changed once, or a side led and did not win. It was "sharp",
+    # and the summary said the winner "kept the upper hand" of a game they came back in (the
+    # review of 2026-10-01).
+    return None
 
 
 def phase_grade(accuracy: float, labels: list[Label]) -> Label:
