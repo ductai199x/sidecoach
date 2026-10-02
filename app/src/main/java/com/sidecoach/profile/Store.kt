@@ -762,6 +762,21 @@ class Store(val path: File?) {
         rows("SELECT * FROM reviews WHERE key = ? ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
     }
 
+    /** Every saved review, by its game's key and its strength. `saved_reviews`. */
+    fun savedReviews(): List<Pair<String, String>> = lock.withLock {
+        rows("SELECT key, strength FROM reviews") { it.getString(0) to it.getString(1) }
+    }
+
+    /** `set_review_summary`. */
+    fun setReviewSummary(key: String, strength: String, summary: String) {
+        lock.withLock { exec("UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?", summary, key, strength) }
+    }
+
+    /** The strength of the review each game's Stats facts come from, by its key. `stat_strengths`. */
+    fun statStrengths(): Map<String, String> = lock.withLock {
+        rows("SELECT key, strength FROM stat_games") { it.getString(0) to it.getString(1) }.toMap()
+    }
+
     /** The coach's words on a review's moves, as far as they are prepared. */
     fun setReviewWords(key: String, strength: String, words: String) {
         lock.withLock { exec("UPDATE reviews SET words = ? WHERE key = ? AND strength = ?", words, key, strength) }

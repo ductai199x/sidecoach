@@ -557,6 +557,37 @@ class ReviewRoom(
         // The review's format: a review saved in an older one is done again.
         const val REVIEW_VERSION = 1
 
+        // What a review's summary and its Stats facts are made of from its report ([rederive]):
+        // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's.
+        const val DERIVED = 2
+        const val DERIVED_KEY = "reviews.derived"
+
+        /**
+         * Every saved review's summary, and its facts for Stats, made again from its report when
+         * what they are made of has changed since ([DERIVED]): no engine. The phases became
+         * Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and 745 of
+         * 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). Returns the
+         * reviews made again. `rederive`.
+         */
+        fun rederive(store: Store): Int {
+            if (store.setting(DERIVED_KEY) == DERIVED.toString()) return 0
+            val counted = store.statStrengths()
+            var done = 0
+            for ((key, strength) in store.savedReviews()) {
+                val saved = store.review(key, strength) ?: continue
+                if (saved.version != REVIEW_VERSION) continue
+                val ok = runCatching {
+                    val reviewed = ReviewJson.reviewed(saved.report)
+                    store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
+                    val row = Library.find(store, key)
+                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                }.isSuccess
+                if (ok) done += 1
+            }
+            store.setSetting(DERIVED_KEY, DERIVED.toString())
+            return done
+        }
+
         // The loop's pace, and how long an untouched room lives.
         private const val TICK_MS = 250L
         private const val IDLE_CLOSE_MS = 20 * 60 * 1000L

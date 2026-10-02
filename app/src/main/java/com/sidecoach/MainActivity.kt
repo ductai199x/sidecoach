@@ -38,6 +38,7 @@ import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.PuzzleRooms
+import com.sidecoach.ui.ReviewRoom
 import com.sidecoach.ui.ReviewRooms
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
@@ -139,6 +140,18 @@ class MainActivity : ComponentActivity() {
         PanelListen.askPermission = { runOnUiThread { microphone.launch(Manifest.permission.RECORD_AUDIO) } }
 
         val store = SettingsStore(this)
+        // The saved reviews summed up again when the rule they are made with changed: once, in
+        // the background, never in the way of the panel (the desktop's server does it so).
+        Thread({
+            runCatching {
+                val profile = com.sidecoach.profile.Store(File(filesDir, "profile.sqlite"))
+                try {
+                    ReviewRoom.rederive(profile)
+                } finally {
+                    profile.close()
+                }
+            }
+        }, "rederive").apply { isDaemon = true }.start()
         val ports = getSharedPreferences("panel", MODE_PRIVATE)
         val port = LocalServer(
             assets,
