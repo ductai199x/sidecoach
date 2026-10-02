@@ -367,6 +367,16 @@ _SET_CHANGES = {
     "maestro to leipzig": (
         "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
     ),
+    # Read as the right pieces, unsettled: the still board explained, the next moves pending.
+    "cburnett to chess7": (
+        "cburnett", "chess7",
+        "e2e3 a7a6 d1e2 h7h6 e2d3 g8f6 d3f5 f6g8 f5e4 c7c5 e4c4 h6h5 c4e6 b7b6 g2g3 a6a5 f1d3"
+        " d7d6 f2f3 c8d7 g1e2 g8h6 b1c3 a8a6",
+        "e6e7 d8e7 h1f1 f7f5",
+    ),
+    "cburnett to leipzig": (
+        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4", "g3g4 h7h5 c2c4 f8h6"
+    ),
 }  # fmt: skip
 
 
@@ -402,6 +412,61 @@ def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
             pipe.process(synthetic_board(board=board, highlight=move, style=after), ts)
             ts += 0.1
     assert pipe.reconciler.board.fen() == board.fen()
+
+
+_OVERLAYS: dict[str, dict[str, Any]] = {
+    "arrows on both rooks": {"arrows": (chess.Move.from_uci("a1b1"), chess.Move.from_uci("h1g1"))},
+    "arrow from piece to piece": {"arrows": (chess.Move.from_uci("d1d2"),)},
+    "red marks on the pawns": {
+        "red_marks": tuple(chess.parse_square(f + "2") for f in "abcfgh") + (chess.E4, chess.D3)
+    },
+    "a selected knight": {"selected": chess.F3},
+}
+
+
+@pytest.mark.parametrize("overlay", list(_OVERLAYS))
+def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(overlay: str) -> None:
+    """The look is learned again on a still board when a kind of which two or more pieces
+    stand reads every one of them off its square (round 3): what a new set does, and what
+    something drawn over the board does not. Held three seconds, an overlay does not even set
+    a learning off (the overlay sweep: 192 of 192, six sets, two themes, sixteen overlays),
+    and the game is read on after it."""
+    from sidecoach.vision.pieces import ThemeModel
+
+    pipe = GamePipeline()
+    board = chess.Board()
+    ts = 0.0
+    look = {"style": "staunty", "theme": "green"}
+    for _ in range(3):
+        pipe.process(synthetic_board(board=board, **look), ts)
+        ts += 0.1
+    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5"):
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            ts += 0.1
+    model = pipe.model
+    learned: list[object] = []
+    real = ThemeModel.from_position
+
+    def counted(*args: Any) -> Any:
+        learned.append(args)
+        return real(*args)
+
+    held = synthetic_board(board=board, highlight=board.peek(), **look, **_OVERLAYS[overlay])
+    import unittest.mock
+
+    with unittest.mock.patch.object(ThemeModel, "from_position", counted):
+        for i in range(30):
+            pipe.process(held, ts, changed=i == 0)
+            ts += 0.1
+    assert pipe.model is model and learned == []
+    for uci in ("c2c3", "d7d6"):
+        move = board.push_uci(uci)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            ts += 0.1
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
 
 
 def test_a_look_that_cannot_be_learned_again_is_told_once() -> None:

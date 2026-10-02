@@ -130,6 +130,38 @@ def _misreads(readings: Readings, position: chess.Board, bottom: Side) -> int:
     return count
 
 
+def _unlanded(readings: Readings) -> bool:
+    """Whether a kind of which two or more pieces stand on the board reads every one of them
+    off its square (unsettled): what a new piece set the recogniser still names right looks
+    like (its landing references are the old set's), while something drawn over the board --
+    an arrow, a mark, a highlight -- spoils squares, not every piece of a kind (round 3: a set
+    change left 10 to 31 pieces unsettled and at least one such kind in each of 24 changes;
+    arrows, red marks and a selected piece held on a still board left none)."""
+    landed: dict[str, list[bool]] = {}
+    for row in readings:
+        for reading in row:
+            if reading.kind == "piece" and reading.symbol is not None:
+                landed.setdefault(reading.symbol, []).append(reading.settled)
+    return any(len(kind) >= 2 and not any(kind) for kind in landed.values())
+
+
+def _reads_landed(readings: Readings, position: chess.Board, bottom: Side) -> bool:
+    """Whether `readings` show `position` on every cell: each of its pieces of its own kind,
+    landed on its square, and nothing on the squares it leaves empty."""
+    for r in range(8):
+        for c in range(8):
+            reading = readings[r][c]
+            piece = position.piece_at(square_at(r, c, bottom))
+            if piece is None:
+                if reading.kind != "empty":
+                    return False
+            elif not (
+                reading.kind == "piece" and reading.symbol == piece.symbol() and reading.settled
+            ):
+                return False
+    return True
+
+
 def _on_its_board(frame: np.ndarray, board: BoardCandidate, tracker: BoardTracker) -> bool:
     """Whether a re-fit of the lock finds the board where the lock is, to within the
     tracker's deadband, with the fit the tracker asks of a lock."""
@@ -867,9 +899,17 @@ class GamePipeline:
             and model.dark_bg is not None
             and not same_theme(*sampled, model.light_bg, model.dark_bg)
         )
-        if not new_theme and rec.unexplained_frames < RELEARN_UNEXPLAINED_FRAMES:
+        # The game unread: a new theme, or frames no story explains (a new set read as other
+        # pieces). Or not yet unread but about to be: a new set read as the right pieces that
+        # no longer land on their squares (`_unlanded`), on a board the reconciler explains
+        # only because an unsettled piece holds no story back -- until a move lands on one,
+        # and the next moves came before the look could be learned (round 3, the look-change
+        # sweep's cburnett to chess7 and to leipzig, moves 0.3 s apart).
+        stalled = new_theme or rec.unexplained_frames >= RELEARN_UNEXPLAINED_FRAMES
+        if not stalled:
+            self._look_lost = None  # the game is read
+        if not stalled and not _unlanded(readings):
             self._relearn_seen = None
-            self._look_lost = None  # the game is read again
             return []
         if any(reading.hover for row in readings for reading in row):  # a piece dragged
             self._relearn_seen = None
@@ -926,9 +966,11 @@ class GamePipeline:
             if (occupied != expected).any():
                 continue
             shown = True
-            # A set learned before on these colours, whole, that reads the position -- every
-            # cell of it: the recogniser this game was read with is among the cached sets,
-            # and read with one piece wrong it was taken again, and nothing changed.
+            # A recogniser is taken only when it reads the position on every cell, every
+            # piece landed on its square: the recogniser this game was read with is among
+            # the cached sets, and read with one piece wrong it was taken again, and nothing
+            # changed; and one learned where something drawn spoils a piece would read it
+            # off its square, and is not taken.
             cached_reads = [
                 (cached, cached_readings)
                 for _key, cached in (
@@ -936,10 +978,9 @@ class GamePipeline:
                     if self.cache is not None and sampled is not None
                     else []
                 )
-                if _misreads(
+                if _reads_landed(
                     cached_readings := cached.classify_frame(frame, geometry), position, bottom
                 )
-                == 0
             ]
             if cached_reads:
                 self.model, self._readings = cached_reads[0]
@@ -948,13 +989,18 @@ class GamePipeline:
             learned = ThemeModel.from_position(frame, geometry, bottom, position)
             if learned is None:
                 continue
+            learned_readings = learned.classify_frame(frame, geometry)
+            if not _reads_landed(learned_readings, position, bottom):
+                continue
             learned.rank_labels = learn_rank_labels(frame, geometry, bottom) or model.rank_labels
             self.model = learned
-            self._readings = learned.classify_frame(frame, geometry)
+            self._readings = learned_readings
             self._look_lost = None
             return []
-        if not (shown or new_theme):
-            return []  # nothing says the look changed: another board, a dialog, a story
+        if not stalled or not (shown or new_theme):
+            # Nothing says the look changed (another board, a dialog, a story), or the game
+            # is still read.
+            return []
         # The game's board in a new look that cannot be learned -- pieces the frame shows
         # where the game has none, a kind its silhouettes do not separate -- or a new theme
         # with moves played since: the game goes unread, and the person is told once, as of
