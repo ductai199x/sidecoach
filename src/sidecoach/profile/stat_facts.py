@@ -243,7 +243,7 @@ def ended_by(text: str | None, result: str | None, game: ReviewedGame) -> str | 
     if result == "1/2-1/2":
         if board.is_insufficient_material():
             return "insufficient material"
-        if board.can_claim_threefold_repetition() or board.is_fivefold_repetition():
+        if board.is_repetition(3):  # the sites draw it as the position comes the third time
             return "repetition"
         if board.halfmove_clock >= 100:
             return "50 moves"
