@@ -133,7 +133,12 @@ class PuzzleRoom(
      * The page said it was in view and has not been heard from since: gone without a word
      * ([VANISHED_MS]). `puzzle_room.PuzzleRoom.vanished`.
      */
-    fun vanished(): Boolean = !hidden && clockMs() - seen > VANISHED_MS
+    fun vanished(): Boolean {
+        // The clock read on every check, hidden or not: the reading has no effect, and each read
+        // is a check the tests can wait on (PuzzleModeTest), as the desktop's wait on `vanished`.
+        val now = clockMs()
+        return !hidden && now - seen > VANISHED_MS
+    }
 
     /** The session's state as the page reads it, with the room's voice, its closing and its model calls. */
     fun state(): JSONObject {

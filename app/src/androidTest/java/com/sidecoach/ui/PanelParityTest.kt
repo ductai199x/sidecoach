@@ -64,10 +64,25 @@ class PanelParityTest {
     @Test
     fun everyEventIsWrittenDownAsTheDesktopWritesIt() {
         val steps = fixture.getJSONArray("dispatch")
-        var opening: String? = null
         // The desktop's engine is a fresh one; the phone's is the app's, which other tests have
         // written on (a GameStarted leaves the badges as they were, as the desktop's does).
         PanelEngine.set("labels" to emptyMap<String, String>(), "game_id" to null, "user_side" to null, "clock" to null)
+        // And a quiet voice, as the desktop's fresh engine has: the app's own voice may still be
+        // speaking a line another test gave it (on the emulator, with no audio out, it stayed
+        // busy), and each new game and move then cut it off in the log first ("cut off: a new
+        // game", PanelVoice.positionMovedOn).
+        val speaker = PanelVoice.speaker
+        PanelVoice.speaker = FakeTts()
+        try {
+            dispatch(steps)
+        } finally {
+            PanelVoice.speaker = speaker
+        }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    private fun dispatch(steps: JSONArray) {
+        var opening: String? = null
         for (i in 0 until steps.length()) {
             val step = steps.getJSONObject(i)
             val event = eventOf(step.getJSONObject("event"))
@@ -91,7 +106,6 @@ class PanelParityTest {
             val kept = step.getJSONObject("state")
             for (key in kept.keys()) check("$label: state $key", state.opt(key), kept.opt(key))
         }
-        assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 
     /** A voice that is busy or not as a case says, and says nothing (`FakeTTS`). */
