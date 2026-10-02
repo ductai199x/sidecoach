@@ -289,7 +289,6 @@ class ReviewRoom(
                 .put("model", written.model)
                 .put("cost", cost ?: JSONObject.NULL)
                 .put("texts", JSONObject().apply { for ((ply, parts) in written.texts) put(ply.toString(), JSONObject(parts as Map<*, *>)) })
-                .put("reveals", JSONArray(written.reveals.sorted()))
             shown = shown(saved, reviewed)
         } catch (exc: Exception) { // a failure is said, never left "writing"
             val gone = runCatching { !store.inRecord(key) }.getOrDefault(false)
