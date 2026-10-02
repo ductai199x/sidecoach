@@ -1382,6 +1382,25 @@ REPAIR_SYSTEM = (
 )
 
 
+# A rate-limited call is asked again once after this long, when the provider's timeout,
+# counted from the first call, leaves room for it.
+RATE_BACKOFF_S = 2.0
+
+
+def _retry_wait(exc: Exception, provider: object, began: float) -> float | None:
+    """How long to wait before asking again after a failed call, or None to give up: only
+    a rate limit (429) is worth a second call; a timeout spent the time, a refused key or a
+    bad request will fail the same way, and each would be paid or wasted twice."""
+    import time
+
+    if not str(exc).startswith("429"):
+        return None
+    budget = getattr(provider, "timeout_s", None)
+    if isinstance(budget, int | float) and time.monotonic() - began + RATE_BACKOFF_S >= budget:
+        return None
+    return RATE_BACKOFF_S
+
+
 class Speaker:
     """Runs the model on a worker thread and checks what it says.
 
@@ -1424,6 +1443,47 @@ class Speaker:
         self._results: queue.SimpleQueue[Spoken] = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
         self._busy = threading.Event()
+        self._closed = threading.Event()
+        # The providers replaced mid-session: their calls still count, and their
+        # connections are closed with the Speaker's (a call in flight may be on one).
+        self._retired: list[object] = []
+
+    def _providers(self) -> list[object]:
+        """Every provider this Speaker has used, each once."""
+        seen: dict[int, object] = {}
+        for p in (
+            self.provider,
+            self.routine_provider,
+            self.verifier,
+            self.claim_reader,
+            *self._retired,
+        ):
+            if p is not None:
+                seen.setdefault(id(p), p)
+        return list(seen.values())
+
+    def replace_providers(
+        self,
+        provider: LLMProvider,
+        routine_provider: LLMProvider | None = None,
+        verifier: LLMProvider | None = None,
+    ) -> None:
+        """A new model mid-game: the next call goes to it; the old ones are kept, for what
+        they were paid and to be closed at the end."""
+        self._retired.extend(self._providers())
+        self.provider = provider
+        self.routine_provider = routine_provider or provider
+        self.verifier = verifier
+
+    def usages(self) -> list[Any]:
+        """The model-call ledgers (llm.usage.Usage) of every provider used, each once: the
+        spend before a model change, and a verifier's on another endpoint, included."""
+        seen: dict[int, Any] = {}
+        for p in self._providers():
+            usage = getattr(p, "usage", None)
+            if usage is not None:
+                seen.setdefault(id(usage), usage)
+        return list(seen.values())
 
     @property
     def pending(self) -> int:
@@ -1435,10 +1495,22 @@ class Speaker:
             self._thread.start()
 
     def close(self, timeout: float = 10.0) -> None:
+        """Stop: what is queued is dropped unasked (the session is gone; nobody would hear
+        it, and each would be paid), and a call in flight is not asked again."""
+        self._closed.set()
+        while True:
+            try:
+                self._requests.get_nowait()
+            except queue.Empty:
+                break
         thread, self._thread = self._thread, None
         if thread is not None:
             self._requests.put(None)
             thread.join(timeout)
+        # Their connections with them: a replaced or closed provider's client stayed open.
+        for p in self._providers():
+            with contextlib.suppress(Exception):
+                getattr(p, "close", lambda: None)()
 
     def submit(self, request: _Request) -> None:
         """Queue a request. An ask goes ahead of any unprompted request still waiting: the
@@ -1497,6 +1569,9 @@ class Speaker:
         reply is sampled by its own stated likelihood from those that pass. Because several are
         offered at once, a clean one is usually among them, so the template is rarely needed.
         """
+        import time
+
+        began = time.monotonic()
         messages = _vs_wrap(list(request.messages), request.candidates)
         problems: list[str] = []
         text = ""
@@ -1528,7 +1603,7 @@ class Speaker:
                 attempts=0,
                 epoch=request.epoch,
             )
-        while attempts < 2:
+        while attempts < 2 and not (attempts and self._closed.is_set()):
             attempts += 1
             stats: dict[str, Any] = {}
             reader: _FirstCandidate | None = None
@@ -1548,6 +1623,7 @@ class Speaker:
                 reader = _FirstCandidate(
                     request.stream_to, lambda t: self._problems(t, request), limit=limit
                 )
+            failed: Exception | None = None
             try:
                 completion = self._complete(
                     provider, request, messages, reader.feed if reader is not None else None
@@ -1558,6 +1634,7 @@ class Speaker:
                 self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 raw = ""
+                failed = exc
             if reader is not None:
                 reader.finish()
                 if reader.spoken:
@@ -1576,6 +1653,15 @@ class Speaker:
                 stats["stream_problems"] = reader.problems or (
                     ["the voice declined"] if reader.declined else ["the stream ended early"]
                 )
+            if failed is not None:
+                # A failed call is not a draft: no complaint, no second paid call for a
+                # timeout or a refused key. A rate limit is waited out once, inside the
+                # provider's timeout counted from the first call.
+                problems = [f"the call failed: {self.last_error}"]
+                wait = _retry_wait(failed, provider, began)
+                if wait is None or self._closed.wait(wait):
+                    break
+                continue
             scored = [
                 (prob, candidate, self._problems(candidate, request))
                 for prob, candidate in _parse_candidates(raw)
@@ -1918,7 +2004,7 @@ class Speaker:
     def _run(self) -> None:
         while True:
             request = self._requests.get()
-            if request is None:
+            if request is None or self._closed.is_set():
                 return
             self._busy.set()
             try:
@@ -3166,9 +3252,7 @@ class Coach:
         """A new model mid-game (the settings saved): the next call goes to it; a call in
         flight finishes on the old one. The conversation is untouched."""
         with self._lock:
-            self.speaker.provider = provider
-            self.speaker.routine_provider = routine_provider or provider
-            self.speaker.verifier = verifier
+            self.speaker.replace_providers(provider, routine_provider, verifier)
             self.summariser = summariser or provider
             self.claims = claims
 

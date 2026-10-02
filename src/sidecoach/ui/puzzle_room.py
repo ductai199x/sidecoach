@@ -77,6 +77,7 @@ class PuzzleRoom:
         # a game of kind "puzzle" and kept quiet: it speaks when asked.
         self._assessing = _Assessing(settings, analysis)
         self._coaching = _Coaching(settings, coach and self._assessing.on, self._assessing.computed)
+        self._ledgers: list[Any] = []  # the coach's, kept past its close
         # The engine's lines are written for the console (rich markup); plain here.
         self._assessing.sink = lambda line: self._emit("engine", "debug", _plain(line))
         self._coaching.sink = self._on_message
@@ -108,13 +109,12 @@ class PuzzleRoom:
         state["voice"] = self.voice
         state["voice_ready"] = self._speak is not None
         state["closed"] = self.closed
-        usage = getattr(getattr(self._coaching.coach, "speaker", None), "provider", None)
-        usage = getattr(usage, "usage", None)
-        if usage is not None:
-            from sidecoach.llm.usage import prices_for
+        ledgers = self.usages()
+        if ledgers:
+            from sidecoach.llm.usage import total
 
-            model = getattr(self._coaching.coach.speaker.provider, "model", None)  # type: ignore[union-attr]
-            state["llm"] = usage.summary(prices_for(self.settings, model))
+            provider = getattr(getattr(self._coaching.coach, "speaker", None), "provider", None)
+            state["llm"] = total(ledgers, self.settings, getattr(provider, "model", None))
         return state
 
     # A move, a take-back and a give-up are played on the page's request and answered with
@@ -255,15 +255,19 @@ class PuzzleRoom:
             with contextlib.suppress(Exception):
                 self._mirror("puzzle", level, f"{self._id} {chan}: {text}", **data)
 
-    def usage(self) -> Any | None:
-        """The room's model calls (llm.usage.Usage), for the parent panel's strip."""
-        provider = getattr(getattr(self._coaching.coach, "speaker", None), "provider", None)
-        return getattr(provider, "usage", None)
+    def usages(self) -> list[Any]:
+        """The room's model-call ledgers (llm.usage.Usage), for the parent panel's strip:
+        kept from the start, as the coach is closed and dropped with the room."""
+        speaker = getattr(self._coaching.coach, "speaker", None)
+        if speaker is not None:
+            self._ledgers = list(speaker.usages())
+        return list(self._ledgers)
 
     def _finish(self) -> None:
         self.closed = True
         with contextlib.suppress(Exception):
             self._assessing.close()
+        self.usages()  # the ledgers kept before the coach goes
         with contextlib.suppress(Exception):
             self._coaching.close()
         self.store.close()
@@ -305,24 +309,37 @@ class PuzzleRooms:
         self._mirror = mirror
         self._rooms: dict[str, PuzzleRoom] = {}
         self._lock = threading.Lock()
+        self._spent: list[Any] = []  # the ledgers of rooms replaced by a reopened puzzle
+        self._opening: dict[str, threading.Event] = {}  # the rooms being made
         # The motif each puzzle was recommended for, told by the engine's profiler.
         self.motifs: dict[str, str] = {}
 
     def open(self, puzzle_id: str) -> PuzzleRoom | None:
-        with self._lock:
-            room = self._rooms.get(puzzle_id)
-            if room is not None and not room.closed and not room.closing:
-                return room
-            if self.puzzles is None and self.data_dir is not None:
-                from sidecoach.profile.puzzles import open_store
+        """The puzzle's room, made if it has none open. It is made outside the lock: making
+        one asks the model whether it answers, and the session loop reads the rooms' spend
+        under this lock every tick -- the live game froze for the length of that check (the
+        API review, 2026-10-01). Two opens of one puzzle at once make one room."""
+        while True:
+            with self._lock:
+                room = self._rooms.get(puzzle_id)
+                if room is not None and not room.closed and not room.closing:
+                    return room
+                making = self._opening.get(puzzle_id)
+                if making is None:
+                    if self.puzzles is None and self.data_dir is not None:
+                        from sidecoach.profile.puzzles import open_store
 
-                with contextlib.suppress(Exception):
-                    self.puzzles = open_store(self.data_dir)
-            if self.puzzles is None:
-                return None
-            puzzle = self.puzzles.get(puzzle_id)
-            if puzzle is None:
-                return None
+                        with contextlib.suppress(Exception):
+                            self.puzzles = open_store(self.data_dir)
+                    if self.puzzles is None:
+                        return None
+                    puzzle = self.puzzles.get(puzzle_id)
+                    if puzzle is None:
+                        return None
+                    making = self._opening[puzzle_id] = threading.Event()
+                    break
+            making.wait()  # another open is making it: take that one
+        try:
             room = PuzzleRoom(
                 self.settings,
                 puzzle,
@@ -334,13 +351,24 @@ class PuzzleRooms:
                 coach=self.coach,
                 mirror=self._mirror,
             )
-            self._rooms[puzzle_id] = room
+            with self._lock:
+                old = self._rooms.get(puzzle_id)
+                if old is not None:
+                    # A puzzle opened again: the closed room's calls still count.
+                    self._spent.extend(old.usages())
+                self._rooms[puzzle_id] = room
             return room
+        finally:
+            with self._lock:
+                self._opening.pop(puzzle_id, None)
+            making.set()
 
     def usages(self) -> list[Any]:
         """The model-call ledgers of the rooms, open or closed, for the panel's strip."""
         with self._lock:
-            return [u for u in (room.usage() for room in self._rooms.values()) if u is not None]
+            rooms = list(self._rooms.values())
+            spent = list(self._spent)
+        return spent + [u for room in rooms for u in room.usages()]
 
     def get(self, puzzle_id: str) -> PuzzleRoom | None:
         with self._lock:

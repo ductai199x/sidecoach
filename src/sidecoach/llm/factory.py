@@ -74,12 +74,19 @@ PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 }
 
 
+# The presets served by a company, at an address of their own (and OPENAI_BASE_URL or
+# DASHSCOPE_BASE_URL): llm.base_url is not theirs to take.
+HOSTED = frozenset({"openai", "dashscope"})
+
+
 def _key_env(settings: LLMSettings, defaults: ProviderDefaults | None) -> str | None:
     """The variable the key is read from: the settings', else the preset's; a custom service
     keeps its key under CUSTOM_API_KEY unless the settings name another ("": none)."""
     if defaults is None:
         return settings.api_key_env if settings.api_key_env is not None else "CUSTOM_API_KEY"
-    return settings.api_key_env or defaults.api_key_env
+    # A preset's key is its own: a custom service's variable left in the settings sent no
+    # key, or the wrong one, to OpenAI (the API review, 2026-10-01).
+    return defaults.api_key_env
 
 
 def api_key_of(settings: LLMSettings) -> str | None:
@@ -132,9 +139,12 @@ def make_provider(settings: LLMSettings, *, timeout_s: float | None = None) -> A
     effort = settings.reasoning_effort or defaults.reasoning_effort
 
     env_url = os.environ.get(defaults.base_url_env) if defaults.base_url_env else None
+    # The server address is the local server's or a custom service's (config: only_for):
+    # a hosted preset's is its own, or the key went over plain HTTP to an old LAN address.
+    own_url = settings.base_url if settings.provider not in HOSTED else None
     return OpenAICompatProvider(
         settings.provider,
-        settings.base_url or env_url or defaults.base_url,
+        own_url or env_url or defaults.base_url,
         settings.model or defaults.model,
         api_key=api_key,
         thinking_control=control,  # type: ignore[arg-type]

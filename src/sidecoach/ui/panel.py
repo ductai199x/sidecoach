@@ -2604,18 +2604,19 @@ class PanelEngine:
         tts_dev = getattr(getattr(self._tts, "device", None), "name", None)
         stt_dev = getattr(getattr(self._stt, "device", None), "name", None)
         # The session's model calls: tokens, and dollars when the prices are known.
+        # Every ledger: the models replaced mid-session and a verifier on its own endpoint
+        # included, each priced as its own model.
         llm = None
-        provider = getattr(getattr(coaching.coach, "speaker", None), "provider", None)
-        usage = getattr(provider, "usage", None)
-        if usage is not None:
-            from sidecoach.llm.usage import combine, prices_for
+        speaker = getattr(coaching.coach, "speaker", None)
+        provider = getattr(speaker, "provider", None)
+        ledgers: list[Any] = list(getattr(speaker, "usages", list)())
+        for source in self.extra_usage:
+            with contextlib.suppress(Exception):
+                ledgers.extend(source())
+        if ledgers:
+            from sidecoach.llm.usage import total
 
-            prices = prices_for(self.settings, getattr(provider, "model", None))
-            ledgers = [usage]
-            for source in self.extra_usage:
-                with contextlib.suppress(Exception):
-                    ledgers.extend(source())
-            llm = combine([ledger.summary(prices) for ledger in ledgers])
+            llm = total(ledgers, self.settings, getattr(provider, "model", None))
         self._set(
             health={
                 "llm": llm,

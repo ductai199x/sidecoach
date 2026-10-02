@@ -154,7 +154,7 @@ def test_the_panel_resets_the_profile_and_clears_the_caches_over_the_api(
     engine = make_panel()
     engine.practice_ids = ["fork1"]
     engine.puzzle_motifs["fork1"] = "fork"
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.post("/api/clear_caches").json()["done"] == [
         "removed theme-abc.pkl",
         "removed puzzles.sqlite",

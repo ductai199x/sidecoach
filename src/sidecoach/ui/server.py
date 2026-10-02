@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import socket
@@ -56,6 +57,52 @@ WEB = Path(__file__).parent / "web"
 # is same-origin and needs none of this.
 SHELL_ORIGINS = ["http://tauri.localhost", "tauri://localhost", "http://localhost:1420"]
 LOCK_FILE = "panel.lock"
+# The request bodies a cross-site page can send without a CORS preflight.
+_SIMPLE_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data", "text/plain")
+
+
+def _host_ok(host: str) -> bool:
+    """Whether a request's Host names this machine by an address or as localhost. Any other
+    name is a page whose domain was made to resolve here (DNS rebinding)."""
+    import ipaddress
+
+    name = host.strip().lower()
+    if name.startswith("["):  # [::1]:8765
+        name = name[1 : name.find("]")] if "]" in name else ""
+    elif name.count(":") == 1:
+        name = name.split(":")[0]
+    if name == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
+def _refusal(method: str, path: str, headers: Any) -> str:
+    """Why a request is refused ('' when it is not): a foreign Host, or a browser request
+    from a page that is neither this server's nor the desktop shell's -- a state change
+    must come with a JSON body, which no cross-site page can send without a preflight."""
+    host = headers.get("host", "")
+    if not _host_ok(host):
+        return "host"
+    origin = headers.get("origin", "")
+    site = headers.get("sec-fetch-site", "")
+    if origin in SHELL_ORIGINS:
+        return ""
+    if origin and origin.lower() not in (f"http://{host}".lower(), f"https://{host}".lower()):
+        return "origin"
+    if site in ("cross-site", "same-site"):
+        return "origin"
+    browser = bool(origin or site)
+    if browser and path.startswith("/api/") and method in ("POST", "PUT", "PATCH"):
+        kind = headers.get("content-type", "").split(";")[0].strip().lower()
+        if not kind or kind in _SIMPLE_TYPES:
+            return "content-type"
+    return ""
+
+
 # How often the server checks that the parent it was told to follow is still alive.
 PARENT_CHECK_S = 2.0
 
@@ -237,9 +284,17 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             path = request.url.path
             if path.startswith("/api/") and path != "/api/health" and request.method != "OPTIONS":
                 header = request.headers.get("authorization", "")
-                if header != f"Bearer {token}":
+                if not hmac.compare_digest(header.encode(), f"Bearer {token}".encode()):
                     return JSONResponse({"ok": False, "error": "unauthorised"}, status_code=401)
             return await call_next(request)
+
+    @app.middleware("http")
+    async def _same_site(request: Request, call_next: Any) -> Any:
+        # Outermost: before the bearer and CORS, a foreign Host or a cross-site page is refused.
+        why = _refusal(request.method, request.url.path, request.headers)
+        if why:
+            return JSONResponse({"ok": False, "error": f"refused: {why}"}, status_code=403)
+        return await call_next(request)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

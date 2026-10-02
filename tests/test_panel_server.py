@@ -20,7 +20,7 @@ from sidecoach.ui.server import build_app
 @pytest.mark.embedder  # a session started builds the stages: the net loads
 def test_controls_and_static_page(make_panel: Callable[..., PanelEngine]) -> None:
     engine = make_panel()
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
 
     poll = client.get("/api/poll").json()
     assert set(poll) == {"state", "lines", "cursor"}
@@ -57,7 +57,7 @@ def test_mute_and_the_listening_mode_are_kept_for_the_next_session(
     first.profile.chesscom_user = "nosegazm"
     first._source = path
     engine = make_panel(first)
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.get("/api/poll").json()["state"]["muted"] is False
     assert client.post("/api/muted", json={"muted": True}).json()["ok"] is True
     assert client.post("/api/listen", json={"mode": "off"}).json() == {"ok": True, "mode": "off"}
@@ -66,10 +66,14 @@ def test_mute_and_the_listening_mode_are_kept_for_the_next_session(
     assert saved.profile.chesscom_user == "nosegazm", "the rest of the file is kept"
     # The next session starts muted, listening as it was left.
     again = make_panel(saved)
-    state = TestClient(build_app(again)).get("/api/poll").json()["state"]
+    state = (
+        TestClient(base_url="http://127.0.0.1", app=build_app(again))
+        .get("/api/poll")
+        .json()["state"]
+    )
     assert again.muted is True and state["muted"] is True and state["listen"] == "off"
     # Settings > Voice's switch is the same setting, applied at once.
-    put = TestClient(build_app(again)).put(
+    put = TestClient(base_url="http://127.0.0.1", app=build_app(again)).put(
         "/api/settings", json={"settings": {"voice": {"muted": False}}}
     )
     assert put.json()["ok"] and again.muted is False
@@ -87,7 +91,7 @@ def test_the_captions_switch_from_the_panel_follows_the_box(
     settings = Settings(data_dir=tmp_path)
     settings._source = tmp_path / "sidecoach.toml"
     engine = make_panel(settings)
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
 
     def captions() -> dict[str, object]:
         return client.get("/api/poll").json()["state"]["captions"]
@@ -118,7 +122,7 @@ def test_every_change_to_the_settings_raises_the_counter_the_main_window_reads(
 
     settings = Settings(data_dir=tmp_path)
     settings._source = tmp_path / "sidecoach.toml"
-    client = TestClient(build_app(make_panel(settings)))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(make_panel(settings)))
 
     def version() -> int:
         return client.get("/api/poll").json()["state"]["settings_version"]

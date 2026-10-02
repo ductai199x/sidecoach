@@ -142,7 +142,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     engine = make_panel()
     engine.puzzle_motifs[FORK.id] = "fork"
     engine.practice_ids = [FORK.id, MATE.id]
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.get(f"/puzzle/{FORK.id}").status_code == 200, "the page"
     assert client.post("/api/puzzle/nope/open").json()["ok"] is False
 
@@ -204,7 +204,7 @@ def test_puzzles_fetched_after_the_server_started_open_in_a_room(
     from sidecoach.ui.server import build_app
 
     engine = make_panel()
-    client = TestClient(build_app(engine))
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"] is False
     _csv(tmp_path)
     opened = client.post(f"/api/puzzle/{FORK.id}/open").json()

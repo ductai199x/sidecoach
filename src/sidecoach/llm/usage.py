@@ -64,6 +64,9 @@ class Usage:
         self.written = 0  # of the prompt tokens, the ones it wrote to its cache
         self.completion = 0
         self.reasoning = 0  # of the completion tokens, the reasoning ones
+        # The model these calls went to, for their prices (a verifier on another model is
+        # priced as itself); None for a ledger no provider named.
+        self.model: str | None = None
 
     def record(
         self, stats: dict[str, Any], *, prompt_chars: int = 0, completion_chars: int = 0
@@ -115,6 +118,20 @@ class Usage:
             }
         out["cost"] = self.cost(prices)
         return out
+
+
+def total(ledgers: list[Any], settings: Any, model: str | None = None) -> dict[str, Any]:
+    """Several ledgers as one summary, each priced as its own model (`model` for one
+    that names none)."""
+    seen: dict[int, Any] = {}
+    for ledger in ledgers:
+        seen.setdefault(id(ledger), ledger)
+    return combine(
+        [
+            ledger.summary(prices_for(settings, getattr(ledger, "model", None) or model))
+            for ledger in seen.values()
+        ]
+    )
 
 
 def combine(summaries: list[dict[str, Any]]) -> dict[str, Any]:

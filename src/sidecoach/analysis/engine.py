@@ -43,6 +43,9 @@ EXTEND_SECONDS = 0.5
 EXTEND_TRIES = 3
 # python-chess's model for turning centipawns into win-draw-loss when an engine will not.
 WDL_MODEL = "sf"
+# How long past its time a streamed search may go before its engine is taken for wedged:
+# python-chess's own timeout for a one-shot search.
+STREAM_GRACE_S = 10.0
 DEFAULT_SCORE_MODEL = "human"
 
 
@@ -90,6 +93,9 @@ class Engine:
     _interruptible: bool = field(default=False, init=False, repr=False)
     _stopped: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _search: chess.engine.SimpleAnalysisResult | None = field(default=None, init=False, repr=False)
+    # Closed by its owner: a search under way (a request's next one, a crash's restart)
+    # does not start another process nobody would close. `open` opens it again.
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -101,11 +107,17 @@ class Engine:
     @property
     def name(self) -> str:
         """What the engine calls itself, for the doctor and the logs."""
-        self.open()
+        self._start()
         assert self._engine is not None
         return str(self._engine.id.get("name", self.path.name))
 
     def open(self) -> None:
+        self._closed = False
+        self._start()
+
+    def _start(self) -> None:
+        if self._closed:
+            raise EngineUnavailable("the engine was closed")
         if self._engine is not None:
             return
         popen: dict[str, Any] = {}
@@ -149,6 +161,11 @@ class Engine:
                 self._engine.configure(options)
 
     def close(self) -> None:
+        self._closed = True
+        self._drop()
+
+    def _drop(self) -> None:
+        """The process gone (a crash's restart starts another; `close` does not)."""
         engine, self._engine = self._engine, None
         if engine is not None:
             with contextlib.suppress(Exception):  # a dead engine needs no goodbye
@@ -257,17 +274,40 @@ class Engine:
         on_depth: Callable[[list[chess.engine.InfoDict]], None] | None = None,
     ) -> list[chess.engine.InfoDict]:
         for attempt in (1, 2):
-            self.open()
+            self._start()
             assert self._engine is not None
             try:
                 if self._interruptible or on_depth is not None:
                     return self._streamed(board, limit, multipv, on_depth)
                 return list(self._engine.analyse(board, limit, multipv=multipv))
             except (chess.engine.EngineTerminatedError, BrokenPipeError) as exc:
-                self.close()
+                self._drop()
                 if attempt == 2:
                     raise EngineUnavailable(f"engine died twice on {board.fen()}: {exc}") from exc
         raise AssertionError("unreachable")
+
+    @contextlib.contextmanager
+    def _watchdog(self, limit: chess.engine.Limit) -> Iterator[None]:
+        """A streamed search with a time limit that has not ended STREAM_GRACE_S past it
+        is a wedged engine: its process is killed, the search ends as a crash does, and
+        the restart answers it. Without this, the worker held the lock forever (the
+        one-shot search has python-chess's own timeout; the stream had none)."""
+        engine = self._engine
+        if limit.time is None or engine is None:
+            yield
+            return
+
+        def kill() -> None:
+            with contextlib.suppress(Exception):
+                engine.close()  # the transport closed: the process is killed
+
+        timer = threading.Timer(limit.time + STREAM_GRACE_S, kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
 
     def _streamed(
         self,
@@ -283,7 +323,7 @@ class Engine:
         if stoppable and self._stopped.is_set():
             raise Interrupted
         assert self._engine is not None
-        with self._engine.analysis(board, limit, multipv=multipv) as search:
+        with self._watchdog(limit), self._engine.analysis(board, limit, multipv=multipv) as search:
             self._search = search if stoppable else None
             try:
                 if stoppable and self._stopped.is_set():  # interrupted before it was in reach
