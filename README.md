@@ -68,8 +68,11 @@ gradlew.bat assemblePhone                      # the APK the phone runs
 gradlew.bat installPhone                       # onto the phone over adb
 powershell -File tools\install.ps1 -Serial <serial>   # the same, checked: refuses a live
                                                # session, prints what landed
-powershell -File tools\test.ps1                # the parity suite, on a device or emulator
-powershell -File tools\test.ps1 -Class com.sidecoach.state.PipelineTest
+powershell -File tools\test.ps1                # the whole suite: the device's and the host's
+powershell -File tools\test.ps1 -Class com.sidecoach.state.PipelineTest   # one device class
+powershell -File tools\test.ps1 -OneAtATime    # the device's classes one after another
+gradlew.bat :app:testPhoneUnitTest --tests com.sidecoach.coach.CoachTest   # one host class
+python tools/lane_seconds.py                  # the lanes' cost table, after a -OneAtATime run
 ```
 
 The phone runs the `phone` build type: the debug build in all but being debuggable, signed with
@@ -78,12 +81,27 @@ debuggable app's code runs without inlining or intrinsics; the tests run the pho
 (`testBuildType`). The debug build (`installDebug`) is for `tools/play_game.ps1`'s rendered game
 and for `run-as`, which only a debuggable app allows.
 
-The tests are instrumented, not unit tests: they need OpenCV's native library, the ONNX
-runtime and the engine, so they run on a device. `tools/test.ps1` rather than Gradle's
-`connectedPhoneAndroidTest`, which uninstalls the app when it is done and takes the engine's
-network with it. It installs only what changed, and pushes the model files the tests load once
-(through the app's external files: `com.sidecoach.FilesIn` moves them in). The default run is
-the whole suite: every case of every test.
+The suite has two halves, and `tools/test.ps1` runs both at once; it exits 0 only if every
+test of both passed. The default run is the whole suite: every case of every test.
+
+- **The device's** (`app/src/androidTest`): the tests that need OpenCV's native library, the
+  ONNX runtime, the engine, SQLite, the screen or the app's own state. `tools/test.ps1` rather
+  than Gradle's `connectedPhoneAndroidTest`, which uninstalls the app when it is done and takes
+  the engine's network with it. It installs only what changed, and pushes the model files the
+  tests load once (through the app's external files: `com.sidecoach.FilesIn` moves them in).
+  The runner (`androidx.test.runner.SidecoachRunner`) runs the classes in lanes side by side
+  (`com.sidecoach.Lanes`): the app lane, one class at a time, for whatever touches the app's
+  shared state (a class that names no lane runs there); the model classes and the free ones in
+  pools, longest first; and a class that holds 85 MB of the heap or more alone waits for a heap
+  slot, since every class shares the one process's 192 MB. Each test's lane, seconds, CPU and
+  peak memory land in `app/build/test-timings.tsv`.
+- **The host's** (`app/src/test`, Gradle's `testPhoneUnitTest`): the pure-logic tests, on the
+  JVM in two forks of two processors, with Android's own `org.json` (`:libcore-json`) and the
+  same fixtures (`com.sidecoach.TestAssets`). A call into Android fails there; it never passes
+  by accident.
+
+A test waits on a state or a signal, never a time: a clock the test moves (`StepClock`,
+`ManualClock`), the code's own hooks (`AnalyserWatch`), a gate the test releases.
 
 The engine is built from source with the NDK, without its 98 MB network; the app fetches the
 network on first run, as the desktop fetches the engine:
