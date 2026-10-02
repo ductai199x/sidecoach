@@ -279,6 +279,41 @@ class GamesApiTest {
         store.close()
     }
 
+    /**
+     * The same moves, players and result played again another day are another game, not a copy
+     * (the audit of 2026-10-02): to the second when both say the time of day, else the same day
+     * or the next. The desktop's test_the_same_game_played_again_another_day_is_another_game.
+     */
+    @Test
+    fun theSameGamePlayedAgainAnotherDayIsAnotherGame() {
+        val timed = LONGER.replace(
+            "[TimeControl \"600\"]\n",
+            "[TimeControl \"600\"]\n[UTCDate \"2026.09.29\"]\n[UTCTime \"23:30:00\"]\n",
+        )
+        for (dated in listOf(true, false)) {
+            val store = Store(null)
+            var later = timed.replace("2026.09.29", "2026.10.06")
+            if (!dated) later = later.replace("[UTCTime \"23:30:00\"]\n", "").replace("[UTCDate \"2026.10.06\"]\n", "")
+            val site = site(timed, "chesscom:1")
+            val again = Library.fromPgn(later, listOf("nosegazm")).single()
+            for (row in listOf(site, again)) store.addLibraryGame(row)
+            Library.reconcile(store)
+            assertEquals("two games", listOf(site.key, again.key).sorted(), shown(store))
+            assertEquals(emptyMap<String, String>(), store.twins())
+            // The same game's copy, a date alone on the day after its UTC date (another time
+            // zone): one game.
+            val copy = Library.fromPgn(
+                timed.replace("[UTCTime \"23:30:00\"]\n", "").replace("[UTCDate \"2026.09.29\"]\n", "")
+                    .replace("2026.09.29", "2026.09.30"),
+                listOf("nosegazm"),
+            ).single()
+            store.addLibraryGame(copy)
+            Library.reconcile(store)
+            assertEquals(mapOf(copy.key to site.key), store.twins())
+            store.close()
+        }
+    }
+
     /** Nothing paid for is lost:the pasted copy's Deep review and its words go to the site's record, which has a lower one. */
     @Test
     fun aCopysReviewAndPaidWordsGoToTheSurvivor() {
