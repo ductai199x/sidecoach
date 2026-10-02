@@ -27,6 +27,7 @@ CPU, the changed cells of a frame in one batch. The model file ships in the pack
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -36,6 +37,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 MODEL_PATH = Path(__file__).with_name("models") / "yolo26n-embed.onnx"
 # Where the net runs: "auto" takes the GPU when onnxruntime's CUDA provider initialises,
@@ -99,6 +102,27 @@ class CellEmbedder:
         self.embed([np.zeros((EMBED_INPUT, EMBED_INPUT, 3), dtype=np.uint8)] * 64)
         return time.perf_counter() - begun
 
+    def _run(self, batch: np.ndarray) -> np.ndarray:
+        """The net over a batch. A run that fails off the CPU -- CUDA out of memory, a
+        driver reset -- loads the net again on the CPU, for good, and runs there: the GPU
+        session was kept failing every frame, and "pipeline error" filled the log (round 2,
+        finding 5). A failure on the CPU is raised."""
+        try:
+            run = self.session.run(None, {"cells": batch})
+        except Exception:
+            if self.device.name == "cpu":
+                raise
+            log.warning(
+                "the embedding net failed on %s; on the CPU from now on",
+                self.device.name,
+                exc_info=True,
+            )
+            from sidecoach.voice.runtime import session
+
+            self.session, self.device = session(self.path, "cpu", intra_op_num_threads=2)
+            run = self.session.run(None, {"cells": batch})
+        return np.asarray(run[0], dtype=np.float32)
+
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:
         """Unit embeddings (n, EMBED_DIM), float32, one per crop; a crop seen before is not
         run through the net again."""
@@ -122,8 +146,7 @@ class CellEmbedder:
                     out[i] = hit
         if todo:
             batch = np.stack([self.prepare(crops[i]) for i in todo]).transpose(0, 3, 1, 2)
-            run = self.session.run(None, {"cells": np.ascontiguousarray(batch, dtype=np.float32)})
-            fresh = np.asarray(run[0], dtype=np.float32)
+            fresh = self._run(np.ascontiguousarray(batch, dtype=np.float32))
             with self._seen_lock:
                 for j, i in enumerate(todo):
                     out[i] = fresh[j]
