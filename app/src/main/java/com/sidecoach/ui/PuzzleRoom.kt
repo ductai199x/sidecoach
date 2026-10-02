@@ -68,7 +68,14 @@ class PuzzleRoom(
     @Volatile var voice: Boolean = speak != null
         private set
 
-    @Volatile var touched: Long = SystemClock.elapsedRealtime()
+    /** The room's clock, in ms: a test moves it. */
+    @Volatile var clockMs: () -> Long = { SystemClock.elapsedRealtime() }
+
+    /** When the page was last heard from, and whether it last said it was out of view. */
+    @Volatile var seen: Long = clockMs()
+        private set
+
+    @Volatile var hidden: Boolean = false
         private set
 
     @Volatile var closed = false
@@ -112,15 +119,25 @@ class PuzzleRoom(
 
     // ---- the page's side -----------------------------------------------------------------
 
-    fun poll(since: Int = 0): JSONObject = JSONObject().apply {
-        put("state", state())
-        put("lines", log.since(since))
-        put("cursor", log.cursor)
+    /** The page's poll; [hidden]: the page is out of view (it says so as it goes). */
+    fun poll(since: Int = 0, hidden: Boolean = false): JSONObject {
+        this.hidden = hidden
+        return JSONObject().apply {
+            put("state", state())
+            put("lines", log.since(since))
+            put("cursor", log.cursor)
+        }
     }
+
+    /**
+     * The page said it was in view and has not been heard from since: gone without a word
+     * ([VANISHED_MS]). `puzzle_room.PuzzleRoom.vanished`.
+     */
+    fun vanished(): Boolean = !hidden && clockMs() - seen > VANISHED_MS
 
     /** The session's state as the page reads it, with the room's voice, its closing and its model calls. */
     fun state(): JSONObject {
-        touched = SystemClock.elapsedRealtime()
+        seen = clockMs()
         val state = synchronized(lock) { session.state() }
         state["voice"] = voice
         state["voice_ready"] = speak != null
@@ -160,7 +177,7 @@ class PuzzleRoom(
 
     /** A command for the loop thread: ask <text> | voice <bool> | close. */
     fun command(name: String, payload: Any? = null) {
-        touched = SystemClock.elapsedRealtime()
+        seen = clockMs()
         if (name == "close") {
             // Said at once, so a page reloading (its old page's close, then its open) gets a
             // fresh room rather than this one on its way out.
@@ -180,8 +197,8 @@ class PuzzleRoom(
                 coaching.events(engineEvents, ts)
                 coaching.tick(ts)
                 coaching.drain()
-                if (SystemClock.elapsedRealtime() - touched > IDLE_CLOSE_MS) {
-                    emit("sys", "info", "room idle; closing")
+                if (vanished()) {
+                    emit("sys", "info", "the page is gone without closing; closing")
                     break
                 }
                 stop.await(TICK_MS, TimeUnit.MILLISECONDS)
@@ -349,9 +366,18 @@ class PuzzleRoom(
     private fun now(): Double = SystemClock.elapsedRealtime() / 1000.0
 
     companion object {
-        /** The loop's pace, and how long an untouched room lives. */
+        /** The loop's pace. */
         const val TICK_MS = 250L
-        const val IDLE_CLOSE_MS = 20 * 60 * 1000L
+
+        /**
+         * A room closes when its page says it goes (its close, its beacon as it unloads or
+         * leaves) and with the app; never for being left alone (Tai, 2026-10-02: a puzzle left
+         * open over lunch was gone after 20 idle minutes). The one safety net is for a page that
+         * vanished without a word (its process died): a page in view polls four times a second,
+         * so one that last said it was in view and has not polled for this long is gone. A page
+         * out of view (its timers slowed or stopped) is never closed by it. `VANISHED_S`.
+         */
+        const val VANISHED_MS = 60_000L
     }
 }
 

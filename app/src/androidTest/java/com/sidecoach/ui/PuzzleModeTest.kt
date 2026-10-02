@@ -207,6 +207,62 @@ class PuzzleModeTest {
         }
     }
 
+    /**
+     * Tai, 2026-10-02: a puzzle left open over lunch was gone after 20 idle minutes. A room
+     * closes when its page says it goes; the one safety net is a page that said it was in view
+     * and then went quiet (its process died). The room's clock is the test's; the loop's reads
+     * of it are the signals the test waits on. `test_a_room_closes_with_its_page_never_for_being_left_alone`.
+     */
+    @Test
+    fun aRoomClosesWithItsPageNeverForBeingLeftAlone() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val (api, rooms) = api(tmp, null)
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/open").getBoolean("ok"))
+            val room = rooms.get(fork.id)!!
+            val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+            // The loop thread's reads of the clock (its check for a vanished page), in order.
+            val loopReads = java.util.concurrent.LinkedBlockingQueue<Long>()
+            room.clockMs = {
+                val t = now.get()
+                if (Thread.currentThread().name == "puzzle-${fork.id}") loopReads.put(t)
+                t
+            }
+            /** Two loop checks at [t]: the first of them ran whole, so its verdict stood. */
+            fun checkedTwiceAt(t: Long) {
+                var seenAt = 0
+                while (seenAt < 2) {
+                    val read = loopReads.poll(60, java.util.concurrent.TimeUnit.SECONDS)
+                        ?: throw AssertionError("the room's loop never checked at $t")
+                    if (read == t) seenAt++
+                }
+            }
+            // Out of view, as the page says when it is hidden: hours of quiet close nothing.
+            assertTrue(call(api, "GET", "/api/puzzle/${fork.id}/poll?hidden=1").getBoolean("ok"))
+            now.addAndGet(3 * 3600 * 1000L)
+            checkedTwiceAt(now.get())
+            assertFalse(room.closed)
+            // Back in view: polled, then quiet with the page in view.
+            val polled = call(api, "GET", "/api/puzzle/${fork.id}/poll")
+            assertTrue(polled.getBoolean("ok") && !polled.getJSONObject("state").getBoolean("closed"))
+            now.addAndGet(PuzzleRoom.VANISHED_MS)
+            checkedTwiceAt(now.get())
+            assertFalse("not past it", room.closed)
+            now.addAndGet(1000L)
+            room.join(60_000)
+            assertTrue("the vanished page's room never finished", room.closed)
+            val gone = call(api, "GET", "/api/puzzle/${fork.id}/poll")
+            assertTrue(gone.getBoolean("closed") && !gone.getBoolean("ok"))
+            // A page that says it goes closes its room at once (its close, or its beacon).
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/open").getBoolean("ok"))
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
+            assertTrue(call(api, "GET", "/api/puzzle/${fork.id}/poll").getBoolean("closed"))
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------
 
     private fun tempDir(): File =
