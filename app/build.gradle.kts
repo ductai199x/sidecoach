@@ -133,14 +133,22 @@ dependencies {
 // android.jar fails loudly ("not mocked"; no isReturnDefaultValues), so a test that needs the
 // phone cannot pass here by accident. Run with `gradlew :app:testPhoneUnitTest`.
 tasks.withType<Test>().configureEach {
-    // Four test JVMs of two processors each: at most eight host threads, whatever the tests'
-    // own pools (Parallel.cores is availableProcessors()), and the JIT's and GC's sized to match.
-    maxParallelForks = 4
+    // Two test JVMs of two processors each (the tests' own pools follow: Parallel.cores is
+    // availableProcessors()). Measured, a JVM of two processors keeps about three host threads
+    // busy -- its two workers, the thread feeding them, its two compilers in bursts: two such
+    // JVMs peak at a quarter of the 24 threads, within the eight the host tests may take while
+    // the device's suite runs (2026-10-02: three peaked at 35 %, four at 47 %, for 1-2 s less).
+    maxParallelForks = 2
     forkEvery = 0
     minHeapSize = "256m"
     maxHeapSize = "1g"
     jvmArgs(
         "-XX:ActiveProcessorCount=2",
+        // No collector or compiler threads beyond the test's own: the serial collector runs on
+        // the thread that allocates, and two compiler threads are the fewest tiered compilation
+        // takes.
+        "-XX:+UseSerialGC",
+        "-XX:CICompilerCount=2",
         // As on the phone: UTF-8 everywhere and an English locale for String.format.
         "-Dfile.encoding=UTF-8",
         "-Dstdout.encoding=UTF-8",
