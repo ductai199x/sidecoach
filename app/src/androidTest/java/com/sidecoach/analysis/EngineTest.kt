@@ -305,8 +305,17 @@ class EngineTest {
         }
     }
 
-    // A finished position has no lines before the engine is asked (`Engine.analyse`'s game-over
-    // return): EngineParityTest's "checkmate" and "a claimable threefold repetition".
+    @Test
+    fun aFinishedPositionHasNoLines() {
+        val engine = shared()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.let {
+            // Checkmate: there is nothing to play.
+            assertTrue(it.analyse(Board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"), depth = 8).isEmpty())
+            // Stalemate, likewise.
+            assertTrue(it.analyse(Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"), depth = 8).isEmpty())
+        }
+    }
 
     @Test
     fun theMoverAlwaysSeesItsOwnScore() {

@@ -35,9 +35,15 @@ class VoiceLogTest {
     private fun emptyDir(name: String): File =
         File(app.cacheDir, "voicelog-$name").apply { mkdirs() }
 
-    // A warning of the voice in the panel's log is aVoiceThatDoesNotLoadSaysSoInTheLog's (its
-    // level and channel) and anUtteranceTheHandlerFailsOnIsSaidAndListeningGoesOn's; an error had
-    // a test of its own, but nothing in the app logs one (`VoiceLog.error` has no caller).
+    @Test
+    fun aWarningAndAnErrorOfTheVoiceAreInThePanelsLog() {
+        val before = cursor()
+        VoiceLog.warn("Kokoro playback failed: no output")
+        VoiceLog.error("something broke")
+        val lines = linesSince(before).filter { it.getString("chan") == "voice" }
+        assertEquals(listOf("warn", "error"), lines.map { it.getString("level") })
+        assertEquals(listOf("Kokoro playback failed: no output", "something broke"), lines.map { it.getString("text") })
+    }
 
     @Test
     fun aVoiceThatDoesNotLoadSaysSoInTheLog() {

@@ -65,9 +65,21 @@ class AnnotatorTest {
         }
     }
 
-    // The engine's own move costs nothing: a move that is the best line's first is a loss of
-    // nought before any search (`Score.evalLoss`), held over every ply of four games by
-    // AnnotatorParityTest (its "best" plies, severity none, loss 0).
+    @Test
+    fun theEnginesOwnMoveCostsNothing() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            val annotator = GameAnnotator(sf, depth = 14, multipv = 4)
+            val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+            val best = annotator.measureForVerdict(board).lines.first().moves.first()
+            val assessment = annotator.assessMove("game", board, Move.fromUci(best), ply = 7)
+            Log.i(TAG, "the engine's own move $best: ${assessment.label}, loss ${assessment.expectedLoss}")
+            assertEquals(0.0, assessment.expectedLoss, 0.0)
+            assertEquals(Severity.NONE, assessment.severity)
+            assertEquals(Label.BEST, assessment.label)
+        }
+    }
 
     @Test
     fun aPositionIsMeasuredOnceAndCarriesItsThreats() {

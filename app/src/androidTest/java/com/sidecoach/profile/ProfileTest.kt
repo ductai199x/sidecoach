@@ -726,6 +726,14 @@ class ProfileTest {
         }
     }
 
+    /** `test_a_query_answering_infinity_is_shown_not_a_crash`. */
+    @Test
+    fun aQueryAnsweringInfinityIsShownNotACrash() {
+        assertEquals("inf", Ask.cell(Double.POSITIVE_INFINITY))
+        assertEquals("nan", Ask.cell(Double.NaN))
+        assertEquals("2.5", Ask.cell(2.5))
+    }
+
     private class Scripted(replies: List<String>) : LLMProvider {
         override val name = "scripted"
         private val replies = ArrayDeque(replies)
