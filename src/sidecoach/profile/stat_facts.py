@@ -313,7 +313,10 @@ def _termination(row: LibraryRow) -> str | None:
     return found.group(1) if found else None
 
 
-def keep_stats(store: Store, strength: str, reviewed: ReviewedGame, row: LibraryRow) -> None:
-    """A reviewed game's facts kept for Stats, in place of any from an older review."""
+def keep_stats(
+    store: Store, strength: str, reviewed: ReviewedGame, row: LibraryRow, *, held: bool = False
+) -> None:
+    """A reviewed game's facts kept for Stats, in place of any from an older review; `held`,
+    only while the game is in the player's record (`Store.save_stats`)."""
     game, moves = facts_of(reviewed, row)
-    store.save_stats(strength, asdict(game), [asdict(m) for m in moves])
+    store.save_stats(strength, asdict(game), [asdict(m) for m in moves], held=held)

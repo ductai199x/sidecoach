@@ -200,7 +200,11 @@ class Backlog:
                 continue
             try:
                 keep_stats(
-                    store, review.strength, ReviewedGame.model_validate_json(review.report), row
+                    store,
+                    review.strength,
+                    ReviewedGame.model_validate_json(review.report),
+                    row,
+                    held=True,
                 )
             except Exception as exc:  # noqa: BLE001 - a review that cannot be read is skipped
                 # Said: a failure kept in silence left no way to tell why a game never reached

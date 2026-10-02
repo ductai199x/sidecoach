@@ -145,6 +145,49 @@ def test_a_review_under_way_saves_nothing_for_a_profile_reset_meanwhile(
     store.close()
 
 
+@pytest.mark.parametrize("lands", ["after the look", "after the save"])
+def test_a_reset_between_the_reviews_look_and_its_save_saves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lands: str
+) -> None:
+    """The audit of 2026-10-02 (For Tai #14): Reset profile landing in the instant after the
+    review asked whether the game is still in the record -- or after its review was saved, before
+    its Stats facts -- still saved the review (and the facts) of a game no longer in the record.
+    Staged exactly there: neither is saved."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.profile import library
+    from sidecoach.ui import review_room
+    from tests.fakes import FakeEngine
+    from tests.test_review_server import GAME
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    settings = Settings(data_dir=tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    looked, saved = store.in_record, store.save_review
+
+    def look(key: str) -> bool:
+        answer = looked(key)
+        if lands == "after the look":
+            reset_profile(settings)  # another connection, as the panel's Reset profile
+        return answer
+
+    def save(*args: Any) -> bool:
+        done = saved(*args)
+        if lands == "after the save":
+            reset_profile(settings)
+        return done
+
+    monkeypatch.setattr(store, "in_record", look)
+    monkeypatch.setattr(store, "save_review", save)
+    review_room.review_row(
+        settings, row, store, STRENGTHS["fast"], workers=1, make_engine=lambda **_: FakeEngine()
+    )
+    assert store.review(row.key, "fast") is None, "no review of a game out of the record"
+    assert store.stat_games() == [], "nor its Stats facts"
+    store.close()
+
+
 def test_the_panel_resets_the_profile_and_clears_the_caches_over_the_api(
     make_panel: Callable[..., PanelEngine], tmp_path: Path
 ) -> None:

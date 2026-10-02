@@ -682,7 +682,7 @@ def review_row(
         )
     # What this strength's review kept part way goes; another strength's stays, to go on from.
     store.clear_progress(row.key, strength.name)
-    keep_stats(store, strength.name, reviewed, row)
+    keep_stats(store, strength.name, reviewed, row, held=True)
     return reviewed, summary
 
 
@@ -705,7 +705,7 @@ def rederive(store: Store) -> int:
             store.set_review_summary(key, strength, summarize(reviewed).model_dump_json())
             row = library.find(store, key)
             if counted.get(key) == strength and row is not None:
-                keep_stats(store, strength, reviewed, row)
+                keep_stats(store, strength, reviewed, row, held=True)
         except Exception as exc:  # noqa: BLE001 - a review that cannot be read is left as it is
             log.warning(
                 "the saved review of %s (%s) could not be summed up again: %r", key, strength, exc
@@ -803,7 +803,7 @@ def _carry_one(store: Store, old: ReviewRow, imported: str, row: LibraryRow) -> 
     if old.words:
         store.set_review_words(imported, old.strength, old.words)
     store.clear_progress(imported, old.strength)
-    keep_stats(store, old.strength, reviewed, row)
+    keep_stats(store, old.strength, reviewed, row, held=True)
     return True
 
 

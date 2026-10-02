@@ -1008,10 +1008,11 @@ def test_a_saved_review_that_cannot_be_summed_up_again_is_said(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The audit of 2026-10-02: a saved review rederive could not read was skipped in silence."""
-    from sidecoach.profile.store import Store
+    from sidecoach.profile.store import LibraryRow, Store
     from sidecoach.ui import review_room
 
     store = Store(tmp_path / "profile.sqlite")
+    store.add_library_game(LibraryRow("pgn:1", "pgn", 0.0, "*"))  # a review is of a listed game
     store.save_review("pgn:1", "fast", review_room.REVIEW_VERSION, 1.0, "not a report", None)
     store.set_setting(review_room.DERIVED_KEY, "1")
     assert review_room.rederive(store) == 0
