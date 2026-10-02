@@ -437,6 +437,9 @@ REQUEST_REBUILT = frozenset(
         # and whether the rung and the marks follow the reply (an AI coach's answer): no
         # check reads either.
         "own_moves",
+        # Whether the voice says the reply (a stuck hint queued ahead of a question is shown,
+        # not spoken): the voice's, no check reads it.
+        "unvoiced",
         "rung_by_reply",
         # Whether the lesson ends by asking what the player saw: the coach's record of the
         # question reads it, no check does.
