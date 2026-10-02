@@ -20,6 +20,7 @@ import math
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 import chess
 
@@ -44,7 +45,7 @@ from sidecoach.events import (
     Takeback,
     UserUtterance,
 )
-from sidecoach.profile import causes
+from sidecoach.profile import causes, stats
 from sidecoach.profile.insights import as_cells, insights, motif_rates, motif_words
 from sidecoach.profile.puzzles import (
     Attempt,
@@ -170,6 +171,9 @@ class Profiler:
         puzzles: PuzzleStore | None = None,
     ) -> None:
         self.store = store
+        # The biggest cost (stats.biggest_cost) as of the games it was made from: read again
+        # only when a game's facts change, not at every snapshot.
+        self._cost: tuple[Any, dict[str, Any] | None] | None = None
         self.session_id = session_id or uuid.uuid4().hex[:8]
         self.store.start_session(self.session_id, ts)
         self.store.purge_unfinished(PROVISIONAL_PLIES)
@@ -731,6 +735,13 @@ class Profiler:
             fullmoves=chess.Board(game.last_fen).fullmove_number,
         )
 
+    def _biggest_cost(self) -> dict[str, Any] | None:
+        """What costs the player most, by the rule of Stats' "Work on this"."""
+        stamp = stats.cost_stamp(self.store)
+        if self._cost is None or self._cost[0] != stamp:
+            self._cost = (stamp, stats.biggest_cost(self.store))
+        return self._cost[1]
+
     def snapshot(self) -> ProfileSnapshot:
         rows = self.store.cells()
         games = self.store.games_count()
@@ -738,7 +749,7 @@ class Profiler:
         return ProfileSnapshot(
             games=games,
             cells=as_cells(rows),
-            insights=insights(rows, games),
+            insights=insights(rows, games, self._biggest_cost()),
             last_session=last.summary if last is not None else None,
         )
 

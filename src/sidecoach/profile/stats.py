@@ -127,7 +127,11 @@ class _Data:
     """Games (their `key`, `user_side`, `result`...) and their moves, both sides'; the player's
     moves apart. From the store (`of`), or from any rows shaped as its (the peers' sample)."""
 
-    def __init__(self, games: list[dict[str, Any]], moves: Iterable[dict[str, Any]]) -> None:
+    def __init__(
+        self, games: list[dict[str, Any]], moves: Iterable[dict[str, Any]], *, rated: bool = True
+    ) -> None:
+        """`rated` false leaves out each move's plies before it, which only the rating model
+        reads (`biggest_cost` needs none)."""
         self.games = games
         by_key = {g["key"]: g for g in games}
         self.moves_by_game: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -135,7 +139,8 @@ class _Data:
         for m in moves:
             self.all_by_game[m["key"]].append(m)
             if m["side"] == by_key[m["key"]]["user_side"]:
-                m["before"] = performance.plies_before(m["fen"])
+                if rated:
+                    m["before"] = performance.plies_before(m["fen"])
                 self.moves_by_game[m["key"]].append(m)
         self.moves = [m for g in games for m in self.moves_by_game[g["key"]]]
 
@@ -304,6 +309,54 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+# Each area as the player hears it (the Stats page's names, in lower case where a sentence
+# takes them): the coach's "biggest cost" says the area Work on this puts first, in these words.
+AREA_NAMES = {
+    "missed.checkmate": "mates you missed",
+    "missed.fork": "forks you missed",
+    "missed.pin": "pins you missed",
+    "missed.discovery": "discovered attacks you missed",
+    "missed.trapped piece": "trapped pieces you missed",
+    "missed.removing the defender": "defenders you could have removed",
+    "missed.free piece": "free pieces you left on the board",
+    "missed.sacrifice": "sacrifices you missed",
+    "missed.other": "other tactics you missed",
+    "allowed.checkmate": "mates you walked into",
+    "allowed.fork": "forks you allowed",
+    "allowed.pin": "pins you walked into",
+    "allowed.discovery": "discovered attacks you allowed",
+    "allowed.trapped piece": "pieces you let be trapped",
+    "allowed.removing the defender": "defenders you let be removed",
+    "allowed.free piece": "pieces you left hanging",
+    "allowed.sacrifice": "sacrifices you allowed",
+    "allowed.other": "other tactics you allowed",
+    "opening": "mistakes in the opening",
+    "endgame.pawn": "king and pawn endings",
+    "endgame.rook": "rook endings",
+    "endgame.queen": "queen endings",
+    "endgame.other": "other endings",
+    "quiet": "mistakes in quiet positions",
+}
+
+
+def biggest_cost(store: Store) -> dict[str, Any] | None:
+    """The area that cost the player most over all their reviewed games: the first of Stats'
+    "Work on this" (`work`, the one rule for what costs most -- the coach's "biggest cost" is
+    this, Tai, 2026-10-02: one taxonomy, not the live causes beside the page's areas), or None
+    while there are too few games or moves behind any. Without the rating model's inputs, which
+    only the ratings read."""
+    games = _games(store, Filter())
+    d = _Data(games, store.stat_moves([g["key"] for g in games]), rated=False)
+    ranked = work(_costs(d))
+    return ranked[0] if ranked else None
+
+
+def cost_stamp(store: Store) -> tuple[tuple[str, str, str], ...]:
+    """What `biggest_cost` is made of, in a cheap stamp: the games it counts, each by its key,
+    the review its facts are from, and the player's side. It changes when a game's facts do."""
+    return tuple((g["key"], g["strength"], g["user_side"]) for g in _games(store, Filter()))
 
 
 # ---- the ratings and the peers ---------------------------------------------------------------

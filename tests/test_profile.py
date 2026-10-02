@@ -489,44 +489,62 @@ def test_insights_need_evidence_before_they_speak() -> None:
 G3 = frozenset({"a", "b", "c"})
 
 
-def test_insights_name_the_biggest_cost_and_whether_it_is_a_gap() -> None:
+def test_insights_say_the_biggest_cost_in_the_areas_of_stats() -> None:
+    """The coach's biggest cost is the area Stats' "Work on this" puts first, in the page's
+    words (Tai, 2026-10-02: one taxonomy); the causes of the live cells no longer name it."""
     rows = [
         CellRow(causes.MISSED_THREAT, "fork", "middlegame", 3, 0, 0.6, G3),
-        _cell(causes.MISSED_THREAT, "pin", "endgame", errors=1, loss=0.1),
         _cell(causes.POSITIONAL, None, "middlegame", errors=1, loss=0.1),
         CellRow(None, "fork", "middlegame", 3, 6, 0.0, G3),
         _cell(None, None, "middlegame", chances=30),
         _cell(None, None, "endgame", chances=12, loss=0.0),
     ]
-    lines = insights(rows, games=3)
-    assert lines[0] == "Your biggest cost over 3 games is missed opponent threat: 4 mistakes."
-    assert lines[1] == "That looks like a gap: it shows up as fork in the middlegame."
+    cost = {"area": "missed.fork", "cost": 0.3, "games": 4, "moves": 5}
+    lines = insights(rows, games=3, cost=cost)
+    assert lines[0] == "Your biggest cost over 4 games is forks you missed: 5 moves."
     assert "You missed a fork 3 of the 6 times you had one." in lines
     assert "The middlegame costs you most per move." in lines
-    assert not any("expected score" in x for x in lines)
+    assert not any("expected score" in x or "looks like a" in x for x in lines)
+    assert not any("missed opponent threat" in x for x in insights(rows, games=3, cost=cost))
+    assert not any("biggest cost" in x for x in insights(rows, games=3)), "no area, no line"
 
 
-def test_a_cost_spread_across_positions_is_a_habit() -> None:
-    rows = [
-        CellRow(causes.POSITIONAL, None, "opening", 1, 0, 0.2, frozenset({"a"})),
-        CellRow(causes.POSITIONAL, None, "middlegame", 1, 0, 0.2, frozenset({"b"})),
-        CellRow(causes.POSITIONAL, None, "endgame", 1, 0, 0.2, frozenset({"c"})),
-    ]
-    lines = insights(rows, games=3)
-    assert lines[1] == "That looks like a habit: it shows up across 3 kinds of position in 3 games."
+def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> None:
+    """One rule: the profiler's snapshot says what Stats puts first, over the same games, and
+    says nothing while Stats names nothing; it follows a game's facts when they change."""
+    from sidecoach.profile.stats import Filter, biggest_cost, stats
+    from tests.test_stats import _game, _move
 
-
-def test_one_bad_game_is_no_habit() -> None:
-    """Three mistakes in one game were "That looks like a habit" (the review of 2026-10-01): a
-    gap or a habit needs its mistakes from several games."""
-    one = frozenset({"g"})
-    rows = [
-        CellRow(causes.POSITIONAL, None, "opening", 1, 0, 0.2, one),
-        CellRow(causes.POSITIONAL, None, "middlegame", 1, 0, 0.2, one),
-        CellRow(causes.POSITIONAL, None, "endgame", 1, 0, 0.15, one),
-    ]
-    lines = insights(rows, games=1)
-    assert lines == ["Your biggest cost is positional misjudgment: 3 mistakes."]
+    store = Store(tmp_path / "profile.sqlite")
+    profiler = Profiler(store, session_id="s")
+    assert profiler.snapshot().insights == []
+    for key in "abc":
+        store.save_stats(
+            "standard",
+            _game(key),
+            [
+                _move(3, "white", phase="opening", label="blunder", loss=0.5),
+                _move(21, "white", chance="fork", found=False, label="miss", loss=0.3),
+            ],
+        )
+    first = stats(store, Filter())["work"][0]
+    assert first["area"] == "opening"
+    cost = biggest_cost(store)
+    assert cost is not None and cost["area"] == first["area"] and cost["cost"] == first["cost"]
+    assert profiler.snapshot().insights[0] == (
+        "Your biggest cost over 3 games is mistakes in the opening: 3 moves."
+    )
+    # A game's facts change (a stronger review of one, a game more): the line follows.
+    for key in "abc":
+        store.save_stats(
+            "deep",
+            _game(key),
+            [_move(21, "white", chance="fork", found=False, label="miss", loss=0.9)],
+        )
+    assert profiler.snapshot().insights[0] == (
+        "Your biggest cost over 3 games is forks you missed: 3 moves."
+    )
+    store.close()
 
 
 def _judged(

@@ -145,6 +145,24 @@ def test_the_filter_takes_a_time_control_and_people_or_bots(tmp_path: Path) -> N
     assert stats(store, Filter(days=0))["overview"]["games"] == 2, "no limit"
 
 
+def test_a_game_with_no_time_class_counts_under_all_and_under_no_class(tmp_path: Path) -> None:
+    """Tai, 2026-10-02: a game joined from the middle has no time control, so no class. It is
+    in every figure under "All" (its clock-free moves in the time figures included, with no
+    crash) and in no class's -- never counted as another one."""
+    store = _store(tmp_path)
+    store.save_stats(
+        "standard",
+        _game("j", time_class=None, termination=None),
+        [_move(1, "white", clock_ms=5_000, spent_ms=1_000, label="mistake", accuracy=40.0)],
+    )
+    assert stats(store, Filter())["overview"]["games"] == 3
+    for speed, held in (("rapid", 1), ("blitz", 1), ("bullet", 0), ("classical", 0), ("daily", 0)):
+        assert stats(store, Filter(time_class=speed))["overview"]["games"] == held, speed
+    assert stats(store, Filter())["time"]["pressure"]["n"] == 1, "no class, no time pressure"
+    assert positions(store, Filter(), "time.pressure", "") is not None
+    store.close()
+
+
 def test_a_figure_opens_the_positions_behind_it(tmp_path: Path) -> None:
     store = _store(tmp_path)
     missed = positions(store, Filter(), "tactics.missed", "pin")

@@ -1,5 +1,5 @@
-"""What the cells add up to, in words (DESIGN section 5.6): the biggest cost, whether it
-is a gap or a habit, the motif missed most often, the phase that costs most.
+"""What the player's record adds up to, in words (DESIGN section 5.6): the biggest cost (the
+area Stats' "Work on this" puts first), the motif missed most often, the phase that costs most.
 
 Everything is computed from counts and the expected score they cost, and an insight
 needs a few mistakes behind it, so a single event never makes a weakness. The words are
@@ -10,18 +10,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import Any
 
 from sidecoach.events import ProfileCell
+from sidecoach.profile.stats import AREA_NAMES
 from sidecoach.profile.store import CellRow
 
-# A cause needs this many mistakes before it is named; a motif this many occasions. A habit
-# (a gap, a habit, a tactic missed) needs its mistakes from this many games: three mistakes in
-# one game were "a habit" (the review of 2026-10-01).
+# A motif is named after this many mistakes of it and this many occasions, from this many
+# games: three mistakes in one game were "a habit" (the review of 2026-10-01).
 MIN_ERRORS = 3
 MIN_CHANCES = 4
 MIN_GAMES = 3
-# A cause whose cost sits this much in one kind of position is a gap; spread out, a habit.
-GAP_SHARE = 0.6
 
 
 def motif_words(name: str | None) -> str:
@@ -75,34 +74,20 @@ def motif_rates(rows: Sequence[CellRow]) -> list[tuple[str, float, int, int]]:
     ]
 
 
-def insights(rows: Sequence[CellRow], games: int) -> list[str]:
-    """The player model in a few sentences, or nothing while the counts are small."""
+def insights(rows: Sequence[CellRow], games: int, cost: dict[str, Any] | None = None) -> list[str]:
+    """The player model in a few sentences, or nothing while the counts are small. `cost` is the
+    area that costs the player most (`stats.biggest_cost`): the one rule Stats' "Work on this"
+    uses, so the coach and the page name the same thing. The cells' causes (a mistake's why)
+    were a second taxonomy beside Stats' areas -- the coach said "missed opponent threat" where
+    the page said "forks you missed" (Tai, 2026-10-02: "fine", one) -- and no longer name the
+    biggest cost; the sentences that said a gap or a habit were about that cause and go with
+    it."""
     out: list[str] = []
-    by_cause: dict[str, list[CellRow]] = defaultdict(list)
-    for r in rows:
-        if r.cause is not None and r.errors > 0:
-            by_cause[r.cause].append(r)
-    if by_cause:
-        cause, cells = max(by_cause.items(), key=lambda kv: sum(c.expected_loss for c in kv[1]))
-        errors = sum(c.errors for c in cells)
-        loss = sum(c.expected_loss for c in cells)
-        if errors >= MIN_ERRORS:
-            over = f" over {games} games" if games > 1 else ""
-            out.append(f"Your biggest cost{over} is {cause}: {errors} mistakes.")
-            top = max(cells, key=lambda c: c.expected_loss)
-            seen_in = len(frozenset[str]().union(*(c.games for c in cells)))
-            if seen_in < MIN_GAMES:
-                pass  # a gap or a habit needs several games behind it, never one bad game
-            elif loss > 0 and top.expected_loss / loss >= GAP_SHARE and (top.motif or top.phase):
-                what = motif_words(top.motif) if top.motif else "positions"
-                where = f" in the {top.phase}" if top.phase else ""
-                out.append(f"That looks like a gap: it shows up as {what}{where}.")
-            else:
-                kinds = len({(c.motif, c.phase) for c in cells})
-                out.append(
-                    f"That looks like a habit: it shows up across {kinds} kinds of position"
-                    f" in {seen_in} games."
-                )
+    if cost is not None:
+        name = AREA_NAMES.get(cost["area"], cost["area"])
+        out.append(
+            f"Your biggest cost over {cost['games']} games is {name}: {cost['moves']} moves."
+        )
     # The motif missed most often, as a rate over the occasions it was on the board.
     rated = motif_rates(rows)
     if rated:
