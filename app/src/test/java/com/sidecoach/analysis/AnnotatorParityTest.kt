@@ -291,8 +291,9 @@ class AnnotatorParityTest {
         val held = object : FakeEngine() {
             override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
                 searching.countDown()
-                // A fake that timed out and carried on would pass a test that never let it go.
-                if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw AssertionError("the test never let the search go")
+                // A fake that timed out and carried on would pass a test that never let it go. (An exception,
+                // not an Error: on the analyser's thread an Error would end the test process.)
+                if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw IllegalStateException("the test never let the search go")
                 return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
             }
         }
@@ -564,7 +565,7 @@ class AnnotatorParityTest {
                 val deadline = System.nanoTime() + HANG_MS * 1_000_000
                 while (!stopped) {
                     val left = (deadline - System.nanoTime()) / 1_000_000
-                    if (left <= 0) throw AssertionError(what)
+                    if (left <= 0) throw IllegalStateException(what)
                     lock.wait(left)
                 }
             }

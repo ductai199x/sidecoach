@@ -82,8 +82,9 @@ class TakebackTest {
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             searching.countDown()
-            // A fake that timed out and carried on would pass a test that never let it go.
-            if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw AssertionError("the test never let the search go")
+            // A fake that timed out and carried on would pass a test that never let it go. (An exception,
+            // not an Error: on the analyser's thread an Error would end the test process.)
+            if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw IllegalStateException("the test never let the search go")
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
@@ -125,7 +126,7 @@ class TakebackTest {
             val deadline = System.nanoTime() + HANG_MS * 1_000_000
             while (!condition()) {
                 val left = (deadline - System.nanoTime()) / 1_000_000
-                if (left <= 0) throw AssertionError(what)
+                if (left <= 0) throw IllegalStateException(what)
                 gate.wait(left)
             }
         }
@@ -186,20 +187,24 @@ class TakebackTest {
         }
         analyser.submitMove("g", moves[0].first, moves[0].second, 1)
         analyser.start()
-        assertTrue("the worker never started on ply 1", engine.searching.await(HANG_MS, TimeUnit.MILLISECONDS))
-        for ((before, move, ply) in moves.drop(1)) analyser.submitMove("g", before, move, ply)
-        // Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
-        analyser.withdraw("g", 2)
-        assertEquals(2, analyser.withdrawn)
-        assertEquals(2, analyser.pending)
-        // Ply 1 taken back too, mid-search: its verdict is not delivered.
-        analyser.withdraw("g", 0)
-        assertEquals(4, analyser.withdrawn)
-        engine.go.countDown()
-        // Nothing is delivered of ply 1, so wait for the work to be settled, not for words: a word
-        // is put before its request settles, so none can come after `pending` is 0.
-        val got = watch.settled()
-        analyser.close()
+        val got = try {
+            assertTrue("the worker never started on ply 1", engine.searching.await(HANG_MS, TimeUnit.MILLISECONDS))
+            for ((before, move, ply) in moves.drop(1)) analyser.submitMove("g", before, move, ply)
+            // Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
+            analyser.withdraw("g", 2)
+            assertEquals(2, analyser.withdrawn)
+            assertEquals(2, analyser.pending)
+            // Ply 1 taken back too, mid-search: its verdict is not delivered.
+            analyser.withdraw("g", 0)
+            assertEquals(4, analyser.withdrawn)
+            engine.go.countDown()
+            // Nothing is delivered of ply 1, so wait for the work to be settled, not for words: a
+            // word is put before its request settles, so none can come after `pending` is 0.
+            watch.settled()
+        } finally {
+            engine.go.countDown() // a failed assertion above leaves no search held
+            analyser.close()
+        }
         val plies = got.mapNotNull { (it as? MoveAssessment)?.ply ?: (it as? Analysis)?.ply }
         assertTrue("words on withdrawn plies: $plies", plies.none { it == 1 || it == 3 || it == 4 })
         assertEquals(0, analyser.pending)
@@ -322,7 +327,7 @@ class TakebackTest {
                     val deadline = System.nanoTime() + HANG_MS * 1_000_000
                     while (!stopped) {
                         val left = (deadline - System.nanoTime()) / 1_000_000
-                        if (left <= 0) throw AssertionError("the whole measure was never let go")
+                        if (left <= 0) throw IllegalStateException("the whole measure was never let go")
                         lock.wait(left)
                     }
                 }

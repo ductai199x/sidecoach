@@ -252,8 +252,14 @@ class EngineTest {
             try {
                 var lines: List<com.sidecoach.events.Line> = emptyList()
                 val searching = CountDownLatch(1)
+                val failed = java.util.Collections.synchronizedList(ArrayList<Throwable>())
                 val search = kotlin.concurrent.thread {
-                    lines = sf.analyse(slow, depth = 40, multipv = 4, onDepth = { searching.countDown() })
+                    // Caught: a throw on a thread of its own would end the test process.
+                    try {
+                        lines = sf.analyse(slow, depth = 40, multipv = 4, onDepth = { searching.countDown() })
+                    } catch (exc: Throwable) {
+                        failed.add(exc)
+                    }
                 }
                 assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
                 // The time keeper has read the clock and let go of it (the pause waits for it):
@@ -271,6 +277,7 @@ class EngineTest {
                 sf.resume() // wakes the time keeper
                 search.join(HANG_MS)
                 assertTrue("the cap did not hold", !search.isAlive)
+                assertEquals("the search failed", emptyList<Throwable>(), failed)
                 assertEquals("one stop, the cap's", stops + 1, sf.count("> stop"))
                 assertTrue("no lines", lines.isNotEmpty())
                 assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
@@ -347,7 +354,15 @@ class EngineTest {
             val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
             var lines: List<com.sidecoach.events.Line> = emptyList()
             val searching = CountDownLatch(1)
-            val search = kotlin.concurrent.thread { lines = sf.analyse(board, timeS = 1.0, onDepth = { searching.countDown() }) }
+            val failed = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+            val search = kotlin.concurrent.thread {
+                // Caught: a throw on a thread of its own would end the test process.
+                try {
+                    lines = sf.analyse(board, timeS = 1.0, onDepth = { searching.countDown() })
+                } catch (exc: Throwable) {
+                    failed.add(exc)
+                }
+            }
             assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
             sf.pause()
             sf.untilStopped()
@@ -371,6 +386,7 @@ class EngineTest {
             sf.resume() // wakes the time keeper
             search.join(HANG_MS)
             assertTrue("the search never ended", !search.isAlive)
+            assertEquals("the search failed", emptyList<Throwable>(), failed)
             Log.i(TAG, "paused search: engine cpu $held -> $stillHeld ms, depth ${lines.firstOrNull()?.depth}")
             assertEquals("the engine ran while paused: $held -> $stillHeld ms", held, stillHeld)
             assertEquals("one stop", 1, sf.count("> stop"))
@@ -455,6 +471,7 @@ class EngineTest {
     private fun searchToDepth60(sf: Watched): Pair<Thread, List<Throwable>> {
         val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
         val searching = CountDownLatch(1)
+        sf.maxSeconds = null // no cap to end it: only a `stop` does
         val worker = kotlin.concurrent.thread {
             try {
                 sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1, onDepth = { searching.countDown() }) }
