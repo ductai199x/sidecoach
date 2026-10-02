@@ -108,18 +108,22 @@ class CoachTest {
         return messages(coach)
     }
 
-    /** The engine's look at [board]: two of its legal moves, captures first, the first the best. */
-    private fun twoLines(board: Board, ply: Int): Analysis {
+    /**
+     * The engine's look at [board]: two of its legal moves, captures first, the first the best;
+     * [provisional] the early depth, the full one to follow.
+     */
+    private fun twoLines(board: Board, ply: Int, provisional: Boolean = false): Analysis {
         val (first, second) = board.legalMoves()
             .sortedWith(compareBy<Move>({ !board.isCapture(it) }, { it.uci() }))
             .take(2)
+        val depth = if (provisional) 12 else 18
         return Analysis(
             gameId = "g", fen = board.fen(), ply = ply,
             lines = listOf(
-                Line(moves = listOf(first.uci()), depth = 18, expectedScore = 0.7),
-                Line(moves = listOf(second.uci()), depth = 18, expectedScore = 0.5),
+                Line(moves = listOf(first.uci()), depth = depth, expectedScore = 0.7),
+                Line(moves = listOf(second.uci()), depth = depth, expectedScore = 0.5),
             ),
-            decisive = false, onlyMove = false,
+            decisive = false, onlyMove = false, provisional = provisional,
         )
     }
 
@@ -128,7 +132,13 @@ class CoachTest {
      * speak: the model is given the position the player faces -- its board, the side to move,
      * the engine's lines, the facts -- and no other as the position now. At a puzzle's start, a
      * joined game's, a re-read board's or after a takeback to the start, it was given none, or
-     * the withdrawn move's (Tai, 2026-10-01). `test_conversation.py`.
+     * the withdrawn move's (Tai, 2026-10-01). Asked before the engine has looked, the question
+     * is answered from its early depth, and the position now shows that depth's lines and facts:
+     * only the full depth reached the record, and the model was told "Engine lines: not in yet."
+     * with no facts (the coach review, 2026-10-01). Only the position now has its legal moves:
+     * the setting, the takeback and the re-read show a board as where the record starts or went
+     * back to, and after a re-read the setting's board was a second "position as it stands".
+     * `test_conversation.py`.
      */
     @Test
     fun thePositionNowIsTheBoardThePlayerFaces() {
@@ -150,7 +160,12 @@ class CoachTest {
                 val (coach, provider) = coach(emptyList())
                 coach.onEvent(GameStarted(gameId = "g", userSide = side, startFen = fen, kind = kind), 0.0)
                 var board = Board(fen)
-                coach.onEvent(twoLines(board, 0), 0.5)
+                // Asked, the position now's analysis lands after the question, at its early depth.
+                val later = ArrayList<Pair<Board, Int>>()
+                fun look(at: Board, ply: Int, ts: Double, now: Boolean = false) {
+                    if (now && trigger == "asked") later.add(at.copy() to ply) else coach.onEvent(twoLines(at, ply), ts)
+                }
+                look(board, 0, 0.5, now = state == "start")
                 var gone: String? = null
                 if (state == "moved" || state == "taken back") {
                     for (ply in 1..2) {
@@ -162,7 +177,7 @@ class CoachTest {
                             MovePlayed(gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before, fenAfter = board.fen(), byUser = ply == 1),
                             ply.toDouble(),
                         )
-                        coach.onEvent(twoLines(board, ply), ply + 0.5)
+                        look(board, ply, ply + 0.5, now = state == "moved" && ply == 2)
                     }
                     if (state == "taken back") {
                         gone = board.fen()
@@ -177,13 +192,18 @@ class CoachTest {
                     board = Board(reread.getValue(side))
                     coach.conversation.coachSaid("Look at the knight.") // of the board before the re-read
                     coach.onEvent(Resync("g", board.fen(), "re-read"), 3.0)
-                    coach.onEvent(twoLines(board, 0), 3.5)
+                    look(board, 0, 3.5, now = true)
                 }
                 assertTrue(where, coach.userToMove && coach.board.fen() == board.fen())
                 if (trigger == "stuck") {
                     stuck(coach)
                 } else {
                     coach.ask("what should I be thinking about here?", 10.0)
+                    for ((at, ply) in later) {
+                        messages(coach)
+                        assertTrue("$where: the question waits for the engine's look", provider.prompts.isEmpty())
+                        coach.onEvent(twoLines(at, ply, provisional = true), 10.5)
+                    }
                     messages(coach)
                 }
                 assertTrue("$where: the model was asked", provider.prompts.isNotEmpty())
@@ -196,6 +216,10 @@ class CoachTest {
                     assertFalse("$where: said of a position no longer the game's", "Look at the knight." in now)
                 }
                 assertTrue(where, (if (board.turn == WHITE) "White" else "Black") + " to move" in now)
+                assertTrue(
+                    "$where: one board to play on",
+                    harness.split("Legal moves: ").size - 1 == 1 && "Legal moves: " in now,
+                )
                 val best = board.san(Move.fromUci(twoLines(board, 0).lines[0].moves[0]))
                 val lines = now.substringAfter("## Engine lines").substringBefore("\n## ")
                 assertTrue("$where: the engine's best line\n$lines", " $best  0.70" in lines.split("\n")[1])
@@ -224,6 +248,23 @@ class CoachTest {
                 (harnessProblem(withdrawn, board, Pieces.Side.BLACK) ?: "")
         )
         assertEquals("the setting does not say the player is White", harnessProblem(good, board, Pieces.Side.WHITE))
+        // The engine's lines and the facts, when the coach has them for the position now: the
+        // early depth was answered from and never shown (the coach review, 2026-10-01).
+        val unread = good + "\n\n## Engine lines\nnot in yet.\n\n## On the board (complete lists)\n..."
+        assertEquals("nothing known: nothing missing", null, harnessProblem(unread, board, Pieces.Side.BLACK))
+        assertEquals(
+            "the position now has no engine lines, though the coach has them",
+            harnessProblem(unread, board, Pieces.Side.BLACK, lines = true),
+        )
+        val read = good + "\n\n## Engine lines (the player's move)\n  1. Qxf2+  0.70\n\n" +
+            "## On the board (complete lists)\n...\n\n## Said here\n    EVENT: ## Facts (a quote)"
+        assertEquals(null, harnessProblem(read, board, Pieces.Side.BLACK, lines = true))
+        assertEquals(
+            "the position now has no facts, though the coach has them",
+            harnessProblem(read, board, Pieces.Side.BLACK, lines = true, facts = true),
+        )
+        val withFacts = read.replace("\n\n## On the board", "\n\n## Facts (the player to move)\nphase: x")
+        assertEquals(null, harnessProblem(withFacts, board, Pieces.Side.BLACK, lines = true, facts = true))
     }
 
     /**
@@ -906,33 +947,47 @@ class CoachTest {
      */
     @Test
     fun theirThreatOnTheirTurnIsTheirBestMoveNotThePlayers() {
-        val (coach, provider) = coach(listOf("", ""))
-        start(coach, Pieces.Side.BLACK)
-        val board = Board()
-        for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
-            val ply = i + 1
-            val move = board.parseSan(san)!!
-            val before = board.fen()
-            board.push(move)
-            coach.onEvent(
-                MovePlayed(
-                    gameId = "g",
-                    ply = ply,
-                    san = san,
-                    uci = move.uci(),
-                    fenBefore = before,
-                    fenAfter = board.fen(),
-                    byUser = ply % 2 == 0,
-                ),
-                ply.toDouble(),
-            )
+        fun scholarAsBlack(): Pair<Coach, ScriptedProvider> {
+            val (coach, provider) = coach(listOf("", ""))
+            start(coach, Pieces.Side.BLACK)
+            val board = Board()
+            for ((i, san) in listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6").withIndex()) {
+                val ply = i + 1
+                val move = board.parseSan(san)!!
+                val before = board.fen()
+                board.push(move)
+                coach.onEvent(
+                    MovePlayed(
+                        gameId = "g",
+                        ply = ply,
+                        san = san,
+                        uci = move.uci(),
+                        fenBefore = before,
+                        fenAfter = board.fen(),
+                        byUser = ply % 2 == 0,
+                    ),
+                    ply.toDouble(),
+                )
+            }
+            assertFalse(coach.userToMove)
+            coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+            return coach to provider
         }
-        assertFalse(coach.userToMove)
-        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        val (coach, provider) = scholarAsBlack()
         coach.ask("what are they threatening?", 8.0)
         val out = messages(coach)
         assertTrue(directiveOf(given(provider, 0)), "it is the opponent's move" in directiveOf(given(provider, 0)))
         assertTrue(out.toString(), out.isNotEmpty() && out.last().text.startsWith("It's their move, and their best is Qxf7#"))
+        // A hint asked on their turn is the same, never the player's hint on the opponent's
+        // position: the model was asked for "the first hint" and to keep back "the player's move"
+        // (the coach review, 2026-10-01).
+        val (hinted, hintModel) = scholarAsBlack()
+        hinted.ask("hint", 9.0)
+        val hint = messages(hinted)
+        val task = directiveOf(given(hintModel, 0))
+        assertTrue(task, "it is the opponent's move" in task)
+        assertTrue(task, "Give the first hint" !in task && "Keep back only the answer" !in task)
+        assertTrue(hint.toString(), hint.isNotEmpty() && hint.last().text.startsWith("It's their move, and their best is Qxf7#"))
     }
 
     /** Their own move is theirs even after the reply, and a threat gets its answer (af1bae2). */
@@ -1792,6 +1847,33 @@ class CoachTest {
         assertEquals(Unlock.HINT, unlockFor("HINT please", board, emptyList()))
         assertEquals(Unlock.ASK_MOVE, unlockFor("what should I play here", board, emptyList()))
         assertEquals(null, unlockFor("how are you", board, emptyList()))
+        // Words, not a word: "open lines" opened the line, and "which move" or "the answer" about
+        // a move already played opened the move, and the answer was given (the coach review,
+        // 2026-10-01).
+        for (said in listOf(
+            "are there any open lines for my rooks?",
+            "which move did they just play?",
+            "which move did I miss there?",
+            "what was the answer to their last threat?",
+            "was that the best move?",
+        )) {
+            assertEquals(said, null, unlockFor(said, board, listOf("Qxf7#")))
+        }
+        for ((said, unlock) in listOf(
+            "what's the line?" to Unlock.ASK_LINE,
+            "what are the lines here?" to Unlock.ASK_LINE,
+            "give me a line" to Unlock.ASK_LINE,
+            "show me some lines" to Unlock.ASK_LINE,
+            "what's the main variation?" to Unlock.ASK_LINE,
+            "ok and after that?" to Unlock.ASK_LINE,
+            "how would this position continues?" to Unlock.ASK_LINE,
+            "which move should I play?" to Unlock.ASK_MOVE,
+            "which move is best?" to Unlock.ASK_MOVE,
+            "just tell me the answer" to Unlock.ASK_MOVE,
+            "what's the answer to their threat?" to Unlock.ASK_MOVE,
+        )) {
+            assertEquals(said, unlock, unlockFor(said, board, listOf("Qxf7#")))
+        }
     }
 
     /**
@@ -2174,6 +2256,13 @@ class CoachTest {
         assertTrue(coach.fastPace)
         coach.onEvent(GameStarted(gameId = "h", userSide = Pieces.Side.WHITE, startFen = Board().fen()), 10.0)
         assertTrue(coach.paceS == null && !coach.fastPace)
+        // The next puzzle in the same orientation comes as a re-read of the board: the pace was
+        // kept, and its first find was only shown (the game-state review, 2026-10-01).
+        val (again, _) = coach(emptyList())
+        playFromStart(again, listOf("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"), thinkMs = 1000)
+        assertTrue(again.fastPace)
+        again.onEvent(Resync("g", SCHOLAR, "position adopted"), 10.0)
+        assertTrue(again.paceS == null && !again.fastPace)
     }
 
     /**
@@ -2543,7 +2632,326 @@ class CoachTest {
         assertTrue(coach.verdictWord("book") in OPENERS.getValue("book").map { "$it." })
     }
 
+    // ---- the coach review, 2026-10-01: the game's lifecycle (desktop tests/test_coach.py) ----
+
+    private fun offlineCoach(): Coach =
+        Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+
+    /** `_looked`: the engine's look at [board], [ucis] its lines best first, [threats] (UCI) too. */
+    private fun looked(
+        coach: Coach,
+        board: Board,
+        ply: Int,
+        ucis: List<String>,
+        ts: Double,
+        threats: List<String> = emptyList(),
+    ) {
+        coach.onEvent(
+            Analysis(
+                gameId = "g", fen = board.fen(), ply = ply,
+                lines = ucis.mapIndexed { i, u -> Line(moves = listOf(u), depth = 18, expectedScore = 0.5 - i / 10.0) },
+                decisive = false, onlyMove = false, threats = threats,
+            ),
+            ts,
+        )
+    }
+
+    /** `_judged`: the engine's verdict on the move at [ply]: its own best. */
+    private fun judged(coach: Coach, ply: Int, uci: String, ts: Double) {
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g", ply = ply, uci = uci, expectedLoss = 0.0, severity = Severity.NONE,
+                best = listOf(uci), label = Label.BEST,
+            ),
+            ts,
+        )
+    }
+
+    /** `_judged_at_scholar`: the user's [san] from SCHOLAR (ply 7) at [ts], its verdict a second later. */
+    private fun judgedAtScholar(coach: Coach, san: String, loss: Double, severity: Severity, label: Label, ts: Double) {
+        val board = Board(SCHOLAR)
+        val move = board.parseSan(san)!!
+        board.push(move)
+        coach.onEvent(
+            MovePlayed(gameId = "g", ply = 7, san = san, uci = move.uci(), fenBefore = SCHOLAR, fenAfter = board.fen(), byUser = true),
+            ts,
+        )
+        coach.onEvent(
+            MoveAssessment(
+                gameId = "g", ply = 7, uci = move.uci(), expectedLoss = loss, severity = severity,
+                best = listOf("h5f7"), label = label,
+            ),
+            ts + 1,
+        )
+    }
+
+    /**
+     * A reply still being written when the game moved on -- a takeback, a re-read, the next game
+     * -- was recorded wherever the game was when it landed: under "Said here" of the position taken
+     * back to or of the new game, where it made the player's next words a follow-up, or the answer
+     * to its question. And a lesson held for its analysis was said in the next game.
+     * `test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now`.
+     */
+    @Test
+    fun aReplyAboutAMomentTheGameHasLeftIsNoTurnOfTheOneNow() {
+        for (change in listOf("takeback", "re-read", "new game")) {
+            val (coach, _) = coach(listOf("[p=1.0] The queen mates on f7. What did you miss?"))
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 7.0)
+            judgedAtScholar(coach, "Bxf7+", 0.45, Severity.BLUNDER, Label.MISS, 10.0) // the lesson, asked
+            when (change) {
+                "takeback" -> coach.onEvent(Takeback("g", 1, SCHOLAR), 12.0)
+                "re-read" -> coach.onEvent(Resync("g", SCHOLAR, "re-read"), 12.0)
+                else -> start(coach)
+            }
+            val out = messages(coach) // the reply lands now
+            assertEquals(change, listOf(Trigger.POST_MISTAKE), out.map { it.trigger })
+            assertTrue(change, coach.conversation.entries.none { it.kind == "coach" })
+            assertFalse(change, out[0].text in coach.conversation.render())
+        }
+        val coach = Coach(
+            ScriptedProvider(emptyList()),
+            policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)),
+            lessonWaitS = LESSON_WAIT_S,
+        )
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        judgedAtScholar(coach, "Bxf7+", 0.45, Severity.BLUNDER, Label.MISS, 10.0)
+        assertEquals("held for the analysis of the position it left", emptyList<CoachMessage>(), messages(coach))
+        start(coach)
+        coach.tick(12.0 + LESSON_WAIT_S)
+        assertEquals("the last game's lesson", emptyList<CoachMessage>(), messages(coach))
+    }
+
+    /**
+     * What was said unasked at the plies taken back is not counted against the positions played
+     * to there after: counted by ply, both hints said after 1.e4 left 1.d4, played in its place,
+     * with no stuck hint at all.
+     * `test_the_hints_said_at_a_withdrawn_ply_do_not_count_against_the_next_position_there`.
+     */
+    @Test
+    fun theHintsSaidAtAWithdrawnPlyDoNotCountAgainstTheNextPositionThere() {
+        val coach = offlineCoach()
+        start(coach, Pieces.Side.BLACK)
+        var board = Board()
+        played(coach, board, 1, "e2e4", false, 1.0)
+        looked(coach, board, 1, listOf("e7e5", "c7c5"), 1.5)
+        assertEquals(
+            listOf(DisclosureLevel.IDEA, DisclosureLevel.FOCUS),
+            (stuck(coach) + stuck(coach)).map { it.level },
+        )
+        coach.onEvent(Takeback("g", 1, Board().fen()), 40.0)
+        board = Board()
+        played(coach, board, 1, "d2d4", false, 41.0)
+        looked(coach, board, 1, listOf("d7d5", "g8f6"), 41.5)
+        assertEquals(listOf(DisclosureLevel.IDEA), stuck(coach).map { it.level })
+    }
+
+    /**
+     * The coach's "One moment -- still looking at this position." was recorded as its turn, so the
+     * question it held, answered when the analysis landed, read as a follow-up: "what should I
+     * have played?" was answered "You have already told them the verdict on it and the better move
+     * ... do not repeat either". `test_the_coachs_one_moment_is_no_turn_of_the_conversation`.
+     */
+    @Test
+    fun theCoachsOneMomentIsNoTurnOfTheConversation() {
+        val (coach, provider) = coach(listOf("[p=1.0] Qxf7# was mate on the spot."))
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6), 7.0)
+        coach.quiet = true // no word after the move
+        judgedAtScholar(coach, "Bxf7+", 0.45, Severity.BLUNDER, Label.MISS, 10.0)
+        coach.quiet = false
+        val board = Board(SCHOLAR)
+        board.push(board.parseSan("Bxf7+")!!)
+        played(coach, board, 8, "e8e7", false, 12.0)
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        coach.ask("what should I have played?", 12.5)
+        assertEquals("one moment", listOf(Trigger.USER_ASK), messages(coach).map { it.trigger })
+        assertTrue(coach.conversation.entries.none { it.kind == "coach" })
+        looked(coach, board, 8, listOf("h5e5", "d2d3"), 13.0)
+        messages(coach)
+        val task = directiveOf(given(provider))
+        assertTrue(task, "They ask about the move they already played, Bxf7+" in task)
+        assertFalse(task, "You have already told them the verdict" in task)
+    }
+
+    /**
+     * Right after the player's move, its position not yet read, "what are they threatening?" was
+     * answered from the position before the move: "They threaten Qxf2#", the threat the move had
+     * just stopped. It waits for the engine's look at the position on the board, where their
+     * threat is their best move. `test_their_threat_after_the_players_move_waits_for_the_position_now`.
+     */
+    @Test
+    fun theirThreatAfterThePlayersMoveWaitsForThePositionNow() {
+        val coach = offlineCoach()
+        coach.onEvent(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = QH4, kind = "position"), 0.0)
+        val board = Board(QH4)
+        looked(coach, board, 0, listOf("d1e2", "d1f3"), 0.5, threats = listOf("h4f2"))
+        assertEquals(listOf("Qxf2#"), coach.positions[0]?.facts?.threats)
+        played(coach, board, 1, "d1e2", true, 3.0) // Qe2 guards f2
+        judged(coach, 1, "d1e2", 3.2)
+        messages(coach)
+        coach.ask("what are they threatening?", 3.5)
+        assertTrue(messages(coach).none { "Qxf2" in it.text })
+        looked(coach, board, 1, listOf("g8f6", "b8c6"), 4.0)
+        val said = messages(coach).map { it.text }
+        assertTrue(said.toString(), said.isNotEmpty() && said.last().startsWith("It's their move, and their best is"))
+    }
+
+    /**
+     * Pressed between the player's move and its verdict, "hint" got "Give me a moment; I am still
+     * reading this position." with nothing queued -- the promise never kept -- and the rung was
+     * climbed at the position the player had moved from: the combination's next stuck hint
+     * skipped the idea. `test_a_hint_before_the_verdict_is_answered_and_climbs_no_rung_of_the_position_left`.
+     */
+    @Test
+    fun aHintBeforeTheVerdictIsAnsweredAndClimbsNoRungOfThePositionLeft() {
+        val coach = offlineCoach()
+        start(coach, Pieces.Side.BLACK)
+        val board = Board()
+        played(coach, board, 1, "e2e4", false, 1.0)
+        looked(coach, board, 1, listOf("e7e5", "c7c5"), 1.5)
+        played(coach, board, 2, "e7e5", true, 3.0) // the engine's best
+        coach.ask("hint", 3.05)
+        assertEquals("a moment", listOf(Trigger.USER_ASK), messages(coach).map { it.trigger })
+        judged(coach, 2, "e7e5", 3.1)
+        messages(coach)
+        looked(coach, board, 2, listOf("g1f3", "b1c3"), 3.6)
+        val kept = messages(coach).filter { it.trigger == Trigger.USER_ASK }.map { it.text }
+        assertTrue(kept.toString(), kept.size == 1 && "moment" !in kept[0])
+        assertEquals(DisclosureLevel.SILENT, coach.positions[1]?.disclosure?.hinted)
+        played(coach, board, 3, "g1f3", false, 5.0)
+        looked(coach, board, 3, listOf("b8c6", "g8f6"), 5.5)
+        assertEquals(listOf(DisclosureLevel.IDEA), stuck(coach).map { it.level })
+    }
+
+    /**
+     * The coach's "One moment" was a promise it did not keep when the board changed under it: a
+     * takeback neither answered nor dropped the question, a re-read and a new game dropped it, and
+     * the game's end left it waiting. It is answered at the position the player faces once the
+     * coach has read it, and at the game's end at once.
+     * `test_a_question_held_for_the_engine_is_answered_whatever_the_board_does`.
+     */
+    @Test
+    fun aQuestionHeldForTheEngineIsAnsweredWhateverTheBoardDoes() {
+        val four = Board()
+        for (san in listOf("e4", "e5", "Bc4", "Nc6")) four.push(four.parseSan(san)!!)
+        val other = Board(QH4)
+        for (change in listOf("takeback", "re-read", "new game", "game over")) {
+            val coach = offlineCoach()
+            playToScholar(coach)
+            looked(coach, four, 4, listOf("d1h5", "g1f3"), 6.5)
+            coach.ask("hint", 7.0) // the position now not read yet
+            assertEquals("$change: a moment", listOf(Trigger.USER_ASK), messages(coach).map { it.trigger })
+            when (change) {
+                "takeback" -> coach.onEvent(Takeback("g", 2, four.fen()), 8.0)
+                "re-read" -> {
+                    coach.onEvent(Resync("g", QH4, "re-read"), 8.0)
+                    looked(coach, other, 0, listOf("d1e2", "d1f3"), 8.5)
+                }
+                "new game" -> {
+                    coach.onEvent(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = QH4, kind = "position"), 8.0)
+                    looked(coach, other, 0, listOf("d1e2", "d1f3"), 8.5)
+                }
+                else -> coach.onEvent(GameEnded(gameId = "g", result = "1-0", reason = "resigned"), 8.0)
+            }
+            val answered = messages(coach)
+            assertEquals(change, listOf(Trigger.USER_ASK), answered.map { it.trigger })
+            assertFalse(change, "moment" in answered[0].text)
+        }
+    }
+
+    /**
+     * An inaccuracy got the word for a sound move -- "Fine, but Qxf7# was a little tighter", and
+     * the model was told "an inaccuracy: sound, a little behind Qxf7#" -- while asked "was that a
+     * mistake?" right after, the coach answered it as the costly move it was.
+     * `test_an_inaccuracy_is_never_called_sound`.
+     */
+    @Test
+    fun anInaccuracyIsNeverCalledSound() {
+        val fine = FINE_TIGHTER.map { it.substringBefore("{best}") }
+        for (offline in listOf(true, false)) {
+            val (coach, provider) = if (offline) offlineCoach() to null else coach(listOf("", ""))
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 7.0)
+            judgedAtScholar(coach, "Bxf7+", 0.07, Severity.INACCURACY, Label.INACCURACY, 10.0)
+            val out = messages(coach)
+            assertTrue(out.toString(), out.size == 1 && out[0].trigger == Trigger.POST_MOVE)
+            assertTrue(out[0].text, "Qxf7" in out[0].text && fine.none { out[0].text.startsWith(it) })
+            if (provider != null) {
+                val task = directiveOf(given(provider, 0))
+                assertTrue(task, "which was an inaccuracy" in task && "sound" !in task)
+            }
+        }
+    }
+
+    /**
+     * A hint asked at 15 s was followed by the focus unasked at 16 s: the stuck spell ran from the
+     * position, not from the answer. The next hint unasked waits a full spell from the answer, as
+     * from one said unasked. `test_a_question_starts_the_stuck_spell_again`.
+     */
+    @Test
+    fun aQuestionStartsTheStuckSpellAgain() {
+        val coach = offlineCoach()
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.ask("hint", 15.0)
+        assertEquals(listOf(DisclosureLevel.IDEA), messages(coach).map { it.level })
+        coach.tick(16.0)
+        assertEquals("a second after the answer", emptyList<CoachMessage>(), messages(coach))
+        assertEquals(listOf(DisclosureLevel.FOCUS), stuck(coach).map { it.level })
+    }
+
+    /**
+     * The coach outlives a Stop, and kept the position it last read: the first ticks after the
+     * next Start gave stuck hints about the last session's board (the game-state review,
+     * 2026-10-01). Paused at the end of a session, it is quiet until the board is read again.
+     * `test_after_a_stop_the_coach_says_nothing_unasked_until_the_board_is_read_again`.
+     */
+    @Test
+    fun afterAStopTheCoachSaysNothingUnaskedUntilTheBoardIsReadAgain() {
+        val coach = offlineCoach()
+        playToScholar(coach)
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        coach.pause(8.0) // GameWatcher.close
+        for (ts in listOf(100.0, 1_000.0, 100_000.0)) coach.tick(ts)
+        assertEquals("the last session's position", emptyList<CoachMessage>(), messages(coach))
+        playToScholar(coach) // the board read again
+        coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
+        assertEquals(listOf(Trigger.STUCK), stuck(coach).map { it.trigger })
+    }
+
+    /**
+     * The analysis of the position the player's move left can land after the opponent's reply:
+     * its note went under "Said here" of the position the player now faces, the past position's
+     * standing beside the one now's, and without its engine lines, filtered by a title they no
+     * longer have. It is the record's, under the move it is about, lines and all.
+     * `test_conversation.py::test_a_late_engine_note_is_the_records_and_has_its_lines`.
+     */
+    @Test
+    fun aLateEngineNoteIsTheRecordsAndHasItsLines() {
+        val (coach, provider) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(twoLines(Board(SCHOLAR), 6), 7.0)
+        coach.ask("what is my plan?", 8.0) // the model has seen the record: its lines are frozen
+        messages(coach)
+        val afterQh5 = Board()
+        for (san in listOf("e4", "e5", "Bc4", "Nc6", "Qh5")) afterQh5.push(afterQh5.parseSan(san)!!)
+        coach.onEvent(twoLines(afterQh5, 5), 9.0) // 3. Qh5's position, read late
+        coach.ask("and what should I watch out for?", 10.0)
+        messages(coach)
+        val text = harness(given(provider))
+        val record = text.substringBefore("# Position now\n")
+        val now = text.substringAfter("# Position now\n")
+        assertTrue(record, "Engine note on the position after 3. Qh5" in record)
+        val note = record.substringAfter("Engine note on the position after 3. Qh5")
+        assertTrue(note, "Engine lines (the opponent's move" in note && "Standing:" in note)
+        assertFalse(now, "Engine note" in now)
+    }
+
     companion object {
+        // White to move; Black's queen and bishop threaten Qxf2#.
+        private const val QH4 = "rnb1k1nr/pppp1ppp/8/2b1p3/2B1P2q/2N5/PPPP1PPP/R1BQK1NR w KQkq - 6 4"
         // 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??: white to move, Qxf7 mates.
         private const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
 
