@@ -216,6 +216,11 @@ BOARD_UNREAD = {
         "coordinates seem to be off. Turn them on in the site's board settings, or press "
         "Flip to tell me."
     ),
+    "look": (
+        "The board or the pieces changed in the middle of this game, and I can't read the "
+        "new ones. Switch back to the ones you had to go on with this game; a new game "
+        "started with these teaches them to me."
+    ),
 }
 
 

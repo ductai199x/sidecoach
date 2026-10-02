@@ -130,9 +130,9 @@ def _misreads(readings: Readings, position: chess.Board, bottom: Side) -> int:
     return count
 
 
-def _on_its_board(frame: np.ndarray, board: BoardCandidate) -> bool:
+def _on_its_board(frame: np.ndarray, board: BoardCandidate, tracker: BoardTracker) -> bool:
     """Whether a re-fit of the lock finds the board where the lock is, to within the
-    tracker's deadband, and validated."""
+    tracker's deadband, with the fit the tracker asks of a lock."""
     refit = refine(to_gray(frame), board).board
     shift = max(
         abs(refit.region.x - board.region.x),
@@ -140,7 +140,7 @@ def _on_its_board(frame: np.ndarray, board: BoardCandidate) -> bool:
         abs(refit.region.x + refit.region.w - board.region.x - board.region.w),
         abs(refit.region.y + refit.region.h - board.region.y - board.region.h),
     )
-    return refit.fit >= 0.85 and shift <= 2
+    return refit.fit >= tracker.min_fit and shift <= tracker.refit_deadband_px
 
 
 def _plausible_ms(ms: int | None) -> int | None:
@@ -249,6 +249,9 @@ class GamePipeline:
     # The lock and the readings the look was last read broken with, and since when: it must
     # read broken the same way for RELEARN_HOLD_S.
     _relearn_seen: tuple[object, float] | None = None
+    # Since when the game's board has shown a look that could not be learned again, and
+    # whether the person has been told (`_relearn_look`).
+    _look_lost: tuple[float, bool] | None = None
     # The result the site's badges showed on the last read frames, and for how many; and
     # what the last read frame showed: the result and the two kings' squares.
     _badges: tuple[str, int] | None = None
@@ -312,7 +315,7 @@ class GamePipeline:
                 self._start_checked = key
         if self.model is not None and not self._start_on_screen:
             # On every verified tick, changed or not: a new look must stay a moment.
-            self._relearn_look(frame, geometry, ts)
+            events += self._relearn_look(frame, geometry, ts)
         self._start_seen = self._start_seen + 1 if self._start_on_screen else 0
         if self._should_bootstrap():
             # Decided on every verified tick, changed or not, so that a start position
@@ -816,6 +819,7 @@ class GamePipeline:
         model.rank_labels = learn_rank_labels(frame, geometry, bottom)
         self._cold_since = None
         self._cold_noticed = False
+        self._look_lost = None
         self._forget_clock()
         if self.reconciler is not None:
             self.reconciler.bottom = bottom
@@ -830,25 +834,26 @@ class GamePipeline:
                 log.warning("the learned theme was not cached", exc_info=True)
         return True
 
-    def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> None:
-        """The recogniser learned again, mid-game, when the board's look changed under it.
+    def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
+        """The recogniser learned again, mid-game, when the board's look changed under it;
+        a `BoardUnread` ("look") when it cannot be.
 
         A theme or a piece set changed mid-game left the rest of the game unread, with no
         event: the recogniser was rebuilt only from a start position, and a new theme reads
         as unknown almost everywhere, a new set as other pieces (round 2, finding 2). The
         game's own position says what is on the board: the record's position, or one legal
         move on from it (played before the new look was read). One whose occupied squares
-        are the frame's, which the recogniser reads as neither it nor anything near it, is
-        learned from (`ThemeModel.from_position`, validated before it is used), and these
-        readings are taken again with it. A board showing anything else -- another game,
-        a dialog, a piece in flight -- matches no such position and is left alone. The model
-        learned is not cached: it lacks the kinds the position has lost, and the next start
-        position rebuilds and caches the whole set."""
+        are the frame's, on a frame no story of the reconciler explains, is learned from
+        (`ThemeModel.from_position`, validated before it is used), and these readings are
+        taken again with it. A board showing anything else -- another game, a dialog, a
+        piece in flight -- matches no such position and is left alone. The model learned is
+        not cached: it lacks the kinds the position has lost, and the next start position
+        rebuilds and caches the whole set."""
         rec, model, bottom, readings = self.reconciler, self.model, self.bottom, self._readings
         if rec is None or model is None or bottom is None or readings is None:
-            return
+            return []
         if not rec.started or rec.finished or start_shaped(readings):
-            return  # a start position is the bootstrap's to learn from, and to cache
+            return []  # a start position is the bootstrap's to learn from, and to cache
         unknown = sum(1 for row in readings for reading in row if reading.kind == "unknown")
         # Sampled only when it may matter: this runs on every still tick.
         sampled = sample_palette(frame, geometry) if unknown >= RELEARN_UNKNOWN_CELLS else None
@@ -862,10 +867,13 @@ class GamePipeline:
             and model.dark_bg is not None
             and not same_theme(*sampled, model.light_bg, model.dark_bg)
         )
-        dragging = any(reading.hover for row in readings for reading in row)
-        if dragging or (not new_theme and rec.unexplained_frames < RELEARN_UNEXPLAINED_FRAMES):
+        if not new_theme and rec.unexplained_frames < RELEARN_UNEXPLAINED_FRAMES:
             self._relearn_seen = None
-            return
+            self._look_lost = None  # the game is read again
+            return []
+        if any(reading.hover for row in readings for reading in row):  # a piece dragged
+            self._relearn_seen = None
+            return []
         # Only a look that stays broken, read the same on one lock for RELEARN_HOLD_S: a new
         # look stays, while a piece in flight, a premove's ghost or a lock a few pixels off
         # for a frame pass. Taken at two or three frames, a capture's animation was learned
@@ -877,17 +885,28 @@ class GamePipeline:
         )
         if self._relearn_seen is None or self._relearn_seen[0] != seen:
             self._relearn_seen = (seen, ts)
-            return
+            return []
         if ts - self._relearn_seen[1] < RELEARN_HOLD_S:
-            return
+            return []
         if self._relearn_tried is not None and ts - self._relearn_tried < RELEARN_EVERY_S:
-            return
+            return []
         self._relearn_tried = ts
-        # The recogniser reads the frame as a position of this game, earlier or one move on:
-        # a move being taken back or browsed, a story pending -- not a new look (the stress
-        # sweep's seeds 16, 22 and 23: a rook's capture shown undone for two frames).
-        history = rec.board.copy()
-        base = history.copy(stack=False)
+        # Learned only on a lock that sits on its board to the pixel: a board in the middle
+        # of a nudge, the lock a few pixels off it, read its squares mixed and half the
+        # board as a new theme, and a look learned there read nothing after (the geometry
+        # sweep's seed 25).
+        if self.board is None or not _on_its_board(frame, self.board, self.tracker):
+            return []
+        # Whether this is the game's board in a new look is the reconciler's to say: none of
+        # its stories explains the frame. A frame the recogniser read within a cell of a
+        # position of the game was once left alone as "not a new look", and a set read
+        # with a single piece wrong was never learned: about one set change in six left
+        # the rest of the game unread (round 3). What guards against another board, a
+        # dialog or a piece in flight is that the frame must show pieces exactly where the
+        # game's position, or one legal move on from it, puts them, as the look-free
+        # occupancy reads them -- and then as the new look's own silhouettes read them
+        # (`ThemeModel.from_position`).
+        base = rec.board.copy(stack=False)
         positions = [base]
         for move in base.legal_moves:
             if move.promotion not in (None, chess.QUEEN):
@@ -895,21 +914,10 @@ class GamePipeline:
             after = base.copy(stack=False)
             after.push(move)
             positions.append(after)
-        earlier: list[chess.Board] = []
-        while history.move_stack:
-            history.pop()
-            earlier.append(history.copy(stack=False))
-        if any(_misreads(readings, p, bottom) < 2 for p in positions + earlier):
-            return
-        # Learned only on a lock that sits on its board to the pixel: a board in the middle
-        # of a nudge, the lock a few pixels off it, read its squares mixed and half the
-        # board as a new theme, and a look learned there read nothing after (the geometry
-        # sweep's seed 25).
-        if self.board is None or not _on_its_board(frame, self.board):
-            return
         occupied = occupancy(frame, geometry) >= PIECE_MIN_FRACTION
         if sampled is None:
             sampled = sample_palette(frame, geometry)
+        shown = False  # the frame shows one of those positions
         for position in positions:
             expected = np.array(
                 [[position.piece_at(square_at(r, c, bottom)) is not None for c in range(8)]
@@ -917,7 +925,10 @@ class GamePipeline:
             )  # fmt: skip
             if (occupied != expected).any():
                 continue
-            # A set learned before on these colours, whole, that reads the position.
+            shown = True
+            # A set learned before on these colours, whole, that reads the position -- every
+            # cell of it: the recogniser this game was read with is among the cached sets,
+            # and read with one piece wrong it was taken again, and nothing changed.
             cached_reads = [
                 (cached, cached_readings)
                 for _key, cached in (
@@ -928,18 +939,31 @@ class GamePipeline:
                 if _misreads(
                     cached_readings := cached.classify_frame(frame, geometry), position, bottom
                 )
-                <= 1
+                == 0
             ]
             if cached_reads:
                 self.model, self._readings = cached_reads[0]
-                return
+                self._look_lost = None
+                return []
             learned = ThemeModel.from_position(frame, geometry, bottom, position)
             if learned is None:
                 continue
             learned.rank_labels = learn_rank_labels(frame, geometry, bottom) or model.rank_labels
             self.model = learned
             self._readings = learned.classify_frame(frame, geometry)
-            return
+            self._look_lost = None
+            return []
+        if not (shown or new_theme):
+            return []  # nothing says the look changed: another board, a dialog, a story
+        # The game's board in a new look that cannot be learned -- pieces the frame shows
+        # where the game has none, a kind its silhouettes do not separate -- or a new theme
+        # with moves played since: the game goes unread, and the person is told once, as of
+        # a board unread at the start (COLD_NOTICE_S), rather than left in silence.
+        since, told = self._look_lost or (ts, False)
+        self._look_lost = (since, told or ts - since >= COLD_NOTICE_S)
+        if told or ts - since < COLD_NOTICE_S:
+            return []
+        return [BoardUnread(reason="look")]
 
     def _learned_set(
         self, model: ThemeModel, frame: np.ndarray, geometry: BoardGeometry, bottom: Side
@@ -1133,6 +1157,7 @@ class GamePipeline:
         self.bottom = bottom
         self._cold_since = None
         self._cold_noticed = False
+        self._look_lost = None
         self._readings = readings
         self._readings_key = (
             (self.board.region, round(self.board.cell_px, 2)) if self.board is not None else None

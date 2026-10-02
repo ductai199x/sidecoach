@@ -142,9 +142,11 @@ class BoardUnread(Event):
     board-and-piece set reads it -- the colours never seen, or pieces the sets on those
     colours misread -- so a start position shown once teaches it; "orientation" when a
     learned set reads it but the coordinates cannot be, so Flip must say which side is at
-    the bottom."""
+    the bottom; "look" when the board or the pieces of a game being followed changed in the
+    middle of it and the new ones could not be learned from the game's position (round 3),
+    so the rest of the game goes unread until the old look is back or a new game starts."""
 
-    reason: Literal["unlearned", "orientation"]
+    reason: Literal["unlearned", "orientation", "look"]
 
 
 class GameEnded(Event):
