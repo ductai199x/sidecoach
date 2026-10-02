@@ -642,8 +642,9 @@ class ReviewRoom(
         // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's. 3:
         // the move labels are made again by today's rule (a miss is failing to punish the
         // opponent's error; chess.com's great, brilliant and book) and the openings named as
-        // Lichess names them (Tai, 2026-10-02).
-        const val DERIVED = 3
+        // Lichess names them (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a
+        // longer one -- is a miss (Tai, 2026-10-02 12:16).
+        const val DERIVED = 4
         const val DERIVED_KEY = "reviews.derived"
 
         /**
