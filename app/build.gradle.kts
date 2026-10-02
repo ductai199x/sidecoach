@@ -5,6 +5,9 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+/** The device tests' extra processes (the `apart` build types; androidTest Lanes.kt). */
+val APART_PROCESSES = 3
+
 android {
     namespace = "com.sidecoach"
     compileSdk = 37
@@ -72,6 +75,18 @@ android {
             // The developer's tools the debug build had, kept on: the capture window's numbers
             // in files/spike, and the panel's WebView open to chrome://inspect.
             buildConfigField("boolean", "DEV_TOOLS", "true")
+        }
+        // The phone's build again under other package names, for the device's tests alone: each
+        // installed app is a process of its own with a Java heap of its own, and the test classes
+        // that churn through the heap (the vision replays allocate gigabytes) run in them beside
+        // the main run instead of sharing its one 192 MB heap and its one collector
+        // (androidTest Lanes.kt, `Lane.process`; tools/test.ps1). Never installed on the phone.
+        for (n in 1..APART_PROCESSES) {
+            create("apart$n") {
+                initWith(getByName("phone"))
+                applicationIdSuffix = ".apart$n"
+                matchingFallbacks += listOf("phone", "debug")
+            }
         }
     }
     // The instrumentation tests run against the phone's build, not the debuggable one.

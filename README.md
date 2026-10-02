@@ -93,8 +93,15 @@ test of both passed. The default run is the whole suite: every case of every tes
   (`com.sidecoach.Lanes`): the app lane, one class at a time, for whatever touches the app's
   shared state (a class that names no lane runs there); the model classes and the free ones in
   pools, longest first; and a class that holds 85 MB of the heap or more alone waits for a heap
-  slot, since every class shares the one process's 192 MB. Each test's lane, seconds, CPU and
-  peak memory land in `app/build/test-timings.tsv`.
+  slot, since every class shares the one process's 192 MB. The classes that churn through the
+  heap -- the vision replays allocate gigabytes -- run in processes of their own beside it
+  (`com.sidecoach.InProcess`): the `apart` build types are the phone build under other package
+  names (`com.sidecoach.apartN`, never installed on the phone), each instrumented by a runner of
+  its own (`SidecoachRunnerApartN`), each with its own heap, collector, files and settings, and
+  `tools/test.ps1` runs them all at once. Nets and OpenCV run one thread wide in the tests, as on
+  the desktop; the classes side by side are the parallelism. Each test's process, lane, seconds,
+  CPU, peak memory, heap allocated, collections and result (passed, failed, skipped) land in
+  `app/build/test-timings.tsv`; the run prints every skipped test by name.
 - **The host's** (`app/src/test`, Gradle's `testPhoneUnitTest`): the pure-logic tests, on the
   JVM in two forks of two processors, with Android's own `org.json` (`:libcore-json`) and the
   same fixtures (`com.sidecoach.TestAssets`). A call into Android fails there; it never passes

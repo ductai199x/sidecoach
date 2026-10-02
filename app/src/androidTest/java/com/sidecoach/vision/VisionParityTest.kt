@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import com.sidecoach.Parallel
 import com.sidecoach.chess.Board
@@ -25,6 +26,7 @@ import kotlin.math.abs
  * place, and the tracker's probe finding it again.
  */
 @Lane(Lane.Kind.FREE)
+@InProcess(3)
 @RunWith(AndroidJUnit4::class)
 class VisionParityTest {
 

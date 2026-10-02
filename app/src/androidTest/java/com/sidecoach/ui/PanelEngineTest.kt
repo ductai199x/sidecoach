@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.TestNets
 import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.Assessing
 import com.sidecoach.analysis.Engine
@@ -61,7 +62,7 @@ class PanelEngineTest {
         PanelEngine.set("running" to true, "listen" to "ptt")
         PanelEngine.command("ask", "hello")
         val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
-        CellEmbedder.load(app).use { net ->
+        CellEmbedder.load(app, threads = TestNets.THREADS).use { net ->
             val watcher = GameWatcher(app, null, net, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
             val frames = run.getJSONArray("frames")
             val bitmaps = HashMap<String, android.graphics.Bitmap>()

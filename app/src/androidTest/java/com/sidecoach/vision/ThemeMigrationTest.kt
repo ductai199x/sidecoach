@@ -2,6 +2,8 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
+import com.sidecoach.TestNets
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -32,6 +34,7 @@ import org.opencv.core.Core
  * model read it, and be written again at today's version.
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class ThemeMigrationTest {
 
@@ -45,7 +48,7 @@ class ThemeMigrationTest {
         val start = fixtures.getValue("start-green")
         val italian = fixtures.getValue("italian-green")
         val geometry = BoardGeometry(Region(start.x, start.y, start.side, start.side), start.cell.toDouble())
-        CellEmbedder.load(context).use { embedder ->
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
             // Today's model of the same set: the same frame, the same seed.
             val startFrame = Fixtures.mat(start)
             Core.setRNGSeed(SEED)

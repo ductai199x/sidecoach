@@ -3,7 +3,9 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
+import com.sidecoach.TestNets
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -28,6 +30,7 @@ import kotlin.math.abs
  * cell (its OpenCV is another build than the desktop's).
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class LandingTest {
 
@@ -41,7 +44,7 @@ class LandingTest {
         var worstAt = ""
         var shifts = 0
         var landing = 0
-        CellEmbedder.load(instrumentation.targetContext).use { embedder ->
+        CellEmbedder.load(instrumentation.targetContext, threads = TestNets.THREADS).use { embedder ->
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)
                 val name = case.getString("name")

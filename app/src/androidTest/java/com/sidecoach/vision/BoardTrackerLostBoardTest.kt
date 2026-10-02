@@ -1,6 +1,7 @@
 package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -18,6 +19,7 @@ import kotlin.math.abs
  * The pages are grey planes drawn here: two checkerboards, pieces as dark squares inside cells.
  */
 @Lane(Lane.Kind.FREE)
+@InProcess(3)
 @RunWith(AndroidJUnit4::class)
 class BoardTrackerLostBoardTest {
 

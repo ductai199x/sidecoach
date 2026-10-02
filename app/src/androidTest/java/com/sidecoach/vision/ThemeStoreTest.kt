@@ -2,7 +2,9 @@ package com.sidecoach.vision
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
+import com.sidecoach.TestNets
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -24,6 +26,7 @@ import java.io.File
  * `ThemeMigrationTest`'s.
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class ThemeStoreTest {
 
@@ -35,7 +38,7 @@ class ThemeStoreTest {
         val italian = fixtures.getValue("italian-green")
         val geometry = BoardGeometry(Region(start.x, start.y, start.side, start.side), start.cell.toDouble())
         val directory = File(context.cacheDir, "themes-store-test").apply { deleteRecursively(); mkdirs() }
-        CellEmbedder.load(context).use { embedder ->
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
             val startFrame = Fixtures.mat(start)
             val model = ThemeModel.fromStartPosition(startFrame, geometry, true, embedder)
             startFrame.release()
@@ -98,7 +101,7 @@ class ThemeStoreTest {
         val start = Fixtures.all().first { it.name == "start-green" }
         val geometry = BoardGeometry(Region(start.x, start.y, start.side, start.side), start.cell.toDouble())
         val directory = File(context.cacheDir, "themes-store-damage").apply { deleteRecursively(); mkdirs() }
-        CellEmbedder.load(context).use { embedder ->
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
             val frame = Fixtures.mat(start)
             val model = checkNotNull(ThemeModel.fromStartPosition(frame, geometry, true, embedder))
             frame.release()

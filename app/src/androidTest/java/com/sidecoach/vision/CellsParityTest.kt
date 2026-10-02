@@ -3,7 +3,9 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
+import com.sidecoach.TestNets
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -31,6 +33,7 @@ import kotlin.math.abs
  * correlation (another OpenCV).
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class CellsParityTest {
 
@@ -49,7 +52,7 @@ class CellsParityTest {
         var sets = 0
         var learnMs = 0L
         var readMs = 0L
-        CellEmbedder.load(context.targetContext).use { embedder ->
+        CellEmbedder.load(context.targetContext, threads = TestNets.THREADS).use { embedder ->
             val cases = index.getJSONArray("cases")
             for (k in 0 until cases.length()) {
                 val case = cases.getJSONObject(k)

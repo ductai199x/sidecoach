@@ -35,6 +35,7 @@ import java.io.File
  * The phone's theme files are `theme-*.bin` where the desktop pickles, and Android's SQLite
  * keeps a rollback journal beside a closed store.
  */
+@InProcess(3)
 @RunWith(AndroidJUnit4::class)
 class MaintenanceTest {
 

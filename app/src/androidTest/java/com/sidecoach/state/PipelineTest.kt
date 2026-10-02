@@ -3,6 +3,7 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import com.sidecoach.Parallel
 import com.sidecoach.events.BoardUnread
@@ -58,6 +59,7 @@ import org.opencv.imgproc.Imgproc
  * `test_a_puzzle_left_still_is_read_once` counts it.
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(1)
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
 
@@ -72,6 +74,7 @@ class PipelineTest {
      * results). The answers must still be the desktop's, frame for frame.
      */
     @Test
+    @InProcess(2)
     fun aStillScreenReadAgainIsReadAsThePythonReadsIt() = readAll(sameFrameShortcut = true)
 
     private fun readAll(sameFrameShortcut: Boolean) {

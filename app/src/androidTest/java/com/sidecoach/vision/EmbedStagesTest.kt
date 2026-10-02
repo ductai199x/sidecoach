@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -24,6 +25,7 @@ import org.opencv.imgproc.Imgproc
  * parity audit, 2026-09-29).
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class EmbedStagesTest {
 

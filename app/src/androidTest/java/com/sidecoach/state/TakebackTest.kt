@@ -3,6 +3,8 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
+import com.sidecoach.TestNets
 import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.AnalyserWatch
 import com.sidecoach.analysis.Assessing
@@ -58,6 +60,7 @@ import java.util.concurrent.TimeUnit
  * run when the test lets them, and what a run did is counted from an ordered log. [HANG_MS]
  * bounds a hang and is never the expected path.
  */
+@InProcess(3)
 @RunWith(AndroidJUnit4::class)
 class TakebackTest {
 
@@ -440,7 +443,7 @@ class TakebackTest {
         val wanted = setOf("takeback-brown", "unexplained-green") + quickly
         val failures = ArrayList<String>()
         var ran = 0
-        CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext).use { net ->
+        CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext, threads = TestNets.THREADS).use { net ->
             for (r in 0 until runs.length()) {
                 val run = runs.getJSONObject(r)
                 val name = run.getString("name")

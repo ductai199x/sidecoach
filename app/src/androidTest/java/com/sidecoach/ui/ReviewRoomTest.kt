@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.analysis.Engine
 import com.sidecoach.analysis.GameReview
 import com.sidecoach.chess.STARTING_FEN
@@ -32,6 +33,7 @@ import java.util.concurrent.TimeUnit
  * words the app was closed in the middle of carried over, the answers already paid for never
  * asked again. Skipped without the engine's network (tools/push_net.ps1).
  */
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class ReviewRoomTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext

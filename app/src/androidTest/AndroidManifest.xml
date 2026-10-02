@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The tests' runner once more for each of the phone build's copies under other package names (the
+  `apart` build types, app/build.gradle.kts): each instruments its own app, a process with a Java
+  heap of its own, and runs the tests Lanes.kt places there (`InProcess`). tools/test.ps1
+  starts them all side by side. The main runner comes first: the build fills the first
+  instrumentation in with its own runner and target (testInstrumentationRunner, com.sidecoach), and
+  an apart runner declared first was replaced by it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation
+        android:name="androidx.test.runner.SidecoachRunner"
+        android:targetPackage="com.sidecoach" />
+    <instrumentation
+        android:name="androidx.test.runner.SidecoachRunnerApart1"
+        android:label="Sidecoach tests, process 1"
+        android:targetPackage="com.sidecoach.apart1" />
+    <instrumentation
+        android:name="androidx.test.runner.SidecoachRunnerApart2"
+        android:label="Sidecoach tests, process 2"
+        android:targetPackage="com.sidecoach.apart2" />
+    <instrumentation
+        android:name="androidx.test.runner.SidecoachRunnerApart3"
+        android:label="Sidecoach tests, process 3"
+        android:targetPackage="com.sidecoach.apart3" />
+</manifest>

@@ -21,7 +21,9 @@ param(
     [switch]$SkipBuild,
     # Every class one after another, as before the lanes (androidTest Lanes.kt): to tell a
     # lane's fault from a test's, and for each test's own CPU in app/build/test-timings.tsv.
-    [switch]$OneAtATime
+    [switch]$OneAtATime,
+    # More of the runner's arguments, as "key=value,key=value" (each passed as `-e key value`).
+    [string]$Runner = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,10 +33,17 @@ $gradle = Join-Path $root "gradlew.bat"
 $clock = [Diagnostics.Stopwatch]::StartNew()
 function At { "[{0,6:N1} s]" -f $clock.Elapsed.TotalSeconds }
 
+# The phone build's copies under other package names, each a test process of its own (the
+# `apart` build types, app/build.gradle.kts; androidTest Lanes.kt's InProcess).
+$apartCount = [int]([regex]::Match((Get-Content (Join-Path $root "app/build.gradle.kts") -Raw), 'val APART_PROCESSES = (\d+)').Groups[1].Value)
+$aparts = @(1..$apartCount | Where-Object { $_ -gt 0 })
+
 if (-not $SkipBuild) {
     Write-Host "$(At) building..."
-    # The two APKs and the host tests' classes, on at most eight of the host's workers.
-    & $gradle -p $root --max-workers=8 :app:assemblePhone :app:assemblePhoneAndroidTest :app:compilePhoneUnitTestSources | Out-Null
+    # The APKs and the host tests' classes, on at most eight of the host's workers.
+    $tasks = @(":app:assemblePhone", ":app:assemblePhoneAndroidTest", ":app:compilePhoneUnitTestSources") +
+        @($aparts | ForEach-Object { ":app:assembleApart$_" })
+    & $gradle -p $root --max-workers=8 @tasks | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the build failed" }
 }
 
@@ -54,7 +63,8 @@ if (-not $Class) {
 
 $app = Join-Path $root "app/build/outputs/apk/phone/app-phone.apk"
 $test = Join-Path $root "app/build/outputs/apk/androidTest/phone/app-phone-androidTest.apk"
-foreach ($apk in @($app, $test)) {
+$apartApks = @($aparts | ForEach-Object { Join-Path $root "app/build/outputs/apk/apart$_/app-apart$_.apk" })
+foreach ($apk in @($app, $test) + $apartApks) {
     if (-not (Test-Path $apk)) { throw "no APK at $apk" }
 }
 
@@ -102,18 +112,19 @@ if ($held.Count -eq 0) {
 }
 
 # When each package was last installed on the device, as its package manager says.
+$packages = @("com.sidecoach", "com.sidecoach.test") + @($aparts | ForEach-Object { "com.sidecoach.apart$_" })
 function Installed-At {
-    $times = & $adb -s $Serial shell "dumpsys package com.sidecoach 2>/dev/null | grep lastUpdateTime; dumpsys package com.sidecoach.test 2>/dev/null | grep lastUpdateTime"
+    $times = & $adb -s $Serial shell (($packages | ForEach-Object { "dumpsys package $_ 2>/dev/null | grep lastUpdateTime" }) -join "; ")
     return (($times | ForEach-Object { $_.Trim() }) -join "|")
 }
 
-# The two APKs installed only when they changed since this checkout last installed them here: the
+# The APKs installed only when they changed since this checkout last installed them here: the
 # build leaves an APK alone when nothing changed, and the install was seconds of every run. The
 # stamp holds the APKs' sizes and times and the device's own install times, so an install from
 # anywhere else (another branch, tools\install.ps1) since then is seen and replaced. Over a debug
 # build it keeps the app's files and settings: the same package, signed with the same key.
 $stamp = Join-Path $root "app/build/test-installed-$($Serial -replace '[^A-Za-z0-9]', '_').txt"
-$apks = (@($app, $test) | ForEach-Object { $item = Get-Item $_; "$($item.Length):$($item.LastWriteTimeUtc.Ticks)" }) -join "|"
+$apks = (@($app, $test) + $apartApks | ForEach-Object { $item = Get-Item $_; "$($item.Length):$($item.LastWriteTimeUtc.Ticks)" }) -join "|"
 $wanted = "$apks|$(Installed-At)"
 if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $wanted)) {
     Write-Host "$(At) installed already (the APKs have not changed)"
@@ -125,39 +136,97 @@ if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $wanted)) {
     if ($LASTEXITCODE -ne 0) { throw "the app did not install" }
     & $adb -s $Serial install -r -t -d $test | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the tests did not install" }
+    foreach ($apk in $apartApks) {
+        & $adb -s $Serial install -r -t -d $apk | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "$(Split-Path $apk -Leaf) did not install" }
+    }
     Set-Content -Path $stamp -Value "$apks|$(Installed-At)" -NoNewline
 }
 
 # What is missing goes to the app's external files, which the shell may write, and the tests'
 # listener moves it into the app's own files when the run starts.
-for ($i = 0; $i -lt $files.Count; $i++) {
-    if ($held -contains $paths[$i]) { continue }
-    $local = $files[$i][0]
-    Write-Host "pushing $(Split-Path $local -Leaf) ($([int]((Get-Item $local).Length / 1MB)) MB)..."
-    # The folder made by the shell first: `adb push` makes its folders with an owner it may not
-    # set under Android/data ("secure_mkdirs failed: Operation not permitted").
-    $folder = "$outside/push/$($paths[$i])" -replace '/[^/]+$', ''
-    & $adb -s $Serial shell "mkdir -p $folder"
-    & $adb -s $Serial push $local "$outside/push/$($paths[$i])" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "the push of $($paths[$i]) failed" }
+function Push-Missing($dir, $held, $which) {
+    for ($i = 0; $i -lt $files.Count; $i++) {
+        if (-not (& $which $paths[$i])) { continue }
+        if ($held -contains $paths[$i]) { continue }
+        $local = $files[$i][0]
+        Write-Host "pushing $(Split-Path $local -Leaf) ($([int]((Get-Item $local).Length / 1MB)) MB) to $dir..."
+        # The folder made by the shell first: `adb push` makes its folders with an owner it may not
+        # set under Android/data ("secure_mkdirs failed: Operation not permitted").
+        $folder = "$dir/push/$($paths[$i])" -replace '/[^/]+$', ''
+        & $adb -s $Serial shell "mkdir -p $folder"
+        & $adb -s $Serial push $local "$dir/push/$($paths[$i])" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "the push of $($paths[$i]) failed" }
+    }
+}
+Push-Missing $outside $held { param($path) $true }
+# The apart processes' copies of the app get the engine's network (their app-lane classes review
+# games on it); the voice's and the ear's models are the app's own process's alone.
+foreach ($n in $aparts) {
+    $dir = "/sdcard/Android/data/com.sidecoach.apart$n/files"
+    $there = @(& $adb -s $Serial shell "cat $dir/files.txt 2>/dev/null" | ForEach-Object { ($_.Trim() -split " ")[0] } | Where-Object { $_ })
+    Push-Missing $dir $there { param($path) $path -like "*.nnue" }
 }
 
 & $adb -s $Serial logcat -c
-& $adb -s $Serial shell "rm -f $outside/timings.tsv"
-$args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener,com.sidecoach.FilesIn")
-if ($Class) { $args += @("-e", "class", $Class) }
-if ($OneAtATime) { $args += @("-e", "lanes", "off") }
-$args += "com.sidecoach.test/androidx.test.runner.SidecoachRunner"
+$apartOutside = @($aparts | ForEach-Object { "/sdcard/Android/data/com.sidecoach.apart$_/files" })
+& $adb -s $Serial shell ((@($outside) + $apartOutside | ForEach-Object { "rm -f $_/timings.tsv" }) -join "; ")
+$instrument = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener,com.sidecoach.FilesIn")
+if ($Class) { $instrument += @("-e", "class", $Class) }
+if ($OneAtATime) { $instrument += @("-e", "lanes", "off") }
+foreach ($pair in ($Runner -split "," | Where-Object { $_ })) { $k, $v = $pair -split "=", 2; $instrument += @("-e", $k, $v) }
+
+# The apart processes (androidTest Lanes.kt's InProcess) started first, each instrumenting its own
+# copy of the app, their output to files; the app's own process in the foreground, its output
+# printed as it comes. Each process runs only its own tests; a `-Class` placed elsewhere runs
+# nothing in the others. With -OneAtATime the processes run one after another too.
+$runs = @()
+function Start-Apart($n) {
+    $out = Join-Path $root "app/build/test-apart$n.txt"
+    $proc = Start-Process -FilePath $adb -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err" `
+        -ArgumentList (@("-s", $Serial, "shell", "am", "instrument") + $instrument + "com.sidecoach.test/androidx.test.runner.SidecoachRunnerApart$n")
+    $null = $proc.Handle # held now, or PowerShell has no exit code to give at the end
+    return @{ n = $n; proc = $proc; out = $out }
+}
 Write-Host "$(At) running..."
-$deviceOut = @(& $adb -s $Serial shell am instrument @args | ForEach-Object { Write-Host $_; $_ })
+if (-not $OneAtATime) { foreach ($n in $aparts) { $runs += Start-Apart $n } }
+$deviceOut = @(& $adb -s $Serial shell am instrument @instrument "com.sidecoach.test/androidx.test.runner.SidecoachRunner" | ForEach-Object { Write-Host $_; $_ })
 $devicePassed = [bool]($deviceOut | Where-Object { $_ -match "^OK \(\d+ tests?\)" })
+Write-Host "$(At) the app's own process done"
+if ($OneAtATime) { foreach ($n in $aparts) { $run = Start-Apart $n; $run.proc.WaitForExit(); $runs += $run } }
+foreach ($run in $runs) {
+    $run.proc.WaitForExit()
+    $text = @(Get-Content $run.out)
+    $ok = [bool]($text | Where-Object { $_ -match "^OK \(\d+ tests?\)" })
+    $devicePassed = $devicePassed -and $ok
+    Write-Host ""
+    Write-Host "$(At) --- process $($run.n) (com.sidecoach.apart$($run.n)) ---"
+    if ($ok) { $text | Where-Object { $_ -match "^(OK|Time:)" } | ForEach-Object { Write-Host $_ } } else { $text | ForEach-Object { Write-Host $_ } }
+}
 
 Write-Host ""
 Write-Host "$(At) --- what the tests logged ---"
 & $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "sidecoach.lanes:I" "*:S"
 
-# Each test's lane and times (com.sidecoach.Lanes), for a look at where the time goes.
-& $adb -s $Serial pull "$outside/timings.tsv" (Join-Path $root "app/build/test-timings.tsv") | Out-Null
+# Each test's process, lane and times (com.sidecoach.Lanes), every process's in one table, for a
+# look at where the time goes.
+$timings = Join-Path $root "app/build/test-timings.tsv"
+$lines = @()
+foreach ($dir in @($outside) + $apartOutside) {
+    $part = Join-Path $root "app/build/test-timings-part.tsv"
+    Set-Content -Path $part -Value "" -NoNewline
+    & $adb -s $Serial pull "$dir/timings.tsv" $part | Out-Null
+    $got = @(Get-Content $part)
+    if ($got.Count -eq 0) { continue }
+    if ($lines.Count -eq 0) { $lines += $got } else { $lines += $got | Select-Object -Skip 1 }
+}
+Set-Content -Path $timings -Value $lines
+# A test that skipped (an assumption that did not hold: a model file missing) passes in JUnit's
+# count; said here, by name, so a run that skipped is never taken for one that ran.
+$skippedTests = @($lines | Select-Object -Skip 1 | Where-Object { ($_ -split "`t")[-1] -eq "skipped" } |
+    ForEach-Object { $c = $_ -split "`t"; "$($c[0])#$($c[1])" })
+Write-Host "$(At) device tests skipped: $($skippedTests.Count)"
+$skippedTests | ForEach-Object { Write-Host "  skipped: $_" }
 
 $hostPassed = $true
 if ($hostRun) {

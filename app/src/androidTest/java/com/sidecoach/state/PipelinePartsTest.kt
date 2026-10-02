@@ -2,7 +2,9 @@ package com.sidecoach.state
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
+import com.sidecoach.TestNets
 import com.sidecoach.chess.Board
 import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.ScreenState
@@ -42,6 +44,7 @@ import org.opencv.imgproc.Imgproc
  * are `PipelineTest`'s.
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class PipelinePartsTest {
 
@@ -242,7 +245,7 @@ class PipelinePartsTest {
         @BeforeClass
         fun setUp() {
             assertTrue("OpenCV did not load", OpenCVLoader.initLocal())
-            net = CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext)
+            net = CellEmbedder.load(InstrumentationRegistry.getInstrumentation().targetContext, threads = TestNets.THREADS)
         }
 
         @JvmStatic

@@ -2,6 +2,7 @@ package com.sidecoach.vision
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -16,6 +17,7 @@ import kotlin.math.abs
  * desktop's suite demands of the Python.
  */
 @Lane(Lane.Kind.FREE)
+@InProcess(3)
 @RunWith(AndroidJUnit4::class)
 class BoardDetectTest {
 

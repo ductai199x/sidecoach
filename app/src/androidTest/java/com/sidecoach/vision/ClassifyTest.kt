@@ -3,7 +3,9 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.InProcess
 import com.sidecoach.Lane
+import com.sidecoach.TestNets
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -18,6 +20,7 @@ import org.opencv.android.OpenCVLoader
  * Kotlin bootstraps the same way from the same frame and must name the same squares.
  */
 @Lane(Lane.Kind.VISION)
+@InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class ClassifyTest {
 
@@ -26,7 +29,7 @@ class ClassifyTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val fixtures = Fixtures.all().associateBy { it.name }
         val failures = ArrayList<String>()
-        CellEmbedder.load(context).use { embedder ->
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
             for (fixture in fixtures.values) {
                 val from = fixture.classifiedFrom ?: continue
                 val start = fixtures.getValue(from)

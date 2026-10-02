@@ -55,6 +55,19 @@ annotation class Lane(val value: Kind) {
 }
 
 /**
+ * Which process a test class, or one test of it, runs in: 0, the app's own (com.sidecoach), the
+ * default; n, the process of the phone build's n-th copy (com.sidecoach.apartN, the `apart` build
+ * types), a Java heap and a collector of its own. Every class shares its process's one heap (192
+ * MB on the emulator) and its one collector, and the vision replays allocate gigabytes: side by
+ * side in one process they waited on the collector more than they ran. tools/test.ps1 runs the
+ * processes side by side; each runs only its own tests, in its own lanes. On a test it overrides
+ * its class's.
+ */
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class InProcess(val value: Int)
+
+/**
  * The suite's classes in lanes side by side: [Lane.Kind.APP]'s one at a time on one thread, in
  * the order AndroidJUnitRunner gives them, as the whole suite ran before; [Lane.Kind.VISION] and
  * [Lane.Kind.VOICE] together on [modelThreads] threads, and [Lane.Kind.FREE] on [freeThreads],
@@ -87,9 +100,11 @@ object Lanes {
      * holds a model per 192 MB of heap. A model class's start-position read alone takes most of an
      * ordinary app's 192 MB (an embedder's 38 MB input buffer is on the heap, PipelineTest holds
      * two), and two side by side on the emulator's 4 GB took it into swap and ran a lane's other
-     * class out of heap (2026-10-02, measured).
+     * class out of heap (2026-10-02, measured). `-e model_threads N` overrides it, for a
+     * measurement (tools\test.ps1 -Runner "model_threads=N").
      */
-    private val modelThreads = (heapMb / 192).toInt().coerceIn(1, maxOf(1, cores / 2))
+    private val modelThreads = InstrumentationRegistry.getArguments().getString("model_threads")?.toInt()
+        ?: (heapMb / 192).toInt().coerceIn(1, maxOf(1, cores / 2))
 
     /**
      * The [Lane.Kind.FREE] pool's threads: half the cores, two at least. With the app lane and the
@@ -102,9 +117,54 @@ object Lanes {
     fun request(request: Request, args: Bundle): Request {
         Log.i(TAG, "the heap's limit: $heapMb MB, $cores cores: $modelThreads model and $freeThreads free threads")
         val top = request.runner
-        val children = (top as? ParentRunner<*>)?.let { childrenOf(it) } ?: return request
-        if (children.isEmpty()) return request
+        val all = (top as? ParentRunner<*>)?.let { childrenOf(it) } ?: return request
+        // This process's classes only: the others run in their own (`Lane.process`). A run asked
+        // for one class (`-e class`) in another process runs nothing here.
+        if (all.isEmpty()) return request
+        // OpenCV's own pool kept to one thread in the test processes, as the desktop's suite keeps
+        // cv2's (conftest `_one_thread_each`): the classes side by side are the parallelism, the
+        // pool's idle workers wait by reading the clock (a trap to the host on the emulator), and
+        // OpenCV's answers do not depend on how many threads it uses.
+        if (org.opencv.android.OpenCVLoader.initLocal()) org.opencv.core.Core.setNumThreads(1)
+        val here = process
+        val children = all.mapNotNull { here(it, here) }
+        Log.i(TAG, "process $here (${InstrumentationRegistry.getInstrumentation().targetContext.packageName}): ${children.size} of ${all.size} classes")
         return Request.runner(LaneRunner(top, children, serial = args.getString("lanes") == "off"))
+    }
+
+    /** This run's process: 0 in the app's own, n in com.sidecoach.apartN. */
+    internal val process: Int by lazy {
+        val name = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+        Regex("\\.apart(\\d+)$").find(name)?.groupValues?.get(1)?.toInt() ?: 0
+    }
+
+    /** The process [test] runs in: its own [InProcess], else its class's, else 0. */
+    fun processOf(test: Description): Int {
+        val ofClass = test.testClass?.getAnnotation(InProcess::class.java)?.value ?: 0
+        return test.getAnnotation(InProcess::class.java)?.value ?: ofClass
+    }
+
+    /**
+     * [runner]'s class as it runs in process [here]: whole, with only the tests placed here
+     * (a JUnit filter on its runner), or not at all (null).
+     */
+    private fun here(runner: Runner, here: Int): Runner? {
+        fun leaves(d: Description): List<Description> = if (d.isTest) listOf(d) else d.children.flatMap { leaves(it) }
+        val tests = leaves(runner.description)
+        val mine = tests.filter { processOf(it) == here }
+        if (mine.isEmpty()) {
+            // A class whose tests are all elsewhere, or one with no tests to list (a class that
+            // failed to initialise): the latter runs in the app's own process, to report itself.
+            return if (tests.isEmpty() && here == 0) runner else null
+        }
+        if (mine.size == tests.size) return runner
+        (runner as? org.junit.runner.manipulation.Filterable)?.filter(object : org.junit.runner.manipulation.Filter() {
+            override fun shouldRun(description: Description): Boolean =
+                !description.isTest || processOf(description) == here
+
+            override fun describe(): String = "the tests of process $here"
+        }) ?: error("${runner.description} splits its tests between processes but cannot be filtered")
+        return runner
     }
 
     /**
@@ -188,6 +248,16 @@ object Lanes {
         -1
     }
 
+    /**
+     * The bytes the process has allocated on the Java heap since it started, and the collections
+     * it has run (ART's own counters): over a test, what it cost the collector -- the test's own
+     * with the lanes off.
+     */
+    internal fun allocatedBytes(): Long =
+        android.os.Debug.getRuntimeStat("art.gc.bytes-allocated")?.toLongOrNull() ?: -1
+
+    internal fun collections(): Long = android.os.Debug.getRuntimeStat("art.gc.gc-count")?.toLongOrNull() ?: -1
+
     fun laneOf(runner: Runner): Lane.Kind =
         runner.description.testClass?.getAnnotation(Lane::class.java)?.value ?: Lane.Kind.APP
 
@@ -228,9 +298,12 @@ object Lanes {
      * Hungry classes side by side: one per 192 MB of the heap's limit (one on the emulator). Two at
      * once still made the collector run without end: PipelineTest took 99 s beside
      * BoardTrackerLostBoardTest and 137 s beside VisionParityTest, 45 s alone; one at a time, 52 s
-     * (2026-10-02, measured on emulator-5556).
+     * (2026-10-02, measured on emulator-5556). `-e heap_slots N` overrides it, for a measurement.
      */
-    private val heapSlots = java.util.concurrent.Semaphore((heapMb / 192).toInt().coerceAtLeast(1), true)
+    private val heapSlots = java.util.concurrent.Semaphore(
+        InstrumentationRegistry.getArguments().getString("heap_slots")?.toInt() ?: (heapMb / 192).toInt().coerceAtLeast(1),
+        true,
+    )
 
     /**
      * A pool's classes, longest first, each handed to the first of the pool's threads to ask for
@@ -262,7 +335,11 @@ object Lanes {
         private val children: List<Runner>,
         private val serial: Boolean,
     ) : Runner() {
-        override fun getDescription(): Description = top.description
+        // This process's classes: the run's count and its listeners see only what runs here.
+        override fun getDescription(): Description =
+            Description.createSuiteDescription(top.description.displayName).apply {
+                this@LaneRunner.children.forEach { addChild(it.description) }
+            }
 
         override fun run(notifier: RunNotifier) {
             val handOn = Any()
@@ -346,7 +423,7 @@ object Lanes {
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val dir = context.getExternalFilesDir(null) ?: return
                 File(dir, "timings.tsv").writeText(
-                    "class\tmethod\tlane\tthread\tstart_s\tend_s\tprocess_cpu_s\tpeak_rss_mb\tpeak_heap_mb\n" + times.joinToString(""),
+                    "class\tmethod\tlane\tthread\tstart_s\tend_s\tprocess_cpu_s\tpeak_rss_mb\tpeak_heap_mb\talloc_mb\tgcs\tprocess\tstatus\n" + times.joinToString(""),
                 )
             } catch (exc: Exception) {
                 Log.w(TAG, "no timings written: $exc")
@@ -370,8 +447,12 @@ object Lanes {
     ) : RunListener() {
         private val held = ArrayList<(RunNotifier) -> Unit>()
         private var inTest = false
+        // What became of the test: passed, failed or skipped (an assumption that did not hold).
+        private var status = "passed"
         private val started = AtomicLong()
         private val cpuAtStart = AtomicLong()
+        private val allocAtStart = AtomicLong()
+        private val gcsAtStart = AtomicLong()
         private var peak: AtomicLong? = null
 
         private fun now(): Double = (System.nanoTime() - began) / 1e9
@@ -388,17 +469,22 @@ object Lanes {
             finisher?.testStarted(description)
             held.clear()
             inTest = true
+            status = "passed"
             started.set(System.nanoTime())
             cpuAtStart.set(android.os.Process.getElapsedCpuTime())
+            allocAtStart.set(allocatedBytes())
+            gcsAtStart.set(collections())
             peak = Resident.watch()
             held += { it.fireTestStarted(description) }
         }
 
         override fun testFailure(failure: Failure) {
+            status = "failed"
             if (inTest) held += { it.fireTestFailure(failure) } else handOn(listOf { it.fireTestFailure(failure) })
         }
 
         override fun testAssumptionFailure(failure: Failure) {
+            if (status == "passed") status = "skipped"
             if (inTest) held += { it.fireTestAssumptionFailed(failure) } else handOn(listOf { it.fireTestAssumptionFailed(failure) })
         }
 
@@ -415,7 +501,10 @@ object Lanes {
             val cpu = (android.os.Process.getElapsedCpuTime() - cpuAtStart.get()) / 1e3
             val (rss, heap) = peak?.let { Resident.done(it) } ?: (residentMb() to Resident.heapMb())
             times += "${description.className}\t${description.methodName}\t$lane\t${Thread.currentThread().name}\t" +
-                "%.3f\t%.3f\t%.3f\t%d\t%d\n".format(java.util.Locale.ROOT, start, end, cpu, rss, heap)
+                "%.3f\t%.3f\t%.3f\t%d\t%d\t%d\t%d\t%d\t%s\n".format(
+                    java.util.Locale.ROOT, start, end, cpu, rss, heap,
+                    (allocatedBytes() - allocAtStart.get()) / (1024 * 1024), collections() - gcsAtStart.get(), process, status,
+                )
             handOn(ArrayList(held))
             held.clear()
         }

@@ -374,6 +374,7 @@ class PanelVoicePolicyTest {
      * template in place of every AI reply until the voice was there (the round-3 parity audit).
      */
     @Test
+    @com.sidecoach.InProcess(3) // a process whose voice is never built: in the app's own, a class before it built it
     fun noVoiceYetMeansNoSinkNotADeclinedReply() {
         org.junit.Assume.assumeTrue("the voice is built in this process", PanelVoice.tts == null)
         PanelVoice.speaker = null
