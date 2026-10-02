@@ -269,6 +269,37 @@ class PanelListenTest {
         }
     }
 
+    /** A microphone test whose page went away ends at the panel's next poll
+     * (`test_a_microphone_test_whose_window_closed_ends_at_the_next_poll`, voice finding 10). */
+    @Test
+    fun aMicrophoneTestWhosePageWentAwayEndsAtTheNextPoll() {
+        allowMicrophone()
+        PanelListen.build(app)
+        PanelListen.stt = object : Recogniser {
+            override val loaded = true
+            override val loadSeconds: Double? = 0.0
+            override fun healthcheck() = true to "fake"
+            override fun load() = true
+            override fun prime(): Double? = 0.0
+            override fun close() = Unit
+            override fun transcribe(audio: FloatArray) = ""
+        }
+        try {
+            PanelListen.setListen("ptt")
+            val started = PanelListen.setHearTest(true)
+            org.junit.Assume.assumeTrue("no microphone here: $started", started.getBoolean("ok"))
+            PanelEngine.poll(0) // the page still polling
+            assertTrue(PanelListen.hearTestRunning)
+            PanelListen.hearTestSeenAgo(PanelListen.HEAR_TEST_TIMEOUT_S + 1) // the page went away
+            PanelEngine.poll(0)
+            assertTrue(!PanelListen.hearTestRunning)
+            assertEquals("ptt", PanelListen.listener!!.mode)
+        } finally {
+            if (PanelListen.hearTestRunning) PanelListen.setHearTest(false)
+            PanelListen.setListen("off")
+        }
+    }
+
     /**
      * `test_a_spoken_move_reaches_the_coach_as_san`, with the phone's recogniser: a real clip
      * is heard, corrected to the legal move, put in the text box and asked of the coach after the

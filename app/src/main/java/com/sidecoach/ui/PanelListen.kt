@@ -482,6 +482,22 @@ object PanelListen {
      * comes. Runs on the listener's delivery thread (or the request's, for `/api/hear`).
      * `_on_utterance`.
      */
+    /**
+     * The microphone test's page went away without saying so (Settings closed during the test):
+     * the test ends at the panel's next poll, not only at the next utterance, which left it
+     * listening in voice mode whatever the player had chosen (voice finding 10). `poll`'s check.
+     */
+    fun endStaleHearTest() {
+        if (hearTestOn && now() - hearTestSeen > HEAR_TEST_TIMEOUT_S) setHearTest(false)
+    }
+
+    /** For the tests: the page's last look at the microphone test, [seconds] ago. */
+    internal fun hearTestSeenAgo(seconds: Double) {
+        hearTestSeen = now() - seconds
+    }
+
+    internal val hearTestRunning: Boolean get() = hearTestOn
+
     internal fun onUtterance(audio: FloatArray, seconds: Double) {
         utteranceGen += 1
         val holds = dictationHolds // a press or an utterance after this one began

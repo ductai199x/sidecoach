@@ -223,6 +223,7 @@ object PanelEngine {
     // ---- what the page asks for --------------------------------------------------------
 
     fun poll(since: Int): JSONObject {
+        PanelListen.endStaleHearTest()
         val lines = JSONArray()
         val snapshot: JSONObject
         val at: Int
