@@ -532,6 +532,7 @@ export type PanelState = {
   /** Raised by every change the server makes to the settings or a piece set. */
   settings_version?: number;
   caption_lines?: [number, string, boolean?][];
+  caption_again?: number;
   speaking?: boolean;
   board_screen?: [number, number, number, number] | null;
   [key: string]: unknown;

@@ -416,6 +416,9 @@ class PanelEngine:
             # the vision follows is on the screen, in pixels (none while it follows none).
             "captions": caption_settings(self.settings, preview=0),
             "caption_lines": [],
+            # Raised when a line captioned earlier is said now (a word held back in a fast
+            # game): the box, faded since, comes back for it.
+            "caption_again": 0,
             # Raised by every change the server makes to the settings or a piece set: the main
             # window reads it with each poll and tells the other windows (lib/panel.svelte.ts).
             "settings_version": 0,
@@ -1567,6 +1570,10 @@ class PanelEngine:
         self._held_word = None
         self._voicing = (trigger, ply)
         self._await_audio(trigger, ply, text)
+        with self._lock:
+            # Captioned when it was held back, long faded: the box comes back while it is
+            # said (voice finding 20, 2026-10-01).
+            self._state["caption_again"] = int(self._state.get("caption_again") or 0) + 1
         self._tts.say(text)
         self._emit("voice", "debug", f"speaking ({self.voice}), the game slowed: {elide(text, 60)}")
 
