@@ -585,6 +585,25 @@ def square_colours(gray: np.ndarray, region: Region, cell: float) -> Colours | N
     return palette(_cells(gray, region, cell, pad=0))
 
 
+def occupied_grid(
+    gray: np.ndarray, region: Region, cell: float, medians: np.ndarray, colours: Colours
+) -> np.ndarray:
+    """Which cells, as an 8x8 bool grid, are readable and have an interior mean that differs
+    from their ring median by over the tolerance: the cells pieces and marks sit on."""
+    band = _ring_band(cell)
+    readable = readable_against(medians, colours)
+    grid = np.zeros((8, 8), dtype=bool)
+    for r in range(8):
+        for c in range(8):
+            if not readable[r, c]:
+                continue
+            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
+            inner = gray[y0 + band : y1 - band, x0 + band : x1 - band]
+            if inner.size and abs(float(inner.mean()) - medians[r, c]) > colours[2]:
+                grid[r, c] = True
+    return grid
+
+
 def occupied_cells(
     gray: np.ndarray, region: Region, cell: float, medians: np.ndarray, colours: Colours
 ) -> int:
@@ -596,18 +615,17 @@ def occupied_cells(
     ties: among boards of one size and fit the detector puts a game board before an empty
     one.
     """
-    band = _ring_band(cell)
-    readable = readable_against(medians, colours)
-    count = 0
-    for r in range(8):
-        for c in range(8):
-            if not readable[r, c]:
-                continue
-            x0, y0, x1, y1 = cell_bounds(region, cell, r, c)
-            inner = gray[y0 + band : y1 - band, x0 + band : x1 - band]
-            if inner.size and abs(float(inner.mean()) - medians[r, c]) > colours[2]:
-                count += 1
-    return count
+    return int(occupied_grid(gray, region, cell, medians, colours).sum())
+
+
+def board_occupancy(gray: np.ndarray, region: Region, cell: float) -> np.ndarray | None:
+    """The occupied cells of the board at `region`, read in its own colours; None when the
+    frame does not show it whole. Two boards of one size tell apart by it: a board moved
+    keeps its pieces, another game's board does not."""
+    colours = square_colours(gray, region, cell)
+    if colours is None:
+        return None
+    return occupied_grid(gray, region, cell, _cells(gray, region, cell, pad=0), colours)
 
 
 def _boundary_weight(
