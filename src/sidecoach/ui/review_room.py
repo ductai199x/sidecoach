@@ -44,7 +44,7 @@ from sidecoach.llm.usage import Usage, prices_for
 from sidecoach.profile import library
 from sidecoach.profile.game_summary import missed_motifs, summarize
 from sidecoach.profile.stat_facts import keep_stats
-from sidecoach.profile.store import LibraryRow, Store
+from sidecoach.profile.store import STRENGTH_RANK, WATCHED, LibraryRow, ReviewRow, Store
 from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries, measured
@@ -711,59 +711,89 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
     measurements with the import's own headers and clocks, summed up and saved with its facts
     for Stats at once, no engine -- pairing left the game with no accuracy until it was reviewed
     again (Tai, 2026-09-30). A record that differs is reviewed as the import, from the positions
-    the watched review measured (`review_row`). Returns the imports given a review."""
+    the watched review measured (`review_row`). Returns the imports given a review.
+
+    The same for a copy of a game that stands aside for another (`library.pair_copies`: a game
+    pasted and imported), which is the same game move for move, with one more rule: nothing
+    the player has of either is lost -- a review the survivor lacks is carried when it is
+    stronger or has the AI coach's words (paid for), and words one has that the other has not
+    go to the survivor (Tai, 2026-10-02)."""
     carried = []
     for watched, imported in twins.items():
-        if store.best_review(imported) is not None:
+        copy = not watched.startswith(WATCHED)
+        best = store.best_review(imported)
+        if best is not None and not copy:
             continue
-        old = store.best_review(watched)
         row = library.find(store, imported)
-        if old is None or old.version != REVIEW_VERSION or row is None:
+        if row is None:
             continue
-        games = library.games_in(row.pgn)
-        try:
-            was = ReviewedGame.model_validate_json(old.report)
-        except ValueError:
-            continue
-        if not games or not was.moves:
-            continue
-        game = games[0]
-        seen = [m.fen_before for m in was.moves] + [was.moves[-1].after.fen]
-        if seen != [b.fen() for b in positions(game)]:
-            continue
-        moves = [
-            m.model_copy(
-                update={
-                    "assessment": m.assessment.model_copy(update={"game_id": imported}),
-                    "after": m.after.model_copy(update={"game_id": imported}),
-                    "clock_ms": clock_ms,
-                    "spent_ms": spent_ms,
-                }
-            )
-            for m, (clock_ms, spent_ms) in zip(was.moves, clocks(game), strict=True)
-        ]
-        reviewed = was.model_copy(
+        mine = store.reviews_of(watched)
+        for old in mine if copy else mine[:1]:
+            if old.version != REVIEW_VERSION:
+                continue
+            kept = store.review(imported, old.strength) if copy else None
+            if kept is not None:
+                if old.words and not kept.words and kept.version == old.version:
+                    store.set_review_words(imported, old.strength, old.words)
+                continue
+            if (
+                best is not None
+                and not old.words
+                and STRENGTH_RANK[old.strength] <= STRENGTH_RANK[best.strength]
+            ):
+                continue
+            if _carry_one(store, old, imported, row):
+                carried.append(imported)
+                best = store.best_review(imported)
+    return carried
+
+
+def _carry_one(store: Store, old: ReviewRow, imported: str, row: LibraryRow) -> bool:
+    """One review of a game carried to the game that stands for it (`carry_twins`); whether it
+    was."""
+    games = library.games_in(row.pgn)
+    try:
+        was = ReviewedGame.model_validate_json(old.report)
+    except ValueError:
+        return False
+    if not games or not was.moves:
+        return False
+    game = games[0]
+    seen = [m.fen_before for m in was.moves] + [was.moves[-1].after.fen]
+    if seen != [b.fen() for b in positions(game)]:
+        return False
+    moves = [
+        m.model_copy(
             update={
-                "headers": {k: str(v) for k, v in game.headers.items()},
-                "start": was.start.model_copy(update={"game_id": imported}),
-                "moves": moves,
+                "assessment": m.assessment.model_copy(update={"game_id": imported}),
+                "after": m.after.model_copy(update={"game_id": imported}),
+                "clock_ms": clock_ms,
+                "spent_ms": spent_ms,
             }
         )
-        if not store.save_review(
-            imported,
-            old.strength,
-            REVIEW_VERSION,
-            time.time(),
-            reviewed.model_dump_json(),
-            summarize(reviewed).model_dump_json(),
-        ):
-            continue  # reviewed meanwhile (that review stays, with its words), or removed
-        if old.words:
-            store.set_review_words(imported, old.strength, old.words)
-        store.clear_progress(imported, old.strength)
-        keep_stats(store, old.strength, reviewed, row)
-        carried.append(imported)
-    return carried
+        for m, (clock_ms, spent_ms) in zip(was.moves, clocks(game), strict=True)
+    ]
+    reviewed = was.model_copy(
+        update={
+            "headers": {k: str(v) for k, v in game.headers.items()},
+            "start": was.start.model_copy(update={"game_id": imported}),
+            "moves": moves,
+        }
+    )
+    if not store.save_review(
+        imported,
+        old.strength,
+        REVIEW_VERSION,
+        time.time(),
+        reviewed.model_dump_json(),
+        summarize(reviewed).model_dump_json(),
+    ):
+        return False  # reviewed meanwhile (that review stays, with its words), or removed
+    if old.words:
+        store.set_review_words(imported, old.strength, old.words)
+    store.clear_progress(imported, old.strength)
+    keep_stats(store, old.strength, reviewed, row)
+    return True
 
 
 def playback(pgn: str) -> list[dict[str, str | None]]:

@@ -936,6 +936,68 @@ def test_the_review_saved_first_stays_with_the_words_paid_for(
     store.close()
 
 
+def test_a_pasted_game_reviewed_then_imported_keeps_its_review_and_paid_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-10-02: a game pasted and imported is one game. The pasted copy's review and the
+    AI coach's words the player paid for go to the site's record (the one that stands for the
+    game), whichever strength they are; a review the site's record has stays, and gains the
+    words it lacks; the game is in Stats once."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    settings = Settings(data_dir=tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    (pasted,) = library.from_pgn(GAME, user_names=["nosegazm"])
+    store.add_library_game(pasted)
+
+    def review(row: Any, strength: str) -> None:
+        assert review_room.review_row(
+            settings,
+            row,
+            store,
+            STRENGTHS[strength],
+            workers=1,
+            make_engine=lambda **_: FakeEngine(),
+        )
+
+    review(pasted, "deep")
+    words = json.dumps({"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}})
+    store.set_review_words(pasted.key, "deep", words)
+    site = library.row_for(
+        library.games_in(GAME)[0], source="chesscom", key="chesscom:9", user_names=["nosegazm"]
+    )
+    store.add_library_game(site)
+    review(site, "standard")  # the site's record was reviewed at a lower strength meanwhile
+    twins = library.reconcile(store)
+    assert twins == {pasted.key: site.key}
+    review_room.carry_twins(store, twins)
+
+    assert [r.key for r in store.library()] == [site.key], "listed once"
+    deep = store.review(site.key, "deep")
+    assert deep is not None and deep.words == words, "the stronger review, with the paid words"
+    assert json.loads(deep.report)["headers"]["Site"] == "Chess.com"
+    assert store.review(site.key, "standard") is not None, "its own review stays"
+    assert store.review(pasted.key, "deep") is not None, "and the pasted copy's is kept as it was"
+    assert {g["key"] for g in store.stat_games()} == {site.key}, "Stats counts it once"
+    assert store.stat_strengths() == {site.key: "deep", pasted.key: "deep"}
+
+    # Words paid for on the pasted copy's Standard review reach the site's, which lacks them.
+    review(pasted, "standard")
+    store.set_review_words(pasted.key, "standard", words)
+    review_room.carry_twins(store, twins)
+    kept = store.review(site.key, "standard")
+    assert kept is not None and kept.words == words
+    again = store.review(site.key, "standard")
+    review_room.carry_twins(store, twins)  # nothing more to do the next time
+    assert store.review(site.key, "standard") == again
+    store.close()
+
+
 def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

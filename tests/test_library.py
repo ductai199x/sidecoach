@@ -318,6 +318,8 @@ def test_every_game_is_listed_however_many() -> None:
     (row,) = from_pgn(
         GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), user_names=["nosegazm"]
     )
+    # A site's games are told apart by their ids, whatever they play (a pasted one is not).
+    row = dataclasses.replace(row, source="chesscom", key="chesscom:first")
     start = row.played_at or 0.0
     # The first game played: imported and watched, older than every other.
     store.add_library_game(row)
@@ -375,6 +377,7 @@ def test_a_watched_record_that_is_no_game_stays_out(tmp_path) -> None:  # noqa: 
     _watch(store, "g3", SANS, 3000.0, result="*")
     _watch(store, "g4", SANS[:6], 4000.0)
     assert [r.key for r in from_watched(store)] == [good]
+    assert from_watched(store)[0].time_class is None, "no clock read at the start: no class"
     store.close()
 
 
@@ -427,4 +430,97 @@ def test_the_end_of_game_card_offers_game_review_only_for_a_game_it_opens() -> N
     assert PanelEngine._reviewable(profiler, "g-long") == game
     assert PanelEngine._reviewable(profiler, "g-short") is None
     assert PanelEngine._reviewable(profiler, "no-such-game") is None
+    store.close()
+
+
+def _site(text: str, key: str, source: str = "chesscom") -> LibraryRow:
+    """A game as the site's import keeps it: its own key and class."""
+    from sidecoach.profile.library import games_in, row_for
+
+    return row_for(
+        games_in(text)[0], source=source, key=key, user_names=["nosegazm"], time_class="rapid"
+    )
+
+
+def _shown(store: Store) -> list[str]:
+    """What the list, the backlog and Stats count: every game once."""
+    return sorted(r.key for r in store.library())
+
+
+def test_a_game_both_pasted_and_imported_is_one_game_whichever_came_first() -> None:
+    """Tai, 2026-10-02: "that's obvious". The same game pasted as a PGN and brought in from the
+    site is one game, the site's record (its headers); the pasted copy stands aside in the
+    library, Stats and the backlog, as a watched game does for its import."""
+    for first_pasted in (True, False):
+        store = Store(None)
+        (pasted,) = from_pgn(GAME, user_names=["nosegazm"])
+        site = _site(GAME, "chesscom:1")
+        order = [pasted, site] if first_pasted else [site, pasted]
+        for row in order:
+            store.add_library_game(row)
+            reconcile(store)
+        assert _shown(store) == [site.key]
+        assert store.twins() == {pasted.key: site.key}
+        assert [r.key for r in store.unreviewed()] == [site.key]
+        # Stats: the pasted copy was counted before the import came in; once, then.
+        _stats(store, pasted.key)
+        assert {g["key"] for g in store.stat_games()} == {pasted.key}
+        _stats(store, site.key)
+        assert {g["key"] for g in store.stat_games()} == {site.key}
+        # Nothing more to do on another look, and removing the game takes its copy too.
+        assert reconcile(store) == {pasted.key: site.key}
+        assert set(store.remove_game(site.key)) == {site.key, pasted.key}
+        assert _shown(store) == [] and store.stat_games() == []
+        assert set(store.restore_game(site.key)) == {site.key, pasted.key}
+        assert _shown(store) == [site.key]
+        store.close()
+
+
+def test_three_copies_of_a_game_are_one_and_a_better_copy_takes_over() -> None:
+    """Pasted, pasted again with another date, then brought in: the site's record stands for
+    all three -- and the watched game that stood aside for the first now stands aside for it."""
+    store = Store(None)
+    (first,) = from_pgn(
+        GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), user_names=["nosegazm"]
+    )
+    again = from_pgn(
+        GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG).replace(
+            '[Date "2026.09.29"]', '[Date "2026.09.30"]'
+        ),
+        user_names=["nosegazm"],
+    )[0]
+    assert again.key != first.key
+    store.add_library_game(first)
+    watched = _watch(store, "g1", SANS, (first.played_at or 0.0) + 60)
+    assert reconcile(store) == {watched: first.key}
+    store.add_library_game(again)
+    reconcile(store)
+    assert _shown(store) == [first.key], "the first brought in stands for the pair"
+    site = _site(GAME.replace("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 0-1", LONG), "chesscom:7")
+    store.add_library_game(site)
+    assert reconcile(store) == {first.key: site.key, again.key: site.key, watched: site.key}
+    assert _shown(store) == [site.key]
+    assert [r.key for r in from_watched(store) if r.key not in store.twins()] == []
+    store.close()
+
+
+def test_games_that_only_look_alike_are_not_merged() -> None:
+    """The same opening, the same players, even the same moves but a late one: two games. Two
+    games of one site, and a pasted game of other players, are two as well."""
+    store = Store(None)
+    site = _site(GAME, "chesscom:1")
+    (other_way,) = from_pgn(OTHER, user_names=["nosegazm"])  # the opening to move 3, then its own
+    late_b = GAME.replace("3. Bc4 Nf6 0-1", "3. Bc4 Nf6 4. d3 Bc5 0-1")
+    late_c = GAME.replace("3. Bc4 Nf6 0-1", "3. Bc4 Nf6 4. d3 Be7 0-1")
+    (pasted_b,) = from_pgn(late_b, user_names=["nosegazm"])
+    site_c = _site(late_c, "chesscom:3")  # differs from the pasted one by the last move only
+    strangers = from_pgn(late_b.replace("Anakin_737", "Magnus"), user_names=["nosegazm"])[0]
+    site_twin = _site(GAME, "chesscom:2")  # a second game of the site with the same moves
+    for row in (site, other_way, pasted_b, site_c, strangers, site_twin):
+        store.add_library_game(row)
+    reconcile(store)
+    assert _shown(store) == sorted(
+        [site.key, other_way.key, pasted_b.key, site_c.key, strangers.key, site_twin.key]
+    )
+    assert store.twins() == {}
     store.close()

@@ -300,6 +300,7 @@ def reconcile(store: Store) -> dict[str, str]:
     stands for the watched one in the library, the background review and Stats. Pairs found
     are kept in the store; returns them all, watched key -> imported key. Every watched game,
     not the latest 200 (the review of 2026-10-01), each against the imports played near it."""
+    pair_copies(store)
     twins = store.twins()
     imported = store.library()
     dated = sorted((r.played_at, i) for i, r in enumerate(imported) if r.played_at is not None)
@@ -329,6 +330,96 @@ def reconcile(store: Store) -> dict[str, str]:
             store.add_twin(key, best[1])
             twins[key] = best[1]
     return twins
+
+
+# One game kept twice in the library -- pasted as a PGN and brought in from the site, or pasted
+# twice with other headers -- is one game (Tai, 2026-10-02: "that's obvious"): its copies stand
+# aside for the best of them, as a watched game does for its import (`reconcile`: the same
+# `twins`), so the list, Stats, the insights and the backlog count it once. Two copies are one
+# game when at least one was pasted (a site's own ids tell its games apart: two games of one
+# site, or of two sites, are two), they play the same moves from the start to the end, their
+# results do not disagree, and the players, when both name them, are the same.
+_SITES = ("chesscom", "lichess")
+_COMMENT = re.compile(r"\{[^}]*\}|;[^\n]*")
+_VARIATION = re.compile(r"\([^()]*\)")
+_MOVE_NOISE = re.compile(r"\$\d+|\d+\.+")
+_RESULTS = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
+
+
+def _signature(pgn: str) -> tuple[str, ...]:
+    """A PGN's moves as bare words, read off its text with no board (cheap enough for every
+    game of the library at each look): what two copies of one game share, the candidates
+    `pair_copies` then confirms by playing the moves."""
+    text = "\n".join(line for line in pgn.splitlines() if not line.startswith("["))
+    text = _COMMENT.sub(" ", text)
+    while (bare := _VARIATION.sub(" ", text)) != text:
+        text = bare
+    words = _MOVE_NOISE.sub(" ", text).split()
+    return tuple(w.rstrip("+#!?") for w in words if w not in _RESULTS)
+
+
+def _standing(row: LibraryRow) -> tuple[bool, bool, bool, float, str]:
+    """Which copy stands for the game, best first: the site's own record (its headers, clocks,
+    ratings) over a pasted one, then the one that says when in the day it started and which
+    side was the player's, then the one brought in first."""
+    return (
+        row.source not in _SITES,
+        not _TIMED.search(row.pgn),
+        row.user_side is None,
+        row.added_at,
+        row.key,
+    )
+
+
+def _named(name: str | None) -> str | None:
+    return None if name is None or name.strip() in ("", "?") else name.strip().lower()
+
+
+def _same_game(best: LibraryRow, row: LibraryRow, moves: dict[str, list[str] | None]) -> bool:
+    """Whether `row` is a copy of `best` (see the rule above)."""
+    if best.source == "pgn" or row.source == "pgn":
+        if (
+            best.result
+            and row.result
+            and "*" not in (best.result, row.result)
+            and best.result != row.result
+        ):
+            return False
+        for ours, theirs in ((best.white, row.white), (best.black, row.black)):
+            if _named(ours) and _named(theirs) and _named(ours) != _named(theirs):
+                return False
+        for each in (best, row):
+            if each.key not in moves:
+                moves[each.key] = _sans(each.pgn)
+        return moves[best.key] is not None and moves[best.key] == moves[row.key]
+    return False
+
+
+def pair_copies(store: Store) -> dict[str, str]:
+    """Each game the library keeps in more than one copy, the copies that stand aside -> the
+    copy that stands for the game (`twins`, kept in the store). Returns every copy paired. A
+    better copy that comes later (the site's, after a paste) takes over the ones that stood
+    aside for the one before it, the watched games' pairs among them."""
+    groups: dict[tuple[str, ...], list[LibraryRow]] = {}
+    for row in store.library():
+        words = _signature(row.pgn)
+        if words:
+            groups.setdefault(words, []).append(row)
+    found: dict[str, str] = {}
+    moves: dict[str, list[str] | None] = {}
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        stands: list[LibraryRow] = []  # the games of this group, each by its best copy
+        for row in sorted(group, key=_standing):
+            home = next((best for best in stands if _same_game(best, row, moves)), None)
+            if home is None:
+                stands.append(row)
+                continue
+            store.add_twin(row.key, home.key)
+            store.retarget_twins(row.key, home.key)
+            found[row.key] = home.key
+    return found
 
 
 def _order(move: MoveRow) -> tuple[int, int]:

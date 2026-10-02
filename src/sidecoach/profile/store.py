@@ -977,10 +977,12 @@ class Store:
     def library(self) -> list[LibraryRow]:
         """Every imported game, the latest played first. Every one: the Games window listed 500
         while the background review and Stats counted all (the review of 2026-10-01), and the
-        games past it could not be seen, opened or removed."""
+        games past it could not be seen, opened or removed. A game that is a copy of another
+        (pasted and imported: `add_twin`, library.py `pair_copies`) is that other's: once."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM library ORDER BY COALESCE(played_at, added_at) DESC"
+                "SELECT * FROM library WHERE key NOT IN (SELECT watched FROM twins)"
+                " ORDER BY COALESCE(played_at, added_at) DESC"
             ).fetchall()
         return [LibraryRow(**dict(r)) for r in rows]
 
@@ -1123,6 +1125,12 @@ class Store:
             )
             self._db.commit()
 
+    def retarget_twins(self, was: str, now: str) -> None:
+        """Every game that stood aside for `was` stands aside for `now` (a better copy came)."""
+        with self._lock:
+            self._db.execute("UPDATE twins SET imported = ? WHERE imported = ?", (now, was))
+            self._db.commit()
+
     def twins(self) -> dict[str, str]:
         """The watched games that were imported too: watched key -> imported key."""
         with self._lock:
@@ -1214,6 +1222,7 @@ class Store:
         with self._lock:
             rows = self._db.execute(
                 "SELECT * FROM library WHERE key NOT IN (SELECT key FROM reviews)"
+                " AND key NOT IN (SELECT watched FROM twins)"
                 " ORDER BY COALESCE(played_at, added_at) DESC"
             ).fetchall()
         return [LibraryRow(**dict(r)) for r in rows]
@@ -1265,6 +1274,15 @@ class Store:
                 "SELECT * FROM reviews WHERE key = ? AND strength = ?", (key, strength)
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
+
+    def reviews_of(self, key: str) -> list[ReviewRow]:
+        """Every review of the game, the strongest first."""
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT * FROM reviews WHERE key = ? ORDER BY {_RANK} DESC, reviewed_at DESC",
+                (key,),
+            ).fetchall()
+        return [ReviewRow(**dict(r)) for r in rows]
 
     def saved_reviews(self) -> list[tuple[str, str]]:
         """Every saved review, by its game's key and its strength."""

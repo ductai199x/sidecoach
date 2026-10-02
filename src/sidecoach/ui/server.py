@@ -998,7 +998,11 @@ def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
         new = [row for row in rows if store.library_game(row.key) is None]
         for row in rows:
             store.add_library_game(row)
-        library.reconcile(store)  # a game Sidecoach watched, now imported: one game
+        # A game Sidecoach watched, now imported, or kept already in another copy (a pasted
+        # game, now brought in from the site): one game. A copy is not new; the keys are the
+        # games' that stand for them.
+        twins = library.reconcile(store)
+        new = [row for row in new if row.key not in twins]
     finally:
         store.close()
     return {
@@ -1006,7 +1010,7 @@ def _import(engine: PanelEngine, store_path: Path, body: Any) -> dict[str, Any]:
         "added": len(new),
         "already": len(rows) - len(new),
         "left_out": len(out),
-        "keys": [r.key for r in rows],
+        "keys": [twins.get(r.key, r.key) for r in rows],
     }
 
 
