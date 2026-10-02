@@ -178,6 +178,17 @@ def _validated(engine: Any, change: dict[str, Any]) -> Settings:
     default, and the log says so: left, it refused every later save and mute for a field
     nobody had sent (the settings review, 2026-10-01)."""
     data = _merged(engine.settings.model_dump(mode="json"), change)
+    llm_change: dict[str, Any] = change.get("llm") or {}
+    if not isinstance(llm_change, dict):
+        llm_change = {}
+    if (
+        "provider" in llm_change
+        and llm_change["provider"] != engine.settings.llm.provider
+        and "model" not in llm_change
+    ):
+        # One service's model is not another's: kept, OpenAI was asked for the local
+        # server's model (the API review, 2026-10-01). Empty is the new service's default.
+        data["llm"]["model"] = None
     for _ in range(len(data) + 1):  # each round takes at least one field out
         try:
             new = Settings.model_validate(data)

@@ -43,6 +43,23 @@ def test_the_schema_carries_the_marks_the_page_reads(
     assert "OPENAI_API_KEY" in got["secrets"]
 
 
+def test_a_new_service_does_not_take_the_old_ones_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, engine = _client(tmp_path, monkeypatch)
+    custom = {"provider": "custom", "base_url": "http://192.168.1.20:1234/v1", "model": "qwen3"}
+    assert client.put("/api/settings", json={"settings": {"llm": custom}}).json()["ok"]
+    # The page sends what changed: the service alone.
+    put = {"settings": {"llm": {"provider": "openai"}}}
+    assert client.put("/api/settings", json=put).json()["ok"]
+    assert engine.settings.llm.model is None  # the new service's default
+    # A model sent with the service is kept.
+    put = {"settings": {"llm": {"provider": "local", "model": "mine"}}}
+    assert client.put("/api/settings", json=put).json()["ok"]
+    assert engine.settings.llm.model == "mine"
+    assert engine.settings.llm.base_url == "http://192.168.1.20:1234/v1"
+
+
 def test_a_save_writes_the_file_and_says_what_applies_when(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -47,12 +47,31 @@ def test_dashscope_defaults_and_what_the_environment_and_settings_override(
     settings = LLMSettings(provider="dashscope", model="qwen3.8-flash", thinking_control="none")
     provider = make_provider(settings)
     assert provider.model == "qwen3.8-flash" and provider.thinking_control == "none"
-    # The account's endpoint is set beside the key; a settings base_url still wins.
+    # The account's endpoint is set beside the key. A settings base_url is the local server's
+    # or a custom service's, never a hosted preset's: one left from before is not used.
     monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://account.example/compatible-mode/v1")
     provider = make_provider(LLMSettings(provider="dashscope"))
     assert provider.base_url == "https://account.example/compatible-mode/v1"
-    provider = make_provider(LLMSettings(provider="dashscope", base_url="https://x.example/v1"))
-    assert provider.base_url == "https://x.example/v1"
+    provider = make_provider(LLMSettings(provider="dashscope", base_url="http://192.168.1.20/v1"))
+    assert provider.base_url == "https://account.example/compatible-mode/v1"
+
+
+def test_a_switch_of_service_leaves_nothing_of_the_old_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    # What a custom service left in the settings: its address, its key variable.
+    left = LLMSettings(
+        provider="openai", base_url="http://192.168.1.20:1234/v1", api_key_env="CUSTOM_API_KEY"
+    )
+    provider = make_provider(left)
+    assert provider.base_url == "https://api.openai.com/v1"
+    assert provider._api_key == "sk-openai"
+    # The local server keeps its own address.
+    local = make_provider(LLMSettings(provider="local", base_url="http://192.168.1.20:1234/v1"))
+    assert local.base_url == "http://192.168.1.20:1234/v1"
 
 
 def test_the_factory_gives_the_offline_provider_and_it_reports_itself() -> None:
