@@ -72,4 +72,17 @@ class ReviewWordsFixesTest {
             ReviewWords.PARALLEL = was
         }
     }
+
+    /** `test_no_call_is_made_once_told_to_stop`: the game removed while its words are written. */
+    @Test
+    fun noCallIsMadeOnceToldToStop() {
+        val plies = ReviewWords.keyPlies(game)
+        val model = Model()
+        val words = ReviewWords.write(
+            game, model, user = "black", opening = null, prices = Prices(),
+            answered = mapOf(plies[0] to "### why\nA move."), stop = { true },
+        )
+        assertEquals(emptyList<Int>(), model.asked)
+        assertEquals(plies.drop(1).toSet(), words.failed)
+    }
 }

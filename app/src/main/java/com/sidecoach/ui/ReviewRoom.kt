@@ -205,6 +205,9 @@ class ReviewRoom(
             if (status != "ready" || r == null) return "the review is not ready"
             if (wordsStatus == "writing") return null
             if (provider == null) return unavailable
+            // Removed meanwhile: the words would be paid for and saved on nothing (the review of
+            // 2026-10-01).
+            if (!store.inRecord(key)) return GONE
             wordsStatus = "writing"
             wordsError = null
             reviewed = r
@@ -251,7 +254,9 @@ class ReviewRoom(
                 thinking = reasons,
                 answered = before,
                 onAnswer = ::keep,
+                stop = { !store.inRecord(key) },
             )
+            if (!store.inRecord(key)) throw IllegalStateException(GONE)
             if (written.failed.isNotEmpty()) {
                 // Some calls failed: the answers paid for are kept ([keep]), and Try again asks
                 // the rest. They were saved as done, the failed moves without words for good and
@@ -274,9 +279,10 @@ class ReviewRoom(
                 .put("reveals", JSONArray(written.reveals.sorted()))
             shown = shown(saved, reviewed)
         } catch (exc: Exception) { // a failure is said, never left "writing"
+            val gone = runCatching { !store.inRecord(key) }.getOrDefault(false)
             synchronized(lock) {
                 wordsStatus = "failed"
-                wordsError = exc.message ?: exc.toString()
+                wordsError = if (gone) GONE else exc.message ?: exc.toString()
             }
             emit("sys", "error", "the AI coach's words failed: $exc")
             return
@@ -494,7 +500,7 @@ class ReviewRoom(
             if (!stop.get()) { // not stopped: the game went from the record meanwhile
                 synchronized(lock) {
                     status = "failed"
-                    error = "This game is no longer in your record."
+                    error = GONE
                 }
                 emit("sys", "warn", "$key left the record while it was reviewed")
             }
@@ -570,6 +576,9 @@ class ReviewRoom(
     companion object {
         // The review's format: a review saved in an older one is done again.
         const val REVIEW_VERSION = 1
+
+        /** Why a room has nothing more to do: its game was removed (or the profile reset) meanwhile. */
+        const val GONE = "This game is no longer in your record."
 
         // What a review's summary and its Stats facts are made of from its report ([rederive]):
         // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's.

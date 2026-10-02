@@ -755,6 +755,7 @@ object ReviewWords {
         thinking: Boolean = false,
         answered: Map<Int, String>? = null,
         onAnswer: ((Int, String, Map<String, Any?>) -> Unit)? = null,
+        stop: (() -> Boolean)? = null,
     ): Words {
         val paid = LinkedHashMap(answered ?: emptyMap())
         val plies = keyPlies(game)
@@ -774,7 +775,8 @@ object ReviewWords {
             }
         }
 
-        fun ask(ply: Int): Any = try {
+        // [stop] true asks no more (the game removed meanwhile): the calls not made fail.
+        fun ask(ply: Int): Any = if (stop != null && stop()) IllegalStateException("stopped") else try {
             asked.chat(
                 SYSTEM,
                 listOf(ChatMessage("user", prompt(game, ply, user, opening))),
