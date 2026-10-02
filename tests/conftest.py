@@ -1,7 +1,5 @@
 """Suite-wide options: `--seeds N` (or `--seeds A-B`) widens the random-game sweeps
-(tests/test_stress.py, tests/test_board_geometry.py) and `--sweep` adds the cases marked
-`sweep` (every lichess set, every board size): the default run keeps a representative few of
-each and is fast (Tai, 2026-10-01); the guard that keeps the suite off a live session; the
+(tests/test_stress.py, tests/test_board_geometry.py, tests/test_premove_sweep.py); the guard that keeps the suite off a live session; the
 workers started together; the vision tests kept together a module at a time; and
 `make_panel`, the panel most panel tests start from."""
 
@@ -134,9 +132,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "embedder: loads the embedding net outside the vision suite (tests/conftest.py)"
     )
-    config.addinivalue_line(
-        "markers", "sweep: one more case of a sweep, run with --sweep (tests/conftest.py)"
-    )
     _below_normal_priority()  # the controller and, since this runs in each, every worker
     if os.environ.get("PYTEST_XDIST_WORKER"):
         # One OpenCV thread a worker: every worker's own pool, one thread a core each, had
@@ -169,12 +164,6 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(tryfirst=True)  # before xdist's own, which reads the marks on the worker
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if not config.getoption("--sweep"):
-        # A sweep's other cases only when asked: the default run keeps its representative few.
-        swept = [item for item in items if item.get_closest_marker("sweep")]
-        if swept:
-            config.hook.pytest_deselected(items=swept)
-            items[:] = [item for item in items if not item.get_closest_marker("sweep")]
     counted: dict[str, int] = {}
     for item in items:
         module = item.path.stem
@@ -206,12 +195,6 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--sweep",
-        action="store_true",
-        default=False,
-        help="run every case of the sweeps (the cases marked sweep), not the representative few",
-    )
     parser.addoption(
         "--seeds",
         action="store",
