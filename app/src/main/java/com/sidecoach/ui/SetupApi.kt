@@ -16,7 +16,7 @@ import org.json.JSONObject
  */
 class SetupApi(private val context: Context) {
 
-    private val setup = Setup(context)
+    private val setup = Setup(context).apply { onFetched.add(PanelWarm::setupFetched) }
 
     fun status(): JSONObject = setup.status().apply {
         // No GPU pack on a phone; the page shows the section only when it is told of one.

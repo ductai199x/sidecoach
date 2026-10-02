@@ -298,12 +298,28 @@ object PanelWarm {
     }
 
     /**
+     * Setup fetched [ids] (`setup_fetched`). The voice or the recogniser among them is loaded
+     * now, and listening applied as the settings say: loaded at start before their files came,
+     * they stayed off until a restart -- the microphone button hidden, its test refused (voice
+     * finding 4; round 3 audit, 2026-10-02).
+     */
+    fun setupFetched(ids: List<String>) {
+        if (!::appContext.isInitialized) return // no warm-up yet: the start's will load them
+        if ("kokoro" in ids || "stt" in ids) thread(name = "voice-after-setup", isDaemon = true) { warmVoice() }
+    }
+
+    /** One warm-up of the voice at a time: Setup's run can end while the start's is loading. */
+    private val voiceWarmLock = Any()
+
+    /**
      * `_warm_voice`: both voice models loaded once, off the pipeline thread, each primed with
      * one inference so the first real one is not the slow one, and where they landed said;
      * then the microphone, and listening in the mode the settings name -- when there is speech
      * recognition to listen with.
      */
-    private fun warmVoice() {
+    private fun warmVoice() = synchronized(voiceWarmLock) { warmVoiceNow() }
+
+    private fun warmVoiceNow() {
         val tts = PanelVoice.tts
         if (tts == null) {
             stage("voice", "off", "voice off")
