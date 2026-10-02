@@ -119,6 +119,23 @@ def test_a_piece_given_for_nothing_is_no_sacrifice() -> None:
     assert "give up" not in (idea_words.piece(idea, chess.Board(fen)) or "")
 
 
+def test_a_sound_sacrifice_in_a_worse_position_is_one() -> None:
+    """Bxh7+ Kxh7 Ng5+ Kg8 Qh5 a little worse (0.45), nothing back in the line: the engine
+    rates it above a bishop-for-a-pawn count, so the bishop is sacrificed (Tai, 2026-10-02:
+    no "below 0.5 it needs two points back" gate)."""
+    fen = "r1bq1rk1/pppn1ppp/4p3/3pP3/1b1P4/2NB1N2/PPP2PPP/R2QK2R w KQ - 0 8"
+    idea = read(fen, "Bxh7+ Kxh7 Ng5+ Kg8 Qh5", score=0.45)
+    assert idea.sacrifices == ((0, "bishop"),)
+
+
+def test_a_piece_another_move_could_defend_is_sacrificed_not_lost_anyway() -> None:
+    """The knight on a4 is attacked and every square it can go to is covered, but Ra1 or Rd4
+    would defend it: h3 Rxa4 gives it, a sacrifice, not a piece lost whatever it did."""
+    fen = "r6k/2p3pp/3p4/4b3/N7/8/5PPP/3R2K1 w - - 0 30"
+    idea = read(fen, "h3 Rxa4", score=0.6)
+    assert idea.sacrifices == ((0, "knight"),)
+
+
 def test_the_target_says_when_the_pattern_comes_about() -> None:
     """The loose piece is loose once the blow is on the board, not now: fxe2 takes the knight
     that guards the rook on g1 (Lichess 01M89, "nothing defends it" of a guarded rook)."""
