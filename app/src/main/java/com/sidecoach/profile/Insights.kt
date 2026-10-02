@@ -17,9 +17,8 @@ import java.math.RoundingMode
 object Insights {
 
     /**
-     * A cause needs this many mistakes before it is named; a motif this many occasions. A habit
-     * (a gap, a habit, a tactic missed) needs its mistakes from MIN_GAMES games: three mistakes in
-     * one game were "a habit" (the review of 2026-10-01).
+     * A motif is named after this many mistakes of it and this many occasions, from this many
+     * games: three mistakes in one game were "a habit" (the review of 2026-10-01).
      */
     const val MIN_ERRORS = 3
     const val MIN_CHANCES = 4
