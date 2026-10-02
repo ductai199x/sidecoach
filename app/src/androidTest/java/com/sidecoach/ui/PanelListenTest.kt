@@ -2,6 +2,9 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.HANG_MS
+import com.sidecoach.ManualClock
+import com.sidecoach.SteppedFrames
 import com.sidecoach.voice.FrameSource
 import com.sidecoach.voice.HOP
 import com.sidecoach.voice.Listener
@@ -9,6 +12,7 @@ import com.sidecoach.voice.Recogniser
 import com.sidecoach.voice.VoiceGate
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -25,17 +29,25 @@ import java.util.concurrent.TimeUnit
  * box as it is recognised and is asked of the coach a second after the utterance ends, unless
  * more is said, which appends, or the person types; and an utterance that comes to nothing is
  * said, so a click does not hold the words before it.
+ *
+ * Nothing here waits on the real time (the desktop's cc3076a): the second of quiet is the
+ * dictation's timer on a clock the test moves ([ManualClock]), checked at its real length,
+ * [PanelListen.DICTATION_SEND_DELAY_S], to the hundredth; a partial is waited on through the
+ * one thread partials run on; the listeners read their frames as the test steps them
+ * ([SteppedFrames]).
  */
 @RunWith(AndroidJUnit4::class)
 class PanelListenTest {
 
     /** Speech recognition that reads the words off the clip's length: one word per 0.4 s. */
     private class WordsByLength : Recogniser {
-        /** A clip of exactly [held] samples waits for [gate] first (a slow partial). */
+        /** A clip of exactly [held] samples waits for [gate] first (a slow partial); [begun] says it is there. */
         @Volatile var gate = CountDownLatch(0)
         @Volatile var held = -1
-        /** Counted down when a held clip begins to be recognised: the test acts by this state. */
-        @Volatile var working = CountDownLatch(1)
+        val begun = CountDownLatch(1)
+
+        /** A held clip that went on without the test's release: the test lost a step. */
+        @Volatile var unreleased = false
         override val loaded = true
         override val loadSeconds: Double? = 0.0
         override fun healthcheck() = true to "fake"
@@ -44,8 +56,8 @@ class PanelListenTest {
         override fun close() = Unit
         override fun transcribe(audio: FloatArray): String {
             if (audio.size == held) {
-                working.countDown()
-                gate.await(2, TimeUnit.SECONDS)
+                begun.countDown()
+                if (!gate.await(HANG_MS, TimeUnit.MILLISECONDS)) unreleased = true
             }
             return List(maxOf(1, (audio.size / 16000.0 / 0.4).toInt())) { "hello" }.joinToString(" ")
         }
@@ -54,13 +66,14 @@ class PanelListenTest {
     /** What was asked of the session's loop (`engine._commands`). */
     private val asked = PanelEngine.commands
     private var recogniser = WordsByLength()
-    private val realTimer = PanelListen.makeTimer
+    private val clock = ManualClock()
+    private val quiet = PanelListen.DICTATION_SEND_DELAY_S
 
     @Before
     fun setUp() {
         PanelListen.cancelDictation()
         PanelEngine.set("fen" to null)
-        PanelListen.sendDelayS = 0.3
+        PanelListen.sendClock = clock.sendClock()
         recogniser = WordsByLength()
         PanelListen.stt = recogniser
         // A session: the ask is queued for its loop.
@@ -72,9 +85,9 @@ class PanelListenTest {
     fun tearDown() {
         PanelEngine.set("running" to false)
         asked.clear()
-        PanelListen.sendDelayS = PanelListen.DICTATION_SEND_DELAY_S
-        PanelListen.makeTimer = realTimer
         PanelListen.cancelDictation()
+        PanelListen.realSendClock()
+        assertFalse("a held recognition went on without the test's release", recogniser.unreleased)
     }
 
     private fun dictation(): JSONObject =
@@ -87,6 +100,17 @@ class PanelListenTest {
         if (sends != null) assertEquals(d.toString(), sends, !d.isNull("sends_at"))
     }
 
+    /**
+     * The partial recognition under way has ended: partials run one at a time on their own
+     * thread, so a task put behind it runs once its words are in the box (or dropped).
+     */
+    private fun partialDone() {
+        PanelListen.partials.submit {}.get(HANG_MS, TimeUnit.MILLISECONDS)
+    }
+
+    /** The page's `sends_at`: a second of quiet after now, on the dictation's clock. */
+    private fun aSecondFromNow(): Long = Math.round((clock.now + quiet) * 1000)
+
     private fun silence(seconds: Double) = FloatArray((16000 * seconds).toInt())
 
     @Test
@@ -97,20 +121,26 @@ class PanelListenTest {
         assertTrue(dictation().getBoolean("live"))
         // Partials while the key is held: the words so far, live.
         PanelListen.onPartial(silence(1.0))
-        val deadline = System.currentTimeMillis() + 2000
-        while (dictation().getString("text") != "hello hello" && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        partialDone()
         assertDictation("hello hello", live = true, sends = false)
         // The key comes up: the final result replaces the partial and the send is armed.
         PanelListen.onUtterance(silence(2.0), 2.0)
         assertDictation("hello hello hello hello hello", live = false, sends = true)
+        assertEquals("a second after the utterance", aSecondFromNow(), dictation().getLong("sends_at"))
         assertTrue(asked.isEmpty())
         // Pressed again before it sends: it waits, and the next utterance appends.
+        clock.advance(quiet / 2)
         PanelListen.dictationHold()
         assertTrue(dictation().isNull("sends_at"))
+        assertEquals("the send that was armed is called off", emptyList<Any>(), clock.pending())
         PanelListen.onUtterance(silence(0.5), 0.5)
         assertEquals("hello hello hello hello hello hello", dictation().getString("text"))
         // ...and after the quiet, one ask with everything, and the box is clear.
-        assertEquals("ask_spoken" to "hello hello hello hello hello hello", asked.poll(2, TimeUnit.SECONDS))
+        val ended = clock.now
+        clock.advanceTo(ended + quiet - 0.01)
+        assertTrue("not before a second of quiet", asked.isEmpty())
+        clock.advanceTo(ended + quiet)
+        assertEquals("ask_spoken" to "hello hello hello hello hello hello", asked.poll())
         assertDictation("", live = false, sends = false)
         // A partial still being recognised when its utterance ends is dropped: the final
         // result has those words, and they must not show twice.
@@ -120,9 +150,17 @@ class PanelListenTest {
         PanelListen.onPartial(silence(1.0)) // blocks in transcribe
         PanelListen.onUtterance(silence(2.0), 2.0)
         slow.countDown()
-        Thread.sleep(200)
+        partialDone()
         assertEquals("hello hello hello hello hello", dictation().getString("text"))
-        PanelListen.cancelDictation()
+        // Typed over before it sends: the words go to the box to edit, and nothing is asked.
+        assertTrue(!dictation().isNull("sends_at"))
+        val typed = PanelListen.cancelDictation()
+        assertEquals(true, typed.getBoolean("ok"))
+        assertEquals("hello hello hello hello hello", typed.getString("text"))
+        assertDictation("", live = false, sends = false)
+        assertEquals("the send is called off", emptyList<Any>(), clock.pending())
+        clock.advance(10 * quiet) // past the send delay
+        assertTrue(asked.isEmpty())
         // No 'heard:' line at info level: the words are on the page, not in the terminal.
         val lines = PanelEngine.poll(0).getJSONArray("lines")
         for (i in 0 until lines.length()) {
@@ -139,7 +177,8 @@ class PanelListenTest {
         assertEquals(true, cancelled.getBoolean("ok"))
         assertEquals("hello hello", cancelled.getString("text"))
         assertDictation("", live = false, sends = false)
-        Thread.sleep(1200)
+        assertEquals("the send is called off", emptyList<Any>(), clock.pending())
+        clock.advance(10 * quiet) // long past the second of quiet
         assertTrue(asked.isEmpty())
     }
 
@@ -148,9 +187,14 @@ class PanelListenTest {
         PanelListen.onUtterance(silence(1.0), 1.0)
         PanelListen.onSpeechStart() // the click begins
         assertDictation("hello hello", live = true, sends = false)
+        assertEquals("the send waits while the click lasts", emptyList<Any>(), clock.pending())
         PanelListen.onDropped() // ...and is dropped
         assertDictation("hello hello", live = false, sends = true)
-        assertEquals("ask_spoken" to "hello hello", asked.poll(2, TimeUnit.SECONDS))
+        val dropped = clock.now
+        clock.advanceTo(dropped + quiet - 0.01)
+        assertTrue("not before a second of quiet", asked.isEmpty())
+        clock.advanceTo(dropped + quiet)
+        assertEquals("ask_spoken" to "hello hello", asked.poll())
         // With nothing said before it, the box simply stops listening.
         PanelListen.onSpeechStart()
         PanelListen.onDropped()
@@ -475,9 +519,11 @@ class PanelListenTest {
         assertEquals("heard: Nf3", heard.last().getString("text"))
         assertEquals("Nf3", heard.last().getJSONObject("data").getJSONArray("moves").getString(0))
         assertTrue(heard.last().getJSONObject("data").getLong("stt_ms") < 2000)
-        // The corrected text is in the text box, and asked of the coach after the quiet.
+        // The corrected text is in the text box, and asked of the coach after a second of quiet.
         assertEquals("Nf3", dictation().getString("text"))
-        assertEquals("ask_spoken" to "Nf3", asked.poll(3, TimeUnit.SECONDS))
+        assertTrue("not before the second of quiet", asked.isEmpty())
+        clock.advance(quiet)
+        assertEquals("ask_spoken" to "Nf3", asked.poll())
         assertTrue(recogniser.loaded)
         assertEquals("parakeet-tdt_ctc-110m, cpu", recogniser.healthcheck().second)
         recogniser.close()
@@ -492,21 +538,30 @@ class PanelListenTest {
         override fun probability(input: FloatArray): Float = (probs.removeFirstOrNull() ?: 0.0).toFloat()
     }
 
-    /** A microphone whose frames the test puts in. */
-    private class FedMic : FrameSource {
-        override val frames: BlockingQueue<FloatArray> = LinkedBlockingQueue()
+    /**
+     * A microphone whose frames the test puts in, and whose listener the test steps: its
+     * `frames` are [SteppedFrames] (the desktop's SteppedMic).
+     */
+    private open class SteppedMic : FrameSource {
+        val steps = SteppedFrames()
+        override val frames: BlockingQueue<FloatArray> = steps
         override val detail = "fed by the test"
         override val isOpen = true
         override fun open() = true
         override fun close() = Unit
     }
 
+    /**
+     * Whoever was told an utterance began is told when it comes to nothing: a click the
+     * endpointer drops in voice mode, a push-to-talk tap too short to hold a word. The listener
+     * reads the frames as the test steps it: every frame is handled when it is asked.
+     */
     @Test
     fun anUtteranceThatComesToNothingIsSaid() {
         val starts = ArrayList<String>()
         val dropped = java.util.concurrent.CopyOnWriteArrayList<String>()
         val heard = ArrayList<Double>()
-        val mic = FedMic()
+        val mic = SteppedMic()
         // Two confident frames start speech; the silence after it is a click, not an ask.
         val gate = ScriptedGate(listOf(0.9, 0.9) + List(20) { 0.1 })
         val listener = Listener(
@@ -517,19 +572,22 @@ class PanelListenTest {
             onDropped = { dropped.add("dropped") },
         )
         listener.setMode("vad")
-        repeat(22) { mic.frames.put(FloatArray(HOP)) }
-        val deadline = System.currentTimeMillis() + 3000
-        while (dropped.isEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(10)
-        assertEquals(listOf("start"), starts)
-        assertEquals(listOf("dropped"), dropped.toList())
-        assertTrue(heard.isEmpty())
-        // Push-to-talk: a press and a release with nothing kept in between.
-        listener.setMode("ptt")
-        listener.press()
-        listener.release()
-        assertEquals(listOf("dropped", "dropped"), dropped.toList())
-        assertTrue(heard.isEmpty())
-        listener.setMode("off")
+        try {
+            repeat(22) { mic.frames.put(FloatArray(HOP)) }
+            mic.steps.idle() // all 22 read and handled; the listener waits for the next
+            assertEquals(listOf("start"), starts)
+            assertEquals(listOf("dropped"), dropped.toList())
+            assertTrue(heard.isEmpty())
+            // Push-to-talk: a press and a release with nothing kept in between.
+            listener.setMode("ptt")
+            listener.press()
+            listener.release()
+            assertEquals(listOf("dropped", "dropped"), dropped.toList())
+            assertTrue(heard.isEmpty())
+        } finally {
+            mic.steps.free()
+            listener.setMode("off")
+        }
     }
 
     /**
@@ -670,51 +728,57 @@ class PanelListenTest {
      * The key pressed again while the first half was being recognised: that recognition ended
      * after the press and armed the second of quiet, and the first half went alone while the
      * player held the key (`test_a_press_while_the_last_words_are_recognised_keeps_one_question`,
-     * voice finding 5). Driven by the recogniser's state and a timer the test fires: it slept to
-     * land the press and waited past the real second of quiet (round 3 audit, 2026-10-02).
+     * voice finding 5). The press lands while the first half is in the recogniser (it says when
+     * it is there), and the second of quiet is the dictation's timer on the test's clock.
      */
     @Test
     fun aPressWhileTheLastWordsAreRecognisedKeepsOneQuestion() {
-        val armed = java.util.concurrent.CopyOnWriteArrayList<Pair<java.util.concurrent.CompletableFuture<Unit>, () -> Unit>>()
-        PanelListen.makeTimer = { _, send ->
-            java.util.concurrent.CompletableFuture<Unit>().also { armed.add(it to send) }
-        }
         val slow = CountDownLatch(1)
         recogniser.gate = slow
         recogniser.held = 16000
         PanelListen.dictationHold() // the key down
         val first = Thread { PanelListen.onUtterance(silence(1.0), 1.0) } // up: recognising ...
         first.start()
-        assertTrue(recogniser.working.await(5, TimeUnit.SECONDS))
-        PanelListen.dictationHold() // ... and down again while it works
+        assertTrue("the first half never reached the recogniser", recogniser.begun.await(HANG_MS, TimeUnit.MILLISECONDS))
+        PanelListen.dictationHold() // ... and down again
         slow.countDown()
-        first.join(5000)
+        first.join(HANG_MS)
+        assertFalse(first.isAlive)
         assertTrue(dictation().isNull("sends_at"))
-        assertTrue("a send armed while the key is held", armed.none { !it.first.isCancelled })
+        assertEquals("no send armed while the key is held", emptyList<Any>(), clock.pending())
+        clock.advance(1.3) // past the second of quiet, the key still held
         assertTrue(asked.isEmpty())
         PanelListen.onUtterance(silence(0.5), 0.5) // up
-        val live = armed.filter { !it.first.isCancelled }
-        assertEquals(1, live.size)
-        live[0].second() // the second of quiet
+        val released = clock.now
+        assertEquals("a second after the release", aSecondFromNow(), dictation().getLong("sends_at"))
+        clock.advanceTo(released + quiet - 0.01)
+        assertTrue("not before the second of quiet", asked.isEmpty())
+        clock.advanceTo(released + quiet)
         assertEquals("ask_spoken" to "hello hello hello", asked.poll())
     }
 
     /**
      * Push-to-talk ends at the longest utterance, and a mode switch with the key down lets go of
      * it (`test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go`, voice
-     * finding 7).
+     * finding 7). The listener reads its frames as the test steps it; an utterance is waited
+     * on as its handler receives it.
      */
     @Test
     fun pushToTalkStopsAtTheLongestUtteranceAndAModeSwitchLetsGo() {
         val heard = java.util.concurrent.CopyOnWriteArrayList<Double>()
-        val mic = FedMic()
-        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ -> heard.add(audio.size / 16000.0) })
+        val handed = LinkedBlockingQueue<Double>()
+        val mic = SteppedMic()
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ ->
+            heard.add(audio.size / 16000.0)
+            handed.put(audio.size / 16000.0)
+        })
         listener.setMode("ptt")
         try {
             listener.press()
             repeat(((com.sidecoach.voice.MAX_UTTERANCE_S + 5) * 16000 / HOP).toInt()) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
-            val deadline = System.currentTimeMillis() + 5000
-            while ((heard.isEmpty() || mic.frames.isNotEmpty()) && System.currentTimeMillis() < deadline) Thread.sleep(10)
+            mic.steps.idle() // every frame read and handled; the listener waits for the next
+            assertTrue("the utterance was never handed over", handed.poll(HANG_MS, TimeUnit.MILLISECONDS) != null)
+            assertTrue(mic.frames.isEmpty())
             assertEquals(1, heard.size)
             assertTrue("${heard[0]}", heard[0] <= com.sidecoach.voice.MAX_UTTERANCE_S + 0.1)
             listener.release()
@@ -725,7 +789,13 @@ class PanelListenTest {
             // second's speech, a 100 ms sleep and a release raced the listener (round 3 audit).
             listener.press()
             assertTrue("the fresh press was ignored", listener.pressTaken)
+            repeat(16000 / HOP) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
+            mic.steps.idle()
+            listener.release()
+            assertTrue("the second utterance was never handed over", handed.poll(HANG_MS, TimeUnit.MILLISECONDS) != null)
+            assertEquals(2, heard.size)
         } finally {
+            mic.steps.free()
             listener.setMode("off")
         }
     }
@@ -769,14 +839,15 @@ class PanelListenTest {
         }
     }
 
-    /** A microphone whose input failed is reopened (`test_a_microphone_whose_stream_died_is_reopened`,
-     * voice finding 17). */
+    /**
+     * A microphone whose input failed is reopened (`test_a_microphone_whose_stream_died_is_reopened`,
+     * voice finding 17): in the listener's quiet rounds, at most once every MIC_REOPEN_S. The
+     * listener's clock is one the test moves; its rounds are the test's steps.
+     */
     @Test
     fun aMicrophoneWhoseInputFailedIsReopened() {
-        val mic = object : FrameSource {
-            override val frames: BlockingQueue<FloatArray> = LinkedBlockingQueue()
-            override val detail = "fed by the test"
-            override val isOpen = true
+        val time = ManualClock()
+        val mic = object : SteppedMic() {
             @Volatile var opens = 0
             @Volatile var dead = false
             override fun open(): Boolean {
@@ -784,18 +855,29 @@ class PanelListenTest {
                 dead = false
                 return true
             }
-            override fun close() = Unit
             override fun stalled() = dead
         }
-        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { _, _ -> })
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { _, _ -> }, clock = { time.seconds() })
         listener.setMode("ptt")
         try {
             assertEquals(1, mic.opens)
+            mic.steps.idle()
+            assertEquals("a live input is left alone", 1, mic.opens)
             mic.dead = true // the input failed
-            val deadline = System.currentTimeMillis() + (com.sidecoach.voice.MIC_REOPEN_S * 1000).toLong() + 3000
-            while (mic.opens < 2 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+            mic.steps.idle() // the listener's next quiet round
             assertEquals(2, mic.opens)
+            // Dead again at once: not tried again until MIC_REOPEN_S have passed.
+            val tried = time.now
+            mic.dead = true
+            mic.steps.idle()
+            time.advanceTo(tried + com.sidecoach.voice.MIC_REOPEN_S - 0.01)
+            mic.steps.idle()
+            assertEquals("tried again too soon", 2, mic.opens)
+            time.advanceTo(tried + com.sidecoach.voice.MIC_REOPEN_S)
+            mic.steps.idle()
+            assertEquals(3, mic.opens)
         } finally {
+            mic.steps.free()
             listener.setMode("off")
         }
     }

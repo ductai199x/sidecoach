@@ -2,6 +2,10 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
+import com.sidecoach.analysis.GameReview
+import com.sidecoach.analysis.OpeningBook
+import com.sidecoach.analysis.Thresholds
 import com.sidecoach.events.ReviewJson
 import com.sidecoach.profile.GameSummaries
 import com.sidecoach.profile.Library
@@ -9,13 +13,16 @@ import com.sidecoach.profile.StatFacts
 import com.sidecoach.profile.Store
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 /**
  * Game Review's fixes of the review of 2026-10-01 that need no engine, each as its desktop test
  * in tests/test_review_server.py says it, on the real reviews of profile/reviews.json.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ReviewFixesTest {
     private val fixture: JSONObject by lazy {
@@ -32,7 +39,8 @@ class ReviewFixesTest {
             val row = Library.fromPgn(g.getString("pgn"), listOf("nosegazm")).single()
             store.addLibraryGame(row)
             val reviewed = ReviewJson.reviewed(g.getJSONObject("reviewed"))
-            val fresh = ReviewJson.summary(GameSummaries.summarize(reviewed)).toString()
+            // Summed up from the labels of today's rule, which rederive gives the review first.
+            val fresh = ReviewJson.summary(GameSummaries.summarize(GameReview.relabel(reviewed, Thresholds()))).toString()
             val stale = JSONObject(fresh).put("shape", "old").toString()
             store.saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, ReviewJson.reviewed(reviewed).toString(), stale)
             val (fact, moves) = StatFacts.factsOf(reviewed, row)
@@ -43,6 +51,73 @@ class ReviewFixesTest {
             assertEquals(fresh, store.review(row.key, "fast")!!.summary)
             assertEquals(phases, store.statMoves(listOf(row.key)).map { it.phase })
             assertEquals("once", 0, ReviewRoom.rederive(store))
+        } finally {
+            store.close()
+        }
+    }
+
+    /**
+     * `test_a_saved_review_relabelled_from_what_it_kept_is_labelled_as_the_review_was`: over the
+     * real reviews of profile/reviews.json (made by the desktop's review), [GameReview.relabel]
+     * reads every move's label from the saved measurements by the rule the annotator labels
+     * with, and gives the labels the review gave.
+     */
+    @Test
+    fun aSavedReviewRelabelledFromWhatItKeptIsLabelledAsTheReviewWas() {
+        val games = fixture.getJSONArray("games")
+        var moves = 0
+        for (i in 0 until games.length()) {
+            val reviewed = ReviewJson.reviewed(games.getJSONObject(i).getJSONObject("reviewed"))
+            val again = GameReview.relabel(reviewed, Thresholds())
+            assertEquals("game $i", reviewed.moves.map { it.assessment.label }, again.moves.map { it.assessment.label })
+            moves += reviewed.moves.size
+        }
+        assertTrue("the fixture holds reviewed moves", moves > 0)
+    }
+
+    /**
+     * `test_saved_reviews_are_relabelled_by_the_new_rules_and_keep_their_words` (Tai, 2026-10-02):
+     * a review saved with an older rule's labels (every move a miss here) and opening names gets
+     * today's, once, and the AI coach's words, paid for, are kept to the byte.
+     */
+    @Test
+    fun savedReviewsAreRelabelledByTheNewRulesAndKeepTheirWords() {
+        val g = fixture.getJSONArray("games").getJSONObject(0)
+        val store = Store(null)
+        try {
+            val row = Library.fromPgn(g.getString("pgn"), listOf("nosegazm")).single()
+            store.addLibraryGame(row)
+            val reviewed = ReviewJson.reviewed(g.getJSONObject("reviewed"))
+            val old = ReviewJson.reviewed(reviewed)
+            val oldMoves = old.getJSONArray("moves")
+            for (i in 0 until oldMoves.length()) {
+                val move = oldMoves.getJSONObject(i)
+                move.getJSONObject("assessment").put("label", "miss")
+                move.getJSONObject("after").put("opening", "C20 King's Pawn Game")
+            }
+            store.saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, old.toString(), null)
+            val words = JSONObject().put("model", "luna").put("cost", 0.03)
+                .put("texts", JSONObject().put("4", JSONObject().put("why", "Paid for."))).toString()
+            store.setReviewWords(row.key, "fast", words)
+            // Relabelled by an earlier mate rule (stamp 4, Tai 12:16): made again (12:50).
+            store.setSetting(ReviewRoom.DERIVED_KEY, "4")
+            val folder = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "relabel-book").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+            InstrumentationRegistry.getInstrumentation().context.assets.open("openings_sample/c.tsv").use { input ->
+                File(folder, "c.tsv").outputStream().use { input.copyTo(it) }
+            }
+            val book = OpeningBook.load(folder)!!
+            assertEquals(1, ReviewRoom.rederive(store, Thresholds(), book))
+            val again = store.review(row.key, "fast")!!
+            val relabelled = ReviewJson.reviewed(again.report)
+            val today = GameReview.relabel(reviewed, Thresholds(), book)
+            assertEquals(today.moves.map { it.assessment.label }, relabelled.moves.map { it.assessment.label })
+            assertTrue("not the old rule's", relabelled.moves.any { it.assessment.label != com.sidecoach.events.Label.MISS })
+            assertEquals(today.moves.map { it.after.opening }, relabelled.moves.map { it.after.opening })
+            assertEquals("the paid words are never touched", words, again.words)
+            assertEquals("once", 0, ReviewRoom.rederive(store, Thresholds(), book))
         } finally {
             store.close()
         }

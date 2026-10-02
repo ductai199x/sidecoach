@@ -3,8 +3,8 @@ package com.sidecoach.state
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.Parallel
-import com.sidecoach.Sweep
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
@@ -57,6 +57,7 @@ import org.opencv.imgproc.Imgproc
  * how often its last session read the theme cache (`reads`), as
  * `test_a_puzzle_left_still_is_read_once` counts it.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class PipelineTest {
 
@@ -78,18 +79,19 @@ class PipelineTest {
         val text = context.assets.open("pipeline/index.json").bufferedReader().use { it.readText() }
         val all = JSONObject(text).getJSONArray("runs")
         // A scenario that pins a behaviour of the pipeline's is replayed once; the still screen's
-        // shortcut is held to the others (`READ_ONCE` in the generator), and of those to the few
-        // that meet every event it passes on unless the sweep is asked for (`SHORTCUT_SWEEP`,
-        // `tools/test.ps1 -All`).
+        // shortcut is held to the others (`READ_ONCE` in the generator).
         val runs = (0 until all.length()).map { all.getJSONObject(it) }
             .filter { !(sameFrameShortcut && it.optBoolean("read_once")) }
-            .filter { !(sameFrameShortcut && it.optBoolean("shortcut_sweep") && !Sweep.all) }
+            // The longest first, so the threads finish together: a long scenario taken last ran
+            // on alone.
+            .sortedByDescending { it.getJSONArray("frames").length() }
         val failures = java.util.Collections.synchronizedList(ArrayList<String>())
         // The scenarios side by side: each its own pipeline, and each thread its own net, one
-        // thread to a net. Two at a time: a scenario holds its frames' pixels and planes and,
-        // while it learns a start position, its net's 38 MB input buffer (a direct buffer is on
-        // the Java heap here); three or four of them ran the 192 MB heap out, and three were no
-        // faster than two.
+        // thread to a net. One per 128 MB of the heap, two at least: a scenario holds its frames'
+        // pixels and planes and, while it learns a start position, its net's 38 MB input buffer
+        // (a direct buffer is on the Java heap here); three or four of them ran an ordinary app's
+        // 192 MB heap out, and three were no faster than two on four cores.
+        val threads = (com.sidecoach.Lanes.heapMb / 128).toInt().coerceIn(2, maxOf(2, Parallel.cores))
         // OpenCV's own threads kept to one meanwhile: the replays are the parallelism, and its
         // pool's idle workers waited by reading the clock, a trap to the host on the emulator,
         // a fifth of the CPU. Its answers do not depend on how many threads it uses.
@@ -97,7 +99,7 @@ class PipelineTest {
         val openCvThreads = Core.getNumThreads()
         Core.setNumThreads(1)
         try {
-            Parallel.forEach(runs, threads = 2, resource = { CellEmbedder.load(target, threads = 2) }) { run, net ->
+            Parallel.forEach(runs, threads = threads, resource = { CellEmbedder.load(target, threads = 2) }) { run, net ->
                 if (failures.size < 8) replay(run, net, sameFrameShortcut, failures)
             }
         } finally {
@@ -124,14 +126,22 @@ class PipelineTest {
         var pipeline = GamePipeline(net, store)
         var gate = ChangeGate()
         val frames = run.getJSONArray("frames")
+        // Each frame decoded once, and let go after the last frame that needs it -- its own last
+        // showing, or a call after it that reads it again (`reorient`): kept to the end, a long
+        // scenario's frames were most of a gigabyte, and two replays side by side ran the
+        // emulator's memory into swap.
         val decoded = HashMap<String, Mat>()
+        val letGo = lastUses(frames)
         var moves = 0
         var lastFile: String? = null
         var lastPixels: FramePixels? = null
         var lastMat: Mat? = null
         var shortcuts = 0
+        var decodeNs = 0L
+        var processNs = 0L
         val began = System.currentTimeMillis()
         for (f in 0 until frames.length()) {
+            letGo[f - 1]?.forEach { decoded.remove(it)?.release() }
             val frame = frames.getJSONObject(f)
             if (frame.has("call")) {
                 // What the desktop's test did to its pipeline between frames.
@@ -154,7 +164,10 @@ class PipelineTest {
                 counted?.listings = 0
             }
             val file = frame.getString("file")
-            val mat = decoded.getOrPut(file) { load(file) }
+            val mat = decoded.getOrPut(file) {
+                val t = System.nanoTime()
+                load(file).also { decodeNs += System.nanoTime() - t }
+            }
             val same = sameFrameShortcut && file == lastFile
             if (same) shortcuts++
             val pixels = lastPixels.takeIf { same } ?: FramePixels.of(mat)
@@ -176,7 +189,9 @@ class PipelineTest {
                 )
             }
             val id = frame.optInt("id", f)
+            val t = System.nanoTime()
             val events = pipeline.process(mat, ts, changed, id, pixels, sameFrame = same)
+            processNs += System.nanoTime() - t
             // Every event carries the tick's time and frame (`_stamp`).
             if (events.any { it.ts != ts || it.sourceFrameId != id } && failures.size < 8) {
                 failures.add("$name frame $f ($file): an event not stamped with the tick")
@@ -233,6 +248,7 @@ class PipelineTest {
         Log.i(
             "sidecoach.state",
             "$name: ${frames.length()} frames ($shortcuts read again), $moves moves, " +
+                "decoding ${decodeNs / 1_000_000} ms, the pipeline ${processNs / 1_000_000} ms, " +
                 "${pipeline.bootstraps} bootstraps, $took ms — ${rec?.pgn()}",
         )
         // No game at the end is an empty record on both sides.
@@ -318,6 +334,21 @@ class PipelineTest {
             }
             else -> throw IllegalArgumentException("a call this test does not know: $call")
         }
+    }
+
+    /**
+     * The files to let go after each frame: a file after the last frame that reads it -- its own
+     * last showing, or a call after it, which reads the frame shown last (`reorient`).
+     */
+    private fun lastUses(frames: org.json.JSONArray): Map<Int, List<String>> {
+        val last = HashMap<String, Int>()
+        var shown: String? = null
+        for (f in 0 until frames.length()) {
+            val frame = frames.getJSONObject(f)
+            if (!frame.has("call")) shown = frame.getString("file")
+            shown?.let { last[it] = f }
+        }
+        return last.entries.groupBy({ it.value }, { it.key })
     }
 
     /** A theme directory that counts its listings (`ThemeStore.candidates` lists it once a read). */

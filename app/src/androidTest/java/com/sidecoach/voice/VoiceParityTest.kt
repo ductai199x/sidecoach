@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -22,6 +23,7 @@ import kotlin.math.sqrt
  * of the recorded sessions and the edge cases; the silence trims; the long strings' batches; and
  * Kokoro's audio within a tolerance.
  */
+@Lane(Lane.Kind.VOICE)
 @RunWith(AndroidJUnit4::class)
 class VoiceParityTest {
 

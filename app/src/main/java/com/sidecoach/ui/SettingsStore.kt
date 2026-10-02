@@ -194,7 +194,11 @@ open class SettingsStore(private val context: Context) {
             provider = o.optString("provider", "none"),
             model = nullable(o, "model"),
             baseUrl = nullable(o, "base_url"),
-            apiKeyEnv = nullable(o, "api_key_env"),
+            // The empty string is a custom service that takes no key, as the desktop's
+            // `api_key_env: str | None` keeps it (`factory._key_env`); only null means "the
+            // custom service's own CUSTOM_API_KEY". Read as null, a keyless service was asked
+            // for a key it does not take and the coach fell back to offline.
+            apiKeyEnv = if (o.isNull("api_key_env")) null else o.optString("api_key_env"),
             thinkingControl = nullable(o, "thinking_control"),
             reasoningEffort = nullable(o, "reasoning_effort"),
             routineEffort = nullable(o, "routine_effort"),

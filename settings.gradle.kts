@@ -22,3 +22,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "sidecoach"
 include(":app")
+// Android's org.json for the app's unit tests on the host (libcore-json/build.gradle.kts).
+include(":libcore-json")

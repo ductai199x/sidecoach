@@ -1,6 +1,7 @@
 package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -12,6 +13,7 @@ import org.junit.runner.RunWith
  * desktop's `tests/test_profile.py` gained from 797094c on. Pure functions, no store: it runs
  * without the device's SQLite.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class CausesReviewTest {
 

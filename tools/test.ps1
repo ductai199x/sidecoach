@@ -1,13 +1,12 @@
-# Run the parity suite on a device, with the engine's network in place.
+# Run the whole suite: the device's tests (app/src/androidTest) on a device, with the engine's
+# network in place, and beside them the host's (app/src/test: the tests that need no Android,
+# on the JVM, Gradle's testPhoneUnitTest). The exit code is 0 only if every test of both passed.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\test.ps1 -Class com.sidecoach.analysis.EngineTest
-#   powershell -ExecutionPolicy Bypass -File tools\test.ps1 -All
 #
-# -All adds what the default run leaves out (Tai, 2026-10-01: "SLIM DOWN THE SUITE AND MAKE IT
-# BLAZING FAST"): every case of the sweeps (`-e sweep true`: the cases marked `sweep` in their
-# fixtures, as the desktop's --sweep) and the screenshots kept for a person to look at
-# (`-e shots true`).
+# The default run is the whole suite: every case of every test (Tai, 2026-10-02). `-Class` runs
+# that device class alone; a host class runs with `gradlew :app:testPhoneUnitTest --tests <class>`.
 #
 # The tests run against the `phone` build type, the build the phone runs: not debuggable, so
 # the code runs as fast as it does there (app/build.gradle.kts). Gradle's
@@ -20,17 +19,37 @@ param(
     [string]$Serial = "emulator-5556",
     [string]$Class = "",
     [switch]$SkipBuild,
-    [switch]$All
+    # Every class one after another, as before the lanes (androidTest Lanes.kt): to tell a
+    # lane's fault from a test's, and for each test's own CPU in app/build/test-timings.tsv.
+    [switch]$OneAtATime
 )
 
 $ErrorActionPreference = "Stop"
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $root = Split-Path -Parent $PSScriptRoot
+$gradle = Join-Path $root "gradlew.bat"
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function At { "[{0,6:N1} s]" -f $clock.Elapsed.TotalSeconds }
 
 if (-not $SkipBuild) {
-    Write-Host "building..."
-    & (Join-Path $root "gradlew.bat") -p $root :app:assemblePhone :app:assemblePhoneAndroidTest | Out-Null
+    Write-Host "$(At) building..."
+    # The two APKs and the host tests' classes, on at most eight of the host's workers.
+    & $gradle -p $root --max-workers=8 :app:assemblePhone :app:assemblePhoneAndroidTest :app:compilePhoneUnitTestSources | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the build failed" }
+}
+
+# The host's tests, started now and run while the device runs its own: Gradle's daemon is free
+# once the build is done, and the tests' two JVMs take a quarter of the host at most
+# (app/build.gradle.kts). Their results are Gradle's XML, read at the end.
+$hostRun = $null
+$hostLog = Join-Path $root "app/build/test-host.log"
+$hostResults = Join-Path $root "app/build/test-results/testPhoneUnitTest"
+if (-not $Class) {
+    if (Test-Path $hostResults) { Get-ChildItem $hostResults -Filter "*.xml" | Remove-Item }
+    $hostRun = Start-Process -FilePath $gradle -NoNewWindow -PassThru `
+        -ArgumentList @("-p", $root, "--max-workers=4", "-q", ":app:testPhoneUnitTest") `
+        -RedirectStandardOutput $hostLog -RedirectStandardError "$hostLog.err"
+    $null = $hostRun.Handle # held now, or PowerShell has no exit code to give at the end
 }
 
 $app = Join-Path $root "app/build/outputs/apk/phone/app-phone.apk"
@@ -97,9 +116,9 @@ $stamp = Join-Path $root "app/build/test-installed-$($Serial -replace '[^A-Za-z0
 $apks = (@($app, $test) | ForEach-Object { $item = Get-Item $_; "$($item.Length):$($item.LastWriteTimeUtc.Ticks)" }) -join "|"
 $wanted = "$apks|$(Installed-At)"
 if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $wanted)) {
-    Write-Host "installed already (the APKs have not changed)"
+    Write-Host "$(At) installed already (the APKs have not changed)"
 } else {
-    Write-Host "installing..."
+    Write-Host "$(At) installing..."
     # -d: this checkout's build, even over a newer version another branch installed on a shared
     # emulator (a version bump elsewhere made the install fail, and the tests ran on that build).
     & $adb -s $Serial install -r -t -d $app | Out-Null
@@ -124,13 +143,38 @@ for ($i = 0; $i -lt $files.Count; $i++) {
 }
 
 & $adb -s $Serial logcat -c
+& $adb -s $Serial shell "rm -f $outside/timings.tsv"
 $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRunListener,com.sidecoach.FilesIn")
-if ($All) { $args += @("-e", "sweep", "true", "-e", "shots", "true") }
 if ($Class) { $args += @("-e", "class", $Class) }
-$args += "com.sidecoach.test/androidx.test.runner.AndroidJUnitRunner"
-Write-Host "running..."
-& $adb -s $Serial shell am instrument @args
+if ($OneAtATime) { $args += @("-e", "lanes", "off") }
+$args += "com.sidecoach.test/androidx.test.runner.SidecoachRunner"
+Write-Host "$(At) running..."
+$deviceOut = @(& $adb -s $Serial shell am instrument @args | ForEach-Object { Write-Host $_; $_ })
+$devicePassed = [bool]($deviceOut | Where-Object { $_ -match "^OK \(\d+ tests?\)" })
 
 Write-Host ""
-Write-Host "--- what the tests logged ---"
-& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "*:S"
+Write-Host "$(At) --- what the tests logged ---"
+& $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "sidecoach.lanes:I" "*:S"
+
+# Each test's lane and times (com.sidecoach.Lanes), for a look at where the time goes.
+& $adb -s $Serial pull "$outside/timings.tsv" (Join-Path $root "app/build/test-timings.tsv") | Out-Null
+
+$hostPassed = $true
+if ($hostRun) {
+    $hostRun.WaitForExit()
+    $tests = 0; $failed = 0; $skipped = 0
+    foreach ($xml in Get-ChildItem $hostResults -Filter "*.xml" -ErrorAction SilentlyContinue) {
+        $suite = ([xml](Get-Content $xml.FullName -Raw)).testsuite
+        $tests += [int]$suite.tests; $failed += [int]$suite.failures + [int]$suite.errors; $skipped += [int]$suite.skipped
+    }
+    $hostPassed = ($hostRun.ExitCode -eq 0) -and ($failed -eq 0) -and ($tests -gt 0)
+    Write-Host ""
+    Write-Host "$(At) --- the host's tests ---"
+    Write-Host "$tests tests, $failed failed, $skipped skipped (gradle exit $($hostRun.ExitCode); app/build/test-host.log)"
+    if (-not $hostPassed) { Get-Content $hostLog, "$hostLog.err" -ErrorAction SilentlyContinue | Select-Object -Last 60 }
+}
+if (-not ($devicePassed -and $hostPassed)) {
+    Write-Host "$(At) FAILED: device $(if ($devicePassed) { 'passed' } else { 'failed' }), host $(if ($hostPassed) { 'passed' } else { 'failed' })"
+    exit 1
+}
+Write-Host "$(At) PASSED: device and host"

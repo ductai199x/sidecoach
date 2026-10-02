@@ -1,6 +1,7 @@
 package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -9,6 +10,7 @@ import org.junit.runner.RunWith
  * Stats' fixes of the review of 2026-10-01, each as its desktop test in tests/test_stats.py
  * says it, on a store built by hand (no fixture).
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class StatsReviewTest {
 

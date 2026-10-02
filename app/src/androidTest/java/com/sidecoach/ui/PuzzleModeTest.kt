@@ -28,6 +28,14 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PuzzleModeTest {
 
+    private companion object {
+        // A safety net for a room's signal, never the expected path.
+        const val HANG_MS = 60_000L
+
+        // A room's outcome line as mirrored: "<id> game: puzzle <id> solved|failed ...".
+        val OUTCOME = Regex("^\\S+ game: puzzle ")
+    }
+
     private val fork = Puzzle(
         id = "000Pw",
         fen = "6k1/5p1p/4p3/4q3/3nN3/2Q3P1/PP3P1P/6K1 w - - 2 37",
@@ -127,7 +135,7 @@ class PuzzleModeTest {
         val tmp = tempDir()
         try {
             csv(tmp)
-            val (api, _) = api(tmp, Puzzles.openStore(tmp))
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
             PanelEngine.puzzleMotifs[fork.id] = "fork"
             PanelEngine.practiceIds = listOf(fork.id, mate.id)
             assertEquals(false, call(api, "POST", "/api/puzzle/nope/open").getBoolean("ok"))
@@ -150,39 +158,45 @@ class PuzzleModeTest {
             assertTrue(strings(right, "moves") == listOf("Ne2+", "Kf1") && right.getBoolean("your_move"))
             val done = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "e2c3"}""").getJSONObject("state")
             assertTrue(done.getString("status") == "solved" && done.getString("message") == "Solved, after a miss.")
-            logged(api, fork.id, "puzzle ${fork.id} failed (fork)")
+            outcome(api, fork.id, "puzzle ${fork.id} failed (fork)")
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
             assertEquals("1075", store.setting("puzzle_level"))
             // The user's question reaches the room. Its coach is off here: the room says so, as
             // the panel does, or the page's typing dots waited for an answer for good.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/ask", """{"text": "hint"}""").getBoolean("ok"))
-            logged(api, fork.id, "no coach to ask: hint")
+            logged(api, fork.id, "user", "no coach to ask: hint")
             val said = call(api, "GET", "/api/puzzle/${fork.id}/poll").getJSONArray("lines")
             assertTrue(
                 "no turn of a conversation nobody answers",
                 (0 until said.length()).none { said.getJSONObject(it).getString("text") == "you: hint" },
             )
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/voice", """{"on": false}""").getBoolean("ok"))
-            // Closing ends the room; the outcome is not recorded twice.
+            // Closing ends the room; the outcome is not recorded twice, counted once the room's
+            // loop has drained the close and finished (its thread joined), not merely once the
+            // close was asked for.
+            val forkRoom = rooms.get(fork.id)!!
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
-            for (i in 0 until 50) {
-                if (call(api, "GET", "/api/puzzle/${fork.id}/poll").optBoolean("closed")) break
-                Thread.sleep(50)
-            }
+            forkRoom.join(HANG_MS)
+            assertTrue("the room never finished", forkRoom.closed)
             assertTrue(call(api, "GET", "/api/puzzle/${fork.id}/poll").optBoolean("closed"))
             assertEquals(1, store.attempts().size)
+            assertTrue("an outcome logged twice", outcomes.isEmpty())
             store.close()
             // Giving up on the next one: a fail, the solution played out, recorded once.
             assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
             val gave = call(api, "POST", "/api/puzzle/${mate.id}/giveup").getJSONObject("state")
             assertTrue(gave.getString("status") == "given_up" && strings(gave, "moves") == listOf("Ra8#"))
-            logged(api, mate.id, "puzzle ${mate.id} failed")
+            outcome(api, mate.id, "puzzle ${mate.id} failed")
             store = Store(File(tmp, "profile.sqlite"))
             assertEquals(listOf(mate.id, fork.id), store.attempts().map { it.first })
             assertEquals("1050", store.setting("puzzle_level"))
             store.close()
+            val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
+            assertTrue("an outcome logged twice", outcomes.isEmpty())
         } finally {
             PanelEngine.puzzleMotifs.clear()
             PanelEngine.practiceIds = emptyList()
@@ -279,6 +293,15 @@ class PuzzleModeTest {
         File(dir, "puzzles/sample.csv").writeText((listOf(header) + rows + "").joinToString("\n"))
     }
 
+    /**
+     * What the rooms' loop threads said, as they said it: every line a room logs comes through
+     * the rooms' own mirror (as the app's panel gets them), so the test waits on the line itself
+     * rather than polling the page against a clock (the desktop's `_RoomSignals`, 0bf0f27). An
+     * outcome ("<id> game: puzzle ...") goes to [outcomes], every other line to [lines].
+     */
+    private val outcomes = java.util.concurrent.LinkedBlockingQueue<String>()
+    private val lines = java.util.concurrent.LinkedBlockingQueue<String>()
+
     /** The API over rooms of their own, the engine and the coach off (as the desktop's test). */
     private fun api(dir: File, puzzles: com.sidecoach.profile.PuzzleStore?): Pair<PanelApi, PuzzleRooms> {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
@@ -291,6 +314,7 @@ class PuzzleModeTest {
             dataDir = dir,
             analysis = false,
             coach = false,
+            mirror = { _, _, text, _ -> if (OUTCOME.containsMatchIn(text)) outcomes.put(text) else lines.put(text) },
         )
         rooms.motifs = PanelEngine.puzzleMotifs
         return PanelApi("test", SetupApi(app), SettingsApi(settings), dir, rooms = { rooms }) to rooms
@@ -309,18 +333,29 @@ class PuzzleModeTest {
     }
 
     /**
-     * Wait for the room's log line that starts with [prefix]: the outcome is recorded by the
-     * room's loop, a tick after the answer that ended the puzzle.
+     * The room logs its outcome, the next one it logs, starting with [prefix] -- the outcome is
+     * recorded by the room's loop, a tick after the answer that ended the puzzle -- and the
+     * page's poll shows it. [HANG_MS] is only a safety net: the line comes at the loop's next tick.
      */
-    private fun logged(api: PanelApi, id: String, prefix: String) {
-        var lines = emptyList<String>()
-        repeat(100) {
-            val all = call(api, "GET", "/api/puzzle/$id/poll").getJSONArray("lines")
-            lines = (0 until all.length()).map { all.getJSONObject(it).getString("text") }
-            if (lines.any { it.startsWith(prefix) }) return
-            Thread.sleep(50)
+    private fun outcome(api: PanelApi, id: String, prefix: String) {
+        val said = outcomes.poll(HANG_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        assertTrue("no outcome '$prefix'", said != null && said.startsWith("$id game: $prefix"))
+        assertTrue(polled(api, id).toString(), polled(api, id).any { it.startsWith(prefix) })
+    }
+
+    /** The room logs a line on [chan] starting with [prefix] (others it logs before are passed by), and the poll shows it. */
+    private fun logged(api: PanelApi, id: String, chan: String, prefix: String) {
+        while (true) {
+            val said = lines.poll(HANG_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            assertTrue("no line '$prefix'", said != null)
+            if (said!!.startsWith("$id $chan: $prefix")) break
         }
-        throw AssertionError("no line '$prefix' in $lines")
+        assertTrue(polled(api, id).toString(), polled(api, id).any { it.startsWith(prefix) })
+    }
+
+    private fun polled(api: PanelApi, id: String): List<String> {
+        val all = call(api, "GET", "/api/puzzle/$id/poll").getJSONArray("lines")
+        return (0 until all.length()).map { all.getJSONObject(it).getString("text") }
     }
 
     @Suppress("UNCHECKED_CAST")

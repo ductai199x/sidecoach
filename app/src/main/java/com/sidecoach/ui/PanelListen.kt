@@ -49,8 +49,36 @@ object PanelListen {
      */
     const val DICTATION_SEND_DELAY_S = 1.0
 
-    /** The delay in use: [DICTATION_SEND_DELAY_S], shortened by a test as the desktop's monkeypatches it. */
-    @Volatile internal var sendDelayS = DICTATION_SEND_DELAY_S
+    /**
+     * The dictation's clock: the wall time the page reads `sends_at` in, and the timer that
+     * sends the words after the quiet (`panel.time.time` and `panel.threading.Timer`). The
+     * app's is [RealSendClock]; a test gives one it moves, as the desktop's tests give the
+     * panel a ManualClock, and the real [DICTATION_SEND_DELAY_S] is then checked to the
+     * millisecond rather than waited out. Nothing else changes.
+     */
+    internal interface SendClock {
+        fun wallMs(): Long
+
+        fun schedule(delayMs: Long, send: () -> Unit): java.util.concurrent.Future<*>
+    }
+
+    private object RealSendClock : SendClock {
+        private val timers = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "dictation").apply { isDaemon = true }
+        }
+
+        override fun wallMs(): Long = System.currentTimeMillis()
+
+        override fun schedule(delayMs: Long, send: () -> Unit): java.util.concurrent.Future<*> =
+            timers.schedule({ send() }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    @Volatile internal var sendClock: SendClock = RealSendClock
+
+    /** The real clock again, after a test. */
+    internal fun realSendClock() {
+        sendClock = RealSendClock
+    }
 
     /** `panel.HEAR_TEST_TIMEOUT_S`: the test turns itself off this long after the page's last look. */
     const val HEAR_TEST_TIMEOUT_S = 20.0
@@ -69,17 +97,13 @@ object PanelListen {
     private val lock = Any()
     private var dictationText = ""
     private var dictationTimer: Future<*>? = null
-    private val timers = Executors.newSingleThreadScheduledExecutor { r ->
-        Thread(r, "dictation").apply { isDaemon = true }
-    }
 
-    /** What arms the second of quiet (`panel._make_timer`); a test hands in one it fires itself. */
-    internal var makeTimer: (delayMs: Long, send: () -> Unit) -> Future<*> = { delayMs, send ->
-        timers.schedule({ send() }, delayMs, TimeUnit.MILLISECONDS)
-    }
-
-    /** One partial recognition at a time (`_partial_busy`); a partial still running skips the next. */
-    private val partials = Executors.newSingleThreadExecutor { r ->
+    /**
+     * One partial recognition at a time (`_partial_busy`); a partial still running skips the
+     * next. Internal, not private, only so a test can wait for the partial under way to end
+     * (a task put behind it), as the desktop's waits on `_partial_busy`.
+     */
+    internal val partials = Executors.newSingleThreadExecutor { r ->
         Thread(r, "stt-partial").apply { isDaemon = true }
     }
     private val partialBusy = AtomicBoolean(false)
@@ -394,11 +418,12 @@ object PanelListen {
 
     /** (Re)start the second of quiet after which the dictation is sent. Under [lock]. `_dictation_arm_locked`. */
     private fun dictationArmLocked() {
-        val delay = (sendDelayS * 1000).toLong()
+        val delay = (DICTATION_SEND_DELAY_S * 1000).toLong()
         dictationTimer?.cancel(false)
-        dictationTimer = makeTimer(delay) { dictationSend() }
+        val clock = sendClock
+        dictationTimer = clock.schedule(delay) { dictationSend() }
         PanelEngine.set(
-            "dictation" to dictation(dictationText, live = false, sendsAt = System.currentTimeMillis() + delay),
+            "dictation" to dictation(dictationText, live = false, sendsAt = clock.wallMs() + delay),
         )
     }
 

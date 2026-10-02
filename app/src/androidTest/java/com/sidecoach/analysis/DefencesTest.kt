@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Line
@@ -18,6 +19,7 @@ import java.io.File
  * chess.com puzzles of 2026-09-24. The last needs the engine's network: `tools/test.ps1` puts
  * one there.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class DefencesTest {
 

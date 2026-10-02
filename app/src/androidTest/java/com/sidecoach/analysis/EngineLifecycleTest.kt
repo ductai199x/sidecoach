@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -19,6 +20,7 @@ import java.util.concurrent.TimeUnit
  * first depth and for the processes' exit, never for a time. (A wedged engine's watchdog is
  * tested with the engine's clock driven by the test.)
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class EngineLifecycleTest {
 

@@ -2,6 +2,7 @@ package com.sidecoach.state
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.events.ClockObservation
 import com.sidecoach.events.ScreenState
@@ -40,6 +41,7 @@ import org.opencv.imgproc.Imgproc
  * (`test_pipeline.py`). The clock's own mapping is `ClockTest`'s; games through the pipeline
  * are `PipelineTest`'s.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class PipelinePartsTest {
 

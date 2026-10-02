@@ -1,9 +1,9 @@
 package com.sidecoach.analysis
 
-import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.events.Label
 import com.sidecoach.events.ReviewJson
 import com.sidecoach.profile.Library
@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * first did not, and the review is whole. Skipped without the engine's network
  * (tools/push_net.ps1).
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class GameReviewLiveTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -41,9 +42,11 @@ class GameReviewLiveTest {
     @Test
     fun aReviewStoppedPartWayGoesOnFromWhereItWas() {
         val strength = GameReview.STRENGTHS.getValue("fast")
-        val probe = engines(1, strength.multipv)
-        assumeTrue("the engine or its network is missing", probe != null)
-        probe!!.forEach { it.close() }
+        // The engine and its network there: looked for, not started (each start loads the
+        // network; the runs below start their own).
+        val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
+        val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
+        assumeTrue("the engine or its network is missing", binary.exists() && net != null)
         val file = File(context.cacheDir, "review-live.sqlite").apply { delete() }
         val store = Store(file)
         val row = Library.fromPgn(pgn, listOf("nosegazm")).single()
@@ -72,7 +75,6 @@ class GameReviewLiveTest {
         val known = kept.map { ReviewJson.measured(JSONObject(it)) }.associateBy { it.fen }
         val searched = ArrayList<String>()
         var firstReport: Int? = null
-        val started = SystemClock.elapsedRealtime()
         engines = engines(GameReview.workersFor(), strength.multipv)!!
         val second = try {
             GameReview.reviewGame(
@@ -84,8 +86,7 @@ class GameReviewLiveTest {
         } finally {
             engines.forEach { it.close() }
         }
-        val seconds = (SystemClock.elapsedRealtime() - started) / 1000.0
-        Log.i(TAG, "resumed: ${known.size} known, ${searched.size} searched, ${GameReview.workersFor()} engines, $seconds s")
+        Log.i(TAG, "resumed: ${known.size} known, ${searched.size} searched, ${GameReview.workersFor()} engines")
         store.close()
         assertEquals("the kept positions counted at once", known.size, firstReport)
         assertTrue("nothing kept was searched again", searched.none { it in known })

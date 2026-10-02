@@ -15,9 +15,10 @@ android {
         // foreground-service and projection rules this app is built around do not hold.
         minSdk = 33
         targetSdk = 37
-        versionCode = 157
-        versionName = "0.1.57"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        versionCode = 158
+        versionName = "0.1.58"
+        // AndroidJUnitRunner with the classes in lanes side by side (androidTest Lanes.kt).
+        testInstrumentationRunner = "androidx.test.runner.SidecoachRunner"
         ndk {
             // OpenCV and onnxruntime each ship four ABIs and the APK came to 323 MB. The
             // phone is arm64 and the emulator x86_64; a release build splits per ABI.
@@ -75,6 +76,12 @@ android {
     }
     // The instrumentation tests run against the phone's build, not the debuggable one.
     testBuildType = "phone"
+    // The helpers both kinds of test use (Parallel, Workers): one copy, compiled into the host's
+    // unit tests (src/test) and the device's (src/androidTest).
+    sourceSets {
+        getByName("test").kotlin.srcDir("src/sharedTest/java")
+        getByName("androidTest").kotlin.srcDir("src/sharedTest/java")
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -113,7 +120,52 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
+    // Android's own org.json (AOSP libcore's, libcore-json/), ahead of android.jar's stubs: the
+    // code under test builds and reads JSON as it does on the phone -- insertion-ordered objects,
+    // Android's number formatting and escapes.
+    testImplementation(project(":libcore-json"))
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
+}
+
+// The pure-logic tests, on the host (src/test): the chess, the coach, the reconciler, the
+// analysis helpers and the model client, none of which needs the Android runtime. A call into
+// android.jar fails loudly ("not mocked"; no isReturnDefaultValues), so a test that needs the
+// phone cannot pass here by accident. Run with `gradlew :app:testPhoneUnitTest`.
+tasks.withType<Test>().configureEach {
+    // Two test JVMs of two processors each (the tests' own pools follow: Parallel.cores is
+    // availableProcessors()). Measured, a JVM of two processors keeps about three host threads
+    // busy -- its two workers, the thread feeding them, its two compilers in bursts: two such
+    // JVMs peak at a quarter of the 24 threads, within the eight the host tests may take while
+    // the device's suite runs (2026-10-02: three peaked at 35 %, four at 47 %, for 1-2 s less).
+    maxParallelForks = 2
+    forkEvery = 0
+    minHeapSize = "256m"
+    maxHeapSize = "1g"
+    jvmArgs(
+        "-XX:ActiveProcessorCount=2",
+        // No collector or compiler threads beyond the test's own: the serial collector runs on
+        // the thread that allocates, and two compiler threads are the fewest tiered compilation
+        // takes.
+        "-XX:+UseSerialGC",
+        "-XX:CICompilerCount=2",
+        // As on the phone: UTF-8 everywhere and an English locale for String.format.
+        "-Dfile.encoding=UTF-8",
+        "-Dstdout.encoding=UTF-8",
+        "-Duser.language=en",
+        "-Duser.country=US",
+    )
+    // The fixtures stay where the device's tests read them (androidTest/assets); the app's own
+    // assets are main/assets.
+    systemProperty("sidecoach.assets", file("src/androidTest/assets").absolutePath)
+    systemProperty("sidecoach.appAssets", file("src/main/assets").absolutePath)
+    // Every run runs every test: never UP-TO-DATE, never FROM-CACHE.
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+    testLogging {
+        events("failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStandardStreams = false
+    }
 }

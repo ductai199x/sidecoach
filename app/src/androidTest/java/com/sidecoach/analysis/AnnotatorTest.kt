@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
@@ -26,16 +27,32 @@ import java.io.File
  *
  * It needs the engine's network: `tools/test.ps1` puts one there.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class AnnotatorTest {
 
-    private fun engine(): Engine? {
+    /** Stockfish, every search asked of it counted. */
+    /**
+     * Searches run to the depth they are asked for, with no cap of seconds: beside the other lanes'
+     * classes a depth-14 search ran past the engine's 5 s cap, came back shallower, and the blunder
+     * was labelled a miss (2026-10-02, once in a full run) -- a verdict on how busy the device was.
+     */
+    private class Counted(binary: File, net: File) : Engine(binary, net, threads = 2, hashMb = 64, multipv = 4, maxSeconds = null) {
+        @Volatile var searches = 0
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<com.sidecoach.events.Line>) -> Unit)?): List<com.sidecoach.events.Line> {
+            searches += 1
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+        }
+    }
+
+    private fun engine(): Counted? {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val binary = Engine.binaryIn(context.applicationInfo.nativeLibraryDir)
         if (!binary.exists()) return null
         val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
             ?: return null
-        return Engine(binary, net, threads = 2, hashMb = 64, multipv = 4)
+        return Counted(binary, net)
     }
 
     @Test
@@ -65,9 +82,21 @@ class AnnotatorTest {
         }
     }
 
-    // The engine's own move costs nothing: a move that is the best line's first is a loss of
-    // nought before any search (`Score.evalLoss`), held over every ply of four games by
-    // AnnotatorParityTest (its "best" plies, severity none, loss 0).
+    @Test
+    fun theEnginesOwnMoveCostsNothing() {
+        val engine = engine()
+        assumeTrue("the engine or its network is missing", engine != null)
+        engine!!.use { sf ->
+            val annotator = GameAnnotator(sf, depth = 14, multipv = 4)
+            val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+            val best = annotator.measureForVerdict(board).lines.first().moves.first()
+            val assessment = annotator.assessMove("game", board, Move.fromUci(best), ply = 7)
+            Log.i(TAG, "the engine's own move $best: ${assessment.label}, loss ${assessment.expectedLoss}")
+            assertEquals(0.0, assessment.expectedLoss, 0.0)
+            assertEquals(Severity.NONE, assessment.severity)
+            assertEquals(Label.BEST, assessment.label)
+        }
+    }
 
     @Test
     fun aPositionIsMeasuredOnceAndCarriesItsThreats() {
@@ -76,19 +105,18 @@ class AnnotatorTest {
         engine!!.use { sf ->
             val annotator = GameAnnotator(sf, depth = 12, multipv = 4)
             val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4")
-            val first = System.currentTimeMillis()
             val a = annotator.analysisEvent("game", board, ply = 8)
-            val once = System.currentTimeMillis() - first
-            val second = System.currentTimeMillis()
+            val once = sf.searches
             val b = annotator.analysisEvent("game", board, ply = 8)
-            val again = System.currentTimeMillis() - second
             Log.i(
                 TAG,
                 "the Italian for Black: ${a.lines.size} lines, decisive ${a.decisive}, " +
-                    "only ${a.onlyMove}, threats ${a.threats}, $once ms then $again ms",
+                    "only ${a.onlyMove}, threats ${a.threats}, $once searches then ${sf.searches - once}",
             )
             assertTrue("no lines", a.lines.isNotEmpty())
-            assertTrue("the second look should be free", again < 50)
+            assertTrue("the first look searched", once > 0)
+            // Counted, not timed (it was: under 50 ms): the second look asks the engine nothing.
+            assertEquals("the second look should be free", once, sf.searches)
             assertEquals(a.fen, b.fen)
             assertTrue("a quiet middlegame has a threat to name", a.threats.isNotEmpty())
         }
@@ -99,6 +127,7 @@ class AnnotatorTest {
         val engine = engine()
         assumeTrue("the engine or its network is missing", engine != null)
         val analyser = Analyser(GameAnnotator(engine!!, depth = 12, multipv = 4))
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         try {
             val board = Board()
@@ -110,14 +139,8 @@ class AnnotatorTest {
                 board.push(move)
             }
             // Nothing above waited for the engine: that is the point.
-            val began = System.currentTimeMillis()
-            val events = ArrayList<com.sidecoach.events.Event>()
-            while (System.currentTimeMillis() - began < 30_000) {
-                events.addAll(analyser.poll())
-                if (analyser.pending == 0 && events.size >= 8) break
-                Thread.sleep(50)
-            }
-            events.addAll(analyser.poll())
+            // Every request answered (signalled by the worker, not polled).
+            val events = watch.settled()
             val assessments = events.filterIsInstance<MoveAssessment>().sortedBy { it.ply }
             val analyses = events.filterIsInstance<Analysis>()
             Log.i(
@@ -150,10 +173,11 @@ class AnnotatorTest {
         val board = Board(SCHOLAR)
         val annotator = GameAnnotator(engine!!, depth = 16, multipv = 3, withThreats = false)
         val analyser = Analyser(annotator)
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val got = try {
             analyser.submitPosition("g", board, 0)
-            drain(analyser, 30.0).filterIsInstance<Analysis>()
+            watch.settled().filterIsInstance<Analysis>()
         } finally {
             analyser.close()
         }
@@ -163,18 +187,6 @@ class AnnotatorTest {
         assertTrue("$depths", depths.first() == EARLY_DEPTH && depths.last() == 16)
         assertTrue("$depths", depths == depths.sorted() && depths.toSet().size == depths.size)
         assertEquals(setOf(board.fen()), got.map { it.fen }.toSet())
-    }
-
-    /** `_drain`: what the analyser delivers until nothing is owed, or [timeoutS]. */
-    private fun drain(analyser: Analyser, timeoutS: Double = 10.0): List<com.sidecoach.events.Event> {
-        val deadline = System.currentTimeMillis() + (timeoutS * 1000).toLong()
-        val events = ArrayList<com.sidecoach.events.Event>()
-        while (System.currentTimeMillis() < deadline) {
-            events += analyser.poll()
-            if (events.isNotEmpty() && analyser.pending == 0) return events
-            Thread.sleep(10)
-        }
-        return events
     }
 
     /** The desktop pushes SAN; here the move is found by name among the legal ones. */

@@ -2,7 +2,8 @@ package com.sidecoach.ui
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.sidecoach.analysis.GameReviewParityTest
+import com.sidecoach.Lane
+import com.sidecoach.analysis.GameReviewParity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -18,6 +19,7 @@ import java.util.Base64
  * taken in, sets made, added to, renamed, deleted, put back and gone past their Undo -- all
  * replayed here in a folder of the test's own.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LooksParityTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -30,13 +32,13 @@ class LooksParityTest {
             mkdirs()
         }
         val failures = ArrayList<String>()
-        GameReviewParityTest.same("catalogue", Looks.catalogue(files), fixture.getJSONObject("catalogue"), failures)
+        GameReviewParity.same("catalogue", Looks.catalogue(files), fixture.getJSONObject("catalogue"), failures)
         val looks = fixture.getJSONArray("looks")
         for (i in 0 until looks.length()) {
             val one = looks.getJSONObject(i)
             val pieces = one.getString("pieces")
             val theme = one.getString("theme")
-            GameReviewParityTest.same("look $pieces $theme", Looks.look(pieces, theme, files), one.getJSONObject("look"), failures)
+            GameReviewParity.same("look $pieces $theme", Looks.look(pieces, theme, files), one.getJSONObject("look"), failures)
         }
         val codes = fixture.getJSONArray("codes")
         for (i in 0 until codes.length()) {
@@ -88,8 +90,8 @@ class LooksParityTest {
                     null
                 }
             }
-            if (got is JSONObject) GameReviewParityTest.same(what, got, one.getJSONObject("result"), failures)
-            if (got is JSONArray) GameReviewParityTest.same(what, got, one.getJSONArray("result"), failures)
+            if (got is JSONObject) GameReviewParity.same(what, got, one.getJSONObject("result"), failures)
+            if (got is JSONArray) GameReviewParity.same(what, got, one.getJSONArray("result"), failures)
         }
         assertTrue("${failures.size} failures:\n" + failures.take(30).joinToString("\n"), failures.isEmpty())
     }

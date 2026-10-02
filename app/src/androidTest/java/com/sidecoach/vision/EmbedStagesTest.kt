@@ -3,6 +3,7 @@ package com.sidecoach.vision
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.BeforeClass
@@ -22,6 +23,7 @@ import org.opencv.imgproc.Imgproc
  * (`-e bench true`), as `TrapCostTest` does -- in the suite it passed whatever it measured (the
  * parity audit, 2026-09-29).
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class EmbedStagesTest {
 

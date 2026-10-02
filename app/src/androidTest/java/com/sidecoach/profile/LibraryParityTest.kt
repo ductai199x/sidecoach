@@ -2,6 +2,7 @@ package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.llm.HttpReply
 import com.sidecoach.llm.Transport
 import org.json.JSONArray
@@ -20,6 +21,7 @@ import java.time.ZoneOffset
  * difflib's matching blocks, chess.com's and Lichess's answers, and stores of watched records
  * and imports (`from_watched`'s rows, `reconcile`'s pairs).
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LibraryParityTest {
 
@@ -318,11 +320,7 @@ class LibraryParityTest {
             tags = emptyList(), availableTags = emptyList(), allowedTags = emptyList(), depth = null, withdrawn = false,
         )
 
-        fun libraryRow(o: JSONObject) = LibraryRow(
-            key = o.getString("key"), source = o.getString("source"), addedAt = o.getDouble("added_at"),
-            pgn = o.getString("pgn"), playedAt = optDouble(o, "played_at"), white = optString(o, "white"),
-            black = optString(o, "black"), whiteElo = optInt(o, "white_elo"), blackElo = optInt(o, "black_elo"),
-            result = optString(o, "result"), timeClass = optString(o, "time_class"), userSide = optString(o, "user_side"),
-        )
+        /** The shared reading (sharedTest's LibraryRows), as ReviewAnalysisParityTest reads it on the host. */
+        fun libraryRow(o: JSONObject) = LibraryRows.libraryRow(o)
     }
 }

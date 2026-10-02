@@ -231,6 +231,12 @@ class Listener(
      * nothing (2026-09-23: a cough held a dictation's send for good).
      */
     private val onDropped: () -> Unit = {},
+    /**
+     * The listener's clock, in seconds (`mic.time.monotonic`): the device's uptime clock. A
+     * test gives one it moves (the desktop's tests give the module a ManualClock in place of
+     * its `time`); nothing else changes.
+     */
+    private val clock: () -> Double = { SystemClock.elapsedRealtime() / 1000.0 },
 ) {
     val endpointer = Endpointer()
 
@@ -254,7 +260,7 @@ class Listener(
     private val deliveries = LinkedBlockingQueue<Pair<FloatArray, Double>>()
     private var deliverer: Thread? = null
 
-    private fun now(): Double = SystemClock.elapsedRealtime() / 1000.0
+    private fun now(): Double = clock()
 
     // ---- control ---------------------------------------------------------------------------
 

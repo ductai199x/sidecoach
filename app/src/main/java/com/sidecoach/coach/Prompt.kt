@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import android.content.res.AssetManager
+import java.io.InputStream
 
 /**
  * The system message: who the coach is, how the game reaches it, the rules, and C.
@@ -82,7 +83,9 @@ const val CONTRACT =
         "state: of it, claim no pin, fork or hanging piece they do not name. A side's threats are what " +
         "it would play if the other side passed.\n" +
         "The labels, from best to worst: brilliant, great, best, excellent, good, book (opening " +
-        "theory), inaccuracy, mistake, miss (a win or a tactic left on the board), blunder.\n" +
+        "theory), inaccuracy, mistake, miss (a winning chance let go: the opponent's mistake not " +
+        "punished, a tactic on the board not taken, or a forced mate let go: a mate in 1 not given, " +
+        "no mate left, or one 4 or more moves longer while the opponent still has a piece), blunder.\n" +
         "# The position they faced: after one of the player's moves, the facts of the position " +
         "they moved from, for the lesson on that move.\n" +
         "# Earlier in this game: with some lessons, the player's earlier moves played with the " +
@@ -173,9 +176,15 @@ object Corrections {
     @Volatile
     private var loaded: String? = null
 
-    fun load(assets: AssetManager): String {
+    fun load(assets: AssetManager): String = load { name -> assets.open(name) }
+
+    /**
+     * [load] from whatever opens an asset by its name: the app's AssetManager, or the source
+     * tree for the host's unit tests, which have no AssetManager.
+     */
+    fun load(open: (String) -> InputStream): String {
         val text = try {
-            assets.open(ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            open(ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
                 // `Path.read_text` translates newlines; the asset is CRLF on a Windows
                 // checkout, and C would reach the model with a blank line between lessons.
                 .replace("\r\n", "\n").replace("\r", "\n").trim()

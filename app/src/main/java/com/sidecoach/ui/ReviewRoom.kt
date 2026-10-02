@@ -2,6 +2,7 @@ package com.sidecoach.ui
 
 import android.content.Context
 import android.os.SystemClock
+import com.sidecoach.analysis.Book
 import com.sidecoach.analysis.Engine
 import com.sidecoach.analysis.EngineAssets
 import com.sidecoach.analysis.GameReview
@@ -9,6 +10,7 @@ import com.sidecoach.analysis.Measured
 import com.sidecoach.analysis.Motifs
 import com.sidecoach.analysis.OpeningBook
 import com.sidecoach.analysis.Strength
+import com.sidecoach.analysis.Thresholds
 import com.sidecoach.coach.ReviewLinks
 import com.sidecoach.coach.ReviewWords
 import com.sidecoach.events.GameSummary
@@ -637,35 +639,48 @@ class ReviewRoom(
         const val GONE = "This game is no longer in your record."
 
         // What a review's summary and its Stats facts are made of from its report ([rederive]):
-        // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's.
-        const val DERIVED = 2
+        // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's. 3:
+        // the move labels are made again by today's rule (a miss is failing to punish the
+        // opponent's error; chess.com's great, brilliant and book) and the openings named as
+        // Lichess names them (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a
+        // longer one -- is a miss (Tai, 2026-10-02 12:16). 5: only a mate in 1 not given, no mate
+        // left, or one 4+ moves longer with a piece on the opponent's side (Tai, 2026-10-02 12:50).
+        const val DERIVED = 5
         const val DERIVED_KEY = "reviews.derived"
 
         /**
-         * Every saved review's summary, and its facts for Stats, made again from its report when
-         * what they are made of has changed since ([DERIVED]): no engine. The phases became
-         * Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and 745 of
-         * 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). Returns the
-         * reviews made again. `rederive`.
+         * Every saved review's labels, openings, summary and facts for Stats made again from its
+         * report when what they are made of has changed since ([DERIVED]): no engine. The phases
+         * became Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and
+         * 745 of 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). The
+         * labels are made again by today's rule from each move's saved measurements
+         * ([GameReview.relabel]), the openings by [book] when there is one, and the AI coach's
+         * words -- paid for -- are never touched (Tai, 2026-10-02). [thresholds]: the settings'.
+         * Returns the reviews made again. `rederive`.
          */
-        fun rederive(store: Store): Int {
+        fun rederive(store: Store, thresholds: Thresholds = Thresholds(), book: Book? = null): Int {
             if (store.setting(DERIVED_KEY) == DERIVED.toString()) return 0
             val counted = store.statStrengths()
             var done = 0
             for ((key, strength) in store.savedReviews()) {
                 val saved = store.review(key, strength) ?: continue
                 if (saved.version != REVIEW_VERSION) continue
+                var written = false
                 val ok = runCatching {
-                    val reviewed = ReviewJson.reviewed(saved.report)
-                    store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
-                    val row = Library.find(store, key)
+                    val reviewed = GameReview.relabel(ReviewJson.reviewed(saved.report), thresholds, book)
+                    val summary = ReviewJson.summary(GameSummaries.summarize(reviewed)).toString()
+                    written = store.setReviewReport(
+                        key, strength, saved.reviewedAt, ReviewJson.reviewed(reviewed).toString(), summary,
+                    )
+                    // Not written: replaced or removed meanwhile, and that one stands.
+                    val row = if (written) Library.find(store, key) else null
                     if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row, held = true)
                 }.onFailure {
                     // Said: skipped in silence, nothing told why a review kept its old summary
                     // (the audit of 2026-10-02).
                     android.util.Log.w("sidecoach.review", "the saved review of $key ($strength) could not be summed up again: $it")
                 }.isSuccess
-                if (ok) done += 1
+                if (ok && written) done += 1
             }
             store.setSetting(DERIVED_KEY, DERIVED.toString())
             return done
@@ -673,7 +688,9 @@ class ReviewRoom(
 
         // The loop's pace, and how long an untouched room lives.
         private const val TICK_MS = 250L
-        private const val IDLE_CLOSE_MS = 20 * 60 * 1000L
+        // Internal, not private, only so a test can ask `closing` at the room's own times (just
+        // touched, and idle past it) rather than at the real clock; nothing else changes.
+        internal const val IDLE_CLOSE_MS = 20 * 60 * 1000L
 
         // The last card's training: the motifs the game missed most, and puzzles of each.
         const val PRACTICE_MOTIFS = 2

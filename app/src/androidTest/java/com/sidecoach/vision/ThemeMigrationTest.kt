@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
+import com.sidecoach.Lane
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -30,6 +31,7 @@ import org.opencv.core.Core
  * kind, standing for both square colours -- read `italian-green` as that version and today's
  * model read it, and be written again at today's version.
  */
+@Lane(Lane.Kind.VISION)
 @RunWith(AndroidJUnit4::class)
 class ThemeMigrationTest {
 

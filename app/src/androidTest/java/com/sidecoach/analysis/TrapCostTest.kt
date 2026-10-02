@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.events.Line
 import org.json.JSONObject
@@ -23,6 +24,7 @@ import java.io.File
  * and logs the numbers under the `sidecoach.analysis` tag. The positions are the coach fixture's
  * master-game and Lichess positions, analysed one after another on one engine, as a game is.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class TrapCostTest {
 

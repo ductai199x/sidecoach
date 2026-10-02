@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Label
@@ -23,6 +24,7 @@ import java.io.File
  * claimed played on, positions cached with the moves that led there, settings saved
  * mid-search, a cut search's lines of one depth, and an engine that stops answering replaced.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class EngineReviewTest {
 
@@ -38,13 +40,13 @@ class EngineReviewTest {
         secondScore: Double? = null,
         opponentBlundered: Boolean = false,
         chance: Boolean = false,
-        mateMissed: Boolean = false,
+        mateLetGo: Boolean = false,
         mateAllowed: Boolean = false,
         obvious: Boolean = false,
     ): Label = labelMove(
         loss, Thresholds(), isBest = isBest, inBook = inBook, decisive = decisive,
         sacrifice = sacrifice, beforeScore = beforeScore, opponentBlundered = opponentBlundered,
-        secondScore = secondScore, chance = chance, mateMissed = mateMissed,
+        secondScore = secondScore, chance = chance, mateLetGo = mateLetGo,
         mateAllowed = mateAllowed, obvious = obvious,
     )
 
@@ -86,29 +88,25 @@ class EngineReviewTest {
         assertEquals(Label.BEST, label(0.0, isBest = true, sacrifice = true, beforeScore = 0.05))
     }
 
+    /** `test_a_miss_is_a_winning_chance_let_go`. */
     @Test
-    fun aMissIsATacticOrAMateLetGo() {
+    fun aMissIsAWinningChanceLetGo() {
         assertEquals(Label.MISS, label(0.06, chance = true))
         assertEquals(Label.MISS, label(0.15, chance = true))
         assertEquals(Label.MISS, label(0.90, chance = true))
         assertEquals(Label.EXCELLENT, label(0.01, chance = true))
         assertEquals(Label.MISTAKE, label(0.15))
-        assertEquals(Label.MISS, label(0.02, chance = true, mateMissed = true))
+        // A forced mate let go by a move that still wins as much -- under an inaccuracy's loss --
+        // is labelled by that loss, never an inaccuracy (Tai, 2026-10-02).
+        assertEquals(Label.GOOD, label(0.025, chance = true))
+        // A forced mate let go is a miss whatever it cost (Tai, 2026-10-02 12:16); the engine's
+        // own move never is.
+        assertEquals(Label.MISS, label(0.0, mateLetGo = true))
+        assertEquals(Label.MISS, label(0.025, mateLetGo = true))
+        assertEquals(Label.BEST, label(0.0, mateLetGo = true, isBest = true))
         assertEquals(Label.BLUNDER, label(0.02, mateAllowed = true, beforeScore = 0.3))
         assertEquals(Label.GOOD, label(0.02, mateAllowed = true, beforeScore = 0.03))
         assertEquals(Label.BEST, label(0.0, mateAllowed = true, beforeScore = 0.3, isBest = true))
-    }
-
-    @Test
-    fun whatALineWinsIsCountedAfterTheReplies() {
-        val board = Board()
-        for (san in listOf("e4", "d5")) board.push(board.parseSan(san)!!)
-        assertEquals(0, materialWon(board, listOf("e4d5", "d8d5")))
-        assertEquals(3, materialWon(Board("4k3/8/8/3n4/8/8/8/3QK3 w - - 0 1"), listOf("d1d5", "e8f8")))
-        val traded = Board("4k3/8/8/3n4/8/2N5/8/4K3 b - - 0 1")
-        traded.push(traded.parseSan("Nxc3")!!)
-        assertEquals(0, materialWon(traded, listOf("e1d2", "c3d5")))
-        assertEquals(99, materialWon(Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1"), listOf("a1a8")))
     }
 
     // ---- a claimable draw ----------------------------------------------------------------
@@ -251,16 +249,151 @@ class EngineReviewTest {
         return annotator.assessMove("g", before, Move.fromUci(move), 1)
     }
 
+    /**
+     * The opponent's move [theirs] from [fen], then the player's [mine], judged in order by one
+     * annotator: the lines of the three positions are [scores]. `_answered`.
+     */
+    private fun answered(fen: String, theirs: String, mine: String, scores: List<Line>): MoveAssessment {
+        val first = Board(fen)
+        val second = first.copy()
+        second.push(Move.fromUci(theirs))
+        val third = second.copy()
+        third.push(Move.fromUci(mine))
+        val fake = FakeEngine(listOf(first, second, third).map { it.fen() }.zip(scores.map { listOf(it) }).toMap())
+        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
+        annotator.assessMove("g", first, Move.fromUci(theirs), 1)
+        return annotator.assessMove("g", second, Move.fromUci(mine), 2)
+    }
+
+    /**
+     * `test_a_miss_is_a_winning_chance_let_go_wherever_it_came_from`: chess.com's miss, Tai's
+     * reading (2026-10-02) -- the move let go a winning chance the position offered, the
+     * opponent's error or a tactic already on the board, read off the engine's lines: the best
+     * line stood better or winning, and the move played leaves a lower band. An opponent's error
+     * that left the player no better is no chance.
+     */
     @Test
-    fun aForcedMateLetGoIsAMissAndOneWalkedIntoABlunder() {
+    fun aMissIsAWinningChanceLetGoWhereverItCameFrom() {
+        val erred = listOf(
+            Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.47),
+            Line(moves = listOf("e1d2"), depth = 6, expectedScore = 0.65),
+            Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.47),
+        )
+        assertEquals(Label.MISS, answered("4k3/4p3/8/8/8/8/4P3/4K3 b - - 0 1", "e7e6", "e1f1", erred).label)
+        val knight = "4k3/8/8/3n4/8/8/8/3QK3 b - - 0 1"
+        val tactic = listOf(
+            Line(moves = listOf("e8f8"), depth = 6, expectedScore = 0.35),
+            Line(moves = listOf("d1d5", "f8e7"), depth = 6, expectedScore = 0.65),
+            Line(moves = listOf("d5f4"), depth = 6, expectedScore = 0.5),
+        )
+        assertEquals(Label.MISS, answered(knight, "e8f8", "e1e2", tactic).label)
+        val noBetter = listOf(
+            Line(moves = listOf("e8e7"), depth = 6, expectedScore = 0.58),
+            Line(moves = listOf("d1d5", "f8e7"), depth = 6, expectedScore = 0.55),
+            Line(moves = listOf("d5f4"), depth = 6, expectedScore = 0.57),
+        )
+        assertEquals(Label.MISTAKE, answered(knight, "e8f8", "e1e2", noBetter).label)
+    }
+
+    /**
+     * `test_a_forced_mate_let_go_and_one_walked_into` (Tai, 2026-10-02 12:16): a mate in 5 traded
+     * for a move that keeps the advantage but no mate is a miss; a mate in 1 traded for a mate in 2
+     * is a miss; another mate in 3 for a mate in 3 is fine. The engine's own move is never a miss
+     * for it; like with like, the search before the move's own line for it outranks the search
+     * after it. A move into a forced mate from a position not yet lost is a blunder.
+     */
+    @Test
+    fun aForcedMateLetGoAndOneWalkedInto() {
         val board = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
-        val mating = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
+        val inFive = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 5)
         val stillWon = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.03, scoreCp = -1000)
-        assertEquals(Label.MISS, judged(board, "h2h3", mating, stillWon).label)
+        val noMate = judged(board, "h2h3", inFive, stillWon)
+        assertTrue(noMate.expectedLoss < 0.04)
+        assertEquals(Label.MISS, noMate.label)
+        val inOne = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
+        val matedNext = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.0, mate = -1)
+        val longer = judged(board, "h2h3", inOne, matedNext)
+        assertEquals(0.0, longer.expectedLoss, 0.0)
+        assertEquals(Label.MISS, longer.label)
+        val inThree = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 3)
+        val matedInTwo = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.0, mate = -2)
+        assertEquals(Label.EXCELLENT, judged(board, "h2h3", inThree, matedInTwo).label)
+        val own = Line(moves = listOf("h2h3", "g8f8"), depth = 6, expectedScore = 1.0, mate = 3)
+        val seenLonger = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.0, mate = -4)
+        assertEquals(Label.BEST, judged(board, "h2h3", own, seenLonger).label)
         val worse = Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.2, scoreCp = -400)
         val mates = Line(moves = listOf("a1a8"), depth = 6, expectedScore = 1.0, mate = 1)
         val black = Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
         assertEquals(Label.BLUNDER, judged(black, "h7h6", worse, mates).label)
+        // Like with like: the search before has a line for h3, mate in 3 as the best's; the
+        // search after it alone sees a mate a move longer. h3 kept the mate: no miss.
+        val after = board.copy()
+        after.push(Move.fromUci("h2h3"))
+        val fake = FakeEngine(
+            mapOf(
+                board.fen() to listOf(inThree, Line(moves = listOf("h2h3", "g8f8"), depth = 6, expectedScore = 1.0, mate = 3)),
+                after.fen() to listOf(Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.0, mate = -3)),
+            ),
+        )
+        val kept = GameAnnotator(fake, depth = 6, withThreats = false).assessMove("g", board, Move.fromUci("h2h3"), 1)
+        assertEquals(Label.EXCELLENT, kept.label)
+    }
+
+    /**
+     * `_mate_judged`: the label of [playedSan] from [fen], where the best line ([bestSan] first)
+     * mates in [n], and the move played leaves a mate in [m] of the player's moves (null: no mate,
+     * the position still a thousand centipawns up).
+     */
+    private fun mateJudged(fen: String, bestSan: String, n: Int, playedSan: String, m: Int?): Label {
+        val board = Board(fen)
+        val best = board.parseSan(bestSan)!!.uci()
+        val played = board.parseSan(playedSan)!!.uci()
+        val before = Line(moves = listOf(best), depth = 6, expectedScore = 1.0, mate = n)
+        val after = if (m == null) {
+            Line(moves = emptyList(), depth = 6, expectedScore = 0.03, scoreCp = -1000)
+        } else {
+            Line(moves = emptyList(), depth = 6, expectedScore = 0.0, mate = 1 - m)
+        }
+        return judged(board, played, before, after).label!!
+    }
+
+    /**
+     * `test_a_mate_let_go_is_a_miss_in_one_none_left_or_four_longer_with_a_piece` (Tai,
+     * 2026-10-02 12:50): (1) a mate in 1 not given; (2) no mate left; (3) a mate MATE_LONGER (4)
+     * or more moves longer while the opponent still has a piece. Any other longer mate is labelled
+     * by its loss. The three games' cases of the analysis among them.
+     */
+    @Test
+    fun aMateLetGoIsAMissInOneNoneLeftOrFourLongerWithAPiece() {
+        assertEquals(4, MATE_LONGER)
+        val g01 = "5Q2/7k/1pp1p3/p7/P2P4/1PK1P3/2P5/6R1 w - - 2 39"
+        assertEquals(Label.MISS, mateJudged(g01, "Qg7#", 1, "Qf2", 2))
+        assertEquals(Label.MISS, mateJudged(g01, "Qg7#", 1, "Qf2", null))
+        val g04 = "2b2k2/8/3P2Q1/p4p2/2P2P1P/1P6/P6P/4K3 w - - 1 46"
+        assertEquals(Label.EXCELLENT, mateJudged(g04, "Qf6+", 4, "Qh7", 7))
+        assertEquals(Label.MISS, mateJudged(g04, "Qf6+", 4, "Qh7", 8))
+        val g02 = "8/8/1kPN4/1P1K4/8/8/8/8 w - - 3 69"
+        assertEquals(Label.EXCELLENT, mateJudged(g02, "Nc4+", 8, "Ne8", 10))
+        assertEquals(Label.EXCELLENT, mateJudged(g02, "Nc4+", 8, "Ne8", 14))
+        val pawns = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 1, "h3", 2))
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 1, "h3", null))
+        assertEquals(Label.EXCELLENT, mateJudged(pawns, "Ra8#", 3, "h3", 8))
+        assertEquals(Label.MISS, mateJudged(pawns, "Ra8#", 3, "h3", null))
+    }
+
+    /** `test_the_standing_bands_are_the_coachs`: the bands a winning chance is read in are the coach's words. */
+    @Test
+    fun theStandingBandsAreTheCoachs() {
+        val cases = listOf(
+            Triple(0.1, 0, "losing"), Triple(0.2, 0, "losing"), Triple(0.3, 1, "worse"),
+            Triple(0.38, 1, "worse"), Triple(0.5, 2, "about equal"), Triple(0.62, 3, "better"),
+            Triple(0.79, 3, "better"), Triple(0.8, 4, "winning"),
+        )
+        for ((score, band, words) in cases) {
+            assertEquals("$score", band, standing(score))
+            assertTrue("$score", words in com.sidecoach.coach.standingWords(score))
+        }
     }
 
     /** The desktop's test_the_best_move_of_a_mating_line_is_never_a_mate_let_go. */

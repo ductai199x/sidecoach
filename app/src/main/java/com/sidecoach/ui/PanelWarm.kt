@@ -151,8 +151,13 @@ object PanelWarm {
         }
     }
 
-    /** Whether a warm-up has been started in this process; the app opens it once. */
-    @Volatile private var started = false
+    /**
+     * Whether a warm-up has been started in this process; the app opens it once. Internal, not
+     * private, only so a test that opens the activity for something else (RecordingNoticeTest's
+     * question) can say one has: the warm-up's models then load in no test that did not ask for
+     * them, and do not run on into the classes after it. The app never sets it but here.
+     */
+    @Volatile internal var started = false
 
     private lateinit var appContext: Context
 

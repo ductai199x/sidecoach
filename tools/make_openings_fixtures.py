@@ -96,6 +96,24 @@ def sequences(rng: random.Random) -> list[list[chess.Move]]:
         "1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6",
     ):
         out.append(line_moves(pgn))
+    # The name is Lichess's (Tai, 2026-10-02): the last named position in the first 40 plies,
+    # a transposition back into theory included -- out of the tables at 2.Bc4 and back in the
+    # Italian; a named position at ply 39 and another at 41; and long random games, of their
+    # own seed so the cases above stay as they were.
+    out.append(line_moves("1. e4 e5 2. Bc4 Nc6 3. Nf3"))
+    out.append(line_moves(" ".join(["Nf3 Nf6 Ng1 Ng8"] * 9) + " e4 e5 Nf3 Nc6 Bc4"))
+    long = random.Random(20261002)
+    for _ in range(40):
+        board = chess.Board()
+        played = []
+        for _ in range(long.randrange(30, 61)):
+            legal = list(board.legal_moves)
+            if not legal:
+                break
+            move = long.choice(legal)
+            board.push(move)
+            played.append(move)
+        out.append(played)
     # Not a game from the start position: e7e5 first is not legal for White.
     out.append([chess.Move.from_uci("e7e5"), chess.Move.from_uci("e2e4")])
     out.append([])

@@ -11,11 +11,13 @@ import com.sidecoach.llm.OfflineProvider
 import com.sidecoach.vision.Pieces
 import com.sidecoach.voice.TtsProvider
 import com.sidecoach.voice.Voices
+import com.sidecoach.ManualClock
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -50,8 +52,18 @@ class PanelVoicePolicyTest {
         }
     }
 
+    /**
+     * The voice as each test expects to find it, unmuted: the saved setting the warm-up starts
+     * the voice with ([PanelVoice.startMuted]) is no test's here.
+     */
+    @Before
+    fun setUp() {
+        PanelVoice.setMuted(false)
+    }
+
     @After
     fun tearDown() {
+        PanelVoice.clock = PanelVoice.REAL_CLOCK
         PanelVoice.setMuted(false)
         PanelVoice.speaker = null
         PanelVoice.voicing = null
@@ -161,9 +173,14 @@ class PanelVoicePolicyTest {
         assertEquals("muted", PanelVoice.speak("stuck", long, 12))
     }
 
-    /** `test_the_way_from_a_move_to_its_first_sound_is_timed`. */
+    /**
+     * `test_the_way_from_a_move_to_its_first_sound_is_timed`. The panel's clock is one the test
+     * moves: the time taken is exactly the time that passed.
+     */
     @Test
     fun theWayFromAMoveToItsFirstSoundIsTimed() {
+        val clock = ManualClock()
+        PanelVoice.clock = { clock.seconds() }
         PanelVoice.speaker = FakeTts()
         PanelEngine.set("ply" to 1)
         val before = PanelVoice.latency()
@@ -172,14 +189,15 @@ class PanelVoicePolicyTest {
         assertEquals(n, PanelVoice.latency()["move_to_speech_n"])
         val sink = PanelVoice.streamSink(Trigger.POST_MOVE, 0)
         assertNotNull(sink)
-        Thread.sleep(50)
+        clock.advance(0.25) // the word is written ...
         assertTrue(sink!!("e4: best.")) // the first line of the word on ply 1, queued
-        Thread.sleep(50)
+        clock.advance(0.5) // ... and synthesised
         PanelVoice.onAudioStarts("e4: best.") // the voice: playing now
         var lat = PanelVoice.latency()
         assertEquals(n + 1, lat["move_to_speech_n"])
         val last = lat["move_to_speech_last_s"] as Double
         assertTrue("$lat", last in 0.08..2.0)
+        assertEquals("from the move, not from the line queued", 0.75, last, 0.0)
         if (n == 0) assertEquals(last, lat["move_to_speech_s"])
         // A line nobody waited for, or a stuck hint, is not a move's latency.
         PanelVoice.onAudioStarts("something else")

@@ -2,6 +2,8 @@ package com.sidecoach.vision
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -17,6 +19,7 @@ import kotlin.math.abs
  * which side `orientation_from_start` put at the bottom. The Kotlin must agree: this is
  * what makes the port a port rather than a rewrite.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class SilhouetteTest {
 
@@ -61,6 +64,13 @@ class SilhouetteTest {
             frame.release()
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    @Test
+    fun aStartPositionIsShapedLikeOneAndAGameIsNot() {
+        val fixtures = Fixtures.all().associateBy { it.name }
+        assertEquals(true, fixtures.getValue("start-green").startShaped)
+        assertEquals(false, fixtures.getValue("italian-green").startShaped)
     }
 
     companion object {

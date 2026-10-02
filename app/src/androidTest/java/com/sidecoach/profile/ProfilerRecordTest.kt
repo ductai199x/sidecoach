@@ -1,6 +1,7 @@
 package com.sidecoach.profile
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
@@ -32,6 +33,7 @@ import org.junit.runner.RunWith
  * annotator emit them -- `tests/profiling.py`'s Feed -- for the fixes of the review of
  * 2026-10-01. Their desktop twins are in tests/test_profile.py.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class ProfilerRecordTest {
 

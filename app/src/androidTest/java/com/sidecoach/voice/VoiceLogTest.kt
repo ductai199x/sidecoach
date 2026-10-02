@@ -2,6 +2,8 @@ package com.sidecoach.voice
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.HANG_MS
+import com.sidecoach.SteppedFrames
 import com.sidecoach.ui.PanelEngine
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -35,9 +37,15 @@ class VoiceLogTest {
     private fun emptyDir(name: String): File =
         File(app.cacheDir, "voicelog-$name").apply { mkdirs() }
 
-    // A warning of the voice in the panel's log is aVoiceThatDoesNotLoadSaysSoInTheLog's (its
-    // level and channel) and anUtteranceTheHandlerFailsOnIsSaidAndListeningGoesOn's; an error had
-    // a test of its own, but nothing in the app logs one (`VoiceLog.error` has no caller).
+    @Test
+    fun aWarningAndAnErrorOfTheVoiceAreInThePanelsLog() {
+        val before = cursor()
+        VoiceLog.warn("Kokoro playback failed: no output")
+        VoiceLog.error("something broke")
+        val lines = linesSince(before).filter { it.getString("chan") == "voice" }
+        assertEquals(listOf("warn", "error"), lines.map { it.getString("level") })
+        assertEquals(listOf("Kokoro playback failed: no output", "something broke"), lines.map { it.getString("text") })
+    }
 
     @Test
     fun aVoiceThatDoesNotLoadSaysSoInTheLog() {
@@ -63,15 +71,19 @@ class VoiceLogTest {
         assertFalse(gate.load())
         val texts = linesSince(before).filter { it.getString("chan") == "voice" && it.getString("level") == "warn" }
             .map { it.getString("text") }.filter { it.startsWith("Parakeet") || it.startsWith("Silero") }
-        // Once each: a model that failed is not tried again.
-        assertEquals(texts.toString(), 2, texts.size)
+        // A recogniser not downloaded yet is looked for again at each use, as the desktop's is
+        // (`ParakeetSTT.load`, voice finding 4: Setup fetches it after the first warm-up), so the
+        // load and the transcription each say so; the gate, tried once, says so once.
+        assertEquals(texts.toString(), 3, texts.size)
         assertEquals("Parakeet unavailable, speech recognition is off: not downloaded yet (Setup, in the menu)", texts[0])
-        assertTrue(texts[1], texts[1].startsWith("Silero VAD unavailable: "))
+        assertEquals(texts[0], texts[1])
+        assertTrue(texts[2], texts[2].startsWith("Silero VAD unavailable: "))
     }
 
-    /** A microphone whose frames the test puts in. */
-    private class FedMic : FrameSource {
-        override val frames: BlockingQueue<FloatArray> = LinkedBlockingQueue()
+    /** A microphone whose frames the test puts in, and whose listener the test steps ([SteppedFrames]). */
+    private class SteppedMic : FrameSource {
+        val steps = SteppedFrames()
+        override val frames: BlockingQueue<FloatArray> = steps
         override val detail = "fed by the test"
         override val isOpen = true
         override fun open() = true
@@ -90,7 +102,7 @@ class VoiceLogTest {
         val before = cursor()
         val heard = LinkedBlockingQueue<Double>()
         var first = true
-        val mic = FedMic()
+        val mic = SteppedMic()
         val listener = Listener(mic, Quiet(), onUtterance = { _, seconds ->
             if (first) {
                 first = false
@@ -99,16 +111,20 @@ class VoiceLogTest {
             heard.put(seconds)
         })
         listener.setMode("ptt")
-        repeat(2) {
-            listener.press()
-            repeat(16) { mic.frames.put(FloatArray(HOP)) }
-            val until = System.currentTimeMillis() + 2000
-            while (mic.frames.isNotEmpty() && System.currentTimeMillis() < until) Thread.sleep(10)
-            Thread.sleep(50)
-            listener.release()
+        try {
+            repeat(2) {
+                listener.press()
+                repeat(16) { mic.frames.put(FloatArray(HOP)) }
+                mic.steps.idle() // every frame read and kept; the listener waits for the next
+                listener.release()
+            }
+            // The utterances' own thread hands them over one after the other: the second
+            // handed over, the first's failure was said. The bound is only a safety net.
+            assertTrue("the second utterance was not handed over", heard.poll(HANG_MS, java.util.concurrent.TimeUnit.MILLISECONDS) != null)
+        } finally {
+            mic.steps.free()
+            listener.setMode("off")
         }
-        assertTrue("the second utterance was not handed over", heard.poll(3, java.util.concurrent.TimeUnit.SECONDS) != null)
-        listener.setMode("off")
         val texts = linesSince(before).filter { it.getString("chan") == "voice" }.map { it.getString("text") }
             .filter { it.startsWith("utterance") }
         assertEquals(listOf("utterance handler failed: boom"), texts)

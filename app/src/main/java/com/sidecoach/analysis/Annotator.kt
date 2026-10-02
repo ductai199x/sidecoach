@@ -426,45 +426,20 @@ class GameAnnotator(
             // Another game, or a move that did not lead here: the move before is unknown.
             last = null
         }
-        val erred = last?.loss ?: 0.0
-        // Taking back on the square the opponent just captured on. Taking a piece that merely
-        // moved there is not obvious: that is how a blunder gets punished.
-        val captures = before.isCapture(move)
-        val recapture = last != null && last.captured && captures && move.to == last.to
-        // A capture nobody can take back is a grab, not a find; a king's capture always is.
-        // Taking back is read by the rules: a piece guarded only by one pinned to its own king
-        // is taken for nothing.
-        val freeGrab = captures && !Exchange.canRetake(before, move)
-        val obvious = recapture || freeGrab || before.legalMoves().size == 1
-        val top = measuredBefore.lines.firstOrNull()
-        val afterTop = measuredAfter.lines.firstOrNull()
-        // A forced mate the best move had, and the move played let go; one the move walks into.
-        // The mates are the lines' own: the curve puts a thousand centipawns a fortieth of a
-        // game below a mate, and a mate in four let go read as an inaccuracy.
-        val mating = top?.mate != null && top.mate > 0
-        val mateMissed = mating && !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
-        val mateAllowed = afterTop?.mate != null && afterTop.mate > 0 && !(top?.mate != null && top.mate < 0)
-        // What the best move had to find: a mate, material won, or -- after the opponent's
-        // error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
-        // to punish the opponent").
-        val won = if (top != null) materialWon(before, top.moves) else 0
-        val chance = mating || won >= TACTIC_GAIN || (erred >= thresholds.mistake && won >= 1)
-        val label = labelMove(
-            loss,
-            thresholds,
-            isBest = best.isNotEmpty() && best[0] == move.uci(),
-            inBook = inBook(after),
-            decisive = measuredBefore.decisive,
-            sacrifice = tags.any { it.name == "sacrifice" },
+        val label = verdict(
+            before,
+            move,
+            measuredBefore.lines,
+            measuredAfter.lines,
+            loss = loss,
             beforeScore = measuredBefore.score,
-            opponentBlundered = erred >= thresholds.blunder,
-            secondScore = measuredBefore.lines.getOrNull(1)?.expectedScore,
-            chance = chance,
-            mateMissed = mateMissed,
-            mateAllowed = mateAllowed,
-            obvious = obvious,
+            decisive = measuredBefore.decisive,
+            inBook = inBook(after),
+            sacrifice = tags.any { it.name == "sacrifice" },
+            previous = last?.let { Previous(it.loss, it.to, it.captured) },
+            thresholds = thresholds,
         )
-        assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, captures)
+        assessed[ply] = Assessed(gameId, after.epd(), loss, move.to, before.isCapture(move))
         return MoveAssessment(
             gameId = gameId,
             ply = ply,
@@ -530,9 +505,17 @@ class GameAnnotator(
         val book = book ?: return null
         if (board.moveStack.isEmpty()) return null
         if (board.root().fen() != STARTING_FEN) return null
-        val found = book.identify(ArrayList(board.moveStack)) ?: return null
-        return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+        return openingName(book, board.moveStack)
     }
+}
+
+/**
+ * The opening [moves] from the start position are in, as the analysis carries it ("C50 Italian
+ * Game"); null when the book names none. `annotator.opening_name`.
+ */
+fun openingName(book: Book, moves: List<Move>): String? {
+    val found = book.identify(ArrayList(moves)) ?: return null
+    return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
 }
 
 /** A line's moves as moves, up to the first that does not parse: `annotator._moves`. */
@@ -590,6 +573,29 @@ class Analyser(
         private set
 
     private var behindUntil = 0L
+
+    /**
+     * The clock [behindUntil] is kept on, in nanoseconds: `System.nanoTime` in the app (the
+     * desktop's `time.monotonic`). A test whose outcome depends on that window holds it still.
+     */
+    @Volatile internal var nanoTime: () -> Long = { System.nanoTime() }
+
+    /**
+     * What a test watches the worker by, as the desktop's tests wrap `_results.put`, `_settle`,
+     * `_look_ahead` and `withdraw`: told after each word put in [results], after each request is
+     * settled, after each step of the look ahead, at the end of [withdraw] and once [close] has put
+     * its stop in the queue. Null in the app, where nothing is told and nothing else changes.
+     */
+    internal interface Watch {
+        fun said(event: Event) {}
+        fun settled() {}
+        fun lookedAhead() {}
+        fun withdrew(gameId: String, ply: Int) {}
+        fun closing() {}
+    }
+
+    @Volatile internal var watch: Watch? = null
+
     private val requests = LinkedBlockingQueue<Request>()
     /** What the worker has finished; a test puts a late word here, as the desktop's put one in `_results`. */
     internal val results = ConcurrentLinkedQueue<Event>()
@@ -667,6 +673,7 @@ class Analyser(
         thread = null
         if (worker != null) {
             requests.put(stop)
+            watch?.closing()
             if (looking) annotator.engine.interrupt()
             worker.join(5000)
         }
@@ -745,6 +752,7 @@ class Analyser(
             // request's work runs interruptible ([run]).
             annotator.engine.interrupt()
         }
+        watch?.withdrew(gameId, ply)
     }
 
     fun poll(): List<Event> {
@@ -771,6 +779,13 @@ class Analyser(
 
     private fun settle() {
         synchronized(countLock) { outstanding = maxOf(0, outstanding - 1) }
+        watch?.settled()
+    }
+
+    /** A word for whoever drains [results] ([watch] told). */
+    private fun say(event: Event) {
+        results.add(event)
+        watch?.said(event)
     }
 
     private fun run() {
@@ -806,7 +821,7 @@ class Analyser(
             val deepening = deepening(request, request.board, early)
             val event = yielding(request, request.board, deepening)
             if (event != null && !request.withdrawn) {
-                results.add(event)
+                say(event)
                 planAhead(request.board, event.lines)
             }
         } else {
@@ -822,15 +837,15 @@ class Analyser(
             if (request.withdrawn) return
             val verdict = annotator.assessMove(request.gameId, request.board, request.move, request.ply)
             if (request.withdrawn) return
-            results.add(verdict)
+            say(verdict)
             if (requests.isNotEmpty()) {
                 skipped += 1
-                behindUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
+                behindUntil = nanoTime() + TimeUnit.SECONDS.toNanos(BEHIND_S.toLong())
                 val event = annotator.analysisEvent(request.gameId, after, request.ply, thin = true)
-                if (!request.withdrawn) results.add(event)
+                if (!request.withdrawn) say(event)
                 return
             }
-            if (early == null && !request.byUser && System.nanoTime() < behindUntil) {
+            if (early == null && !request.byUser && nanoTime() < behindUntil) {
                 // Behind a moment ago: the verdict came first, and now the first usable depth of
                 // the position the player faces. It is never the last word: every depth follows,
                 // then the look ahead. Measured at EARLY_DEPTH and kept as the whole, it was never
@@ -844,7 +859,7 @@ class Analyser(
             }
             val event = yielding(request, after, deepening(request, after, early)) ?: return
             if (request.withdrawn) return
-            results.add(event)
+            say(event)
             planAhead(after, event.lines)
         }
     }
@@ -855,9 +870,9 @@ class Analyser(
      * moment ago; [hurried], after it ([serve]).
      */
     private fun early(request: Request, board: Board, hurried: Boolean = false): Analysis? {
-        if (annotator.measured(board) || (!hurried && System.nanoTime() < behindUntil)) return null
+        if (annotator.measured(board) || (!hurried && nanoTime() < behindUntil)) return null
         val event = annotator.analysisEvent(request.gameId, board, request.ply, early = true)
-        if (!request.withdrawn) results.add(event)
+        if (!request.withdrawn) say(event)
         return event
     }
 
@@ -873,7 +888,7 @@ class Analyser(
         return { lines ->
             val depth = if (lines.isNotEmpty()) lines[0].depth else 0
             if (!request.withdrawn && EARLY_DEPTH < depth && depth < annotator.depth) {
-                results.add(annotator.deepened(early, board, lines))
+                say(annotator.deepened(early, board, lines))
             }
         }
     }
@@ -894,6 +909,7 @@ class Analyser(
             if (ahead.isEmpty()) return requests.take()
             val (board, moves) = ahead.removeAt(0)
             lookAhead(board, moves, ahead)
+            watch?.lookedAhead()
         }
     }
 
@@ -932,7 +948,7 @@ class Analyser(
         try {
             if (request.withdrawn) return
             val event = yielding(request, board)
-            if (event != null && !request.withdrawn) results.add(event)
+            if (event != null && !request.withdrawn) say(event)
         } catch (exc: Exception) {
             failures += 1
             lastError = "${exc::class.java.simpleName}: ${exc.message}"

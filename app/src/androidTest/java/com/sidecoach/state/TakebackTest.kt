@@ -1,13 +1,15 @@
 package com.sidecoach.state
 
-import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.analysis.Analyser
+import com.sidecoach.analysis.AnalyserWatch
 import com.sidecoach.analysis.Assessing
+import com.sidecoach.analysis.EARLY_DEPTH
 import com.sidecoach.analysis.Engine
 import com.sidecoach.analysis.GameAnnotator
+import com.sidecoach.analysis.HANG_MS
 import com.sidecoach.analysis.Interrupted
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
@@ -50,67 +52,112 @@ import java.util.concurrent.TimeUnit
  * taken back quickly with the pieces sliding, a frame each, all at once, and a board left
  * unexplained for long before eleven are taken back -- run through the ported pipeline, the
  * glue and the coach, which must count the same plies as the reconciler throughout.
+ *
+ * No test here waits on a clock (Tai, 2026-10-01: a test is about logic, not timing): the
+ * analyser's worker is watched through its own steps ([AnalyserWatch]), the fake engines' searches
+ * run when the test lets them, and what a run did is counted from an ordered log. [HANG_MS]
+ * bounds a hang and is never the expected path.
  */
 @RunWith(AndroidJUnit4::class)
 class TakebackTest {
 
     /** Every position answered with the same quiet line, as the desktop's FakeEngine. */
     private open class QuietEngine : Engine(File("quiet"), null) {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> =
-            if (com.sidecoach.analysis.gameOver(board)) emptyList()
+        /** Each position asked, with the depth asked for (`FakeEngine.calls`, `.depths`). */
+        val calls: MutableList<Pair<String, Int?>> = java.util.Collections.synchronizedList(ArrayList())
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+            calls.add(board.fen() to depth)
+            return if (com.sidecoach.analysis.gameOver(board)) emptyList()
             else listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
+        }
 
         override fun close() = Unit
     }
 
-    /** Its searches wait to be let go, so a test can act mid-search. */
+    /** Its searches wait to be let go, so a test can act mid-search (`_HeldEngine`). */
     private class HeldEngine : QuietEngine() {
         val searching = CountDownLatch(1)
         val go = CountDownLatch(1)
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             searching.countDown()
-            go.await(5, TimeUnit.SECONDS)
+            // A fake that timed out and carried on would pass a test that never let it go. (An exception,
+            // not an Error: on the analyser's thread an Error would end the test process.)
+            if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw IllegalStateException("the test never let the search go")
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
 
     /**
-     * A moment per search, as a real engine takes, and stopped as a real one is
-     * ([Engine.interrupt]): none begins once stopped, and one under way ends within a moment.
-     * While [watching] -- from the moment the glue is told of a takeback -- it notes the
-     * position each search begins on (`_SlowEngine.asked`).
+     * `_GatedEngine`: searches run as the test lets them, never on a clock: answered at once while
+     * the gate is open; after [hold], each search begun waits at the gate until [release] -- or
+     * until it is interrupted, and then it stops, as a real one does ([Engine.interrupt]): none
+     * begins once stopped, and one under way ends. ([Engine.interrupt] is not open: whoever
+     * interrupts wakes the gate, [wake] -- the analyser's withdraw through its watch.)
+     *
+     * Every search begun is noted in [log], in order with what the analyser said; and the
+     * positions begun while [watching] in [asked].
      */
-    private class SlowEngine(@Volatile var ms: Long) : QuietEngine() {
+    private class GatedEngine(private val log: MutableList<Pair<String, Any>>) : QuietEngine() {
+        /** From the moment the analyser is told of a takeback: what it searched before was the game's. */
         @Volatile var watching = false
-        val asked: MutableList<String> = java.util.Collections.synchronizedList(ArrayList<String>())
+        private val asked = ArrayList<String>() // under [gate]
+        private val ends = ArrayList<Pair<String, String>>() // each held search's position, and how it ended; under [gate]
+        private val gate = Object()
+        private var held = false
+        var atGate = 0 // searches waiting at the gate now; under [gate]
+            private set
 
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (interruptibleNow && stopped) throw Interrupted()
-            if (watching) asked.add(board.boardFen())
-            val end = SystemClock.elapsedRealtime() + ms
-            while (SystemClock.elapsedRealtime() < end) {
-                if (interruptibleNow && stopped) throw Interrupted()
-                Thread.sleep(5)
-            }
-            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+        val isHeld: Boolean get() = synchronized(gate) { held }
+
+        fun hold() = synchronized(gate) { held = true }
+
+        fun release() = synchronized(gate) {
+            held = false
+            gate.notifyAll()
         }
-    }
 
-    /**
-     * `_HeldFullEngine`: its first full-depth search ([full]) runs until [Engine.interrupt]
-     * stops it, as a real one's does; every other search, the early depth's included, answers
-     * at once. A test acts mid-measure by this state, not by how long a search takes.
-     */
-    private class HeldFullEngine(private val full: Int) : QuietEngine() {
-        @Volatile var held = false
+        fun wake() = synchronized(gate) { gate.notifyAll() }
+
+        fun askedNow(): List<String> = synchronized(gate) { ArrayList(asked) }
+
+        private fun waitFor(what: String, condition: () -> Boolean) {
+            val deadline = System.nanoTime() + HANG_MS * 1_000_000
+            while (!condition()) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                if (left <= 0) throw IllegalStateException(what)
+                gate.wait(left)
+            }
+        }
+
+        /** Until a search is held at the gate: the engine is busy on it. */
+        fun waitAtGate() = synchronized(gate) { waitFor("no search came") { atGate > 0 } }
+
+        /** Until [count] held searches have ended (let go or interrupted); how they ended. */
+        fun waitEnded(count: Int): List<Pair<String, String>> = synchronized(gate) {
+            waitFor("held searches ended: $ends") { ends.size >= count }
+            ArrayList(ends)
+        }
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (interruptibleNow && depth == full && !held) {
-                held = true
-                val until = SystemClock.elapsedRealtime() + 5000 // a safety net only: the test stops it
-                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
-                throw Interrupted()
+            fun stopped() = interruptibleNow && stopped
+            if (stopped()) throw Interrupted()
+            synchronized(gate) {
+                log.add("search" to board.boardFen())
+                if (watching) asked.add(board.boardFen())
+                if (held) {
+                    atGate += 1
+                    gate.notifyAll()
+                    try {
+                        waitFor("a held search never let go") { !held || stopped() }
+                    } finally {
+                        atGate -= 1
+                    }
+                    ends.add(board.boardFen() to if (stopped()) "interrupted" else "answered")
+                    gate.notifyAll()
+                }
+                if (stopped()) throw Interrupted()
             }
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
@@ -130,6 +177,7 @@ class TakebackTest {
     fun aTakebackLetsTheEngineGoOfTheWithdrawnMoves() {
         val engine = HeldEngine()
         val analyser = Analyser(GameAnnotator(engine, depth = 6, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val board = Board()
         val moves = "e4 e5 Nf3 Nc6".split(" ").mapIndexed { i, san ->
             val before = board.copy()
@@ -139,26 +187,24 @@ class TakebackTest {
         }
         analyser.submitMove("g", moves[0].first, moves[0].second, 1)
         analyser.start()
-        assertTrue("the worker never started on ply 1", engine.searching.await(5, TimeUnit.SECONDS))
-        for ((before, move, ply) in moves.drop(1)) analyser.submitMove("g", before, move, ply)
-        // Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
-        analyser.withdraw("g", 2)
-        assertEquals(2, analyser.withdrawn)
-        assertEquals(2, analyser.pending)
-        // Ply 1 taken back too, mid-search: its verdict is not delivered.
-        analyser.withdraw("g", 0)
-        assertEquals(4, analyser.withdrawn)
-        engine.go.countDown()
-        val got = ArrayList<Event>()
-        val deadline = System.currentTimeMillis() + 5000
-        while (System.currentTimeMillis() < deadline) {
-            got += analyser.poll()
-            if (analyser.pending == 0) break
-            Thread.sleep(10)
+        val got = try {
+            assertTrue("the worker never started on ply 1", engine.searching.await(HANG_MS, TimeUnit.MILLISECONDS))
+            for ((before, move, ply) in moves.drop(1)) analyser.submitMove("g", before, move, ply)
+            // Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
+            analyser.withdraw("g", 2)
+            assertEquals(2, analyser.withdrawn)
+            assertEquals(2, analyser.pending)
+            // Ply 1 taken back too, mid-search: its verdict is not delivered.
+            analyser.withdraw("g", 0)
+            assertEquals(4, analyser.withdrawn)
+            engine.go.countDown()
+            // Nothing is delivered of ply 1, so wait for the work to be settled, not for words: a
+            // word is put before its request settles, so none can come after `pending` is 0.
+            watch.settled()
+        } finally {
+            engine.go.countDown() // a failed assertion above leaves no search held
+            analyser.close()
         }
-        Thread.sleep(100)
-        got += analyser.poll()
-        analyser.close()
         val plies = got.mapNotNull { (it as? MoveAssessment)?.ply ?: (it as? Analysis)?.ply }
         assertTrue("words on withdrawn plies: $plies", plies.none { it == 1 || it == 3 || it == 4 })
         assertEquals(0, analyser.pending)
@@ -194,6 +240,7 @@ class TakebackTest {
     fun aHintAskedBeforeTheFirstMoveIsAnswered() {
         val hint = "Think about which piece you want in the centre first."
         val analyser = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val assessing = Assessing(analyser)
         analyser.start()
         val model = OneReply(hint)
@@ -208,14 +255,10 @@ class TakebackTest {
             assessing.submit(started)
             coach.onEvent(started, 0.0)
             coach.ask("hint", 0.5)
-            val deadline = System.currentTimeMillis() + 5000
-            while (System.currentTimeMillis() < deadline) {
-                val got = assessing.drain()
-                drained += got
-                for (event in got) coach.onEvent(event, 1.0)
-                if (analyser.pending == 0 && got.isEmpty()) break
-                Thread.sleep(10)
-            }
+            // Everything owed answered (signalled by the worker), then what it said to the coach.
+            watch.idle()
+            drained += assessing.drain()
+            for (event in drained) coach.onEvent(event, 1.0)
             coach.speaker.runPending()
             said += coach.poll().map { it.text }
         } finally {
@@ -235,6 +278,7 @@ class TakebackTest {
     @Test
     fun aTakebackToWhereTheGameBeganMeasuresItAgain() {
         val analyser = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val assessing = Assessing(analyser)
         analyser.start()
         try {
@@ -252,12 +296,45 @@ class TakebackTest {
                     ),
                 )
             }
-            assessing.wait(5.0)
+            watch.idle() // both moves answered (signalled by the worker, not polled)
+            assessing.drain()
             assessing.submit(Takeback(gameId = "g", plies = 2, fen = start.fen()))
-            val again = assessing.wait(5.0)
+            watch.idle()
+            val again = assessing.drain()
             assertEquals(listOf(start.fen()), again.filterIsInstance<Analysis>().filter { it.ply == 0 }.map { it.fen })
         } finally {
             assessing.close()
+        }
+    }
+
+    /**
+     * `_WholeMeasureHeld`: answers at once, except the first whole measure (the full [depth]) of
+     * [fen]: that search runs until it is interrupted, as a real one stops ([Engine.interrupt]),
+     * so the test acts while it is under way, never on a clock. Whoever interrupts it [wake]s it.
+     */
+    private class WholeMeasureHeld(private val fen: String, private val depth: Int) : QuietEngine() {
+        val holding = CountDownLatch(1) // the held search is under way
+        val interrupted = CountDownLatch(1) // and was stopped
+        private val lock = Object()
+
+        fun wake() = synchronized(lock) { lock.notifyAll() }
+
+        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
+            val whole = depth == this.depth
+            if (interruptibleNow && whole && board.fen() == fen && holding.count > 0) {
+                synchronized(lock) {
+                    holding.countDown()
+                    val deadline = System.nanoTime() + HANG_MS * 1_000_000
+                    while (!stopped) {
+                        val left = (deadline - System.nanoTime()) / 1_000_000
+                        if (left <= 0) throw IllegalStateException("the whole measure was never let go")
+                        lock.wait(left)
+                    }
+                }
+                interrupted.countDown()
+                throw Interrupted()
+            }
+            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
 
@@ -275,22 +352,26 @@ class TakebackTest {
     fun aPositionReReadMidMeasureGetsNoWordOnTheOldReading() {
         val white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
         val black = white.replace(" w ", " b ")
-        // The white reading's full measure is held until something stops it ([HeldFullEngine]):
-        // a 300 ms search failed the test whenever a slow moment fell between the measure's
-        // start and the drain (round 3 audit, 2026-10-02).
-        val engine = HeldFullEngine(full = 18)
+        val engine = WholeMeasureHeld(white, 18)
         val analyser = Analyser(GameAnnotator(engine, depth = 18, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val assessing = Assessing(analyser)
         analyser.start()
         try {
             assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = white, kind = "position"))
-            val deadline = System.currentTimeMillis() + 5000
-            while (!engine.held && System.currentTimeMillis() < deadline) Thread.sleep(5)
-            assertTrue("the full measure never began", engine.held)
+            assertTrue("the full measure never began", engine.holding.await(HANG_MS, TimeUnit.MILLISECONDS))
+            assertTrue("the whole measure, under way", analyser.looking)
             val before = assessing.drain()
             assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
-            val after = assessing.wait(10.0)
+            engine.wake() // the reset interrupted it before `submit` returned
+            assertTrue("the reset let go of the measure under way", engine.interrupted.await(HANG_MS, TimeUnit.MILLISECONDS))
+            watch.idle()
+            val after = assessing.drain()
             assertEquals(listOf(white), before.filterIsInstance<Analysis>().map { it.fen })
+            // The old reading's whole measure was never taken up again after the reset: its only
+            // search that ran to an answer is the early one.
+            val whiteDepths = synchronized(engine.calls) { engine.calls.filter { it.first == white }.map { it.second } }
+            assertEquals(listOf<Int?>(EARLY_DEPTH), whiteDepths)
             val told = after.filterIsInstance<Analysis>().map { it.fen }
             assertTrue("$told", told.isNotEmpty() && told.toSet() == setOf(black))
         } finally {
@@ -313,25 +394,20 @@ class TakebackTest {
         // The engine has measured four plies and nothing has been drained; then 3.Nf3 Nc6 are
         // taken back and 3.Bc4 played. What it said of the withdrawn plies stays behind.
         val analyser = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val assessing = Assessing(analyser)
         analyser.start()
         assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = STARTING_FEN))
         val board = Board()
         for ((i, san) in "e4 e5 Nf3 Nc6".split(" ").withIndex()) assessing.submit(played(board, san, i + 1))
-        val until = System.currentTimeMillis() + 5000
-        while (analyser.pending != 0 && System.currentTimeMillis() < until) Thread.sleep(10)
+        watch.idle() // all four measured, nothing drained
         board.pop()
         board.pop()
         assessing.submit(Takeback(gameId = "g", plies = 2, fen = board.fen()))
         assessing.submit(played(board, "Bc4", 3))
-        val got = ArrayList<Event>()
-        val deadline = System.currentTimeMillis() + 5000
-        while (System.currentTimeMillis() < deadline &&
-            got.none { it is MoveAssessment && it.ply == 3 && it.uci == "f1c4" }
-        ) {
-            got += assessing.drain()
-            Thread.sleep(10)
-        }
+        // Every request answered; then the glue holds what came against the game as it stands.
+        watch.idle()
+        val got = assessing.drain()
         assessing.close()
         val verdicts = got.filterIsInstance<MoveAssessment>().map { it.ply to it.uci }
         assertEquals(listOf(1 to "e2e4", 2 to "e7e5", 3 to "f1c4"), verdicts)
@@ -339,18 +415,21 @@ class TakebackTest {
     }
 
     /**
-     * The recorded scenarios through the ported pipeline, the glue and the coach, the engine
-     * a phone's speed behind: the reconciler, the glue and the coach count the same plies, and
-     * nothing drained once a takeback is known is about a withdrawn move or position.
+     * The recorded scenarios through the ported pipeline, the glue and the coach: the reconciler,
+     * the glue and the coach count the same plies, and nothing drained once a takeback is known
+     * is about a withdrawn move or position.
      *
-     * The three of `test_ten_plies_taken_back_quickly` (stepwise-sliding, a-frame-each,
-     * one-jump) as the desktop plays them: searches of [FAST_MS] through the game, the engine
-     * waited for, then [SEARCH_MS] a search for the last two plies and the takebacks; the
-     * replacement's verdict must come within 2.2 searches of the takeback being told (the rest
-     * of the search under way, then its own), and the withdrawn position is never searched
-     * after it (the parity audit, 2026-09-29: neither was checked here). The desktop times it
-     * from the frame the replacement is first shown on; here from the takeback being told, so
-     * the phone's time to read a frame is not counted against the engine.
+     * As `test_ten_plies_taken_back_quickly` plays them, for every scenario: the engine keeps up
+     * with the game -- each move's work settled before the next frame -- until the last two
+     * plies before the takeback (Qb5+ c6 in the three quick ones), which it is held on, so it is
+     * on the withdrawn moves when the takeback comes. "Prompt" is counted, not timed: every
+     * search begun is logged in order with what the analyser says and each takeback it is told
+     * of. The search under way when the takeback came is let go (interrupted, not run to its
+     * end) and was of a withdrawn line; between the takeback and the replacement's verdict only
+     * the replacement's own positions are searched, at most the two a verdict needs, and nothing
+     * is said; no withdrawn position is searched from the takeback on (the parity audit,
+     * 2026-09-29). The phone's test used to time it instead: searches that slept, 15 ms between
+     * frames, and the verdict within 2.2 searches of the takeback by the stopwatch.
      */
     @Test
     fun theScenariosLeaveTheGameTheGlueAndTheCoachAgreeing() {
@@ -367,138 +446,241 @@ class TakebackTest {
                 val name = run.getString("name")
                 if (name !in wanted) continue
                 ran += 1
-                val quick = name in quickly
-                val engine = SlowEngine(if (quick) FAST_MS else 250L)
-                val analyser = Analyser(GameAnnotator(engine, depth = 6, withThreats = false))
-                analyser.start()
-                val assessing = Assessing(analyser)
-                val coach = Coach(OfflineProvider())
-                val pipeline = GamePipeline(net)
-                val gate = ChangeGate()
-                val frames = run.getJSONArray("frames")
-                val decoded = HashMap<String, Mat>()
-                val events = ArrayList<Event>()
-                val drained = ArrayList<Event>()
-                var knownAt = -1 // the drain index when the last takeback became known
-                fun drain(ts: Double) {
-                    for (said in assessing.drain()) {
-                        drained += said
-                        coach.onEvent(said, ts)
-                    }
-                }
-                // The frame Qb5+ is first shown on, the 21st ply (the desktop's `c.play("Qb5+",
-                // "c6")` after `c.wait_for_engine()`): the state the python first told it on.
-                val slowFrom = if (quick) firstShown(frames, "MovePlayed 21 ") else -1
-                var withdrawn: String? = null // the position after ply 22, which the takeback withdraws
-                var told = -1L // when the glue was told of the takeback
-                var waited: Double? = null
-                for (f in 0 until frames.length()) {
-                    val frame = frames.getJSONObject(f)
-                    val file = frame.getString("file")
-                    val mat = decoded.getOrPut(file) { load(file) }
-                    val ts = frame.getDouble("ts")
-                    if (f == slowFrom) {
-                        // `c.wait_for_engine()`, then a phone's speed from here on.
-                        val until = System.currentTimeMillis() + 30_000
-                        while (analyser.pending != 0 && System.currentTimeMillis() < until) {
-                            drain(ts)
-                            Thread.sleep(10)
-                        }
-                        engine.ms = SEARCH_MS
-                    }
-                    val pixels = FramePixels.of(mat)
-                    gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
-                    val changed = gate.changed(pixels, ts)
-                    var replaced = false
-                    for (event in pipeline.process(mat, ts, changed, f, pixels)) {
-                        events += event
-                        assessing.submit(event)
-                        coach.onEvent(event, ts)
-                        if (event is Takeback) {
-                            knownAt = drained.size
-                            if (quick) {
-                                // Recorded from the moment the analyser is told (`armed`, `watching`).
-                                engine.watching = true
-                                told = SystemClock.elapsedRealtime()
-                            }
-                        }
-                        if (event is MovePlayed && event.ply == 22) withdrawn = event.fenAfter.split(" ")[0]
-                        if (event is MovePlayed && event.ply == 11 && event.uci == "e4e5" && told >= 0) replaced = true
-                    }
-                    drain(ts)
-                    if (replaced && waited == null) {
-                        // 6.e5 in place of 6.cxd4: its verdict, waited for as the desktop's test waits.
-                        val deadline = told + 10_000
-                        while (drained.none { it is MoveAssessment && it.ply == 11 && it.uci == "e4e5" } &&
-                            SystemClock.elapsedRealtime() < deadline
-                        ) {
-                            drain(ts)
-                            Thread.sleep(5)
-                        }
-                        waited = (SystemClock.elapsedRealtime() - told) / 1000.0
-                    }
-                    // The frames come at the capture's own pace, not all at once.
-                    Thread.sleep(15)
-                }
-                val until = System.currentTimeMillis() + 60_000
-                while (analyser.pending != 0 && System.currentTimeMillis() < until) {
-                    drain(99_999.0)
-                    Thread.sleep(20)
-                }
-                Thread.sleep(100)
-                drain(99_999.0)
-                assessing.close()
-                for (mat in decoded.values) mat.release()
-
-                val rec = pipeline.reconciler
-                if (rec == null) {
-                    failures += "$name: no game"
-                    continue
-                }
-                val game = rec.board.moveStack.mapIndexed { i, m -> i + 1 to m.uci() }.toMap()
-                val fens = HashMap<Int, String>()
-                val walked = Board()
-                for ((i, m) in rec.board.moveStack.withIndex()) {
-                    walked.push(m)
-                    fens[i + 1] = walked.boardFen()
-                }
-                if (assessing.playedLine != game) failures += "$name: the glue's game ${assessing.playedLine} is not $game"
-                val coachGame = coach.moves.mapValues { it.value.uci }
-                if (coachGame != game) failures += "$name: the coach's game $coachGame is not $game"
-                if (events.any { it is Resync }) failures += "$name: a resync"
-                if (knownAt >= 0) {
-                    for (said in drained.drop(knownAt)) {
-                        if (said is MoveAssessment && game[said.ply] != said.uci) {
-                            failures += "$name: a verdict on a withdrawn move, ply ${said.ply} ${said.uci}"
-                        } else if (said is Analysis && said.ply > 0 && fens[said.ply] != said.fen.split(" ")[0]) {
-                            failures += "$name: an analysis of a withdrawn position, ply ${said.ply}"
-                        }
-                    }
-                }
-                val takebacks = events.filterIsInstance<Takeback>().map { it.plies }
-                if (quick) {
-                    val took = waited
-                    if (took == null || took >= 2.2 * SEARCH_MS / 1000.0) {
-                        failures += "$name: the replacement's verdict took ${took ?: "forever"} s " +
-                            "(searches of $SEARCH_MS ms, the takebacks $takebacks)"
-                    }
-                    if (withdrawn == null) {
-                        failures += "$name: no 22nd ply to withdraw"
-                    } else if (withdrawn in synchronized(engine.asked) { engine.asked.toList() }) {
-                        failures += "$name: the withdrawn position $withdrawn was searched after the takeback"
-                    }
-                }
-                val notes = events.count { it is Unexplained }
-                Log.i(
-                    "sidecoach.state",
-                    "$name: takebacks $takebacks, $notes unexplained, ${game.size} plies agreed, " +
-                        "${drained.size} drained, ${analyser.withdrawn} withdrawn" +
-                        (waited?.let { ", the replacement's verdict in ${"%.2f".format(it)} s" } ?: ""),
-                )
+                failures += scenario(name, run.getJSONArray("frames"), net)
             }
         }
         assertEquals("the takeback scenarios in the fixtures", 5, ran)
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    /** One recorded scenario played through ([theScenariosLeaveTheGameTheGlueAndTheCoachAgreeing]); what failed. */
+    private fun scenario(name: String, frames: org.json.JSONArray, net: CellEmbedder): List<String> {
+        val failures = ArrayList<String>()
+        // In order: every search begun, every word the analyser said, and each takeback it was told of.
+        val log: MutableList<Pair<String, Any>> = java.util.Collections.synchronizedList(ArrayList())
+        val engine = GatedEngine(log)
+        val analyser = Analyser(GameAnnotator(engine, depth = 6, withThreats = false))
+        val watch = AnalyserWatch(
+            analyser,
+            object : Analyser.Watch {
+                override fun said(event: Event) {
+                    log.add("said" to event)
+                }
+
+                override fun withdrew(gameId: String, ply: Int) {
+                    // After the analyser has let go: whatever begins after this is not of a
+                    // withdrawn move (a search under way had begun before). Its interrupt is in:
+                    // the gate is woken to see it.
+                    log.add("takeback" to ply)
+                    engine.watching = true
+                    engine.wake()
+                }
+            },
+        )
+        analyser.start()
+        val assessing = Assessing(analyser)
+        val coach = Coach(OfflineProvider())
+        val pipeline = GamePipeline(net)
+        val gate = ChangeGate()
+        val decoded = HashMap<String, Mat>()
+        val letGo = lastUses(frames)
+        val events = ArrayList<Event>()
+        val drained = ArrayList<Event>()
+        var knownAt = -1 // the drain index when the last takeback became known
+        fun drain(ts: Double) {
+            for (said in assessing.drain()) {
+                drained += said
+                coach.onEvent(said, ts)
+            }
+        }
+        // The two plies before the takeback, which the engine is held on (`c.engine.hold()`,
+        // `c.play("Qb5+", "c6")`): held from the frame the first of them is first shown on.
+        val takebackAt = (0 until frames.length()).first { f -> told(frames, f).any { it.startsWith("Takeback ") } }
+        val heldPlies = (0 until takebackAt).flatMap { f -> told(frames, f).filter { it.startsWith("MovePlayed ") } }
+            .map { it.split(" ")[1].toInt() }
+            .takeLast(2)
+        val holdFrom = firstShown(frames, "MovePlayed ${heldPlies[0]} ")
+        var withdrawn: String? = null // the position after the last held ply, which the takeback withdraws
+        val line = HashMap<Int, String>() // each ply's position as the moves were told
+        var oldLine: Map<Int, String> = emptyMap() // the game's positions when the takeback came
+        var replaced = false
+        try {
+            for (f in 0 until frames.length()) {
+                val frame = frames.getJSONObject(f)
+                val file = frame.getString("file")
+                val mat = decoded.getOrPut(file) { load(file) }
+                val ts = frame.getDouble("ts")
+                if (f == holdFrom) {
+                    watch.idle() // `c.wait_for_engine()`
+                    engine.hold()
+                }
+                val pixels = FramePixels.of(mat)
+                gate.region = ChangeGate.boardGate(pipeline.board, pixels.width, pixels.height)
+                val changed = gate.changed(pixels, ts)
+                var moved = false
+                var bothHeld = false
+                var replacement: MovePlayed? = null
+                for (event in pipeline.process(mat, ts, changed, f, pixels)) {
+                    events += event
+                    if (event is Takeback) {
+                        // What the engine said before this was said of the game as it stood.
+                        knownAt = drained.size
+                        oldLine = HashMap(line)
+                    }
+                    assessing.submit(event)
+                    coach.onEvent(event, ts)
+                    if (event is MovePlayed) {
+                        moved = true
+                        line[event.ply] = event.fenAfter.split(" ")[0]
+                        if (knownAt < 0 && event.ply == heldPlies.last()) {
+                            withdrawn = event.fenAfter.split(" ")[0]
+                            bothHeld = true
+                        }
+                        if (knownAt >= 0 && !replaced && replacement == null) replacement = event
+                    }
+                }
+                if (bothHeld) {
+                    // Both held plies submitted: the engine is on the first, the second waits.
+                    engine.waitAtGate()
+                    if (analyser.pending != 2) failures += "$name: ${analyser.pending} pending on the held plies, not 2"
+                }
+                if (replacement != null) {
+                    replaced = true
+                    failures += counted(name, engine, log, watch, replacement, oldLine, drained, ::drain, ts)
+                } else if (moved && !engine.isHeld) {
+                    watch.idle() // the engine keeps up: this move's work done
+                }
+                drain(ts)
+                letGo[f]?.forEach { decoded.remove(it)?.release() }
+            }
+            watch.idle()
+            drain(99_999.0)
+        } finally {
+            engine.release()
+            assessing.close()
+            for (mat in decoded.values) mat.release()
+        }
+
+        val rec = pipeline.reconciler ?: return failures + "$name: no game"
+        val game = rec.board.moveStack.mapIndexed { i, m -> i + 1 to m.uci() }.toMap()
+        val fens = fensOf(rec.board)
+        if (assessing.playedLine != game) failures += "$name: the glue's game ${assessing.playedLine} is not $game"
+        val coachGame = coach.moves.mapValues { it.value.uci }
+        if (coachGame != game) failures += "$name: the coach's game $coachGame is not $game"
+        if (events.any { it is Resync }) failures += "$name: a resync"
+        if (!replaced) failures += "$name: no move replaced the withdrawn ones"
+        if (knownAt >= 0) {
+            for (said in drained.drop(knownAt)) {
+                if (said is MoveAssessment && game[said.ply] != said.uci) {
+                    failures += "$name: a verdict on a withdrawn move, ply ${said.ply} ${said.uci}"
+                } else if (said is Analysis && said.ply > 0 && fens[said.ply] != said.fen.split(" ")[0]) {
+                    failures += "$name: an analysis of a withdrawn position, ply ${said.ply}"
+                }
+            }
+        }
+        val takebacks = events.filterIsInstance<Takeback>().map { it.plies }
+        if (takebacks.size != 1) failures += "$name: the takebacks $takebacks, not one"
+        val toldAt = synchronized(log) { log.indices.filter { log[it].first == "takeback" } }
+        if (toldAt.size != 1) failures += "$name: the analyser told of ${toldAt.size} takebacks"
+        val asked = engine.askedNow()
+        if (asked.isEmpty()) failures += "$name: nothing asked once the takeback was told"
+        if (withdrawn == null) {
+            failures += "$name: no ply ${heldPlies.last()} to withdraw"
+        } else if (withdrawn in asked) {
+            failures += "$name: the withdrawn position $withdrawn was searched after the takeback"
+        }
+        // Nothing withdrawn searched from the takeback on, to the end of the game.
+        if (toldAt.isNotEmpty()) {
+            val back = (log[toldAt[0]].second as Int)
+            val gone = oldLine.filterKeys { it > back }.values.toSet()
+            val after = synchronized(log) { log.drop(toldAt[0] + 1).filter { it.first == "search" }.map { it.second as String } }.toSet()
+            if ((gone intersect after).isNotEmpty()) failures += "$name: withdrawn positions searched after the takeback: ${gone intersect after}"
+        }
+        val notes = events.count { it is Unexplained }
+        Log.i(
+            "sidecoach.state",
+            "$name: takebacks $takebacks, $notes unexplained, ${game.size} plies agreed, " +
+                "${drained.size} drained, ${analyser.withdrawn} withdrawn, ${analyser.skipped} skipped, " +
+                "${synchronized(log) { log.count { it.first == "search" } }} searches",
+        )
+        return failures
+    }
+
+    /**
+     * The replacement played after the takeback, [replacement]: the search under way when the
+     * takeback came was interrupted and was of the line withdrawn; then the engine let go and
+     * waited for; between the takeback and the replacement's verdict, only its own positions
+     * searched (one or two) and nothing said.
+     */
+    private fun counted(
+        name: String,
+        engine: GatedEngine,
+        log: MutableList<Pair<String, Any>>,
+        watch: AnalyserWatch,
+        replacement: MovePlayed,
+        oldLine: Map<Int, String>,
+        drained: List<Event>,
+        drain: (Double) -> Unit,
+        ts: Double,
+    ): List<String> {
+        val failures = ArrayList<String>()
+        val first = engine.waitEnded(1)[0]
+        if (first.second != "interrupted" || first.first !in oldLine.values) {
+            failures += "$name: the search under way at the takeback $first was not let go, or not of the old line"
+        }
+        engine.release()
+        watch.idle()
+        drain(ts)
+        val entries = synchronized(log) { log.toList() }
+        val told = entries.indexOfFirst { it.first == "takeback" }
+        val verdict = entries.indices.firstOrNull { i ->
+            i > told && entries[i].first == "said" && (entries[i].second as? MoveAssessment)?.ply == replacement.ply
+        }
+        if (verdict == null) return failures + "$name: the replacement was never judged"
+        val judged = entries[verdict].second as MoveAssessment
+        if (judged.uci != replacement.uci) failures += "$name: the verdict at ply ${replacement.ply} is on ${judged.uci}, not ${replacement.uci}"
+        if (drained.none { it is MoveAssessment && it.ply == replacement.ply && it.uci == replacement.uci }) {
+            failures += "$name: the replacement's verdict never reached the coach"
+        }
+        val between = entries.subList(told + 1, verdict)
+        val searched = between.filter { it.first == "search" }.map { it.second as String }
+        val own = setOf(replacement.fenBefore.split(" ")[0], replacement.fenAfter.split(" ")[0])
+        if (searched.size !in 1..2 || !own.containsAll(searched)) {
+            failures += "$name: between the takeback and the replacement's verdict: $searched (its own: $own)"
+        }
+        // Nothing said before the verdict -- but, for the opponent's move, the early word on the
+        // position the player then faces, its own (`Analyser.serve`: "measured early first").
+        val words = between.filter { it.first == "said" }.map { it.second as Event }
+        val early = words.filter {
+            !replacement.byUser && it is Analysis && it.provisional && it.ply == replacement.ply &&
+                it.fen.split(" ").take(4) == replacement.fenAfter.split(" ").take(4)
+        }
+        if (words.size != early.size || early.size > 1) {
+            failures += "$name: a word before the verdict: " + words.map { e ->
+                when (e) {
+                    is Analysis -> "Analysis(ply ${e.ply}, ${e.fen}, provisional ${e.provisional})"
+                    is MoveAssessment -> "MoveAssessment(ply ${e.ply}, ${e.uci})"
+                    else -> e.toString()
+                }
+            }
+        }
+        return failures
+    }
+
+    private fun told(frames: org.json.JSONArray, f: Int): List<String> {
+        val events = frames.getJSONObject(f).optJSONArray("events") ?: return emptyList()
+        return (0 until events.length()).map { events.getString(it) }
+    }
+
+    /** Each ply's position (board part) along [board]'s moves. */
+    private fun fensOf(board: Board): Map<Int, String> {
+        val walked = Board()
+        val out = HashMap<Int, String>()
+        for ((i, m) in board.moveStack.withIndex()) {
+            walked.push(m)
+            out[i + 1] = walked.boardFen()
+        }
+        return out
     }
 
     /**
@@ -506,13 +688,20 @@ class TakebackTest {
      * and back while the frames before it show the same file.
      */
     private fun firstShown(frames: org.json.JSONArray, prefix: String): Int {
-        var at = (0 until frames.length()).firstOrNull { f ->
-            val told = frames.getJSONObject(f).optJSONArray("events") ?: return@firstOrNull false
-            (0 until told.length()).any { told.getString(it).startsWith(prefix) }
-        } ?: return -1
+        var at = (0 until frames.length()).firstOrNull { f -> told(frames, f).any { it.startsWith(prefix) } } ?: return -1
         val file = frames.getJSONObject(at).optString("file")
         while (at > 0 && frames.getJSONObject(at - 1).optString("file") == file) at -= 1
         return at
+    }
+
+    /**
+     * The files to let go after each frame: a file after the last frame that shows it (as
+     * PipelineTest's `lastUses`), so a scenario's decoded frames are not all held to its end.
+     */
+    private fun lastUses(frames: org.json.JSONArray): Map<Int, List<String>> {
+        val last = HashMap<String, Int>()
+        for (f in 0 until frames.length()) last[frames.getJSONObject(f).getString("file")] = f
+        return last.entries.groupBy({ it.value }, { it.key })
     }
 
     /**
@@ -570,12 +759,6 @@ class TakebackTest {
     }
 
     companion object {
-        /** A search through the game, as the desktop's `Chain` gives it (0.03 s). */
-        private const val FAST_MS = 30L
-
-        /** A search from the last two plies on, a phone's (`test_ten_plies_taken_back_quickly`'s 0.4 s). */
-        private const val SEARCH_MS = 400L
-
         @JvmStatic
         @BeforeClass
         fun loadOpenCv() {

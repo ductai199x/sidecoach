@@ -2,6 +2,7 @@ package com.sidecoach.analysis
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.sidecoach.Lane
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.events.Analysis
@@ -24,6 +25,7 @@ import java.io.File
  * Game submitted the way the watcher submits it -- a takeback in the middle -- is book to its
  * last move and named as the whole line names it, not as its first move does.
  */
+@Lane(Lane.Kind.FREE)
 @RunWith(AndroidJUnit4::class)
 class LiveBookTest {
 
@@ -49,6 +51,7 @@ class LiveBookTest {
         val book = OpeningBook.load(folder)
         assertNotNull(book)
         val analyser = Analyser(GameAnnotator(QuietEngine(), book = book))
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val assessing = Assessing(analyser)
 
@@ -74,17 +77,16 @@ class LiveBookTest {
 
         val labels = HashMap<Int, Label?>()
         val openings = HashMap<Int, String?>()
-        val deadline = System.currentTimeMillis() + 10_000
-        // Ply 7 comes twice, d4 then d3: waited for until d3's own name arrives.
-        while (System.currentTimeMillis() < deadline && openings[7] != "C50 Italian Game: Giuoco Pianissimo") {
-            for (event in assessing.drain()) {
-                when (event) {
-                    is MoveAssessment -> labels[event.ply] = event.label
-                    is Analysis -> openings[event.ply] = event.opening
-                    else -> Unit
-                }
+        // Ply 7 can come twice, d4 (measured before the takeback was told) then d3: everything is
+        // waited for (signalled by the worker, not polled), so what the glue passes on is all there
+        // is, d3's own word the last at ply 7.
+        watch.idle()
+        for (event in assessing.drain()) {
+            when (event) {
+                is MoveAssessment -> labels[event.ply] = event.label
+                is Analysis -> openings[event.ply] = event.opening
+                else -> Unit
             }
-            Thread.sleep(20)
         }
         analyser.close()
         assertEquals(labels.toString(), List(6) { Label.BOOK }, (1..6).map { labels[it] })

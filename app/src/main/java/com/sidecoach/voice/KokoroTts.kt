@@ -140,7 +140,16 @@ class KokoroTts(
     /** Milliseconds of synthesis a millisecond of speech takes now, as the last piece took. */
     @Volatile private var pace = PACE_GUESS
 
-    private var track: AudioTrack? = null
+    /**
+     * Where the samples go: the phone's audio output ([TrackOutput], an AudioTrack kept open
+     * and playing), made at the first line. A test hands in its own ([makeOutput]): one that
+     * plays a piece when the test lets it, so that what happens while a piece plays -- the next
+     * one made -- is seen, not timed.
+     */
+    private var output: Output? = null
+
+    /** How the output is made: the phone's own unless a test says otherwise. */
+    @Volatile internal var makeOutput: () -> Output = { TrackOutput.open() }
 
     /** Synthesis holds it shared; [close] alone, so the model is never freed under a line. */
     private val using = java.util.concurrent.locks.ReentrantReadWriteLock()
@@ -160,7 +169,7 @@ class KokoroTts(
 
     /** The output the voice plays through, by name: where Android routes the track now. */
     fun speakerName(): String {
-        val routed = track?.routedDevice
+        val routed = (output as? TrackOutput)?.track?.routedDevice
         if (routed != null) return routed.productName?.toString()?.ifEmpty { null } ?: "the phone's output"
         return "the phone's media output (follows a headset or a speaker)"
     }
@@ -251,13 +260,7 @@ class KokoroTts(
         if (owner == null) queue.clear() else queue.removeIf { it.stamp.owner == owner }
         if (!cutNow) return
         while (true) chunks.poll()?.done?.countDown() ?: break
-        runCatching {
-            track?.let {
-                it.pause()
-                it.flush()
-                it.play()
-            }
-        }
+        runCatching { output?.cut() }
     }
 
     /**
@@ -276,9 +279,9 @@ class KokoroTts(
         val alone = using.writeLock()
         alone.lock()
         try {
-            val t = track
-            track = null
-            runCatching { t?.release() }
+            val out = output
+            output = null
+            runCatching { out?.release() }
             synchronized(loadLock) {
                 runCatching { kokoro?.close() }
                 kokoro = null
@@ -437,7 +440,7 @@ class KokoroTts(
                 // The track opened before the cancel check, and the piece written in slices, each
                 // checked: a stop landing while the track opened, or during a piece, was ignored
                 // and the line played over a mute or a barge-in (voice finding 13).
-                val out = openTrack()
+                val out = openOutput()
                 if (staleNow(chunk.mine)) continue
                 if (line != null) {
                     underruns = out.underrunCount
@@ -447,11 +450,11 @@ class KokoroTts(
                 }
                 writePiece(
                     chunk.samples,
-                    output = { sink(out) },
-                    reopen = { sink(reopenTrack(out)) },
+                    output = { PcmSink(out::write) },
+                    reopen = { PcmSink(reopenOutput(out)::write) },
                     stopped = { staleNow(chunk.mine) },
                 )
-                if (chunk.done != null) Log.i(TAG, "line: played with ${(track ?: out).underrunCount - underruns} gaps")
+                if (chunk.done != null) Log.i(TAG, "line: played with ${(output ?: out).underrunCount - underruns} gaps")
             } catch (_: InterruptedException) {
                 return
             } catch (exc: Exception) { // audio errors are not fatal
@@ -462,10 +465,8 @@ class KokoroTts(
         }
     }
 
-    private fun sink(track: AudioTrack) = PcmSink { samples, at, n -> track.write(samples, at, n, AudioTrack.WRITE_BLOCKING) }
-
     /**
-     * The track [dead] dropped and a new one opened, on wherever Android routes the voice now.
+     * The output [dead] dropped and a new one opened, on wherever Android routes the voice now.
      * Android moves a playing track to a new output itself (headphones plugged in, a Bluetooth
      * headset connected: the track asks for no device, so it follows the system's routing); a
      * track it could not move, or one the audio server lost, answered every write with an error
@@ -473,45 +474,80 @@ class KokoroTts(
      * without a restart).
      */
     @Synchronized
-    private fun reopenTrack(dead: AudioTrack): AudioTrack {
-        if (track === dead) {
-            track = null
+    private fun reopenOutput(dead: Output): Output {
+        if (output === dead) {
+            output = null
             runCatching { dead.release() }
             VoiceLog.warn("the voice's output track died; opened afresh on the current output")
         }
-        return openTrack()
+        return openOutput()
     }
 
-    /** The open output track, opened at the first line and kept playing. */
+    /** The open output, opened at the first line and kept playing. */
     @Synchronized
-    private fun openTrack(): AudioTrack {
-        track?.let { return it }
-        val minimum = AudioTrack.getMinBufferSize(
-            Kokoro.SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_FLOAT,
-        )
-        val made = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(Kokoro.SAMPLE_RATE)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                    .build(),
-            )
-            .setBufferSizeInBytes(maxOf(minimum, Kokoro.SAMPLE_RATE / 5 * 4))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
-            .build()
-        made.play()
-        track = made
-        return made
+    private fun openOutput(): Output {
+        output?.let { return it }
+        return makeOutput().also { output = it }
+    }
+
+    /** Where a line's samples are written, a slice at a time ([play]). */
+    internal interface Output {
+        /** The gaps the output has played so far (each a moment it had nothing to play). */
+        val underrunCount: Int
+
+        /** [n] samples from [at], returned once they are taken: how many were. */
+        fun write(samples: FloatArray, at: Int, n: Int): Int
+
+        /** Whatever is queued to play, silenced now; the output stays open. */
+        fun cut()
+
+        fun release()
+    }
+
+    /** The phone's audio output: an AudioTrack, opened once and kept playing. */
+    internal class TrackOutput(val track: AudioTrack) : Output {
+        override val underrunCount: Int get() = track.underrunCount
+
+        override fun write(samples: FloatArray, at: Int, n: Int): Int =
+            track.write(samples, at, n, AudioTrack.WRITE_BLOCKING)
+
+        override fun cut() {
+            track.pause()
+            track.flush()
+            track.play()
+        }
+
+        override fun release() = track.release()
+
+        companion object {
+            fun open(): TrackOutput {
+                val minimum = AudioTrack.getMinBufferSize(
+                    Kokoro.SAMPLE_RATE,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_FLOAT,
+                )
+                val made = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build(),
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(Kokoro.SAMPLE_RATE)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .build(),
+                    )
+                    .setBufferSizeInBytes(maxOf(minimum, Kokoro.SAMPLE_RATE / 5 * 4))
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
+                    .build()
+                made.play()
+                return TrackOutput(made)
+            }
+        }
     }
 
     companion object {
