@@ -7,9 +7,11 @@ import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.squareName
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -90,5 +92,24 @@ class ExchangeTest {
         fun strings(a: JSONArray): List<String> = (0 until a.length()).map { a.getString(it) }
 
         fun ints(a: JSONArray): List<Int> = (0 until a.length()).map { a.getInt(it) }
+    }
+
+    /** `test_a_side_in_check_answers_it_before_its_pieces_can_be_taken` (the facts audit, 2026-10-01). */
+    @Test
+    fun aSideInCheckAnswersItBeforeItsPiecesCanBeTaken() {
+        // White is in check from the d1 rook: a null move left Rf1xf7 illegal, and the defended
+        // rook on f7 read as hanging. After Kc2 or Ka2 it is defended.
+        var board = Board("8/pk1r1Rp1/1p2p2p/4P1bP/4N3/8/PP6/1K1r1R2 w - - 5 34")
+        assertFalse(Exchange.hanging(board, parseSquare("f7")))
+        assertFalse(Exchange.canBeWon(board, parseSquare("f7")))
+        // Bxh7+: Black answers the check, and the queen on a5 still guards the bishop on g5
+        // (hxg5 still wins it for a pawn: it can be won, but it is not hanging).
+        board = Board("r1b2rk1/3n1ppB/p2pp3/q5b1/2PQ3P/2N5/PP4PR/3K2N1 b - - 0 17")
+        assertFalse(Exchange.hanging(board, parseSquare("g5")))
+        assertTrue(Exchange.canBeWon(board, parseSquare("g5")))
+        // A knight check that forks the king and an unguarded rook: it hangs after every answer.
+        board = Board("r3k3/2N5/8/8/8/8/8/4K3 b - - 0 1")
+        assertTrue(Exchange.hanging(board, parseSquare("a8")))
+        assertTrue(Exchange.canBeWon(board, parseSquare("a8")))
     }
 }
