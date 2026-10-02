@@ -24,8 +24,8 @@ from tests.fakes import HANG_S
 def _own_frames(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test here its own empty frame caches: what the process's other tests drew is
     not this test's hit (a cold run failed on a frame another test had kept, 2026-10-02)."""
-    monkeypatch.setattr(synth, "_BOARDS", synth.Kept(16))
-    monkeypatch.setattr(synth, "_BACKGROUNDS", synth.Kept(8))
+    monkeypatch.setattr(synth, "_BOARDS", synth.Kept(192 * synth.MB))
+    monkeypatch.setattr(synth, "_BACKGROUNDS", synth.Kept(64 * synth.MB))
     # The cache's own tests read and write in its default mode, whatever mode the run was
     # started in: with SIDECOACH_TEST_CACHE=rebuild set for the whole run, four of them
     # counted every row as run again and failed (2026-10-02). A test that wants a mode sets it.
@@ -91,6 +91,65 @@ def test_whatever_changes_the_pixels_is_a_new_frame() -> None:
         assert synth._BOARDS.misses == misses + 1, (one, other)
         assert not np.array_equal(a, b), (one, other)
         assert np.array_equal(b, _fresh(**other)), other
+
+
+def _geometry_frames() -> list[dict[str, Any]]:
+    """Frames as the geometry sweep draws them: 1920x1200, boards of several sizes at odd
+    places, partly off the screen, a dragged piece reaching past the board, labels."""
+    moved = chess.Board()
+    moved.push_san("e4")
+    return [
+        {"width": 1920, "height": 1200, "x0": 37, "y0": 411, "cell": 71, "seed": 3},
+        {"width": 1920, "height": 1200, "x0": 1500, "y0": 900, "cell": 90, "board": moved},
+        {"width": 1920, "height": 1200, "x0": -60, "y0": -30, "cell": 48, "coordinates": True},
+        {
+            "width": 1920,
+            "height": 1200,
+            "x0": 600,
+            "y0": 300,
+            "cell": 64,
+            "dragging": (chess.E2, chess.E4, 0.4, -0.9),
+            "theme": "wood",
+            "style": "cburnett",
+        },
+    ]
+
+
+def test_a_frame_kept_as_its_board_is_the_frame_drawn_afresh_and_a_fraction_of_it() -> None:
+    """A board frame is kept as the rectangle where it differs from its background: put back
+    together it is the frame, pixel for pixel (its SHA-256 the fresh one's), and it costs a
+    fraction of the frame's memory."""
+    import hashlib
+
+    for kw in _geometry_frames():
+        first = synth.synthetic_board(**kw)
+        again = synth.synthetic_board(**kw)
+        fresh = _fresh(**kw)
+        digest = hashlib.sha256(fresh.tobytes()).hexdigest()
+        assert hashlib.sha256(first.tobytes()).hexdigest() == digest, kw
+        assert hashlib.sha256(again.tobytes()).hexdigest() == digest, kw
+        assert again.flags.writeable and again.shape == (1200, 1920, 3)
+    assert synth._BOARDS.hits == len(_geometry_frames())
+    whole = 1920 * 1200 * 3
+    assert synth._BOARDS.bytes < 0.25 * whole * len(_geometry_frames()), synth._BOARDS.bytes
+
+
+def test_the_frames_kept_stay_within_their_budget() -> None:
+    """The oldest frames go first so that what is kept stays under the budget, however many
+    frames are drawn; a frame asked for after it went is drawn again, the same pixels."""
+    synth._BOARDS = synth.Kept(3 * synth.MB)  # the fixture puts the suite's back
+    kws: list[dict[str, Any]] = [
+        {"width": 1920, "height": 1200, "x0": 100 + 37 * i, "y0": 200, "cell": 80, "seed": 1}
+        for i in range(12)
+    ]
+    first = [synth.synthetic_board(**kw) for kw in kws]
+    assert 0 < synth._BOARDS.bytes <= 3 * synth.MB
+    assert len(synth._BOARDS.frames) < len(kws), "some went"
+    misses = synth._BOARDS.misses
+    assert np.array_equal(synth.synthetic_board(**kws[0]), first[0])
+    assert synth._BOARDS.misses == misses + 1, "the oldest went, and is drawn again"
+    assert np.array_equal(synth.synthetic_board(**kws[0]), first[0])
+    assert synth._BOARDS.hits >= 1
 
 
 def test_with_the_cache_off_every_frame_is_drawn(monkeypatch: pytest.MonkeyPatch) -> None:

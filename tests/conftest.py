@@ -242,6 +242,19 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
     return max(1, int((os.cpu_count() or 1) * CPU_SHARE / WORKER_COST))
 
 
+@pytest.hookimpl(tryfirst=True)  # before xdist's own, which reads the marks on the worker
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """A seeded sweep's cases of one seed go to one worker (an `xdist_group`): they draw the
+    seed's game, the same frames, and the second reads the first one's from the frames kept
+    (tests/synth.py `Kept`) -- the board geometry's every-frame and gated runs of a seed,
+    1920x1200 frames each. A test already grouped keeps its group."""
+    for item in items:
+        spec = getattr(item, "callspec", None)
+        if spec is None or "seed" not in spec.params or item.get_closest_marker("xdist_group"):
+            continue
+        item.add_marker(pytest.mark.xdist_group(f"{item.path.stem}-seed-{spec.params['seed']}"))
+
+
 def pytest_xdist_make_scheduler(config: pytest.Config, log: Any) -> Any:
     """`--dist loadgroup` (pyproject), dealt longest first (tests/scheduling.py)."""
     if config.getvalue("dist") != "loadgroup":

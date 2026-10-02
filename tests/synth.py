@@ -20,6 +20,7 @@ import os
 from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import chess
 import cv2
@@ -875,7 +876,7 @@ def blend_outline(
 
 
 class Kept:
-    """The last `size` frames a renderer drew, by the arguments that drew them: the
+    """The frames a renderer drew last, up to `max_bytes`, by the arguments that drew them: the
     renderers here are pure (every random number comes from the `seed` argument), so the
     same arguments are the same pixels, and a frame asked for again is copied, not drawn
     again. Measured 2026-10-02: 57% of the suite's 4,840 boards and 98% of its 5,034
@@ -886,30 +887,66 @@ class Kept:
 
     enabled = os.environ.get("SIDECOACH_TEST_CACHE", "1") != "0"
 
-    def __init__(self, size: int) -> None:
-        self.size = size
-        self.frames: OrderedDict[Hashable, np.ndarray] = OrderedDict()
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self.bytes = 0
+        # A frame kept whole, or as its difference from a background: (top, left, crop).
+        self.frames: OrderedDict[Hashable, tuple[Any, ...]] = OrderedDict()
         self.hits = self.misses = 0
 
-    def get(self, key: Hashable | None, draw: Callable[[], np.ndarray]) -> np.ndarray:
+    def get(
+        self,
+        key: Hashable | None,
+        draw: Callable[[], np.ndarray],
+        base: Callable[[], np.ndarray] | None = None,
+    ) -> np.ndarray:
+        """The frame for `key`, drawn by `draw` the first time. With `base` (the background
+        the frame was drawn on, itself kept), only the rectangle where the frame differs
+        from it is kept, and the frame is put back together from the two -- the same pixels
+        exactly (everything outside the rectangle IS the background) in a fraction of the
+        memory: a 1920x1200 geometry frame is 6.9 MB whole, its board a few hundred kB."""
         if key is None or not Kept.enabled:
             return draw()
         kept = self.frames.get(key)
-        if kept is None:
-            self.misses += 1
-            kept = draw()
-            kept.flags.writeable = False
-            self.frames[key] = kept
-            while len(self.frames) > self.size:
-                self.frames.popitem(last=False)
-        else:
+        if kept is not None:
             self.hits += 1
             self.frames.move_to_end(key)
-        return kept.copy()
+            if len(kept) == 1:
+                return kept[0].copy()
+            top, left, crop = kept
+            assert base is not None
+            frame = base()
+            frame[top : top + crop.shape[0], left : left + crop.shape[1]] = crop
+            return frame
+        self.misses += 1
+        frame = draw()
+        if base is None:
+            stored: tuple[Any, ...] = (frame.copy(),)
+        else:
+            # Where the frame differs from its background, in any channel: the bounding box
+            # of the non-zero pixels of the largest channel difference (OpenCV, in C).
+            diff = cv2.absdiff(frame, base())
+            left, top, w, h = cv2.boundingRect(
+                cv2.max(cv2.max(diff[..., 0], diff[..., 1]), diff[..., 2])
+            )
+            stored = (top, left, frame[top : top + h, left : left + w].copy())
+        for part in stored:
+            if isinstance(part, np.ndarray):
+                part.flags.writeable = False
+                self.bytes += part.nbytes
+        self.frames[key] = stored
+        while self.bytes > self.max_bytes and len(self.frames) > 1:
+            _, old = self.frames.popitem(last=False)
+            self.bytes -= sum(p.nbytes for p in old if isinstance(p, np.ndarray))
+        return frame
 
 
-_BACKGROUNDS = Kept(8)
-_BOARDS = Kept(16)
+# A test process keeps at most 256 MB of frames (Tai, 2026-10-02: "max 256 MB x 8"): the
+# backgrounds whole (a 1920x1200 one is 6.9 MB, and a test draws on a few), the boards as their
+# difference from them.
+MB = 1 << 20
+_BACKGROUNDS = Kept(64 * MB)
+_BOARDS = Kept(192 * MB)
 
 
 def busy_background(width: int, height: int, seed: int) -> np.ndarray:
@@ -1009,7 +1046,7 @@ def synthetic_board(
         hash(key)
     except TypeError:  # a list where a tuple was meant: drawn, not kept
         key = None
-    return _BOARDS.get(key, draw)
+    return _BOARDS.get(key, draw, base=lambda: busy_background(width, height, seed))
 
 
 def with_overlays(frame: np.ndarray, x0: int, y0: int, cell: int) -> np.ndarray:
