@@ -12,6 +12,12 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.io.FilterInputStream
+import java.io.FilterOutputStream
+import java.io.InputStream
+import java.io.OutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Stockfish, built for the phone and driven over UCI.
@@ -29,11 +35,128 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class EngineTest {
 
-    /** The engine, and every process it started, so a test can end one behind its back. */
+    /**
+     * The engine, and every process it started, so a test can end one behind its back; every
+     * command written to the process and every line read from it noted in [log], in order with
+     * the test's own marks ([mark]); and, while [manual] is set, the clock a search's time is
+     * kept on ([Engine.now]) is the test's, every reading of it by the engine's time keeper
+     * counted ([readings], [untilRead]).
+     */
     private class Watched(binary: File, net: File) : Engine(binary, net, threads = 2, hashMb = 64, multipv = 3) {
         val started = ArrayList<Process>()
+        val log: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
+        @Volatile var manual: Long? = null
+        private val read = Object()
+        var readings = 0 // under [read]
+            private set
 
-        override fun launch(): Process = super.launch().also { started.add(it) }
+        override fun launch(): Process = Spied(super.launch(), log).also { started.add(it) }
+
+        override fun now(): Long {
+            val time = manual ?: return super.now()
+            if (Thread.currentThread().name == "engine-clock") {
+                synchronized(read) {
+                    readings += 1
+                    read.notifyAll()
+                }
+            }
+            return time
+        }
+
+        fun mark(what: String) = log.add("! $what")
+
+        /** Until the time keeper has read the clock more than [count] times. */
+        fun untilRead(count: Int) = synchronized(read) {
+            val deadline = System.nanoTime() + HANG_MS * 1_000_000
+            while (readings <= count) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                assertTrue("the engine's time keeper never read the clock", left > 0)
+                read.wait(left)
+            }
+        }
+
+        /** The process's state letter from /proc (`T`: stopped by a signal). */
+        fun state(): Char {
+            val stat = File("/proc/${pidOf(started.last())}/stat").readText()
+            return stat[stat.lastIndexOf(')') + 2]
+        }
+
+        /**
+         * Until the process stands still ([pause] sends SIGSTOP, which the kernel carries out as
+         * the process is next scheduled): the process's own state, read until it says so, no
+         * clock -- [HANG_MS] bounds a hang.
+         */
+        fun untilStopped() {
+            val deadline = System.nanoTime() + HANG_MS * 1_000_000
+            while (state() != 'T') {
+                assertTrue("the paused engine never stood still: ${state()}", System.nanoTime() < deadline)
+                Thread.yield()
+            }
+        }
+
+        fun indexOf(entry: String): Int = synchronized(log) { log.indexOfFirst { it == entry || it.startsWith("$entry ") } }
+
+        fun count(entry: String): Int = synchronized(log) { log.count { it == entry || it.startsWith("$entry ") } }
+    }
+
+    /**
+     * The engine's process, every command written to it (`> stop`) and every line read from it
+     * (`< bestmove e2e4`) noted in [log] as it passes. Its `pid` is the real one's: the engine
+     * reads a process's `pid` to pause it.
+     */
+    private class Spied(private val real: Process, private val log: MutableList<String>) : Process() {
+        @JvmField val pid: Int = pidOf(real)
+
+        private val input = object : FilterInputStream(real.inputStream) {
+            private val line = StringBuilder()
+
+            private fun seen(bytes: ByteArray, off: Int, len: Int) {
+                for (i in off until off + len) {
+                    val c = bytes[i].toInt().toChar()
+                    if (c == '\n') {
+                        log.add("< $line")
+                        line.setLength(0)
+                    } else if (c != '\r') {
+                        line.append(c)
+                    }
+                }
+            }
+
+            override fun read(): Int = super.read().also { if (it >= 0) seen(byteArrayOf(it.toByte()), 0, 1) }
+
+            override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) seen(b, off, it) }
+        }
+
+        private val output = object : FilterOutputStream(real.outputStream) {
+            private val line = StringBuilder()
+
+            override fun write(b: Int) {
+                out.write(b)
+                val c = b.toChar()
+                if (c == '\n') {
+                    log.add("> $line")
+                    line.setLength(0)
+                } else {
+                    line.append(c)
+                }
+            }
+
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                for (i in off until off + len) write(b[i].toInt() and 0xff)
+            }
+        }
+
+        override fun getOutputStream(): OutputStream = output
+
+        override fun getInputStream(): InputStream = input
+
+        override fun getErrorStream(): InputStream = real.errorStream
+
+        override fun waitFor(): Int = real.waitFor()
+
+        override fun exitValue(): Int = real.exitValue()
+
+        override fun destroy() = real.destroy()
     }
 
     private fun engine(): Watched? = Companion.engine()
@@ -109,7 +232,12 @@ class EngineTest {
         }
     }
 
-    /** `test_no_single_position_may_hold_up_a_game`: a search that would take minutes is cut at the cap. */
+    /**
+     * `test_no_single_position_may_hold_up_a_game`: a search that would take minutes is cut at
+     * the cap. Counted, not timed (it was: under five seconds by the stopwatch): on a clock the
+     * test moves, no `stop` goes to the engine before the cap has run, and one does when it has,
+     * which ends the search short of the depth asked for.
+     */
     @Test
     fun noSinglePositionMayHoldUpAGame() {
         val engine = shared()
@@ -119,14 +247,35 @@ class EngineTest {
             val slow = Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
             val cap = sf.maxSeconds
             sf.maxSeconds = 0.5
+            sf.manual = 1_000_000L
+            val stops = sf.count("> stop")
             try {
-                val began = System.currentTimeMillis()
-                val lines = sf.analyse(slow, depth = 40, multipv = 4)
-                val took = System.currentTimeMillis() - began
+                var lines: List<com.sidecoach.events.Line> = emptyList()
+                val searching = CountDownLatch(1)
+                val search = kotlin.concurrent.thread {
+                    lines = sf.analyse(slow, depth = 40, multipv = 4, onDepth = { searching.countDown() })
+                }
+                assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
+                // The time keeper has read the clock and let go of it (the pause waits for it):
+                // the cap has not run, and nothing was stopped.
+                val reads = sf.readings
+                sf.pause()
+                sf.resume()
+                sf.untilRead(reads)
+                sf.pause()
+                sf.resume()
+                assertEquals("stopped before the cap had run", stops, sf.count("> stop"))
+                sf.manual = sf.manual!! + 500
+                sf.mark("the cap run")
+                sf.pause()
+                sf.resume() // wakes the time keeper
+                search.join(HANG_MS)
+                assertTrue("the cap did not hold", !search.isAlive)
+                assertEquals("one stop, the cap's", stops + 1, sf.count("> stop"))
                 assertTrue("no lines", lines.isNotEmpty())
-                assertTrue("the cap did not hold: $took ms", took < 5000)
                 assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
             } finally {
+                sf.manual = null
                 sf.maxSeconds = cap
             }
         }
@@ -180,40 +329,64 @@ class EngineTest {
         assertEquals("", sanLine(board, listOf("nonsense")))
     }
 
+    /**
+     * A search of a second, paused an hour: the process stands still the whole time, and the
+     * pause does not count against the search's second. Counted, not timed (it was: a second's
+     * pause, the CPU read before and after it, and the search at least two seconds long): the
+     * search's time is kept on a clock the test moves, and what the engine is told is read from
+     * the pipe in order -- no `stop` until the clock has run the search's whole second outside
+     * the pause.
+     */
     @Test
     fun aPausedEngineHoldsStillAndStillSearchesItsTime() {
         val engine = engine()
         assumeTrue("the engine or its network is missing", engine != null)
         engine!!.use { sf ->
             sf.open()
+            sf.manual = 1_000_000L
             val board = Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
             var lines: List<com.sidecoach.events.Line> = emptyList()
-            val began = System.currentTimeMillis()
-            val search = kotlin.concurrent.thread { lines = sf.analyse(board, timeS = 1.0) }
-            Thread.sleep(300)
+            val searching = CountDownLatch(1)
+            val search = kotlin.concurrent.thread { lines = sf.analyse(board, timeS = 1.0, onDepth = { searching.countDown() }) }
+            assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
             sf.pause()
-            Thread.sleep(100)
+            sf.untilStopped()
             val held = sf.cpuMs()
-            Thread.sleep(1000)
+            sf.manual = sf.manual!! + 3_600_000 // an hour paused
             val stillHeld = sf.cpuMs()
+            assertEquals("the engine ran while paused", 'T', sf.state())
+            // Resumed: once the time keeper has read the clock again and let go of it (the pause
+            // and resume after wait for it), it has decided -- and no `stop` was sent.
+            val reads = sf.readings
             sf.resume()
-            search.join()
-            val took = System.currentTimeMillis() - began
-            val after = sf.cpuMs()
-            Log.i(TAG, "paused search: $took ms, engine cpu $held -> $stillHeld -> $after ms, depth ${lines.firstOrNull()?.depth}")
-            assertTrue("the engine ran while paused: $held -> $stillHeld ms", stillHeld - held <= 20)
-            // A second of search, less the pause: the pause does not count against it.
-            assertTrue("the pause cut the search short: $took ms", took >= 2000)
+            sf.untilRead(reads)
+            sf.pause()
+            sf.resume()
+            assertEquals("the pause was counted against the search", -1, sf.indexOf("> stop"))
+            assertTrue("the search ended early", search.isAlive)
+            // The search's second run out: now it is stopped.
+            sf.manual = sf.manual!! + 1000
+            sf.mark("the second run")
+            sf.pause()
+            sf.resume() // wakes the time keeper
+            search.join(HANG_MS)
+            assertTrue("the search never ended", !search.isAlive)
+            Log.i(TAG, "paused search: engine cpu $held -> $stillHeld ms, depth ${lines.firstOrNull()?.depth}")
+            assertEquals("the engine ran while paused: $held -> $stillHeld ms", held, stillHeld)
+            assertEquals("one stop", 1, sf.count("> stop"))
+            assertTrue("stopped before its second had run", sf.indexOf("> stop") > sf.indexOf("! the second run"))
             assertTrue("no lines", lines.isNotEmpty())
-            // The same process ran on, its hash with it: a restarted engine's time starts at 0.
-            assertTrue("the engine was restarted: $stillHeld -> $after ms", after > stillHeld)
+            // The same process ran on, its hash with it.
+            assertEquals("the engine was restarted", 1, sf.started.size)
         }
     }
 
     /**
      * `test_the_engine_stops_a_search_it_is_interrupted_in` (desktop 9c0774d): a search inside
-     * `interruptible` ends within the second of `interrupt`, from another thread, with
-     * [Interrupted]; the engine answers as before afterwards.
+     * `interruptible` ends on `interrupt`, from another thread, with [Interrupted]; the engine
+     * answers as before afterwards. A search to depth 60 from the start does not end by itself:
+     * it ends because `stop` went to the engine and its `bestmove` came back (read from the pipe
+     * in order; it was timed: within the second).
      */
     @Test
     fun theEngineStopsASearchItIsInterruptedIn() {
@@ -221,22 +394,17 @@ class EngineTest {
         assumeTrue("the engine or its network is missing", engine != null)
         engine!!.use { sf ->
             sf.open()  // as the desktop's fixture holds it: running, its network loaded
-            val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
-            val worker = kotlin.concurrent.thread {
-                try {
-                    sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1) }
-                } catch (exc: Throwable) {
-                    raised.add(exc)
-                }
-            }
-            Thread.sleep(300)
-            val t = android.os.SystemClock.elapsedRealtime()
+            val (worker, raised) = searchToDepth60(sf)
+            sf.mark("interrupt")
             sf.interrupt()
-            worker.join(5000)
-            val took = android.os.SystemClock.elapsedRealtime() - t
-            Log.i(TAG, "interrupted: the search ended $took ms after the interrupt")
-            assertTrue("the search ran on: $took ms", !worker.isAlive && took < 1000)
+            worker.join(HANG_MS)
+            assertTrue("the search ran on", !worker.isAlive)
             assertTrue("$raised", raised.isNotEmpty() && raised[0] is Interrupted)
+            val stop = sf.indexOf("> stop")
+            val answer = sf.indexOf("< bestmove")
+            Log.i(TAG, "interrupted: stop at ${sf.indexOf("! interrupt")} -> $stop, bestmove at $answer, ended at ${sf.indexOf("! ended")}")
+            assertTrue("no stop after the interrupt", stop > sf.indexOf("! interrupt"))
+            assertTrue("the search ended before the engine answered the stop", answer in (stop + 1) until sf.indexOf("! ended"))
             // The engine answers as before afterwards.
             assertTrue(sf.analyse(Board(), depth = 6, multipv = 1).isNotEmpty())
         }
@@ -244,8 +412,10 @@ class EngineTest {
 
     /**
      * The phone's own: the voice holds the engine still ([Engine.pause]) while a move comes and
-     * interrupts the look ahead. The interrupt returns at once -- the capture thread never
-     * waits on a stopped process -- and the search ends the moment the engine runs on.
+     * interrupts the look ahead. The interrupt returns while the engine still stands still --
+     * the capture thread never waits on a stopped process -- and the search ends once the engine
+     * runs on and answers the `stop` (read from the pipe in order; it was timed: the interrupt
+     * under 100 ms, the search alive 300 ms later, ended within the second of the resume).
      */
     @Test
     fun anInterruptWhilePausedEndsTheSearchOnceResumed() {
@@ -253,31 +423,49 @@ class EngineTest {
         assumeTrue("the engine or its network is missing", engine != null)
         engine!!.use { sf ->
             sf.open()
-            val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
-            val worker = kotlin.concurrent.thread {
-                try {
-                    sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1) }
-                } catch (exc: Throwable) {
-                    raised.add(exc)
-                }
-            }
-            Thread.sleep(300)
+            val (worker, raised) = searchToDepth60(sf)
             sf.pause()
-            val t = android.os.SystemClock.elapsedRealtime()
-            sf.interrupt()
-            val waited = android.os.SystemClock.elapsedRealtime() - t
-            assertTrue("the interrupt waited on the paused engine: $waited ms", waited < 100)
-            Thread.sleep(300)
+            sf.untilStopped()
+            // From another thread, as the capture thread's: it returns while the engine stands still.
+            val interrupter = kotlin.concurrent.thread { sf.interrupt() }
+            interrupter.join(HANG_MS)
+            assertTrue("the interrupt waited on the paused engine", !interrupter.isAlive)
+            assertEquals("the engine ran before the interrupt returned", 'T', sf.state())
+            assertTrue("no stop went to the engine", sf.indexOf("> stop") >= 0)
             assertTrue("the search ended while the engine was held", worker.isAlive)
-            val resumed = android.os.SystemClock.elapsedRealtime()
+            sf.mark("resume")
             sf.resume()
-            worker.join(5000)
-            val took = android.os.SystemClock.elapsedRealtime() - resumed
-            Log.i(TAG, "interrupted while paused: the search ended $took ms after the resume")
-            assertTrue("the search ran on after the resume: $took ms", !worker.isAlive && took < 1000)
+            worker.join(HANG_MS)
+            assertTrue("the search ran on after the resume", !worker.isAlive)
             assertTrue("$raised", raised.isNotEmpty() && raised[0] is Interrupted)
+            val answer = sf.indexOf("< bestmove")
+            Log.i(TAG, "interrupted while paused: resumed at ${sf.indexOf("! resume")}, bestmove at $answer, ended at ${sf.indexOf("! ended")}")
+            // The engine answered the stop only once it ran on, and the search ended on that answer.
+            assertTrue("answered while held", answer > sf.indexOf("! resume"))
+            assertTrue("the search ended before the engine answered", answer < sf.indexOf("! ended"))
             assertTrue(sf.analyse(Board(), depth = 6, multipv = 1).isNotEmpty())
         }
+    }
+
+    /**
+     * A search to depth 60 from the start, inside `interruptible`, on its own thread: it never
+     * ends by itself. Returned once its first depth is in (it is under way, not slept on); its
+     * end marked in the engine's log (`! ended`), and what it raised.
+     */
+    private fun searchToDepth60(sf: Watched): Pair<Thread, List<Throwable>> {
+        val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+        val searching = CountDownLatch(1)
+        val worker = kotlin.concurrent.thread {
+            try {
+                sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1, onDepth = { searching.countDown() }) }
+            } catch (exc: Throwable) {
+                raised.add(exc)
+            } finally {
+                sf.mark("ended")
+            }
+        }
+        assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
+        return worker to raised
     }
 
     @Test
@@ -381,6 +569,20 @@ class EngineTest {
         fun closeShared() {
             kept?.close()
             kept = null
+        }
+
+        /** A process's id, read as the engine reads it (`Engine.processId`). */
+        private fun pidOf(process: Process): Int {
+            var type: Class<*>? = process.javaClass
+            while (type != null) {
+                runCatching {
+                    val field = type.getDeclaredField("pid")
+                    field.isAccessible = true
+                    return field.getInt(process)
+                }
+                type = type.superclass
+            }
+            throw AssertionError("no pid in $process")
         }
 
         /** Black to move at queen odds: winning, with no mate in sight to hide the numbers. */
