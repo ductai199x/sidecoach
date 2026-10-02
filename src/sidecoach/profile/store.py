@@ -259,6 +259,25 @@ _RANK = (
 # The watched games Stats leaves out: those whose import's facts are kept (the import counts).
 _STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
+# Raised by every review saved or summed up again, by any store of this process (a review
+# window's, the background review's): what was read of the reviews is stale once it moves
+# (`reviews_revision`).
+_reviews_saved = 0
+_reviews_lock = threading.Lock()
+
+
+def reviews_revision() -> int:
+    """A count raised with every review saved, or summed up again, in this process: the panel
+    reads the reviews again once it moves (the end-of-game card's accuracy, ui/panel.py)."""
+    return _reviews_saved
+
+
+def reviews_touched() -> None:
+    """A review was saved or summed up again: `reviews_revision` moves."""
+    global _reviews_saved
+    with _reviews_lock:
+        _reviews_saved += 1
+
 
 class QueryRefused(ValueError):
     """A query that is not a single read-only statement, or that ran too long."""
@@ -1305,6 +1324,8 @@ class Store:
                 (key, strength, version, reviewed_at, report, summary, key, value),
             )
             self._db.commit()
+        if cursor.rowcount > 0:
+            reviews_touched()
         return cursor.rowcount > 0
 
     def review(self, key: str, strength: str) -> ReviewRow | None:
@@ -1336,6 +1357,7 @@ class Store:
                 (summary, key, strength),
             )
             self._db.commit()
+        reviews_touched()
 
     def stat_strengths(self) -> dict[str, str]:
         """The strength of the review each game's Stats facts come from, by its key."""

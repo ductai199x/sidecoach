@@ -827,6 +827,55 @@ def test_the_words_paid_on_a_watched_game_show_in_its_imports_review(
     store.close()
 
 
+def test_the_end_of_game_card_says_the_reviews_accuracy_once_it_is_done(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For Tai #11 (decided 2026-10-02): the card said 78.0 and Game Review 78.3 -- the live
+    verdicts and the review's own analysis. The card says the live accuracy while the game's
+    review is not done, then Game Review's, as the server's poll carries it: read again when a
+    review is saved (by any store: the review window's, the background review's), and not asked
+    of the store between changes."""
+    from types import SimpleNamespace
+
+    from sidecoach.events import GameReview, Side
+    from sidecoach.profile.store import Store
+
+    engine = make_panel()
+    path = engine.settings.data_dir / "profile.sqlite"
+    store = Store(path)
+    watched = _watch(store, "g1", SANS, 1_790_000_000.0)
+
+    class Ends:
+        """The profiler as the game ends: its review, live."""
+
+        def __init__(self) -> None:
+            self.store = store
+
+        def on_event(self, _event: Any, _now: float) -> list[Any]:
+            return [GameReview(game_id="g1", user_side=Side.BLACK, result="0-1", accuracy=78.0)]
+
+    engine._profile(Ends(), [SimpleNamespace()])
+    card = next(line for line in engine.poll()["lines"] if (line.get("data") or {}).get("review"))
+    assert card["data"]["review_key"] == watched and card["data"]["review"]["accuracy"] == 78.0
+    assert engine.poll()["state"]["review_accuracy"] == {}, "not reviewed: the live accuracy"
+
+    read: list[str] = []
+    best = Store.best_review
+    monkeypatch.setattr(Store, "best_review", lambda self, key: read.append(key) or best(self, key))
+    engine.poll()
+    assert read == [], "nothing changed: the store is not asked"
+
+    other = Store(path)  # the review window's own store
+    summary = {"white": {"accuracy": 90.1}, "black": {"accuracy": 78.3}}
+    assert other.save_review(watched, "standard", 1, 1.0, "{}", json.dumps(summary))
+    other.close()
+    assert engine.poll()["state"]["review_accuracy"] == {watched: 78.3}, "Game Review's"
+    assert read == [watched]
+    engine.poll()
+    assert read == [watched], "read once for the change"
+    store.close()
+
+
 def test_words_go_by_position_and_move_whatever_the_move_numbers(tmp_path: Path) -> None:
     """A watched game joined late counts its moves from another number: its FENs' clocks differ
     from the import's, its positions do not. Each word goes to the import's move played from the

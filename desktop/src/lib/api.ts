@@ -574,6 +574,9 @@ export type PanelState = {
   captions?: Captions;
   /** Raised by every change the server makes to the settings or a piece set. */
   settings_version?: number;
+  /** Game Review's accuracy of each game whose end-of-game card was shown, by its review key,
+   * once the game's review is done: the card's live accuracy until then. */
+  review_accuracy?: Record<string, number>;
   caption_lines?: [number, string, boolean?][];
   caption_again?: number;
   speaking?: boolean;

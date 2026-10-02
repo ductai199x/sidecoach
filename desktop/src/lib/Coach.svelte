@@ -40,6 +40,12 @@
   const PLURAL: Record<string, string> = { inaccuracy: "inaccuracies", mistake: "mistakes", miss: "misses", blunder: "blunders" };
   const kindWords = (k: string, n: number): string => (n === 1 ? k : PLURAL[k] ?? k);
   const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+  /** A card's accuracy: Game Review's once the game's review is done (the server's, with each
+   * poll), the live one until then. */
+  function accuracyOf(item: Extract<CoachItem, { kind: "review" }>): number | null {
+    const reviewed = item.reviewKey ? store.state.review_accuracy?.[item.reviewKey] : undefined;
+    return reviewed ?? item.review.accuracy ?? null;
+  }
 </script>
 
 <div id="coach" class="coach" use:stickToBottom>
@@ -88,8 +94,9 @@
       </div>
     {:else}
       {@const r = item.review}
+      {@const accuracy = accuracyOf(item)}
       <div class="msg review">
-        <div class="meta">Game over · {r.result}{r.reason ? " by " + r.reason : ""}{r.accuracy != null ? " · accuracy " + r.accuracy.toFixed(1) : ""}</div>
+        <div class="meta">Game over · {r.result}{r.reason ? " by " + r.reason : ""}{accuracy != null ? " · accuracy " + accuracy.toFixed(1) : ""}</div>
         <div class="rv-head">{(r.lines && r.lines[0]) || "Game over."}</div>
         {#if tallies(r).length}
           <div class="rv-tally">

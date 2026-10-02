@@ -423,7 +423,15 @@ class PanelEngine:
             # window reads it with each poll and tells the other windows (lib/panel.svelte.ts).
             "settings_version": 0,
             "board_screen": None,
+            # Game Review's accuracy of each game whose end-of-game card the session showed, by
+            # its review key, once the game's review is done: the card shows the live accuracy
+            # until then (Tai, 2026-10-02). Read again when the reviews move (`_follow_reviews`).
+            "review_accuracy": {},
         }
+        # The end-of-game cards shown: review key -> the player's side; and the reviews'
+        # revision and the cards counted when their accuracies were last read.
+        self._cards: dict[str, str] = {}
+        self._cards_read: tuple[int, int] | None = None
         self._captioned = 0  # the words captioned so far, the last one's number
         self._profiler: Any = None
         # How much of each of the coach's growing lists has been logged, by the list itself: a
@@ -1035,8 +1043,10 @@ class PanelEngine:
         store stays open on the emptied file; its game in progress is dropped and the
         panel shows a fresh, empty profile."""
         from sidecoach.maintenance import reset_profile
+        from sidecoach.profile.store import reviews_touched
 
         path = reset_profile(self.settings)
+        reviews_touched()  # the reviews went: the cards' accuracies are the live ones again
         profiler = self._profiler
         if profiler is not None:
             profiler._game = None
@@ -1196,10 +1206,50 @@ class PanelEngine:
             # test ended only with the next utterance, listening on meanwhile in voice mode
             # whatever the player had chosen (voice finding 10, 2026-10-01).
             self.set_hear_test(False)
+        self._follow_reviews()
         with self._lock:
             state = dict(self._state)
         state["speaking"] = bool(self._tts.busy)
         return {"state": state, "lines": self._log.since(since), "cursor": self._log.cursor}
+
+    def _follow_reviews(self) -> None:
+        """Game Review's accuracy of each game the session showed an end-of-game card for, read
+        again only when the reviews moved (store.reviews_revision: every review saved, by the
+        review window or the background review) or a card came: the card says the live accuracy
+        until its game's review is done, then the review's, as Game Review shows it (the review
+        of 2026-10-01: 78.0 on the card, 78.3 in Game Review). Rides the poll the windows
+        already make; nothing is asked of the store between changes."""
+        from sidecoach.profile.store import Store, reviews_revision
+
+        with self._lock:
+            cards = dict(self._cards)
+            stamp = (reviews_revision(), len(cards))
+            if not cards or stamp == self._cards_read:
+                return
+        # The session's own store while it runs (a replay's is in memory), else the profile's.
+        held = getattr(self._profiler, "store", None)
+        own = held is None
+        found: dict[str, float] = {}
+        try:
+            store = Store(self.settings.data_dir / "profile.sqlite") if held is None else held
+            try:
+                for key, side in cards.items():
+                    best = store.best_review(key)
+                    summary = json.loads(best.summary) if best is not None and best.summary else {}
+                    accuracy = (summary.get(side) or {}).get("accuracy")
+                    if accuracy is not None:
+                        found[key] = accuracy
+            finally:
+                if own:
+                    store.close()
+        except Exception as exc:  # noqa: BLE001 - the card keeps the live accuracy; said once
+            with self._lock:
+                self._cards_read = stamp  # tried again when the reviews move
+            self._emit("sys", "warn", f"the cards' review accuracies could not be read: {exc!r}")
+            return
+        with self._lock:
+            self._cards_read = stamp
+            self._state["review_accuracy"] = found
 
     def caption(self, text: str, *, continues: bool = False) -> None:
         """Words given to the voice, for the captions' window, numbered: said or not -- muted,
@@ -2159,13 +2209,18 @@ class PanelEngine:
                 review = event.model_dump(exclude={"ts", "source_frame_id"})
                 self._set(review=review)
                 insights = list(snapshot.insights) if snapshot is not None else []
+                review_key = self._reviewable(profiler, event.game_id)
+                if review_key is not None:
+                    # Its accuracy follows Game Review's once the game is reviewed.
+                    with self._lock:
+                        self._cards[review_key] = event.user_side.value
                 self._emit(
                     "coach",
                     "info",
                     "review: " + elide(" ".join(event.lines), 80),
                     review=review,
                     insights=insights,
-                    review_key=self._reviewable(profiler, event.game_id),
+                    review_key=review_key,
                 )
             elif isinstance(event, Recommendation):
                 practice = event.model_dump(exclude={"ts", "source_frame_id"})
