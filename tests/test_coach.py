@@ -423,9 +423,10 @@ def test_in_blitz_a_mistake_gets_a_word_that_does_not_call_it_fine() -> None:
     instruction, fallback = coach._instruction(
         Trigger.POST_MOVE, position, DisclosureLevel.LINE, None, (), blunder, played
     )
-    from sidecoach.coach.coach import COST_YOU, FINE_TIGHTER
+    from sidecoach.coach.coach import COST_BY_SEVERITY, FINE_TIGHTER
 
-    assert fallback in [c.format(best="Qxf7#") + "." for c in COST_YOU]
+    # A blunder is said as one, never "that cost you something" (the facts audit, 2026-10-01).
+    assert fallback in [c.format(best="Qxf7#") + "." for c in COST_BY_SEVERITY["blunder"]]
     assert "which was a blunder" in instruction and "fine" not in instruction
     assert "no lesson, no question" in instruction
     # A move a little behind the best is still fine.
@@ -1555,7 +1556,7 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     """The record's answerer is asked off the coach's thread; the answer is spoken as the
     coach's turn, the player's words and a note of the lookup join the conversation, and
     the queries are kept for the log. Questions about this game stay with the game."""
-    import time
+    import threading
 
     from sidecoach.profile.ask import Answer, Exchange
 
@@ -1574,9 +1575,11 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
 
     coach.profile_ask = lookup
     coach.ask("why am I always losing in the middlegame?", 7.0)
-    deadline = time.monotonic() + 5
-    while not coach.profile_answers and time.monotonic() < deadline:
-        time.sleep(0.02)
+    # The lookup runs on its own thread: wait for that thread to end, not for a time (polling
+    # the answers list raced the queued words, which come after it).
+    for thread in threading.enumerate():
+        if thread.name == "profile-ask":
+            thread.join()
     said = drain(coach)
     assert asked == ["why am I always losing in the middlegame?"]
     assert (

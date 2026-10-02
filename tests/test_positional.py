@@ -262,6 +262,9 @@ def test_hanging_pawns_are_the_central_pair_and_the_plan_names_the_flanking_file
 def test_a_passive_king_in_the_endgame_is_named() -> None:
     board = chess.Board("6k1/8/8/8/8/8/8/6K1 w - - 0 1")
     assert kinds(P.king_activity(board, chess.WHITE, phase="endgame")) == ["passiveKing"]
+    # With their queen on the board the king walk is no lesson.
+    board = chess.Board("6k1/5q2/8/8/8/8/5Q2/6K1 w - - 0 1")
+    assert P.king_activity(board, chess.WHITE, phase="endgame") == []
 
 
 def test_central_infiltration_is_not_called_centralising() -> None:
@@ -292,6 +295,8 @@ MAJORITIES: list[tuple[str, str, chess.Color, str | None, set[str] | None]] = [
     # more pawns, but not more advancing files than the enemy can blockade -- so it is not
     # named (the book's caution about crippled majorities).
     ("crippled by doubled pawns", "4k3/1pp5/8/8/8/2P5/1PP5/4K3 w - - 0 1", chess.WHITE, None, None),
+    # Three against two on a-c, but their d-pawn makes it three all on the queenside half.
+    ("the d-pawn counts", "4k3/pp1p4/8/8/8/8/PPP5/4K3 w - - 0 1", chess.WHITE, None, None),
 ]
 
 

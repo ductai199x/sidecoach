@@ -149,6 +149,32 @@ COST_YOU = [
     "That cost you something: {best} was the move",
     "Not that one -- {best} was better",
 ]
+# One bag per severity: "that cost you something" undersold a blunder (the facts audit,
+# 2026-10-01). A mistake keeps COST_YOU.
+COST_BY_SEVERITY = {
+    "inaccuracy": [
+        "A small slip: {best} was a little better",
+        "Close, but {best} was more precise",
+        "That gave a little away -- {best} was better",
+    ],
+    "mistake": COST_YOU,
+    "blunder": [
+        "That one costs a lot: {best} was the move",
+        "A serious mistake -- {best} was much better",
+        "That one hurts: {best} was the move",
+    ],
+}
+
+
+def _cost(severity: Severity, label: str) -> str:
+    """The cost bag a missed best move draws from."""
+    if severity is Severity.BLUNDER or label == "blunder":
+        return "blunder"
+    if severity is Severity.INACCURACY or label == "inaccuracy":
+        return "inaccuracy"
+    return "mistake"
+
+
 # The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
 # position. Keyed by the pattern's name as the fact sheet gives it.
 PATTERN_LESSONS: dict[str, str] = {
@@ -4163,7 +4189,8 @@ class Coach:
                     if left is not None and left.analysis is not None
                     else None
                 )
-                opener = self._bags.draw("cost", COST_YOU).format(best=best)
+                kind = _cost(assessment.severity, label)
+                opener = self._bags.draw(f"cost:{kind}", COST_BY_SEVERITY[kind]).format(best=best)
                 rule = rule_of(facts, best, board=position.board, played=played.uci)
                 fallback, held = self._fresh_lesson(
                     opener,
@@ -4282,7 +4309,9 @@ class Coach:
             elif assessment.severity in (Severity.MISTAKE, Severity.BLUNDER) or label == "miss":
                 # A mistake in blitz: the policy keeps it to the word after the move (no
                 # lesson), but the word says what the move was -- never "fine".
-                fallback = self._bags.draw("cost", COST_YOU).format(best=best) + "."
+                kind = _cost(assessment.severity, label)
+                fallback = self._bags.draw(f"cost:{kind}", COST_BY_SEVERITY[kind]).format(best=best)
+                fallback += "."
                 instruction = (
                     f"The player just played {played.san}, which was {_rated(label)}: {best} "
                     f"({better_words}) was better. It is a fast game: one or two sentences, no "
@@ -4295,7 +4324,7 @@ class Coach:
                 # sound, a little behind" (the coach review, 2026-10-01).
                 slip = assessment.severity is Severity.INACCURACY or label == "inaccuracy"
                 opener = (
-                    self._bags.draw("cost", COST_YOU)
+                    self._bags.draw("cost:inaccuracy", COST_BY_SEVERITY["inaccuracy"])
                     if slip
                     else self._bags.draw("fine", FINE_TIGHTER)
                 ).format(best=best)

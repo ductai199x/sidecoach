@@ -235,12 +235,18 @@ def read(board: chess.Board, analysis: Analysis, *, owed: dict[int, int] | None 
         upto = 2
     top = analysis.lines[0]
     winning = (top.mate is not None and top.mate > 0) or top.expected_score >= WON
+    sacrifices = _sacrifices(boards, pv, upto)
+    if sacrifices and idea.goal != "draw" and not winning and top.expected_score < 0.5:
+        # Given for nothing: a piece the line neither wins back nor buys anything with, the
+        # position no better for it, was given up, not sacrificed ("Use your queen on d1 --
+        # the piece you give up" of a queen thrown in front of a mate, 2026-10-01).
+        sacrifices = tuple(s for s in sacrifices if _won_back(boards, s[0], board.turn))
     return replace(
         idea,
         pinned_guard=_pinned_guard(idea, boards, pv),
         also=_also(idea, boards, pv),
         intermezzo=_intermezzo(boards, pv, min(len(pv), 10)),
-        sacrifices=_sacrifices(boards, pv, upto),
+        sacrifices=sacrifices,
         winning=winning,
         level=top.expected_score < LEVEL and not (top.mate is not None and top.mate > 0),
         down=_balance(board, board.turn) < 0,
@@ -700,6 +706,9 @@ def _sacrifices(
         given = boards[i + 1].piece_at(reply.to_square)
         if given is None or given.color != us:
             continue
+        origin = pv[i].from_square if pv[i].to_square == reply.to_square else reply.to_square
+        if _lost_anyway(boards[i], origin):
+            continue  # it could not be saved: giving it is no sacrifice
         lowest = after_reply
         took = boards[i].piece_type_at(pv[i].to_square) if boards[i].is_capture(pv[i]) else None
         if given.piece_type == chess.ROOK and took in (chess.BISHOP, chess.KNIGHT):
@@ -707,6 +716,39 @@ def _sacrifices(
         else:
             out.append((i, _NAMES[given.piece_type]))
     return tuple(out)
+
+
+def _lost_anyway(board: chess.Board, square: chess.Square) -> bool:
+    """The piece on `square`, its side to move, is lost whatever it does: it can be won
+    where it stands, and every move of it lands where it can be won too, or takes something
+    worth less than itself. Leaving such a piece, or cashing it in for a pawn, was called
+    a sacrifice (the facts audit, 2026-10-01)."""
+    piece = board.piece_at(square)
+    if piece is None or piece.piece_type in (chess.KING, chess.PAWN):
+        return False
+    if not exchange.can_be_won(board, square):
+        return False
+    for move in board.legal_moves:
+        if move.from_square != square:
+            continue
+        if board.is_capture(move):
+            if exchange.exchange(board, move) >= 0:
+                return False
+            continue
+        after = board.copy(stack=False)
+        after.push(move)
+        if not exchange.can_be_won(after, move.to_square):
+            return False
+    return True
+
+
+def _won_back(boards: Sequence[chess.Board], i: int, us: chess.Color) -> bool:
+    """The material given at ply `i` comes back later in the line (two points of it at
+    least), or the line mates."""
+    if boards[-1].is_checkmate() and boards[-1].turn != us:
+        return True
+    given = _balance(boards[i + 2], us)
+    return any(_balance(b, us) >= given + 2 for b in boards[i + 3 :])
 
 
 def _first_gift(boards: Sequence[chess.Board], pv: Sequence[chess.Move], reach: int) -> int:

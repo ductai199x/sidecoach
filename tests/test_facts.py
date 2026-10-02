@@ -357,3 +357,27 @@ def test_the_nature_of_the_best_move_is_forcing_a_tactic_or_quiet() -> None:
     fen = "5k2/3n1p2/b5p1/3P4/5QN1/qr1p2RP/5PPK/8 w - - 0 34"
     assert nature(fen, ["g4h6", "d7f6", "f4f6", "a3a2"], 0.97).startswith("a tactic")
     assert nature(fen, ["g4h6"], 0.97).startswith("quiet")
+
+
+def test_the_target_never_says_nothing_defends_a_defended_piece() -> None:
+    # exf7+ Kh8 Qxb8: the rook on f8 defends b8 but has to stop f8=Q. The check is answered
+    # first, so b8 is not loose, and the AI was told "their rook on b8: nothing defends it"
+    # beside "their rook on f8 cannot take back on b8" (the facts audit, 2026-10-01).
+    fen = "1r3rk1/pp3ppp/2pQP3/1P1pP1q1/3Nn3/6P1/P5KP/2R2R2 w - - 1 2"
+    analysis = _analysis(
+        fen,
+        lines=[
+            Line(moves=["e6f7", "g8h8", "d6b8", "g5d2", "g2h1"], depth=18, expected_score=0.975),
+            Line(moves=["d6c7", "g5d2", "g2h1", "f7e6"], depth=18, expected_score=0.261),
+        ],
+        defences=[
+            Line(
+                moves=["e6f7", "g8h8", "d6b8", "f8b8", "f7f8q", "b8f8", "f1f8"],
+                depth=14,
+                expected_score=1.0,
+                mate=2,
+            )
+        ],
+    )
+    facts = facts_from_analysis(chess.Board(fen), analysis, user=chess.WHITE)
+    assert "nothing defends it" not in (facts.target or "")

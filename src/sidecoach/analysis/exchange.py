@@ -101,7 +101,18 @@ def exchange(board: chess.Board, move: chess.Move) -> int:
 
 def best_capture(board: chess.Board, color: chess.Color, square: chess.Square) -> int:
     """The most `color` nets by taking on `square` (were it `color`'s move); 0 when it cannot
-    take or would lose by it."""
+    take or would lose by it.
+
+    When the other side is to move and in check, it answers the check first: the most
+    `color` nets after its best answer (0 when the piece steps away). Handing the move over
+    with a null move in check left every recapture illegal, and every defended piece of the
+    checked side read as loose."""
+    replies = _check_answers(board, not color)
+    if replies is not None:
+        return min(
+            [0 if b.piece_at(square) is None else best_capture(b, color, square) for b in replies],
+            default=0,
+        )
     view = _as_mover(board, color)
     return max([0, *(exchange(view, m) for m in captures_on(board, color, square))])
 
@@ -114,11 +125,33 @@ def can_be_won(board: chess.Board, square: chess.Square) -> bool:
     return best_capture(board, not piece.color, square) > 0
 
 
+def _check_answers(board: chess.Board, color: chess.Color) -> list[chess.Board] | None:
+    """The boards after each legal answer when `color` is to move and in check; None
+    otherwise. A side in check cannot pass, so whether its piece can be taken is a question
+    about the board after its answer."""
+    if board.turn != color or not board.is_check():
+        return None
+    out: list[chess.Board] = []
+    for move in board.legal_moves:
+        after = board.copy(stack=False)
+        after.push(move)
+        out.append(after)
+    return out
+
+
 def hanging(board: chess.Board, square: chess.Square) -> bool:
-    """The piece on `square` is attacked by a legal capturer and nothing can take back."""
+    """The piece on `square` is attacked by a legal capturer and nothing can take back.
+
+    When its side is to move and in check, the piece hangs only if it does after every
+    answer to the check (one that moves the piece saves it)."""
     piece = board.piece_at(square)
     if piece is None or piece.piece_type == chess.KING:
         return False
+    replies = _check_answers(board, piece.color)
+    if replies is not None:
+        return bool(replies) and all(
+            b.piece_at(square) == piece and hanging(b, square) for b in replies
+        )
     for move in captures_on(board, not piece.color, square):
         after = _as_mover(board, not piece.color).copy(stack=False)
         after.push(move)

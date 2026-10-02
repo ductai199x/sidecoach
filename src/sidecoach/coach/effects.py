@@ -221,18 +221,24 @@ def describe_effects(
     ]
     for s in sorted(covered, key=lambda s: (-value_at(s), s)):
         by = _names(after, capturers(after, them, s))
-        out.append(f"defends {_name(after, s)}, which is attacked by {by}")
+        if move.to_square in defenders(after, us, s):
+            out.append(f"defends {_name(after, s)}, which is attacked by {by}")
+        else:
+            # Saved by a defence the move uncovers, or by what it takes: not "defends",
+            # which names the moved piece (the facts audit, 2026-10-01).
+            out.append(f"makes {_name(after, s)} safe from {by}")
         break
 
-    # A rook or queen onto a file with no pawn of its own on it.
+    # A rook or queen onto a file with no pawn of its own on it, the file as the move leaves
+    # it: a capture of their pawn opens it ("takes the half-open file" of Rxd6, 2026-10-01).
     if mover is not None and mover.piece_type in (chess.ROOK, chess.QUEEN):
         file_index = chess.square_file(move.to_square)
         own_pawn = any(
-            board.piece_at(chess.square(file_index, r)) == chess.Piece(chess.PAWN, us)
+            after.piece_at(chess.square(file_index, r)) == chess.Piece(chess.PAWN, us)
             for r in range(8)
         )
         their_pawn = any(
-            board.piece_at(chess.square(file_index, r)) == chess.Piece(chess.PAWN, them)
+            after.piece_at(chess.square(file_index, r)) == chess.Piece(chess.PAWN, them)
             for r in range(8)
         )
         if chess.square_file(move.from_square) != file_index and not own_pawn:

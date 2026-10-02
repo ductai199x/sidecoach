@@ -316,3 +316,26 @@ def test_a_quiet_pawn_move_threatens_a_break() -> None:
     )
     assert "The first move is quiet, but it threatens a pawn break." in texts["idea"]
     assert told
+
+
+def test_covers_only_when_the_moved_piece_guards_it() -> None:
+    """Ne4 blocks the queen on b4 from the pawn on f4: it makes the pawn safe, it does not
+    cover it (the facts audit, 2026-10-01). g3 guards it."""
+    from sidecoach.coach import story
+
+    board = chess.Board("2r4r/4kpp1/p3p2p/7n/Bq3P2/2N2Q1P/1PP3P1/4R1K1 w - - 2 28")
+    said = [e.said for e in story.effects(board, board.parse_san("Ne4"), None)]
+    assert "makes your pawn on f4 safe" in said
+    assert not any(s.startswith("covers") for s in said)
+    said = [e.said for e in story.effects(board, board.parse_san("g3"), None)]
+    assert "covers your pawn on f4" in said
+
+
+def test_attacks_only_what_the_moved_piece_can_take() -> None:
+    """Kf7 next to a rook on e8 that the queen on e5 guards: no attack, the king cannot take
+    (the facts audit, 2026-10-01)."""
+    from sidecoach.coach import story
+
+    board = chess.Board("1r2R1k1/p5p1/2p4p/2PpQ3/2nP4/B3PP1P/P5PK/4q3 b - - 10 34")
+    said = [e.said for e in story.effects(board, board.parse_san("Kf7"), None)]
+    assert not any(s.startswith("attacks") for s in said)

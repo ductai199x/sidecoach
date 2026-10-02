@@ -385,7 +385,7 @@ PLAN_NAME = {
 PLAN_REASON = {
     "attack": "an attack breaks through when more of your pieces bear on their king than they "
     "can bring to defend it",
-    "storm": "with the kings on opposite wings, your pawns can roll at theirs without "
+    "storm": "with your own king off that wing, your pawns can roll at theirs without "
     "exposing your own, and they pry open lines for your pieces",
     "double": "two heavy pieces on the same file hit twice as hard and break into their position",
     "outpost": "a knight on a square no pawn of theirs can ever attack stays there for good",
