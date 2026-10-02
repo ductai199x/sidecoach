@@ -224,3 +224,36 @@ def test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go()
         assert ear._started_at is not None  # the fresh press is taken
     finally:
         ear.set_mode("off")
+
+
+def test_a_microphone_whose_stream_died_is_reopened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Voice finding 17: a dead input stream was never reopened; the coach stayed deaf."""
+    import sidecoach.voice.mic as mic_mod
+    from sidecoach.voice.mic import Listener
+    from tests.fakes import FedMic
+
+    monkeypatch.setattr(mic_mod, "MIC_REOPEN_S", 0.0)
+
+    class DyingMic(FedMic):
+        def __init__(self) -> None:
+            super().__init__()
+            self.opens = 0
+            self.dead = False
+
+        def open(self) -> bool:
+            self.opens += 1
+            self.dead = False
+            return super().open()
+
+        def stalled(self) -> bool:
+            return self.dead
+
+    mic = DyingMic()
+    ear = Listener(mic, _QuietGate(), on_utterance=lambda a, s: None)  # type: ignore[arg-type]
+    ear.set_mode("ptt")
+    try:
+        assert mic.opens == 1
+        mic.dead = True  # the headset unplugged
+        assert _until(lambda: mic.opens == 2)
+    finally:
+        ear.set_mode("off")
