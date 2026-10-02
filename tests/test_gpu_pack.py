@@ -8,6 +8,7 @@ import hashlib
 import json
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -95,3 +96,75 @@ def test_a_wrong_digest_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     with pytest.raises(RuntimeError, match="checksum"):
         gpu.install(settings)
     assert gpu.installed(settings) is None
+
+
+def test_an_interrupted_pack_resumes_where_it_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup finding 20: a failure part-way deleted the staging folder, so every retry of
+    the ~1.5 GB pack started from nothing. Wheels already unpacked are not fetched again."""
+    first = _one_wheel_pack(tmp_path, monkeypatch, {"foo/__init__.py": "A = 1\n"}, "3")
+    second = tmp_path / "bar-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(second, "w") as z:
+        z.writestr("bar/__init__.py", "B = 2\n")
+    m = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    m["wheels"].append(
+        {
+            "name": "bar",
+            "version": "1.0",
+            "filename": second.name,
+            "url": second.as_uri(),
+            "size": second.stat().st_size,
+            "sha256": "0" * 64,  # wrong: the run fails on this wheel
+        }
+    )
+    (tmp_path / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    settings = Settings(data_dir=tmp_path / "data")
+    with pytest.raises(RuntimeError, match="checksum"):
+        gpu.install(settings)
+    assert gpu.installed(settings) is None
+    # The second wheel fixed; the first must not be fetched again.
+    m["wheels"][1]["sha256"] = hashlib.sha256(second.read_bytes()).hexdigest()
+    (tmp_path / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    fetched: list[str] = []
+    import sidecoach.setup as setup_mod
+
+    real = setup_mod.download
+
+    def counting(url: str, *a: Any, **k: Any) -> Path:
+        fetched.append(url)
+        return real(url, *a, **k)
+
+    monkeypatch.setattr(setup_mod, "download", counting)
+    pack = gpu.install(settings)
+    assert fetched == [second.as_uri()]
+    assert (pack / "site-packages" / "foo" / "__init__.py").read_text() == "A = 1\n"
+    assert (pack / "site-packages" / "bar" / "__init__.py").read_text() == "B = 2\n"
+    assert first.exists() and not (pack.parent / "3.staging").exists()
+
+
+def test_the_setup_status_asks_nvml_once_in_a_while(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setup finding 21: the status (polled twice a second) asked NVML twice a call."""
+    calls: list[int] = []
+    monkeypatch.setattr(gpu, "detect", lambda: calls.append(1) or {"eligible": False})
+    monkeypatch.setattr(gpu, "_detected", {"at": -1e9, "value": None})
+    settings = Settings()
+    for _ in range(5):
+        gpu.status(settings)
+        gpu.pack_item(settings)
+    assert len(calls) == 1
+
+
+def test_new_wheels_under_the_shipped_version_are_refused() -> None:
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "build_pack.py"
+    spec = importlib.util.spec_from_file_location("build_pack", path)
+    assert spec and spec.loader
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    old = {"version": "1", "wheels": [{"name": "a", "sha256": "x"}]}
+    assert build.needs_bump(old, {"version": "1", "wheels": [{"name": "a", "sha256": "y"}]})
+    assert not build.needs_bump(old, {"version": "2", "wheels": [{"name": "a", "sha256": "y"}]})
+    assert not build.needs_bump(old, dict(old))
+    assert not build.needs_bump({}, dict(old))
