@@ -79,6 +79,9 @@ object PanelVoice {
     private data class Held(val trigger: String, val text: String, val ply: Int?, val since: Double)
     @Volatile private var heldWord: Held? = null
 
+    /** Guards [heldWord] while a reply still being written joins it ([streamSink]). */
+    private val heldLock = Any()
+
     private val lock = Any()
     private val moveAt = HashMap<Int, Double>()
     private val awaitingAudio = HashMap<String, Double>()
@@ -316,8 +319,28 @@ object PanelVoice {
         var started = false
         var silent = false // began while the push-to-talk key was held, or is not to be spoken
         var hushedAt = hushed
+        // The word held for the pace while the reply is still being written: its sentences join
+        // it until [sayHeldWord] takes it.
+        var held: Held? = null
         return sink@{ sentence ->
             val continues = started
+            val word = held
+            if (word != null) {
+                // Held for the pace: the rest joins the held word, shown now. Taken and said
+                // already (the game slowed meanwhile), the rest follows it in the voice.
+                Captions.show(sentence, true)
+                val taken = synchronized(heldLock) {
+                    if (heldWord === word) {
+                        val joined = word.copy(text = "${word.text} $sentence")
+                        held = joined
+                        heldWord = joined
+                        return@sink true
+                    }
+                    voicing == (name to ply)
+                }
+                if (taken && !muted && hushed == hushedAt && !PanelEngine.pttHeld()) voiceOut()?.say(sentence)
+                return@sink true
+            }
             if (started && (muted || hushed != hushedAt || silent)) {
                 // Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is still
                 // the reply -- in the chat, the record and the captions -- only silent.
@@ -325,7 +348,15 @@ object PanelVoice {
                 Captions.show(sentence, true)
                 return@sink true
             }
-            if (muted) return@sink false
+            if (muted || voiceOut() == null) {
+                // Muted after the reply was asked for and before its first sentence, or no voice
+                // to say it: shown, silent. Declined, the coach put the offline template in the AI
+                // reply's place (round 3 audit, 2026-10-02).
+                started = true
+                silent = true
+                Captions.show(sentence, continues)
+                return@sink true
+            }
             if (!started && PanelEngine.pttHeld()) {
                 // A reply that begins while the player holds the key to talk is never spoken,
                 // however long the key is held: captioned, in the chat, silent.
@@ -334,7 +365,13 @@ object PanelVoice {
                 Captions.show(sentence)
                 return@sink true
             }
-            val speaker = voiceOut() ?: return@sink false
+            val speaker = voiceOut() ?: run {
+                // The voice went away between the two looks: shown, silent, never declined.
+                started = true
+                silent = true
+                Captions.show(sentence, continues)
+                return@sink true
+            }
             if (!started) {
                 hushedAt = hushed
                 val action = if (movedOn()) {
@@ -343,7 +380,16 @@ object PanelVoice {
                     voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
                 }
                 if (action == "supersede") speaker.stop()
-                if (action == "text") return@sink false // a fast game: held for the pace, not lost
+                if (action == "text") {
+                    // A fast game: the reply is held for the pace ([speak]), whole, and shown now.
+                    // Declined, the coach put a template in its place.
+                    started = true
+                    val first = Held(name, sentence, ply, SystemClock.elapsedRealtime() / 1000.0)
+                    held = first
+                    synchronized(heldLock) { heldWord = first }
+                    Captions.show(sentence)
+                    return@sink true
+                }
                 if (action != "speak" && action != "supersede") {
                     // Shown, in its place, not spoken: the rest of the reply follows the same.
                     started = true
@@ -389,12 +435,18 @@ object PanelVoice {
         val thinking = if (began != null) ts - began else SystemClock.elapsedRealtime() / 1000.0 - held.since
         val speaker = voiceOut() ?: return
         if (thinking < PACE_RESUME_S || speaker.busy) return
-        heldWord = null
-        voicing = held.trigger to held.ply
-        awaitAudio(held.trigger, held.ply, held.text)
+        // Taken whole: a reply still being written joins its held word under this lock
+        // ([streamSink]), and what it writes after this follows in the voice.
+        val taken = synchronized(heldLock) {
+            val now = heldWord ?: return
+            heldWord = null
+            voicing = now.trigger to now.ply
+            now
+        }
+        awaitAudio(taken.trigger, taken.ply, taken.text)
         Captions.again() // captioned when it was held back, long faded: back while it is said
-        speaker.say(held.text)
-        PanelEngine.emit("voice", "debug", "speaking ($voice), the game slowed: ${PanelEngine.elide(held.text, 60)}")
+        speaker.say(taken.text)
+        PanelEngine.emit("voice", "debug", "speaking ($voice), the game slowed: ${PanelEngine.elide(taken.text, 60)}")
     }
 
     // ---- latency, amortised: the move to the first sound, the model's first token -----------

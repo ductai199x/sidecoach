@@ -34,6 +34,8 @@ class PanelListenTest {
         /** A clip of exactly [held] samples waits for [gate] first (a slow partial). */
         @Volatile var gate = CountDownLatch(0)
         @Volatile var held = -1
+        /** Counted down when a held clip begins to be recognised: the test acts by this state. */
+        @Volatile var working = CountDownLatch(1)
         override val loaded = true
         override val loadSeconds: Double? = 0.0
         override fun healthcheck() = true to "fake"
@@ -41,7 +43,10 @@ class PanelListenTest {
         override fun prime(): Double? = 0.0
         override fun close() = Unit
         override fun transcribe(audio: FloatArray): String {
-            if (audio.size == held) gate.await(2, TimeUnit.SECONDS)
+            if (audio.size == held) {
+                working.countDown()
+                gate.await(2, TimeUnit.SECONDS)
+            }
             return List(maxOf(1, (audio.size / 16000.0 / 0.4).toInt())) { "hello" }.joinToString(" ")
         }
     }
@@ -49,6 +54,7 @@ class PanelListenTest {
     /** What was asked of the session's loop (`engine._commands`). */
     private val asked = PanelEngine.commands
     private var recogniser = WordsByLength()
+    private val realTimer = PanelListen.makeTimer
 
     @Before
     fun setUp() {
@@ -67,6 +73,7 @@ class PanelListenTest {
         PanelEngine.set("running" to false)
         asked.clear()
         PanelListen.sendDelayS = PanelListen.DICTATION_SEND_DELAY_S
+        PanelListen.makeTimer = realTimer
         PanelListen.cancelDictation()
     }
 
@@ -381,25 +388,33 @@ class PanelListenTest {
      * The key pressed again while the first half was being recognised: that recognition ended
      * after the press and armed the second of quiet, and the first half went alone while the
      * player held the key (`test_a_press_while_the_last_words_are_recognised_keeps_one_question`,
-     * voice finding 5).
+     * voice finding 5). Driven by the recogniser's state and a timer the test fires: it slept to
+     * land the press and waited past the real second of quiet (round 3 audit, 2026-10-02).
      */
     @Test
     fun aPressWhileTheLastWordsAreRecognisedKeepsOneQuestion() {
+        val armed = java.util.concurrent.CopyOnWriteArrayList<Pair<java.util.concurrent.CompletableFuture<Unit>, () -> Unit>>()
+        PanelListen.makeTimer = { _, send ->
+            java.util.concurrent.CompletableFuture<Unit>().also { armed.add(it to send) }
+        }
         val slow = CountDownLatch(1)
         recogniser.gate = slow
         recogniser.held = 16000
         PanelListen.dictationHold() // the key down
         val first = Thread { PanelListen.onUtterance(silence(1.0), 1.0) } // up: recognising ...
         first.start()
-        Thread.sleep(50)
-        PanelListen.dictationHold() // ... and down again
+        assertTrue(recogniser.working.await(5, TimeUnit.SECONDS))
+        PanelListen.dictationHold() // ... and down again while it works
         slow.countDown()
-        first.join(2000)
+        first.join(5000)
         assertTrue(dictation().isNull("sends_at"))
-        Thread.sleep(600) // past the second of quiet (0.3 s here), the key still held
+        assertTrue("a send armed while the key is held", armed.none { !it.first.isCancelled })
         assertTrue(asked.isEmpty())
         PanelListen.onUtterance(silence(0.5), 0.5) // up
-        assertEquals("ask_spoken" to "hello hello hello", asked.poll(2, TimeUnit.SECONDS))
+        val live = armed.filter { !it.first.isCancelled }
+        assertEquals(1, live.size)
+        live[0].second() // the second of quiet
+        assertEquals("ask_spoken" to "hello hello hello", asked.poll())
     }
 
     /**
