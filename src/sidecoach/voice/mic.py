@@ -41,7 +41,9 @@ log = logging.getLogger(__name__)
 
 MODES = ("off", "ptt", "vad")
 PRE_ROLL_FRAMES = 10  # 320 ms kept before a detected start, so "knight" is not "ight"
-MAX_UTTERANCE_S = 20.0
+# The longest utterance (Tai, 2026-10-02: 60 s, was 20 s -- a long question asked on the
+# held key lost everything past 20 s).
+MAX_UTTERANCE_S = 60.0
 # How often a microphone whose stream died is tried again.
 MIC_REOPEN_S = 3.0
 QUEUE_FRAMES = SAMPLE_RATE // HOP * 10  # ten seconds of backlog before the oldest is dropped

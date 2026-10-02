@@ -486,6 +486,33 @@ def test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go()
         ear.set_mode("off")
 
 
+def test_a_45_second_question_held_on_the_key_is_handed_over_whole() -> None:
+    """E3 (Tai, 2026-10-02): the longest utterance is 60 s, not 20 s -- a long question asked on
+    the held key lost everything past 20 s."""
+    from sidecoach.voice.mic import Listener
+    from sidecoach.voice.vad import HOP, SAMPLE_RATE
+
+    handed: queue.Queue[float] = queue.Queue()
+    mic = SteppedMic()
+    ear = Listener(
+        mic,  # type: ignore[arg-type]
+        _QuietGate(),  # type: ignore[arg-type]
+        on_utterance=lambda audio, seconds: handed.put(len(audio) / SAMPLE_RATE),
+    )
+    ear.set_mode("ptt")
+    try:
+        ear.press()
+        for _ in range(45 * SAMPLE_RATE // HOP):
+            mic.frames.put(np.full(HOP, 0.01, dtype=np.float32))
+        mic.steps.idle()
+        assert handed.empty()  # still held: nothing handed over at 20 s
+        ear.release()
+        assert handed.get(timeout=HANG_S) >= 45 - HOP / SAMPLE_RATE
+    finally:
+        mic.steps.free()
+        ear.set_mode("off")
+
+
 def test_a_microphone_whose_stream_died_is_reopened(monkeypatch: pytest.MonkeyPatch) -> None:
     """Voice finding 17: a dead input stream was never reopened; the coach stayed deaf. It is
     tried again in the listener's quiet rounds, at most once every MIC_REOPEN_S (the
