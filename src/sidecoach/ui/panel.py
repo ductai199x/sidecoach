@@ -308,7 +308,11 @@ class PanelEngine:
     _record_failed: bool = field(default=False, init=False)
     # Dictation: the words on the screen so far and the timer that sends them.
     _dictation_text: str = field(default="", init=False)
-    _dictation_timer: threading.Timer | None = field(default=None, init=False)
+    _dictation_timer: Any = field(default=None, init=False)
+    # What makes that timer (`threading.Timer`); a test hands in one it fires itself.
+    _make_timer: Callable[[float, Callable[[], None]], Any] = field(
+        default=threading.Timer, init=False
+    )
     _partial_busy: threading.Lock = field(default_factory=threading.Lock, init=False)
     _utterance_gen: int = field(default=0, init=False)  # bumped when an utterance ends
     _warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
@@ -1308,19 +1312,18 @@ class PanelEngine:
 
         threading.Thread(target=work, name="stt-partial", daemon=True).start()
 
-    def _dictation_arm(self) -> None:
-        """(Re)start the second of quiet after which the dictation is sent."""
-        with self._lock:
-            if self._dictation_timer is not None:
-                self._dictation_timer.cancel()
-            self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
-            self._dictation_timer.daemon = True
-            self._dictation_timer.start()
-            self._state["dictation"] = {
-                "text": self._dictation_text,
-                "live": False,
-                "sends_at": int((time.time() + DICTATION_SEND_DELAY_S) * 1000),
-            }
+    def _dictation_arm_locked(self) -> None:
+        """(Re)start the second of quiet after which the dictation is sent. Under `_lock`."""
+        if self._dictation_timer is not None:
+            self._dictation_timer.cancel()
+        self._dictation_timer = self._make_timer(DICTATION_SEND_DELAY_S, self._dictation_send)
+        self._dictation_timer.daemon = True
+        self._dictation_timer.start()
+        self._state["dictation"] = {
+            "text": self._dictation_text,
+            "live": False,
+            "sends_at": int((time.time() + DICTATION_SEND_DELAY_S) * 1000),
+        }
 
     def _dictation_settle(self, holds: int | None = None) -> None:
         """An utterance ended (with words or with none): the words (if any) go on to send
@@ -1328,19 +1331,18 @@ class PanelEngine:
         count of presses and utterances when this one ended its recording; one more came while
         it was being recognised, and the box waits for that one, which settles it in turn: the
         second of quiet ran from the first, and the question went in two halves (voice
-        finding 5, 2026-10-01)."""
-        if holds is not None and holds != self._dictation_holds:
-            with self._lock:
+        finding 5, 2026-10-01). The count is compared and the send armed in one locked step:
+        a press between the two armed a send while the key was held (round 3 audit)."""
+        with self._lock:
+            if holds is not None and holds != self._dictation_holds:
                 self._state["dictation"] = {
                     "text": self._dictation_text,
                     "live": True,
                     "sends_at": None,
                 }
-            return
-        if self._dictation_text:
-            self._dictation_arm()
-        else:
-            with self._lock:
+            elif self._dictation_text:
+                self._dictation_arm_locked()
+            else:
                 self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
 
     def _dictation_hold(self) -> None:
@@ -1518,15 +1520,39 @@ class PanelEngine:
         rant"): a reply that is not to be spoken -- stale, skipped, or asked for a moment that
         is over (`moved_on`) -- is taken sentence by sentence all the same, captioned and kept
         as the reply's text, and only silent. Declining it, as before, made the coach say a
-        template in its place."""
+        template in its place. So the sink never declines: muted before the first sentence,
+        the reply is shown and silent; held back for a fast game ("text"), the whole reply is
+        the word held (`_speak` holds a line the same way) and is shown now."""
         if self.muted:
             return None
         name = getattr(trigger, "value", str(trigger))
         started: list[str] = []
         hushed_at = [self._hushed]
+        # The word held for the pace, while the reply is still being written: its sentences
+        # join it until `_say_held_word` takes it.
+        held: list[tuple[str, str, int | None, float] | None] = [None]
 
         def sink(sentence: str) -> bool:
             continues = bool(started)
+            if started and started[0] == "text":
+                # Held for the pace: the rest joins the held word, shown now. Taken and said
+                # already (the game slowed meanwhile), the rest follows it in the voice.
+                self.caption(sentence, continues=True)
+                with self._lock:
+                    word = held[0]
+                    if word is not None and self._held_word is word:
+                        held[0] = (word[0], f"{word[1]} {sentence}", word[2], word[3])
+                        self._held_word = held[0]
+                        return True
+                    taken = word is not None and self._voicing == (name, ply)
+                if (
+                    taken
+                    and not self.muted
+                    and self._hushed == hushed_at[0]
+                    and not self._ptt_held()
+                ):
+                    self._tts.say(sentence)
+                return True
             if started and (
                 self.muted or self._hushed != hushed_at[0] or started[0] in ("ptt", "silent")
             ):
@@ -1536,7 +1562,12 @@ class PanelEngine:
                 self.caption(sentence, continues=True)
                 return True
             if self.muted:
-                return False
+                # Muted after the reply was asked for and before its first sentence: shown,
+                # silent. Declined, the coach put the offline template in the AI reply's place
+                # (round 3 audit, 2026-10-02).
+                started.append("silent")
+                self.caption(sentence)
+                return True
             if not started and self._ptt_held():
                 # A reply that begins while the player holds the key to talk is never
                 # spoken, however long the key is held: captioned, in the chat, silent.
@@ -1563,7 +1594,14 @@ class PanelEngine:
                 if action == "supersede":
                     self._tts.stop()
                 if action == "text":
-                    return False  # a fast game: held for the pace (`_speak`), not lost
+                    # A fast game: the reply is held for the pace (`_speak`), whole, and
+                    # shown now. Declined, the coach put a template in its place.
+                    started.append("text")
+                    held[0] = (name, sentence, ply, time.monotonic())
+                    with self._lock:
+                        self._held_word = held[0]
+                    self.caption(sentence)
+                    return True
                 if action not in ("speak", "supersede"):
                     # Shown, in its place, not spoken: the rest of the reply follows the same.
                     started.append("silent")
@@ -1646,8 +1684,15 @@ class PanelEngine:
         thinking = ts - began if began is not None else time.monotonic() - since
         if thinking < PACE_RESUME_S or self._tts.busy:
             return
-        self._held_word = None
-        self._voicing = (trigger, ply)
+        with self._lock:
+            # Taken whole: a reply still being written joins its held word under this lock
+            # (`_stream_sink`), and what it writes after this follows in the voice.
+            held = self._held_word
+            if held is None:
+                return
+            trigger, text, ply, _ = held
+            self._held_word = None
+            self._voicing = (trigger, ply)
         self._await_audio(trigger, ply, text)
         with self._lock:
             # Captioned when it was held back, long faded: the box comes back while it is
