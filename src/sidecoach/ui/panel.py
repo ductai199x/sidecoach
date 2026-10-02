@@ -276,6 +276,8 @@ class PanelEngine:
     # Counts the times the voice was cut off by the player (a barge-in, a mute): a reply
     # being written sentence by sentence says nothing more once it moves.
     _hushed: int = field(default=0, init=False)
+    # Counts the presses and utterances begun (see _dictation_settle).
+    _dictation_holds: int = field(default=0, init=False)
     # The puzzles recommended lately, in order, and the motif each was for: the puzzle
     # page (ui/puzzle_room.py) opens them in a tab of their own, with Next in that order.
     practice_ids: list[str] = field(default_factory=list, init=False)
@@ -1276,21 +1278,33 @@ class PanelEngine:
 
     def _dictation_arm(self) -> None:
         """(Re)start the second of quiet after which the dictation is sent."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-        self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
-        self._dictation_timer.daemon = True
-        self._dictation_timer.start()
         with self._lock:
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+            self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
+            self._dictation_timer.daemon = True
+            self._dictation_timer.start()
             self._state["dictation"] = {
                 "text": self._dictation_text,
                 "live": False,
                 "sends_at": int((time.time() + DICTATION_SEND_DELAY_S) * 1000),
             }
 
-    def _dictation_settle(self) -> None:
-        """An utterance that came to nothing: earlier words (if any) go on to send, else
-        the box stops saying it is listening."""
+    def _dictation_settle(self, holds: int | None = None) -> None:
+        """An utterance ended (with words or with none): the words (if any) go on to send
+        after the second of quiet, else the box stops saying it is listening. `holds`: the
+        count of presses and utterances when this one ended its recording; one more came while
+        it was being recognised, and the box waits for that one, which settles it in turn: the
+        second of quiet ran from the first, and the question went in two halves (voice
+        finding 5, 2026-10-01)."""
+        if holds is not None and holds != self._dictation_holds:
+            with self._lock:
+                self._state["dictation"] = {
+                    "text": self._dictation_text,
+                    "live": True,
+                    "sends_at": None,
+                }
+            return
         if self._dictation_text:
             self._dictation_arm()
         else:
@@ -1299,10 +1313,11 @@ class PanelEngine:
 
     def _dictation_hold(self) -> None:
         """A new press or a new utterance: whatever was about to send waits for the rest."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-            self._dictation_timer = None
         with self._lock:
+            self._dictation_holds += 1
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+                self._dictation_timer = None
             self._state["dictation"] = {
                 "text": self._dictation_text,
                 "live": True,
@@ -1319,10 +1334,10 @@ class PanelEngine:
 
     def cancel_dictation(self) -> dict[str, Any]:
         """The person typed: the words stay theirs in the box, nothing sends on its own."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-            self._dictation_timer = None
         with self._lock:
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+                self._dictation_timer = None
             text, self._dictation_text = self._dictation_text, ""
             self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
         return {"ok": True, "text": text}
@@ -1351,6 +1366,7 @@ class PanelEngine:
         Runs on the listener thread; the ask is queued for the pipeline thread.
         """
         self._utterance_gen += 1
+        holds = self._dictation_holds  # a press or an utterance after this one began
         begun = time.perf_counter()
         raw = self._stt.transcribe(audio)
         ms = (time.perf_counter() - begun) * 1000
@@ -1363,12 +1379,12 @@ class PanelEngine:
             self._emit(
                 "voice", "debug", f"heard nothing in {seconds:.1f}s of audio", stt_ms=round(ms)
             )
-            self._dictation_settle()
+            self._dictation_settle(holds)
             return
         fixed = correct(raw, self._board_on_screen())
         text = fixed.text
         if not text:
-            self._dictation_settle()
+            self._dictation_settle(holds)
             return
         # Into the text box, after whatever was said before in this dictation; sent after
         # a second of quiet unless more comes. The terminal keeps the detail.
@@ -1384,7 +1400,7 @@ class PanelEngine:
             seconds=round(seconds, 2),
             stt_ms=round(ms),
         )
-        self._dictation_arm()
+        self._dictation_settle(holds)
 
     def _emit(self, chan: str, level: str, text: str, **data: Any) -> None:
         self._log.emit(chan, level, text, **data)
