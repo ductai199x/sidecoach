@@ -239,3 +239,15 @@ def test_a_question_s_engine_searches_run_off_the_callers_thread() -> None:
             thread.join(5.0)
     assert engine.threads, "the move named was examined"
     assert threading.current_thread().name not in engine.threads, engine.threads
+
+
+def test_a_call_the_tools_cannot_read_is_told_so_never_analysed_as_now() -> None:
+    """Arguments that were no JSON object, or an unknown start, were analysed silently as
+    the board now (the deep prompt review, 2026-10-01): the model is told instead."""
+    engine = FirstLegal()
+    tools = EngineTools(chess.Board(AFTER_RXF1), None, engine, chess.BLACK)
+    out = tools.run("analyse", {"_raw": "moves: Kg2"})
+    assert out.startswith("The arguments were not a JSON object ('moves: Kg2')"), out
+    out = tools.run("analyse", {"moves": ["Kg2"], "start": "before"})
+    assert out.startswith("No start named 'before'"), out
+    assert engine.seen == [], "nothing was analysed"
