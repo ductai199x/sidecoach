@@ -1275,6 +1275,9 @@ class Spoken:
     # The lesson ends by asking what the player saw (`Coach._elicit_due`): when it is dropped
     # unsaid, the question was never asked.
     elicit: bool = False
+    # A hint said unasked that a question came behind while it waited (`Speaker.submit`): shown
+    # first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
+    unvoiced: bool = False
 
 
 @dataclass
@@ -1412,6 +1415,9 @@ class _Request:
     # the reply carries, and the marks on the board, follow what it said (`said_level`).
     rung_by_reply: bool = False
     elicit: bool = False
+    # Set by `Speaker.submit` on a hint said unasked when a question is queued behind it: its
+    # text comes first, as it was said first, and the voice does not say it (`Spoken.unvoiced`).
+    unvoiced: bool = False
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1799,7 +1805,9 @@ class Speaker:
         should come out in the same correct order"): a remark dropped here was never seen, and
         a lesson dropped took the rule it was charged against and the question it was to end
         with (`Coach._elicit_due`) with it. A hint said unasked keeps its place ahead of the
-        ask (`_UNASKED_HINTS`)."""
+        ask (`_UNASKED_HINTS`), and is not spoken: the voice goes to the answer (Tai,
+        2026-10-02: "the stuck hint does not need to be voiced but the order should still be
+        preserved")."""
         if request.trigger is not Trigger.USER_ASK:
             self._requests.put(request)
             return
@@ -1812,6 +1820,8 @@ class Speaker:
         ahead: list[_Request | Spoken | None] = []  # said already, the asks before, the hints
         behind: list[_Request | Spoken | None] = []
         for item in waiting:
+            if isinstance(item, _Request) and item.trigger in _UNASKED_HINTS:
+                item.unvoiced = True
             if (
                 not isinstance(item, _Request)
                 or item.trigger is Trigger.USER_ASK
@@ -1872,6 +1882,7 @@ class Speaker:
                 own_moves=request.own_moves,
                 rung=rung,
                 elicit=request.elicit,
+                unvoiced=request.unvoiced,
             )
 
     @staticmethod
@@ -1944,6 +1955,7 @@ class Speaker:
                 epoch=request.epoch,
                 own_moves=request.own_moves,
                 elicit=request.elicit,
+                unvoiced=request.unvoiced,
             )
         while attempts < 2 and not (attempts and self._closed.is_set()):
             attempts += 1
@@ -2084,6 +2096,7 @@ class Speaker:
             own_moves=request.own_moves,
             rung=rung,
             elicit=request.elicit,
+            unvoiced=request.unvoiced,
         )
 
     @staticmethod
@@ -4687,11 +4700,6 @@ class Coach:
             played=self._record_moves(),
             played_san=played.san if played else None,
             assessment=assessment,
-            stream_to=self.stream_sink(
-                trigger, position.ply, lambda: self.moved_on((epoch, game_id, own_moves))
-            )
-            if self.stream_sink
-            else None,
             routine=routine,
             # A fast game gets the template, not a model reply; what the player asks, and
             # the review of a game that is over, always get the model.
@@ -4707,6 +4715,14 @@ class Coach:
             rung_by_reply=ai_ask,
             elicit=elicit,
         )
+        if self.stream_sink:
+            # Not spoken once its moment is over, nor when a question came behind it while it
+            # waited (`Speaker.submit` sets `unvoiced`): read when its first sentence comes.
+            request.stream_to = self.stream_sink(
+                trigger,
+                position.ply,
+                lambda: request.unvoiced or self.moved_on((epoch, game_id, own_moves)),
+            )
         self.speaker.submit(request)
 
     def _must_name(

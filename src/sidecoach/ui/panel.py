@@ -2593,11 +2593,18 @@ class PanelEngine:
                 if spoken.streamed:
                     action = "streamed"
                 else:
+                    # A stuck hint a question came behind is shown first, in its place, and
+                    # not spoken: the voice goes to the answer (Tai, 2026-10-02).
                     action = self._speak(
-                        message.trigger.value, message.text, message.ply, moved_on=spoken.late
+                        message.trigger.value,
+                        message.text,
+                        message.ply,
+                        moved_on=spoken.late or spoken.unvoiced,
                     )
                 if action == "streamed":
                     meta.append("streamed")
+                elif spoken.unvoiced:
+                    meta.append("not spoken: a question came behind it")
                 elif action == "stale":
                     meta.append("not spoken: board moved on")
                 if spoken.late:

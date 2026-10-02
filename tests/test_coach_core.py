@@ -486,6 +486,36 @@ def test_a_question_drops_nothing_queued() -> None:
     ]
 
 
+def test_a_stuck_hint_a_question_came_behind_is_shown_first_and_not_spoken() -> None:
+    """Tai, 2026-10-02 (T8): "the stuck hint does not need to be voiced but the order should
+    still be preserved". The hint waiting when the question comes is shown first, in its place,
+    and the voice goes to the answer: its sink reads it as not to be spoken, and the panel is
+    told so (`Spoken.unvoiced`). A hint with no question behind it is spoken as ever."""
+    coach = Coach(
+        ScriptedProvider(["Look at f7.", "Qxf7 is mate."]),
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+    )
+    sinks: dict[Trigger, Callable[[], bool]] = {}
+
+    def stream_sink(trigger: Trigger, ply: int | None, moved_on: Callable[[], bool]) -> None:
+        sinks[trigger] = moved_on  # what the voice will ask when the first sentence comes
+
+    coach.stream_sink = stream_sink  # type: ignore[assignment]
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    since = coach.policy.stuck_from
+    assert since is not None
+    coach.tick(since + coach.policy.stuck_threshold())  # the stuck hint, queued, not yet run
+    assert sinks[Trigger.STUCK]() is False, "nothing behind it yet: spoken"
+    coach.ask("what should I play?", since + coach.policy.stuck_threshold() + 1)
+    assert sinks[Trigger.STUCK]() is True, "a question came behind it: not spoken"
+    assert sinks[Trigger.USER_ASK]() is False, "the answer is spoken"
+    out = drain(coach)
+    assert [m.trigger for m in out] == [Trigger.STUCK, Trigger.USER_ASK], "in order, none dropped"
+    hint, answer = coach.spoken[-2:]
+    assert hint.unvoiced and not answer.unvoiced
+
+
 # 7. A failure while answering is counted, and the question is answered
 
 
