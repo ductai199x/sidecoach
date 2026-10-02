@@ -275,12 +275,40 @@ fun mayCarryClaims(text: String): Boolean {
  */
 private val ASK_MOVE = Regex(
     "\\b((?<!\\bwas the )(?<!\\bwas that the )(?<!\\bwas it the )best move|" +
-        "what (should|do|would) i (play|do)|what would you play|" +
-        "which move(?! (?:did|was|were|had|has|have|do|does) (?:they|he|she|i|it|that|the opponent|" +
-        "my opponent)\\b)|" +
-        "just tell me|what'?s the move|tell me the move|(?<!\\bwas )(?<!\\bwere )the answer)\\b",
+        "what (?:should|would) i play|what would you play|" +
+        "which move (?:should i (?:play|make)|is (?:best|better)|would you (?:play|make|suggest)|" +
+        "do you (?:play|suggest|recommend))|" +
+        "just tell me|what'?s the move|(?:tell|show|give) me the move|" +
+        "(?:(?:tell|give|show) me|what(?:'s| is)) the answer)\\b",
     RegexOption.IGNORE_CASE,
 )
+
+/**
+ * The moves besides the best one asked for as such: "any other good moves?", "what else works?",
+ * "which moves are fine here?" -- the player asks for moves, and gets all that are fine, named
+ * ([alternativesAnswer]). `coach._ASK_OTHER_MOVES`.
+ */
+internal val ASK_OTHER_MOVES = Regex(
+    "\\bwhat else (?:works|is good|is fine|is playable|can i play|could i play|do i have)\\b" +
+        "|\\bwhich moves (?:are|would be|work|hold)\\b" +
+        "|\\b(?:other|another|more|alternative) (?:good |decent |fine |playable |strong |" +
+        "reasonable )?(?:moves?|options?|candidates?|alternatives?)\\b" +
+        "|\\b(?:best|good|fine|decent|playable|candidate|top) moves\\b|\\balternatives?\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Another move asked about as good as the one they have in mind or the one named: "is Nf3 also
+ * good?", "does d4 work too?". Opens nothing by itself. `coach._ASK_ALSO`.
+ */
+internal val ASK_ALSO = Regex(
+    "\\b(?:also|as well|too)\\b[^.?!]{0,25}\\b(?:good|fine|ok|okay|playable|works?|strong)\\b" +
+        "|\\b(?:good|fine|ok|okay|playable|works?)\\b[^.?!]{0,15}\\b(?:also|as well|too)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+/** "I am not stuck, just thinking" is no request for a hint. `coach._NOT_STUCK`. */
+private val NOT_STUCK = Regex("(?:\\bnot|n't|\\bnever)\\s+(?:\\w+\\s+)?stuck\\b", RegexOption.IGNORE_CASE)
 /**
  * How the position goes on is the line: "how would this position continues?" and "ok and after
  * that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
@@ -291,8 +319,8 @@ private val ASK_MOVE = Regex(
 private val ASK_LINE = Regex(
     "\\b(?:the|a|some|main|best|engine'?s?)\\s+(?:(?:main|best|whole|full|engine'?s?|critical|" +
         "forcing|winning)\\s+)?(?:lines?|variations?|continuations?)\\b" +
-        "|\\b(?:what happens (?:after|next)|" +
-        "and then what|what follows|what(?:'s| is| comes) next|then what)\\b" +
+        "|\\b(?:what happens (?:after|next)|what follows)\\b" +
+        "|\\b(?:and )?then what\\W*\$|\\bwhat(?:'s| is| comes) next\\W*\$" +
         "|\\bafter that\\s*\\?" +
         "|\\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|" +
         "things) (?:continue|continues|go on|goes on|play out|proceed)\\b",
@@ -312,8 +340,8 @@ private val NAMED_SQUARE = Regex("\\b[a-h][1-8]\\b")
 /** The unlock the user's words earn, if any. */
 fun unlockFor(text: String, board: Board, candidates: List<String>): Unlock? {
     if (ASK_LINE.containsMatchIn(text)) return Unlock.ASK_LINE
-    if (ASK_MOVE.containsMatchIn(text)) return Unlock.ASK_MOVE
-    if (HINT.containsMatchIn(text)) return Unlock.HINT
+    if (ASK_MOVE.containsMatchIn(text) || ASK_OTHER_MOVES.containsMatchIn(text)) return Unlock.ASK_MOVE
+    if (HINT.containsMatchIn(NOT_STUCK.replace(text, " "))) return Unlock.HINT
     for (token in SAN.findAll(text).map { it.groupValues[1] }) {
         val move = board.parseSan(token) ?: continue
         if (board.san(move) in candidates) return Unlock.USER_NAMED_MOVE
@@ -453,6 +481,9 @@ class Coach(
     var positions: MutableMap<Int, CoachPosition> = LinkedHashMap()
     var moves: MutableMap<Int, MovePlayed> = LinkedHashMap()
 
+    /** When each move of [moves] arrived (the loop's clock). `Coach._moved_at`. */
+    private var movedAt: MutableMap<Int, Double> = LinkedHashMap()
+
     /** The game as the model sees it: one message per move, the coach's turns between. */
     val conversation = Conversation().apply { this.compactRecord = compactRecord }
 
@@ -540,7 +571,7 @@ class Coach(
      * A question asked before the engine had looked at the position on the board: it is
      * answered the moment the analysis lands (see [ask]).
      */
-    private var pendingAsk: Pair<String, Double>? = null
+    private var pendingAsks = ArrayList<Pair<String, Double>>()
 
     /**
      * The moment of the game: a new game, a takeback and a re-read each start another. A reply
@@ -598,14 +629,12 @@ class Coach(
                 releaseLesson(ts)
                 current = null
                 finished = true
-                conversation.ended(event)
-                val pending = pendingAsk
-                if (pending != null) {
-                    // The question held for the engine's look, answered now: nothing is withheld
-                    // from a game that is over, and left waiting it was never answered.
-                    pendingAsk = null
-                    ask(pending.first, ts)
-                }
+                synchronized(lock) { conversation.ended(event) }
+                // The questions held for the engine's look, answered now: nothing is withheld from
+                // a game that is over, and left waiting they were never answered.
+                val asks = pendingAsks
+                pendingAsks = ArrayList()
+                for ((held, _) in asks) ask(held, ts)
             }
 
             is Recommendation -> onRecommendation(event, ts)
@@ -615,7 +644,7 @@ class Coach(
             is ProfileSnapshot -> profile = event
             is ScreenStateChanged -> {
                 val covered = event.state == ScreenState.COVERED
-                if (covered && !policy.covered) conversation.covered()
+                if (covered && !policy.covered) synchronized(lock) { conversation.covered() }
                 policy.covered = covered
             }
 
@@ -667,8 +696,12 @@ class Coach(
      * games: every button press froze the vision until it returned).
      */
     fun ask(text: String, ts: Double) {
+        // The moment it was asked in: the reply is that moment's, whatever the game does while a
+        // worker checks the words and the model writes (a new game starting then filed the
+        // answer under the next game).
+        val moment = epoch to gameId
         if (profileAsk != null && ASK_PROFILE.containsMatchIn(text)) {
-            askProfile(text, ts)
+            askProfile(text, ts, moment)
             return
         }
         val elicitAt = elicitAsked
@@ -682,7 +715,7 @@ class Coach(
             // the moment its analysis lands -- never from an older position's (Tai, 2026-09-24:
             // a hint pressed as a puzzle appeared got "I have not seen enough of this game yet
             // to say. Give me a move or two.").
-            if (pendingAsk == null) {
+            if (pendingAsks.isEmpty()) {
                 queuePlain(
                     Trigger.USER_ASK,
                     "One moment -- still looking at this position.",
@@ -690,7 +723,7 @@ class Coach(
                     turn = false,
                 )
             }
-            pendingAsk = text to ts
+            pendingAsks.add(text to ts) // each is answered, in the order asked
             return
         }
         if (position == null || position.facts == null) position = latestWithFacts()
@@ -833,6 +866,7 @@ class Coach(
                     fen = where.board.fen(),
                     now = true,
                     recordNow = true,
+                    moment = moment,
                 )
             }
             return found
@@ -848,14 +882,17 @@ class Coach(
             fun answered() {
                 val verdicts = if (mayCarryClaims(text)) examined() else emptyList()
                 if (!shownExamination) { // offline, the engine's word on it was the answer
-                    speak(Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts)
+                    speak(
+                        Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts,
+                        moment = moment,
+                    )
                 }
             }
             if (tools && !syncClaims) {
                 // The engine's searches -- the moves named, the line's end -- take up to seconds
                 // each: on the caller's thread they stalled the pipeline (the deep prompt review,
                 // 2026-10-01).
-                spawn({ answered() }, "sidecoach-ask")
+                spawn({ guarded("question", ts, moment) { answered() }.run() }, "sidecoach-ask")
             } else {
                 answered()
             }
@@ -877,22 +914,43 @@ class Coach(
                 ts,
                 userText = text,
                 verdicts = verdicts + found,
+                moment = moment,
             )
         }
 
         if (syncClaims) {
             checked() // replay and evaluation: the request must exist when ask() returns
         } else {
-            spawn({ checked() }, "sidecoach-claims")
+            spawn({ guarded("claims check", ts, moment) { checked() }.run() }, "sidecoach-claims")
         }
     }
+
+    /**
+     * A question's work for a worker thread, its failure counted and logged as a failed call is,
+     * and the question answered with that rather than left with nothing. `Coach._guarded`.
+     */
+    private fun guarded(what: String, ts: Double, moment: Pair<Int, String?>, work: () -> Unit): Runnable =
+        Runnable {
+            try {
+                work()
+            } catch (exc: Exception) {
+                speaker.noteFailure(what, exc)
+                queuePlain(
+                    Trigger.USER_ASK,
+                    "I could not work that out just now; ask me again in a moment.",
+                    ts,
+                    recordNow = true,
+                    moment = moment,
+                )
+            }
+        }
 
     /**
      * A question about the player over their games: answered from the record by the
      * profile's own model loop, off this thread (several model calls), and spoken as the
      * coach's turn when it lands. The queries it ran are kept for the log.
      */
-    private fun askProfile(text: String, ts: Double) {
+    private fun askProfile(text: String, ts: Double, moment: Pair<Int, String?>) {
         val ask = profileAsk!!
         synchronized(lock) { conversation.userSaid(text) }
 
@@ -906,6 +964,7 @@ class Coach(
                     "I could not read the record just now; ask me again in a moment.",
                     ts,
                     recordNow = true,
+                    moment = moment,
                 )
                 profileAnswers.add("error" to exc.toString())
                 return
@@ -918,10 +977,10 @@ class Coach(
                 )
             }
             profileAnswers.add("answer" to answer)
-            queuePlain(Trigger.USER_ASK, answer.text, ts, recordNow = true)
+            queuePlain(Trigger.USER_ASK, answer.text, ts, recordNow = true, moment = moment)
         }
 
-        spawn({ run() }, "profile-ask")
+        spawn({ guarded("record question", ts, moment) { run() }.run() }, "profile-ask")
     }
 
     fun hint(ts: Double) = ask("hint", ts)
@@ -949,16 +1008,32 @@ class Coach(
      * `Coach._answer_pending`.
      */
     private fun answerPending(ts: Double) {
-        val pending = pendingAsk ?: return
-        if (current?.facts == null) return
-        pendingAsk = null
-        ask(pending.first, ts)
+        if (pendingAsks.isEmpty() || current?.facts == null) return
+        val asks = pendingAsks
+        pendingAsks = ArrayList()
+        for ((held, _) in asks) ask(held, ts)
     }
 
     fun poll(): List<CoachMessage> {
         val out = ArrayList<CoachMessage>()
         for (one in speaker.poll()) {
+            if (ofAMomentGone(one)) {
+                // The lesson or the word on a move the board no longer has -- taken back, the
+                // game over, the board re-read: never shown or spoken, and the question it was to
+                // end with was never asked.
+                withdrawn.addLast(one)
+                while (withdrawn.size > SPOKEN_PROMPTS_KEPT) withdrawn.removeFirst()
+                if (one.elicit) {
+                    elicitAsked = null
+                    elicitAnswered = false
+                }
+                policy.lastReason =
+                    "not said: the ${one.message.trigger.slug} on ply ${one.message.ply} was " +
+                        "about a position the board no longer has"
+                continue
+            }
             spoken.add(one)
+            lighten()
             if (one.message.text.isEmpty()) {
                 // A failed model reply with nothing to fall back on: kept for the log (its
                 // calls say why), said to no one.
@@ -979,6 +1054,33 @@ class Coach(
     }
 
     // Internals
+
+    /**
+     * What was dropped unsaid for its moment being gone ([ofAMomentGone]), for the log.
+     * `Coach.withdrawn`.
+     */
+    val withdrawn = ArrayDeque<Spoken>()
+
+    /**
+     * Whether a lesson or a word on a move was written for a moment that is over: a takeback, a
+     * re-read or a new game came after the request. Only what is about a position by its ply: an
+     * answer to the player's question, the review and the practice are theirs in whatever moment
+     * they land. `Coach._of_a_moment_gone`.
+     */
+    private fun ofAMomentGone(one: Spoken): Boolean =
+        one.epoch != epoch &&
+            (one.message.trigger == Trigger.POST_MOVE || one.message.trigger == Trigger.POST_MISTAKE) &&
+            one.message.ply != null
+
+    /**
+     * What the log keeps of the replies said long ago: their words and checks, not the prompts
+     * (each the whole game's harness, up to twice a reply, for as long as the session ran).
+     * `Coach._lighten`.
+     */
+    private fun lighten() {
+        val old = spoken.size - SPOKEN_PROMPTS_KEPT - 1
+        if (old >= 0) spoken[old] = spoken[old].withoutPrompts()
+    }
 
     /**
      * The system message and the templates' register for the player: set at the start and
@@ -1005,7 +1107,8 @@ class Coach(
         board = Board(event.startFen)
         positions = linkedMapOf(0 to CoachPosition(ply = 0, board = board.copy()))
         moves = LinkedHashMap()
-        conversation.newGame(event, profile = profileLines())
+        movedAt = LinkedHashMap()
+        synchronized(lock) { conversation.newGame(event, profile = profileLines()) }
         thinkS.clear()
         mistakes = 0
         // The review is the game's own: a new game answered "how did I do overall?" with the
@@ -1069,12 +1172,19 @@ class Coach(
      * top of a lesson (Tai's phone, 2026-09-27). A player of 1800 and up hears the pattern
      * without the textbook habit. Said from the model's cause, no model call.
      */
+    /**
+     * Nothing is said unasked: the policy's quiet mode, or bullet, where the pattern and the
+     * practice said after the game's moves came regardless. `Coach._unprompted_off`.
+     */
+    private fun unpromptedOff(): Boolean = quiet || policy.timeControl == TimeControl.BULLET
+
     private fun onEvidence(event: ProfileEvidence, ts: Double) {
         val cause = event.cause
         if (event.gameId != gameId || cause == null || !Causes.HABIT.containsKey(cause)) return
         val n = (causesSeen[cause] ?: 0) + 1
         causesSeen[cause] = n
         if (n < 3 || cause in patternTold) return
+        if (unpromptedOff()) return // nothing unasked: it comes the next time the cause does
         patternTold.add(cause)
         val (words, habit) = Causes.HABIT.getValue(cause)
         var text = "That is three times now: $words."
@@ -1090,7 +1200,7 @@ class Coach(
      * puzzles, on the card; no model call, the card carries the links.
      */
     private fun onRecommendation(event: Recommendation, ts: Double) {
-        if (event.gameId != gameId || event.puzzles.isEmpty()) return
+        if (event.gameId != gameId || event.puzzles.isEmpty() || unpromptedOff()) return
         val n = event.puzzles.size
         val text = "For practice: $n ${event.motifWords} puzzle${if (n != 1) "s" else ""} around " +
             "${event.level} ${if (n != 1) "are" else "is"} on the review card -- ${event.reason}."
@@ -1133,7 +1243,7 @@ class Coach(
     private fun onClock(event: ClockObservation, ts: Double) {
         val userMs = if (userSide == Pieces.Side.WHITE) event.whiteMs else event.blackMs
         if (userMs != null) policy.setRemaining(userMs)
-        conversation.clock(event.whiteMs, event.blackMs)
+        synchronized(lock) { conversation.clock(event.whiteMs, event.blackMs) }
         val seen = listOfNotNull(event.whiteMs, event.blackMs)
         if (seen.isEmpty()) return
         val peak = seen.max()
@@ -1199,10 +1309,11 @@ class Coach(
             thinkS.addLast(event.thinkMs / 1000.0)
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
         }
-        if (event.byUser) pendingAsk = null // they played on: the question is answered by the move
+        if (event.byUser) pendingAsks = ArrayList() // they played on: the questions are answered by the move
         board = boardAfter(board, event)
         moves[event.ply] = event
-        conversation.move(event)
+        movedAt[event.ply] = ts
+        synchronized(lock) { conversation.move(event) }
         val position =
             CoachPosition(ply = event.ply, board = board.copy(), lastMove = event.san)
         positions[event.ply] = position
@@ -1229,7 +1340,7 @@ class Coach(
         try {
             summarise(conversation, summariser, keep = summariseEvery, lock = lock)
         } catch (exc: Exception) {
-            speaker.lastError = "summary: ${exc::class.java.simpleName}: ${exc.message}"
+            speaker.noteFailure("summary", exc)
         }
     }
 
@@ -1239,18 +1350,22 @@ class Coach(
      */
     private fun onTakeback(event: Takeback, ts: Double) {
         epoch += 1
-        conversation.takeback(event)
+        synchronized(lock) { conversation.takeback(event) }
         board = boardBack(board, event.fen)
         val active = conversation.activeRecords()
         val ply = if (active.isNotEmpty()) active.last().move.ply else 0
         for (gone in positions.keys.filter { it > ply }) positions.remove(gone)
         // The withdrawn moves go too: a late word on one was taken for the move that replaced it.
         for (gone in moves.keys.filter { it > ply }) moves.remove(gone)
+        for (gone in movedAt.keys.filter { it > ply }) movedAt.remove(gone)
         var position = positions[ply]
         if (position == null) {
             position = CoachPosition(ply = ply, board = board.copy())
             positions[ply] = position
         }
+        // The move played from here is gone, and with it the line its playing opened: the
+        // position is the player's again at the hints it had had, stuck hints and all.
+        position.disclosure.withdrawMove()
         current = position
         policy.withdraw(ply)
         policy.newPosition(ply, ts, userToMove = userToMove)
@@ -1262,9 +1377,10 @@ class Coach(
     private fun onResync(event: Resync, ts: Double) {
         epoch += 1
         board = Board(event.fen)
-        conversation.resync(event, board)
+        synchronized(lock) { conversation.resync(event, board) }
         positions = linkedMapOf(0 to CoachPosition(ply = 0, board = board.copy()))
         moves = LinkedHashMap()
+        movedAt = LinkedHashMap()
         current = positions[0]
         // The pace is the position's play, as a game's own: the next puzzle in the same
         // orientation comes as a re-read, and the last one's quick finish made its first find
@@ -1297,7 +1413,7 @@ class Coach(
         // replaces it: kept back until the full depth, a question answered from the early one
         // was asked of the model with "Engine lines: not in yet." and no facts (the coach review,
         // 2026-10-01).
-        conversation.analysed(event, position.facts!!)
+        synchronized(lock) { conversation.analysed(event, position.facts!!) }
         if (event.provisional) {
             // Measured early, the full depth to follow: what the player asks is answered from it
             // now; the coach's own words -- a lesson -- wait for the full depth.
@@ -1313,21 +1429,49 @@ class Coach(
 
     /**
      * The highest hint the combination this position continues has had: back through the
-     * player's positions while the move they played there was the engine's best, the levels
-     * said before they moved (Tai, 2026-09-29: "Each level can only be said once and if the
-     * level higher was said then the lower one can't be said"). A move off the best line
-     * starts a new one; a puzzle's wrong moves are taken back. `Coach._ladder`.
+     * player's positions while the move they played there was the engine's best and the position
+     * goes on with it ([sameCombination]), the levels said before they moved (Tai, 2026-09-29:
+     * "Each level can only be said once and if the level higher was said then the lower one
+     * can't be said"). A move off the best line starts a new one; a puzzle's wrong moves are
+     * taken back. Any run of best moves is not one combination: the hint said at the game's
+     * first move kept the next fifty from a player who was stuck. `Coach._ladder`.
      */
     private fun ladder(position: CoachPosition): DisclosureLevel {
         var level = DisclosureLevel.SILENT
-        var ply = position.ply
+        var current = position
         while (true) {
+            val ply = current.ply
             val own = moves[ply - 1]
             val before = positions[ply - 2]
-            if (own == null || !own.byUser || before == null || !wasBest(before, own)) return level
+            if (own == null || !own.byUser || before == null || !wasBest(before, own) ||
+                !sameCombination(before, own, current)
+            ) {
+                return level
+            }
             if (before.disclosure.hinted.value > level.value) level = before.disclosure.hinted
-            ply -= 2
+            current = before
         }
+    }
+
+    /**
+     * Whether [after], where the player stands again, goes on with the combination they moved on
+     * from at [before] by [own]: a forcing sequence the engine's line there continues -- their
+     * move, the reply it expected, and the next move of the line the best now -- or one plan or
+     * theme the facts name at both. `Coach._same_combination`.
+     */
+    private fun sameCombination(before: CoachPosition, own: MovePlayed, after: CoachPosition): Boolean {
+        val was = before.facts ?: return false
+        val now = after.facts ?: return false
+        for ((first, second) in listOf(was.theme to now.theme, was.plan to now.plan)) {
+            if (!first.isNullOrEmpty() && first == second) return true
+        }
+        val line = was.line.map { it.trimEnd('+', '#') }
+        return was.nature != null && was.nature.startsWith("forcing") &&
+            line.size >= 3 &&
+            line[0] == own.san.trimEnd('+', '#') &&
+            (after.lastMove ?: "").trimEnd('+', '#') == line[1] &&
+            now.candidates.isNotEmpty() &&
+            now.candidates[0].trimEnd('+', '#') == line[2]
     }
 
     /** Whether [move] was the engine's best from [position]. `Coach._was_best`. */
@@ -1345,7 +1489,7 @@ class Coach(
         val played = moves[event.ply]
         // The verdict on a move taken back since, not on the one played there now.
         if (played != null && played.uci != event.uci) return
-        conversation.assess(event)
+        synchronized(lock) { conversation.assess(event) }
         val move = played ?: return
         if (!move.byUser) return
         val before = positions[event.ply - 1]
@@ -1664,7 +1808,7 @@ class Coach(
             known = position.analysis?.lines ?: emptyList(),
         )
     } catch (exc: Exception) {
-        speaker.lastError = "named analysis: ${exc::class.java.simpleName}: ${exc.message}"
+        speaker.noteFailure("named analysis", exc)
         emptyList()
     }
 
@@ -1741,7 +1885,10 @@ class Coach(
      */
     internal fun askedOwnMove(text: String): PlyRecord? {
         if (ASK_LAST_MOVE.containsMatchIn(text) || ASK_COST.containsMatchIn(text)) {
-            return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
+            // After a reply that came straight away "that move" is theirs too: they never faced
+            // the position between (the opponent's move is last on the board, and the model took
+            // it for the one asked about).
+            return lastOwnMove(mine = MY_MOVE.containsMatchIn(text) || repliedAtOnce())
         }
         if (finished || userToMove || !offline) return null
         val elsewhere = listOf(
@@ -1749,6 +1896,21 @@ class Coach(
         )
         if (elsewhere.any { it.containsMatchIn(text) }) return null
         return lastOwnMove()
+    }
+
+    /**
+     * Whether the last move on the board is the opponent's and came straight after the player's
+     * own ([INSTANT_REPLY_S] by the loop's clock): a bot's. `Coach._replied_at_once`.
+     */
+    internal fun repliedAtOnce(): Boolean {
+        if (moves.isEmpty()) return false
+        val last = moves.keys.max()
+        val reply = moves[last]
+        val own = moves[last - 1]
+        if (reply == null || own == null || reply.byUser || !own.byUser) return false
+        val sent = movedAt[own.ply]
+        val answered = movedAt[reply.ply]
+        return sent != null && answered != null && answered - sent >= 0 && answered - sent <= INSTANT_REPLY_S
     }
 
     /** The opponent's move, when it is the last move played and has its verdict. */
@@ -1827,8 +1989,13 @@ class Coach(
                 }
             }
         }
-        val good = listOf("brilliant", "great", "best", "excellent").sumOf { counts[it] ?: 0 }
-        var text = "$good of your ${judged.size} moves were best or excellent."
+        val strong = listOf("brilliant", "great", "best", "excellent")
+        val good = strong.sumOf { counts[it] ?: 0 }
+        // The count and the words name the same labels: "best or excellent" over a count that
+        // held the great and the brilliant moves too said less than it counted.
+        val named = strong.filter { (counts[it] ?: 0) > 0 }.ifEmpty { listOf("best", "excellent") }
+        val labels = if (named.size == 1) named[0] else "${named.dropLast(1).joinToString(", ")} or ${named.last()}"
+        var text = "$good of your ${judged.size} moves were $labels."
         // What they keep missing, from the session's causes, before the game has a review.
         val kept = causesSeen.entries
             .filter { (cause, n) -> n >= 2 && Causes.HABIT.containsKey(cause) }
@@ -1858,6 +2025,52 @@ class Coach(
         return null
     }
 
+    /**
+     * The directive and the template for a question about the moves besides the best: every move
+     * about level with it, named, and the clearly worse ones with what goes wrong with them, from
+     * the engine's lines ([worseMoves]). Asked whether a move is also good, the answer is the same
+     * set and the move they name among it or not. `Coach._alternatives_answer`.
+     */
+    private fun alternativesAnswer(position: CoachPosition, facts: PositionFacts, said: String): Pair<String, String> {
+        val fine = facts.candidates
+        val analysis = position.analysis
+        val worse = if (analysis != null) worseMoves(position.board, analysis, userColour) else emptyList()
+        val also = ASK_ALSO.containsMatchIn(said) && !ASK_OTHER_MOVES.containsMatchIn(said)
+        val levelPart = if (fine.size > 1) {
+            "The moves about level with the best, all fine: ${fine.joinToString(", ")}. Say they " +
+                "are about equally good, and name every one."
+        } else {
+            "One move stands out: ${fine[0]}. Say the others are clearly worse."
+        }
+        val worsePart = if (worse.isNotEmpty()) {
+            " Clearly worse, and what goes wrong with them, true of the board: ${worseText(worse)}. " +
+                "Say which, and why, in a few words."
+        } else {
+            ""
+        }
+        val askPart = if (also) {
+            "They ask whether another move is also good: say yes plainly when the move they name " +
+                "is among the fine ones, and what it does; when it is not, say it is weaker than " +
+                "the best, and what goes wrong with it when the sheet says."
+        } else {
+            "They ask about the good moves here, not only the best one."
+        }
+        val directive = "$askPart $ALTERNATIVES_READ $levelPart$worsePart Say it in words. " +
+            "$NO_FIGURES Two or three sentences, no question."
+        var text = fineSaid(fine)
+        val bare = fine.map { it.trimEnd('+', '#') }
+        val named = SAN.findAll(said).map { it.groupValues[1] }.filter { it.trimEnd('+', '#') in bare }.toList()
+        if (also && named.isNotEmpty()) {
+            text = if (named[0].trimEnd('+', '#') == bare[0]) {
+                "${named[0]} is the engine's top choice."
+            } else {
+                "Yes, ${named[0]} is fine too -- about as good as ${fine[0]}."
+            }
+            if (fine.size > 1) text += " " + fineSaid(fine)
+        }
+        return directive to "$text ${worseSaid(worse)}".trim()
+    }
+
     private fun speak(
         trigger: Trigger,
         position: CoachPosition,
@@ -1870,8 +2083,10 @@ class Coach(
         candidates: Int? = null,
         routine: Boolean = false,
         elicit: Boolean = false,
+        moment: Pair<Int, String?>? = null,
     ) {
         val facts = position.facts!!
+        val (momentEpoch, momentGame) = moment ?: (epoch to gameId)
         var (instructionText, fallback) = instruction(
             trigger, position, level, userText, verdicts, assessment, played, elicit = elicit,
         )
@@ -2074,7 +2289,7 @@ class Coach(
             board = position.board,
             fallback = fallback,
             ply = position.ply,
-            gameId = gameId ?: "",
+            gameId = momentGame ?: "",
             userText = userText,
             disclosed = verdicts.filter { it.startsWith("Engine on ") }.joinToString("\n"),
             annotations = annotationsFor(
@@ -2105,7 +2320,8 @@ class Coach(
             record = numberedMoves(),
             unlisted = unlisted,
             tools = tools,
-            epoch = epoch,
+            epoch = momentEpoch,
+            elicit = elicit,
         )
         speaker.submit(request)
     }
@@ -2351,17 +2567,20 @@ class Coach(
         now: Boolean = false,
         recordNow: Boolean = false,
         turn: Boolean = true,
+        moment: Pair<Int, String?>? = null,
     ) {
+        val (momentEpoch, momentGame) = moment ?: (epoch to gameId)
         val message = CoachMessage(
             text = text,
             level = level,
             trigger = trigger,
-            gameId = gameId,
+            gameId = momentGame,
             ply = ply,
             fen = fen,
             annotations = annotations ?: emptyList(),
         )
-        if (recordNow) synchronized(lock) { conversation.coachSaid(text) }
+        // Asked for in a moment gone by, it is no turn of this one ([poll]).
+        if (recordNow && momentEpoch == epoch) synchronized(lock) { conversation.coachSaid(text) }
         speaker.submitReady(
             Spoken(
                 message = message,
@@ -2369,7 +2588,7 @@ class Coach(
                 problems = emptyList(),
                 attempts = 0,
                 recorded = recordNow || !turn,
-                epoch = epoch,
+                epoch = momentEpoch,
             ),
             now = now,
         )
@@ -2751,7 +2970,7 @@ class Coach(
                 " They ask nothing: reply in one short sentence -- say whether what they " +
                     "say is right, or put it right -- and ask nothing."
             }
-        val directive: String
+        var directive: String
         val lastOpponent = lastOpponentMove()
         val lastOwn = askedOwnMove(said)
         if (ASK_REVIEW.containsMatchIn(said)) {
@@ -2798,8 +3017,19 @@ class Coach(
                     val given = bestSan.isNotEmpty() &&
                         saidSinceMove().any { bestSan.trimEnd('+', '#') in it }
                     // Asked again once the move was given, "The next hint is the answer" said it
-                    // was still to come (the deep prompt review, 2026-10-01).
-                    aim + if (given) MOVE_GIVEN.replace("{move}", bestSan) else MOVE_DIRECTIVE
+                    // was still to come; said again, it is with why it beats what is clearly
+                    // worse, as the board says it -- not a restatement (`alternatives`).
+                    val worse = if (given && position.analysis != null) {
+                        worseMoves(position.board, position.analysis!!, userColour)
+                    } else {
+                        emptyList()
+                    }
+                    if (worse.isNotEmpty()) {
+                        fallback = "$fallback ${worseSaid(worse)}".trim()
+                        aim + MOVE_GIVEN_WHY.format(bestSan, worseText(worse))
+                    } else {
+                        aim + if (given) MOVE_GIVEN.replace("{move}", bestSan) else MOVE_DIRECTIVE
+                    }
                 }
                 level.value >= DisclosureLevel.FOCUS.value -> {
                     val bestSan = facts.candidates.firstOrNull() ?: ""
@@ -2846,13 +3076,38 @@ class Coach(
                 "They asked to see the line: give it -- ${facts.line.joinToString(" ")} -- " +
                     "plainly, then one short sentence on the idea behind it." + byMove +
                     " Do not answer with a question." + if (given) " $LINE_GIVEN" else ""
+        } else if (level.value >= DisclosureLevel.MOVE.value && facts.candidates.isNotEmpty() &&
+            position.board.turn == userColour &&
+            (
+                ASK_OTHER_MOVES.containsMatchIn(said) ||
+                    (ASK_ALSO.containsMatchIn(said) && !ASK_LAST_MOVE.containsMatchIn(said))
+                )
+        ) {
+            // The moves besides the best: all that are about as good, named, and the clearly
+            // worse ones with what goes wrong ([alternativesAnswer]).
+            val (asked, alternatives) = alternativesAnswer(position, facts, said)
+            directive = asked
+            // A move they name, rated by the engine, is that word's to say.
+            if (engineWords.none { "the expected score is" in it }) fallback = alternatives
         } else if (level.value >= DisclosureLevel.MOVE.value &&
             ASK_MOVE.containsMatchIn(said) && facts.candidates.isNotEmpty()
         ) {
-            directive =
+            var asked =
                 "They asked what to play: tell them plainly it is ${facts.candidates[0]}, then " +
                     "why it works, from the fact sheet's why and pattern, correctly. Do not answer " +
                     "with a question this time."
+            if (facts.candidates.size > 1) {
+                // Not only line 1: others are as good, and the best is not one move.
+                asked += " ${facts.candidates.size} moves are about equally good here " +
+                    "(${facts.candidates.joinToString(", ")}): say so, and name them, rather " +
+                    "than naming only the first."
+                val rest = facts.candidates.drop(1)
+                fallback = (
+                    "$fallback " + (if (rest.size > 1) rest.dropLast(1).joinToString(", ") + " and " else "") +
+                        "${rest.last()} ${if (rest.size > 1) "are" else "is"} about as good."
+                    ).trim()
+            }
+            directive = asked
         } else if (ASK_OPPONENT_MOVE.containsMatchIn(said) && lastOpponent != null) {
             val theirs = lastOpponent.assessment!!
             val san = lastOpponent.move.san
@@ -3015,6 +3270,12 @@ class Coach(
                             ) +
                         (if (askedCost) " Name moves bare, never with a move number in front." else " $NO_FIGURES") +
                         " $TIE_TO_THE_GAME"
+            }
+            val reply = moves[lastOwn.move.ply + 1]
+            if (reply != null && !reply.byUser && repliedAtOnce()) {
+                // The opponent's move is last on the board; theirs is the one they ask about.
+                directive += " By \"that\" they mean $san, their own move: ${reply.san}, which the " +
+                    "opponent played straight after it, is not what they ask about."
             }
             if (followup && !asks) {
                 fallback = "" // a nod needs no template: nothing, rather than the verdict again

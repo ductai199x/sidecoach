@@ -139,8 +139,13 @@ val COACH_PIECE_NAMES = arrayOf("", "pawn", "knight", "bishop", "rook", "queen",
 
 private val FACT_VALUES = intArrayOf(0, 1, 3, 3, 5, 9, 0)
 
-/** Candidates within this much of the best line are "the near-equal set". */
-const val CANDIDATE_MARGIN = 0.02
+/**
+ * Candidates within this much of the best line are "the near-equal set": the moves that are all
+ * fine, said so when the player asks for the best moves and never refused when they name one (the
+ * claim check reads the same set). 0.02 left out a move three hundredths behind that an engine's
+ * depth would swap with the best.
+ */
+const val CANDIDATE_MARGIN = 0.03
 
 /**
  * An expected score from the player's side, in words: as the coach says it to the player
