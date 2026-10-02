@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -540,6 +541,36 @@ def test_no_single_position_may_hold_up_a_game(engine: Engine) -> None:
         engine.max_seconds = 5.0
     assert lines and time.monotonic() - started < 5.0
     assert lines[0].depth < 40, "the depth asked for was not reached, and that is reported"
+
+
+@needs_engine
+def test_settings_saved_mid_search_wait_for_the_search_to_end() -> None:
+    """Threads or hash saved while a search runs used to reach Stockfish at once: the
+    `setoption` stopped the search, and the cut one was kept as if whole (0.6 s and depth 14
+    of a 4 s search, the engine review 2026-10-01). They now wait for the search to end."""
+    assert STOCKFISH is not None
+    quiet = chess.Board("r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R1BQ1RK1 w - - 0 9")
+    with Engine(path=STOCKFISH, threads=2, hash_mb=64, multipv=4, max_seconds=1.5) as running:
+        got: dict[str, float] = {}
+
+        def search() -> None:
+            started = time.monotonic()
+            running.analyse(quiet, depth=60)
+            got["took"] = time.monotonic() - started
+
+        worker = threading.Thread(target=search)
+        worker.start()
+        time.sleep(0.4)
+        saved = time.monotonic()
+        running.reconfigure(threads=1, hash_mb=32)
+        assert time.monotonic() - saved < 0.2, "the save does not wait on the search"
+        worker.join(10)
+        assert got["took"] > 1.2, f"the search was cut short at {got['took']:.2f} s"
+        assert running.threads == 1 and running.hash_mb == 32
+        running.analyse(quiet, depth=4)  # the next search starts with them
+        assert running._engine is not None
+        config = vars(running._engine.protocol)["config"]  # what was last set on the process
+        assert config.get("Threads") == 1 and config.get("Hash") == 32
 
 
 def test_an_illegal_move_is_refused_rather_than_measured() -> None:

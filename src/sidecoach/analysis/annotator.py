@@ -167,6 +167,15 @@ class GameAnnotator:
         self.computed.clear()
         self._assessed.clear()
 
+    def forget_measured(self) -> None:
+        """Forget the positions measured, keeping the game's moves: the depth, the lines, the
+        time cap, the curve or the thresholds changed, and a loss compares two positions
+        measured the same way, so none measured before is set against one measured after."""
+        self._cache.clear()
+        self._verdict_cache.clear()
+        self._ahead.clear()
+        self.computed.clear()
+
     def look_ahead(self, board: chess.Board) -> Measured:
         """A position the game may reach, measured whole before it does, as the game's own
         positions are, and cached with them. Inside `Engine.interruptible` a search stopped

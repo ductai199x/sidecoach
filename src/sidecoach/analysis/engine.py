@@ -90,6 +90,8 @@ class Engine:
     _interruptible: bool = field(default=False, init=False, repr=False)
     _stopped: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _search: chess.engine.SimpleAnalysisResult | None = field(default=None, init=False, repr=False)
+    # Threads or hash saved while a search ran: set on the process before the next search.
+    _options_owed: bool = field(default=False, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -132,11 +134,25 @@ class Engine:
         self._engine = engine
 
     def reconfigure(self, *, threads: int | None = None, hash_mb: int | None = None) -> None:
-        """Threads and hash on the running engine (the settings saved mid-session)."""
+        """Threads and hash on the running engine (the settings saved mid-session). Never
+        during a search: a `setoption` stops the search under way, which was then kept as if
+        it had finished (0.6 s and depth 14 of a 4 s search). With a search running they are
+        set before the next one, and the save does not wait for it."""
         if threads is not None:
             self.threads = threads
         if hash_mb is not None:
             self.hash_mb = hash_mb
+        if not self._lock.acquire(blocking=False):
+            self._options_owed = True
+            return
+        try:
+            self._configure()
+        finally:
+            self._lock.release()
+
+    def _configure(self) -> None:
+        """Threads and hash set on the process; under the lock, between searches."""
+        self._options_owed = False
         if self._engine is None:
             return
         options: dict[str, str | int | bool | None] = {}
@@ -199,6 +215,8 @@ class Engine:
 
         depths = None if on_depth is None else (lambda infos: on_depth(as_lines(infos, False)))
         with self._lock:
+            if self._options_owed:
+                self._configure()
             infos = self._analyse_with_restart(board, limit, wanted, depths)
         lines = as_lines(infos, carry_best)
         if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
@@ -217,6 +235,8 @@ class Engine:
                 break
             limit = chess.engine.Limit(depth=EXTEND_DEPTH, time=EXTEND_SECONDS)
             with self._lock:
+                if self._options_owed:
+                    self._configure()
                 infos = self._analyse_with_restart(end, limit, 1)
             more = (infos[0].get("pv") or []) if infos else []
             if not more:
