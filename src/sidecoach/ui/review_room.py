@@ -49,8 +49,9 @@ from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries, measured
 
-# The review's format: a review saved in an older one is done again.
-REVIEW_VERSION = 1
+# The review's format: a review saved in an older one is done again. 2: the labels as
+# chess.com defines them (great, miss, brilliant, book; 2026-10-01).
+REVIEW_VERSION = 2
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
