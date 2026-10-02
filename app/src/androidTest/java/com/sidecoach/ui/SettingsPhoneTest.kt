@@ -546,6 +546,31 @@ class SettingsPhoneTest {
     }
 
     /**
+     * An object field re-sent with its keys in another order is not a change: compared as text,
+     * llm.extra_body counted as changed and rebuilt the coach's model for nothing (the review of
+     * 2026-10-01). The desktop's `_changed` compares with Python's ==; a key's value that does
+     * change, or a list in another order, still is one.
+     */
+    @Test
+    fun anObjectFieldInAnotherKeyOrderIsNotAChange() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val saved = store.values()
+        try {
+            fun extra(body: String) = JSONObject().put("llm", JSONObject().put("extra_body", JSONObject(body)))
+            val first = api.update(JSONObject().put("settings", extra("""{"top_k": 20, "seed": 7, "more": {"a": 1, "b": [1, 2]}}""")))
+            assertTrue(first.toString(), first.getBoolean("ok"))
+            val again = api.update(JSONObject().put("settings", extra("""{"more": {"b": [1, 2], "a": 1.0}, "seed": 7, "top_k": 20}""")))
+            assertTrue(again.toString(), again.getBoolean("ok"))
+            assertEquals("[]", again.getJSONArray("changed").toString())
+            val moved = api.update(JSONObject().put("settings", extra("""{"more": {"b": [2, 1], "a": 1}, "seed": 7, "top_k": 20}""")))
+            assertEquals("[\"llm.extra_body\"]", moved.getJSONArray("changed").toString())
+        } finally {
+            store.save(saved)
+        }
+    }
+
+    /**
      * Two small ones of the settings review (2026-10-01): a username saved with spaces around it
      * went into the address the games are fetched from, and the site knew no such player; and a
      * change to llm.extra_body was named key by key, which no mark applies to

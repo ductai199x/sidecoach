@@ -242,11 +242,42 @@ class SettingsApi(val store: SettingsStore) {
             val b = new.opt(key)
             if (prefix.isEmpty() && a is JSONObject && b is JSONObject) {
                 out.addAll(changed(a, b, "$key."))
-            } else if (a?.toString() != b?.toString()) {
+            } else if (!same(a, b)) {
                 out.add("$prefix$key")
             }
         }
         return out.sorted()
+    }
+
+    /**
+     * Two JSON values equal as Python's == finds them: objects by their keys and values in any
+     * order, lists in order, numbers by value (1 is 1.0, True is 1). Compared as text,
+     * llm.extra_body re-sent with its keys in another order counted as changed and rebuilt the
+     * coach's model for nothing (the review of 2026-10-01).
+     */
+    private fun same(a: Any?, b: Any?): Boolean {
+        val x = if (a == JSONObject.NULL) null else a
+        val y = if (b == JSONObject.NULL) null else b
+        return when {
+            x == null || y == null -> x == null && y == null
+            x is JSONObject && y is JSONObject -> {
+                val keys = x.keys().asSequence().toSet()
+                keys == y.keys().asSequence().toSet() && keys.all { same(x.opt(it), y.opt(it)) }
+            }
+            x is JSONArray && y is JSONArray -> x.length() == y.length() && (0 until x.length()).all { same(x.opt(it), y.opt(it)) }
+            (x is Number || x is Boolean) && (y is Number || y is Boolean) -> {
+                if (x is Boolean && y is Boolean) return x == y
+                fun value(v: Any): Double = if (v is Boolean) (if (v) 1.0 else 0.0) else (v as Number).toDouble()
+                val bothWhole = (x is Int || x is Long || x is Boolean) && (y is Int || y is Long || y is Boolean)
+                if (bothWhole) {
+                    fun whole(v: Any): Long = if (v is Boolean) (if (v) 1L else 0L) else (v as Number).toLong()
+                    whole(x) == whole(y)
+                } else {
+                    value(x) == value(y)
+                }
+            }
+            else -> x == y
+        }
     }
 }
 
