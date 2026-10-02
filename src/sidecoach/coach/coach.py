@@ -713,6 +713,16 @@ _SAYS_COST = re.compile(
 _CLAUSE = re.compile(r"(?<=[.;:!?])\s+|\s+--\s+|,\s+(?:but|though|while)\s+")
 # A clause about the move just played without naming it: "That was ...", "It cost ...".
 _ABOUT_IT = re.compile(r"^\W*(?:that|it|this|your (?:last )?move)\b", re.IGNORECASE)
+# Such a clause calling the move something: "That was a blunder", "It is the best move", "it's
+# not the strongest" -- not "It is best to ...", "It avoids the mistake of ...".
+_CALLED_IT = re.compile(
+    r"^\W*(?:that|it|this|your (?:last )?move)(?:'s|\s+(?:was|is|were))\s+(?:not\s+)?"
+    r"(?:(?:just|really|clearly|simply|actually|definitely|probably|also|still|truly)\s+)*"
+    r"(?:(?:a|an|the|your)\s+)?(?:(?:big|small|real|clear|serious|slight|costly|tiny|minor|"
+    r"bad|huge)\s+)?(?:blunder|mistake|inaccuracy|miss|best|strongest|top|engine's)\b"
+    r"(?!\s+to\b)",
+    re.IGNORECASE,
+)
 
 
 def _verdict_problems(text: str, request: _Request) -> list[str]:
@@ -733,11 +743,16 @@ def _verdict_problems(text: str, request: _Request) -> list[str]:
     best_ok = label in ("best", "excellent") or a.expected_loss < 0.005
     problems: list[str] = []
     for clause in _CLAUSE.split(text):
-        if not (names_it.search(clause) or _ABOUT_IT.match(clause)):
+        named = names_it.search(clause) is not None
+        if not (named or _ABOUT_IT.match(clause)):
             continue
+        # Unnamed, the clause speaks of the move only where it calls it so: "It avoids the
+        # mistake of ..." and "It is best to develop" were refused (the deep prompt review).
+        said_of_it = named or _CALLED_IT.match(clause) is not None
         others = [m for m in _SAN.findall(clause) if m.rstrip("+#") != core]
         if (
             not others
+            and said_of_it
             and not best_ok
             and _SAYS_BEST.search(clause)
             and not re.search(
@@ -749,6 +764,7 @@ def _verdict_problems(text: str, request: _Request) -> list[str]:
             problems.append(f"called {played} the best move; its verdict is {label}")
         if (
             a.severity is Severity.NONE
+            and said_of_it
             and _SAYS_SLIP.search(clause)
             and not re.search(
                 r"\bnot (?:a )?(?:blunder|mistake)\b|\bno (?:blunder|mistake)\b", clause, re.I

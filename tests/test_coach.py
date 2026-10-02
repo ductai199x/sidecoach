@@ -1953,6 +1953,18 @@ def test_the_verdict_words_are_checked_clause_by_clause() -> None:
     ]
     assert _verdict_problems("O-O was the best move here, though Ba4 was close.", good)
     assert _verdict_problems("Fine, but Ba4 was the best move here.", good) == []
+    # A clause opening with "it" or "that" is about the move only where the verdict word is
+    # said of it: these true sentences were refused (the deep prompt review, 2026-10-01).
+    for said in (
+        "It avoids the mistake of locking your bishop in.",
+        "That keeps you clear of the classic blunder of moving the f-pawn.",
+        "It was not a blunder, but Ba4 was a touch better.",
+        "It is best to develop a piece before you push pawns.",
+        "This is a position where the best move is quiet.",
+    ):
+        assert _verdict_problems(said, good) == [], said
+    assert _verdict_problems("It was a clear mistake; Ba4 was better.", good)
+    assert _verdict_problems("That is the best move here.", good)
 
 
 def test_their_own_move_is_theirs_even_after_the_reply_and_a_threat_is_heard_as_one() -> None:
