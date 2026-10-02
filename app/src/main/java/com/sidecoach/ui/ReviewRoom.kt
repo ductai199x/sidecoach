@@ -554,9 +554,8 @@ class ReviewRoom(
     }
 
     companion object {
-        // The review's format: a review saved in an older one is done again. 2: the labels as
-        // chess.com defines them (great, miss, brilliant, book; 2026-10-01).
-        const val REVIEW_VERSION = 2
+        // The review's format: a review saved in an older one is done again.
+        const val REVIEW_VERSION = 1
 
         // The loop's pace, and how long an untouched room lives.
         private const val TICK_MS = 250L
