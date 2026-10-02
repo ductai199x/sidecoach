@@ -494,20 +494,12 @@ _OVERLAYS: dict[str, dict[str, Any]] = {
 _OVERLAY_SETS = ("cburnett", "maestro", "staunty", "leipzig", "alpha", "pixel")
 
 
-@pytest.mark.parametrize("theme", ["green", "brown"])
-@pytest.mark.parametrize("style", _OVERLAY_SETS)
-@pytest.mark.parametrize("overlay", list(_OVERLAYS))
-def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
-    overlay: str, style: str, theme: str
-) -> None:
-    """The look is learned again on a still board when a kind of which two or more pieces
-    stand reads every one of them off its square (round 3, 8711b37): what a new set does, and
-    what something drawn over the board does not -- a measured rule, so its sweep is the
-    suite's (round 3 audit E13, Tai 2026-10-02: keep the rule, with the overlay sweep in the
-    suite). Sixteen overlays, six sets, two themes, 192 cases: held three seconds, an overlay
-    does not even set a learning off, and the game is read on after it."""
-    from sidecoach.vision.pieces import ThemeModel
+_OVERLAY_OPENING = ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5")
+_OVERLAY_REST = ("c2c3", "d7d6", "b1d2", "a7a6")
 
+
+def _overlay_opening(style: str, theme: str) -> tuple[GamePipeline, chess.Board, float]:
+    """A pipeline that has read the opening on this set and theme, three frames a position."""
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
@@ -515,11 +507,52 @@ def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
     for _ in range(3):
         pipe.process(synthetic_board(board=board, **look), ts)
         ts += 0.1
-    for uci in ("e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5"):
+    for uci in _OVERLAY_OPENING:
         move = board.push_uci(uci)
         for _ in range(3):
             pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
             ts += 0.1
+    return pipe, board, ts
+
+
+# The opening read once a set and theme in a test process, every overlay case of them handed a
+# copy of the pipeline as it stands after it. The opening is the same pixels and the same steps
+# for all sixteen overlays -- two openings read afresh give the same events, frame for frame --
+# and it was two thirds of each case's time (2026-10-02: 0.35-0.74 s of about 0.6 s). A copy
+# reads the overlay and the rest exactly as a pipeline that read the opening itself: every event
+# the same for all sixteen overlays on eight of the twelve sets and themes, measured, and
+# test_a_copied_opening_reads_on_as_one_read_afresh keeps checking it. The embedding net is
+# the process's one (`CellEmbedder.load`), shared by the copies as by every pipeline.
+_OPENED: dict[tuple[str, str], tuple[GamePipeline, chess.Board, float]] = {}
+
+
+def _opened(style: str, theme: str) -> tuple[GamePipeline, chess.Board, float]:
+    import copy
+
+    from sidecoach.vision.embedding import CellEmbedder
+
+    if (style, theme) not in _OPENED:
+        pipe, board, ts = _overlay_opening(style, theme)
+        assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+        _OPENED.clear()  # one look at a time: its sixteen cases run together (xdist_group)
+        _OPENED[(style, theme)] = (pipe, board, ts)
+    pipe, board, ts = _OPENED[(style, theme)]
+    shared = {id(net): net for net in (CellEmbedder.load(),) if net is not None}
+    return copy.deepcopy(pipe, shared), board.copy(), ts
+
+
+def _overlay_and_rest(
+    pipe: GamePipeline, board: chess.Board, ts: float, overlay: str, look: dict[str, Any]
+) -> tuple[list[str], bool, int]:
+    """The overlay held three seconds on the still board, then the rest of the game: the
+    events as said (the game's random id left out), whether the model was kept, and how often
+    a learning was tried."""
+    import re
+    import unittest.mock
+
+    from sidecoach.vision.pieces import ThemeModel
+
+    said: list[str] = []
     model = pipe.model
     learned: list[object] = []
     real = ThemeModel.from_position
@@ -528,20 +561,70 @@ def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
         learned.append(args)
         return real(*args)
 
-    held = synthetic_board(board=board, highlight=board.peek(), **look, **_OVERLAYS[overlay])
-    import unittest.mock
+    def say(events: list[Any]) -> None:
+        said.append(re.sub(r"game_id='[0-9a-f]+'", "game_id=*", repr(events)))
 
+    held = synthetic_board(board=board, highlight=board.peek(), **look, **_OVERLAYS[overlay])
     with unittest.mock.patch.object(ThemeModel, "from_position", counted):
         for i in range(30):
-            pipe.process(held, ts, changed=i == 0)
+            say(pipe.process(held, ts, changed=i == 0))
             ts += 0.1
-    assert pipe.model is model and learned == []
-    for uci in ("c2c3", "d7d6", "b1d2", "a7a6"):
+    kept = pipe.model is model
+    for uci in _OVERLAY_REST:
         move = board.push_uci(uci)
         for _ in range(3):
-            pipe.process(synthetic_board(board=board, highlight=move, **look), ts)
+            say(pipe.process(synthetic_board(board=board, highlight=move, **look), ts))
             ts += 0.1
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
+    return said, kept, len(learned)
+
+
+def _overlay_cases() -> list[Any]:
+    """Every overlay on every set and theme, a set and theme's cases one xdist group (their
+    opening read once on the worker); the ids as the three stacked parametrisations gave them."""
+    return [
+        pytest.param(
+            overlay,
+            style,
+            theme,
+            id=f"{overlay}-{style}-{theme}",
+            marks=pytest.mark.xdist_group(f"overlay-{style}-{theme}"),
+        )
+        for theme in ("green", "brown")
+        for style in _OVERLAY_SETS
+        for overlay in _OVERLAYS
+    ]
+
+
+@pytest.mark.parametrize(("overlay", "style", "theme"), _overlay_cases())
+def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
+    overlay: str, style: str, theme: str
+) -> None:
+    """The look is learned again on a still board when a kind of which two or more pieces
+    stand reads every one of them off its square (round 3, 8711b37): what a new set does, and
+    what something drawn over the board does not -- a measured rule, so its sweep is the
+    suite's (round 3 audit E13, Tai 2026-10-02: keep the rule, with the overlay sweep in the
+    suite). Sixteen overlays, six sets, two themes, 192 cases: held three seconds after the
+    opening, an overlay does not even set a learning off, and the game is read on after it."""
+    pipe, board, ts = _opened(style, theme)
+    _said, kept, learned = _overlay_and_rest(
+        pipe, board, ts, overlay, {"style": style, "theme": theme}
+    )
+    assert kept and learned == 0
+
+
+def test_a_copied_opening_reads_on_as_one_read_afresh() -> None:
+    """What lets the overlay cases share their opening: a copy of a pipeline that read it
+    says, frame for frame, what a pipeline reading the opening itself says, through an
+    overlay held and the game after it -- and the original is untouched by its copy's run."""
+    look: dict[str, Any] = {"style": "staunty", "theme": "brown"}
+    _OPENED.pop(("staunty", "brown"), None)
+    copied = _overlay_and_rest(*_opened("staunty", "brown"), "four arrows", look)
+    again = _overlay_and_rest(*_opened("staunty", "brown"), "red marks on pieces", look)
+    fresh = _overlay_and_rest(*_overlay_opening("staunty", "brown"), "four arrows", look)
+    assert copied == fresh
+    fresh = _overlay_and_rest(*_overlay_opening("staunty", "brown"), "red marks on pieces", look)
+    assert again == fresh, "the first copy's run left the kept opening as it was"
 
 
 def test_a_look_that_cannot_be_learned_again_is_told_once() -> None:
