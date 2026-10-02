@@ -273,6 +273,9 @@ class PanelEngine:
     # What the voice was last given: the trigger and the ply of that message, so the
     # next one knows whether what is playing is about a position the board has left.
     _voicing: tuple[str, int | None] | None = field(default=None, init=False)
+    # Counts the times the voice was cut off by the player (a barge-in, a mute): a reply
+    # being written sentence by sentence says nothing more once it moves.
+    _hushed: int = field(default=0, init=False)
     # The puzzles recommended lately, in order, and the motif each was for: the puzzle
     # page (ui/puzzle_room.py) opens them in a tab of their own, with Next in that order.
     practice_ids: list[str] = field(default_factory=list, init=False)
@@ -1147,6 +1150,7 @@ class PanelEngine:
             self.muted = muted
             self._state["muted"] = muted
         if muted:
+            self._hushed += 1
             self._tts.stop()
         self._emit("voice", "info", "muted" if muted else "unmuted")
 
@@ -1322,6 +1326,9 @@ class PanelEngine:
         dictation about to send waits for what is coming."""
         if not self._hear_test_on:
             self._dictation_hold()
+        # A reply still being written says nothing more, even between two sentences, when
+        # the voice is briefly idle: the voice never talks over the player.
+        self._hushed += 1
         if self._tts.busy:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
@@ -1441,14 +1448,22 @@ class PanelEngine:
             return None
         name = getattr(trigger, "value", str(trigger))
         started: list[str] = []
+        hushed_at = [self._hushed]
 
         def sink(sentence: str) -> bool:
+            continues = bool(started)
+            if started and (self.muted or self._hushed != hushed_at[0]):
+                # Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is
+                # still the reply -- in the chat, the record and the captions -- only
+                # silent. Declining here cut the reply's text at what had been said.
+                self.caption(sentence, continues=True)
+                return True
             if self.muted:
                 return False
             with self._lock:
                 ply_now = int(self._state.get("ply") or 0)
-            continues = bool(started)
             if not started:
+                hushed_at[0] = self._hushed
                 action = self.voice_action(
                     name, sentence, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
                 )
