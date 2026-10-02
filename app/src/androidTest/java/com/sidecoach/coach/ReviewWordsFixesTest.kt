@@ -85,4 +85,24 @@ class ReviewWordsFixesTest {
         assertEquals(emptyList<Int>(), model.asked)
         assertEquals(plies.drop(1).toSet(), words.failed)
     }
+
+    /**
+     * `test_the_better_move_waits_for_the_answer`: a "why" giving the better move in words ("the
+     * knight to e4") waits for the answer as one in notation does.
+     */
+    @Test
+    fun theBetterMoveInWordsWaitsForTheAnswer() {
+        val move = game.moves.first {
+            val label = it.assessment.label?.let { l -> ReviewJson.labelName(l) }
+            label in ReviewWords.BAD && it.assessment.best.isNotEmpty() &&
+                !com.sidecoach.chess.Board(it.fenBefore).isCastling(com.sidecoach.chess.Move.fromUci(it.assessment.best[0]))
+        }
+        val board = com.sidecoach.chess.Board(move.fenBefore)
+        val answer = com.sidecoach.chess.Move.fromUci(move.assessment.best[0])
+        val piece = listOf("", "pawn", "knight", "bishop", "rook", "queen", "king")[board.pieceTypeAt(answer.from)]
+        val square = com.sidecoach.chess.squareName(answer.to)
+        assertTrue(ReviewWords.namesTheAnswer("Bringing the $piece over to $square was better.", game, move.ply))
+        assertTrue(ReviewWords.namesTheAnswer("The ${piece.replaceFirstChar { it.uppercase() }} to $square first.", game, move.ply))
+        assertEquals(false, ReviewWords.namesTheAnswer("The $piece belonged somewhere safer.", game, move.ply))
+    }
 }

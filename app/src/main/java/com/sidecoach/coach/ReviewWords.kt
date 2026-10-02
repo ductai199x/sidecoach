@@ -677,8 +677,8 @@ object ReviewWords {
     }
 
     /**
-     * Whether a paragraph on the student's bad move gives the better move in notation: it is
-     * Retry's answer. The opponent's moves are not the student's to find (with the student's side
+     * Whether a paragraph on the student's bad move gives the better move, in notation or in
+     * words (the piece sent to its square, or castling): it is Retry's answer. The opponent's moves are not the student's to find (with the student's side
      * unknown, every bad move is kept back). `names_the_answer`.
      */
     fun namesTheAnswer(text: String, game: ReviewedGame, ply: Int, user: String? = null): Boolean {
@@ -687,9 +687,21 @@ object ReviewWords {
         val theirs = user != null && move.side.value != user
         if (label == null || label !in BAD || move.assessment.best.isEmpty() || theirs) return false
         val board = Board(move.fenBefore)
-        val best = board.san(Move.fromUci(move.assessment.best[0])).trimEnd('+', '#')
-        return Regex("(?<![\\w])${escaped(best)}(?![\\w])").containsMatchIn(text)
+        val answer = Move.fromUci(move.assessment.best[0])
+        val best = board.san(answer).trimEnd('+', '#')
+        if (Regex("(?<![\\w])${escaped(best)}(?![\\w])").containsMatchIn(text)) return true
+        // In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
+        // castling. Notation alone was caught, and "the knight to e4" showed the answer before it
+        // was asked for (the review of 2026-10-01).
+        if (board.isCastling(answer)) return Regex("\\bcastl(?:e|es|ed|ing)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        val name = PIECE_NAMES.getOrElse(board.pieceTypeAt(answer.from)) { "piece" }
+        val square = squareName(answer.to)
+        val verbs = "(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
+        return Regex("\\b${name}s?\\b(?:\\s+\\w+){0,2}\\s+$verbs\\s+$square\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
     }
+
+    /** `chess.piece_name`, by piece type (1 pawn ... 6 king). */
+    private val PIECE_NAMES = mapOf(1 to "pawn", 2 to "knight", 3 to "bishop", 4 to "rook", 5 to "queen", 6 to "king")
 
     /**
      * What stops a part on move [ply] from being shown, in words; empty when nothing. "why" and
