@@ -12,6 +12,7 @@ from typing import Any
 import chess
 
 from sidecoach.analysis.engine import Engine
+from sidecoach.analysis.score import game_over
 from sidecoach.events import Line
 from sidecoach.llm.base import ChatMessage, Completion
 
@@ -33,12 +34,15 @@ class FakeEngine(Engine):
         self.calls: list[str] = []
         self.depths: list[int | None] = []
         self.multipvs: list[int] = []
+        # The moves each position came with: what the engine is told of its history.
+        self.histories: list[list[str]] = []
 
     def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
         self.calls.append(board.fen())
+        self.histories.append([move.uci() for move in board.move_stack])
         self.depths.append(kwargs.get("depth"))
         self.multipvs.append(int(kwargs.get("multipv") or 1))
-        if board.is_game_over(claim_draw=True):
+        if game_over(board):
             return []
         return self.answers.get(board.fen(), self.default)
 

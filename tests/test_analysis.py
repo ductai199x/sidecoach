@@ -740,6 +740,54 @@ def test_while_no_move_waits_the_engine_looks_ahead_and_a_move_there_is_answered
     assert annotator.ahead_hits == 2
 
 
+def test_a_position_looked_at_ahead_carries_the_moves_that_lead_there() -> None:
+    """The engine reads a repetition from the moves before a position, so a position looked
+    at ahead is searched with them, as the game's own are: measured without them it was
+    cached, and the game arriving there judged its moves on a search that could not see the
+    repetition (the engine review, 2026-10-01)."""
+    board = chess.Board()
+    for san in ("Nf3", "Nf6", "Ng1"):
+        board.push_san(san)
+    fake = FakeEngine({board.fen(): [_line("f6g8")]}, default=[_line("g1f3")])
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    with Analyser(annotator, look_ahead=1) as analyser:
+        before = board.copy()
+        before.pop()
+        analyser.submit_move("g", before, chess.Move.from_uci("f3g1"), 3, by_user=False)
+        assert _until(lambda: analyser.looked == 2), analyser.looked
+    ahead = [
+        h
+        for fen, h in zip(fake.calls, fake.histories, strict=True)
+        if fen == _after("Nf3", "Nf6", "Ng1", "Ng8")
+    ]
+    assert ahead and ahead[-1] == ["g1f3", "g8f6", "f3g1", "f6g8"], fake.histories
+
+
+def test_one_position_reached_by_two_histories_is_measured_for_each() -> None:
+    """The same placement after different quiet moves is not the same position to the
+    engine: which positions repeat differs. Cached by its FEN alone, the first history's
+    search answered the second."""
+    one = chess.Board()
+    for san in ("Nf3", "Nc6", "Nc3", "Nf6"):
+        one.push_san(san)
+    two = chess.Board()
+    for san in ("Nc3", "Nf6", "Nf3", "Nc6"):
+        two.push_san(san)
+    assert one.fen() == two.fen()
+    fake = FakeEngine()
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    annotator.measure(one)
+    annotator.measure(two)
+    annotator.measure(two.copy())
+    assert fake.calls.count(one.fen()) == 2, "each history searched once"
+    # After a capture or a pawn move nothing before can repeat: one search serves both.
+    for board in (one, two):
+        board.push_san("e4")
+    annotator.measure(one)
+    annotator.measure(two)
+    assert fake.calls.count(one.fen()) == 1
+
+
 class _DepthEngine(FakeEngine):
     """A fake engine that answers with the depth it was asked for."""
 
