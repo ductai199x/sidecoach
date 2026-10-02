@@ -11,7 +11,6 @@ import com.sidecoach.analysis.spacePlan
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
-import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
@@ -240,7 +239,9 @@ object StatFacts {
         if (Stats.terminationKind(text) != "other") return text
         val board = Board(game.start.fen)
         try {
-            for (move in game.moves) board.push(Move.fromUci(move.assessment.uci))
+            // push_uci: a move that is not legal there raises, and the position proves nothing
+            // (the review of 2026-10-01: pushed unchecked, an illegal move went on the board).
+            for (move in game.moves) board.push(board.parseUci(move.assessment.uci))
         } catch (e: IllegalArgumentException) {
             return text
         }
