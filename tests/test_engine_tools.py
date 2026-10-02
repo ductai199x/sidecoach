@@ -91,6 +91,46 @@ def test_square_says_what_stands_there_and_who_attacks_it() -> None:
     assert out.endswith("None of the opponent's pieces can move there.")
 
 
+class _Asked:
+    """An engine that notes the moves each position came with and the depth asked for, and
+    answers with one line at that depth."""
+
+    def __init__(self) -> None:
+        self.histories: list[list[str]] = []
+        self.depths: list[int | None] = []
+
+    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+        self.histories.append([m.uci() for m in board.move_stack])
+        self.depths.append(depth)
+        move = sorted(board.legal_moves, key=lambda m: m.uci())[0]
+        return [Line(moves=[move.uci()], depth=depth or 0, expected_score=0.55)]
+
+
+def test_the_tools_search_with_the_moves_that_led_there() -> None:
+    """Stockfish reads a repetition from the moves before a position; the tools dropped
+    them, and a move that repeats the position a third time was searched as any other."""
+    board = chess.Board()
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6"):
+        board.push_san(san)
+    engine = _Asked()
+    tools = EngineTools(board, None, engine, chess.WHITE)
+    out = tools.run("analyse", {"moves": ["Ng1"]})
+    assert engine.histories[-1][:7] == [m.uci() for m in board.move_stack] + ["f3g1"]
+    # Ng8 there is the third time: a draw the game ends on, said as such.
+    assert "The game is over there" not in out
+    assert "The game is over there: a draw" in tools.run("analyse", {"moves": ["Ng1", "Ng8"]})
+
+
+def test_a_move_off_the_lines_is_rated_at_the_lines_depth() -> None:
+    """The first move given is rated against the best line shown; a move no line plays was
+    searched at the tools' own depth (14) and set against a depth-18 line."""
+    engine = _Asked()
+    known = [Line(moves=["e2e4"], depth=18, expected_score=0.55)]
+    tools = EngineTools(chess.Board(), None, engine, chess.WHITE, known_now=known)
+    tools.run("analyse", {"moves": ["a3"]})
+    assert engine.depths == [14, 18], "the position searched, then the move rated at 18"
+
+
 class ToolModel:
     """A model that takes tools: it makes the calls of each round in `rounds` in turn, then
     answers with what it got."""
