@@ -652,6 +652,23 @@ private val PIECE_ON_SQUARE = Regex("($PIECE_RE)s? on ([a-h][1-8])")
 private val LONG_WORD = Regex("[a-z]{6,}")
 
 /**
+ * Whether [text] names the move [move]: its letters as a whole move, not inside another ("e4" is
+ * not named by "Nxe4" or "Qe4", "O-O" not by "O-O-O"), its check, mate and comment marks
+ * aside. `disclosure._names_move`. The coach's [names] reads a bare square as a square, and a
+ * pawn move like "e4" was rated a MOVE whenever a reply named a piece going to e4.
+ */
+private fun namesMove(text: String, move: String): Boolean {
+    val core = trailingMarksOff(move)
+    if (core.isEmpty()) return false
+    val pattern = if (core.startsWith("O-O")) {
+        "(?<![-A-Za-z0-9])" + Regex.escape(core) + "(?!-O)(?![A-Za-z0-9])"
+    } else {
+        "(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])"
+    }
+    return Regex(pattern).containsMatchIn(text)
+}
+
+/**
  * The rung a reply of the AI coach carried, from what it says: the first two moves of the
  * engine's line (LINE), a move the sheet lists as a candidate (MOVE), a square of the target,
  * the piece or the squares that carry the theme (FOCUS), a square or a threat of the key fact or
@@ -659,16 +676,16 @@ private val LONG_WORD = Regex("[a-z]{6,}")
  *
  * The ladder of hints (each rung said once, none below one already said) follows this, not a
  * guess from the question's words: with the AI on, the model reads the question and decides what
- * it answers (Tai, 2026-10-02). `disclosure.said_level` (its `_names_move` is [names]).
+ * it answers (Tai, 2026-10-02). `disclosure.said_level` (its `_names_move` is [namesMove]).
  */
 fun saidLevel(text: String, facts: PositionFacts): DisclosureLevel {
     val movesText = if (mayNumberMoves(text)) NUMBERED_MOVE.replace(text, " ") else text
     val line = facts.line.filter { it.isNotEmpty() }
-    if (line.size >= 2 && names(movesText, line[0]) && names(movesText, line[1])) {
+    if (line.size >= 2 && namesMove(movesText, line[0]) && namesMove(movesText, line[1])) {
         return DisclosureLevel.LINE
     }
     val answers = facts.candidates + line.take(1)
-    if (answers.any { names(movesText, it) }) return DisclosureLevel.MOVE
+    if (answers.any { namesMove(movesText, it) }) return DisclosureLevel.MOVE
     val squares = squaresIn(text)
     val focus = listOfNotNull(facts.target, facts.piece, *facts.focus.toTypedArray())
         .filter { it.isNotEmpty() }.joinToString(" ")
@@ -677,7 +694,7 @@ fun saidLevel(text: String, facts: PositionFacts): DisclosureLevel {
     val idea = listOfNotNull(facts.key, facts.stakes, facts.situation, facts.trap)
         .filter { it.isNotEmpty() }.joinToString(" ")
     val ideaSquares = squaresIn(idea)
-    if (squares.any { it in ideaSquares } || facts.threats.any { names(movesText, it) }) {
+    if (squares.any { it in ideaSquares } || facts.threats.any { namesMove(movesText, it) }) {
         return DisclosureLevel.IDEA
     }
     val words = listOfNotNull(facts.goal, facts.theme, facts.plan, facts.mechanism, facts.stakes)

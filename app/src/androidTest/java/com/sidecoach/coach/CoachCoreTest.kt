@@ -1012,6 +1012,13 @@ class CoachCoreTest {
         assertEquals(DisclosureLevel.SILENT, saidLevel("Look for a check.", facts))
         val long = facts.copy(line = listOf("Qxf7#", "Kd8"))
         assertEquals(DisclosureLevel.LINE, saidLevel("Qxf7 and then Kd8 is forced.", long))
+        // A pawn move is named only as a whole move: "e4" is not named by "Nxe4" or "Qe4" (the
+        // phone read it as a square and rated such replies MOVE; the round-3 parity audit).
+        val pawn = facts.copy(target = null, piece = null, candidates = listOf("e4"), line = listOf("e4", "e5"))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Nxe4 wins a pawn.", pawn))
+        assertEquals(DisclosureLevel.SILENT, saidLevel("Qe4 is fine.", pawn))
+        assertEquals(DisclosureLevel.MOVE, saidLevel("e4 grabs the centre.", pawn))
+        assertEquals(DisclosureLevel.LINE, saidLevel("After e4 e5 it is level.", pawn))
         val disclosure = Disclosure()
         assertEquals(DisclosureLevel.IDEA, disclosure.said(DisclosureLevel.IDEA))
         assertEquals(null, disclosure.said(DisclosureLevel.IDEA))
