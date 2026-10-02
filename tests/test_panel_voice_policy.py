@@ -177,6 +177,46 @@ def test_a_word_held_in_a_fast_game_is_said_once_the_player_slows(
     assert len(fake.calls) == 1, "a word held at the game's end is dropped"
 
 
+def test_a_streamed_reply_in_a_fast_game_is_kept_and_held_whole_for_the_pace(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """A streamed reply whose first sentence met a fast game was declined: the model's reply was
+    thrown away and the template shown in its place (Tai, 2026-10-02: kept, never replaced).
+    It is taken sentence by sentence, captioned, not said, and held whole for the pace like a
+    word on the page: said once the player slows."""
+    from types import SimpleNamespace
+
+    from sidecoach.events import Trigger
+    from sidecoach.ui.panel import PACE_RESUME_S
+    from tests.coaching import SCHOLAR_MOVES, offline_coach, play, start_game
+
+    coach = offline_coach()
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES, think_ms=1000)  # a second a move: a fast game
+    engine = make_panel()
+    fake = FakeTTS()
+    engine._tts = fake  # type: ignore[assignment]
+    coaching = SimpleNamespace(coach=coach)
+    engine._coaching = coaching
+    engine._loop_ts = 7.0
+    engine._state["ply"] = 6
+    sink = engine._stream_sink(Trigger.POST_MISTAKE, 5)
+    assert sink is not None
+    assert sink("Nf6 left f7 to the queen.") is True, "kept, not declined"
+    assert sink("Qxf7 is mate now.") is True
+    assert fake.calls == [], "a fast game: not said yet"
+    held = engine._held_word
+    assert held is not None and held[1] == "Nf6 left f7 to the queen. Qxf7 is mate now."
+    engine._say_held_word(coaching, 6.0 + PACE_RESUME_S + 1)  # the game slowed
+    assert fake.calls == ["say:Nf6 left f7 to the queen. Qxf7 is mate now."]
+    # Cut off while held (the position left): the rest is captioned and nothing is said later.
+    sink = engine._stream_sink(Trigger.POST_MISTAKE, 5)
+    assert sink is not None and sink("Look at f7.")
+    engine._position_moved_on("takeback")
+    assert sink("Their king has no square.") is True
+    assert engine._held_word is None
+
+
 def test_replay_is_paced_to_its_timestamps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A recording of a rendered game whose ticks are a second apart, replayed at 4x:
     the frames come a quarter of a second apart in wall time, not as fast as they read.

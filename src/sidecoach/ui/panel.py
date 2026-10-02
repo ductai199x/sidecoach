@@ -1517,21 +1517,47 @@ class PanelEngine:
         rant"): a reply that is not to be spoken -- stale, skipped, or asked for a moment that
         is over (`moved_on`) -- is taken sentence by sentence all the same, captioned and kept
         as the reply's text, and only silent. Declining it, as before, made the coach say a
-        template in its place."""
+        template in its place. So is a reply in a fast game ("text"): taken, captioned, and
+        held whole for the pace as a word on the page is (`_held_word`), said once the player
+        slows (Tai, 2026-10-02: a streamed reply is kept, never replaced by the template)."""
         if self.muted:
             return None
         name = getattr(trigger, "value", str(trigger))
         started: list[str] = []
         hushed_at = [self._hushed]
+        held: list[str] = []  # a fast game's reply, sentence by sentence
+        ours: list[tuple[str, str, int | None, float]] = []  # the word it is held as
+
+        def hold() -> None:
+            word = (name, " ".join(held), ply, ours[0][3] if ours else time.monotonic())
+            self._held_word = word
+            ours[:] = [word]
 
         def sink(sentence: str) -> bool:
             continues = bool(started)
+            if (
+                started
+                and started[0] == "text"
+                and not self.muted
+                and self._hushed == hushed_at[0]
+                and ours
+                and self._held_word is ours[0]  # not said yet, nor replaced
+            ):
+                held.append(sentence)
+                hold()
+                self.caption(sentence, continues=True)
+                return True
             if started and (
-                self.muted or self._hushed != hushed_at[0] or started[0] in ("ptt", "silent")
+                self.muted
+                or self._hushed != hushed_at[0]
+                or started[0] in ("ptt", "silent", "text")
             ):
                 # Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is
                 # still the reply -- in the chat, the record and the captions -- only
-                # silent. Declining here cut the reply's text at what had been said.
+                # silent. Declining here cut the reply's text at what had been said. A reply
+                # held for the pace and cut off is not said later either.
+                if started[0] == "text" and ours and self._held_word is ours[0]:
+                    self._held_word = None
                 self.caption(sentence, continues=True)
                 return True
             if self.muted:
@@ -1562,7 +1588,15 @@ class PanelEngine:
                 if action == "supersede":
                     self._tts.stop()
                 if action == "text":
-                    return False  # a fast game: held for the pace (`_speak`), not lost
+                    # A fast game: on the page now, the whole reply held for the pace and said
+                    # once the player slows (`_say_held_word`); declined, the model's reply was
+                    # thrown away and the template shown in its place.
+                    started.append("text")
+                    held.append(sentence)
+                    hold()
+                    self.caption(sentence)
+                    self._emit("voice", "debug", f"held for the pace: {elide(sentence, 60)}")
+                    return True
                 if action not in ("speak", "supersede"):
                     # Shown, in its place, not spoken: the rest of the reply follows the same.
                     started.append("silent")
