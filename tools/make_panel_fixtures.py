@@ -237,7 +237,7 @@ def moves_game() -> list[Any]:
 
 
 def dispatch_fixture() -> list[dict[str, Any]]:
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = PanelEngine(
             Settings(data_dir=Path(tmp), voice=VoiceSettings()),
             analysis=False,
@@ -403,7 +403,7 @@ def coach_meta_fixture() -> list[dict[str, Any]]:
     from sidecoach.events import CoachMessage, DisclosureLevel, Trigger
     from sidecoach.llm.offline import OfflineProvider
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = PanelEngine(
             Settings(data_dir=Path(tmp), voice=VoiceSettings()),
             analysis=False,
@@ -484,7 +484,7 @@ def outcome_fixture() -> dict[str, Any]:
         for o in (*OUTCOMES, "rage-quit")
         for s in ("white", "black", None)
     ]
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = PanelEngine(
             Settings(data_dir=Path(tmp), voice=VoiceSettings()),
             analysis=False,
@@ -620,7 +620,7 @@ def served_fixture() -> list[dict[str, str]]:
 
     from sidecoach.ui.server import build_app
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = PanelEngine(
             Settings(data_dir=Path(tmp), voice=VoiceSettings()),
             analysis=False,
@@ -668,7 +668,7 @@ def routes_fixture() -> list[dict[str, Any]]:
         ("POST", "/api/pieces/own/abc/nope"),
         ("DELETE", "/api/pieces/own/abc/restore"),
     ]
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         engine = PanelEngine(
             Settings(data_dir=Path(tmp), voice=VoiceSettings()),
             analysis=False,

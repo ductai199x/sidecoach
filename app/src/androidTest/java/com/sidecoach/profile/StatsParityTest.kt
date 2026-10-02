@@ -304,13 +304,13 @@ class StatsParityTest {
             .put("key", g.key)
             .put("strength", g.strength)
             .put("source", nul(g.source))
-            .put("time_class", nul(g.timeClass))
             .put("played_at", nul(g.playedAt))
-            .put("user_side", nul(g.userSide))
             .put("bot", g.bot)
             .put("result", nul(g.result))
             .put("opening", nul(g.opening))
             .put("termination", nul(g.termination))
+            .put("user_side", nul(g.userSide))
+            .put("time_class", nul(g.timeClass))
 
         /** `stat_moves()`'s row: the table's columns in order, `found` a truth. */
         private fun json(m: StatMoveRow): JSONObject = JSONObject()

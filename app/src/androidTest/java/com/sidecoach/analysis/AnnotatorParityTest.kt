@@ -670,28 +670,27 @@ class AnnotatorParityTest {
      * `test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it` (the state review,
      * 2026-10-01): after a takeback the move before the replacement is the one the game kept;
      * the last move judged was the withdrawn one, a ply too far, and the replacement was judged
-     * as if nothing came before it -- the opponent's mistake unseen, a loss after it a blunder,
-     * not the miss it is.
+     * as if nothing came before it -- the opponent's blunder unseen, the best reply to it merely
+     * best, not the great move it is.
      */
     @Test
     fun theMoveThatReplacesAWithdrawnOneKnowsTheMoveBeforeIt() {
         val fake = FakeEngine(
             mapOf(
                 Board().fen() to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.55)),
-                after("e4") to listOf(Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.70)),
+                after("e4") to listOf(Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.90)),
                 after("e4", "a6") to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.80)),
-                after("e4", "h6") to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.80)),
             ),
         )
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val board = Board()
         val first = annotator.assessMove("g", board, board.parseSan("e4")!!, 1)
-        assertEquals("the opponent erred", Severity.MISTAKE, first.severity)
+        assertEquals("the opponent blundered", Severity.BLUNDER, first.severity)
         board.push(board.parseSan("e4")!!)
         val withdrawn = annotator.assessMove("g", board, board.parseSan("a6")!!, 2)
-        val replacement = annotator.assessMove("g", board, board.parseSan("h6")!!, 2)
-        assertEquals(Label.MISS, withdrawn.label)
-        assertEquals(Label.MISS, replacement.label)
+        val replacement = annotator.assessMove("g", board, board.parseSan("e5")!!, 2)
+        assertEquals(Label.BLUNDER, withdrawn.label)
+        assertEquals(Label.GREAT, replacement.label)
     }
 
     /** The desktop test's `RecordingTagger`: the same tags for every move, the calls kept. */

@@ -57,11 +57,11 @@
    "position startpos moves e2e4 e7e5",
    "go depth 10 movetime 5000",
    "setoption name MultiPV value 1",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2",
    "go depth 14 movetime 500",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
    "go depth 14 movetime 500",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
    "go depth 14 movetime 500",
    "quit"
   ],
@@ -166,24 +166,24 @@
     "info depth 11 currmove a2a3 currmovenumber 1",
     "bestmove a2a3"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp 128 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
-    "info depth 14 seldepth 16 multipv 1 score cp 121 wdl 421 400 179 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
+    "info depth 13 seldepth 14 multipv 1 score cp 7 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp 0 wdl 300 400 300 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
     "info depth 15 currmove a5a4 currmovenumber 1",
     "bestmove a5a4"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp -85 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
-    "info depth 14 seldepth 16 multipv 1 score cp -92 wdl 208 400 392 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
+    "info depth 13 seldepth 14 multipv 1 score cp 95 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 14 seldepth 16 multipv 1 score cp 88 wdl 388 400 212 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
     "info depth 15 currmove a1a2 currmovenumber 1",
     "bestmove a1a2"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp -5 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
-    "info depth 14 seldepth 16 multipv 1 score cp -12 wdl 288 400 312 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
+    "info depth 13 seldepth 14 multipv 1 score cp -126 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp -133 wdl 167 400 433 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
     "info depth 15 currmove a6a5 currmovenumber 1",
     "bestmove a6a5"
    ]
@@ -204,7 +204,7 @@
        "a7a5",
        "a1a2"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.37132483661091226,
       "score_cp": -143,
       "mate": null,
@@ -232,11 +232,13 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.31737261263958383,
-      "score_cp": -208,
+      "depth": 10,
+      "expected_score": 0.3376418641828339,
+      "score_cp": -183,
       "mate": null,
       "wdl": [
        117,
@@ -267,7 +269,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.522078114090291,
       "score_cp": 24,
       "mate": null,
@@ -295,11 +297,13 @@
      },
      {
       "moves": [
-       "a8b8"
+       "a8b8",
+       "a2a3",
+       "a7a5"
       ],
-      "depth": 9,
-      "expected_score": 0.4623301956955016,
-      "score_cp": -41,
+      "depth": 10,
+      "expected_score": 0.4852759384118717,
+      "score_cp": -16,
       "mate": null,
       "wdl": [
        284,
@@ -329,7 +333,7 @@
        "a7a5",
        "a1a2"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.5046024700028845,
       "score_cp": 5,
       "mate": null,
@@ -357,11 +361,13 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.44499235158754635,
-      "score_cp": -60,
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
       "mate": null,
       "wdl": [
        265,
@@ -419,7 +425,7 @@
       "moves": [
        "h5f7"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 1.0,
       "score_cp": null,
       "mate": 1,
@@ -447,11 +453,13 @@
      },
      {
       "moves": [
-       "a2a4"
+       "a2a4",
+       "a7a5",
+       "a1a2"
       ],
-      "depth": 9,
-      "expected_score": 0.4268863060981179,
-      "score_cp": -80,
+      "depth": 10,
+      "expected_score": 0.44954372531791664,
+      "score_cp": -55,
       "mate": null,
       "wdl": [
        245,
@@ -478,7 +486,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.5649872147270768,
       "score_cp": 71,
       "mate": null,
@@ -506,11 +514,13 @@
      },
      {
       "moves": [
-       "b7b5"
+       "b7b5",
+       "a2a3",
+       "a7a5"
       ],
-      "depth": 9,
-      "expected_score": 0.5055228953683342,
-      "score_cp": 6,
+      "depth": 10,
+      "expected_score": 0.5285051773118131,
+      "score_cp": 31,
       "mate": null,
       "wdl": [
        331,
@@ -537,7 +547,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.4386360651319824,
       "score_cp": -67,
       "mate": null,
@@ -549,11 +559,13 @@
      },
      {
       "moves": [
-       "a7a6"
+       "a7a6",
+       "a2a3",
+       "a6a5"
       ],
-      "depth": 9,
-      "expected_score": 0.3983384732724953,
-      "score_cp": -112,
+      "depth": 10,
+      "expected_score": 0.4205926555346196,
+      "score_cp": -87,
       "mate": null,
       "wdl": [
        213,
@@ -667,7 +679,7 @@
        "a1b1",
        "a5a4"
       ],
-      "depth": 15,
+      "depth": 14,
       "expected_score": 0.47516641034760715,
       "score_cp": -27,
       "mate": null,
@@ -695,11 +707,13 @@
      },
      {
       "moves": [
-       "a8b8"
+       "a8b8",
+       "a1b1",
+       "a7a5"
       ],
-      "depth": 13,
-      "expected_score": 0.41611281849809095,
-      "score_cp": -92,
+      "depth": 14,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
       "mate": null,
       "wdl": [
        233,
@@ -736,7 +750,7 @@
        "a1a2",
        "a5a6"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.4241860033205554,
       "score_cp": -83,
       "mate": null,
@@ -764,11 +778,13 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.36703734109527436,
-      "score_cp": -148,
+      "depth": 10,
+      "expected_score": 0.38867247514924735,
+      "score_cp": -123,
       "mate": null,
       "wdl": [
        177,
@@ -836,11 +852,11 @@
    "position startpos moves e2e4 e7e5",
    "go depth 10 movetime 5000",
    "setoption name MultiPV value 1",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2",
    "go depth 14 movetime 500",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5",
    "go depth 14 movetime 500",
-   "position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
+   "position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1",
    "go depth 14 movetime 500",
    "quit"
   ],
@@ -945,24 +961,24 @@
     "info depth 11 currmove a2a3 currmovenumber 1",
     "bestmove a2a3"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp 128 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
-    "info depth 14 seldepth 16 multipv 1 score cp 121 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
+    "info depth 13 seldepth 14 multipv 1 score cp 7 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp 0 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a5a4 a2a1 a8a5",
     "info depth 15 currmove a5a4 currmovenumber 1",
     "bestmove a5a4"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp -85 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
-    "info depth 14 seldepth 16 multipv 1 score cp -92 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
+    "info depth 13 seldepth 14 multipv 1 score cp 95 lowerbound nodes 500 nps 100000 time 5 pv h2h4",
+    "info depth 14 seldepth 16 multipv 1 score cp 88 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a1a2 a5a6 a2a1",
     "info depth 15 currmove a1a2 currmovenumber 1",
     "bestmove a1a2"
    ],
-   "1|position fen rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2 moves a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
+   "1|position startpos moves e2e4 e7e5 a2a3 a7a5 a1a2 a5a4 a2a1 a8a5 a1a2 a5a6 a2a1": [
     "info string NNUE evaluation using nn-1a298aa575a0.nnue",
-    "info depth 13 seldepth 14 multipv 1 score cp -5 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
-    "info depth 14 seldepth 16 multipv 1 score cp -12 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
+    "info depth 13 seldepth 14 multipv 1 score cp -126 lowerbound nodes 500 nps 100000 time 5 pv h7h6",
+    "info depth 14 seldepth 16 multipv 1 score cp -133 nodes 1000 nps 100000 hashfull 0 tbhits 0 time 10 pv a6a5 a1a2 a5a6",
     "info depth 15 currmove a6a5 currmovenumber 1",
     "bestmove a6a5"
    ]
@@ -983,7 +999,7 @@
        "a7a5",
        "a1a2"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.37132483661091226,
       "score_cp": -143,
       "mate": null,
@@ -1011,16 +1027,18 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.31737261263958383,
-      "score_cp": -208,
+      "depth": 10,
+      "expected_score": 0.3376418641828339,
+      "score_cp": -183,
       "mate": null,
       "wdl": [
        0,
-       22,
-       978
+       51,
+       949
       ]
      }
     ]
@@ -1046,7 +1064,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.522078114090291,
       "score_cp": 24,
       "mate": null,
@@ -1074,16 +1092,18 @@
      },
      {
       "moves": [
-       "a8b8"
+       "a8b8",
+       "a2a3",
+       "a7a5"
       ],
-      "depth": 9,
-      "expected_score": 0.4623301956955016,
-      "score_cp": -41,
+      "depth": 10,
+      "expected_score": 0.4852759384118717,
+      "score_cp": -16,
       "mate": null,
       "wdl": [
-       8,
-       870,
-       122
+       19,
+       926,
+       55
       ]
      }
     ]
@@ -1108,7 +1128,7 @@
        "a7a5",
        "a1a2"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.5046024700028845,
       "score_cp": 5,
       "mate": null,
@@ -1136,16 +1156,18 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.44499235158754635,
-      "score_cp": -60,
+      "depth": 10,
+      "expected_score": 0.467826316589383,
+      "score_cp": -35,
       "mate": null,
       "wdl": [
-       4,
-       785,
-       211
+       10,
+       888,
+       102
       ]
      }
     ]
@@ -1198,7 +1220,7 @@
       "moves": [
        "h5f7"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 1.0,
       "score_cp": null,
       "mate": 1,
@@ -1226,16 +1248,18 @@
      },
      {
       "moves": [
-       "a2a4"
+       "a2a4",
+       "a7a5",
+       "a1a2"
       ],
-      "depth": 9,
-      "expected_score": 0.4268863060981179,
-      "score_cp": -80,
+      "depth": 10,
+      "expected_score": 0.44954372531791664,
+      "score_cp": -55,
       "mate": null,
       "wdl": [
-       2,
-       649,
-       349
+       5,
+       811,
+       184
       ]
      }
     ]
@@ -1257,7 +1281,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.5649872147270768,
       "score_cp": 71,
       "mate": null,
@@ -1285,16 +1309,18 @@
      },
      {
       "moves": [
-       "b7b5"
+       "b7b5",
+       "a2a3",
+       "a7a5"
       ],
-      "depth": 9,
-      "expected_score": 0.5055228953683342,
-      "score_cp": 6,
+      "depth": 10,
+      "expected_score": 0.5285051773118131,
+      "score_cp": 31,
       "mate": null,
       "wdl": [
-       40,
-       933,
-       27
+       90,
+       899,
+       11
       ]
      }
     ]
@@ -1316,7 +1342,7 @@
        "a2a3",
        "a5a4"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.4386360651319824,
       "score_cp": -67,
       "mate": null,
@@ -1328,16 +1354,18 @@
      },
      {
       "moves": [
-       "a7a6"
+       "a7a6",
+       "a2a3",
+       "a6a5"
       ],
-      "depth": 9,
-      "expected_score": 0.3983384732724953,
-      "score_cp": -112,
+      "depth": 10,
+      "expected_score": 0.4205926555346196,
+      "score_cp": -87,
       "mate": null,
       "wdl": [
-       1,
-       381,
-       618
+       2,
+       593,
+       405
       ]
      }
     ]
@@ -1446,7 +1474,7 @@
        "a1b1",
        "a5a4"
       ],
-      "depth": 15,
+      "depth": 14,
       "expected_score": 0.47516641034760715,
       "score_cp": -27,
       "mate": null,
@@ -1474,16 +1502,18 @@
      },
      {
       "moves": [
-       "a8b8"
+       "a8b8",
+       "a1b1",
+       "a7a5"
       ],
-      "depth": 13,
-      "expected_score": 0.41611281849809095,
-      "score_cp": -92,
+      "depth": 14,
+      "expected_score": 0.4386360651319824,
+      "score_cp": -67,
       "mate": null,
       "wdl": [
        0,
-       631,
-       369
+       881,
+       119
       ]
      }
     ]
@@ -1515,7 +1545,7 @@
        "a1a2",
        "a5a6"
       ],
-      "depth": 11,
+      "depth": 10,
       "expected_score": 0.4241860033205554,
       "score_cp": -83,
       "mate": null,
@@ -1543,16 +1573,18 @@
      },
      {
       "moves": [
-       "b1a3"
+       "b1a3",
+       "a7a5",
+       "a1b1"
       ],
-      "depth": 9,
-      "expected_score": 0.36703734109527436,
-      "score_cp": -148,
+      "depth": 10,
+      "expected_score": 0.38867247514924735,
+      "score_cp": -123,
       "mate": null,
       "wdl": [
        0,
-       151,
-       849
+       297,
+       703
       ]
      }
     ]

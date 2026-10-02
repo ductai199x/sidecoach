@@ -827,7 +827,7 @@ def main() -> None:
         "cause_tables": causes_tables(),
         "extracts": extracts,
         "conversations": conversations,
-        "cells": [c.__dict__ for c in store.cells()],
+        "cells": [{**c.__dict__, "games": sorted(c.games)} for c in store.cells()],
         "causes": causes_cases(sample),
         "insights": insight_cases(),
     }

@@ -336,7 +336,7 @@ class ProfileTest {
     private fun cell(c: CellRow): JSONObject = JSONObject()
         .put("cause", c.cause ?: JSONObject.NULL).put("motif", c.motif ?: JSONObject.NULL)
         .put("phase", c.phase ?: JSONObject.NULL).put("errors", c.errors).put("chances", c.chances)
-        .put("expected_loss", c.expectedLoss)
+        .put("expected_loss", c.expectedLoss).put("games", JSONArray(c.games.sorted()))
 
     // ---- comparison ------------------------------------------------------------------------------
 
