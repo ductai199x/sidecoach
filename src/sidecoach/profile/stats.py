@@ -74,7 +74,7 @@ RATING_GAMES = 10
 
 @dataclass(frozen=True)
 class Filter:
-    time_class: str | None = None  # bullet, blitz, rapid, daily; None for all
+    time_class: str | None = None  # bullet, blitz, rapid, classical, daily; None for all
     days: int | None = None  # the last so many days; None for all time
     opponents: str = "all"  # all, people, bots
 

@@ -46,3 +46,13 @@ def test_move_numbers_come_from_the_position_not_the_ply() -> None:
     ):
         source = path.read_text(encoding="utf-8")
         assert not re.search(r"Math\.ceil\(\w+\.ply / 2\)", source), path.name
+
+
+def test_stats_filter_every_time_class_your_games_does() -> None:
+    """Stats had no Classical filter, though Your games has one."""
+    stats = (DESKTOP / "routes" / "stats" / "+page.svelte").read_text(encoding="utf-8")
+    games = (DESKTOP / "routes" / "games" / "+page.svelte").read_text(encoding="utf-8")
+    speeds = re.search(r"const SPEEDS = \[([^\]]*)\]", games)
+    assert speeds is not None
+    for speed in re.findall(r'"(\w+)"', speeds.group(1)):
+        assert f'["{speed}", ' in stats, speed

@@ -396,7 +396,7 @@
   <section class="st-content">
     <div class="st-filters" use:edgeFade>
       <div class="seg small" role="group" aria-label="Time control">
-        {#each [["", "All"], ["bullet", "Bullet"], ["blitz", "Blitz"], ["rapid", "Rapid"], ["daily", "Daily"]] as [value, name] (value)}
+        {#each [["", "All"], ["bullet", "Bullet"], ["blitz", "Blitz"], ["rapid", "Rapid"], ["classical", "Classical"], ["daily", "Daily"]] as [value, name] (value)}
           <button class="segbtn" aria-pressed={filter.time_class === value} onclick={() => setFilter({ time_class: value })}>{name}</button>
         {/each}
       </div>
