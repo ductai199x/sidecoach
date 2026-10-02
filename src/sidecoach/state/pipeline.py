@@ -261,7 +261,7 @@ class GamePipeline:
         reconciler's timers and for the start-position count.
         """
         fresh = changed  # this tick carries new pixels: the moment to sample the clock
-        self.board = self.tracker.update(frame)
+        self.board = self.tracker.update(frame, changed=changed)
         if self.board is None or not self.tracker.verified:
             # No board, or a lock the frame did not validate: readings taken from an
             # unverified geometry would be noise for the reconciler. Whatever changed in
@@ -842,7 +842,8 @@ class GamePipeline:
         if not rec.started or rec.finished or start_shaped(readings):
             return  # a start position is the bootstrap's to learn from, and to cache
         unknown = sum(1 for row in readings for reading in row if reading.kind == "unknown")
-        sampled = sample_palette(frame, geometry)
+        # Sampled only when it may matter: this runs on every still tick.
+        sampled = sample_palette(frame, geometry) if unknown >= RELEARN_UNKNOWN_CELLS else None
         # A new theme is new square colours: half the board unknown on the colours the
         # recogniser knows is a lock a few pixels off its board, before the re-fit caught up
         # (the geometry sweep's seed 175), and a look learned there read nothing after.
@@ -899,6 +900,8 @@ class GamePipeline:
         if self.board is None or not _on_its_board(frame, self.board):
             return
         occupied = occupancy(frame, geometry) >= PIECE_MIN_FRACTION
+        if sampled is None:
+            sampled = sample_palette(frame, geometry)
         for position in positions:
             expected = np.array(
                 [[position.piece_at(square_at(r, c, bottom)) is not None for c in range(8)]

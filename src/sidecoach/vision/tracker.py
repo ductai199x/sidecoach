@@ -151,7 +151,19 @@ class BoardTracker:
     def _passes(self, fit: float, contrast: float) -> bool:
         return fit >= self.min_fit and contrast >= self.min_contrast
 
-    def update(self, frame_bgr: np.ndarray) -> BoardCandidate | None:
+    def update(self, frame_bgr: np.ndarray, changed: bool = True) -> BoardCandidate | None:
+        """The lock on this frame. `changed` False says the board's pixels (the caller's
+        change gate around the lock) are those of the last changed frame: a verified lock
+        then stands as it is, unread -- the whole frame turned grey and the lock validated
+        again was nearly all of a still tick's cost, 10 ms at 1440p, 20 at 4K (round 2,
+        finding 7) -- but for the periodic re-fit, which still comes every `refine_every`
+        ticks: a board that slid a few pixels as it came to rest validates where the lock
+        is, and only the re-fit finds it (skipped on still ticks, the lock stayed off for
+        good: the gated geometry sweep, seeds 15, 17, 35 and more)."""
+        if not changed and self.verified and self._frames_since_refine + 1 < self.refine_every:
+            assert self.board is not None
+            self._frames_since_refine += 1
+            return self.board
         gray = to_gray(frame_bgr)
         if self.board is None:
             # Without a board on screen, searching every frame would stall capture. The

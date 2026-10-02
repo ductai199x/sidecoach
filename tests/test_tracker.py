@@ -383,6 +383,28 @@ def test_a_board_resized_past_the_near_range_is_found_not_a_board_of_the_old_siz
     assert abs(board.cell_px - 100) <= 1.5, board
 
 
+def test_a_still_tick_on_a_verified_lock_reads_nothing(monkeypatch) -> None:
+    """A tick whose board pixels are the last changed frame's (`changed` False) turned the
+    whole frame grey and validated the lock again, nearly all of a still tick's cost: 10 ms
+    at 1440p (round 2 finding 7). A verified lock stands unread; a lock in doubt is still
+    checked."""
+    from sidecoach.vision import tracker as tracker_module
+
+    tracker = BoardTracker()
+    frame = synthetic_board()
+    locked = tracker.update(frame)
+    assert locked is not None and tracker.verified
+    calls = []
+    real = tracker_module.to_gray
+    monkeypatch.setattr(tracker_module, "to_gray", lambda f: calls.append(1) or real(f))
+    for _ in range(5):
+        assert tracker.update(frame, changed=False) is locked
+    assert calls == []
+    tracker.misses = 1  # in doubt: read even on a still tick
+    tracker.update(frame, changed=False)
+    assert calls == [1]
+
+
 def test_a_board_moved_at_its_size_is_relocked_by_the_near_search() -> None:
     """The cheap path stays: the game board moved, same size, same pieces, is re-locked by
     the near-size search without the full one."""
