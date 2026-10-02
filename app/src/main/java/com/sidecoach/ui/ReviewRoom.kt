@@ -205,6 +205,9 @@ class ReviewRoom(
             if (status != "ready" || r == null) return "the review is not ready"
             if (wordsStatus == "writing") return null
             if (provider == null) return unavailable
+            // Removed meanwhile: the words would be paid for and saved on nothing (the review of
+            // 2026-10-01).
+            if (!store.inRecord(key)) return GONE
             wordsStatus = "writing"
             wordsError = null
             reviewed = r
@@ -251,7 +254,23 @@ class ReviewRoom(
                 thinking = reasons,
                 answered = before,
                 onAnswer = ::keep,
+                stop = { !store.inRecord(key) },
             )
+            if (!store.inRecord(key)) throw IllegalStateException(GONE)
+            if (written.failed.isNotEmpty()) {
+                // Some calls failed: the answers paid for are kept ([keep]), and Try again asks
+                // the rest. They were saved as done, the failed moves without words for good and
+                // nothing offered to finish them (the review of 2026-10-01).
+                val total = ReviewWords.keyPlies(reviewed).size
+                val first = written.dropped[written.failed.sorted().first()]
+                val error = "Written on ${total - written.failed.size} of $total key moves; the rest failed ($first)."
+                synchronized(lock) {
+                    wordsStatus = "failed"
+                    wordsError = error
+                }
+                emit("sys", "error", "the AI coach's words: $error")
+                return
+            }
             val cost = written.cost?.let { it + spentBefore }
             saved = JSONObject()
                 .put("model", written.model)
@@ -260,9 +279,10 @@ class ReviewRoom(
                 .put("reveals", JSONArray(written.reveals.sorted()))
             shown = shown(saved, reviewed)
         } catch (exc: Exception) { // a failure is said, never left "writing"
+            val gone = runCatching { !store.inRecord(key) }.getOrDefault(false)
             synchronized(lock) {
                 wordsStatus = "failed"
-                wordsError = exc.message ?: exc.toString()
+                wordsError = if (gone) GONE else exc.message ?: exc.toString()
             }
             emit("sys", "error", "the AI coach's words failed: $exc")
             return
@@ -480,7 +500,7 @@ class ReviewRoom(
             if (!stop.get()) { // not stopped: the game went from the record meanwhile
                 synchronized(lock) {
                     status = "failed"
-                    error = "This game is no longer in your record."
+                    error = GONE
                 }
                 emit("sys", "warn", "$key left the record while it was reviewed")
             }
@@ -556,6 +576,40 @@ class ReviewRoom(
     companion object {
         // The review's format: a review saved in an older one is done again.
         const val REVIEW_VERSION = 1
+
+        /** Why a room has nothing more to do: its game was removed (or the profile reset) meanwhile. */
+        const val GONE = "This game is no longer in your record."
+
+        // What a review's summary and its Stats facts are made of from its report ([rederive]):
+        // raised when that changes, the reviews kept. 2: the phases are Lichess's Divider's.
+        const val DERIVED = 2
+        const val DERIVED_KEY = "reviews.derived"
+
+        /**
+         * Every saved review's summary, and its facts for Stats, made again from its report when
+         * what they are made of has changed since ([DERIVED]): no engine. The phases became
+         * Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and 745 of
+         * 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). Returns the
+         * reviews made again. `rederive`.
+         */
+        fun rederive(store: Store): Int {
+            if (store.setting(DERIVED_KEY) == DERIVED.toString()) return 0
+            val counted = store.statStrengths()
+            var done = 0
+            for ((key, strength) in store.savedReviews()) {
+                val saved = store.review(key, strength) ?: continue
+                if (saved.version != REVIEW_VERSION) continue
+                val ok = runCatching {
+                    val reviewed = ReviewJson.reviewed(saved.report)
+                    store.setReviewSummary(key, strength, ReviewJson.summary(GameSummaries.summarize(reviewed)).toString())
+                    val row = Library.find(store, key)
+                    if (counted[key] == strength && row != null) StatFacts.keepStats(store, strength, reviewed, row)
+                }.isSuccess
+                if (ok) done += 1
+            }
+            store.setSetting(DERIVED_KEY, DERIVED.toString())
+            return done
+        }
 
         // The loop's pace, and how long an untouched room lives.
         private const val TICK_MS = 250L
@@ -715,8 +769,8 @@ class ReviewRoom(
         fun carryTwins(store: Store, twins: Map<String, String>): List<String> {
             val carried = ArrayList<String>()
             for ((watched, imported) in twins) {
-                if (store.latestReview(imported) != null) continue
-                val old = store.latestReview(watched)
+                if (store.bestReview(imported) != null) continue
+                val old = store.bestReview(watched)
                 val row = Library.find(store, imported)
                 if (old == null || old.version != REVIEW_VERSION || row == null) continue
                 val games = Library.gamesIn(row.pgn)
@@ -837,7 +891,20 @@ class ReviewRooms(
         }
     }
 
-    fun open(key: String, strength: String = "standard"): ReviewRoom? = synchronized(lock) {
+    /**
+     * The game's room at [strength]; with none, at the strongest review saved, else [fallback]
+     * (the phone's own, Fast). It opened at the one strength always: a game reviewed Deep was
+     * reviewed again, its Stats overwritten (the review of 2026-10-01).
+     */
+    fun open(key: String, strength: String? = null, fallback: String = "fast"): ReviewRoom? = synchronized(lock) {
+        val strength = strength ?: run {
+            val store = Store(storePath)
+            try {
+                store.bestReview(key)?.strength?.takeIf { it in GameReview.STRENGTHS }
+            } finally {
+                store.close()
+            }
+        } ?: fallback
         val room = rooms[key]
         if (room != null && room.strength.name == strength && room.reopen()) return room
         val row = row(key) ?: return null

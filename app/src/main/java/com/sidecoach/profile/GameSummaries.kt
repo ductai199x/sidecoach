@@ -62,8 +62,9 @@ object GameSummaries {
 
     /**
      * The game's shape, chess.com's "game shapes" read off White's expected score after each
-     * ply: wild, intense, giveaway, sudden, smooth, sharp, balanced. Too short a game (under 10
-     * plies) has no shape. `shape_of`.
+     * ply: wild, intense, giveaway, sudden, smooth, sharp (big swings that never changed who led,
+     * the leader winning), balanced. Too short a game (under 10 plies), or one no shape fits, has
+     * none. `shape_of`.
      */
     fun shapeOf(graph: List<Double>, result: String?): String? {
         if (graph.size < 11) return null
@@ -86,7 +87,10 @@ object GameSummaries {
             return if (swings > 2.0) "sharp" else "smooth"
         }
         if (close.count { it } >= 0.7 * graph.size) return "balanced"
-        return "sharp"
+        // None of the shapes: the lead changed once, or a side led and did not win. It was
+        // "sharp", and the summary said the winner "kept the upper hand" of a game they came
+        // back in (the review of 2026-10-01).
+        return null
     }
 
     /**
@@ -122,7 +126,7 @@ object GameSummaries {
             val label = move.assessment.label
             perSide.getValue(move.side).add(Moved(phase, move.assessment.accuracy ?: 0.0, label))
             val standing = if (move.side == Side.WHITE) graph.last() else 1.0 - graph.last()
-            played.getValue(move.side).add(Performance.Played(move.ply - 1, move.assessment.expectedLoss, standing))
+            played.getValue(move.side).add(Performance.Played(Performance.pliesBefore(move.fenBefore), move.assessment.expectedLoss, standing))
             if (label == Label.BOOK) {
                 lastBook = move.ply
             } else if (label != null && label in KEY_LABELS) {
@@ -180,7 +184,10 @@ object GameSummaries {
         for (phase in PHASES) {
             val inside = moves.filter { it.phase == phase }
             if (inside.size < MIN_PHASE_MOVES) continue
-            val accuracy = round(Py.sum(inside.map { it.accuracy }) / inside.size, 1)
+            // `fmean`, an exactly rounded sum over the count, as the desktop's: a plain sum over
+            // the size put 1.8% of phases 0.1 apart, and a grade can flip on it (the review of
+            // 2026-10-01).
+            val accuracy = round(Stats.fmean(inside.map { it.accuracy }), 1)
             val labels = inside.mapNotNull { it.label }
             phases.add(PhaseGrade(phase, inside.size, accuracy, phaseGrade(accuracy, labels)))
         }

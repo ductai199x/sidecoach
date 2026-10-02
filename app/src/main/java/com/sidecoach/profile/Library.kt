@@ -58,14 +58,9 @@ object Library {
     ): LibraryRow {
         val headers = game.headers
         val pgn = game.toString()
-        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
         val white = headers["White"]
         val black = headers["Black"]
-        val userSide = when {
-            !white.isNullOrEmpty() && white.lowercase() in names -> "white"
-            !black.isNullOrEmpty() && black.lowercase() in names -> "black"
-            else -> null
-        }
+        val userSide = sideOf(white, black, userNames)
         val own = key ?: run {
             val movetext = game.mainlineMoves().joinToString(" ") { it.uci() }
             val text = "${white ?: "None"}|${black ?: "None"}|${headers["Date"] ?: "None"}|$movetext"
@@ -83,7 +78,8 @@ object Library {
             whiteElo = int(headers["WhiteElo"]),
             blackElo = int(headers["BlackElo"]),
             result = headers["Result"],
-            timeClass = timeClass?.takeIf { it.isNotEmpty() } ?: timeClassOf(headers["TimeControl"] ?: ""),
+            timeClass = timeClass?.takeIf { it.isNotEmpty() }
+                ?: timeClassOf(headers["TimeControl"] ?: "", lichess = source == "lichess" || "lichess.org" in (headers["Site"] ?: "")),
             userSide = userSide,
         )
     }
@@ -164,6 +160,35 @@ object Library {
         return rows
     }
 
+    /** The player's side by their usernames, null when neither player is theirs. `side_of`. */
+    fun sideOf(white: String?, black: String?, userNames: Iterable<String>): String? {
+        val names = userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
+        return when {
+            !white.isNullOrEmpty() && white.lowercase() in names -> "white"
+            !black.isNullOrEmpty() && black.lowercase() in names -> "black"
+            else -> null
+        }
+    }
+
+    /**
+     * The imported games' fields that follow the player's settings, as they read now: a game
+     * brought in before the username was set has the player's side once it is set (the review
+     * of 2026-10-01: such a game never reached Stats, and Your games showed it sideless).
+     * `refresh`.
+     */
+    fun refresh(store: Store, userNames: Iterable<String>) {
+        store.fillSides(userNames.map { it.trim() }.filter { it.isNotEmpty() }.map { it.lowercase() })
+        if (store.setting(CLASSES_KEY) != CLASSES.toString()) {
+            for (row in store.library()) {
+                if (row.source == "chesscom") continue // chess.com's own class, as its archive gives it
+                val site = header(row.pgn, "Site")
+                val now = timeClassOf(header(row.pgn, "TimeControl"), lichess = row.source == "lichess" || "lichess.org" in site)
+                if (now != row.timeClass) store.setTimeClass(row.key, now)
+            }
+            store.setSetting(CLASSES_KEY, CLASSES.toString())
+        }
+    }
+
     /** A game of the library by its key: imported, or one Sidecoach watched. `find`. */
     fun find(store: Store, key: String): LibraryRow? {
         if (key.startsWith("watched:")) {
@@ -213,6 +238,7 @@ object Library {
         pgn.headers["Result"] = game.result ?: "*"
         val started = LocalDateTime.ofEpochSecond(kotlin.math.floor(game.startedAt).toLong(), 0, ZoneOffset.UTC)
         pgn.headers["Date"] = DATE.format(started)
+        if (!game.reason.isNullOrEmpty()) pgn.headers["Termination"] = game.reason // how Sidecoach saw it end, for Stats
         if (!game.timeControl.isNullOrEmpty()) pgn.headers["TimeControl"] = game.timeControl
         return LibraryRow(
             key = "watched:${game.gameId}",
@@ -486,12 +512,15 @@ object Library {
 
     /**
      * The time class of a PGN `TimeControl` ("600+5"), or of the clock Sidecoach read ("10
-     * min"), by its expected length (the base plus forty increments): bullet under 3 minutes,
-     * blitz under 10, rapid under 60, classical beyond; "1/86400" and the like are
-     * correspondence ("daily"). `time_class_of`.
+     * min"), by its expected length (the base plus forty increments), each site's lines: on
+     * chess.com bullet under 3 minutes, blitz under 10, rapid under 60, classical beyond; on
+     * Lichess ([lichess]) bullet under 3 (its ultrabullet, under 30 seconds, counted as bullet),
+     * blitz under 8, rapid under 25, classical beyond. "1/86400" and the like are correspondence
+     * ("daily"), and so is Lichess's "-". An 8+0 Lichess game was blitz by chess.com's lines, and
+     * Lichess's correspondence had no class (the review of 2026-10-01). `time_class_of`.
      */
-    fun timeClassOf(control: String): String? {
-        if (control.startsWith("1/")) return "daily"
+    fun timeClassOf(control: String, lichess: Boolean = false): String? {
+        if (control.startsWith("1/") || (lichess && control == "-")) return "daily"
         val watched = WATCHED_CONTROL.matchEntire(control)
         val match = CONTROL.matchEntire(control)
         val seconds = when {
@@ -508,13 +537,22 @@ object Library {
                 match.groupValues[1].toDouble() + 40 * (match.groupValues[2].ifEmpty { "0" }.toDouble())
             else -> return null
         }
+        val blitz = if (lichess) 480 else 600
+        val rapid = if (lichess) 1500 else 3600
         return when {
             seconds < 180 -> "bullet"
-            seconds < 600 -> "blitz"
-            seconds < 3600 -> "rapid"
+            seconds < blitz -> "blitz"
+            seconds < rapid -> "rapid"
             else -> "classical"
         }
     }
+
+    // The rule the library's time classes were last set by ([refresh]): 2, each site's own lines.
+    const val CLASSES = 2
+    const val CLASSES_KEY = "library.classes"
+
+    private fun header(pgn: String, name: String): String =
+        Regex("^\\[$name \"([^\"]*)\"\\]", RegexOption.MULTILINE).find(pgn)?.groupValues?.get(1) ?: ""
 
     private val DATE = DateTimeFormatter.ofPattern("yyyy.MM.dd")
 

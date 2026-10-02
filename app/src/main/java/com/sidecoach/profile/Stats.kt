@@ -167,10 +167,12 @@ object Stats {
              */
             fun of(store: Store, f: Filter, now: Double = clock()): Data {
                 val games = games(store, f, now)
+                // The ratings the games record, in one query, not a library row (and its PGN) a game.
+                val elos = store.libraryElos()
                 val elo = HashMap<String, Int?>()
                 for (g in games) {
-                    val row = store.libraryGame(g.key)
-                    elo[g.key] = if (row == null) null else if (g.userSide == "white") row.whiteElo else row.blackElo
+                    val (white, black) = elos[g.key] ?: (null to null)
+                    elo[g.key] = if (g.userSide == "white") white else black
                 }
                 return Data(games, store.statMoves(games.map { it.key }), elo)
             }
@@ -203,6 +205,10 @@ object Stats {
             out.put("peers", JSONObject().put("rating", Performance.forSite(peers.first, site(d))).put("from", peers.second))
         }
         out.put("work", work(out.getJSONObject("costs")))
+        // The reviewed games whose player's side is not known (no username of theirs in them):
+        // the page says why they are left out, rather than showing nothing (the review of
+        // 2026-10-01).
+        out.put("unsided", store.statGames().count { it.userSide != "white" && it.userSide != "black" })
         return out
     }
 
@@ -260,6 +266,8 @@ object Stats {
         "endgame.other" to "endgame",
     )
     const val WORK = 3 // the areas Work on this names
+    const val WORK_GAMES = 3 // the games before it names any
+    const val WORK_MOVES = 3 // the moves an area needs before it is named
 
     /**
      * The one area a move's cost counts in, when it cost anything worth a word: a tactic it
@@ -274,12 +282,19 @@ object Stats {
         return if (m.phase == "opening") "opening" else "quiet"
     }
 
-    /** Each area's cost: the expected score its moves lost, a game (`n`, the games). `_costs`. */
+    /**
+     * Each area's cost: the expected score its moves lost, a game (`n`, the games), and how many
+     * moves it counts (`moves`). The cost ranks the areas and meets the peers'; it is no count of
+     * points: a position lost can swing back, and the losses add up past the games lost ("11.1
+     * points" for one area when 9 were lost in all, the review of 2026-10-01). `_costs`.
+     */
     private fun costs(d: Data): JSONObject {
         val lost = HashMap<String, Double>()
+        val count = HashMap<String, Int>()
         for (m in d.moves) {
             val where = area(m) ?: continue
             lost[where] = (lost[where] ?: 0.0) + m.loss
+            count[where] = (count[where] ?: 0) + 1
         }
         val games = d.games.size
         val names = KINDS.map { "missed.$it" } + KINDS.map { "allowed.$it" } + "opening" + ENDGAMES.map { "endgame.$it" } + "quiet"
@@ -288,6 +303,7 @@ object Stats {
             val figure = JSONObject()
                 .put("value", if (games != 0) round((lost[name] ?: 0.0) / games, 4) else JSONObject.NULL)
                 .put("n", games)
+                .put("moves", count[name] ?: 0)
             val dot = name.indexOf('.')
             if (dot >= 0) {
                 val head = name.substring(0, dot)
@@ -302,12 +318,16 @@ object Stats {
 
     /**
      * The areas that cost the player most ([WORK] of them), dearest first: each with its cost a
-     * game and its peers' (when known), and its puzzles' motif; its positions are [positions]'
-     * "area" selector's. `work`.
+     * game and its peers' (when known), the moves it counts, and its puzzles' motif; its positions
+     * are [positions]' "area" selector's. Nothing over fewer than [WORK_GAMES] games, and no area
+     * of fewer than [WORK_MOVES] moves: one game's blunder is no area to work on. `work`.
      */
     fun work(costs: JSONObject): JSONArray {
         val ranked = walk(costs)
-            .filter { (_, figure) -> !figure.isNull("value") && figure.getDouble("value") != 0.0 }
+            .filter { (_, figure) ->
+                !figure.isNull("value") && figure.getDouble("value") != 0.0 &&
+                    figure.getInt("n") >= WORK_GAMES && figure.optInt("moves") >= WORK_MOVES
+            }
             .sortedBy { (_, figure) -> -figure.getDouble("value") }
         val out = JSONArray()
         for ((path, figure) in ranked.take(WORK)) {
@@ -316,6 +336,7 @@ object Stats {
                     .put("area", path)
                     .put("cost", figure.get("value"))
                     .put("games", figure.get("n"))
+                    .put("moves", figure.get("moves"))
                     .put("peers", figure.opt("peers") ?: JSONObject.NULL)
                     .put("grade", figure.opt("grade") ?: JSONObject.NULL)
                     .put("motif", MOTIFS[path] ?: JSONObject.NULL),
@@ -327,10 +348,12 @@ object Stats {
     // ---- the ratings and the peers -----------------------------------------------------------------
 
     /**
-     * Moves as the rating model reads them: the plies before each (the store counts White's
-     * first move as ply 1), the loss, the mover's expected score. `_rated`.
+     * Moves as the rating model reads them: the plies before each (by the position it was played
+     * from: a game set up from a position starts at its own move), the loss, the mover's expected
+     * score. `_rated`.
      */
-    private fun rated(moves: List<StatMoveRow>): List<Performance.Played> = moves.map { Performance.Played(it.ply - 1, it.loss, it.score) }
+    private fun rated(moves: List<StatMoveRow>): List<Performance.Played> =
+        moves.map { Performance.Played(Performance.pliesBefore(it.fen), it.loss, it.score) }
 
     /** The scale the page speaks: Lichess's when every game is a Lichess game. `_site`. */
     private fun site(d: Data): String? = if (d.games.isNotEmpty() && d.games.all { it.source == "lichess" }) "lichess" else null
@@ -667,9 +690,9 @@ object Stats {
      */
     private fun shapes(store: Store, d: Data): JSONArray {
         val counts = HashMap<String, IntArray>() // games, won, drawn, lost
+        val shapes = store.reviewShapes()
         for (g in d.games) {
-            val summary = store.review(g.key, g.strength)?.summary ?: continue
-            val shape = runCatching { JSONObject(summary).let { if (it.isNull("shape")) null else it.optString("shape") } }.getOrNull()
+            val shape = shapes[g.key to g.strength]
             if (shape.isNullOrEmpty()) continue
             val c = counts.getOrPut(shape) { IntArray(4) }
             c[0] += 1
@@ -716,15 +739,31 @@ object Stats {
     )
     const val POSITIONS_MAX = 60
 
+    // The games read at a time for them ([positions]).
+    const val POSITIONS_BATCH = 50
+
     /**
      * The player's moves behind a figure, the latest first: [what] a selector of `_SELECT`, [arg]
      * its kind (a tactic's, an endgame's, a structure, a gallery's label). `positions`.
      */
     fun positions(store: Store, f: Filter, what: String, arg: String = "", now: Double = clock()): JSONArray {
         val select = SELECT[what] ?: return JSONArray()
-        val d = Data.of(store, f, now)
+        // The games read newest first, a batch at a time, until there are enough: every game's
+        // moves were read for each area's positions, a second and more at a thousand games (the
+        // review of 2026-10-01).
+        val games = games(store, f, now).asReversed()
         val out = ArrayList<JSONObject>()
-        for (g in d.games.asReversed()) {
+        for (batch in games.chunked(POSITIONS_BATCH)) {
+            if (out.size >= POSITIONS_MAX) break
+            val d = Data(batch, store.statMoves(batch.map { it.key }))
+            positionsIn(d, what, arg, select, out)
+        }
+        return JSONArray(out.take(POSITIONS_MAX))
+    }
+
+    /** `_positions`: [positions] over [d]'s games, in their order, added to [out]. */
+    private fun positionsIn(d: Data, what: String, arg: String, select: (StatMoveRow, String) -> Boolean, out: MutableList<JSONObject>) {
+        for (g in d.games) {
             val limit = PRESSURE_MS[g.timeClass ?: ""]
             for (m in d.mine(g.key)) {
                 if (what == "time.pressure" && (limit == null || m.clockMs == null || m.clockMs >= limit)) continue
@@ -745,7 +784,6 @@ object Stats {
             }
             if (out.size >= POSITIONS_MAX) break
         }
-        return JSONArray(out.take(POSITIONS_MAX))
     }
 
     // ---- Python's float means ----------------------------------------------------------------------

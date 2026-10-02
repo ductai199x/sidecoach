@@ -134,7 +134,15 @@ object ReviewWords {
         val model: String = "",
         var cost: Double? = null,
         val calls: MutableList<Map<String, Any?>> = ArrayList(),
+        // The plies whose call failed: not done, to ask again (Try again), never dropped for good.
+        val failed: LinkedHashSet<Int> = LinkedHashSet(),
     )
+
+    /**
+     * The calls asked at once: every key move at once set a provider's rate limit off, and the
+     * moves whose calls failed were left without words (the review of 2026-10-01). `PARALLEL`.
+     */
+    @Volatile var PARALLEL = 4
 
     /**
      * The plies of the game's key moves, in order: [MOST] of them at most, the dearest kinds
@@ -669,8 +677,8 @@ object ReviewWords {
     }
 
     /**
-     * Whether a paragraph on the student's bad move gives the better move in notation: it is
-     * Retry's answer. The opponent's moves are not the student's to find (with the student's side
+     * Whether a paragraph on the student's bad move gives the better move, in notation or in
+     * words (the piece sent to its square, or castling): it is Retry's answer. The opponent's moves are not the student's to find (with the student's side
      * unknown, every bad move is kept back). `names_the_answer`.
      */
     fun namesTheAnswer(text: String, game: ReviewedGame, ply: Int, user: String? = null): Boolean {
@@ -679,9 +687,21 @@ object ReviewWords {
         val theirs = user != null && move.side.value != user
         if (label == null || label !in BAD || move.assessment.best.isEmpty() || theirs) return false
         val board = Board(move.fenBefore)
-        val best = board.san(Move.fromUci(move.assessment.best[0])).trimEnd('+', '#')
-        return Regex("(?<![\\w])${escaped(best)}(?![\\w])").containsMatchIn(text)
+        val answer = Move.fromUci(move.assessment.best[0])
+        val best = board.san(answer).trimEnd('+', '#')
+        if (Regex("(?<![\\w])${escaped(best)}(?![\\w])").containsMatchIn(text)) return true
+        // In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
+        // castling. Notation alone was caught, and "the knight to e4" showed the answer before it
+        // was asked for (the review of 2026-10-01).
+        if (board.isCastling(answer)) return Regex("\\bcastl(?:e|es|ed|ing)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        val name = PIECE_NAMES.getOrElse(board.pieceTypeAt(answer.from)) { "piece" }
+        val square = squareName(answer.to)
+        val verbs = "(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
+        return Regex("\\b${name}s?\\b(?:\\s+\\w+){0,2}\\s+$verbs\\s+$square\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
     }
+
+    /** `chess.piece_name`, by piece type (1 pawn ... 6 king). */
+    private val PIECE_NAMES = mapOf(1 to "pawn", 2 to "knight", 3 to "bishop", 4 to "rook", 5 to "queen", 6 to "king")
 
     /**
      * What stops a part on move [ply] from being shown, in words; empty when nothing. "why" and
@@ -733,8 +753,8 @@ object ReviewWords {
     /**
      * The model's review of the game's key moves, checked: a call a move, all at once. Without
      * thinking unless asked: a small model reasons worse about chess, not better (Tai,
-     * 2026-09-30). A call that fails drops its move; when every one fails (and none was answered
-     * before), the first failure is thrown. [answered]: the answers already paid for (words the
+     * 2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
+     * fails (and none was answered before), the first failure is thrown. [answered]: the answers already paid for (words the
      * app was closed in the middle of), not asked again; [onAnswer] (ply, text, stats) is handed
      * each new answer the moment it arrives, to keep it. The cost is of the new calls. `write`.
      */
@@ -747,6 +767,7 @@ object ReviewWords {
         thinking: Boolean = false,
         answered: Map<Int, String>? = null,
         onAnswer: ((Int, String, Map<String, Any?>) -> Unit)? = null,
+        stop: (() -> Boolean)? = null,
     ): Words {
         val paid = LinkedHashMap(answered ?: emptyMap())
         val plies = keyPlies(game)
@@ -766,7 +787,8 @@ object ReviewWords {
             }
         }
 
-        fun ask(ply: Int): Any = try {
+        // [stop] true asks no more (the game removed meanwhile): the calls not made fail.
+        fun ask(ply: Int): Any = if (stop != null && stop()) IllegalStateException("stopped") else try {
             asked.chat(
                 SYSTEM,
                 listOf(ChatMessage("user", prompt(game, ply, user, opening))),
@@ -781,7 +803,7 @@ object ReviewWords {
         val replies = LinkedHashMap<Int, Any>()
         if (todo.isNotEmpty()) {
             // `as_completed`: each answer handled here, on the caller's thread, as it comes.
-            val pool = Executors.newFixedThreadPool(todo.size) { task ->
+            val pool = Executors.newFixedThreadPool(minOf(PARALLEL, todo.size)) { task ->
                 Thread(task, "sidecoach-words").apply { isDaemon = true }
             }
             try {
@@ -808,6 +830,7 @@ object ReviewWords {
             val reply = replies[ply]
             if (reply is Exception) {
                 words.dropped[ply] = "the call failed: ${reply.message ?: ""}"
+                words.failed.add(ply)
                 continue
             }
             val text = if (reply is Completion) {

@@ -340,7 +340,8 @@ class Store(val path: File?) {
         val out = ArrayList<CellRow>()
         lock.withLock {
             out += rows(
-                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss" +
+                "SELECT cause, motif, phase, COUNT(*) AS n, SUM(expected_loss) AS loss," +
+                    " json_group_array(DISTINCT game_id) AS games" +
                     " FROM evidence GROUP BY cause, motif, phase",
             ) { c ->
                 CellRow(
@@ -350,6 +351,7 @@ class Store(val path: File?) {
                     errors = c.getInt(c.getColumnIndexOrThrow("n")),
                     chances = 0,
                     expectedLoss = c.doubleOrNull("loss") ?: 0.0,
+                    games = ids(c.stringOrNull("games")),
                 )
             }
             out += rows(
@@ -359,16 +361,39 @@ class Store(val path: File?) {
             ) { c ->
                 CellRow(null, null, c.stringOrNull("phase"), 0, c.getInt(c.getColumnIndexOrThrow("n")), 0.0)
             }
+            // A tactic's occasions with those the player missed (a mistake that did not play it):
+            // a mistake's own motif is the tactic it allowed as often as the one it let go, and
+            // "about 100% (5 of 4)" counted the forks walked into over the forks the player had
+            // (the review of 2026-10-01).
+            val missed = "(e.move_id IS NOT NULL AND NOT EXISTS" +
+                " (SELECT 1 FROM json_each(m.tags) p WHERE p.value = t.value))"
             out += rows(
-                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n" +
-                    " FROM moves m, json_each(m.available_tags) t" +
+                "SELECT m.phase AS phase, t.value AS motif, COUNT(*) AS n," +
+                    " SUM($missed) AS missed," +
+                    " json_group_array(DISTINCT CASE WHEN $missed THEN m.game_id END) AS games" +
+                    " FROM moves m JOIN json_each(m.available_tags) t" +
+                    " LEFT JOIN evidence e ON e.move_id = m.move_id" +
                     " WHERE m.by_user = 1 AND m.withdrawn = 0 AND m.severity IS NOT NULL" +
                     " GROUP BY m.phase, t.value",
             ) { c ->
-                CellRow(null, c.stringOrNull("motif"), c.stringOrNull("phase"), 0, c.getInt(c.getColumnIndexOrThrow("n")), 0.0)
+                CellRow(
+                    null,
+                    c.stringOrNull("motif"),
+                    c.stringOrNull("phase"),
+                    c.intOrNull("missed") ?: 0,
+                    c.getInt(c.getColumnIndexOrThrow("n")),
+                    0.0,
+                    ids(c.stringOrNull("games")),
+                )
             }
         }
         return out.sortedBy { -it.expectedLoss }
+    }
+
+    /** A JSON array of game ids, its nulls left out (store.py `_ids`). */
+    private fun ids(value: String?): Set<String> {
+        val array = org.json.JSONArray(value ?: "[]")
+        return (0 until array.length()).filter { !array.isNull(it) }.map { array.getString(it) }.toSet()
     }
 
     // ---- sessions -------------------------------------------------------------------------------
@@ -393,6 +418,27 @@ class Store(val path: File?) {
     }
 
     // ---- the review's library and its reviews (store.py) ------------------------------------------
+
+    /**
+     * The player's side in each imported game that has none, by their usernames (lower case): a
+     * game brought in before the username was set. `fill_sides`.
+     */
+    fun fillSides(names: List<String>) {
+        if (names.isEmpty()) return
+        val marks = names.joinToString(",") { "?" }
+        lock.withLock {
+            exec(
+                "UPDATE library SET user_side = CASE WHEN lower(white) IN ($marks) THEN 'white'" +
+                    " WHEN lower(black) IN ($marks) THEN 'black' END" +
+                    " WHERE user_side IS NULL AND (lower(white) IN ($marks) OR lower(black) IN ($marks))",
+                *(names + names + names + names).toTypedArray(),
+            )
+        }
+    }
+
+    fun setTimeClass(key: String, timeClass: String?) {
+        lock.withLock { exec("UPDATE library SET time_class = ? WHERE key = ?", timeClass, key) }
+    }
 
     /** A game imported for review; the same game imported again replaces its row. */
     fun addLibraryGame(row: LibraryRow) {
@@ -605,9 +651,15 @@ class Store(val path: File?) {
 
     // ---- Stats: a reviewed game's facts (StatFacts.kt; store.py) ----------------------------------
 
-    /** A game's facts from its review at [strength], in place of any before. `save_stats`. */
+    /**
+     * A game's facts from its review at [strength], in place of any before from a review no
+     * stronger: Stats keeps the strongest review's facts (a Fast look after a Deep review lowered
+     * Stats, the review of 2026-10-01). `save_stats`.
+     */
     fun saveStats(strength: String, game: GameFact, moves: List<MoveFact>) {
         lock.withLock {
+            val kept = rows("SELECT $RANK AS rank FROM stat_games WHERE key = ?", game.key) { it.getInt(0) }.firstOrNull()
+            if (kept != null && kept > (STRENGTH_RANK[strength] ?: 0)) return
             db.beginTransaction()
             try {
                 exec("DELETE FROM stat_moves WHERE key = ?", game.key)
@@ -641,7 +693,30 @@ class Store(val path: File?) {
      * came in, until the import was opened and reviewed). `stat_games`.
      */
     fun statGames(): List<StatGameRow> = lock.withLock {
-        rows("SELECT * FROM stat_games WHERE key NOT IN ($STOOD_FOR) ORDER BY played_at") { statGameRow(it) }
+        // The player's side and the time class are the library's as it is now, when it has the
+        // game: a game reviewed before the username was set kept no side and never reached Stats
+        // (the review of 2026-10-01).
+        rows(
+            "SELECT s.key, s.strength, s.source, s.played_at, s.bot, s.result, s.opening," +
+                " s.termination, COALESCE(l.user_side, s.user_side) AS user_side," +
+                " COALESCE(l.time_class, s.time_class) AS time_class" +
+                " FROM stat_games s LEFT JOIN library l ON l.key = s.key" +
+                " WHERE s.key NOT IN ($STOOD_FOR) ORDER BY s.played_at",
+        ) { statGameRow(it) }
+    }
+
+    /** Each imported game's players' ratings, White's and Black's, by its key. `library_elos`. */
+    fun libraryElos(): Map<String, Pair<Int?, Int?>> = lock.withLock {
+        rows("SELECT key, white_elo, black_elo FROM library") { c ->
+            c.getString(0) to ((if (c.isNull(1)) null else c.getInt(1)) to (if (c.isNull(2)) null else c.getInt(2)))
+        }.toMap()
+    }
+
+    /** Each saved review's game shape (its summary's), by the game's key and strength. `review_shapes`. */
+    fun reviewShapes(): Map<Pair<String, String>, String?> = lock.withLock {
+        rows(
+            "SELECT key, strength, json_extract(summary, '$.shape') AS shape FROM reviews WHERE json_valid(summary)",
+        ) { c -> (c.getString(0) to c.getString(1)) to (if (c.isNull(2)) null else c.getString(2)) }.toMap()
     }
 
     /** The facts of the games' moves, in order. `stat_moves`. */
@@ -654,14 +729,16 @@ class Store(val path: File?) {
     }
 
     /**
-     * Each game's latest review whose facts are not kept yet (a watched game its import stands
-     * for needs none once the import's are kept: [statGames]). `reviews_without_stats`.
+     * Each game's strongest review ([bestReview]) whose facts are not kept yet (a watched game
+     * its import stands for needs none once the import's are kept: [statGames]).
+     * `reviews_without_stats`.
      */
     fun reviewsWithoutStats(): List<ReviewRow> = lock.withLock {
         rows(
             "SELECT r.* FROM reviews r WHERE r.key NOT IN (SELECT key FROM stat_games)" +
                 " AND r.key NOT IN ($STOOD_FOR)" +
-                " AND r.reviewed_at = (SELECT MAX(reviewed_at) FROM reviews WHERE key = r.key)",
+                " AND r.rowid = (SELECT rowid FROM reviews WHERE key = r.key" +
+                " ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1)",
         ) { reviewRow(it) }
     }
 
@@ -694,9 +771,28 @@ class Store(val path: File?) {
         rows("SELECT * FROM reviews WHERE key = ? AND strength = ?", key, strength) { reviewRow(it) }.firstOrNull()
     }
 
-    /** The game's latest review, at whatever strength. */
-    fun latestReview(key: String): ReviewRow? = lock.withLock {
-        rows("SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
+    /**
+     * The game's strongest review (deep, standard, fast), the latest of that strength: the one
+     * the review opens at, Your games shows and Stats counts. The latest was shown, and a Fast
+     * look after a Deep review lowered them all (the review of 2026-10-01). `best_review`.
+     */
+    fun bestReview(key: String): ReviewRow? = lock.withLock {
+        rows("SELECT * FROM reviews WHERE key = ? ORDER BY $RANK DESC, reviewed_at DESC LIMIT 1", key) { reviewRow(it) }.firstOrNull()
+    }
+
+    /** Every saved review, by its game's key and its strength. `saved_reviews`. */
+    fun savedReviews(): List<Pair<String, String>> = lock.withLock {
+        rows("SELECT key, strength FROM reviews") { it.getString(0) to it.getString(1) }
+    }
+
+    /** `set_review_summary`. */
+    fun setReviewSummary(key: String, strength: String, summary: String) {
+        lock.withLock { exec("UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?", summary, key, strength) }
+    }
+
+    /** The strength of the review each game's Stats facts come from, by its key. `stat_strengths`. */
+    fun statStrengths(): Map<String, String> = lock.withLock {
+        rows("SELECT key, strength FROM stat_games") { it.getString(0) to it.getString(1) }.toMap()
     }
 
     /** The coach's words on a review's moves, as far as they are prepared. */
@@ -872,6 +968,10 @@ class Store(val path: File?) {
 
         /** A removed game's rows are kept this long, for Undo (the page offers it for seconds). */
         var UNDO_KEEP_S = 600.0
+
+        // The review strengths, weakest first: a stronger review stands for the game. `STRENGTH_RANK`.
+        val STRENGTH_RANK = mapOf("fast" to 1, "standard" to 2, "deep" to 3)
+        private val RANK = "CASE strength " + STRENGTH_RANK.entries.joinToString(" ") { "WHEN '${it.key}' THEN ${it.value}" } + " ELSE 0 END"
 
         /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
         private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
@@ -1416,6 +1516,12 @@ data class EvidenceRow(
  * motif and phase with the expected score they cost, and the occasions ([chances]) -- moves
  * in a phase, moves with a tactic on the board -- with the cause null.
  */
+/**
+ * One cell of the error taxonomy (store.py `CellRow`): mistakes (`errors`) by cause, motif and
+ * phase with the expected score they cost, and the occasions (`chances`) with the cause null. A
+ * tactic's occasions count in `errors` those the player missed. `games`: the games its errors
+ * came from.
+ */
 data class CellRow(
     val cause: String?,
     val motif: String?,
@@ -1423,6 +1529,7 @@ data class CellRow(
     val errors: Int,
     val chances: Int,
     val expectedLoss: Double,
+    val games: Set<String> = emptySet(),
 )
 
 data class SessionRow(

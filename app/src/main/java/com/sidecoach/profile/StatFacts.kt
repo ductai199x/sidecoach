@@ -11,6 +11,7 @@ import com.sidecoach.analysis.spacePlan
 import com.sidecoach.chess.BLACK
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.KING
+import com.sidecoach.chess.Move
 import com.sidecoach.chess.PAWN
 import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
@@ -213,6 +214,7 @@ object StatFacts {
         }
         val opening = game.moves.reversed().firstOrNull { !it.after.opening.isNullOrEmpty() }?.after?.opening
         val headers = game.headers
+        val result = headers["Result"]?.takeIf { it.isNotEmpty() } ?: row.result
         val fact = GameFact(
             key = row.key,
             source = row.source,
@@ -220,12 +222,48 @@ object StatFacts {
             playedAt = row.playedAt,
             userSide = row.userSide,
             bot = botGame(headers),
-            result = headers["Result"]?.takeIf { it.isNotEmpty() } ?: row.result,
+            result = result,
             opening = opening ?: game.start.opening,
-            termination = headers["Termination"],
+            termination = endedBy(headers["Termination"]?.takeIf { it.isNotEmpty() } ?: termination(row), result, game),
         )
         return fact to moves
     }
+
+    /**
+     * How a game ended, in words [Stats.terminationKind] reads: its Termination header when that
+     * says, else what the final position proves (a mate, a stalemate, dead material, a
+     * repetition, fifty moves), else, for Lichess's "Normal" (a game neither lost on time nor
+     * abandoned), a resignation or a draw agreed. Lichess's "Normal" and a watched game's missing
+     * header made most of "How your games ended" "other" (the review of 2026-10-01). `ended_by`.
+     */
+    fun endedBy(text: String?, result: String?, game: ReviewedGame): String? {
+        if (Stats.terminationKind(text) != "other") return text
+        val board = Board(game.start.fen)
+        try {
+            for (move in game.moves) board.push(Move.fromUci(move.assessment.uci))
+        } catch (e: IllegalArgumentException) {
+            return text
+        }
+        if (board.isCheckmate()) return "checkmate"
+        if (board.isStalemate()) return "stalemate"
+        if (result == "1/2-1/2") {
+            if (board.isInsufficientMaterial()) return "insufficient material"
+            if (board.isRepetition(3)) return "repetition" // the sites draw it as the position comes the third time
+            if (board.halfmoveClock >= 100) return "50 moves"
+        }
+        if ((text ?: "").trim().lowercase(Locale.ROOT) == "normal") {
+            if (result == "1-0" || result == "0-1") return "resignation"
+            if (result == "1/2-1/2") return "agreement"
+        }
+        return text
+    }
+
+    /**
+     * The Termination header of the library's copy of a game: a watched game's says how Sidecoach
+     * saw it end ("lost on time", "checkmate").
+     */
+    private fun termination(row: LibraryRow): String? =
+        Regex("^\\[Termination \"([^\"]*)\"\\]", RegexOption.MULTILINE).find(row.pgn)?.groupValues?.get(1)
 
     /** A reviewed game's facts kept for Stats, in place of any from an older review. `keep_stats`. */
     fun keepStats(store: Store, strength: String, reviewed: ReviewedGame, row: LibraryRow) {

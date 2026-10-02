@@ -38,6 +38,7 @@ import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
 import com.sidecoach.ui.SettingsApi
 import com.sidecoach.ui.PuzzleRooms
+import com.sidecoach.ui.ReviewRoom
 import com.sidecoach.ui.ReviewRooms
 import com.sidecoach.ui.SettingsStore
 import com.sidecoach.ui.SetupApi
@@ -139,6 +140,18 @@ class MainActivity : ComponentActivity() {
         PanelListen.askPermission = { runOnUiThread { microphone.launch(Manifest.permission.RECORD_AUDIO) } }
 
         val store = SettingsStore(this)
+        // The saved reviews summed up again when the rule they are made with changed: once, in
+        // the background, never in the way of the panel (the desktop's server does it so).
+        Thread({
+            runCatching {
+                val profile = com.sidecoach.profile.Store(File(filesDir, "profile.sqlite"))
+                try {
+                    ReviewRoom.rederive(profile)
+                } finally {
+                    profile.close()
+                }
+            }
+        }, "rederive").apply { isDaemon = true }.start()
         val ports = getSharedPreferences("panel", MODE_PRIVATE)
         // The launch's secret: only this WebView holds it (a cookie in the app's private
         // cookie store), so no other app on the phone can drive the local server.
@@ -156,7 +169,11 @@ class MainActivity : ComponentActivity() {
                 // The app's own folder on shared storage, where `adb pull` reaches a dump.
                 dumps = File(getExternalFilesDir(null) ?: filesDir, "dumps"),
                 games = GamesApi(filesDir, store),
-                stats = StatsApi(filesDir),
+                stats = StatsApi(filesDir) {
+                    val profile = store.section("profile")
+                    listOf(profile.optString("chesscom_user", ""), profile.optString("lichess_user", ""))
+                        .map { com.sidecoach.voice.Py.strip(it) }.filter { it.isNotEmpty() }
+                },
                 // One set of review rooms for the app, as the puzzle rooms: a review under way
                 // outlives the window being rebuilt (a turn of the phone).
                 reviews = { ReviewRooms.shared(applicationContext) },
