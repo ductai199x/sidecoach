@@ -631,6 +631,92 @@ const val SEE_ALL_WORDS =
     "You see the answer so that the hint can be precise and true; a hint that gives a little " +
         "too much is a lesser fault than a vague one."
 
+/** What each rung of the ladder may say, as the level line states it. `RUNG_WORDS`. */
+fun rungWords(level: DisclosureLevel): String = when (level) {
+    DisclosureLevel.SILENT -> "nothing about the position"
+    DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
+    DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
+    DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
+    DisclosureLevel.LINE -> "everything, the line included"
+}
+
+/** What has been said, up to each rung, for the AI coach's task ([CoachSession.ladderWords]). `SAID_WORDS`. */
+fun saidWords(level: DisclosureLevel): String = when (level) {
+    DisclosureLevel.SILENT -> "nothing yet"
+    DisclosureLevel.IDEA -> "the idea"
+    DisclosureLevel.FOCUS -> "the idea, the target and the piece"
+    DisclosureLevel.MOVE -> "the move"
+    DisclosureLevel.LINE -> "the move and the line"
+}
+
+/**
+ * What the AI coach is told of a question of the player's: guidelines, not rules. The model reads
+ * what the words ask, from the conversation and the sheet, and decides what to say and how much;
+ * no keyword picks the directive or the rung (Tai, 2026-10-02). The offline coach's keyword
+ * branches stay in `instruction` for its templates and the fallback. `AI_GUIDELINES`.
+ */
+const val AI_GUIDELINES =
+    "Answer them as their coach. What they ask is yours to read from their words, the " +
+        "conversation above and the position; all of the sheet is yours to use -- every engine " +
+        "line with its score, the candidate moves, the facts, the last move of each side with its " +
+        "verdict. Some guidelines, not rules:\n" +
+        "- A hint: one rung up the ladder above, said once, never lower than one already said.\n" +
+        "- The move -- \"what should I play\", \"the play here\", \"the move\": give it plainly, " +
+        "and why it works, from the sheet's why and pattern. Several moves about as good: say so " +
+        "and name them.\n" +
+        "- Which moves are best, good or fine, or whether another move works too: read all of the " +
+        "engine lines, name every move about level with the best, and say which are clearly worse " +
+        "and what goes wrong with them.\n" +
+        "- The line, or what happens next: the engine's line move by move, and the idea behind " +
+        "it; once given, what comes after its end.\n" +
+        "- A move, square or piece they name: whether it holds up and what it does or allows, from " +
+        "the engine's word on it where given above -- theirs to hear in full: the score after it, " +
+        "how far behind the best, the reply, what the move does.\n" +
+        "- \"That\", \"it\" or \"that move\" may mean their own last move or the opponent's reply. " +
+        "The sheet gives both positions -- the one they faced before their move and the one after " +
+        "the reply -- and says how long the reply took when that is known: read the conversation, " +
+        "take the likelier, and say which move you mean when it could be either.\n" +
+        "- The opponent's move or threat: from the last move and its verdict and the threats the " +
+        "facts list. When it is the opponent's move there is no move of theirs to find: say what " +
+        "they threaten and what to be ready for.\n" +
+        "- How they stand, the material, the opening: from the Standing, the material and the " +
+        "record -- the opening by the name the record gives it -- never counted or guessed " +
+        "yourself. How they did overall: from the verdicts and " +
+        "the tally in the record, nothing inferred from the position on the board.\n" +
+        "- A move they already played: its verdict is in the record and all of it may be said -- " +
+        "what it missed or allowed, and the better move -- from the sheet of the position they " +
+        "faced, inventing no fault in a sound move.\n" +
+        "- What they state or take for granted: take it as they meant it, say what in it is right " +
+        "as plainly as what is wrong, and credit them with nothing they did not say -- a question " +
+        "states nothing to agree with. What you already said in this position is under 'Said " +
+        "here': do not say it again in other words; give them something it did not.\n" +
+        "Say it in words: no percentages, scores or move numbers unless they ask for the number. " +
+        "Name moves bare. Two or three sentences, then, if you like, one question."
+
+/** Said of what the coach has said since the last move, so a follow-up gets only what it asks. `AI_FOLLOW_UP`. */
+const val AI_FOLLOW_UP =
+    " You have spoken since the last move already (your turns above): do not repeat the " +
+        "verdict or the better move you told them; answer only what they ask now."
+
+/** The coach's last turn ended with a question. `AI_ANSWERING`. */
+const val AI_ANSWERING =
+    " Your last turn above ended with a question: if their words answer it, say first, plainly " +
+        "and from the facts, whether they have it right, and give the answer yourself in a sentence " +
+        "when they do not; that closes the question, so ask nothing more."
+
+/**
+ * A hint asked after the move was given: the move again, with why it beats clearly worse moves
+ * (Tai, 2026-09-30), as a guideline to the AI; the offline coach keeps its template
+ * ([MOVE_GIVEN_WHY]). `AI_MOVE_GIVEN`: `{move}` the move.
+ */
+const val AI_MOVE_GIVEN =
+    " The move has been given already, in your turns above: it is {move}. If they ask for " +
+        "it again, or for another hint, say it again plainly, with what it does from the fact " +
+        "sheet's why, in other words than before -- and why it is the move to play instead of " +
+        "something that looks as good but is clearly worse: name one or two of the clearly worse " +
+        "moves listed here, with what goes wrong with them as the board says it, and nothing " +
+        "more of them."
+
 /*
  * What the model is asked to do on each rung before the player moves: the facts the rung's
  * template is built from, said the model's own way, sharper for this position (Tai, 2026-09-23:
@@ -1228,23 +1314,44 @@ class Spoken(
     val notes: List<String> = emptyList(),
     /**
      * The moment of the game it was asked for ([Coach.epoch]): one that lands after a new game,
-     * a takeback or a re-read is no turn of the moment now.
+     * a takeback or a re-read is shown all the same, in its place (Tai, 2026-10-02: no reply is
+     * dropped), but is no turn of the moment now (it is not recorded in the conversation), and
+     * the voice does not say it.
      */
     val epoch: Int = 0,
+    /**
+     * How many moves of the player's own the game had when it was asked for
+     * ([CoachSession.ownMoves]): a reply that lands after they moved again is not spoken either.
+     */
+    val ownMoves: Int = 0,
+    /**
+     * The rung of the ladder the reply actually said, from its words ([saidLevel]), for an AI
+     * coach's answer to a question; null for any other message.
+     */
+    val rung: DisclosureLevel? = null,
     /**
      * The lesson ends by asking what the player saw ([CoachSession.elicitDue]): when it is dropped
      * unsaid, the question was never asked.
      */
     val elicit: Boolean = false,
 ) {
+    /**
+     * Set by [CoachSession.poll]: the moment it was asked for is over (the epoch or the player's
+     * moves have moved on), so it is shown, not spoken, and no turn of the conversation now.
+     * `Spoken.late`.
+     */
+    var late: Boolean = false
+
     /** This reply as the log keeps it once it is old: its words and checks, not the prompts. */
     fun withoutPrompts(): Spoken {
         if (calls.all { it.prompt.isEmpty() }) return this
-        return Spoken(
+        val lighter = Spoken(
             message, level, problems, attempts,
             calls.map { ModelCall(it.raw, it.stats, it.candidates, it.passed, "") },
-            recorded, streamed, verified, repaired, leaks, notes, epoch, elicit,
+            recorded, streamed, verified, repaired, leaks, notes, epoch, ownMoves, rung, elicit,
         )
+        lighter.late = late
+        return lighter
     }
 }
 
@@ -1312,11 +1419,11 @@ internal val STALE_BY_AN_ASK = setOf(Trigger.POST_MOVE, Trigger.STUCK, Trigger.D
 const val POSITIONS_KEPT = 40
 
 /**
- * An opponent's move that follows the player's within this many seconds came straight away (a
- * bot): the player never faced the position in between, and "that move" they ask about is their
- * own ([CoachSession.repliedAtOnce]). `INSTANT_REPLY_S`.
+ * The moment a reply was asked for: the epoch (a new game, a takeback or a re-read start
+ * another), the game it was about, and how many moves of their own the player had played.
+ * `Moment`.
  */
-const val INSTANT_REPLY_S = 2.0
+data class Moment(val epoch: Int, val gameId: String?, val ownMoves: Int)
 
 /**
  * The replies the log keeps the prompts of ([CoachSession.lighten]), and the claim readings the
@@ -1416,8 +1523,14 @@ class CoachRequest(
      * coach has an engine and the model takes tools.
      */
     val tools: EngineTools? = null,
-    /** The moment of the game the request was built in ([Coach.epoch]). */
+    /** The moment of the game the request was built in ([CoachSession.epoch], [CoachSession.ownMoves]). */
     val epoch: Int = 0,
+    val ownMoves: Int = 0,
+    /**
+     * An AI coach's answer to a question: the model decides what the words ask, so the rung the
+     * reply carries, and the marks on the board, follow what it said ([saidLevel]).
+     */
+    val rungByReply: Boolean = false,
     val elicit: Boolean = false,
 )
 
@@ -1837,23 +1950,50 @@ class Speaker(
             return speakNow(request)
         } catch (exc: Exception) {
             noteFailure("reply", exc)
+            val shaped = shaped(request, request.fallback)
             return Spoken(
                 message = CoachMessage(
                     text = request.fallback,
-                    level = request.level,
+                    level = shaped.level,
                     trigger = request.trigger,
                     gameId = request.gameId,
                     ply = request.ply,
                     fen = request.board.fen(),
-                    annotations = request.annotations,
+                    annotations = shaped.marks,
                 ),
-                level = request.level,
+                level = shaped.level,
                 problems = listOf("the reply failed: ${exc::class.java.simpleName}: ${exc.message}"),
                 attempts = 0,
                 epoch = request.epoch,
+                ownMoves = request.ownMoves,
+                rung = shaped.rung,
                 elicit = request.elicit,
             )
         }
+    }
+
+    /** The level a reply is logged at, the rung it said, and the marks on the board for it. */
+    internal class Shaped(val level: DisclosureLevel, val rung: DisclosureLevel?, val marks: List<Annotation>)
+
+    /**
+     * The reply's own level, rung and marks. An AI coach's answer to a question follows its words
+     * ([saidLevel]), so the marks and the ladder show what was said, not what the question's
+     * words were guessed to mean; any other message is at the level it was asked for.
+     * `Speaker._shaped`.
+     */
+    internal fun shaped(request: CoachRequest, text: String): Shaped {
+        if (!request.rungByReply) {
+            return Shaped(request.level, null, request.annotations + mentionsIn(text, request.board))
+        }
+        // An answer says at least the idea of the position, as a first hint does -- a quiet one
+        // names no square the words could be matched on -- so the ladder never offers the idea
+        // again after an answer was given.
+        var level = DisclosureLevel.of(
+            maxOf(saidLevel(text, request.facts).value, DisclosureLevel.IDEA.value),
+        )
+        if (request.level.value >= DisclosureLevel.LINE.value) level = request.level // a game that is over withholds nothing
+        val base = annotationsFor(request.facts, level, request.board, request.trigger)
+        return Shaped(level, level, base + mentionsIn(text, request.board))
     }
 
     fun poll(): List<Spoken> {
@@ -1905,6 +2045,7 @@ class Speaker(
                 problems = emptyList(),
                 attempts = 0,
                 epoch = request.epoch,
+                ownMoves = request.ownMoves,
                 elicit = request.elicit,
             )
         }
@@ -2032,18 +2173,19 @@ class Speaker(
             text = trimmed(text, request)
             leaks = leaks(text, request)
         }
+        val shaped = shaped(request, text)
         val message = CoachMessage(
             text = text,
-            level = request.level,
+            level = shaped.level,
             trigger = request.trigger,
             gameId = request.gameId,
             ply = request.ply,
             fen = request.board.fen(),
-            annotations = request.annotations + mentionsIn(text, request.board),
+            annotations = shaped.marks,
         )
         return Spoken(
             message = message,
-            level = request.level,
+            level = shaped.level,
             problems = problems,
             attempts = attempts,
             calls = calls,
@@ -2053,6 +2195,8 @@ class Speaker(
             leaks = leaks,
             notes = notes,
             epoch = request.epoch,
+            ownMoves = request.ownMoves,
+            rung = shaped.rung,
             elicit = request.elicit,
         )
     }

@@ -183,6 +183,23 @@ object PanelVoice {
         if (voicing?.first == ROOM_VOICE) voiceOut()?.stop()
     }
 
+    /**
+     * The position the coach is speaking about is left -- a new game, a takeback, the board
+     * re-read, the player's own next move -- so what the voice is saying about it stops (Tai,
+     * 2026-10-02: "interrupt the tts so it stops its long rant"). The same mechanism as the
+     * push-to-talk silencing and the barge-in: the voice stops, and the rest of a reply still
+     * being written goes to the captions and the record, silent ([streamSink]). The text is never
+     * cut. The opponent's move alone does not stop it. `panel._position_moved_on`.
+     */
+    fun positionMovedOn(why: String) {
+        hushed += 1
+        val speaker = voiceOut() ?: return
+        if (speaker.busy) {
+            speaker.stop()
+            PanelEngine.emit("voice", "debug", "cut off: $why")
+        }
+    }
+
     /** `set_muted`. */
     fun setMuted(on: Boolean) {
         muted = on
@@ -254,12 +271,15 @@ object PanelVoice {
     private fun plyNow(): Int = PanelEngine.plyNow()
 
     /** Apply [voiceAction] and speak accordingly; what was done, for the log. `_speak`. */
-    fun speak(trigger: String, text: String, ply: Int?): String {
+    fun speak(trigger: String, text: String, ply: Int?, movedOn: Boolean = false): String {
         // The captions show every line whatever the voice does with it -- muted, skipped as
         // short, stale, held back for pace (Tai, 2026-10-01). While the push-to-talk key is held
-        // the voice says nothing: the player is talking.
+        // the voice says nothing: the player is talking. A reply asked for a moment that is over
+        // ([movedOn]: a new game, a takeback, a re-read, the player's next move) is shown in its
+        // place and not spoken (Tai, 2026-10-02).
         if (muted || PanelEngine.pttHeld()) return "muted".also { Captions.show(text) }
         val speaker = voiceOut() ?: return "muted".also { Captions.show(text) }
+        if (movedOn) return "stale".also { Captions.show(text) }
         val action = voiceAction(trigger, text, ply, plyNow(), speaker.busy, voicing, coachFast())
         if (action == "supersede") speaker.stop()
         if (action == "speak" || action == "supersede") {
@@ -281,14 +301,20 @@ object PanelVoice {
      * The voice's sink for one coach reply written sentence by sentence (`_stream_sink`): the
      * first sentence decides, by [voiceAction], whether the reply is spoken at all, and each
      * sentence is queued as it comes, so the first is heard while the model writes the rest. A
-     * reply that has begun is heard to its end whatever the board does meanwhile. Called on the
-     * coach's thread.
+     * reply that has begun is heard to its end unless the position it is about is left: a new
+     * game, a takeback, a re-read or the player's next move cuts it ([positionMovedOn]); the
+     * opponent's move alone does not. Called on the coach's thread.
+     *
+     * No reply is dropped (Tai, 2026-10-02): a reply that is not to be spoken -- stale, skipped, or
+     * asked for a moment that is over ([movedOn]) -- is taken sentence by sentence all the same,
+     * captioned and kept as the reply's text, and only silent. Declining it, as before, made the
+     * coach say a template in its place.
      */
-    fun streamSink(trigger: Trigger, ply: Int?): ((String) -> Boolean)? {
+    fun streamSink(trigger: Trigger, ply: Int?, movedOn: () -> Boolean = { false }): ((String) -> Boolean)? {
         if (muted) return null
         val name = trigger.slug
         var started = false
-        var silent = false // began while the push-to-talk key was held: never spoken
+        var silent = false // began while the push-to-talk key was held, or is not to be spoken
         var hushedAt = hushed
         return sink@{ sentence ->
             val continues = started
@@ -311,9 +337,21 @@ object PanelVoice {
             val speaker = voiceOut() ?: return@sink false
             if (!started) {
                 hushedAt = hushed
-                val action = voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
+                val action = if (movedOn()) {
+                    "stale"
+                } else {
+                    voiceAction(name, sentence, ply, plyNow(), speaker.busy, voicing, coachFast())
+                }
                 if (action == "supersede") speaker.stop()
-                if (action != "speak" && action != "supersede") return@sink false
+                if (action == "text") return@sink false // a fast game: held for the pace, not lost
+                if (action != "speak" && action != "supersede") {
+                    // Shown, in its place, not spoken: the rest of the reply follows the same.
+                    started = true
+                    silent = true
+                    Captions.show(sentence)
+                    PanelEngine.emit("voice", "debug", "not spoken ($action): ${PanelEngine.elide(sentence, 60)}")
+                    return@sink true
+                }
                 started = true
                 voicing = name to ply
                 awaitAudio(name, ply, sentence)

@@ -35,6 +35,7 @@ import com.sidecoach.profile.Causes
 import com.sidecoach.vision.Pieces
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * The second half of `coach/coach.py`: what the user's words mean for disclosure, and the
@@ -430,9 +431,11 @@ class Coach(
 
     /**
      * The panel's voice, when it wants replies as they are written: a factory giving, for a
-     * trigger and a ply, the sink the reply's sentences go to, or null.
+     * trigger and a ply, the sink the reply's sentences go to, or null. The third argument says
+     * whether the moment the reply was asked for is over ([movedOn]): then the sink takes the
+     * sentences as the reply's text and the voice says none of them.
      */
-    var streamSink: ((Trigger, Int?) -> ((String) -> Boolean)?)? = null
+    var streamSink: ((Trigger, Int?, () -> Boolean) -> ((String) -> Boolean)?)? = null
 
     var summariser: LLMProvider = summariser ?: provider
 
@@ -584,6 +587,25 @@ class Coach(
     internal var epoch = 0
         private set
 
+    /**
+     * How many moves of the player's own were played in the session: with the epoch, the moment
+     * the voice holds a reply to ([movedOn]). `Coach._own_moves`.
+     */
+    internal var ownMoves = 0
+        private set
+
+    /** The moment a reply asked for now is asked for. `Coach._moment`. */
+    internal fun currentMoment(): Moment = Moment(epoch, gameId, ownMoves)
+
+    /**
+     * Whether the position a reply was asked for is gone: a new game, a takeback or a re-read
+     * came since, or the player has moved again. Such a reply is shown, in its place, all the
+     * same; only its speech is cut (the panel's voice, [streamSink]'s third argument): Tai,
+     * 2026-10-02, "no need to drop any replies ... the only thing that might be good is to
+     * interrupt the tts so it stops its long rant". `Coach.moved_on`.
+     */
+    fun movedOn(moment: Moment): Boolean = moment.epoch != epoch || moment.ownMoves != ownMoves
+
     // Lifecycle
 
     fun start() = speaker.start()
@@ -699,7 +721,7 @@ class Coach(
         // The moment it was asked in: the reply is that moment's, whatever the game does while a
         // worker checks the words and the model writes (a new game starting then filed the
         // answer under the next game).
-        val moment = epoch to gameId
+        val moment = currentMoment()
         if (profileAsk != null && ASK_PROFILE.containsMatchIn(text)) {
             askProfile(text, ts, moment)
             return
@@ -735,7 +757,11 @@ class Coach(
             )
             return
         }
-        val unlock = unlockFor(text, position.board, position.facts!!.candidates)
+        val offline = this.offline
+        // Only the offline coach reads the rung off the words: the keyword rules are its
+        // templates'. With the AI on the model reads what they ask, and the ladder follows what
+        // it said ([climb]; Tai, 2026-10-02).
+        val unlock = if (offline) unlockFor(text, position.board, position.facts!!.candidates) else null
         if (position === current) {
             // A hint asked for climbs from what the combination has had already -- in the
             // position the player faces only: climbed in the one they had moved from, a hint
@@ -747,6 +773,8 @@ class Coach(
             policy.asked(ts)
         }
         var level = maxOf(position.disclosure.level, DisclosureLevel.IDEA)
+        // What a hint now would be.
+        if (!offline && position === current) level = nextRung(position.disclosure.level)
         if (finished || position.board.isGameOver()) {
             // Nothing is withheld from a game that is over.
             level = DisclosureLevel.LINE
@@ -771,22 +799,22 @@ class Coach(
         // instant"). Asked "what should I play against this opening? give me a line", the
         // template for the opening's name was all he got. The templates are the offline coach's,
         // and the model's fallback when a reply gets something wrong.
-        val offline = this.offline
-        // Offline, the answer at once: the template for a bare "hint", the move or the line.
-        // The move or the line asked for, or asked about where it is already open: "what
-        // happens after the best move?" at the line level is the line, though it unlocks
-        // nothing (the harness check of the test audit, 2026-09-26).
-        val exact = unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE || (
-            (level.value >= DisclosureLevel.LINE.value && ASK_LINE.containsMatchIn(text)) ||
-                (level.value >= DisclosureLevel.MOVE.value && ASK_MOVE.containsMatchIn(text))
-            )
-        // A claim to check needs something named: "what happens after the best move?" names
-        // no move or square, whatever its words.
-        val named = mayCarryClaims(text) && (
-            SAN.containsMatchIn(text) || NAMED_SQUARE.containsMatchIn(text)
-            )
-        val canned = offline && (
-            (exact && !named) || (
+        var canned = false
+        if (offline) {
+            // Offline, the answer at once: the template for a bare "hint", the move or the
+            // line. The move or the line asked for, or asked about where it is already open:
+            // "what happens after the best move?" at the line level is the line, though it
+            // unlocks nothing (the harness check of the test audit, 2026-09-26).
+            val exact = unlock == Unlock.ASK_MOVE || unlock == Unlock.ASK_LINE || (
+                (level.value >= DisclosureLevel.LINE.value && ASK_LINE.containsMatchIn(text)) ||
+                    (level.value >= DisclosureLevel.MOVE.value && ASK_MOVE.containsMatchIn(text))
+                )
+            // A claim to check needs something named: "what happens after the best move?"
+            // names no move or square, whatever its words.
+            val named = mayCarryClaims(text) && (
+                SAN.containsMatchIn(text) || NAMED_SQUARE.containsMatchIn(text)
+                )
+            canned = (exact && !named) || (
                 (
                     ASK_HINT.matchesAt(text, 0) ||
                         // A question about the plan: the first hint is the lesson it asks for (the
@@ -794,7 +822,7 @@ class Coach(
                         ASK_AIM.containsMatchIn(text)
                     ) && !mayCarryClaims(text)
                 )
-            )
+        }
         if (canned) {
             val answer = instruction(
                 Trigger.USER_ASK, where, level, text, emptyList(), null, null
@@ -844,7 +872,9 @@ class Coach(
          * 2026-09-26).
          */
         fun examined(): List<String> {
-            val found = namedAnalysis(asked.ifEmpty { text }, where, level)
+            // With the AI on, everything the words name is examined, not only what a question
+            // names: what they ask is the model's to read.
+            val found = namedAnalysis(if (offline) asked.ifEmpty { text } else text, where, level)
             if (!offline) return found // the model answers, from these
             // A move named in their words that is no legal move is the model's to
             // know, not the player's to hear: "after pass, Kd1 is not a legal move" was read
@@ -878,9 +908,12 @@ class Coach(
         // the white king" -- the move just played -- came back "false, Rxf1+ is not a move you can
         // play next" (Tai's puzzle, 2026-09-28).
         val tools = engine != null && !offline
-        if (checker == null || tools || !mayCarryClaims(text)) {
+        // With the AI on no keyword decides whether their words are looked at: the engine's word
+        // on what they name, and the claims check, are for every question.
+        val claimsWords = !offline || mayCarryClaims(text)
+        if (checker == null || tools || !claimsWords) {
             fun answered() {
-                val verdicts = if (mayCarryClaims(text)) examined() else emptyList()
+                val verdicts = if (claimsWords) examined() else emptyList()
                 if (!shownExamination) { // offline, the engine's word on it was the answer
                     speak(
                         Trigger.USER_ASK, where, level, ts, userText = text, verdicts = verdicts,
@@ -929,7 +962,7 @@ class Coach(
      * A question's work for a worker thread, its failure counted and logged as a failed call is,
      * and the question answered with that rather than left with nothing. `Coach._guarded`.
      */
-    private fun guarded(what: String, ts: Double, moment: Pair<Int, String?>, work: () -> Unit): Runnable =
+    private fun guarded(what: String, ts: Double, moment: Moment, work: () -> Unit): Runnable =
         Runnable {
             try {
                 work()
@@ -950,7 +983,7 @@ class Coach(
      * profile's own model loop, off this thread (several model calls), and spoken as the
      * coach's turn when it lands. The queries it ran are kept for the log.
      */
-    private fun askProfile(text: String, ts: Double, moment: Pair<Int, String?>) {
+    private fun askProfile(text: String, ts: Double, moment: Moment) {
         val ask = profileAsk!!
         synchronized(lock) { conversation.userSaid(text) }
 
@@ -991,11 +1024,12 @@ class Coach(
      * "they threaten Qxf2#" was said of the threat the move had just stopped. So is anything but
      * the player's last move once its verdict is in and the position it was played from is read:
      * answered from an older position, the coach said "Give me a moment; I am still reading this
-     * position." with nothing waiting (the coach review, 2026-10-01).
-     * `Coach._waits_for_the_board`.
+     * position." with nothing waiting (the coach review, 2026-10-01). With the AI on every
+     * question waits: what the words are about is the model's to read, and it reads the position
+     * now. `Coach._waits_for_the_board`.
      */
     private fun waitsForTheBoard(text: String): Boolean {
-        if (ASK_THREAT.containsMatchIn(text)) return true
+        if (!offline || ASK_THREAT.containsMatchIn(text)) return true
         val own = lastOwnMove() ?: return true
         val faced = positions[own.move.ply - 1]
         return faced?.facts == null
@@ -1017,21 +1051,10 @@ class Coach(
     fun poll(): List<CoachMessage> {
         val out = ArrayList<CoachMessage>()
         for (one in speaker.poll()) {
-            if (ofAMomentGone(one)) {
-                // The lesson or the word on a move the board no longer has -- taken back, the
-                // game over, the board re-read: never shown or spoken, and the question it was to
-                // end with was never asked.
-                withdrawn.addLast(one)
-                while (withdrawn.size > SPOKEN_PROMPTS_KEPT) withdrawn.removeFirst()
-                if (one.elicit) {
-                    elicitAsked = null
-                    elicitAnswered = false
-                }
-                policy.lastReason =
-                    "not said: the ${one.message.trigger.slug} on ply ${one.message.ply} was " +
-                        "about a position the board no longer has"
-                continue
-            }
+            // No reply is dropped (Tai, 2026-10-02): the text of one asked for a moment that is
+            // over -- a takeback, a re-read, the next game, the player's next move -- comes out
+            // in its place like any other. `late` says so, and only the voice acts on it.
+            one.late = movedOn(Moment(one.epoch, one.message.gameId, one.ownMoves))
             spoken.add(one)
             lighten()
             if (one.message.text.isEmpty()) {
@@ -1039,6 +1062,10 @@ class Coach(
                 // calls say why), said to no one.
                 continue
             }
+            // A turn of the conversation only in the moment it was asked for: a reply about the
+            // game before, or about a move taken back, is shown but never part of the history of
+            // the game now (what the model reads of it, the follow-up it makes of the player's
+            // next words).
             if (!one.recorded && one.epoch == epoch) {
                 synchronized(lock) {
                     conversation.coachSaid(
@@ -1047,30 +1074,31 @@ class Coach(
                     )
                 }
             }
+            climb(one)
             messages += 1
             out.add(one.message)
         }
         return out
     }
 
+    /**
+     * The ladder of hints follows what an AI coach's answer said ([saidLevel]), once the reply is
+     * in: each rung said once, none lower than one already said, in the position the player still
+     * faces. A reply for a moment gone, or about an older position, climbs nothing. `Coach._climb`.
+     */
+    private fun climb(one: Spoken) {
+        val rung = one.rung
+        if (rung == null || one.late) return
+        val ply = one.message.ply
+        val position = if (ply != null) positions[ply] else null
+        if (position != null && position === current &&
+            position.board.turn == userColour // the ladder is the player's to climb
+        ) {
+            position.disclosure.said(rung)
+        }
+    }
+
     // Internals
-
-    /**
-     * What was dropped unsaid for its moment being gone ([ofAMomentGone]), for the log.
-     * `Coach.withdrawn`.
-     */
-    val withdrawn = ArrayDeque<Spoken>()
-
-    /**
-     * Whether a lesson or a word on a move was written for a moment that is over: a takeback, a
-     * re-read or a new game came after the request. Only what is about a position by its ply: an
-     * answer to the player's question, the review and the practice are theirs in whatever moment
-     * they land. `Coach._of_a_moment_gone`.
-     */
-    private fun ofAMomentGone(one: Spoken): Boolean =
-        one.epoch != epoch &&
-            (one.message.trigger == Trigger.POST_MOVE || one.message.trigger == Trigger.POST_MISTAKE) &&
-            one.message.ply != null
 
     /**
      * What the log keeps of the replies said long ago: their words and checks, not the prompts
@@ -1309,7 +1337,10 @@ class Coach(
             thinkS.addLast(event.thinkMs / 1000.0)
             while (thinkS.size > PACE_MOVES) thinkS.removeFirst()
         }
-        if (event.byUser) pendingAsks = ArrayList() // they played on: the questions are answered by the move
+        if (event.byUser) {
+            pendingAsks = ArrayList() // they played on: the questions are answered by the move
+            ownMoves += 1
+        }
         board = boardAfter(board, event)
         moves[event.ply] = event
         movedAt[event.ply] = ts
@@ -1881,13 +1912,17 @@ class Coach(
      * "how would this position continue?" after a puzzle's last move was answered four times
      * running as a question about that move, from the position before it ("Best, and it cost
      * nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28).
+     *
+     * Only the offline coach reads this from the words. With the AI on the model decides what
+     * "that" is -- its own move or the opponent's reply -- from the sheet of both positions and
+     * how long the reply took ([replyNote]), not from a threshold in code (Tai, 2026-10-02).
+     * [rules] asks for the keyword reading all the same, for the fallback's template alone --
+     * what is said when a model's reply fails a check on the board.
      */
-    internal fun askedOwnMove(text: String): PlyRecord? {
+    internal fun askedOwnMove(text: String, rules: Boolean = false): PlyRecord? {
+        if (!(offline || rules)) return null
         if (ASK_LAST_MOVE.containsMatchIn(text) || ASK_COST.containsMatchIn(text)) {
-            // After a reply that came straight away "that move" is theirs too: they never faced
-            // the position between (the opponent's move is last on the board, and the model took
-            // it for the one asked about).
-            return lastOwnMove(mine = MY_MOVE.containsMatchIn(text) || repliedAtOnce())
+            return lastOwnMove(mine = MY_MOVE.containsMatchIn(text))
         }
         if (finished || userToMove || !offline) return null
         val elsewhere = listOf(
@@ -1898,18 +1933,23 @@ class Coach(
     }
 
     /**
-     * Whether the last move on the board is the opponent's and came straight after the player's
-     * own ([INSTANT_REPLY_S] by the loop's clock): a bot's. `Coach._replied_at_once`.
+     * When the last move on the board is the opponent's, directly after the player's own: how
+     * long it came after, by the loop's clock, as information for the model -- a reply in a
+     * second or two means the player never faced the position in between, one after a minute that
+     * they did. Whether "that" is then their move or the reply is the model's to decide; there is
+     * no threshold here. "" when it is not known. `Coach._reply_note`.
      */
-    internal fun repliedAtOnce(): Boolean {
-        if (moves.isEmpty()) return false
+    internal fun replyNote(): String {
+        if (moves.isEmpty()) return ""
         val last = moves.keys.max()
         val reply = moves[last]
         val own = moves[last - 1]
-        if (reply == null || own == null || reply.byUser || !own.byUser) return false
+        if (reply == null || own == null || reply.byUser || !own.byUser) return ""
         val sent = movedAt[own.ply]
         val answered = movedAt[reply.ply]
-        return sent != null && answered != null && answered - sent >= 0 && answered - sent <= INSTANT_REPLY_S
+        if (sent == null || answered == null || answered < sent) return ""
+        val seconds = String.format(Locale.ROOT, "%.1f", answered - sent)
+        return "The opponent's last move, ${reply.san}, came $seconds seconds after the player's ${own.san}."
     }
 
     /** The opponent's move, when it is the last move played and has its verdict. */
@@ -2082,10 +2122,10 @@ class Coach(
         candidates: Int? = null,
         routine: Boolean = false,
         elicit: Boolean = false,
-        moment: Pair<Int, String?>? = null,
+        moment: Moment? = null,
     ) {
         val facts = position.facts!!
-        val (momentEpoch, momentGame) = moment ?: (epoch to gameId)
+        val (momentEpoch, momentGame, momentOwnMoves) = moment ?: currentMoment()
         var (instructionText, fallback) = instruction(
             trigger, position, level, userText, verdicts, assessment, played, elicit = elicit,
         )
@@ -2101,7 +2141,13 @@ class Coach(
         // the answer there (a verdict can land after the opponent has replied).
         val now = current
         val past = now != null && now !== position && now.ply > position.ply
-        val renderLevel = if (past && now != null) now.disclosure.level else level
+        var renderLevel = if (past && now != null) now.disclosure.level else level
+        // With the AI on, a question is the model's to read: the rung stated is the one a hint
+        // they ask for would be ([nextRung]), in the position the player faces.
+        val aiAsk = trigger == Trigger.USER_ASK && !offline
+        if (aiAsk && past && now != null && !finished) {
+            renderLevel = nextRung(now.disclosure.level)
+        }
         var nowAnswer: List<String> = emptyList()
         val nowFacts = now?.facts
         if (past && now != null && nowFacts != null && now.board.turn == userColour &&
@@ -2125,6 +2171,7 @@ class Coach(
             position.board.turn != userColour
         val line = levelLine(
             level, position, if (facing) renderLevel else null, past = past, theirs = theirs,
+            ladder = if (aiAsk && !finished) ladderWords(if (past && now != null) now else position) else null,
         )
         // A question is answered as asked: its words head the Task. Found only under "Said here",
         // far above, "whose bishop? ... he will just move away to the right, no?" got the line
@@ -2151,12 +2198,16 @@ class Coach(
         var facedAt = position // the position `moved` was played from
         if (moved == null && trigger == Trigger.USER_ASK) {
             val own = askedOwnMove(userText ?: "")
-            val last = lastOwnMove()
+            // With the AI on, the sheet of the position the player faced goes with every
+            // question, whether or not the opponent has replied since: "that" may mean their move
+            // or the reply, and the model reads which from the words and the record (Tai,
+            // 2026-10-02), the sheet of both positions and how long the reply took.
+            val last = lastOwnMove(mine = aiAsk)
+            val reach = if (aiAsk) listOf(position.ply - 1, position.ply, position.ply + 1)
+            else listOf(position.ply, position.ply + 1)
             if (own != null && own.move.ply == position.ply + 1) {
                 moved = own.move
-            } else if (own == null && last != null &&
-                (last.move.ply == position.ply || last.move.ply == position.ply + 1)
-            ) {
+            } else if (own == null && last != null && last.move.ply in reach) {
                 // The player's move is the last one played (its new position read, or not yet):
                 // its sheet goes with any question, and the model reads which position the
                 // words are about -- "why does the bishop check not work?" is about the move,
@@ -2291,14 +2342,20 @@ class Coach(
             gameId = momentGame ?: "",
             userText = userText,
             disclosed = verdicts.filter { it.startsWith("Engine on ") }.joinToString("\n"),
-            annotations = annotationsFor(
-                facts,
-                level,
-                position.board,
-                trigger = trigger,
-                playedSan = played?.san,
-                severity = assessment?.severity?.name?.lowercase(),
-            ),
+            // An AI coach's answer to a question has its marks from what it said
+            // ([Speaker.shaped]), not from a level its words were guessed to earn.
+            annotations = if (aiAsk) {
+                emptyList()
+            } else {
+                annotationsFor(
+                    facts,
+                    level,
+                    position.board,
+                    trigger = trigger,
+                    playedSan = played?.san,
+                    severity = assessment?.severity?.name?.lowercase(),
+                )
+            },
             candidates = if (verbalizedSampling) {
                 candidates ?: (if (trigger == Trigger.USER_ASK) VS_ASK_CANDIDATES else VS_CANDIDATES)
             } else {
@@ -2307,7 +2364,9 @@ class Coach(
             played = recordMoves(),
             playedSan = played?.san,
             assessment = assessment,
-            streamTo = streamSink?.invoke(trigger, position.ply),
+            streamTo = streamSink?.invoke(trigger, position.ply) {
+                movedOn(Moment(momentEpoch, momentGame, momentOwnMoves))
+            },
             routine = routine,
             // A fast game gets the template, not a model reply; what the player asks, and the
             // review of a game that is over, always get the model.
@@ -2320,6 +2379,8 @@ class Coach(
             unlisted = unlisted,
             tools = tools,
             epoch = momentEpoch,
+            ownMoves = momentOwnMoves,
+            rungByReply = aiAsk,
             elicit = elicit,
         )
         speaker.submit(request)
@@ -2348,6 +2409,8 @@ class Coach(
         userText: String?,
     ): List<String> {
         if (template.isEmpty()) return emptyList()
+        // The AI reads what they ask; no keyword decides what its answer must name.
+        if (trigger == Trigger.USER_ASK && !offline) return emptyList()
         val said = userText ?: ""
         val facts = position.facts
         var trigger = trigger
@@ -2518,18 +2581,23 @@ class Coach(
         nowLevel: DisclosureLevel? = null,
         past: Boolean = false,
         theirs: Boolean = false,
+        ladder: String? = null,
     ): String {
         if (position.board.isGameOver()) return ""
         if (theirs) {
             return "It is the opponent's move: what they threaten -- their best move and what it " +
                 "does -- may be said.\n\n"
         }
-        fun words(of: DisclosureLevel): String = when (of) {
-            DisclosureLevel.SILENT -> "nothing about the position"
-            DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
-            DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
-            DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
-            DisclosureLevel.LINE -> "everything, the line included"
+        fun words(of: DisclosureLevel): String = rungWords(of)
+        if (ladder != null) {
+            // The AI coach: the ladder as it stands, said as a guideline, whatever the words of
+            // the question ([ladderWords]).
+            val moved = if (nowLevel != null || past) {
+                "The position this is about has been moved from: everything about it may be said. "
+            } else {
+                ""
+            }
+            return "$moved$ladder\n\n"
         }
         if (nowLevel != null) {
             return "The position this is about has been moved from: everything about it may be " +
@@ -2566,9 +2634,9 @@ class Coach(
         now: Boolean = false,
         recordNow: Boolean = false,
         turn: Boolean = true,
-        moment: Pair<Int, String?>? = null,
+        moment: Moment? = null,
     ) {
-        val (momentEpoch, momentGame) = moment ?: (epoch to gameId)
+        val (momentEpoch, momentGame, momentOwnMoves) = moment ?: currentMoment()
         val message = CoachMessage(
             text = text,
             level = level,
@@ -2588,6 +2656,7 @@ class Coach(
                 attempts = 0,
                 recorded = recordNow || !turn,
                 epoch = momentEpoch,
+                ownMoves = momentOwnMoves,
             ),
             now = now,
         )
@@ -2868,6 +2937,7 @@ class Coach(
         // An explicit ask. The player's words are already the last message of the
         // conversation; the directive says only how to answer them.
         val said = userText?.ifEmpty { null } ?: "hint" // `user_text or "hint"`
+        val rulesBefore = HashMap(rules) to lastRule
         var checks = ""
         val claimsChecked = verdicts.filter { !it.startsWith("Engine on ") }
         val engineWords = verdicts.filter { it.startsWith("Engine on ") }
@@ -2971,7 +3041,7 @@ class Coach(
             }
         var directive: String
         val lastOpponent = lastOpponentMove()
-        val lastOwn = askedOwnMove(said)
+        val lastOwn = askedOwnMove(said, rules = true)
         if (ASK_REVIEW.containsMatchIn(said)) {
             // An overall verdict comes from the tally in "Game so far", never from an
             // impression of the last position: the first review told a player a queen up that
@@ -3270,12 +3340,6 @@ class Coach(
                         (if (askedCost) " Name moves bare, never with a move number in front." else " $NO_FIGURES") +
                         " $TIE_TO_THE_GAME"
             }
-            val reply = moves[lastOwn.move.ply + 1]
-            if (reply != null && !reply.byUser && repliedAtOnce()) {
-                // The opponent's move is last on the board; theirs is the one they ask about.
-                directive += " By \"that\" they mean $san, their own move: ${reply.san}, which the " +
-                    "opponent played straight after it, is not what they ask about."
-            }
             if (followup && !asks) {
                 fallback = "" // a nod needs no template: nothing, rather than the verdict again
             }
@@ -3373,7 +3437,129 @@ class Coach(
                 fallback = "" // a nod needs no template: nothing, rather than a hint again
             }
         }
+        if (!offline) {
+            // The keyword branches above wrote the fallback only -- what is said when the model's
+            // reply fails a check on the board -- and used rules of thumb as the directive's own:
+            // undone, and the model is given the guidelines instead.
+            rules.clear()
+            rules.putAll(rulesBefore.first)
+            lastRule = rulesBefore.second
+            directive = aiDirective(position, level)
+        }
         val (cooled, note) = coolHint(facts, fallback)
         return "$checks$directive$note" to cooled
+    }
+
+    /**
+     * The rung a hint asked for now would be, with [said] the highest said of the position: one
+     * up, the idea first, the move at the most (the line only for the asking); once the line was
+     * said, it stays. `Coach._next_rung`.
+     */
+    internal fun nextRung(said: DisclosureLevel): DisclosureLevel {
+        if (said.value >= DisclosureLevel.LINE.value) return DisclosureLevel.LINE
+        return DisclosureLevel.of(
+            minOf(maxOf(said.value + 1, DisclosureLevel.IDEA.value), DisclosureLevel.MOVE.value),
+        )
+    }
+
+    /**
+     * Where the hints stand in the position the player faces, for the AI coach's task: what was
+     * said of it (by the hints and by the answers: the ladder follows the words said, see
+     * [Disclosure.said]), and what the next hint they ask for would be. Guidelines for the model;
+     * it reads what they ask. `Coach._ladder_words`.
+     */
+    internal fun ladderWords(faced: CoachPosition): String {
+        val said = faced.disclosure.level
+        val rung = nextRung(said)
+        return "What you have said of the position the player faces, by hints and answers (under " +
+            "'Said here'): ${saidWords(said)}. A hint they ask for is the next rung of the ladder " +
+            "-- the idea, then the target and the piece, then the move -- each said once and none " +
+            "lower than one already said: that is ${rungWords(rung)}. The move, the line, the " +
+            "good moves, a move they name and anything about the moves played are theirs for " +
+            "the asking, a hint or not." +
+            if (rung.value >= DisclosureLevel.IDEA.value && rung.value < DisclosureLevel.MOVE.value) {
+                " $SEE_ALL_WORDS"
+            } else {
+                ""
+            }
+    }
+
+    /**
+     * The AI coach's task for a question: the guidelines, and the facts that the state of the
+     * conversation gives -- never a keyword in the player's words. What the coach has said since
+     * the last move, the question its last turn ended with, the move already given, the line
+     * already given, the moves about as good and the clearly worse ones, how long the opponent's
+     * reply took. The model reads the question and decides the rest. `Coach._ai_directive`.
+     */
+    private fun aiDirective(position: CoachPosition, level: DisclosureLevel): String {
+        val facts = position.facts!!
+        var out = AI_GUIDELINES
+        val spokenSince = saidSinceMove()
+        if (spokenSince.isNotEmpty()) out += AI_FOLLOW_UP
+        if (lastTurnAsked()) out += AI_ANSWERING
+        val best = facts.candidates.firstOrNull() ?: ""
+        if (facts.candidates.size > 1) {
+            out += " The moves about equally good here: ${facts.candidates.joinToString(", ")}."
+        }
+        val analysis = position.analysis
+        val worse = if (analysis != null) worseMoves(position.board, analysis, userColour) else emptyList()
+        if (worse.isNotEmpty()) {
+            out += " Clearly worse here, and what goes wrong with them: ${worseText(worse)}."
+        }
+        if (best.isNotEmpty() && spokenSince.any { best.trimEnd('+', '#') in it }) {
+            out += AI_MOVE_GIVEN.replace("{move}", best)
+        }
+        if (best.startsWith("O-O")) out += " $FOCUS_KING"
+        if (facts.line.isNotEmpty()) {
+            val given = facts.line.take(3).map { it.trimEnd('+', '#') }
+            if (spokenSince.any { s -> given.all { it in s } }) out += " $LINE_GIVEN"
+        }
+        out += if (position.board.turn == userColour) {
+            " When the engine does not rate a move they name, say it is not the strongest and, " +
+                "in general terms, why."
+        } else {
+            // On the opponent's move a move they name is not examined (`analyseNamed`).
+            " On the opponent's move no move they name is rated here: rate one only from " +
+                "the engine's word on it."
+        }
+        // What the board gives of the material and of what the player's last move allowed,
+        // whatever they ask: facts for the model to use if the question is about them.
+        val material = materialWords(level, facts)
+        if (material != null) {
+            out += " The material, if it comes up, is this, in these terms: " +
+                "$material. Never count the pieces yourself."
+        }
+        val own = lastOwnMove(mine = true)
+        if (own != null) {
+            val left = positions[own.move.ply]
+            val leftAnalysis = left?.analysis
+            val allowed = if (left != null && leftAnalysis != null) {
+                IdeaWords.allowed(left.board, leftAnalysis, own.move.san)
+            } else {
+                null
+            }
+            val severity = own.assessment?.severity
+            if (allowed != null && severity != null && severity != Severity.NONE) {
+                out += " What ${own.move.san} allowed, from the engine's line: $allowed."
+            }
+        }
+        val reply = replyNote()
+        if (reply.isNotEmpty()) out += " $reply"
+        return out
+    }
+
+    /**
+     * Whether the coach's last turn, since the player's last move, ended with a question and
+     * nothing but notes came between: their words may be its answer. `Coach._last_turn_asked`.
+     */
+    private fun lastTurnAsked(): Boolean {
+        var entries = synchronized(lock) { conversation.entries.toList() }
+        // Their words themselves, when ask() has recorded them already, are not the thread.
+        if (entries.isNotEmpty() && entries.last().kind == "ask") entries = entries.dropLast(1)
+        for (entry in entries.asReversed()) {
+            if (entry.kind == "coach") return entry.text.trimEnd().endsWith("?")
+            if (entry.kind != "note") return false
+        }
+        return false
     }
 }
