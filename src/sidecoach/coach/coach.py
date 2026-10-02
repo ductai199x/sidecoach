@@ -23,6 +23,7 @@ import random
 import re
 import statistics
 import threading
+import time
 from collections import Counter, deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -1413,16 +1414,14 @@ REPAIR_SYSTEM = (
 RATE_BACKOFF_S = 2.0
 
 
-def _retry_wait(exc: Exception, provider: object, began: float) -> float | None:
+def _retry_wait(exc: Exception, provider: object, elapsed: float) -> float | None:
     """How long to wait before asking again after a failed call, or None to give up: only
     a rate limit (429) is worth a second call; a timeout spent the time, a refused key or a
     bad request will fail the same way, and each would be paid or wasted twice."""
-    import time
-
     if not str(exc).startswith("429"):
         return None
     budget = getattr(provider, "timeout_s", None)
-    if isinstance(budget, int | float) and time.monotonic() - began + RATE_BACKOFF_S >= budget:
+    if isinstance(budget, int | float) and elapsed + RATE_BACKOFF_S >= budget:
         return None
     return RATE_BACKOFF_S
 
@@ -1470,6 +1469,9 @@ class Speaker:
         self._thread: threading.Thread | None = None
         self._busy = threading.Event()
         self._closed = threading.Event()
+        # Time, for the wait before a rate-limited call is asked again: a test drives both.
+        self.clock: Callable[[], float] = time.monotonic
+        self.pause: Callable[[float], bool] = self._closed.wait  # True: closed meanwhile
         # The providers replaced mid-session: their calls still count, and their
         # connections are closed with the Speaker's (a call in flight may be on one).
         self._retired: list[object] = []
@@ -1595,9 +1597,7 @@ class Speaker:
         reply is sampled by its own stated likelihood from those that pass. Because several are
         offered at once, a clean one is usually among them, so the template is rarely needed.
         """
-        import time
-
-        began = time.monotonic()
+        began = self.clock()
         messages = _vs_wrap(list(request.messages), request.candidates)
         problems: list[str] = []
         text = ""
@@ -1684,8 +1684,8 @@ class Speaker:
                 # timeout or a refused key. A rate limit is waited out once, inside the
                 # provider's timeout counted from the first call.
                 problems = [f"the call failed: {self.last_error}"]
-                wait = _retry_wait(failed, provider, began)
-                if wait is None or self._closed.wait(wait):
+                wait = _retry_wait(failed, provider, self.clock() - began)
+                if wait is None or self.pause(wait):
                     break
                 continue
             scored = [

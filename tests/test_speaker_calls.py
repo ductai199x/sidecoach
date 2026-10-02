@@ -4,7 +4,6 @@ call counted, none made twice for one answer or after the session is gone."""
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -77,22 +76,38 @@ def test_a_failed_call_is_not_a_draft_asked_again(error: Exception) -> None:
     assert spoken.problems and "empty reply" not in spoken.problems
 
 
-def test_a_rate_limit_is_waited_out_once_within_the_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(coach_module, "RATE_BACKOFF_S", 0.05)
+def test_a_rate_limit_is_waited_out_once_within_the_timeout() -> None:
+    # Time is the test's: a clock it moves and a wait it records, no real delay.
+    now = [100.0]
+    waits: list[float] = []
+
+    def pause(seconds: float) -> bool:
+        waits.append(seconds)
+        now[0] += seconds
+        return False  # not closed meanwhile
+
     model = Failing([RuntimeError("429: Rate limit reached")])
-    began = time.monotonic()
-    spoken = Speaker(model).speak_now(_request())  # type: ignore[arg-type]
-    assert time.monotonic() - began >= 0.03
-    assert len(model.calls) == 2
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.clock, speaker.pause = lambda: now[0], pause
+    spoken = speaker.speak_now(_request())
+    assert waits == [coach_module.RATE_BACKOFF_S] and len(model.calls) == 2
     # The same request again, not a complaint about the failure.
     assert model.calls[1]["messages"] == model.calls[0]["messages"]
     assert spoken.message.text == "Develop the knight to f3." and not spoken.problems
-    # No time left for the wait: the template, after one call.
-    monkeypatch.setattr(coach_module, "RATE_BACKOFF_S", 5.0)
-    model = Failing([RuntimeError("429: Rate limit reached")], timeout_s=1.0)
-    spoken = Speaker(model).speak_now(_request())  # type: ignore[arg-type]
+    # No room left in the provider's timeout for the wait: the template, after one call.
+    waits.clear()
+    model = Failing(
+        [RuntimeError("429: Rate limit reached")], timeout_s=coach_module.RATE_BACKOFF_S
+    )
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.clock, speaker.pause = lambda: now[0], pause
+    spoken = speaker.speak_now(_request())
+    assert waits == [] and len(model.calls) == 1 and spoken.message.text == "TEMPLATE"
+    # Closed during the wait: the template, and no second call.
+    model = Failing([RuntimeError("429: Rate limit reached")])
+    speaker = Speaker(model)  # type: ignore[arg-type]
+    speaker.clock, speaker.pause = lambda: now[0], lambda s: True
+    spoken = speaker.speak_now(_request())
     assert len(model.calls) == 1 and spoken.message.text == "TEMPLATE"
 
 
@@ -120,30 +135,36 @@ def test_a_call_lost_after_it_was_sent_is_counted() -> None:
     assert provider.usage.calls == 0
 
 
-class Slow(ScriptedProvider):
-    """A model that takes a while a call, and says when it has started one."""
+class Held(ScriptedProvider):
+    """A model whose call waits for the test to let it finish."""
 
     def __init__(self) -> None:
         super().__init__(then="Fine move.")
         self.started = threading.Event()
+        self.release = threading.Event()
 
     def chat(self, system: str, messages: Sequence[ChatMessage], **kw: Any) -> Completion:
         self.started.set()
-        time.sleep(0.3)
+        self.release.wait()
         return super().chat(system, messages)
 
 
 def test_closing_drops_what_is_queued() -> None:
-    model = Slow()
+    model = Held()
     speaker = Speaker(model)  # type: ignore[arg-type]
     speaker.start()
     for trigger in (Trigger.POST_MOVE, Trigger.USER_ASK, Trigger.USER_ASK, Trigger.USER_ASK):
         speaker.submit(_request(trigger))
-    assert model.started.wait(5)
-    speaker.close(timeout=5)
-    time.sleep(0.5)
-    # The call in flight finishes; nothing queued behind it is asked, or paid for.
-    assert len(model.calls) == 1
+    model.started.wait()
+    closer = threading.Thread(target=speaker.close, kwargs={"timeout": 60})
+    closer.start()
+    try:
+        speaker._closed.wait()  # close has emptied the queue, waiting on the call in flight
+    finally:
+        model.release.set()
+    closer.join()
+    # The call in flight finished; nothing queued behind it was asked, or paid for.
+    assert len(model.calls) == 1 and speaker.pending == 0
 
 
 def _openai(name: str) -> OpenAICompatProvider:
@@ -223,11 +244,14 @@ def test_opening_a_puzzle_does_not_hold_up_the_session(
     from sidecoach.ui import puzzle_room
 
     made: list[Any] = []
+    making = threading.Event()
+    release = threading.Event()
 
-    class SlowRoom:
-        # A room whose making asks a model that takes its time to answer.
+    class HeldRoom:
+        # A room whose making asks a model that has not answered yet.
         def __init__(self, *a: Any, **k: Any) -> None:
-            time.sleep(0.8)
+            making.set()
+            release.wait()
             self.closed = self.closing = False
             made.append(self)
 
@@ -238,21 +262,31 @@ def test_opening_a_puzzle_does_not_hold_up_the_session(
         def get(self, puzzle_id: str) -> object:
             return object()
 
-    monkeypatch.setattr(puzzle_room, "PuzzleRoom", SlowRoom)
+    monkeypatch.setattr(puzzle_room, "PuzzleRoom", HeldRoom)
     rooms = puzzle_room.PuzzleRooms(
         Settings(data_dir=tmp_path),
         store_path=None,
         puzzles=Puzzles(),  # type: ignore[arg-type]
     )
     got: list[Any] = []
-    openers = [threading.Thread(target=lambda: got.append(rooms.open("p1"))) for _ in range(2)]
-    for t in openers:
-        t.start()
-    time.sleep(0.2)
-    began = time.monotonic()
-    rooms.usages()  # what the session loop reads every tick
-    assert time.monotonic() - began < 0.3
-    for t in openers:
-        t.join(5)
-    # Two opens at once, one room.
+    first = threading.Thread(target=lambda: got.append(rooms.open("p1")))
+    first.start()
+    making.wait()  # the room is being made, the model not yet answered
+    read = threading.Event()
+
+    def session_tick() -> None:
+        rooms.usages()  # what the session loop reads every tick
+        read.set()
+
+    threading.Thread(target=session_tick, daemon=True).start()
+    # Read while the room is still being made: the lock is not held through it. (Held, this
+    # is never set and the test fails at the bound, not by a measured duration.)
+    ticked = read.wait(30)
+    release.set()  # (a blocked tick must not leave the room held)
+    assert ticked, "the session's tick is blocked behind the room being made"
+    second = threading.Thread(target=lambda: got.append(rooms.open("p1")))
+    second.start()  # whether it arrives before or after the room is made, it is the same room
+    release.set()
+    first.join()
+    second.join()
     assert len(made) == 1 and got[0] is got[1] is made[0]
