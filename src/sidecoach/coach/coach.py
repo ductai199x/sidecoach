@@ -1646,6 +1646,19 @@ def _retry_wait(exc: Exception, provider: object, elapsed: float) -> float | Non
     return RATE_BACKOFF_S
 
 
+# Said for a question whose reply failed and whose template is empty: a failed reply to the
+# player never ends in silence (Tai, 2026-10-02).
+NOT_ANSWERED = "I could not put an answer together just now; ask me again in a moment."
+
+
+def _said_for(request: _Request) -> str:
+    """What is said when the model's reply failed: the template, or for a question with none,
+    a short honest line."""
+    if not request.fallback and request.trigger is Trigger.USER_ASK:
+        return NOT_ANSWERED
+    return request.fallback
+
+
 # The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
 # The hint was said first -- the ladder and the policy count it already -- and the answer, at the
 # next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a higher
@@ -1834,10 +1847,11 @@ class Speaker:
             return self.speak_now(request)
         except Exception as exc:  # noqa: BLE001
             self.note_failure("reply", exc)
-            level, rung, marks = self._shaped(request, request.fallback)
+            said = _said_for(request)
+            level, rung, marks = self._shaped(request, said)
             return Spoken(
                 message=CoachMessage(
-                    text=request.fallback,
+                    text=said,
                     level=level,
                     trigger=request.trigger,
                     game_id=request.game_id,
@@ -2032,7 +2046,7 @@ class Speaker:
             messages = [*messages[:-1], retry]  # type: ignore[list-item]
         if problems and not streamed:
             self.fallbacks += 1
-            text = request.fallback
+            text = _said_for(request)
             leaks: list[str] = []
             notes: list[str] = []
         else:
@@ -4410,9 +4424,17 @@ class Coach:
         must_name = self._must_name(
             trigger, position, level, fallback, assessment, played, user_text
         )
-        if trigger is Trigger.USER_ASK and fallback and fallback in self._said_since_move():
-            # Nothing the coach said since the last move is said again word for word: a
-            # student's answer to the hint got the same hint back, three times (round 5).
+        if (
+            self._offline
+            and trigger is Trigger.USER_ASK
+            and fallback
+            and fallback in self._said_since_move()
+        ):
+            # Offline, where the template is the answer, nothing the coach said since the last
+            # move is said again word for word: a student's answer to the hint got the same hint
+            # back, three times (round 5). With the AI on the fallback is said only when the
+            # reply failed, and then it stands: a failed reply never ends in silence (Tai,
+            # 2026-10-02).
             fallback = ""
         # A reply about a position already moved from -- the lesson on a move, an answer
         # about it -- is rendered at the level of the position on the board now, and must not
@@ -5684,8 +5706,11 @@ class Coach:
                     )
                     + f" {TIE_TO_THE_GAME}"
                 )
-            if followup and not asks:
-                fallback = ""  # a nod needs no template: nothing, rather than the verdict again
+            if followup and not asks and self._offline:
+                # Offline a nod needs no template: nothing, rather than the verdict again. With
+                # the AI on the fallback stands for a failed reply: never silence (Tai,
+                # 2026-10-02: no pattern blanks a fallback).
+                fallback = ""
         elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
             # A plain question about the game as it stands: answered plainly, no question
             # back (the generic answer's "point them ... with a question" asked one).
@@ -5783,8 +5808,10 @@ class Coach:
                     else ""
                 )
             )
-            if followup and not asks and not engine_words:
-                fallback = ""  # a nod needs no template: nothing, rather than a hint again
+            if followup and not asks and not engine_words and self._offline:
+                # Offline a nod needs no template: nothing, rather than a hint again (with the
+                # AI on, the fallback stands for a failed reply).
+                fallback = ""
         fallback, note = self._cool_hint(facts, fallback)
         if not self._offline:
             # The keyword branches above wrote the fallback only -- what is said when the

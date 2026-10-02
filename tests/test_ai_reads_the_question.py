@@ -337,3 +337,58 @@ def test_an_answer_that_names_nothing_of_the_idea_leaves_the_ladder_where_it_was
     [hint] = stuck(coach)
     assert hint.trigger is Trigger.STUCK and hint.level is DisclosureLevel.IDEA
     assert len(provider.calls) == 2
+
+
+def test_a_failed_reply_after_a_nod_is_never_silence() -> None:
+    """A failed AI reply fell back to nothing when a pattern read the player's words as a
+    statement after the coach had spoken: the player saw nothing at all (Tai, 2026-10-02:
+    something true is still said; no pattern blanks a fallback)."""
+    coach, provider = scripted_coach(["Their king on e8 has one square, e7."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("hint", 8.0)
+    assert [m.text for m in drain(coach)] == ["Their king on e8 has one square, e7."]
+    provider.fail = True  # the server goes down: every reply from here fails
+    coach.ask("ok I see it now", 9.0)  # a nod: no question in it
+    [nod] = drain(coach)
+    assert nod.trigger is Trigger.USER_ASK and nod.text, "the template, not silence"
+
+
+def test_a_failed_reply_whose_template_repeats_is_still_said() -> None:
+    """The template of a failed AI reply was blanked when the coach had said it since the move:
+    asked twice, the second answer was nothing."""
+    coach, provider = scripted_coach([])
+    provider.fail = True
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    drain(coach)
+    coach.ask("what's the material?", 10.0)
+    [first] = drain(coach)
+    coach.ask("what's the material?", 11.0)
+    [again] = drain(coach)
+    assert first.text and again.text == first.text, "said again rather than nothing"
+
+
+def test_a_failed_reply_with_no_template_says_so() -> None:
+    """With no template to fall back on, a failed reply to a question says honestly that no
+    answer came, rather than nothing."""
+    from sidecoach.coach.coach import NOT_ANSWERED, Speaker, _Request
+    from sidecoach.coach.disclosure import PositionFacts
+    from tests.fakes import ScriptedProvider
+
+    speaker = Speaker(ScriptedProvider(fail=True))
+    request = _Request(
+        trigger=Trigger.USER_ASK,
+        level=DisclosureLevel.IDEA,
+        system="",
+        messages=[{"role": "user", "content": "# Task\nAnswer them."}],
+        facts=PositionFacts(fen=chess.STARTING_FEN, side_to_move="white", phase="opening"),
+        board=chess.Board(),
+        fallback="",
+        ply=0,
+        game_id="g",
+    )
+    assert speaker.speak_now(request).message.text == NOT_ANSWERED
+    remark = _Request(**{**request.__dict__, "trigger": Trigger.POST_MOVE})
+    assert speaker.speak_now(remark).message.text == "", "an unasked remark may stay unsaid"
