@@ -675,7 +675,7 @@ def routes_fixture() -> list[dict[str, Any]]:
             coach=False,
             frame_source=iter(()),
         )
-        client = TestClient(build_app(engine), raise_server_exceptions=False)
+        client = TestClient(build_app(engine), base_url="http://127.0.0.1", raise_server_exceptions=False)
         out = []
         for method, path in probes:
             reply = client.request(method, path)
