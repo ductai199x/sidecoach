@@ -194,7 +194,10 @@ fun labelMove(
     // Walking into a mate from a lost position is not the move that lost: chess.com leaves
     // those unmarked (eleven of them in the six games, the best move among them).
     val allowed = mateAllowed && !lost && !isBest
-    val flagged = loss >= thresholds.inaccuracy || mateMissed || allowed
+    // The engine's own first move lets no mate go, whatever the search after it reports (a
+    // long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
+    val missed = mateMissed && !isBest
+    val flagged = loss >= thresholds.inaccuracy || missed || allowed
     if (inBook && loss < thresholds.mistake) return Label.BOOK
     if (flagged && chance && !isBest) return Label.MISS
     if (allowed) return Label.BLUNDER
