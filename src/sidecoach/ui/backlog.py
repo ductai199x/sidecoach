@@ -239,6 +239,7 @@ class Backlog:
                 "start": start,
                 "since": time.monotonic(),
             }
+        no_stockfish = False
         try:
             done = review_row(
                 self.settings,
@@ -254,10 +255,7 @@ class Backlog:
             if done is not None:
                 self.left = max(0, self.left - 1)
         except NoStockfish:
-            # Not the game's failure: looked for again shortly, every game still waiting (the
-            # review of 2026-10-01: on a first run each one failed until the app restarted).
-            self._wake.wait(IDLE_S)
-            self._wake.clear()
+            no_stockfish = True
         except Exception:  # noqa: BLE001 - a game that cannot be reviewed is tried again later
             self._failed[row.key] = time.monotonic()
         finally:
@@ -269,3 +267,8 @@ class Backlog:
                     self._runs.append((run["done"] - run["start"], time.monotonic() - run["since"]))
                 if run is not None and run["total"]:
                     self._sizes.append(run["total"])
+        if no_stockfish:
+            # Not the game's failure: looked for again shortly, every game still waiting (the
+            # review of 2026-10-01: on a first run each one failed until the app restarted).
+            self._wake.wait(IDLE_S)
+            self._wake.clear()
