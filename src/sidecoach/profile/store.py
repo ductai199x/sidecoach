@@ -246,6 +246,14 @@ WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
 RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 # A removed game's rows are kept this long, for Undo (the page offers it for seconds).
 UNDO_KEEP_S = 600.0
+# The review strengths, weakest first: a stronger review stands for the game.
+STRENGTH_RANK = {"fast": 1, "standard": 2, "deep": 3}
+_RANK = (
+    "CASE strength "
+    + " ".join(f"WHEN '{name}' THEN {rank}" for name, rank in STRENGTH_RANK.items())
+    + " ELSE 0 END"
+)
+
 # The watched games Stats leaves out: those whose import's facts are kept (the import counts).
 _STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
 
@@ -1119,9 +1127,15 @@ class Store:
     # ---- Stats: a reviewed game's facts (profile/stat_facts.py) --------------------------------
 
     def save_stats(self, strength: str, game: dict[str, Any], moves: list[dict[str, Any]]) -> None:
-        """A game's facts from its review at `strength`, in place of any before."""
+        """A game's facts from its review at `strength`, in place of any before from a review
+        no stronger: Stats keeps the strongest review's facts."""
         with self._lock:
             key = game["key"]
+            kept = self._db.execute(
+                f"SELECT {_RANK} AS rank FROM stat_games WHERE key = ?", (key,)
+            ).fetchone()
+            if kept is not None and kept["rank"] > STRENGTH_RANK.get(strength, 0):
+                return
             self._db.execute("DELETE FROM stat_moves WHERE key = ?", (key,))
             self._db.execute(
                 "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at,"
@@ -1226,11 +1240,15 @@ class Store:
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
 
-    def latest_review(self, key: str) -> ReviewRow | None:
-        """The game's latest review, at whatever strength."""
+    def best_review(self, key: str) -> ReviewRow | None:
+        """The game's strongest review (deep, standard, fast), the latest of that strength: the
+        one the review opens at, Your games shows and Stats counts. The latest was shown, and a
+        Fast look after a Deep review lowered them all (the review of 2026-10-01)."""
         with self._lock:
             row = self._db.execute(
-                "SELECT * FROM reviews WHERE key = ? ORDER BY reviewed_at DESC LIMIT 1", (key,)
+                f"SELECT * FROM reviews WHERE key = ? ORDER BY {_RANK} DESC, reviewed_at DESC"
+                " LIMIT 1",
+                (key,),
             ).fetchone()
         return None if row is None else ReviewRow(**dict(row))
 

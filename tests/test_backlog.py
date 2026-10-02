@@ -58,7 +58,7 @@ def test_a_game_brought_in_is_reviewed_in_the_background_and_its_facts_kept(
         assert (game["user_side"], game["bot"], game["strength"]) == ("black", False, "standard")
         facts = store.stat_moves([row.key])
         assert len(facts) == 12 and len(made) == 2
-        assert store.latest_review(row.key) is not None
+        assert store.best_review(row.key) is not None
         assert _until(lambda: backlog.state()["status"] == "done")
         done = backlog.state()
         assert (done["done"], done["total"], done["waiting"], done["reviewing"]) == (1, 1, 0, None)
@@ -117,11 +117,11 @@ def test_a_game_that_failed_once_is_counted_and_tried_again(
         time.sleep(0.3)
         state = backlog.state()
         assert (state["status"], state["total"], state["waiting"]) == ("reviewing", 1, 1)
-        assert store.latest_review(row.key) is None
+        assert store.best_review(row.key) is None
         # The engine starts again: the game is tried again, without a restart, and reviewed.
         broken[0] = False
         assert _until(lambda: backlog.state()["status"] == "done", 10.0)
-        assert store.latest_review(row.key) is not None
+        assert store.best_review(row.key) is not None
     finally:
         backlog.close()
         backlog.join(10.0)
@@ -156,7 +156,7 @@ def test_the_player_pauses_and_resumes_and_a_pause_outlives_a_restart(
     try:
         assert _until(lambda: first.state()["status"] == "paused" and first.state()["total"] == 1)
         time.sleep(0.3)
-        assert not made and store.latest_review(row.key) is None, "paused: nothing runs"
+        assert not made and store.best_review(row.key) is None, "paused: nothing runs"
     finally:
         first.close()
         first.join(10.0)
@@ -170,7 +170,7 @@ def test_the_player_pauses_and_resumes_and_a_pause_outlives_a_restart(
         assert not made
         assert again.pause(False)["paused_by_you"] is False
         assert _until(lambda: again.state()["status"] == "done")
-        assert store.latest_review(row.key) is not None and made
+        assert store.best_review(row.key) is not None and made
     finally:
         again.close()
         again.join(10.0)

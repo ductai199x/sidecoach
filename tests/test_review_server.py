@@ -139,7 +139,22 @@ def test_a_game_is_brought_in_reviewed_and_reopened_from_its_saved_review(
         else {}
     )
     assert again["state"]["moves"] == moves and not made, "no engine for a saved review"
-    # An open that names no strength reviews at the server's own: Standard on a computer.
+    # An open that names no strength opens at the strongest review saved: it opened at Standard
+    # always, and a game reviewed Deep was reviewed again, its Stats overwritten (the review of
+    # 2026-10-01).
+    plain = client.post(f"/api/review/{key}/open", json={}).json()
+    assert plain["ok"] and plain["state"]["strength"] == "fast" and not made
+    _until_ready(client, key)
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    assert _until_ready(client, key)["state"]["strength"] == "standard"
+    # A Fast look after it lowers nothing: Stats and Your games keep the strongest.
+    store = Store(engine.settings.data_dir / "profile.sqlite")
+    store.save_stats("fast", {**store.stat_games()[0], "strength": "fast"}, [])
+    assert [(g["strength"], len(store.stat_moves([key]))) for g in store.stat_games()] == [
+        ("standard", 12)
+    ]
+    assert store.best_review(key).strength == "standard"  # type: ignore[union-attr]
+    store.close()
     plain = client.post(f"/api/review/{key}/open", json={}).json()
     assert plain["ok"] and plain["state"]["strength"] == "standard"
     _until_ready(client, key)
@@ -338,7 +353,7 @@ def review_room_game(engine: PanelEngine, key: str) -> Any:
 
     store = Store(engine.settings.data_dir / "profile.sqlite")
     try:
-        saved = store.latest_review(key)
+        saved = store.best_review(key)
         assert saved is not None
         return ReviewedGame.model_validate_json(saved.report)
     finally:

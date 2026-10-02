@@ -156,7 +156,7 @@ class _Import(BaseModel):
 
 
 class _Review(BaseModel):
-    strength: str = "standard"
+    strength: str | None = None  # None: the strongest review saved, else Standard
 
 
 class _Card(BaseModel):
@@ -825,7 +825,7 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
             stood_for.setdefault(imported, []).append(was)
         out = []
         for row in rows:
-            review = store.latest_review(row.key)
+            review = store.best_review(row.key)
             # An import not reviewed yet whose watched game was: that review's accuracies until
             # the import has its own (the review of 2026-10-01: pairing a record that differs
             # from its import took the game's accuracy away; it is not reviewed for that).
@@ -861,8 +861,8 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
 
 def _latest(store: Any, keys: list[str]) -> Any | None:
-    """The latest review of any of these games, or None."""
-    reviews = [r for r in (store.latest_review(k) for k in keys) if r is not None]
+    """The latest of these games' reviews (each game's strongest), or None."""
+    reviews = [r for r in (store.best_review(k) for k in keys) if r is not None]
     return max(reviews, key=lambda r: r.reviewed_at, default=None)
 
 

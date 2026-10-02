@@ -205,9 +205,7 @@ class Backlog:
         waiting = [
             r
             for r in every
-            if (
-                r.key in unreviewed if r.source != "watched" else store.latest_review(r.key) is None
-            )
+            if (r.key in unreviewed if r.source != "watched" else store.best_review(r.key) is None)
         ]
         todo = [r for r in waiting if not self._resting(r.key)]
         self.total = len(every)

@@ -642,9 +642,9 @@ def carry_twins(store: Store, twins: dict[str, str]) -> list[str]:
     the watched review measured (`review_row`). Returns the imports given a review."""
     carried = []
     for watched, imported in twins.items():
-        if store.latest_review(imported) is not None:
+        if store.best_review(imported) is not None:
             continue
-        old = store.latest_review(watched)
+        old = store.best_review(watched)
         row = library.find(store, imported)
         if old is None or old.version != REVIEW_VERSION or row is None:
             continue
@@ -851,7 +851,18 @@ class ReviewRooms:
         finally:
             store.close()
 
-    def open(self, key: str, strength: str = "standard") -> ReviewRoom | None:
+    def open(self, key: str, strength: str | None = None) -> ReviewRoom | None:
+        """The game's room at `strength`; with none, at the strongest review saved (else
+        Standard). It opened at Standard always: a game reviewed Deep was reviewed again at
+        Standard, its Stats overwritten (the review of 2026-10-01)."""
+        if strength is None:
+            store = Store(self.store_path)
+            try:
+                best = store.best_review(key)
+            finally:
+                store.close()
+            strength = best.strength if best is not None and best.strength in STRENGTHS else None
+            strength = strength or "standard"
         with self._lock:
             room = self._rooms.get(key)
             if room is not None and room.strength.name == strength and room.reopen():
