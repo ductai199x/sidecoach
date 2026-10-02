@@ -969,6 +969,11 @@ class Store:
             )
             self._db.commit()
 
+    def set_time_class(self, key: str, time_class: str | None) -> None:
+        with self._lock:
+            self._db.execute("UPDATE library SET time_class = ? WHERE key = ?", (time_class, key))
+            self._db.commit()
+
     def library(self) -> list[LibraryRow]:
         """Every imported game, the latest played first. Every one: the Games window listed 500
         while the background review and Stats counted all (the review of 2026-10-01), and the

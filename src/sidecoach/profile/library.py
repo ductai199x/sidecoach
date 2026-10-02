@@ -78,7 +78,11 @@ def row_for(
         white_elo=_int(headers.get("WhiteElo")),
         black_elo=_int(headers.get("BlackElo")),
         result=headers.get("Result"),
-        time_class=time_class or time_class_of(headers.get("TimeControl", "")),
+        time_class=time_class
+        or time_class_of(
+            headers.get("TimeControl", ""),
+            lichess=source == "lichess" or "lichess.org" in headers.get("Site", ""),
+        ),
         user_side=user_side,
     )
 
@@ -179,6 +183,25 @@ def refresh(store: Store, user_names: Iterable[str]) -> None:
     brought in before the username was set has the player's side once it is set (the review of
     2026-10-01: such a game never reached Stats, and Your games showed it sideless)."""
     store.fill_sides([n.strip().lower() for n in user_names if n.strip()])
+    if store.setting(CLASSES_KEY) != str(CLASSES):
+        for row in store.library():
+            if row.source == "chesscom":
+                continue  # chess.com's own class, as its archive gives it
+            control, site = _header(row.pgn, "TimeControl"), _header(row.pgn, "Site")
+            now = time_class_of(control, lichess=row.source == "lichess" or "lichess.org" in site)
+            if now != row.time_class:
+                store.set_time_class(row.key, now)
+        store.set_setting(CLASSES_KEY, str(CLASSES))
+
+
+# The rule the library's time classes were last set by (`refresh`): 2, each site's own lines.
+CLASSES = 2
+CLASSES_KEY = "library.classes"
+
+
+def _header(pgn: str, name: str) -> str:
+    found = re.search(rf'^\[{name} "([^"]*)"\]', pgn, re.M)
+    return found.group(1) if found else ""
 
 
 def find(store: Store, key: str) -> LibraryRow | None:
@@ -392,12 +415,15 @@ _WATCHED_CONTROL = re.compile(r"^(\d+(?:\.\d+)?) (min|s)$")
 _START_SLACK_S = 5.0
 
 
-def time_class_of(control: str) -> str | None:
+def time_class_of(control: str, *, lichess: bool = False) -> str | None:
     """The time class of a PGN `TimeControl` ("600+5"), or of the clock Sidecoach read ("10
-    min"), by its expected length (the base plus forty increments): bullet under 3 minutes,
-    blitz under 10, rapid under 60, classical beyond; "1/86400" and the like are
-    correspondence ("daily")."""
-    if control.startswith("1/"):
+    min"), by its expected length (the base plus forty increments), each site's lines: on
+    chess.com bullet under 3 minutes, blitz under 10, rapid under 60, classical beyond; on
+    Lichess (`lichess`) bullet under 3 (its ultrabullet, under 30 seconds, counted as bullet),
+    blitz under 8, rapid under 25, classical beyond. "1/86400" and the like are correspondence
+    ("daily"), and so is Lichess's "-". An 8+0 Lichess game was blitz by chess.com's lines, and
+    Lichess's correspondence had no class (the review of 2026-10-01)."""
+    if control.startswith("1/") or (lichess and control == "-"):
         return "daily"
     watched = _WATCHED_CONTROL.match(control)
     match = _CONTROL.match(control)
@@ -415,11 +441,12 @@ def time_class_of(control: str) -> str | None:
         seconds = int(match.group(1)) + 40 * int(match.group(2) or 0)
     else:
         return None
+    blitz, rapid = (480, 1500) if lichess else (600, 3600)
     if seconds < 180:
         return "bullet"
-    if seconds < 600:
+    if seconds < blitz:
         return "blitz"
-    if seconds < 3600:
+    if seconds < rapid:
         return "rapid"
     return "classical"
 
