@@ -739,6 +739,127 @@ def test_an_import_whose_record_differs_is_reviewed_from_the_watched_positions(
     store.close()
 
 
+def test_the_words_paid_on_a_watched_game_show_in_its_imports_review(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For Tai #9 (decided 2026-10-02): the AI coach's words paid for on a watched game's review
+    whose record differs from its import (4. d3 read as d4) were kept but shown nowhere once the
+    import stood for the game. They show in the import's review on the moves the two share -- the
+    same position, the same move -- and are not asked (paid) again; the words on moves the import
+    does not have stay with the watched review, which keeps every word it had. Nothing is lost
+    and nothing is shown, saved or paid twice."""
+    from sidecoach.events import Line
+    from sidecoach.llm import factory
+    from sidecoach.llm.base import Completion
+    from sidecoach.llm.usage import Usage
+    from sidecoach.ui import review_room
+
+    searched = FakeEngine.analyse
+
+    def legal(self: FakeEngine, board: Any, **kwargs: Any) -> list[Any]:
+        """Lines of a legal move, as the words' facts and checks play them out."""
+        searched(self, board, **kwargs)
+        first = next(iter(board.legal_moves), None)
+        return [Line(moves=[first.uci()], depth=14, expected_score=0.5)] if first else []
+
+    monkeypatch.setattr(FakeEngine, "analyse", legal)
+    misread = [*SANS[:6], "d4", *SANS[7:]]
+    client, _engine, store, key, watched, _made = _watched_and_imported(
+        make_panel, monkeypatch, misread
+    )
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    # Plies 3 (Nf3) and 5 (Bc4) are the key moves; 7 is the misread move, 9 comes after it.
+    monkeypatch.setattr(review_room.review_words, "key_plies", lambda _game: [3, 5])
+    paid = {
+        "model": "luna",
+        "cost": 0.02,
+        "texts": {
+            "3": {"why": "Paid for on Nf3."},
+            "7": {"why": "Paid for on d4."},
+            "9": {"why": "Paid for on Nc3."},
+        },
+    }
+    store.set_review_words(watched, "standard", json.dumps(paid))
+    assert client.get("/api/games").json()["games"], "listed: the import stands for it now"
+    assert store.twins() == {watched: key}
+
+    asked: list[int] = []
+
+    class Model:
+        model = "local-model"
+        usage = Usage()
+
+        def chat(self, _system: str, messages: Any, **_: Any) -> Completion:
+            ply = json.loads(messages[0]["content"])["key move"]["ply"]
+            asked.append(ply)
+            return Completion(text=f"### why\nOwn words on ply {ply}.", stats={})
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    assert client.put("/api/settings", json={"settings": {"llm": {"provider": "local"}}}).json()[
+        "ok"
+    ]
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    ai = _until_ready(client, key)["state"]["ai"]
+    assert ai["words"]["texts"] == {"3": {"why": "Paid for on Nf3."}}, "where the moves match"
+    assert ai["status"] == "none", "the key move with no words is there to ask for"
+
+    assert client.post(f"/api/review/{key}/ai").json() == {"ok": True, "error": None}
+    ai = _until_written(client, key)
+    assert asked == [5], "the move with words paid for is not asked again"
+    assert ai["status"] == "ready", ai["error"]
+    assert ai["words"]["texts"] == {
+        "3": {"why": "Paid for on Nf3."},
+        "5": {"why": "Own words on ply 5."},
+    }
+    own = store.review(key, "standard")
+    assert own is not None and json.loads(own.words or "{}")["texts"] == {
+        "5": {"why": "Own words on ply 5."}
+    }, "the import saves its own words only: none saved twice"
+    kept = store.review(watched, "standard")
+    assert kept is not None and json.loads(kept.words or "{}") == paid, "the watched keeps all"
+
+    _close(client, key)
+    client.post(f"/api/review/{key}/open", json={"strength": "standard"})
+    again = _until_ready(client, key)["state"]["ai"]
+    assert (again["status"], again["words"]["texts"]) == ("ready", ai["words"]["texts"])
+    assert asked == [5], "opened again: nothing asked"
+    _close(client, key)
+    store.close()
+
+
+def test_words_go_by_position_and_move_whatever_the_move_numbers(tmp_path: Path) -> None:
+    """A watched game joined late counts its moves from another number: its FENs' clocks differ
+    from the import's, its positions do not. Each word goes to the import's move played from the
+    same position with the same move, the n-th such move to the n-th."""
+    import chess
+
+    from sidecoach.profile.store import LibraryRow, Store
+    from sidecoach.ui import review_room
+    from tests.test_review_words import _game
+
+    store = Store(tmp_path / "profile.sqlite")
+    imported = _game()
+    moves = []
+    for move in imported.moves:
+        fields = move.fen_before.split()
+        fields[5] = str(int(fields[5]) + 20)  # joined at move 21
+        moves.append(move.model_copy(update={"fen_before": " ".join(fields)}))
+    watched = imported.model_copy(update={"moves": moves})
+    store.start_game("w", 1.0, "black", chess.STARTING_FEN)
+    store.add_library_game(LibraryRow("pgn:i", "pgn", 0.0, "*"))
+    assert store.save_review("watched:w", "fast", 1, 1.0, watched.model_dump_json(), None)
+    store.set_review_words(
+        "watched:w", "fast", json.dumps({"model": "m", "texts": {"4": {"why": "W"}}})
+    )
+    store.add_twin("watched:w", "pgn:i")
+    assert review_room.carried_words(store, "pgn:i", imported, "standard") == (
+        {4: {"why": "W"}},
+        "m",
+    )
+    assert review_room.carried_words(store, "watched:w", watched, "fast") == ({}, ""), "one way"
+    store.close()
+
+
 def test_a_removed_game_stays_out_until_undone_or_pasted_again(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:

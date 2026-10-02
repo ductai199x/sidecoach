@@ -630,6 +630,7 @@ def write(
     answered: dict[int, str] | None = None,
     on_answer: Callable[[int, str, dict[str, Any]], None] | None = None,
     stop: Callable[[], bool] | None = None,
+    carried: frozenset[int] | set[int] = frozenset(),
 ) -> ReviewWords:
     """The model's review of the game's key moves, checked: a call a move, all at once. Without
     thinking unless asked: a small model reasons worse about chess, not better (Tai,
@@ -637,10 +638,12 @@ def write(
     fails (and none was answered before), the first failure is raised. `answered`: the answers
     already paid for (words the app was closed in the middle of), not asked again;
     `on_answer(ply, text, stats)` is handed each new answer the moment it arrives, to keep it.
-    `stop()` true asks no more (the game removed meanwhile): the calls not made fail. The cost
+    `stop()` true asks no more (the game removed meanwhile): the calls not made fail. `carried`:
+    the key moves that have words already, paid for on the watched game this one stands for
+    (ui/review_room.py), not asked again (an answer of this game's own stays its own). The cost
     is of the new calls."""
     answered = dict(answered or {})
-    plies = key_plies(game)
+    plies = [p for p in key_plies(game) if p not in carried or p in answered]
     words = ReviewWords(texts={}, model=getattr(provider, "model", ""))
     if not plies:
         return words
