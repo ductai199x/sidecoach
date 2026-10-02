@@ -162,10 +162,32 @@ open class Engine(
         synchronized(clock) { if (paused) signal(SIGSTOP) }
     }
 
-    /** Threads and hash on the running engine (the settings saved mid-session). */
+    /** Threads or hash saved while a search ran: set on the process before the next search. */
+    @Volatile private var optionsOwed = false
+
+    /**
+     * Threads and hash on the running engine (the settings saved mid-session). Never during a
+     * search: a `setoption` stops the search under way, which was then kept as if it had
+     * finished (0.6 s and depth 14 of a 4 s search). With a search running they are set before
+     * the next one, and the save does not wait for it.
+     */
     fun reconfigure(threads: Int? = null, hashMb: Int? = null) {
         if (threads != null) this.threads = threads
         if (hashMb != null) this.hashMb = hashMb
+        if (!lock.tryLock()) {
+            optionsOwed = true
+            return
+        }
+        try {
+            configureNow()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /** Threads and hash set on the process; under the lock, between searches. */
+    private fun configureNow() {
+        optionsOwed = false
         if (process == null) return
         runCatching {
             if ("Threads" in options) configure("Threads", this.threads.toString())
@@ -256,7 +278,8 @@ open class Engine(
             runningSince = if (paused) 0 else SystemClock.elapsedRealtime()
             ++searchNumber
         }
-        Thread({ watch(number) }, "engine-clock").apply {
+        val target = process
+        Thread({ watch(number, target) }, "engine-clock").apply {
             isDaemon = true
             start()
         }
@@ -273,10 +296,15 @@ open class Engine(
     /**
      * The time limit of search [number]: `stop` once it has run its time, the pauses not
      * counted. The engine's own `movetime` would count them, and cut a search short the moment
-     * it resumed; `stop` ends the search as `movetime` does, with its best move.
+     * it resumed; `stop` ends the search as `movetime` does, with its best move. Still running
+     * [watchdogS] of its own time after that, the engine has stopped answering without dying
+     * -- the search would wait on it for good, and the analyser's thread with it -- so its
+     * process is ended, the way a crash ends it, and the search is made again on a new one
+     * ([analyseWithRestart]). `_watched`.
      */
-    private fun watch(number: Int) {
+    private fun watch(number: Int, target: Process?) {
         synchronized(clock) {
+            var stopSent = false
             while (searchNumber == number && budgetMs != 0L) {
                 if (paused) {
                     clock.wait()
@@ -284,14 +312,23 @@ open class Engine(
                 }
                 val left = budgetMs - ranMs - (SystemClock.elapsedRealtime() - runningSince)
                 if (left <= 0) {
+                    if (stopSent) {
+                        runCatching { target?.destroyForcibly() }
+                        budgetMs = 0
+                        return
+                    }
                     runCatching { send("stop") }
-                    budgetMs = 0
-                    return
+                    stopSent = true
+                    budgetMs += (watchdogS * 1000).toLong()
+                    continue
                 }
                 clock.wait(left)
             }
         }
     }
+
+    /** How long past its time a search may run before its engine is taken for hung ([watch]). */
+    @Volatile var watchdogS: Double = 10.0
 
     /**
      * The best lines for `board`, best first, from the side to move's point of view. A
@@ -310,9 +347,9 @@ open class Engine(
         carryBest: Boolean = false,
         onDepth: ((List<Line>) -> Unit)? = null,
     ): List<Line> {
-        // Over, a claimable draw included, as python-chess's `is_game_over(claim_draw=True)`:
-        // with the game's moves on the board, a threefold repetition can be claimed.
-        if (board.isGameOver(claimDraw = true)) return emptyList()
+        // Over as the sites end a game ([gameOver]): a draw the side to move could merely
+        // claim is played on.
+        if (gameOver(board)) return emptyList()
         if (depth == null && timeS == null) throw IllegalArgumentException("analyse needs a depth or a time limit")
         var capped = timeS
         val cap = maxSeconds
@@ -327,7 +364,10 @@ open class Engine(
             .toMutableList()
 
         val depths: ((List<Info>) -> Unit)? = if (onDepth == null) null else { infos -> onDepth(asLines(infos, false)) }
-        val infos = lock.withLock { analyseWithRestart(board, depth, capped, wanted, depths) }
+        val infos = lock.withLock {
+            if (optionsOwed) configureNow()
+            analyseWithRestart(board, depth, capped, wanted, depths)
+        }
         val lines = asLines(infos, carryBest)
         if (carryBest && lines.isNotEmpty() && lines[0].moves.size < MIN_BEST_PLIES) {
             lines[0] = carriedOn(board, lines[0], MIN_BEST_PLIES)
@@ -341,11 +381,14 @@ open class Engine(
      */
     private fun carriedOn(board: Board, line: Line, plies: Int): Line {
         val moves = ArrayList(line.moves)
-        val end = board.copy(withStack = false)
+        val end = board.copy()  // with its moves: a repetition on the way ends the line
         for (uci in moves) end.push(Move.fromUci(uci))
         repeat(EXTEND_TRIES) {
-            if (moves.size >= plies || end.isGameOver(claimDraw = true)) return line.copy(moves = moves)
-            val infos = lock.withLock { analyseWithRestart(end, EXTEND_DEPTH, EXTEND_SECONDS, 1) }
+            if (moves.size >= plies || gameOver(end)) return line.copy(moves = moves)
+            val infos = lock.withLock {
+                if (optionsOwed) configureNow()
+                analyseWithRestart(end, EXTEND_DEPTH, EXTEND_SECONDS, 1)
+            }
             val more = infos.firstOrNull()?.pv ?: emptyList()
             if (more.isEmpty()) return line.copy(moves = moves)
             for (uci in more.take(plies - moves.size)) {
@@ -427,7 +470,9 @@ open class Engine(
     /**
      * `analyse`'s search, read as it goes (`_streamed`): each depth handed to [onDepth] once its
      * last line is in (Stockfish reports a depth's lines best first), and, inside
-     * [interruptible], stopped by [interrupt].
+     * [interruptible], stopped by [interrupt]. A search cut mid-depth (the time cap) has its
+     * first lines a depth further than the rest, and the gap between them set two depths
+     * against each other: it is answered with the last depth finished whole.
      */
     private fun search(
         board: Board,
@@ -471,6 +516,7 @@ open class Engine(
         // and the deepest depth handed on.
         val latest = java.util.TreeMap<Int, Info>()
         var done = 0
+        var whole: List<Info>? = null
         try {
             readUntil("bestmove") { line ->
                 val words = words(line)
@@ -481,9 +527,11 @@ open class Engine(
                     val at = info.depth
                     if (at != null && !info.pv.isNullOrEmpty()) {
                         latest[rank] = info
-                        if (onDepth != null && rank == multipv && at > done) {
+                        if (rank == multipv && at > done) {
                             done = at
-                            onDepth(latest.values.toList())
+                            val complete = latest.values.toList()
+                            whole = complete
+                            onDepth?.invoke(complete)
                         }
                     }
                 }
@@ -493,6 +541,8 @@ open class Engine(
             if (timeS != null) disarm()
         }
         if (stoppable && stopped) throw Interrupted()
+        val cut = whole
+        if (cut != null && infos.map { it.depth }.toSet().size > 1) return cut
         return infos
     }
 

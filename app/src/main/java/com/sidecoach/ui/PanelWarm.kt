@@ -505,6 +505,13 @@ object PanelWarm {
             attempt(listOf("engine.threads", "engine.hash_mb")) {
                 engine.reconfigure(threads = config.threads, hashMb = config.hashMb)
             }
+            // What was measured before is not set against what is measured now: a loss compares
+            // two searches made the same way (the engine review, 2026-10-01).
+            val remeasure = changed.filter { it in THRESHOLD_FIELDS } +
+                listOf("engine.depth", "engine.multipv", "engine.score_model", "engine.max_seconds")
+            if (changed.any { it in remeasure }) {
+                runCatching { analyser.annotator.forgetMeasured() }  // applied already; the cache is a cache
+            }
         }
         return applied.toSortedSet().toList()
     }

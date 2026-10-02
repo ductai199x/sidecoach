@@ -1,6 +1,12 @@
 package com.sidecoach.analysis
 
+import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.KNIGHT
+import com.sidecoach.chess.Move
+import com.sidecoach.chess.PAWN
+import com.sidecoach.chess.QUEEN
+import com.sidecoach.chess.ROOK
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.Severity
@@ -88,10 +94,22 @@ data class Thresholds(
 
 val DEFAULT_THRESHOLDS = Thresholds()
 
+/**
+ * Whether the game is over on the board as the sites play it: mate, stalemate, no mating
+ * material, or a draw by rule that has happened -- the third occurrence of a position, or fifty
+ * moves without a capture or a pawn move. Chess.com and Lichess end the game there themselves.
+ * A draw the side to move could merely claim with its next move is not one: that position is
+ * played on, and a queen up is still a queen up. The repetition needs the board's moves; a
+ * board without them knows no history and repeats nothing. `score.game_over`.
+ */
+fun gameOver(board: Board): Boolean =
+    board.outcome(claimDraw = false) != null || board.isRepetition(3) || board.isFiftyMoves()
+
 /** The value of a finished position to the side to move, or null if it is not finished. */
 fun terminalExpectedScore(board: Board): Double? {
-    val outcome = board.outcome(claimDraw = true) ?: return null
-    val winner = outcome.winner ?: return DRAW
+    if (!gameOver(board)) return null
+    val outcome = board.outcome(claimDraw = false)
+    val winner = outcome?.winner ?: return DRAW  // a draw by rule ([gameOver])
     return if (winner == board.turn) 1.0 else 0.0
 }
 
@@ -129,41 +147,62 @@ fun severityOf(loss: Double, thresholds: Thresholds = DEFAULT_THRESHOLDS): Sever
 }
 
 /**
- * What kind of move it was, in the vocabulary the user reads on chess.com.
+ * What kind of move it was, in the words chess.com's review uses, as its help pages define them
+ * (2026-10-01) and as far as six of the user's reviewed games bear them out. `score.label_move`.
  *
- * Two axes. The loss says how good the move was: best, excellent, good, then the three names
- * for losing ground. The moment says whether it mattered, which is what great, brilliant and
- * miss add. `opponentErred` says the move before this one was a mistake or worse, so this
- * move either took the chance (great, when it is the best move) or let it go (miss, whatever
- * the size of the loss); `onlyMove` says everything else lost, so finding it was great; a
- * sound `sacrifice` is brilliant unless the position was already decided, where giving
- * material back is just technique. Neither great nor brilliant applies to an `obvious` move,
- * nor in a lost position, where the best move changes nothing.
+ * - Best, "the engine's top choice" ([isBest]); excellent, "almost as good as the best move" (a
+ *   loss under `excellent`); good, "a decent move but not the best".
+ * - Inaccuracy, mistake, blunder: by the loss. A move that walks into a forced mate
+ *   ([mateAllowed]) "loses the game" and is a blunder, unless the game was lost already (the
+ *   curve puts a mate at 0.0 and a thousand centipawns at 0.025).
+ * - Book, "a conventional opening move": the tables' move, unless it threw away a tenth of the
+ *   game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does not,
+ *   calling 1...f5 a mistake.
+ * - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent": the
+ *   best move won material or mated ([chance], read off its line by the annotator) and the move
+ *   played gave ground. It names the move whatever the size of the loss; a forced mate let go
+ *   ([mateMissed]) is one even when the move still wins.
+ * - Great, "a move that altered the course of the game": the best move where every other lost
+ *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
+ *   Merely the best move after any error was great 30 times in the six games where chess.com
+ *   said so 20 times.
+ * - Brilliant, "the best move -- and tricky to find too": a sound sacrifice, as good as the
+ *   best, in a game still to be won. Whether it was won already is read from the second-best
+ *   line ([secondScore]): the best is the line the sacrifice makes, and a sacrifice that is the
+ *   only win was never brilliant.
+ *
+ * Neither great nor brilliant applies to an [obvious] move (a recapture, a free capture nobody
+ * can take back, the only legal move), nor in a lost position, where the best move changes
+ * nothing.
  */
 fun labelMove(
     loss: Double,
     thresholds: Thresholds,
     isBest: Boolean,
     inBook: Boolean,
-    onlyMove: Boolean,
+    decisive: Boolean,
     sacrifice: Boolean,
     beforeScore: Double,
-    opponentErred: Boolean,
+    opponentBlundered: Boolean,
+    secondScore: Double? = null,
+    chance: Boolean = false,
+    mateMissed: Boolean = false,
+    mateAllowed: Boolean = false,
     obvious: Boolean = false,
 ): Label {
-    val flagged = loss >= thresholds.inaccuracy
-    if (inBook && !flagged) {
-        // The opening tables hold dubious gambits too; a move that loses ground is judged by
-        // what it lost, whatever a book calls it. 1. e4 f5 is in the tables.
-        return Label.BOOK
-    }
-    val won = beforeScore >= thresholds.decided
     val lost = beforeScore <= 1.0 - thresholds.decided
-    if (opponentErred && flagged) return Label.MISS
+    // Walking into a mate from a lost position is not the move that lost: chess.com leaves
+    // those unmarked (eleven of them in the six games, the best move among them).
+    val allowed = mateAllowed && !lost && !isBest
+    val flagged = loss >= thresholds.inaccuracy || mateMissed || allowed
+    if (inBook && loss < thresholds.mistake) return Label.BOOK
+    if (flagged && chance && !isBest) return Label.MISS
+    if (allowed) return Label.BLUNDER
     if (!flagged) {
         if (!obvious && !lost) {
-            if (sacrifice && !won) return Label.BRILLIANT
-            if (onlyMove || (opponentErred && isBest)) return Label.GREAT
+            val without = secondScore ?: beforeScore
+            if (sacrifice && loss < thresholds.excellent && without < thresholds.decided) return Label.BRILLIANT
+            if (isBest && (decisive || opponentBlundered)) return Label.GREAT
         }
         if (isBest) return Label.BEST
         return if (loss < thresholds.excellent) Label.EXCELLENT else Label.GOOD
@@ -173,6 +212,51 @@ fun labelMove(
         Severity.MISTAKE -> Label.MISTAKE
         else -> Label.INACCURACY
     }
+}
+
+/** What a line wins, in pawns: the piece values every club player counts by. */
+val PIECE_VALUES = mapOf(PAWN to 1, KNIGHT to 3, BISHOP to 3, ROOK to 5, QUEEN to 9)
+
+/** A line that wins this much is a tactic to find (the coach's facts count the same). */
+const val TACTIC_GAIN = 2
+
+/** How far into a line a tactic is looked for: four moves each. */
+const val TACTIC_PLIES = 8
+
+private fun balance(board: Board, us: Boolean): Int {
+    var total = 0
+    for (piece in board.pieceMap().values) {
+        val worth = PIECE_VALUES[piece.pieceType] ?: 0
+        total += if (piece.colour == us) worth else -worth
+    }
+    return total
+}
+
+/**
+ * What the side to move wins over the first [plies] of [moves] (UCI), in pawns, counted after
+ * the opponent's replies; a line that mates wins everything (99). Material the opponent has
+ * just taken, which the side to move is owed back, is not won: taking back is a trade (read
+ * from the board's moves; a board without them owes nothing). `score.material_won`.
+ */
+fun materialWon(board: Board, moves: List<String>, plies: Int = TACTIC_PLIES): Int {
+    val us = board.turn
+    var base = balance(board, us)
+    val back = board.copy()
+    while (back.moveStack.isNotEmpty()) {
+        val move = back.pop()
+        if (!back.isCapture(move)) break
+        base = maxOf(base, balance(back, us))
+    }
+    val at = board.copy(withStack = false)
+    var best = 0
+    for ((i, uci) in moves.take(plies).withIndex()) {
+        val move = Move.fromUciOrNull(uci) ?: break
+        if (!at.isLegal(move)) break
+        at.push(move)
+        if (at.isCheckmate()) return if (at.turn != us) 99 else best
+        if (i % 2 == 1) best = maxOf(best, balance(at, us) - base)
+    }
+    return best
 }
 
 /** 0 to 100 for one move, from its loss in expected score. */

@@ -58,10 +58,14 @@ class ScoreTest {
                 DEFAULT_THRESHOLDS,
                 isBest = o.getBoolean("is_best"),
                 inBook = o.getBoolean("in_book"),
-                onlyMove = o.getBoolean("only_move"),
+                decisive = o.getBoolean("decisive"),
                 sacrifice = o.getBoolean("sacrifice"),
                 beforeScore = o.getDouble("before_score"),
-                opponentErred = o.getBoolean("opponent_erred"),
+                opponentBlundered = o.getBoolean("opponent_blundered"),
+                secondScore = if (o.isNull("second_score")) null else o.getDouble("second_score"),
+                chance = o.getBoolean("chance"),
+                mateMissed = o.getBoolean("mate_missed"),
+                mateAllowed = o.getBoolean("mate_allowed"),
                 obvious = o.getBoolean("obvious"),
             )
             if (label.name.lowercase() != o.getString("label")) {

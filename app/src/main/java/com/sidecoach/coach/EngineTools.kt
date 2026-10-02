@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.PIECE_NAMES
+import com.sidecoach.analysis.gameOver
 import com.sidecoach.analysis.restOfLine
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BB_EMPTY
@@ -143,8 +144,10 @@ class EngineTools(
     knownBefore: List<Line> = emptyList(),
     private val depth: Int = 14,
 ) {
-    private val now: Board = now.copy(withStack = false)
-    private val before: Board? = before?.copy(withStack = false)
+    // With their moves: Stockfish reads a repetition from them, and a move that repeats a
+    // position the third time ends the game ([gameOver]).
+    private val now: Board = now.copy()
+    private val before: Board? = before?.copy()
     private val known: Map<String, List<Line>> =
         mapOf("now" to knownNow.toList(), "before_last_move" to knownBefore.toList())
     val frames: MutableList<Board> = ArrayList()
@@ -179,7 +182,7 @@ class EngineTools(
         val (after, played, illegal) = play(start, moves)
         var head = heading(start, played, where)
         if (illegal.isNotEmpty()) head += " $illegal is not a legal move there, so the analysis stops before it."
-        if (after.isGameOver(claimDraw = true)) return "$head The game is over there: ${result(after)}."
+        if (gameOver(after)) return "$head The game is over there: ${result(after)}."
         val known = this.known[where] ?: emptyList()
         val own = if (played.isNotEmpty()) restOfLine(known, played.map { it.uci() }) else null
         val lines: List<Line>
@@ -249,7 +252,7 @@ class EngineTools(
 
     /** The board after [moves], the moves played, and the first one that could not be. */
     private fun play(start: Board, moves: List<String>): Triple<Board, List<Move>, String> {
-        val board = start.copy(withStack = false)
+        val board = start.copy()
         val played = ArrayList<Move>()
         for (token in moves) {
             val move = board.parseSan(token)
@@ -282,16 +285,18 @@ class EngineTools(
     private fun rating(start: Board, first: Move, origin: String, known: List<Line>): String {
         val best = known.toList().ifEmpty { engine.analyse(start, depth) }
         if (best.isEmpty()) return ""
-        val after = start.copy(withStack = false)
+        val after = start.copy()
         after.push(first)
         val head = "The first move given, ${sanLine(start, listOf(first.uci()))}, is"
         if (best[0].moves.isNotEmpty() && best[0].moves[0] == first.uci()) return "$head the engine's best move from $origin."
-        if (after.isGameOver(claimDraw = true)) return ""
+        if (gameOver(after)) return ""
         val own = best.firstOrNull { it.moves.take(1) == listOf(first.uci()) }
         val score = if (own != null) {
             own.expectedScore
         } else {
-            val reply = engine.analyse(after, depth)
+            // At the best line's depth: set against a shallower search, a move as good as the
+            // best read as worse by what the depths differ by.
+            val reply = engine.analyse(after, best[0].depth.takeIf { it != 0 } ?: depth)
             if (reply.isEmpty()) return ""
             1.0 - reply[0].expectedScore
         }

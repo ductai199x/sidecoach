@@ -214,6 +214,7 @@ object ReviewJson {
         .put("traps", JSONArray(m.traps.map { line(it) }))
         .put("defences", JSONArray(m.defences.map { line(it) }))
         .put("threatens", JSONArray(m.threatens.map { line(it) }))
+        .put("key", m.key)
 
     fun measured(o: JSONObject): com.sidecoach.analysis.Measured = com.sidecoach.analysis.Measured(
         fen = o.getString("fen"),
@@ -225,6 +226,7 @@ object ReviewJson {
         traps = list(o.optJSONArray("traps")) { line(it) },
         defences = list(o.optJSONArray("defences")) { line(it) },
         threatens = list(o.optJSONArray("threatens")) { line(it) },
+        key = o.optString("key", ""),
     )
 
     // ---- ReviewedGame -----------------------------------------------------------------------
