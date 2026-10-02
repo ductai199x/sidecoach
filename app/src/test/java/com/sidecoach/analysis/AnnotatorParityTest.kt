@@ -1,9 +1,7 @@
 package com.sidecoach.analysis
 
-import android.os.SystemClock
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
-import com.sidecoach.Lane
+import com.sidecoach.TestAssets
+import com.sidecoach.TestLog
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
@@ -18,9 +16,12 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
-import org.junit.runner.RunWith
+import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The annotator with its collaborators held to `sidecoach/analysis/annotator.py`: four real
@@ -30,12 +31,16 @@ import java.io.File
  * compared with what the desktop's annotator said
  * (`tools/make_annotator_fixtures.py`). The engine is scripted from the desktop's recording
  * of the real Stockfish, so what is compared is the annotator itself.
+ *
+ * On the host: nothing here needs the Android runtime. The analyser's worker is watched through
+ * its own steps ([AnalyserWatch]) and the fakes' searches end when the test lets them, never on a
+ * clock (the desktop's 0bf0f27); it ran on the device while it polled with sleeps.
  */
-@Lane(Lane.Kind.FREE)
-@RunWith(AndroidJUnit4::class)
 class AnnotatorParityTest {
 
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    /** The opening tables' folder: the device's test used the app's cache, the host a folder of its own. */
+    @get:Rule
+    val temporary = TemporaryFolder()
 
     /**
      * Answers the calls the desktop's annotator made, from its recording of them: per game,
@@ -81,13 +86,9 @@ class AnnotatorParityTest {
     }
 
     private fun book(): OpeningBook {
-        val folder = File(instrumentation.targetContext.cacheDir, "openings-annotator").apply {
-            deleteRecursively()
-            mkdirs()
-        }
-        val assets = instrumentation.context.assets
-        for (name in assets.list("openings").orEmpty().filter { it.endsWith(".tsv") }) {
-            assets.open("openings/$name").use { input -> File(folder, name).outputStream().use { input.copyTo(it) } }
+        val folder = temporary.newFolder("openings-annotator")
+        for (name in TestAssets.list("openings").filter { it.endsWith(".tsv") }) {
+            TestAssets.open("openings/$name").use { input -> File(folder, name).outputStream().use { input.copyTo(it) } }
         }
         val loaded = OpeningBook.load(folder)
         assertNotNull("the tables load", loaded)
@@ -101,8 +102,7 @@ class AnnotatorParityTest {
 
     @Test
     fun everyPlyOfFourGamesMatchesThePython() {
-        val text = instrumentation.context.assets.open("chess/annotator.json").bufferedReader().use { it.readText() }
-        val data = JSONObject(text)
+        val data = JSONObject(TestAssets.text("chess/annotator.json"))
         val engine = ScriptedEngine()
         val book = book()
         val games = data.getJSONArray("games")
@@ -157,7 +157,7 @@ class AnnotatorParityTest {
         }
         assertEquals("every engine call was one the desktop made", emptyList<String>(), engine.missed)
         assertEquals(64, plies)
-        android.util.Log.i("sidecoach.analysis", "annotator parity: $plies plies, $traps traps, $defences defences")
+        TestLog.i("sidecoach.analysis", "annotator parity: $plies plies, $traps traps, $defences defences")
     }
 
     private fun recordedLines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->
@@ -246,9 +246,10 @@ class AnnotatorParityTest {
     @Test
     fun theWorkerAnswersSurvivesAFailureAndDropsTheOldest() {
         val answered = Analyser(GameAnnotator(FakeEngine(), depth = 6, withThreats = false))
+        val answeredWatch = AnalyserWatch(answered)
         answered.start()
         answered.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
-        val events = drain(answered)
+        val events = answeredWatch.settled()
         answered.close()
         assertEquals(listOf("MoveAssessment", "Analysis"), events.map { it::class.java.simpleName })
         assertEquals(0, answered.failures)
@@ -258,12 +259,18 @@ class AnnotatorParityTest {
                 throw RuntimeException("engine gone")
         }
         val failing = Analyser(GameAnnotator(broken, depth = 6, withThreats = false))
+        val watch = AnalyserWatch(failing)
         failing.start()
         failing.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
-        val deadline = System.currentTimeMillis() + 5000
-        while (failing.failures == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
-        failing.close()
+        // The failure is counted before the request settles: settled, it is in.
+        assertEquals(emptyList<Event>(), watch.settled())
         assertEquals(1, failing.failures)
+        assertTrue("${failing.lastError}", failing.lastError?.contains("engine gone") == true)
+        // The worker is still there: the next request is served (and fails alike).
+        failing.submitMove("g", Board(), Move.fromUci("d2d4"), 1)
+        assertEquals(emptyList<Event>(), watch.settled())
+        failing.close()
+        assertEquals(2, failing.failures)
         assertTrue("${failing.lastError}", failing.lastError?.contains("engine gone") == true)
 
         val stuck = Analyser(GameAnnotator(FakeEngine(), depth = 6, withThreats = false), maxPending = 2)  // never started
@@ -279,26 +286,31 @@ class AnnotatorParityTest {
      */
     @Test
     fun aResetTakesTheQueueAndTheStopInIt() {
-        val searching = java.util.concurrent.CountDownLatch(1)
-        val go = java.util.concurrent.CountDownLatch(1)
+        val searching = CountDownLatch(1)
+        val go = CountDownLatch(1)
         val held = object : FakeEngine() {
             override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
                 searching.countDown()
-                go.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                // A fake that timed out and carried on would pass a test that never let it go. (An exception,
+                // not an Error: on the analyser's thread an Error would end the test process.)
+                if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw IllegalStateException("the test never let the search go")
                 return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
             }
         }
         val analyser = Analyser(GameAnnotator(held, depth = 6, withThreats = false))
+        val stopPut = CountDownLatch(1)
+        AnalyserWatch(analyser, object : Analyser.Watch {
+            override fun closing() = stopPut.countDown()
+        })
         analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
         analyser.start()
-        assertTrue("the worker never started", searching.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue("the worker never started", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
         val after = Board()
         after.push(Move.fromUci("e2e4"))
         analyser.submitMove("g", after, Move.fromUci("e7e5"), 2)
         // Closing while the worker is held: the stop goes in behind ply 2, then it waits.
-        val closer = Thread { analyser.close() }.apply { start() }
-        val until = System.currentTimeMillis() + 5000
-        while (closer.state != Thread.State.TIMED_WAITING && System.currentTimeMillis() < until) Thread.sleep(5)
+        Thread { analyser.close() }.start()
+        assertTrue("the stop was never put in", stopPut.await(HANG_MS, TimeUnit.MILLISECONDS))
         analyser.reset()
         assertEquals("ply 1 in the engine, ply 2 and the stop taken", 0, analyser.pending)
         go.countDown()
@@ -315,6 +327,7 @@ class AnnotatorParityTest {
     fun behindAFastGameTheVerdictsAreKeptAndStaleAnalysesThin() {
         val fake = FakeEngine()
         val analyser = Analyser(GameAnnotator(fake, depth = 6, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         val board = Board()
         // Five plies queued before the worker starts: it is behind from the first one.
         for ((i, san) in listOf("e4", "e5", "Nf3", "Nc6", "Bb5").withIndex()) {
@@ -323,15 +336,11 @@ class AnnotatorParityTest {
             board.push(move)
         }
         analyser.start()
-        val got = ArrayList<com.sidecoach.events.Event>()
-        val deadline = System.currentTimeMillis() + 5000
-        while (System.currentTimeMillis() < deadline && got.count { it is com.sidecoach.events.Analysis } < 5) {
-            got += analyser.poll()
-            Thread.sleep(20)
-        }
-        Thread.sleep(100)
-        got += analyser.poll()
+        // Everything owed answered: nothing more can come after this (not merely five analyses
+        // seen, then a moment's grace for anything extra).
+        val got = watch.settled()
         analyser.close()
+        assertEquals("nothing said after the work was settled", emptyList<Event>(), analyser.poll())
         val assessments = got.filterIsInstance<com.sidecoach.events.MoveAssessment>()
         val analyses = got.filterIsInstance<com.sidecoach.events.Analysis>()
         assertEquals("a verdict for every ply", listOf(1, 2, 3, 4, 5), assessments.map { it.ply })
@@ -339,17 +348,6 @@ class AnnotatorParityTest {
         assertTrue("thin for stale plies", analyses.take(4).all { it.lines.size == 1 && it.threats.isEmpty() })
         assertEquals(4, analyser.skipped)
         assertEquals("one whole measurement: the position the player faces", 1, fake.multipvs.count { it == 6 })
-    }
-
-    private fun drain(analyser: Analyser): List<com.sidecoach.events.Event> {
-        val deadline = System.currentTimeMillis() + 10_000
-        val events = ArrayList<com.sidecoach.events.Event>()
-        while (System.currentTimeMillis() < deadline) {
-            events += analyser.poll()
-            if (events.isNotEmpty() && analyser.pending == 0) return events
-            Thread.sleep(10)
-        }
-        return events
     }
 
     /** `_line`: a line of [moves] at depth 6, even. */
@@ -360,13 +358,6 @@ class AnnotatorParityTest {
         val board = Board()
         for (san in sans) board.push(board.parseSan(san)!!)
         return board.fen()
-    }
-
-    /** `_until`: whether [condition] holds within [timeoutS]. */
-    private fun until(timeoutS: Double = 5.0, condition: () -> Boolean): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + (timeoutS * 1000).toLong()
-        while (!condition() && SystemClock.elapsedRealtime() < deadline) Thread.sleep(10)
-        return condition()
     }
 
     private fun calls(fake: FakeEngine): List<String> = synchronized(fake.calls) { fake.calls.toList() }
@@ -391,19 +382,20 @@ class AnnotatorParityTest {
         )
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val analyser = Analyser(annotator, lookAhead = 2)
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val got: List<Event>
         val before: Int
         try {
             analyser.submitPosition("g", start, 0)
-            assertTrue("${analyser.looked}", until { analyser.looked == 4 })
+            watch.until("four positions looked at ahead") { analyser.looked == 4 }
             val searched = calls(fake).toSet()
             for (fen in listOf(after("e4"), after("e4", "e5"), after("d4"), after("d4", "d5"))) {
                 assertTrue("$fen was not looked at", fen in searched)
             }
             before = calls(fake).size
             analyser.submitMove("g", start, Move.fromUci("e2e4"), 1)
-            got = drain(analyser)
+            got = watch.settled()
         } finally {
             analyser.close()
         }
@@ -438,18 +430,19 @@ class AnnotatorParityTest {
         val board = Board()
         val fake = DepthEngine()
         val analyser = Analyser(GameAnnotator(fake, depth = 18, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val started: List<Event>
         val own: List<Event>
         val reply: List<Event>
         try {
             analyser.submitPosition("g", board, 0)
-            started = drain(analyser)
+            started = watch.settled()
             analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
-            own = drain(analyser)
+            own = watch.settled()
             board.push(board.parseSan("e4")!!)
             analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
-            reply = drain(analyser)
+            reply = watch.settled()
         } finally {
             analyser.close()
         }
@@ -478,6 +471,10 @@ class AnnotatorParityTest {
         val annotator = GameAnnotator(fake, depth = 18)
         val board = Board()
         val analyser = Analyser(annotator, lookAhead = 2)
+        // Behind "a moment ago" whatever the host's speed: the clock the window is kept on held
+        // still (it read the wall clock; ten seconds between the two moves turned the test).
+        analyser.nanoTime = { 1_000_000_000_000L }
+        val watch = AnalyserWatch(analyser)
         analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
         board.push(board.parseSan("e4")!!)
         analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
@@ -485,8 +482,8 @@ class AnnotatorParityTest {
         analyser.start()
         val got: List<Event>
         try {
-            got = drain(analyser)
-            assertTrue("nothing looked ahead at", until { analyser.looked >= 1 })
+            got = watch.settled()
+            watch.until("a position looked at ahead") { analyser.looked >= 1 }
         } finally {
             analyser.close()
         }
@@ -511,18 +508,19 @@ class AnnotatorParityTest {
         val fake = DepthEngine(mapOf(start.fen() to listOf(line("e2e4")), after("e4") to listOf(line("e7e5"))))
         val annotator = GameAnnotator(fake, depth = 18, withThreats = false)
         val analyser = Analyser(annotator, lookAhead = 1)
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val reply: List<Event>
         try {
             analyser.submitPosition("g", start, 0)
-            drain(analyser)
-            assertTrue("${analyser.looked}", until { analyser.looked == 2 })
+            watch.settled()
+            watch.until("two positions looked at ahead") { analyser.looked == 2 }
             analyser.submitMove("g", start, Move.fromUci("e2e4"), 1, byUser = true)
-            drain(analyser)
+            watch.settled()
             val after = Board()
             after.push(after.parseSan("e4")!!)
             analyser.submitMove("g", after, Move.fromUci("e7e5"), 2, byUser = false)
-            reply = drain(analyser)
+            reply = watch.settled()
         } finally {
             analyser.close()
         }
@@ -535,18 +533,43 @@ class AnnotatorParityTest {
      * whole measure, not a verdict's one line) runs until `interrupt` stops it; the ones after
      * answer at once.
      */
-    private class YieldOnceEngine : FakeEngine() {
+    private class YieldOnceEngine : StoppedOnly() {
         @Volatile var held = false
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             val several = (multipv ?: 1) > 1
             if (interruptibleNow && several && !held) {
                 held = true
-                val until = SystemClock.elapsedRealtime() + 5000
-                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
-                throw Interrupted()
+                untilStopped("the full measure was never interrupted")
             }
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
+        }
+    }
+
+    /**
+     * A fake whose held search ends only when it is interrupted, as a real one stops
+     * ([Engine.interrupt]); [entered] once it is under way. [Engine.interrupt] is not open, so
+     * whoever interrupts [wake]s it: the test, once the call that interrupts has returned. Woken
+     * and not stopped, it waits on, and a test whose call did not interrupt never ends but at
+     * [HANG_MS].
+     */
+    private open class StoppedOnly(answers: Map<String, List<Line>> = emptyMap()) : FakeEngine(answers) {
+        val entered = CountDownLatch(1)
+        private val lock = Object()
+
+        fun wake() = synchronized(lock) { lock.notifyAll() }
+
+        protected fun untilStopped(what: String): Nothing {
+            synchronized(lock) {
+                entered.countDown()
+                val deadline = System.nanoTime() + HANG_MS * 1_000_000
+                while (!stopped) {
+                    val left = (deadline - System.nanoTime()) / 1_000_000
+                    if (left <= 0) throw IllegalStateException(what)
+                    lock.wait(left)
+                }
+            }
+            throw Interrupted()
         }
     }
 
@@ -562,14 +585,17 @@ class AnnotatorParityTest {
         val fake = YieldOnceEngine()
         val board = Board()
         val analyser = Analyser(GameAnnotator(fake, depth = 18, withThreats = false))
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val got: List<Event>
         try {
             analyser.submitMove("g", board, Move.fromUci("e2e4"), 1, byUser = true)
-            assertTrue("the full measure never started", until { analyser.looking })
+            assertTrue("the full measure never started", fake.entered.await(HANG_MS, TimeUnit.MILLISECONDS))
+            assertTrue("a full measure a request interrupts", analyser.looking)
             board.push(board.parseSan("e4")!!)
             analyser.submitMove("g", board, Move.fromUci("e7e5"), 2, byUser = false)
-            got = drain(analyser)
+            fake.wake() // the request interrupted the measure before `submitMove` returned
+            got = watch.settled()
         } finally {
             analyser.close()
         }
@@ -600,13 +626,10 @@ class AnnotatorParityTest {
      * until `interrupt` stops them (`_stopped.wait(5)`, then `Interrupted`); the game's own are
      * answered at once.
      */
-    private class StoppableEngine(answers: Map<String, List<Line>>, val ahead: Set<String>) : FakeEngine(answers) {
+    private class StoppableEngine(answers: Map<String, List<Line>>, val ahead: Set<String>) : StoppedOnly(answers) {
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (interruptibleNow && board.fen() in ahead) {
-                val until = SystemClock.elapsedRealtime() + 5000
-                while (!stopped && SystemClock.elapsedRealtime() < until) Thread.sleep(1)
-                throw Interrupted()
-            }
+            // Until `interrupt`: a look ahead not let go never ends ([HANG_MS] bounds a hang).
+            if (interruptibleNow && board.fen() in ahead) untilStopped("the look ahead was never let go")
             return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
         }
     }
@@ -614,7 +637,8 @@ class AnnotatorParityTest {
     /**
      * `test_a_move_played_stops_the_look_ahead_at_once` (desktop 9c0774d): a search ahead of the
      * game is let go the moment a move of the game's own comes: the move never waits for a
-     * position it did not go to.
+     * position it did not go to. The fake's search ahead ends only when it is interrupted, so a
+     * move that did not interrupt it would never be judged (it was timed: under 500 ms).
      */
     @Test
     fun aMovePlayedStopsTheLookAheadAtOnce() {
@@ -624,16 +648,17 @@ class AnnotatorParityTest {
         )
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val analyser = Analyser(annotator, lookAhead = 2)
+        val watch = AnalyserWatch(analyser)
         analyser.start()
         val got: List<Event>
         try {
             analyser.submitPosition("g", Board(), 0)
-            assertTrue("never looked ahead", until { analyser.looking })
-            val t = SystemClock.elapsedRealtime()
+            assertTrue("the worker never searched ahead", fake.entered.await(HANG_MS, TimeUnit.MILLISECONDS))
+            assertTrue("a look ahead, under way", analyser.looking)
             analyser.submitMove("g", Board(), Move.fromUci("g1f3"), 1, byUser = false)
-            assertTrue(until(1.0) { !analyser.looking && analyser.pending == 0 })
-            assertTrue(SystemClock.elapsedRealtime() - t < 500)
-            got = drain(analyser)
+            fake.wake() // the move interrupted the look ahead before `submitMove` returned
+            watch.until("the move judged") { analyser.results.any { it is MoveAssessment } }
+            got = watch.settled()
         } finally {
             analyser.close()
         }
