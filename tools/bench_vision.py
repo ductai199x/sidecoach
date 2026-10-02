@@ -19,6 +19,7 @@ The installed package is imported first; the repository's root is added after it
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
 import sys
 import time
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import chess
+import cv2
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
@@ -169,6 +171,23 @@ def report(result: Result, screen: Screen, fps: float) -> None:
         )
 
 
+def write_frames(screen: Screen, fps: float, sans: Sequence[str], folder: Path) -> None:
+    """The game's positions as PNG files and a `game.json` naming them in order, for the
+    phone's `VisionBenchTest`, which feeds them through the phone's own tick."""
+    folder.mkdir(parents=True, exist_ok=True)
+    board = chess.Board()
+    positions = [{"file": "000.png", "san": None}]
+    cv2.imwrite(str(folder / "000.png"), screen.frame(board, None))
+    for n, san in enumerate(sans, start=1):
+        move = board.push_san(san)
+        name = f"{n:03d}.png"
+        cv2.imwrite(str(folder / name), screen.frame(board, move))
+        positions.append({"file": name, "san": san})
+    game = {"fps": fps, "patience": PATIENCE, "positions": positions}
+    (folder / "game.json").write_text(json.dumps(game, indent=1), encoding="utf-8")
+    print(f"{len(positions)} frames of {screen.width}x{screen.height} in {folder}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="The vision pipeline's per-frame cost and move-to-commit delay."
@@ -177,8 +196,16 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=1440)
     parser.add_argument("--cell", type=int, default=100, help="square size in pixels")
     parser.add_argument("--fps", type=float, default=10.0, help="the capture's frame rate")
+    parser.add_argument(
+        "--frames",
+        type=Path,
+        help="write the game's frames here for the phone's bench instead of measuring",
+    )
     args = parser.parse_args()
     screen = Screen(args.width, args.height, args.cell)
+    if args.frames is not None:
+        write_frames(screen, args.fps, GAME, args.frames)
+        return
     report(run(screen, args.fps, GAME), screen, args.fps)
 
 
