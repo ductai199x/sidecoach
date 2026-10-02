@@ -39,7 +39,14 @@ from typing import Any, Literal
 
 import httpx
 
-from sidecoach.llm.base import ChatMessage, Completion, ToolCall, ToolRound
+from sidecoach.llm.base import (
+    ChatMessage,
+    Completion,
+    ProviderError,
+    ToolCall,
+    ToolRound,
+    retry_after,
+)
 from sidecoach.llm.usage import Usage
 
 ThinkingControl = Literal["prefill", "param", "effort", "none"]
@@ -441,7 +448,7 @@ class OpenAICompatProvider:
             raise
         if response.status_code != 200:
             # The status code stays in the message: the callers' backoff keys on "429".
-            raise RuntimeError(f"{response.status_code}: {response.text[:200]}")
+            raise ProviderError(response.status_code, response.text, retry_after(response.headers))
         data = response.json()
         elapsed = time.perf_counter() - started
         if self.wire == "responses":
@@ -549,7 +556,7 @@ class OpenAICompatProvider:
             with self._client.stream("POST", self._endpoint, json=body) as response:
                 if response.status_code != 200:
                     text = response.read().decode("utf-8", "replace")
-                    raise RuntimeError(f"{response.status_code}: {text[:200]}")
+                    raise ProviderError(response.status_code, text, retry_after(response.headers))
                 for line in response.iter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -638,7 +645,7 @@ class OpenAICompatProvider:
             with self._client.stream("POST", self._endpoint, json=body) as response:
                 if response.status_code != 200:
                     text = response.read().decode("utf-8", "replace")
-                    raise RuntimeError(f"{response.status_code}: {text[:200]}")
+                    raise ProviderError(response.status_code, text, retry_after(response.headers))
                 for line in response.iter_lines():
                     if not line.startswith("data: "):
                         continue

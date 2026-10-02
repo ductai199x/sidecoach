@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 from typing import Any, Literal, Protocol, TypedDict
 
 
@@ -45,6 +47,41 @@ class ToolRound:
 
 
 _STATUS = re.compile(r"^(\d{3}):")
+
+
+class ProviderError(RuntimeError):
+    """A call the server answered with an error status. The message starts with the status
+    ("429: ..."), as the callers read it; `retry_after_s` is how long the server asked to be
+    left alone before the next call (its Retry-After), None when it named no time."""
+
+    def __init__(self, status: int, text: str, retry_after_s: float | None = None) -> None:
+        super().__init__(f"{status}: {text[:200]}")
+        self.status = status
+        self.retry_after_s = retry_after_s
+
+
+def retry_after(headers: Mapping[str, str], now: float | None = None) -> float | None:
+    """The wait a response's headers ask for, in seconds: `retry-after-ms` (OpenAI's), else
+    `Retry-After` as seconds or as an HTTP date (counted from `now`, the epoch time).
+    None when they name none or nothing readable."""
+    ms = headers.get("retry-after-ms")
+    if ms:
+        try:
+            return max(0.0, float(ms) / 1000.0)
+        except ValueError:
+            pass
+    value = (headers.get("retry-after") or "").strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, when.timestamp() - (time.time() if now is None else now))
 
 
 def refused_for_good(exc: BaseException) -> bool:
