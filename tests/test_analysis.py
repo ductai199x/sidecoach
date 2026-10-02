@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import chess
 import chess.engine
@@ -367,6 +368,36 @@ def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
     black = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
     walked = _judged(black, "h7h6", lost, mates)
     assert walked.label is Label.BLUNDER, walked
+
+
+def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
+    """The settings' save forgets what was measured (`forget_measured`) from another thread,
+    and the search under way then finishes the old way. Kept, it was the depth-12 position a
+    depth-18 one is set against -- the mix the forgetting is for (the facts audit,
+    2026-10-02). It is handed to its caller, and searched again next time."""
+
+    class ChangedMidSearch(FakeEngine):
+        annotator: GameAnnotator | None = None
+
+        def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
+            lines = super().analyse(board, **kwargs)
+            if self.annotator is not None and len(self.calls) == 1:
+                self.annotator.forget_measured()  # the save, while this search ran
+            return lines
+
+    for measure in ("measure", "measure_for_verdict"):
+        fake = ChangedMidSearch({})
+        annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+        fake.annotator = annotator
+        board = chess.Board()
+        first = getattr(annotator, measure)(board)
+        assert first.lines, "the caller still gets what it asked for"
+        assert not annotator.measured(board), measure
+        assert annotator.computed.lines(board) == [], measure
+        getattr(annotator, measure)(board)
+        assert len(fake.calls) == 2, f"{measure}: searched again the new way"
+        getattr(annotator, measure)(board)
+        assert len(fake.calls) == 2, f"{measure}: and that one is kept"
 
 
 def test_the_best_move_of_a_mating_line_is_never_a_mate_let_go() -> None:
