@@ -46,6 +46,9 @@ class Unlock(StrEnum):
     ASK_LINE = "ask_line"
     USER_NAMED_MOVE = "user_named_move"
     MOVE_PLAYED = "move_played"
+    # What the AI coach's reply to a question actually said (`said_level`): the ladder follows
+    # the words, not a guess at what the question meant.
+    REPLY = "reply"
 
 
 class PositionFacts(BaseModel):
@@ -198,6 +201,15 @@ class Disclosure:
             return None
         self.history.append((unlock, self.level))
         return self.level
+
+    def said(self, level: DisclosureLevel) -> DisclosureLevel | None:
+        """A reply to the player's question said up to `level` (`said_level`): the ladder
+        climbs to it and never falls. Returns the new level, or None when nothing climbed."""
+        if level <= self.level:
+            return None
+        self.level = level
+        self.history.append((Unlock.REPLY, level))
+        return level
 
     @property
     def hinted(self) -> DisclosureLevel:
@@ -460,3 +472,48 @@ def leak_check(
                     add(f"piece {piece_word}")
                     break
     return leaks
+
+
+def _names_move(text: str, move: str) -> bool:
+    core = _TRAILING_MARKS.sub("", move)
+    if not core:
+        return False
+    if core.startswith("O-O"):
+        castle = rf"(?<![-A-Za-z0-9]){re.escape(core)}(?!-O)(?![A-Za-z0-9])"
+        return re.search(castle, text) is not None
+    return re.search(rf"(?<![A-Za-z]){re.escape(core)}[+#]?(?![A-Za-z0-9])", text) is not None
+
+
+_LONG_WORD = re.compile(r"[a-z]{6,}")
+
+
+def said_level(text: str, facts: PositionFacts) -> DisclosureLevel:
+    """The rung a reply of the AI coach carried, from what it says: the first two moves of the
+    engine's line (LINE), a move the sheet lists as a candidate (MOVE), a square of the target,
+    the piece or the squares that carry the theme (FOCUS), a square or a threat of the key fact
+    or the words of the idea (IDEA), else SILENT -- nothing of the ladder was said.
+
+    The ladder of hints (each rung said once, none below one already said) follows this, not a
+    guess from the question's words: with the AI on, the model reads the question and decides
+    what it answers (Tai, 2026-10-02)."""
+    moves_text = _NUMBERED_MOVE.sub(" ", text)
+    line = [m for m in facts.line if m]
+    if len(line) >= 2 and _names_move(moves_text, line[0]) and _names_move(moves_text, line[1]):
+        return DisclosureLevel.LINE
+    answers = [*facts.candidates, *line[:1]]
+    if any(_names_move(moves_text, m) for m in answers):
+        return DisclosureLevel.MOVE
+    squares = squares_in(text)
+    focus = " ".join(x for x in (facts.target, facts.piece, *facts.focus) if x)
+    if squares & squares_in(focus):
+        return DisclosureLevel.FOCUS
+    idea = " ".join(x for x in (facts.key, facts.stakes, facts.situation, facts.trap) if x)
+    if squares & squares_in(idea) or any(_names_move(moves_text, t) for t in facts.threats):
+        return DisclosureLevel.IDEA
+    words = " ".join(
+        x for x in (facts.goal, facts.theme, facts.plan, facts.mechanism, facts.stakes) if x
+    ).lower()
+    mine = set(_LONG_WORD.findall(text.lower()))
+    if len(mine & set(_LONG_WORD.findall(words))) >= 2:
+        return DisclosureLevel.IDEA
+    return DisclosureLevel.SILENT

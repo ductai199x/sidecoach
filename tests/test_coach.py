@@ -168,11 +168,12 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     coach.ask("ok just tell me the move", 9.0)
     out = drain(coach)
     assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
-    # Asked of the AI coach, the move is the model's to give too (Tai, 2026-09-28).
+    # Asked of the AI coach, the move is the model's to give too (Tai, 2026-09-28); what they
+    # ask is the model's to read, with the guidelines and the ladder as it stands (2026-10-02).
     assert len(provider.prompts) == 3
-    assert "They asked what to play: tell them plainly it is Qxf7#" in directive_of(
-        sent(provider, 2)
-    )
+    directive = directive_of(sent(provider, 2))
+    assert "The move -- " in directive and "give it plainly, and why it works" in directive
+    assert "the idea, the target and the piece" in directive, "what the hints said so far"
     # Every earlier coach turn stands under the position: the two hints, each the model's.
     current = _current_move_message(sent(provider, 2))
     said = current.split("## Said here\n", 1)[1]
@@ -195,13 +196,16 @@ def test_a_question_starts_the_stuck_spell_again() -> None:
 
 
 def test_naming_the_move_yourself_earns_the_move_level() -> None:
-    coach, _ = scripted_coach(["What do you think?", "Yes, Qxf7 is mate."])
+    """Offline the keyword rules (`unlock_for`) read the rung off the words. With the AI on the
+    rung is what the answer said: it names the move, so the move is said."""
+    coach, _ = scripted_coach(["Yes, Qxf7 is mate.", "What do you think?"])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
     coach.ask("Is Qxf7 mate?", 8.0)
     out = drain(coach)
     assert out[0].level is DisclosureLevel.MOVE
+    assert coach._current is not None and coach._current.disclosure.level is DisclosureLevel.MOVE
     board = chess.Board(SCHOLAR)
     assert unlock_for("Is Qxf7 mate?", board, ["Qxf7#"]) is Unlock.USER_NAMED_MOVE
     assert unlock_for("What about Bxf7?", board, ["Qxf7#"]) is None, "not the candidate"
@@ -277,7 +281,7 @@ def test_a_question_about_the_plan_is_answered_with_the_first_hint() -> None:
     """ "What should I be aiming for?" earns the hint's rung and the hint's directive, not
     the generic answer (parity pass 2, 2026-09-25); asked of the AI coach, the model answers
     it, with nothing said before it (Tai, 2026-09-28)."""
-    reply = "The king on e8 has one square left. Which check takes it away?"
+    reply = "Their king has one square left. Which check takes it away?"
     coach, provider = scripted_coach([reply])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
@@ -286,8 +290,11 @@ def test_a_question_about_the_plan_is_answered_with_the_first_hint() -> None:
     out = drain(coach)
     assert [m.text for m in out] == [reply] and out[0].level is DisclosureLevel.IDEA
     directive = directive_of(sent(provider, 0))
-    assert "They asked what to aim for: answer with the hint at this rung." in directive
-    assert "What they state or take for granted" not in directive
+    # No keyword picked a directive: the guidelines, and the ladder with nothing said yet, so
+    # a hint now is the first rung.
+    assert "A hint: one rung up the ladder" in directive
+    assert "nothing yet" in directive and "the idea: what is at stake" in directive
+    assert "They asked what to aim for" not in directive
 
 
 def test_no_hint_unasked_comes_after_the_move_was_given() -> None:
@@ -1110,8 +1117,8 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     assert out and out[-1].level is DisclosureLevel.LINE
     messages = sent(provider)
     directive = directive_of(messages)
-    assert "They asked how they did overall" in directive
-    assert "do not infer the course of the game from the position" in directive
+    assert "How they did overall: from the verdicts and the tally in the record" in directive
+    assert "nothing inferred from the position on the board" in directive
     assert "1. e4 (the player): book." in _record(messages).splitlines()
     harness = harness_of(messages)
     assert "The player's moves so far (3 judged): 1 best, 1 book, 1 inaccuracy." in harness
@@ -1154,8 +1161,9 @@ def test_a_bare_hint_is_asked_as_a_hint_and_one_the_model_fails_twice_is_the_tem
     said = _current_move_message(given).split("## Said here", 1)[1].strip(chr(10)).splitlines()
     assert said[-1] == '    PLAYER said: "hint"'
     directive = directive_of(given)
-    assert "They asked for a hint." in directive and "anything said earlier" in directive
-    assert "What they state or take for granted" not in directive
+    # No keyword picked the hint's directive: the guidelines, with the ladder as it stands.
+    assert "A hint: one rung up the ladder" in directive and "nothing yet" in directive
+    assert "They asked for a hint." not in directive
     retry = sent(provider, 1)
     assert len(retry) == len(given)
     assert "Those replies are not allowed" in retry[-1]["content"]
@@ -1173,6 +1181,12 @@ def _bishop_check_instead_of_mate(coach: Coach) -> None:
     drain(coach)
     mate_missed(coach)
     drain(coach)
+    # The engine has looked at the position the move left (the opponent to move): with the AI
+    # on a question waits for that look, as it reads the position now.
+    board = chess.Board(SCHOLAR)
+    board.push_san("Bxf7+")
+    _looked(coach, board, 7, ["e8f7"], 11.5)
+    drain(coach)
 
 
 def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
@@ -1187,26 +1201,23 @@ def test_a_question_about_the_last_move_gets_its_verdict_in_full() -> None:
     out = drain(coach)
     # Taught from the position the move was played from, as the lesson after it was.
     assert "# The position they faced, before Bxf7+" in str(sent(provider)[-1]["content"])
+    # With the AI on the guidelines say a move already played may be told in full, and the
+    # record gives the verdict, the better move and the sheet of the position they faced.
     directive = directive_of(sent(provider))
-    assert "They ask about the move they already played, Bxf7+" in directive
-    assert "Qxf7# was better" in directive
-    assert "from a position that is past, so all of it may be said" in directive
-    # What it cost is said only when they ask it: "It cost you 22% of the game." opened every
-    # answer, and Tai had said the figure is for when he asks (2026-09-20).
-    assert "45%" not in directive and "No figures" in directive
-    # Spoken from the position the move was played from, with everything shown: naming
-    # the better move is not a leak, as it is not in the lesson after a mistake.
-    assert out and out[-1].level is DisclosureLevel.LINE
-    assert out[-1].fen == SCHOLAR
-    # The fallback is the verdict itself, not a hint -- and without the figure.
-    assert out[-1].text.startswith("Qxf7# was better")
-    # Asked what it cost, the figure is theirs to hear.
+    assert "A move they already played: its verdict is in the record" in directive
+    assert "They ask about the move they already played" not in directive
+    assert "45%" not in directive, "the figure is for when they ask: no word of it unasked"
+    assert "no percentages, scores or move numbers unless they ask for the number" in directive
+    assert "the engine preferred 4. Qxf7#" in str(sent(provider)[-1]["content"])
+    # The fallback (a reply that failed its checks) is the verdict itself, not a hint -- and
+    # without the figure.
+    assert out and out[-1].text.startswith("Qxf7# was better")
+    # Asked what it cost, the fallback has the figure, theirs to hear.
     coach, provider = scripted_coach(["...", "..."])
     _bishop_check_instead_of_mate(coach)
     provider.replies = ["", ""]
     coach.ask("how much did that cost me?", 12.0)
     out = drain(coach)
-    assert "it cost 45% of the game: they asked" in directive_of(sent(provider))
     assert out and out[-1].text.startswith("It cost you 45% of the game. Qxf7# was better")
 
 
@@ -1226,8 +1237,10 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     coach.ask("I see, I should have seen the mate.", 12.0)
     drain(coach)
     directive = directive_of(sent(provider))
+    # What the coach has said since the move is a fact of the conversation, not a keyword: the
+    # guideline for a follow-up is there, and the model reads whether the words ask anything.
     assert "do not say it again in other words" in directive
-    assert "They ask nothing: reply in one short sentence" in directive
+    assert "do not repeat the verdict or the better move you told them" in directive
     reply = "A check that leads nowhere only hands their king a free move."
     provider.replies = [reply, reply]
     coach.ask("Why does the bishop check not work?", 13.0)
@@ -1235,7 +1248,7 @@ def test_a_follow_up_gets_what_it_asks_and_a_nod_one_sentence() -> None:
     request = str(sent(provider)[-1]["content"])
     assert "# The position they faced, before Bxf7+" in request
     directive = directive_of(sent(provider))
-    assert "Answer them directly" in directive and "do not say it again" in directive
+    assert "do not say it again" in directive
     # A question is no claim to agree with (Luna: "You are right that g1 is controlled by
     # your King", Tai's puzzle, 2026-09-29).
     assert "a question states nothing to agree with" in directive
@@ -1252,8 +1265,10 @@ def test_a_question_about_a_fine_last_move_says_it_was_fine() -> None:
     coach.ask("was that a mistake?", 12.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "its verdict was best, and it cost nothing" in directive
-    assert "invent no fault" in directive
+    # The verdict is in the record the model reads; the guidelines say a sound move gets no
+    # invented fault.
+    assert "inventing no fault in a sound move" in directive
+    assert "4. Qxf7# by the player: best" in harness_of(sent(provider))
 
 
 def test_asked_why_the_answer_says_why_whole_and_a_bare_one_gets_the_line() -> None:
@@ -1998,12 +2013,14 @@ def test_a_question_only_about_a_fact_is_the_models_and_offline_the_templates() 
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     coach.ask("what opening is this?", 8.0)
     assert [m.text for m in drain(coach)] == ["The model's words."]
-    assert "The opening by the name the record gives it." in directive_of(sent(provider, 0))
+    # No keyword picks the question's directive: the same guidelines carry both questions, the
+    # opening by its name and the line, and the model reads which is asked.
+    assert "the opening by the name the record gives it" in directive_of(sent(provider, 0))
     coach.ask("what should I play against this opening? give me a line", 9.0)
     assert [m.text for m in drain(coach)] == ["Qxf7# -- it is mate at once."]
     directive = directive_of(sent(provider, 1))
-    assert "They asked to see the line: give it -- Qxf7#" in directive
-    assert "The opening by the name" not in directive
+    assert "The line, or what happens next: the engine's line move by move" in directive
+    assert "They asked to see the line" not in directive
     coach = offline_coach()
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
@@ -2283,12 +2300,14 @@ def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() ->
         else:
             start_game(coach)
         out = drain(coach)  # the reply lands now
-        # A lesson on a move the board no longer has is neither shown nor spoken, and no turn
-        # of the moment now (the deep coach.py review, 2026-10-01).
-        assert out == [] and len(coach.withdrawn) == 1, change
+        # No reply is dropped (Tai, 2026-10-02): the lesson on a move the board no longer has is
+        # shown, in its place, and marked late for the voice -- but it is no turn of the moment
+        # now (the deep coach.py review, 2026-10-01).
+        assert [m.text for m in out] == ["The queen mates on f7. What did you miss?"], change
+        assert coach.spoken[-1].late, change
         assert coach._said_since_move() == [], change
         assert not coach._answering_our_question("the bishop check"), change
-        assert coach.withdrawn[0].message.text not in coach.conversation.render(), change
+        assert out[0].text not in coach.conversation.render(), change
     coach = Coach(
         ScriptedProvider([]),
         policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
@@ -2344,8 +2363,9 @@ def test_the_coachs_one_moment_is_no_turn_of_the_conversation() -> None:
     _looked(coach, board, 8, ["h5e5", "d2d3"], 13.0)
     drain(coach)
     directive = directive_of(sent(provider))
-    assert "They ask about the move they already played, Bxf7+" in directive
-    assert "You have already told them the verdict" not in directive
+    assert "A move they already played: its verdict is in the record" in directive
+    assert "# The position they faced, before Bxf7+" in harness_of(sent(provider))
+    assert "do not repeat the verdict or the better move" not in directive
 
 
 def _looked(
@@ -2541,9 +2561,13 @@ def test_a_hint_after_the_move_was_given_does_not_promise_it_again() -> None:
         coach.ask("hint", 8.0 + ts)
         drain(coach)
     directives = [directive_of(sent(provider, i)) for i in range(len(provider.calls))]
-    assert "The next hint is the answer" in directives[2], directives[2]
-    assert "The next hint is the answer" not in directives[3], directives[3]
-    assert "the move has been given already: it is Qxf7#" in directives[3]
+    # With the AI on, the ladder says what a hint would be, from what the answers said; once
+    # the move was said, the guideline says to give it again, with why it beats worse ones.
+    assert "has been given already" not in directives[2], directives[2]
+    assert "The move has been given already, in your turns above: it is Qxf7#" in directives[3]
+    assert "why it is the move to play instead of something that looks as good" in directives[3]
+    assert "Bxf7+ passes up the mate" in directives[3]
+    assert coach._current is not None and coach._current.disclosure.level is DisclosureLevel.MOVE
 
 
 def test_the_second_hint_for_castling_says_what_the_king_goes_after() -> None:
@@ -2572,8 +2596,7 @@ def test_the_second_hint_for_castling_says_what_the_king_goes_after() -> None:
     coach.ask("hint", 9.0)
     drain(coach)
     directive = directive_of(sent(provider, len(provider.calls) - 1))
-    assert "Name the piece to use" in directive, directive
-    assert "Here the move is castling" in directive
+    assert "Here the move is castling" in directive, directive
 
 
 def test_a_move_named_on_their_turn_is_not_called_unrated() -> None:

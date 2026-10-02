@@ -1386,6 +1386,18 @@ class PanelEngine:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
 
+    def _position_moved_on(self, why: str) -> None:
+        """The position the coach is speaking about is left -- a new game, a takeback, the
+        board re-read, the player's own next move -- so what the voice is saying about it stops
+        (Tai, 2026-10-02: "interrupt the tts so it stops its long rant"). The same mechanism as
+        the push-to-talk silencing and the barge-in: the voice stops, and the rest of a reply
+        still being written goes to the captions and the record, silent (`_stream_sink`). The
+        text is never cut. The opponent's move alone does not stop it."""
+        self._hushed += 1
+        if self._tts.busy:
+            self._tts.stop()
+            self._emit("voice", "debug", f"cut off: {why}")
+
     def _on_dropped(self) -> None:
         """An utterance began and came to nothing (a click, a tap too short to hold a word):
         a dictation it held goes on to send, or the box stops saying it is listening."""
@@ -1489,15 +1501,24 @@ class PanelEngine:
         old_stale = old_ply is not None and ply_now - old_ply > old_allowed
         return "supersede" if old_stale else "speak"
 
-    def _stream_sink(self, trigger: Any, ply: int | None) -> Callable[[str], bool] | None:
+    def _stream_sink(
+        self, trigger: Any, ply: int | None, moved_on: Callable[[], bool] | None = None
+    ) -> Callable[[str], bool] | None:
         """The voice's sink for one coach reply written sentence by sentence (see
         coach.Speaker): the first sentence decides, by `voice_action`, whether the reply
         is spoken at all -- stale, skipped, superseding -- and each sentence is queued as
         it comes, so the first is heard while the model writes the rest. A reply that
-        has begun is heard to its end whatever the board does meanwhile; only the next
-        reply, once ready to be spoken, cuts it (Tai: the opponent's move alone must not
-        stop the voice mid-sentence). Called on the coach's thread; the voice's queue
-        and the state lock are safe from there."""
+        has begun is heard to its end unless the position it is about is left: a new game,
+        a takeback, a re-read or the player's next move cuts it (`_position_moved_on`); the
+        opponent's move alone must not stop the voice mid-sentence (Tai). Called on the
+        coach's thread; the voice's queue and the state lock are safe from there.
+
+        No reply is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message
+        should come out in the same correct order ... interrupt the tts so it stops its long
+        rant"): a reply that is not to be spoken -- stale, skipped, or asked for a moment that
+        is over (`moved_on`) -- is taken sentence by sentence all the same, captioned and kept
+        as the reply's text, and only silent. Declining it, as before, made the coach say a
+        template in its place."""
         if self.muted:
             return None
         name = getattr(trigger, "value", str(trigger))
@@ -1506,7 +1527,9 @@ class PanelEngine:
 
         def sink(sentence: str) -> bool:
             continues = bool(started)
-            if started and (self.muted or self._hushed != hushed_at[0] or started[0] == "ptt"):
+            if started and (
+                self.muted or self._hushed != hushed_at[0] or started[0] in ("ptt", "silent")
+            ):
                 # Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is
                 # still the reply -- in the chat, the record and the captions -- only
                 # silent. Declining here cut the reply's text at what had been said.
@@ -1524,13 +1547,29 @@ class PanelEngine:
                 ply_now = int(self._state.get("ply") or 0)
             if not started:
                 hushed_at[0] = self._hushed
-                action = self.voice_action(
-                    name, sentence, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
+                action = (
+                    "stale"
+                    if moved_on is not None and moved_on()
+                    else self.voice_action(
+                        name,
+                        sentence,
+                        ply,
+                        ply_now,
+                        self._tts.busy,
+                        self._voicing,
+                        self._coach_fast(),
+                    )
                 )
                 if action == "supersede":
                     self._tts.stop()
+                if action == "text":
+                    return False  # a fast game: held for the pace (`_speak`), not lost
                 if action not in ("speak", "supersede"):
-                    return False
+                    # Shown, in its place, not spoken: the rest of the reply follows the same.
+                    started.append("silent")
+                    self.caption(sentence)
+                    self._emit("voice", "debug", f"not spoken ({action}): {elide(sentence, 60)}")
+                    return True
                 started.append(action)
                 self._voicing = (name, ply)
                 self._await_audio(name, ply, sentence)
@@ -1543,15 +1582,20 @@ class PanelEngine:
 
         return sink
 
-    def _speak(self, trigger: str, text: str, ply: int | None) -> str:
+    def _speak(self, trigger: str, text: str, ply: int | None, moved_on: bool = False) -> str:
         """Apply `voice_action` and speak accordingly; returns what was done, for the log. The
         captions show every line whatever the voice does with it -- muted, skipped as short,
         stale, held back for pace (Tai, 2026-10-01: "captions show lines regardless of voice
         skips"). While the push-to-talk key is held the voice says nothing: the player is
-        talking ("if push to talk is on then the coach must be muted")."""
+        talking ("if push to talk is on then the coach must be muted"). A reply asked for a
+        moment that is over (`moved_on`: a new game, a takeback, a re-read, the player's next
+        move) is shown in its place and not spoken (Tai, 2026-10-02)."""
         if self.muted or self._ptt_held():
             self.caption(text)
             return "muted"
+        if moved_on:
+            self.caption(text)
+            return "stale"
         with self._lock:
             ply_now = int(self._state.get("ply") or 0)
         action = self.voice_action(
@@ -2204,6 +2248,7 @@ class PanelEngine:
         )
 
         if isinstance(event, GameStarted):
+            self._position_moved_on("a new game")
             self._fen_before.clear()
             self._labels.clear()
             self._last_ply = 0
@@ -2233,6 +2278,8 @@ class PanelEngine:
             think = f", {event.think_ms / 1000:.1f}s" if event.think_ms is not None else ""
             self._fen_before[event.ply] = event.fen_before
             self._last_ply = event.ply
+            if event.by_user:
+                self._position_moved_on("the player moved")
             self._note_move(event.ply)
             assessing.submit(event)
             self._emit(
@@ -2247,6 +2294,7 @@ class PanelEngine:
             )
         elif isinstance(event, Takeback):
             self._emit("game", "warn", f"takeback {event.plies} ply", fen=event.fen)
+            self._position_moved_on("a takeback")
             # The engine lets go of the withdrawn moves at once, and their badges leave the
             # move list: a replacement played at the same ply showed the withdrawn move's.
             assessing.submit(event)
@@ -2258,6 +2306,7 @@ class PanelEngine:
             self._set(labels={str(k): v for k, v in self._labels.items()})
         elif isinstance(event, Resync):
             self._emit("game", "warn", f"resync: {event.reason}", fen=event.fen)
+            self._position_moved_on("the board was re-read")
             assessing.submit(event)
             # The numbering starts again from the adopted position: the old plies' badges
             # would sit on the new moves.
@@ -2508,11 +2557,15 @@ class PanelEngine:
                 if spoken.streamed:
                     action = "streamed"
                 else:
-                    action = self._speak(message.trigger.value, message.text, message.ply)
+                    action = self._speak(
+                        message.trigger.value, message.text, message.ply, moved_on=spoken.late
+                    )
                 if action == "streamed":
                     meta.append("streamed")
                 elif action == "stale":
                     meta.append("not spoken: board moved on")
+                if spoken.late:
+                    meta.append("late: asked for a moment that is over")  # shown in its place
                 elif action == "skip":
                     meta.append("not spoken: voice busy")
                 elif action == "text":

@@ -44,6 +44,7 @@ from sidecoach.coach.disclosure import (
     PositionFacts,
     Unlock,
     leak_check,
+    said_level,
     squares_in,
     visible_facts,
 )
@@ -639,6 +640,22 @@ SEE_ALL_WORDS = (
     "You see the answer so that the hint can be precise and true; a hint that gives a little "
     "too much is a lesser fault than a vague one."
 )
+# What each rung of the ladder may say, as the level line states it.
+RUNG_WORDS = {
+    DisclosureLevel.SILENT: "nothing about the position",
+    DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
+    DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
+    DisclosureLevel.MOVE: "the move and why it works; not the whole line",
+    DisclosureLevel.LINE: "everything, the line included",
+}
+# What has been said, up to each rung, for the AI coach's task (`Coach._ladder_words`).
+SAID_WORDS = {
+    DisclosureLevel.SILENT: "nothing yet",
+    DisclosureLevel.IDEA: "the idea",
+    DisclosureLevel.FOCUS: "the idea, the target and the piece",
+    DisclosureLevel.MOVE: "the move",
+    DisclosureLevel.LINE: "the move and the line",
+}
 
 
 # What the model is asked to do on each rung before the player moves: the facts the rung's
@@ -705,6 +722,70 @@ MOVE_GIVEN_WHY = (
     "name one or two of the moves below and what goes wrong with them, as the board says it, "
     "and nothing more of them. Clearly worse here, and what goes wrong: {worse}. Two or three "
     "sentences, no question."
+)
+# What the AI coach is told of a question of the player's: guidelines, not rules. The model
+# reads what the words ask, from the conversation and the sheet, and decides what to say and
+# how much; no keyword picks the directive or the rung (Tai, 2026-10-02). The offline coach's
+# keyword branches stay in `Coach._instruction` for its templates and the fallback.
+AI_GUIDELINES = (
+    "Answer them as their coach. What they ask is yours to read from their words, the "
+    "conversation above and the position; all of the sheet is yours to use -- every engine "
+    "line with its score, the candidate moves, the facts, the last move of each side with its "
+    "verdict. Some guidelines, not rules:\n"
+    "- A hint: one rung up the ladder above, said once, never lower than one already said.\n"
+    '- The move -- "what should I play", "the play here", "the move": give it plainly, '
+    "and why it works, from the sheet's why and pattern. Several moves about as good: say so "
+    "and name them.\n"
+    "- Which moves are best, good or fine, or whether another move works too: read all of the "
+    "engine lines, name every move about level with the best, and say which are clearly worse "
+    "and what goes wrong with them.\n"
+    "- The line, or what happens next: the engine's line move by move, and the idea behind "
+    "it; once given, what comes after its end.\n"
+    "- A move, square or piece they name: whether it holds up and what it does or allows, from "
+    "the engine's word on it where given above -- theirs to hear in full: the score after it, "
+    "how far behind the best, the reply, what the move does.\n"
+    '- "That", "it" or "that move" may mean their own last move or the opponent\'s reply. '
+    "The sheet gives both positions -- the one they faced before their move and the one after "
+    "the reply -- and says how long the reply took when that is known: read the conversation, "
+    "take the likelier, and say which move you mean when it could be either.\n"
+    "- The opponent's move or threat: from the last move and its verdict and the threats the "
+    "facts list. When it is the opponent's move there is no move of theirs to find: say what "
+    "they threaten and what to be ready for.\n"
+    "- How they stand, the material, the opening: from the Standing, the material and the "
+    "record -- the opening by the name the record gives it -- never counted or guessed "
+    "yourself. How they did overall: from the verdicts and "
+    "the tally in the record, nothing inferred from the position on the board.\n"
+    "- A move they already played: its verdict is in the record and all of it may be said -- "
+    "what it missed or allowed, and the better move -- from the sheet of the position they "
+    "faced, inventing no fault in a sound move.\n"
+    "- What they state or take for granted: take it as they meant it, say what in it is right "
+    "as plainly as what is wrong, and credit them with nothing they did not say -- a question "
+    "states nothing to agree with. What you already said in this position is under 'Said "
+    "here': do not say it again in other words; give them something it did not.\n"
+    "Say it in words: no percentages, scores or move numbers unless they ask for the number. "
+    "Name moves bare. Two or three sentences, then, if you like, one question."
+)
+# Said of what the coach has said since the last move, so a follow-up gets only what it asks.
+AI_FOLLOW_UP = (
+    " You have spoken since the last move already (your turns above): do not repeat the "
+    "verdict or the better move you told them; answer only what they ask now."
+)
+# The coach's last turn ended with a question.
+AI_ANSWERING = (
+    " Your last turn above ended with a question: if their words answer it, say first, plainly "
+    "and from the facts, whether they have it right, and give the answer yourself in a sentence "
+    "when they do not; that closes the question, so ask nothing more."
+)
+# A hint asked after the move was given: the move again, with why it beats clearly worse moves
+# (Tai, 2026-09-30), as a guideline to the AI; the offline coach keeps its template
+# (`MOVE_GIVEN_WHY`).
+AI_MOVE_GIVEN = (
+    " The move has been given already, in your turns above: it is {move}. If they ask for "
+    "it again, or for another hint, say it again plainly, with what it does from the fact "
+    "sheet's why, in other words than before -- and why it is the move to play instead of "
+    "something that looks as good but is clearly worse: name one or two of the clearly worse "
+    "moves listed here, with what goes wrong with them as the board says it, and nothing "
+    "more of them."
 )
 # The moves besides the best one, asked for: all that are about as good, named, and the clearly
 # worse ones with what goes wrong with them. The engine's lines list them all; line 1 is only
@@ -1127,6 +1208,11 @@ class ModelCall:
     prompt: str = ""
 
 
+# The moment a reply was asked for: the epoch (a new game, a takeback or a re-read start
+# another), the game it was about, and how many moves of their own the player had played.
+Moment = tuple[int, str | None, int]
+
+
 @dataclass
 class Spoken:
     """One coach message, with what it was checked against, for the log."""
@@ -1152,8 +1238,18 @@ class Spoken:
     leaks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     # The moment of the game it was asked for (`Coach._epoch`): one that lands after a new
-    # game, a takeback or a re-read is no turn of the moment now.
+    # game, a takeback or a re-read is shown all the same, in its place, but is no turn of the
+    # moment now (it is not recorded in the conversation), and the voice does not say it.
     epoch: int = 0
+    # How many moves of the player's own the game had when it was asked for
+    # (`Coach._own_moves`): a reply that lands after they moved again is not spoken either.
+    own_moves: int = 0
+    # Set by `Coach.poll`: the moment it was asked for is over (the epoch or the player's moves
+    # have moved on), so it is shown, not spoken, and no turn of the conversation now.
+    late: bool = False
+    # The rung of the ladder the reply actually said, from its words (`said_level`), for an AI
+    # coach's answer to a question; None for any other message.
+    rung: DisclosureLevel | None = None
     # The lesson ends by asking what the player saw (`Coach._elicit_due`): when it is dropped
     # unsaid, the question was never asked.
     elicit: bool = False
@@ -1221,10 +1317,6 @@ POSITIONS_KEPT = 40
 # speaker keeps (`Speaker._claims_seen`).
 SPOKEN_PROMPTS_KEPT = 20
 CLAIMS_KEPT = 200
-# An opponent's move that follows the player's within this many seconds came straight away
-# (a bot): the player never faced the position in between, and "that move" they ask about
-# is their own (`Coach._replied_at_once`).
-INSTANT_REPLY_S = 2.0
 # How long the lesson on a mistake waits for the analysis of the position the move left:
 # the verdict comes first, from the best line alone, and the analysis about a second after
 # it -- without it the lesson had no "what your move allowed" (the parity audit, 2026-09-25).
@@ -1291,8 +1383,12 @@ class _Request:
     # The engine at the model's call while it answers (a question of the player's), when the
     # coach has an engine and the model takes tools.
     tools: EngineTools | None = None
-    # The moment of the game the request was built in (`Coach._epoch`).
+    # The moment of the game the request was built in (`Coach._epoch`, `Coach._own_moves`).
     epoch: int = 0
+    own_moves: int = 0
+    # An AI coach's answer to a question: the model decides what the words ask, so the rung
+    # the reply carries, and the marks on the board, follow what it said (`said_level`).
+    rung_by_reply: bool = False
     elicit: bool = False
 
 
@@ -1710,22 +1806,45 @@ class Speaker:
             return self.speak_now(request)
         except Exception as exc:  # noqa: BLE001
             self.note_failure("reply", exc)
+            level, rung, marks = self._shaped(request, request.fallback)
             return Spoken(
                 message=CoachMessage(
                     text=request.fallback,
-                    level=request.level,
+                    level=level,
                     trigger=request.trigger,
                     game_id=request.game_id,
                     ply=request.ply,
                     fen=request.board.fen(),
-                    annotations=list(request.annotations),
+                    annotations=marks,
                 ),
-                level=request.level,
+                level=level,
                 problems=[f"the reply failed: {type(exc).__name__}: {exc}"],
                 attempts=0,
                 epoch=request.epoch,
+                own_moves=request.own_moves,
+                rung=rung,
                 elicit=request.elicit,
             )
+
+    @staticmethod
+    def _shaped(
+        request: _Request, text: str
+    ) -> tuple[DisclosureLevel, DisclosureLevel | None, list[Annotation]]:
+        """The level a reply is logged at, the rung it said, and the marks on the board for it.
+        The reply's own: an AI coach's answer to a question follows its words (`said_level`),
+        so the marks and the ladder show what was said, not what the question's words were
+        guessed to mean; any other message is at the level it was asked for."""
+        marks = [*request.annotations, *mentions_in(text, request.board)]
+        if not request.rung_by_reply:
+            return request.level, None, marks
+        # An answer says at least the idea of the position, as a first hint does -- a quiet one
+        # names no square the words could be matched on -- so the ladder never offers the idea
+        # again after an answer was given.
+        level = max(said_level(text, request.facts), DisclosureLevel.IDEA)
+        if request.level >= DisclosureLevel.LINE:
+            level = request.level  # a game that is over withholds nothing
+        base = annotations_for(request.facts, level, request.board, trigger=request.trigger)
+        return level, level, [*base, *mentions_in(text, request.board)]
 
     def poll(self) -> list[Spoken]:
         out: list[Spoken] = []
@@ -1775,6 +1894,7 @@ class Speaker:
                 problems=[],
                 attempts=0,
                 epoch=request.epoch,
+                own_moves=request.own_moves,
                 elicit=request.elicit,
             )
         while attempts < 2 and not (attempts and self._closed.is_set()):
@@ -1891,18 +2011,19 @@ class Speaker:
             notes = self._notes(text, request)
             text = self._trimmed(text, request)
             leaks = self._leaks(text, request)
+        level, rung, marks = self._shaped(request, text)
         message = CoachMessage(
             text=text,
-            level=request.level,
+            level=level,
             trigger=request.trigger,
             game_id=request.game_id,
             ply=request.ply,
             fen=request.board.fen(),
-            annotations=[*request.annotations, *mentions_in(text, request.board)],
+            annotations=marks,
         )
         return Spoken(
             message=message,
-            level=request.level,
+            level=level,
             problems=problems,
             attempts=attempts,
             calls=calls,
@@ -1912,6 +2033,8 @@ class Speaker:
             leaks=leaks,
             notes=notes,
             epoch=request.epoch,
+            own_moves=request.own_moves,
+            rung=rung,
             elicit=request.elicit,
         )
 
@@ -2527,10 +2650,12 @@ class Coach:
             claim_reader=claim_reader,
         )
         # The panel's voice, when it wants replies as they are written: a factory giving,
-        # for a trigger and a ply, the sink the reply's sentences go to, or None.
-        self.stream_sink: Callable[[Trigger, int | None], Callable[[str], bool] | None] | None = (
-            None
-        )
+        # for a trigger and a ply, the sink the reply's sentences go to, or None. The third
+        # argument says whether the moment the reply was asked for is over (`moved_on`): then
+        # the sink takes the sentences as the reply's text and the voice says none of them.
+        self.stream_sink: (
+            Callable[[Trigger, int | None, Callable[[], bool]], Callable[[str], bool] | None] | None
+        ) = None
         self.claims = claims
         # Dialogue compaction: every `summarise_every` plies the dialogue older than the
         # last `summarise_every` plies is folded into a summary by `summariser` (the
@@ -2561,8 +2686,6 @@ class Coach:
         # The game as the model sees it: one message per move, the coach's turns between.
         self.conversation = Conversation(compact_record=compact_record)
         self.spoken: list[Spoken] = []
-        # What was dropped unsaid for its moment being gone (`_of_a_moment_gone`), for the log.
-        self.withdrawn: deque[Spoken] = deque(maxlen=SPOKEN_PROMPTS_KEPT)
         self._current: _Position | None = None
         self._clock_peak_ms: int | None = None
         # The conversation is read from the caller's thread and from a claims check.
@@ -2608,12 +2731,16 @@ class Coach:
         self._pending_asks: list[tuple[str, float]] = []
         self._elicit_answered = False
         # The moment of the game: a new game, a takeback and a re-read each start another. A
-        # reply asked for in an earlier one and landing in this one is not a turn of this one:
-        # recorded where it landed, the lesson on a withdrawn move stood under "Said here" of
-        # the position taken back to, and a reply about the last puzzle under the next one's,
-        # where they made the player's next words a follow-up or the answer to their question
-        # (the coach review, 2026-10-01).
+        # reply asked for in an earlier one and landing in this one is shown in its place (Tai,
+        # 2026-10-02: no reply is dropped) but is not a turn of this one: recorded where it
+        # landed, the lesson on a withdrawn move stood under "Said here" of the position taken
+        # back to, and a reply about the last puzzle under the next one's, where they made the
+        # player's next words a follow-up or the answer to their question (the coach review,
+        # 2026-10-01). It is not spoken either (`moved_on`).
         self._epoch = 0
+        # How many moves of the player's own were played in the session: with the epoch, the
+        # moment the voice holds a reply to (`moved_on`).
+        self._own_moves = 0
 
     # Lifecycle
 
@@ -2641,6 +2768,17 @@ class Coach:
     @property
     def user_to_move(self) -> bool:
         return self.board.turn == self.user_side.color
+
+    def _moment(self) -> Moment:
+        return (self._epoch, self.game_id, self._own_moves)
+
+    def moved_on(self, moment: Moment) -> bool:
+        """Whether the position a reply was asked for is gone: a new game, a takeback or a
+        re-read came since, or the player has moved again. Such a reply is shown, in its
+        place, all the same; only its speech is cut (the panel's voice, `moved_on` of the
+        stream sink): Tai, 2026-10-02, "no need to drop any replies ... the only thing that
+        might be good is to interrupt the tts so it stops its long rant"."""
+        return moment[0] != self._epoch or moment[2] != self._own_moves
 
     # Events in
 
@@ -2731,7 +2869,7 @@ class Coach:
         # The moment it was asked in: the reply is that moment's, whatever the game does
         # while a worker checks the words and the model writes (a new game starting then
         # filed the answer under the next game).
-        moment = (self._epoch, self.game_id)
+        moment = self._moment()
         if self.profile_ask is not None and _ASK_PROFILE.search(text):
             self._ask_profile(text, ts, moment)
             return
@@ -2767,7 +2905,11 @@ class Coach:
                 ts,
             )
             return
-        unlock = unlock_for(text, position.board, position.facts.candidates)
+        offline = self._offline
+        # Only the offline coach reads the rung off the words: the keyword rules are its
+        # templates'. With the AI on the model reads what they ask, and the ladder follows what
+        # it said (`Coach._climb`; Tai, 2026-10-02).
+        unlock = unlock_for(text, position.board, position.facts.candidates) if offline else None
         if position is self._current:
             # A hint asked for climbs from what the combination has had already -- in the
             # position the player faces only: climbed in the one they had moved from, a hint
@@ -2779,6 +2921,8 @@ class Coach:
             # Answered here, the stuck spell starts again (`InterjectionPolicy.asked`).
             self.policy.asked(ts)
         level = max(position.disclosure.level, DisclosureLevel.IDEA)
+        if not offline and position is self._current:
+            level = self._next_rung(position.disclosure.level)  # what a hint now would be
         if self.finished or position.board.is_game_over():
             # Nothing is withheld from a game that is over.
             level = DisclosureLevel.LINE
@@ -2798,23 +2942,22 @@ class Coach:
         # almost instant"). Asked "what should I play against this opening? give me a line",
         # the template for the opening's name was all he got. The templates are the offline
         # coach's, and the model's fallback when a reply gets something wrong.
-        offline = self._offline
-        # Offline, the answer at once: the template for a bare "hint", the move or the line.
-        # The move or the line asked for, or asked about where it is already open: "what
-        # happens after the best move?" at the line level is the line, though it unlocks
-        # nothing (the harness check of the test audit, 2026-09-26).
-        exact = unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) or (
-            (level >= DisclosureLevel.LINE and _ASK_LINE.search(text) is not None)
-            or (level >= DisclosureLevel.MOVE and _ASK_MOVE.search(text) is not None)
-        )
-        # A claim to check needs something named: "what happens after the best move?" names
-        # no move or square, whatever its words.
-        named = may_carry_claims(text) and bool(
-            _SAN.search(text) or re.search(r"\b[a-h][1-8]\b", text)
-        )
-        canned = offline and (
-            (exact and not named)
-            or (
+        canned = False
+        if offline:
+            # Offline, the answer at once: the template for a bare "hint", the move or the
+            # line. The move or the line asked for, or asked about where it is already open:
+            # "what happens after the best move?" at the line level is the line, though it
+            # unlocks nothing (the harness check of the test audit, 2026-09-26).
+            exact = unlock in (Unlock.ASK_MOVE, Unlock.ASK_LINE) or (
+                (level >= DisclosureLevel.LINE and _ASK_LINE.search(text) is not None)
+                or (level >= DisclosureLevel.MOVE and _ASK_MOVE.search(text) is not None)
+            )
+            # A claim to check needs something named: "what happens after the best move?"
+            # names no move or square, whatever its words.
+            named = may_carry_claims(text) and bool(
+                _SAN.search(text) or re.search(r"\b[a-h][1-8]\b", text)
+            )
+            canned = (exact and not named) or (
                 (
                     bool(_ASK_HINT.match(text))
                     # A question about the plan: the first hint is the lesson it asks for
@@ -2823,7 +2966,6 @@ class Coach:
                 )
                 and not may_carry_claims(text)
             )
-        )
         if canned:
             _, answer = self._instruction(Trigger.USER_ASK, position, level, text, (), None, None)
             self._take_leads(position, answer)
@@ -2868,7 +3010,9 @@ class Coach:
             reply?"), the pieces and squares came back as the whole answer and the question
             went unanswered (the simulated students, 2026-09-26)."""
             nonlocal shown_examination
-            found = self._named_analysis(asked or text, position, level)
+            # With the AI on, everything the words name is examined, not only what a question
+            # names: what they ask is the model's to read.
+            found = self._named_analysis(asked or text if offline else text, position, level)
             if not offline:
                 return found  # the model answers, from these
             # A move named in their words that is no legal move is the model's
@@ -2901,10 +3045,13 @@ class Coach:
         # the white king" -- the move just played -- came back "false, Rxf1+ is not a move you
         # can play next" (Tai's puzzle, 2026-09-28).
         tools = self.engine is not None and not offline
-        if self.claims is None or tools or not may_carry_claims(text):
+        # With the AI on no keyword decides whether their words are looked at: the engine's word
+        # on what they name, and the claims check, are for every question.
+        claims_words = not offline or may_carry_claims(text)
+        if self.claims is None or tools or not claims_words:
 
             def answered() -> None:
-                verdicts = examined() if may_carry_claims(text) else []
+                verdicts = examined() if claims_words else []
                 if not shown_examination:  # offline, the engine's word on it was the answer
                     self._speak(
                         Trigger.USER_ASK,
@@ -2948,7 +3095,7 @@ class Coach:
         else:
             self.spawn(self._guarded(checked, "claims check", ts, moment), "sidecoach-claims")
 
-    def _ask_profile(self, text: str, ts: float, moment: tuple[int, str | None]) -> None:
+    def _ask_profile(self, text: str, ts: float, moment: Moment) -> None:
         """A question about the player over their games: answered from the record by the
         profile's own model loop, off this thread (several model calls), and spoken as
         the coach's turn when it lands. The queries it ran are kept for the log."""
@@ -2981,7 +3128,7 @@ class Coach:
         self.spawn(self._guarded(run, "record question", ts, moment), "profile-ask")
 
     def _guarded(
-        self, work: Callable[[], None], what: str, ts: float, moment: tuple[int, str | None]
+        self, work: Callable[[], None], what: str, ts: float, moment: Moment
     ) -> Callable[[], None]:
         """A question's work for a worker thread, its failure counted and logged as a failed
         call is, and the question answered with that rather than left with nothing."""
@@ -3011,8 +3158,9 @@ class Coach:
         stopped. So is anything but the player's last move once its verdict is in and the
         position it was played from is read: answered from an older position, the coach said
         "Give me a moment; I am still reading this position." with nothing waiting (the coach
-        review, 2026-10-01)."""
-        if _ASK_THREAT.search(text):
+        review, 2026-10-01). With the AI on every question waits: what the words are about is
+        the model's to read, and it reads the position now."""
+        if not self._offline or _ASK_THREAT.search(text):
             return True
         own = self._last_own_move()
         if own is None:
@@ -3034,46 +3182,47 @@ class Coach:
     def poll(self) -> list[CoachMessage]:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
-            if self._of_a_moment_gone(spoken):
-                # The lesson or the word on a move the board no longer has -- taken back, the
-                # game over, the board re-read: never shown or spoken, and the question it was
-                # to end with was never asked.
-                self.withdrawn.append(spoken)
-                if spoken.elicit:
-                    self._elicit_asked, self._elicit_answered = None, False
-                self.policy.last_reason = (
-                    f"not said: the {spoken.message.trigger.value} on ply {spoken.message.ply} "
-                    "was about a position the board no longer has"
-                )
-                continue
+            # No reply is dropped (Tai, 2026-10-02): the text of one asked for a moment that is
+            # over -- a takeback, a re-read, the next game, the player's next move -- comes out
+            # in its place like any other. `late` says so, and only the voice acts on it.
+            spoken.late = self.moved_on((spoken.epoch, spoken.message.game_id, spoken.own_moves))
             self.spoken.append(spoken)
             self._lighten()
             if not spoken.message.text:
                 # A failed model reply with nothing to fall back on: kept for the log (its
                 # calls say why), said to no one.
                 continue
+            # A turn of the conversation only in the moment it was asked for: a reply about
+            # the game before, or about a move taken back, is shown but never part of the
+            # history of the game now (what the model reads of it, the follow-up it makes of
+            # the player's next words).
             if not spoken.recorded and spoken.epoch == self._epoch:
                 with self._lock:
                     self.conversation.coach_said(
                         spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
                     )
+            self._climb(spoken)
             self._messages += 1
             out.append(spoken.message)
         return out
 
-    # Internals
+    def _climb(self, spoken: Spoken) -> None:
+        """The ladder of hints follows what an AI coach's answer said (`said_level`), once the
+        reply is in: each rung said once, none lower than one already said, in the position
+        the player still faces. A reply for a moment gone, or about an older position, climbs
+        nothing."""
+        if spoken.rung is None or spoken.late:
+            return
+        ply = spoken.message.ply
+        position = self.positions.get(ply) if ply is not None else None
+        if (
+            position is not None
+            and position is self._current
+            and position.board.turn == self.user_colour  # the ladder is the player's to climb
+        ):
+            position.disclosure.said(spoken.rung)
 
-    def _of_a_moment_gone(self, spoken: Spoken) -> bool:
-        """Whether a lesson or a word on a move was written for a moment that is over: a
-        takeback, a re-read or a new game came after the request. Only what is about a
-        position by its ply: an answer to the player's question, the review and the
-        practice are theirs in whatever moment they land."""
-        message = spoken.message
-        return (
-            spoken.epoch != self._epoch
-            and message.trigger in (Trigger.POST_MOVE, Trigger.POST_MISTAKE)
-            and message.ply is not None
-        )
+    # Internals
 
     def _lighten(self) -> None:
         """What the log keeps of the replies said long ago: their words and checks, not the
@@ -3290,6 +3439,7 @@ class Coach:
             self._think_s.append(event.think_ms / 1000.0)
         if event.by_user:
             self._pending_asks = []  # they played on: the questions are answered by the move
+            self._own_moves += 1
         self.board = board_after(self.board, event)
         self.moves[event.ply] = event
         self._moved_at[event.ply] = ts
@@ -3800,7 +3950,7 @@ class Coach:
                 return records[-1]
         return None
 
-    def _asked_own_move(self, text: str) -> PlyRecord | None:
+    def _asked_own_move(self, text: str, *, rules: bool = False) -> PlyRecord | None:
         """The player's move a question is about, when it asks about their own last move:
         against a bot the reply comes at once, and "what should I have played?" then found
         the opponent's move last and got a hint for the next one (the runtime audit).
@@ -3813,13 +3963,17 @@ class Coach:
         own knight (2026-09-26). With a model that guess is the model's to make, from the
         record: made here, "how would this position continue?" after a puzzle's last move was
         answered four times running as a question about that move, from the position before
-        it ("Best, and it cost nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28)."""
+        it ("Best, and it cost nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28).
+
+        Only the offline coach reads this from the words. With the AI on the model decides what
+        "that" is -- its own move or the opponent's reply -- from the sheet of both positions
+        and how long the reply took (`_reply_note`), not from a threshold in code (Tai,
+        2026-10-02). `rules` asks for the keyword reading all the same, for the fallback's
+        template alone -- what is said when a model's reply fails a check on the board."""
+        if not (self._offline or rules):
+            return None
         if _ASK_LAST_MOVE.search(text) or _ASK_COST.search(text):
-            # After a reply that came straight away "that move" is theirs too: they never
-            # faced the position between (the opponent's move is last on the board, and the
-            # model took it for the one asked about).
-            mine = bool(_MY_MOVE.search(text)) or self._replied_at_once()
-            return self._last_own_move(mine=mine)
+            return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
         if self.finished or self.user_to_move or not self._offline:
             return None
         elsewhere = (
@@ -3835,17 +3989,26 @@ class Coach:
             return None
         return self._last_own_move()
 
-    def _replied_at_once(self) -> bool:
-        """Whether the last move on the board is the opponent's and came straight after the
-        player's own (`INSTANT_REPLY_S` by the loop's clock): a bot's."""
+    def _reply_note(self) -> str:
+        """When the last move on the board is the opponent's, directly after the player's own:
+        how long it came after, by the loop's clock, as information for the model -- a reply in
+        a second or two means the player never faced the position in between, one after a
+        minute that they did. Whether "that" is then their move or the reply is the model's to
+        decide; there is no threshold here. "" when it is not known."""
         if not self.moves:
-            return False
+            return ""
         last = max(self.moves)
         reply, own = self.moves.get(last), self.moves.get(last - 1)
         if reply is None or own is None or reply.by_user or not own.by_user:
-            return False
+            return ""
         sent, answered = self._moved_at.get(own.ply), self._moved_at.get(reply.ply)
-        return sent is not None and answered is not None and 0 <= answered - sent <= INSTANT_REPLY_S
+        if sent is None or answered is None or answered < sent:
+            return ""
+        seconds = answered - sent
+        return (
+            f"The opponent's last move, {reply.san}, came {seconds:.1f} seconds after the "
+            f"player's {own.san}."
+        )
 
     def _last_opponent_move(self) -> PlyRecord | None:
         """The opponent's move, when it is the last move played and has its verdict."""
@@ -4011,10 +4174,10 @@ class Coach:
         candidates: int | None = None,
         routine: bool = False,
         elicit: bool = False,
-        moment: tuple[int, str | None] | None = None,
+        moment: Moment | None = None,
     ) -> None:
         assert position.facts is not None
-        epoch, game_id = moment if moment is not None else (self._epoch, self.game_id)
+        epoch, game_id, own_moves = moment if moment is not None else self._moment()
         instruction, fallback = self._instruction(
             trigger, position, level, user_text, verdicts, assessment, played, elicit=elicit
         )
@@ -4032,6 +4195,11 @@ class Coach:
         now = self._current
         past = now is not None and now is not position and now.ply > position.ply
         render_level = now.disclosure.level if past and now is not None else level
+        # With the AI on, a question is the model's to read: the rung stated is the one a hint
+        # they ask for would be (`_next_rung`), in the position the player faces.
+        ai_ask = trigger is Trigger.USER_ASK and not self._offline
+        if ai_ask and past and now is not None and not self.finished:
+            render_level = self._next_rung(now.disclosure.level)
         now_answer: tuple[str, ...] = ()
         if (
             past
@@ -4057,7 +4225,14 @@ class Coach:
             and position.board.turn != self.user_colour
         )
         line = self._level_line(
-            level, position, render_level if facing else None, past=past, theirs=theirs
+            level,
+            position,
+            render_level if facing else None,
+            past=past,
+            theirs=theirs,
+            ladder=self._ladder_words(now if past and now is not None else position)
+            if ai_ask and not self.finished
+            else None,
         )
         # A question is answered as asked: its words head the Task. Found only under "Said
         # here", far above, "whose bishop? ... he will just move away to the right, no?" got the
@@ -4084,14 +4259,17 @@ class Coach:
         faced_at = position  # the position `moved` was played from
         if moved is None and trigger is Trigger.USER_ASK:
             own = self._asked_own_move(user_text or "")
-            last = self._last_own_move()
+            # With the AI on, the sheet of the position the player faced goes with every
+            # question, whether or not the opponent has replied since: "that" may mean their
+            # move or the reply, and the model reads which from the words and the record
+            # (Tai, 2026-10-02), the sheet of both positions and how long the reply took.
+            last = self._last_own_move(mine=ai_ask)
+            reach = (position.ply, position.ply + 1)
+            if ai_ask:
+                reach = (position.ply - 1, *reach)
             if own is not None and own.move.ply == position.ply + 1:
                 moved = own.move
-            elif (
-                own is None
-                and last is not None
-                and last.move.ply in (position.ply, position.ply + 1)
-            ):
+            elif own is None and last is not None and last.move.ply in reach:
                 # The player's move is the last one played (its new position read, or not
                 # yet): its sheet goes with any question, and the model reads which position
                 # the words are about -- "why does the bishop check not work?" is about the
@@ -4219,7 +4397,11 @@ class Coach:
             game_id=game_id or "",
             user_text=user_text,
             disclosed="\n".join(v for v in verdicts if v.startswith("Engine on ")),
-            annotations=annotations_for(
+            # An AI coach's answer to a question has its marks from what it said
+            # (`Speaker._shaped`), not from a level its words were guessed to earn.
+            annotations=[]
+            if ai_ask
+            else annotations_for(
                 position.facts,
                 level,
                 position.board,
@@ -4235,7 +4417,11 @@ class Coach:
             played=self._record_moves(),
             played_san=played.san if played else None,
             assessment=assessment,
-            stream_to=self.stream_sink(trigger, position.ply) if self.stream_sink else None,
+            stream_to=self.stream_sink(
+                trigger, position.ply, lambda: self.moved_on((epoch, game_id, own_moves))
+            )
+            if self.stream_sink
+            else None,
             routine=routine,
             # A fast game gets the template, not a model reply; what the player asks, and
             # the review of a game that is over, always get the model.
@@ -4247,6 +4433,8 @@ class Coach:
             unlisted=unlisted,
             tools=tools,
             epoch=epoch,
+            own_moves=own_moves,
+            rung_by_reply=ai_ask,
             elicit=elicit,
         )
         self.speaker.submit(request)
@@ -4268,6 +4456,9 @@ class Coach:
         requiring them rejected every obedient reply (the runtime audit, 2026-09-25).
         Nothing for a word of praise, another question, or a template with none."""
         if not template:
+            return ()
+        if trigger is Trigger.USER_ASK and not self._offline:
+            # The AI reads what they ask; no keyword decides what its answer must name.
             return ()
         said = user_text or ""
         facts = position.facts
@@ -4426,6 +4617,7 @@ class Coach:
         *,
         past: bool = False,
         theirs: bool = False,
+        ladder: str | None = None,
     ) -> str:
         """What may be said about the position the player faces, stated on the directive, the
         one place it is stated; with `now_level`, the reply is about a position already moved
@@ -4442,13 +4634,16 @@ class Coach:
                 "It is the opponent's move: what they threaten -- their best move and what it "
                 "does -- may be said.\n\n"
             )
-        words = {
-            DisclosureLevel.SILENT: "nothing about the position",
-            DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
-            DisclosureLevel.FOCUS: "the idea, the target and the piece; not the move",
-            DisclosureLevel.MOVE: "the move and why it works; not the whole line",
-            DisclosureLevel.LINE: "everything, the line included",
-        }
+        words = RUNG_WORDS
+        if ladder is not None:
+            # The AI coach: the ladder as it stands, said as a guideline, whatever the words
+            # of the question (`Coach._ladder_words`).
+            moved = (
+                "The position this is about has been moved from: everything about it may be said. "
+                if now_level is not None or past
+                else ""
+            )
+            return f"{moved}{ladder}\n\n"
         if now_level is not None:
             return (
                 "The position this is about has been moved from: everything about it may be "
@@ -4463,6 +4658,33 @@ class Coach:
         why = f" {SEE_ALL_WORDS}" if DisclosureLevel.IDEA <= level < DisclosureLevel.MOVE else ""
         return f"Disclosure for the position the player faces: {words[level]}.{why}\n\n"
 
+    @staticmethod
+    def _next_rung(said: DisclosureLevel) -> DisclosureLevel:
+        """The rung a hint asked for now would be, with `said` the highest said of the position:
+        one up, the idea first, the move at the most (the line only for the asking); once the
+        line was said, it stays."""
+        if said >= DisclosureLevel.LINE:
+            return DisclosureLevel.LINE
+        return min(max(DisclosureLevel(said + 1), DisclosureLevel.IDEA), DisclosureLevel.MOVE)
+
+    def _ladder_words(self, faced: _Position) -> str:
+        """Where the hints stand in the position the player faces, for the AI coach's task: what
+        was said of it (by the hints and by the answers: the ladder follows the words said, see
+        `Disclosure.said`), and what the next hint they ask for would be. Guidelines for the
+        model; it reads what they ask."""
+        said = faced.disclosure.level
+        rung = self._next_rung(said)
+        already = SAID_WORDS[said]
+        return (
+            f"What you have said of the position the player faces, by hints and answers (under "
+            f"'Said here'): {already}. A hint they ask for is the next rung of the ladder -- the "
+            "idea, then the target and the piece, then the move -- each said once and none "
+            f"lower than one already said: that is {RUNG_WORDS[rung]}. The move, the line, the "
+            "good moves, a move they name and anything about the moves played are theirs for "
+            "the asking, a hint or not."
+            + (f" {SEE_ALL_WORDS}" if DisclosureLevel.IDEA <= rung < DisclosureLevel.MOVE else "")
+        )
+
     def _queue_plain(
         self,
         trigger: Trigger,
@@ -4476,7 +4698,7 @@ class Coach:
         now: bool = False,
         record_now: bool = False,
         turn: bool = True,
-        moment: tuple[int, str | None] | None = None,
+        moment: Moment | None = None,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing,
         unless `now`, when it goes out at once. With `record_now` it is a turn of the
@@ -4485,7 +4707,7 @@ class Coach:
         the coach's turn made the question it held, answered when the analysis landed, a
         follow-up -- "You have already told them the verdict ... do not repeat either" (the
         coach review, 2026-10-01)."""
-        epoch, game_id = moment if moment is not None else (self._epoch, self.game_id)
+        epoch, game_id, own_moves = moment if moment is not None else self._moment()
         message = CoachMessage(
             text=text,
             level=level,
@@ -4508,6 +4730,7 @@ class Coach:
                 attempts=0,
                 recorded=record_now or not turn,
                 epoch=epoch,
+                own_moves=own_moves,
             ),
             now=now,
         )
@@ -4783,6 +5006,7 @@ class Coach:
         # An explicit ask. The player's words are already the last message of the
         # conversation; the directive says only how to answer them.
         said = user_text or "hint"
+        rules_before = (dict(self._rules), self._last_rule)
         checks = ""
         claims_checked = [v for v in verdicts if not v.startswith("Engine on ")]
         engine_words = [v for v in verdicts if v.startswith("Engine on ")]
@@ -5027,7 +5251,7 @@ class Coach:
                 "three sentences; then, if you like, one question about what it asks of them. "
                 f"Never answer about the player's own move instead. {NO_FIGURES}"
             )
-        elif (record := self._asked_own_move(said)) is not None:
+        elif (record := self._asked_own_move(said, rules=True)) is not None:
             # Asked about their own last move. Its verdict was given in its move message and
             # the facts of the position it was played from in the message before: all of it
             # may be said outright. Without this the model took "the better move is withheld"
@@ -5185,13 +5409,6 @@ class Coach:
                     )
                     + f" {TIE_TO_THE_GAME}"
                 )
-            reply = self.moves.get(record.move.ply + 1)
-            if reply is not None and not reply.by_user and self._replied_at_once():
-                # The opponent's move is last on the board; theirs is the one they ask about.
-                directive += (
-                    f' By "that" they mean {san}, their own move: {reply.san}, which the '
-                    "opponent played straight after it, is not what they ask about."
-                )
             if followup and not asks:
                 fallback = ""  # a nod needs no template: nothing, rather than the verdict again
         elif _ASK_MATERIAL.search(said) or _OPENING_FACT.search(said) or _ASK_EVAL.search(said):
@@ -5293,5 +5510,92 @@ class Coach:
             )
             if followup and not asks and not engine_words:
                 fallback = ""  # a nod needs no template: nothing, rather than a hint again
+        if not self._offline:
+            # The keyword branches above wrote the fallback only -- what is said when the
+            # model's reply fails a check on the board -- and used rules of thumb as the
+            # directive's own: undone, and the model is given the guidelines instead.
+            self._rules, self._last_rule = rules_before
+            directive = self._ai_directive(position, level)
         fallback, note = self._cool_hint(facts, fallback)
         return f"{checks}{directive}{note}", fallback
+
+    def _ai_directive(self, position: _Position, level: DisclosureLevel) -> str:
+        """The AI coach's task for a question: the guidelines, and the facts that the state of the
+        conversation gives -- never a keyword in the player's words. What the coach has said
+        since the last move, the question its last turn ended with, the move already given,
+        the line already given, the moves about as good and the clearly worse ones, how long
+        the opponent's reply took. The model reads the question and decides the rest."""
+        facts = position.facts
+        assert facts is not None
+        out = AI_GUIDELINES
+        spoken = self._said_since_move()
+        if spoken:
+            out += AI_FOLLOW_UP
+        if self._last_turn_asked():
+            out += AI_ANSWERING
+        best = facts.candidates[0] if facts.candidates else ""
+        if len(facts.candidates) > 1:
+            out += f" The moves about equally good here: {', '.join(facts.candidates)}."
+        worse = (
+            worse_moves(position.board, position.analysis, self.user_colour)
+            if position.analysis is not None
+            else []
+        )
+        if worse:
+            out += f" Clearly worse here, and what goes wrong with them: {worse_text(worse)}."
+        if best and any(best.rstrip("+#") in s for s in spoken):
+            out += AI_MOVE_GIVEN.format(move=best)
+        if best.startswith("O-O"):
+            out += f" {FOCUS_KING}"
+        if facts.line:
+            given = [m.rstrip("+#") for m in facts.line[:3]]
+            if any(all(m in s for m in given) for s in spoken):
+                out += f" {LINE_GIVEN}"
+        out += (
+            " When the engine does not rate a move they name, say it is not the strongest and, "
+            "in general terms, why."
+            if position.board.turn == self.user_colour
+            # On the opponent's move a move they name is not examined (`analyse_named`).
+            else " On the opponent's move no move they name is rated here: rate one only from "
+            "the engine's word on it."
+        )
+        # What the board gives of the material and of what the player's last move allowed,
+        # whatever they ask: facts for the model to use if the question is about them.
+        material = self._material_words(level, facts)
+        if material:
+            out += (
+                " The material, if it comes up, is this, in these terms: "
+                f"{material}. Never count the pieces yourself."
+            )
+        own = self._last_own_move(mine=True)
+        if own is not None:
+            left = self.positions.get(own.move.ply)
+            allowed = (
+                idea_words.allowed(left.board, left.analysis, own.move.san)
+                if left is not None and left.analysis is not None
+                else None
+            )
+            if (
+                allowed
+                and own.assessment is not None
+                and own.assessment.severity is not Severity.NONE
+            ):
+                out += f" What {own.move.san} allowed, from the engine's line: {allowed}."
+        reply = self._reply_note()
+        if reply:
+            out += f" {reply}"
+        return out
+
+    def _last_turn_asked(self) -> bool:
+        """Whether the coach's last turn, since the player's last move, ended with a question
+        and nothing but notes came between: their words may be its answer."""
+        with self._lock:
+            entries = list(self.conversation.entries)
+        if entries and entries[-1].kind == "ask":
+            entries = entries[:-1]  # their words themselves, when ask() has recorded them
+        for entry in reversed(entries):
+            if entry.kind == "coach":
+                return entry.text.rstrip().endswith("?")
+            if entry.kind != "note":
+                return False
+        return False
