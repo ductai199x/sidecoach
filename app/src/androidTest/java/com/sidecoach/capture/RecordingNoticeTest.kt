@@ -148,37 +148,48 @@ class RecordingNoticeTest {
         var cancelled = 0
         var dialog: AlertDialog? = null
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            var host: android.app.Activity? = null
-            scenario.onActivity {
-                host = it
-                dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
+            try {
+                var host: android.app.Activity? = null
+                scenario.onActivity {
+                    host = it
+                    dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
+                }
+                val shown = dialog!!
+                assertTrue("the question did not come up", showing(shown))
+                var message = ""
+                instrumentation.runOnMainSync { message = shown.findViewById<TextView>(android.R.id.message).text.toString() }
+                assertEquals(RecordingNotice.words(watchers).second, message)
+                val shots = File(app.getExternalFilesDir(null), "recording_notice").apply { mkdirs() }
+                instrumentation.uiAutomation.takeScreenshot()?.let { image ->
+                    File(shots, "question.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                }
+                // Cancel: nothing shared, nothing remembered.
+                click(shown, AlertDialog.BUTTON_NEGATIVE)
+                assertEquals(0, proceeded)
+                assertEquals(1, cancelled)
+                val lookup = RecordingNotice.Lookup { pkg -> if (pkg == "com.chess") listOf(RecordingNotice.PERMISSION) to 7L else null }
+                assertEquals(1, RecordingNotice.unanswered(app, lookup).size)
+                // Continue: on to the share, and not asked again at this version.
+                scenario.onActivity {
+                    dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
+                }
+                assertTrue("the question did not come up again", showing(dialog!!))
+                click(dialog!!, AlertDialog.BUTTON_POSITIVE)
+                // The answer took the question down: its dismissal handled now, never after the
+                // window has gone (handled then, it ended the whole run, 2026-10-02).
+                instrumentation.waitForIdleSync()
+                instrumentation.runOnMainSync { assertTrue("the question stayed up after its answer", dialog?.isShowing == false) }
+                assertEquals(1, proceeded)
+                assertEquals(1, cancelled)
+                assertTrue(RecordingNotice.unanswered(app, lookup).isEmpty())
+                // Both questions were asked over the one window the test opened.
+                scenario.onActivity { assertTrue("the window was rebuilt under the question", it === host) }
+            } finally {
+                // Whatever failed, no question left up when the window closes: its dismissal
+                // handled after the window was gone ended the whole run.
+                instrumentation.runOnMainSync { dialog?.takeIf { it.isShowing }?.dismiss() }
+                instrumentation.waitForIdleSync()
             }
-            val shown = dialog!!
-            assertTrue("the question did not come up", showing(shown))
-            var message = ""
-            instrumentation.runOnMainSync { message = shown.findViewById<TextView>(android.R.id.message).text.toString() }
-            assertEquals(RecordingNotice.words(watchers).second, message)
-            val shots = File(app.getExternalFilesDir(null), "recording_notice").apply { mkdirs() }
-            instrumentation.uiAutomation.takeScreenshot()?.let { image ->
-                File(shots, "question.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            }
-            // Cancel: nothing shared, nothing remembered.
-            click(shown, AlertDialog.BUTTON_NEGATIVE)
-            assertEquals(0, proceeded)
-            assertEquals(1, cancelled)
-            val lookup = RecordingNotice.Lookup { pkg -> if (pkg == "com.chess") listOf(RecordingNotice.PERMISSION) to 7L else null }
-            assertEquals(1, RecordingNotice.unanswered(app, lookup).size)
-            // Continue: on to the share, and not asked again at this version.
-            scenario.onActivity {
-                dialog = RecordingNotice.ask(it, watchers, proceed = { proceeded++ }, cancelled = { cancelled++ })
-            }
-            assertTrue("the question did not come up again", showing(dialog!!))
-            click(dialog!!, AlertDialog.BUTTON_POSITIVE)
-            assertEquals(1, proceeded)
-            assertEquals(1, cancelled)
-            assertTrue(RecordingNotice.unanswered(app, lookup).isEmpty())
-            // Both questions were asked over the one window the test opened.
-            scenario.onActivity { assertTrue("the window was rebuilt under the question", it === host) }
         }
     }
 }
