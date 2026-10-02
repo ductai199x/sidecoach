@@ -213,6 +213,7 @@ def label_move(
     opponent_blundered: bool,
     second_score: float | None = None,
     chance: bool = False,
+    mate_let_go: bool = False,
     mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
@@ -230,9 +231,10 @@ def label_move(
     - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent":
       the position offered a winning chance (`chance`, read by `verdict` from the engine's
       lines) and the move played gave ground (a loss of an inaccuracy or more), whatever
-      the size of the loss (Tai, 2026-10-02). A forced mate let go by a move that still wins
-      as much -- under an inaccuracy's loss -- is labelled by that loss, never "inaccuracy":
-      chess.com left five such moves of the six games unmarked.
+      the size of the loss (Tai, 2026-10-02). And a forced mate let go (`mate_let_go`,
+      read by `verdict`): the player had a mate in N and the move played leaves none, or
+      only a longer one -- a miss whatever it cost, even while it still wins; a move that
+      keeps a mate as short is labelled by its loss (Tai, 2026-10-02 12:16).
     - Great, "a move that altered the course of the game": the best move where every other
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
@@ -250,11 +252,13 @@ def label_move(
     # Walking into a mate from a lost position is not the move that lost: chess.com leaves
     # those unmarked (eleven of them in the six games, the best move among them).
     mate_allowed = mate_allowed and not lost and not is_best
-    # A mate let go is a winning chance let go (`chance`): flagged only by what it cost, so the
-    # engine's own first move, or one that keeps the win, is never an inaccuracy for it.
+    # A mate let go is a miss of its own (`mate_let_go`), never flagged by what it cost: the
+    # engine's own first move, or one that keeps a mate as short, is never an inaccuracy.
     flagged = not graded_good(loss, thresholds) or mate_allowed
     if in_book and loss < thresholds.mistake:
         return Label.BOOK
+    if mate_let_go and not is_best:
+        return Label.MISS
     if flagged and chance and not is_best:
         return Label.MISS
     if mate_allowed:
@@ -295,21 +299,52 @@ def winning_chance(
     winning chance go, read off the engine's own lines (Tai, 2026-10-02: chess.com's miss --
     the opponent's error or a tactic already on the board, whichever gave it). The chance:
     the best line stood better or winning (`standing` 3 or more, from 0.62), and the move
-    played leaves a lower band; or the best line mates, and the move played does not (nor
-    mates itself, nor leaves a mate the engine still sees). The engine's evaluation decides,
-    not where the chance came from: an opponent's error that left the player no better was
-    no chance to win."""
+    played leaves a lower band. The engine's evaluation decides, not where the chance came
+    from: an opponent's error that left the player no better was no chance to win. A
+    position with a forced mate is read by its mate instead (`mate_let_go`)."""
     top = before_lines[0] if before_lines else None
-    after_top = after_lines[0] if after_lines else None
-    mating = top is not None and top.mate is not None and top.mate > 0
-    if mating:
-        return not after.is_checkmate() and not (
-            after_top is not None and after_top.mate is not None and after_top.mate < 0
-        )
+    if top is not None and top.mate is not None and top.mate > 0:
+        return False
     left = 1.0 - position_score(after, after_lines)
     return standing(before_score) >= standing(BETTER_FROM) and standing(left) < standing(
         before_score
     )
+
+
+def mate_after(
+    move: chess.Move, after: chess.Board, before_lines: Sequence[Line], after_lines: Sequence[Line]
+) -> int | None:
+    """The player's shortest forced mate once `move` is played, counted as the engine counts a
+    mate before it -- in the player's own moves, the one played included -- or None when the
+    move leaves none. Like is compared with like: when the search before the move has a line
+    for the move played (its candidates, `multipv`), that line's mate is the answer, the same
+    search and depth the mate it is set against comes from; else the search after the move,
+    whose mate against the opponent (in their moves) is one of the player's longer."""
+    if after.is_checkmate():
+        return 1
+    for line in before_lines:
+        if line.moves[:1] == [move.uci()]:
+            return line.mate if line.mate is not None and line.mate > 0 else None
+    top = after_lines[0] if after_lines else None
+    if top is not None and top.mate is not None and top.mate < 0:
+        return 1 - top.mate
+    return None
+
+
+def mate_let_go(
+    move: chess.Move, after: chess.Board, before_lines: Sequence[Line], after_lines: Sequence[Line]
+) -> bool:
+    """The player had a forced mate in N, and `move` leaves none or only a longer one (Tai,
+    2026-10-02 12:16: "if I can mate in 5 but I made a move that still good, keep the advantage
+    but no more mate in 5 then that's a miss. if I can mate in 1 but I made a move that is now
+    mate in 2 then that's also a miss. if i can mate in 3 but I made a different move that's
+    ALSO mate in 3 then that is fine"). The engine's own first move is never one (`label_move`
+    checks it): its line is the mate."""
+    top = before_lines[0] if before_lines else None
+    if top is None or top.mate is None or top.mate <= 0:
+        return False
+    kept = mate_after(move, after, before_lines, after_lines)
+    return kept is None or kept > top.mate
 
 
 def verdict(
@@ -369,6 +404,7 @@ def verdict(
         second_score=before_lines[1].expected_score if len(before_lines) > 1 else None,
         opponent_blundered=erred >= thresholds.blunder,
         chance=winning_chance(after, before_lines, after_lines, before_score),
+        mate_let_go=mate_let_go(move, after, before_lines, after_lines),
         mate_allowed=mate_allowed,
         obvious=obvious,
     )

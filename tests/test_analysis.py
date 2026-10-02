@@ -288,6 +288,7 @@ def _label(
     second_score: float | None = None,
     opponent_blundered: bool = False,
     chance: bool = False,
+    mate_let_go: bool = False,
     mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
@@ -302,6 +303,7 @@ def _label(
         second_score=second_score,
         opponent_blundered=opponent_blundered,
         chance=chance,
+        mate_let_go=mate_let_go,
         mate_allowed=mate_allowed,
         obvious=obvious,
     )
@@ -373,9 +375,13 @@ def test_a_miss_is_a_winning_chance_let_go() -> None:
     # A small slip with the chance still there is no miss; nor a loss with no chance.
     assert _label(0.01, chance=True) is Label.EXCELLENT
     assert _label(0.15) is Label.MISTAKE
-    # A forced mate let go by a move that still wins as much -- under an inaccuracy's loss --
-    # is labelled by that loss, never an inaccuracy (Tai, 2026-10-02).
+    # A chance with no ground given is labelled by the loss, never an inaccuracy.
     assert _label(0.025, chance=True) is Label.GOOD
+    # A forced mate let go is a miss whatever it cost (Tai, 2026-10-02 12:16); the engine's
+    # own move never is.
+    assert _label(0.0, mate_let_go=True) is Label.MISS
+    assert _label(0.025, mate_let_go=True) is Label.MISS
+    assert _label(0.0, mate_let_go=True, is_best=True) is Label.BEST
     # A move that walks into a forced mate loses the game: a blunder whatever the curve
     # says it cost -- unless the game was lost already, or every move allows it.
     assert _label(0.02, mate_allowed=True, before_score=0.3) is Label.BLUNDER
@@ -461,26 +467,53 @@ def test_a_miss_is_a_winning_chance_let_go_wherever_it_came_from() -> None:
 
 
 def test_a_forced_mate_let_go_and_one_walked_into() -> None:
-    """A mate is 1.0 on the curve and a thousand centipawns 0.975: a mate in four let go for
-    a won ending read as an inaccuracy at most, and a move into a forced mate in a lost
-    position as good (the engine review, 2026-10-01). A mate in one let go by a move that
-    still wins (a loss under an inaccuracy) is labelled by that loss, never "inaccuracy"
-    (Tai, 2026-10-02: chess.com left five such moves of the six games unmarked); one that
-    gives ground as well lets a winning chance go: a miss."""
+    """Tai, 2026-10-02 12:16: "if I can mate in 5 but I made a move that still good, keep the
+    advantage but no more mate in 5 then that's a miss. if I can mate in 1 but I made a move
+    that is now mate in 2 then that's also a miss. if i can mate in 3 but I made a different
+    move that's ALSO mate in 3 then that is fine". The mate is counted in the player's own
+    moves on both sides of the move; the engine's own first move is never a miss for it. A
+    move into a forced mate from a position not yet lost is a blunder."""
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
-    mating = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    # Mate in 5; h3 keeps the advantage (a thousand centipawns) but no mate: a miss, though it
+    # cost less than an inaccuracy.
+    in_five = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=5)
     still_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
-    let_go = _judged(board, "h2h3", mating, still_won)
-    assert let_go.label is Label.GOOD, let_go
-    only_better = Line(moves=["g8f8"], depth=6, expected_score=0.3, score_cp=-300)
-    missed = _judged(board, "h2h3", mating, only_better)
-    assert missed.label is Label.MISS, missed
+    no_mate = _judged(board, "h2h3", in_five, still_won)
+    assert no_mate.expected_loss < 0.04 and no_mate.label is Label.MISS, no_mate
+    # Mate in 1; h3 leaves a mate in 2 (the opponent mated in 1 of theirs): a miss.
+    in_one = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    mated_next = Line(moves=["g8f8"], depth=6, expected_score=0.0, mate=-1)
+    longer = _judged(board, "h2h3", in_one, mated_next)
+    assert longer.expected_loss == 0.0 and longer.label is Label.MISS, longer
+    # Mate in 3; h3 is another mate in 3 (the opponent mated in 2 of theirs): fine.
+    in_three = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=3)
+    mated_in_two = Line(moves=["g8f8"], depth=6, expected_score=0.0, mate=-2)
+    as_short = _judged(board, "h2h3", in_three, mated_in_two)
+    assert as_short.label is Label.EXCELLENT, as_short
+    # The engine's own first move, the search after it seeing only a longer mate (its
+    # horizon): never a miss.
+    own = Line(moves=["h2h3", "g8f8"], depth=6, expected_score=1.0, mate=3)
+    seen_longer = Line(moves=["g8f8"], depth=6, expected_score=0.0, mate=-4)
+    best = _judged(board, "h2h3", own, seen_longer)
+    assert best.label is Label.BEST, best
     # The other side: worse but holding, and the move lets a mate in.
     lost = Line(moves=["g8f8"], depth=6, expected_score=0.2, score_cp=-400)
     mates = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
     black = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
     walked = _judged(black, "h7h6", lost, mates)
     assert walked.label is Label.BLUNDER, walked
+    # Like with like: the search before the move has a line for h3, mate in 3 as the best's;
+    # the search after it, alone, sees the mate a move longer. The same search and depth as
+    # the mate it is set against says h3 kept it: no miss.
+    before = [in_three, Line(moves=["h2h3", "g8f8"], depth=6, expected_score=1.0, mate=3)]
+    after = board.copy()
+    after.push_uci("h2h3")
+    fake = FakeEngine(
+        {board.fen(): before, after.fen(): [mated_in_two.model_copy(update={"mate": -3})]}
+    )
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    kept = annotator.assess_move("g", board, chess.Move.from_uci("h2h3"), 1)
+    assert kept.label is Label.EXCELLENT, kept
 
 
 def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
