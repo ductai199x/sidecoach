@@ -1341,6 +1341,122 @@ def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
     store.close()
 
 
+class _VariedEngine(FakeEngine):
+    """An engine whose word on a position is a function of it: its first legal move (by UCI)
+    as the best, and a score from the FEN's CRC -- a game of best moves, slips, mistakes and
+    blunders on both sides, the same every run."""
+
+    def analyse(self, board: Any, **kwargs: Any) -> list[Any]:
+        import zlib
+
+        from sidecoach.analysis.score import game_over
+        from sidecoach.events import Line
+
+        self.calls.append(board.fen())
+        if game_over(board):
+            return []
+        best = sorted(m.uci() for m in board.legal_moves)[0]
+        score = 0.2 + (zlib.crc32(board.fen().encode()) % 60) / 100
+        return [Line(moves=[best], depth=6, expected_score=score)]
+
+
+def _varied_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    """GAME reviewed at the fast strength with `_VariedEngine`: the store, and its library row."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    store = Store(tmp_path / "profile.sqlite")
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    made = review_room.review_row(
+        Settings(data_dir=tmp_path),
+        row,
+        store,
+        STRENGTHS["fast"],
+        workers=1,
+        make_engine=lambda **_: _VariedEngine(),
+    )
+    assert made is not None
+    return store, row
+
+
+def test_a_saved_review_relabelled_from_what_it_kept_is_labelled_as_the_review_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`relabel` reads a move's label from the saved measurements by the rule the annotator
+    labels with (`score.verdict`): over a game of every kind of move, the labels it gives a
+    review made today are the ones the review gave."""
+    from sidecoach.analysis.game_review import relabel
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.events import ReviewedGame
+
+    store, row = _varied_review(tmp_path, monkeypatch)
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    reviewed = ReviewedGame.model_validate_json(saved.report)
+    labels = [m.assessment.label for m in reviewed.moves]
+    assert len(set(labels)) >= 4, labels  # a game of more than one kind of move
+    assert [m.assessment.label for m in relabel(reviewed, Thresholds()).moves] == labels
+    store.close()
+
+
+def test_saved_reviews_are_relabelled_by_the_new_rules_and_keep_their_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tai, 2026-10-02: reviews saved before the label rules changed (a miss is failing to
+    punish the opponent's error; chess.com's great, brilliant and book) and the openings'
+    naming are made again from their saved data at startup, once -- and the AI coach's words,
+    paid for, are kept to the byte. A review saved with the old rule's labels (every move a
+    miss here) and an old opening name gets today's."""
+    import shutil
+
+    from sidecoach.analysis.openings import OpeningBook
+    from sidecoach.events import Label, ReviewedGame
+    from sidecoach.ui import review_room
+
+    store, row = _varied_review(tmp_path, monkeypatch)
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    fresh = ReviewedGame.model_validate_json(saved.report)
+    old = fresh.model_copy(
+        update={
+            "moves": [
+                m.model_copy(
+                    update={
+                        "assessment": m.assessment.model_copy(update={"label": Label.MISS}),
+                        "after": m.after.model_copy(update={"opening": "C20 King's Pawn Game"}),
+                    }
+                )
+                for m in fresh.moves
+            ]
+        }
+    )
+    store._db.execute(
+        "UPDATE reviews SET report = ? WHERE key = ?", (old.model_dump_json(), row.key)
+    )
+    words = json.dumps({"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}})
+    store.set_review_words(row.key, "fast", words)
+    store.set_setting(review_room.DERIVED_KEY, "2")
+    tables = tmp_path / "openings"
+    tables.mkdir()
+    shutil.copy(Path(__file__).parent / "openings_sample.tsv", tables / "c.tsv")
+    book = OpeningBook.load(tables)
+    assert review_room.rederive(store, book=book) == 1
+    again = store.review(row.key, "fast")
+    assert again is not None
+    relabelled = ReviewedGame.model_validate_json(again.report)
+    labels = [m.assessment.label for m in relabelled.moves]
+    assert labels == [m.assessment.label for m in fresh.moves]
+    assert [m.after.opening for m in relabelled.moves][4:] == ["C50 Italian Game"] * 8
+    assert again.words == words, "the paid words are never touched"
+    assert review_room.rederive(store, book=book) == 0, "once"
+    store.close()
+
+
 def test_ai_words_cut_short_by_failed_calls_offer_try_again_for_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

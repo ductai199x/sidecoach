@@ -25,9 +25,9 @@ import chess
 import chess.pgn
 from pydantic import TypeAdapter
 
-from sidecoach.analysis.annotator import Book, GameAnnotator, Measured, Tagger
+from sidecoach.analysis.annotator import Book, GameAnnotator, Measured, Tagger, opening_name
 from sidecoach.analysis.engine import Engine
-from sidecoach.analysis.score import Thresholds
+from sidecoach.analysis.score import Previous, Thresholds, position_score, verdict
 from sidecoach.events import ReviewedGame, ReviewedMove, Side
 
 
@@ -217,6 +217,56 @@ def review_game(
         depth=depth,
         seconds=round(time.perf_counter() - started, 2),
     )
+
+
+def relabel(
+    reviewed: ReviewedGame, thresholds: Thresholds, book: Book | None = None
+) -> ReviewedGame:
+    """A saved review's labels made again from what it kept -- each position's lines, its
+    decisive call and whether it was in book, each move's loss and tags -- by the rule a review
+    labels with now (`score.verdict`), and, with `book`, each position's opening named again:
+    no engine. A review saved before the rules changed keeps its measurements and is labelled
+    as one made today (Tai, 2026-10-02)."""
+    start = chess.Board(reviewed.start.fen)
+    named = book is not None and start.fen() == chess.STARTING_FEN
+    before_lines = reviewed.start.lines
+    before_decisive = reviewed.start.decisive
+    previous: Previous | None = None
+    played: list[chess.Move] = []
+    moves: list[ReviewedMove] = []
+    for item in reviewed.moves:
+        board = chess.Board(item.fen_before)
+        move = chess.Move.from_uci(item.assessment.uci)
+        label = verdict(
+            board,
+            move,
+            before_lines,
+            item.after.lines,
+            loss=item.assessment.expected_loss,
+            before_score=position_score(board, before_lines),
+            decisive=before_decisive,
+            in_book=item.after.in_book,
+            sacrifice=any(tag.name == "sacrifice" for tag in item.assessment.tags),
+            previous=previous,
+            thresholds=thresholds,
+        )
+        after = item.after
+        played.append(move)
+        if named:
+            assert book is not None
+            after = after.model_copy(update={"opening": opening_name(book, played)})
+        moves.append(
+            item.model_copy(
+                update={
+                    "assessment": item.assessment.model_copy(update={"label": label}),
+                    "after": after,
+                }
+            )
+        )
+        previous = Previous(item.assessment.expected_loss, move.to_square, board.is_capture(move))
+        before_lines = item.after.lines
+        before_decisive = item.after.decisive
+    return reviewed.model_copy(update={"moves": moves})
 
 
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")
