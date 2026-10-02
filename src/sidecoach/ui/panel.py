@@ -1637,6 +1637,7 @@ class PanelEngine:
                     with self._lock:
                         self._held_word = held[0]
                     self.caption(sentence)
+                    self._emit("voice", "debug", f"held for the pace: {elide(sentence, 60)}")
                     return True
                 if action not in ("speak", "supersede"):
                     # Shown, in its place, not spoken: the rest of the reply follows the same.
