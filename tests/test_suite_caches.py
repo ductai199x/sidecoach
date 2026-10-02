@@ -26,6 +26,11 @@ def _own_frames(monkeypatch: pytest.MonkeyPatch) -> None:
     not this test's hit (a cold run failed on a frame another test had kept, 2026-10-02)."""
     monkeypatch.setattr(synth, "_BOARDS", synth.Kept(16))
     monkeypatch.setattr(synth, "_BACKGROUNDS", synth.Kept(8))
+    # The cache's own tests read and write in its default mode, whatever mode the run was
+    # started in: with SIDECOACH_TEST_CACHE=rebuild set for the whole run, four of them
+    # counted every row as run again and failed (2026-10-02). A test that wants a mode sets it.
+    monkeypatch.delenv("SIDECOACH_TEST_CACHE", raising=False)
+    monkeypatch.setattr(synth.Kept, "enabled", True)  # read from the variable at import
 
 
 def _fresh(**kw: Any) -> np.ndarray:
