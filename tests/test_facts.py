@@ -8,6 +8,7 @@ from __future__ import annotations
 import chess
 import pytest
 
+from sidecoach.coach import idea_words
 from sidecoach.coach.facts import (
     describe_move,
     describe_tactic,
@@ -16,7 +17,6 @@ from sidecoach.coach.facts import (
     phase_of,
     region_of,
 )
-from sidecoach.coach import idea_words
 from sidecoach.events import Analysis, Line
 from tests.coaching import SCHOLAR
 
