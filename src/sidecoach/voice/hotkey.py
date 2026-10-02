@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 from collections.abc import Callable
 from importlib.util import find_spec
@@ -21,6 +22,50 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 MOUSE_PREFIX = "mouse_"
+
+# Windows reports the hand of a modifier in two ways: the sided virtual key (VK_RCONTROL) and,
+# whatever the virtual key says, the hardware scan code with its "extended" flag -- the keypad's
+# and the right-hand Ctrl and Alt carry it, the left-hand ones do not; Shift's two keys have
+# scan codes of their own (0x2A left, 0x36 right).
+_LEFT_SHIFT_SCAN = 0x2A
+_RIGHT_SHIFT_SCAN = 0x36
+
+
+def hand_of(generic: str, scan: int, extended: bool) -> str | None:
+    """ "l" or "r" for a modifier ("ctrl", "alt" or "shift") from the hardware's scan data, or
+    None for a key this does not know."""
+    if generic in ("ctrl", "alt"):
+        return "r" if extended else "l"
+    if generic == "shift":
+        if scan == _RIGHT_SHIFT_SCAN:
+            return "r"
+        if scan == _LEFT_SHIFT_SCAN:
+            return "l"
+    return None
+
+
+def matches_key(
+    wanted: str, got: str, scan: int | None = None, extended: bool | None = None
+) -> bool:
+    """Whether a key reported as `got` is the key named `wanted` ("ctrl_r", "ctrl", "f9").
+
+    A modifier's generic name matches its sided keys ("ctrl" for ctrl_l and ctrl_r). And a sided
+    name matches the generic key, because some keyboards, drivers and remappers report Right Ctrl
+    as plain Ctrl (Tai's, 2026-09-22): the press arrives, just not under the name the setting
+    uses. Then the hardware's scan data says whose hand it was, so Left Ctrl, which a plain
+    "ctrl" report would equally be, never starts push-to-talk (Tai, 2026-10-01: "why does my
+    keyboard report right ctrl as only ctrl?" -- whatever the cause in his stack, the hand is
+    read from the scan code). Without scan data (another system), a plain report matches."""
+    if got == wanted:
+        return True
+    if got.startswith(wanted + "_"):
+        return True  # "ctrl" wants either hand
+    generic, _, side = wanted.partition("_")
+    if side not in ("l", "r") or got != generic:
+        return False
+    if scan is None or extended is None:
+        return True
+    return hand_of(generic, scan, extended) == side
 
 
 class GlobalPushToTalk:
@@ -97,7 +142,18 @@ class GlobalPushToTalk:
             else keyboard.KeyCode.from_char(name)
         )
 
-        generic = name.split("_")[0] if isinstance(wanted, keyboard.Key) else ""
+        # The hardware's scan data of the key being handled: the hook's filter runs just before
+        # the listener's callbacks, on the same thread, for the same event.
+        # By the key's virtual code, so a quick second key cannot overwrite it before the
+        # listener has handled the first.
+        by_vk: dict[int, tuple[int, bool]] = {}
+
+        def note(_msg: int, data: Any) -> bool:
+            by_vk[int(getattr(data, "vkCode", 0))] = (
+                int(getattr(data, "scanCode", 0)),
+                bool(int(getattr(data, "flags", 0)) & 0x01),
+            )
+            return True  # nothing is suppressed: the key goes on to the focused window
 
         def same(key: Any) -> bool:
             if key == wanted:
@@ -105,11 +161,9 @@ class GlobalPushToTalk:
             got = getattr(key, "name", "") or ""
             if not isinstance(wanted, keyboard.Key):
                 return False
-            # A modifier's generic name matches its sided keys ("ctrl" for ctrl_l and
-            # ctrl_r) -- and a sided name matches the generic key, because some keyboards
-            # and drivers report Right Ctrl as plain Ctrl (Tai's, 2026-09-22): the press
-            # arrives, just not under the name the setting uses.
-            return got.startswith(name + "_") or (got == generic and "_" in name)
+            vk = getattr(getattr(key, "value", None), "vk", None)
+            scan, extended = by_vk.get(vk, (None, None)) if vk is not None else (None, None)
+            return matches_key(name, got, scan, extended)
 
         # No key but the push-to-talk key is ever reported: the hook sees every key in every
         # window. Naming them for debugging became a keylogger (a live ring, 2026-09-22, held
@@ -123,6 +177,8 @@ class GlobalPushToTalk:
             if same(key):
                 self._release()
 
+        if os.name == "nt":
+            return keyboard.Listener(on_press=pressed, on_release=released, win32_event_filter=note)
         return keyboard.Listener(on_press=pressed, on_release=released)
 
     def _mouse_listener(self, name: str) -> Any:

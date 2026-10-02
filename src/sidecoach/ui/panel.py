@@ -1001,14 +1001,23 @@ class PanelEngine:
         return self._listener.mode
 
     def ptt(self, down: bool) -> None:
-        """Push-to-talk pressed or released."""
+        """Push-to-talk pressed or released. Pressed, the coach goes quiet at once (the
+        listener's speech start cuts what is playing, `_on_speech_start`) and stays quiet
+        until the key is up (`_ptt_held`)."""
         if down:
-            if self._listener.mode == "ptt":
+            held = self._listener.mode == "ptt"
+            self._set(ptt=held)  # first: nothing is said from here on
+            if held:
                 self._dictation_hold()
             self._listener.press()
         else:
             self._listener.release()
-        self._set(ptt=bool(down) and self._listener.mode == "ptt")
+            self._set(ptt=False)
+
+    def _ptt_held(self) -> bool:
+        """The push-to-talk key is down in push-to-talk mode: the voice stays silent."""
+        with self._lock:
+            return bool(self._state.get("ptt"))
 
     def reset_profile(self) -> str:
         """Empty the player model (maintenance.reset_profile). The running profiler's
@@ -1485,7 +1494,7 @@ class PanelEngine:
 
         def sink(sentence: str) -> bool:
             continues = bool(started)
-            if started and (self.muted or self._hushed != hushed_at[0]):
+            if started and (self.muted or self._hushed != hushed_at[0] or started[0] == "ptt"):
                 # Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is
                 # still the reply -- in the chat, the record and the captions -- only
                 # silent. Declining here cut the reply's text at what had been said.
@@ -1493,6 +1502,12 @@ class PanelEngine:
                 return True
             if self.muted:
                 return False
+            if not started and self._ptt_held():
+                # A reply that begins while the player holds the key to talk is never
+                # spoken, however long the key is held: captioned, in the chat, silent.
+                started.append("ptt")
+                self.caption(sentence)
+                return True
             with self._lock:
                 ply_now = int(self._state.get("ply") or 0)
             if not started:
@@ -1517,9 +1532,12 @@ class PanelEngine:
         return sink
 
     def _speak(self, trigger: str, text: str, ply: int | None) -> str:
-        """Apply `voice_action` and speak accordingly; returns what was done, for the log. A
-        line the voice will not say is still captioned, whole."""
-        if self.muted:
+        """Apply `voice_action` and speak accordingly; returns what was done, for the log. The
+        captions show every line whatever the voice does with it -- muted, skipped as short,
+        stale, held back for pace (Tai, 2026-10-01: "captions show lines regardless of voice
+        skips"). While the push-to-talk key is held the voice says nothing: the player is
+        talking ("if push to talk is on then the coach must be muted")."""
+        if self.muted or self._ptt_held():
             self.caption(text)
             return "muted"
         with self._lock:
@@ -1538,6 +1556,8 @@ class PanelEngine:
         elif action == "text":
             self._held_word = (trigger, text, ply, time.monotonic())
             self.caption(text)
+        else:  # "skip", "stale": not said, and shown all the same
+            self.caption(text)
         return action
 
     def _coach_fast(self) -> bool:
@@ -1550,7 +1570,7 @@ class PanelEngine:
         position for PACE_RESUME_S: the game slowed down. A word about a position the
         board has left is dropped. `ts` is the loop's clock (the frame's time)."""
         held = self._held_word
-        if held is None or self.muted:
+        if held is None or self.muted or self._ptt_held():
             return
         trigger, text, ply, since = held
         coach = coaching.coach
