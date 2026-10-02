@@ -28,9 +28,11 @@ $ErrorActionPreference = "Stop"
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $root = Split-Path -Parent $PSScriptRoot
 $gradle = Join-Path $root "gradlew.bat"
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function At { "[{0,6:N1} s]" -f $clock.Elapsed.TotalSeconds }
 
 if (-not $SkipBuild) {
-    Write-Host "building..."
+    Write-Host "$(At) building..."
     # The two APKs and the host tests' classes, on at most eight of the host's workers.
     & $gradle -p $root --max-workers=8 :app:assemblePhone :app:assemblePhoneAndroidTest :app:compilePhoneUnitTestSources | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the build failed" }
@@ -114,9 +116,9 @@ $stamp = Join-Path $root "app/build/test-installed-$($Serial -replace '[^A-Za-z0
 $apks = (@($app, $test) | ForEach-Object { $item = Get-Item $_; "$($item.Length):$($item.LastWriteTimeUtc.Ticks)" }) -join "|"
 $wanted = "$apks|$(Installed-At)"
 if ((Test-Path $stamp) -and ((Get-Content $stamp -Raw).Trim() -eq $wanted)) {
-    Write-Host "installed already (the APKs have not changed)"
+    Write-Host "$(At) installed already (the APKs have not changed)"
 } else {
-    Write-Host "installing..."
+    Write-Host "$(At) installing..."
     # -d: this checkout's build, even over a newer version another branch installed on a shared
     # emulator (a version bump elsewhere made the install fail, and the tests ran on that build).
     & $adb -s $Serial install -r -t -d $app | Out-Null
@@ -146,12 +148,12 @@ $args = @("-w", "-e", "listener", "androidx.test.internal.runner.listener.LogRun
 if ($Class) { $args += @("-e", "class", $Class) }
 if ($OneAtATime) { $args += @("-e", "lanes", "off") }
 $args += "com.sidecoach.test/androidx.test.runner.SidecoachRunner"
-Write-Host "running..."
+Write-Host "$(At) running..."
 $deviceOut = @(& $adb -s $Serial shell am instrument @args | ForEach-Object { Write-Host $_; $_ })
 $devicePassed = [bool]($deviceOut | Where-Object { $_ -match "^OK \(\d+ tests?\)" })
 
 Write-Host ""
-Write-Host "--- what the tests logged ---"
+Write-Host "$(At) --- what the tests logged ---"
 & $adb -s $Serial logcat -d "sidecoach.chess:I" "sidecoach.vision:I" "sidecoach.state:I" "sidecoach.engine:I" "sidecoach.voice:I" "sidecoach.lanes:I" "*:S"
 
 # Each test's lane and times (com.sidecoach.Lanes), for a look at where the time goes.
@@ -167,12 +169,12 @@ if ($hostRun) {
     }
     $hostPassed = ($hostRun.ExitCode -eq 0) -and ($failed -eq 0) -and ($tests -gt 0)
     Write-Host ""
-    Write-Host "--- the host's tests ---"
+    Write-Host "$(At) --- the host's tests ---"
     Write-Host "$tests tests, $failed failed, $skipped skipped (gradle exit $($hostRun.ExitCode); app/build/test-host.log)"
     if (-not $hostPassed) { Get-Content $hostLog, "$hostLog.err" -ErrorAction SilentlyContinue | Select-Object -Last 60 }
 }
 if (-not ($devicePassed -and $hostPassed)) {
-    Write-Host "FAILED: device $(if ($devicePassed) { 'passed' } else { 'failed' }), host $(if ($hostPassed) { 'passed' } else { 'failed' })"
+    Write-Host "$(At) FAILED: device $(if ($devicePassed) { 'passed' } else { 'failed' }), host $(if ($hostPassed) { 'passed' } else { 'failed' })"
     exit 1
 }
-Write-Host "PASSED: device and host"
+Write-Host "$(At) PASSED: device and host"

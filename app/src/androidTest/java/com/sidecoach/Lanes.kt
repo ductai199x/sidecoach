@@ -33,15 +33,16 @@ annotation class Lane(val value: Kind) {
          * The cell embedder (CellEmbedder): each one's onnxruntime holds about 350 MB of native
          * memory once it has read a start position, and PipelineTest runs two. Side by side with
          * the voice's models and the app lane's panel they took the emulator's 4 GB down to 400
-         * MB free, into swap, and every lane ran four times slower (2026-10-02, measured). One
-         * class at a time. Nothing of the app's shared state.
+         * MB free, into swap, and every lane ran four times slower (2026-10-02, measured). With
+         * [VOICE], the models' pool: two such classes at a time at most. Nothing of the app's
+         * shared state.
          */
         VISION,
 
         /**
          * The voice's and the ear's models (Kokoro, Parakeet, Silero): hundreds of MB of native
-         * memory each, and onnxruntime threads of their own. One class at a time. Nothing of the
-         * app's shared state.
+         * memory each, and onnxruntime threads of their own. With [VISION], the models' pool.
+         * Nothing of the app's shared state.
          */
         VOICE,
 
@@ -54,11 +55,12 @@ annotation class Lane(val value: Kind) {
 }
 
 /**
- * The suite's classes in lanes side by side. Each lane runs its classes one at a time, as the
- * whole suite ran before; the lanes run at once: [Lane.Kind.APP], [Lane.Kind.VISION] and
- * [Lane.Kind.VOICE] on a thread each, [Lane.Kind.FREE] on [FREE_THREADS] threads that take its
- * classes longest first (the seconds each took last, from `lanes/seconds.tsv` in the test
- * assets; a class it does not know goes first). The device's four cores were a quarter used:
+ * The suite's classes in lanes side by side: [Lane.Kind.APP]'s one at a time on one thread, in
+ * the order AndroidJUnitRunner gives them, as the whole suite ran before; [Lane.Kind.VISION] and
+ * [Lane.Kind.VOICE] together on [MODEL_THREADS] threads, and [Lane.Kind.FREE] on [FREE_THREADS],
+ * each pool taking its classes longest first (the seconds each took last, from
+ * `lanes/seconds.tsv` in the test assets, which `tools/lane_seconds.py` writes from a run's
+ * `timings.tsv`; a class it does not know goes first). The device's four cores were a quarter used:
  * most classes run on one thread, and many wait on a window, a voice or an engine. The lanes
  * are drawn by what a class holds -- the app's shared state, or hundreds of MB of a model --
  * so the classes side by side never share state and fit the emulator's memory together.
@@ -75,13 +77,21 @@ object Lanes {
     private const val TAG = "sidecoach.lanes"
 
     /**
-     * The [Lane.Kind.FREE] lane's threads. With the other three lanes, five on four cores: the app
-     * and voice lanes spend much of their time waiting on a window, a voice or an engine.
+     * The threads of the pool [Lane.Kind.VISION] and [Lane.Kind.VOICE] share: two classes that
+     * hold a model at most, side by side -- PipelineTest's two embedders and one more model, about
+     * 1.2 GB, where the emulator has some 2.7 GB to give.
+     */
+    private const val MODEL_THREADS = 2
+
+    /**
+     * The [Lane.Kind.FREE] pool's threads. With the app lane and the models' pool, five on four
+     * cores: the app lane spends much of its time waiting on a window, a voice or an engine.
      */
     private const val FREE_THREADS = 2
 
     @JvmStatic
     fun request(request: Request, args: Bundle): Request {
+        Log.i(TAG, "the heap's limit: ${Runtime.getRuntime().maxMemory() / (1024 * 1024)} MB, ${Runtime.getRuntime().availableProcessors()} cores")
         val top = request.runner
         val children = (top as? ParentRunner<*>)?.let { childrenOf(it) } ?: return request
         if (children.isEmpty()) return request
@@ -97,10 +107,67 @@ object Lanes {
         return children.map { it as Runner }
     }
 
+    /**
+     * The most resident memory the process had while each test ran, sampled every 100 ms on a
+     * thread of its own while any test runs: what a class costs the emulator's memory, the
+     * thing the lanes are drawn by (the test's own with the lanes off).
+     */
+    private object Resident {
+        private val open = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<AtomicLong, Boolean>())
+
+        /** The Java heap in use now, in MB (the growth limit is 192 MB on the emulator). */
+        fun heapMb(): Long = Runtime.getRuntime().let { (it.totalMemory() - it.freeMemory()) / (1024 * 1024) }
+
+        private val heaps = java.util.concurrent.ConcurrentHashMap<AtomicLong, AtomicLong>()
+
+        init {
+            Thread({
+                while (true) {
+                    if (open.isNotEmpty()) {
+                        val now = residentMb()
+                        val heap = heapMb()
+                        for (most in open) {
+                            most.accumulateAndGet(now) { a, b -> maxOf(a, b) }
+                            heaps[most]?.accumulateAndGet(heap) { a, b -> maxOf(a, b) }
+                        }
+                    }
+                    Thread.sleep(100)
+                }
+            }, "lanes-resident").apply { isDaemon = true; start() }
+        }
+
+        fun watch(): AtomicLong = AtomicLong(residentMb()).also {
+            heaps[it] = AtomicLong(heapMb())
+            open += it
+        }
+
+        /** The most resident memory and the most Java heap the test saw, in MB. */
+        fun done(most: AtomicLong): Pair<Long, Long> {
+            open -= most
+            val heap = heaps.remove(most)?.accumulateAndGet(heapMb()) { a, b -> maxOf(a, b) } ?: heapMb()
+            return most.accumulateAndGet(residentMb()) { a, b -> maxOf(a, b) } to heap
+        }
+    }
+
+    /** The test process's resident memory now, in MB (`/proc/self/statm`'s resident pages). */
+    internal fun residentMb(): Long = try {
+        File("/proc/self/statm").readText().trim().split(" ")[1].toLong() *
+            android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) / (1024 * 1024)
+    } catch (_: Exception) {
+        -1
+    }
+
     fun laneOf(runner: Runner): Lane.Kind =
         runner.description.testClass?.getAnnotation(Lane::class.java)?.value ?: Lane.Kind.APP
 
-    /** The seconds each class took last time, for dealing the free lane longest first. */
+    /**
+     * [classes] longest first, by the seconds each took last time; a class not measured yet goes
+     * first of all, its length unknown.
+     */
+    private fun longestFirst(classes: List<Runner>, known: Map<String, Double>): ConcurrentLinkedQueue<Runner> =
+        ConcurrentLinkedQueue(classes.sortedByDescending { known[it.description.className] ?: Double.MAX_VALUE })
+
+    /** The seconds each class took last time, for dealing a pool's classes longest first. */
     private fun seconds(): Map<String, Double> = try {
         InstrumentationRegistry.getInstrumentation().context.assets.open("lanes/seconds.tsv")
             .bufferedReader().useLines { lines ->
@@ -126,12 +193,6 @@ object Lanes {
             val times = ConcurrentLinkedQueue<String>()
             val byLane = children.groupBy { laneOf(it) }
             val known = seconds()
-            // Longest first; a class not measured yet first of all, its length unknown.
-            val free = ConcurrentLinkedQueue(
-                byLane[Lane.Kind.FREE].orEmpty().sortedByDescending {
-                    known[it.description.className] ?: Double.MAX_VALUE
-                },
-            )
             fun runOne(child: Runner, lane: String) {
                 val relay = Relay(notifier, handOn, lane, began, times)
                 val local = RunNotifier().apply { addListener(relay) }
@@ -155,15 +216,21 @@ object Lanes {
             if (serial) {
                 lane("serial") { children.forEach { runOne(it, "serial") } }
             } else {
-                for (kind in listOf(Lane.Kind.APP, Lane.Kind.VISION, Lane.Kind.VOICE)) {
-                    val mine = byLane[kind].orEmpty()
-                    if (mine.isNotEmpty()) lane(kind.name.lowercase()) { mine.forEach { runOne(it, kind.name.lowercase()) } }
-                }
-                repeat(minOf(FREE_THREADS, free.size)) { i ->
-                    lane("free$i") {
-                        while (true) runOne(free.poll() ?: break, "free")
+                val app = byLane[Lane.Kind.APP].orEmpty()
+                if (app.isNotEmpty()) lane("app") { app.forEach { runOne(it, "app") } }
+                fun pool(name: String, threads: Int, kinds: List<Lane.Kind>) {
+                    val queue = longestFirst(kinds.flatMap { byLane[it].orEmpty() }, known)
+                    repeat(minOf(threads, queue.size)) { i ->
+                        lane("$name$i") {
+                            while (true) {
+                                val next = queue.poll() ?: break
+                                runOne(next, laneOf(next).name.lowercase())
+                            }
+                        }
                     }
                 }
+                pool("models", MODEL_THREADS, listOf(Lane.Kind.VISION, Lane.Kind.VOICE))
+                pool("free", FREE_THREADS, listOf(Lane.Kind.FREE))
             }
             threads.forEach { it.join() }
             val wall = (System.nanoTime() - began) / 1e9
@@ -176,7 +243,7 @@ object Lanes {
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val dir = context.getExternalFilesDir(null) ?: return
                 File(dir, "timings.tsv").writeText(
-                    "class\tmethod\tlane\tthread\tstart_s\tend_s\tprocess_cpu_s\n" + times.joinToString(""),
+                    "class\tmethod\tlane\tthread\tstart_s\tend_s\tprocess_cpu_s\tpeak_rss_mb\tpeak_heap_mb\n" + times.joinToString(""),
                 )
             } catch (exc: Exception) {
                 Log.w(TAG, "no timings written: $exc")
@@ -200,6 +267,7 @@ object Lanes {
         private var inTest = false
         private val started = AtomicLong()
         private val cpuAtStart = AtomicLong()
+        private var peak: AtomicLong? = null
 
         private fun now(): Double = (System.nanoTime() - began) / 1e9
 
@@ -216,7 +284,8 @@ object Lanes {
             inTest = true
             started.set(System.nanoTime())
             cpuAtStart.set(android.os.Process.getElapsedCpuTime())
-            held +={ it.fireTestStarted(description) }
+            peak = Resident.watch()
+            held += { it.fireTestStarted(description) }
         }
 
         override fun testFailure(failure: Failure) {
@@ -237,8 +306,9 @@ object Lanes {
             // The whole process's CPU over the test, every lane's: the test's own only with the
             // lanes off. Its engines' processes are not in it.
             val cpu = (android.os.Process.getElapsedCpuTime() - cpuAtStart.get()) / 1e3
+            val (rss, heap) = peak?.let { Resident.done(it) } ?: (residentMb() to Resident.heapMb())
             times += "${description.className}\t${description.methodName}\t$lane\t${Thread.currentThread().name}\t" +
-                "%.3f\t%.3f\t%.3f\n".format(java.util.Locale.ROOT, start, end, cpu)
+                "%.3f\t%.3f\t%.3f\t%d\t%d\n".format(java.util.Locale.ROOT, start, end, cpu, rss, heap)
             handOn(ArrayList(held))
             held.clear()
         }
