@@ -638,7 +638,9 @@ class ReviewRoom(
 
         // The loop's pace, and how long an untouched room lives.
         private const val TICK_MS = 250L
-        private const val IDLE_CLOSE_MS = 20 * 60 * 1000L
+        // Internal, not private, only so a test can ask `closing` at the room's own times (just
+        // touched, and idle past it) rather than at the real clock; nothing else changes.
+        internal const val IDLE_CLOSE_MS = 20 * 60 * 1000L
 
         // The last card's training: the motifs the game missed most, and puzzles of each.
         const val PRACTICE_MOTIFS = 2
