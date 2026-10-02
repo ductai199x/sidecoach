@@ -45,6 +45,10 @@ open class SettingsStore(private val context: Context) {
 
         /** The unreadable text last kept and logged, so a read of it again says it once. */
         var seenUnreadable: String? = null
+
+        /** The saved text last read and the settings it came to, checked ([values]). */
+        @Volatile
+        var checked: Pair<String, String>? = null
     }
 
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -67,27 +71,42 @@ open class SettingsStore(private val context: Context) {
     /** The settings the phone starts from, every field in the settings' own order. */
     fun defaults(): JSONObject = JSONObject(defaults.toString())
 
-    /** The settings as they stand: the defaults, with whatever was saved over them. */
+    private val schemaJson: JSONObject by lazy { JSONObject(schema) }
+
+    /**
+     * The settings as they stand: the defaults, with whatever was saved over them, field by
+     * field as the settings take them -- a saved value the settings refuse takes its default and
+     * the others stay, and the saved text is kept and the log says so (`config._read_settings`
+     * with `drop_refused`; read unchecked, a value past its bound reached the code).
+     */
     fun values(): JSONObject {
+        val saved = prefs.getString("json", null) ?: return withPaths(JSONObject(defaults.toString()))
+        // Checked once a saved text: the settings are read at every turn of the code.
+        val known = checked
+        if (known != null && known.first == saved) return withPaths(JSONObject(known.second))
         val out = JSONObject(defaults.toString())
-        val saved = prefs.getString("json", null) ?: return withPaths(out)
         val over = runCatching { JSONObject(saved) }.getOrNull()
         if (over == null) {
-            keepUnreadable(saved)
+            keepUnreadable(saved, "are not readable")
             return withPaths(out)
         }
         merge(out, over)
+        val refused = SettingsCheck.dropRefused(schemaJson, defaults, out)
+        if (refused.isNotEmpty()) {
+            keepUnreadable(saved, "have values the settings refuse, left at their defaults: ${refused.joinToString(", ")}")
+        }
+        checked = saved to out.toString()
         return withPaths(out)
     }
 
     /**
-     * Saved settings the phone cannot read are never run over in silence: they are kept in the
-     * app's files as `settings.unreadable-<when>.json` -- once: the same text found again keeps no
-     * second copy -- and the log says so. Read as the defaults and said nowhere, they were lost at
-     * the next save (`config._keep_unreadable`; Tai lost his settings, the settings review
-     * 2026-10-01).
+     * Saved settings the phone cannot read whole are never run over in silence: they are kept in
+     * the app's files as `settings.unreadable-<when>.json` -- once: the same text found again keeps
+     * no second copy -- and the log says so ([why]: not readable, or which values the settings
+     * refuse). Read as the defaults and said nowhere, they were lost at the next save
+     * (`config._keep_unreadable`; Tai lost his settings, the settings review 2026-10-01).
      */
-    private fun keepUnreadable(text: String) {
+    private fun keepUnreadable(text: String, why: String) {
         synchronized(UNREADABLE) {
             if (text == seenUnreadable) return
             seenUnreadable = text
@@ -96,7 +115,7 @@ open class SettingsStore(private val context: Context) {
             val same = folder.listFiles { f -> f.name.startsWith("settings.unreadable-") && f.name.endsWith(".json") }
                 ?.firstOrNull { runCatching { it.readBytes().contentEquals(bytes) }.getOrDefault(false) }
             val line = if (same != null) {
-                "the saved settings are not readable; they are kept as ${same.name}"
+                "the saved settings $why; they are kept as ${same.name}"
             } else {
                 val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(java.util.Date())
                 var copy = java.io.File(folder, "settings.unreadable-$stamp.json")
@@ -106,8 +125,8 @@ open class SettingsStore(private val context: Context) {
                     copy = java.io.File(folder, "settings.unreadable-$stamp-$n.json")
                 }
                 runCatching { copy.writeBytes(bytes) }.fold(
-                    { "the saved settings are not readable; they are kept as ${copy.name}" },
-                    { "the saved settings are not readable; no copy could be kept (${it.message})" },
+                    { "the saved settings $why; they are kept as ${copy.name}" },
+                    { "the saved settings $why; no copy could be kept (${it.message})" },
                 )
             }
             android.util.Log.w("sidecoach.settings", line)

@@ -89,6 +89,7 @@ class SettingsApi(val store: SettingsStore) {
             ) {
                 llmWanted.put("model", JSONObject.NULL)
             }
+            dropHeld(wanted)
             // The phone owns these; the page shows them and cannot move them.
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
@@ -176,6 +177,7 @@ class SettingsApi(val store: SettingsStore) {
                 }
                 PanelEngine.emit("sys", "warn", "${loc.joinToString(".")}: not kept for the next session (${error.optString("msg")})")
             }
+            dropHeld(wanted)
             wanted.put("data_dir", before.optString("data_dir"))
             wanted.put("tools_dir", before.optString("tools_dir"))
             try {
@@ -187,6 +189,19 @@ class SettingsApi(val store: SettingsStore) {
                 return
             }
             PanelEngine.settingsTouched()
+        }
+    }
+
+    /**
+     * A value the settings hold and refuse, which the change does not set, put back to its
+     * default, and the log says so: left, it refused every later save and mute for a field
+     * nobody had sent (the settings review, 2026-10-01). Only a field the change itself sets is
+     * refused; those were checked before this. `settings_api._validated` with `drop_refused`.
+     */
+    private fun dropHeld(wanted: JSONObject) {
+        val dropped = SettingsCheck.dropRefused(JSONObject(store.schema), store.defaults(), wanted)
+        if (dropped.isNotEmpty()) {
+            PanelEngine.emit("sys", "warn", "settings: ${dropped.joinToString(", ")} could not be kept, back at the default")
         }
     }
 
@@ -353,6 +368,33 @@ object SettingsCheck {
             }
         }
         return Result(values, errors)
+    }
+
+    /**
+     * Each field of [values] (a whole settings document) the settings refuse put back to its
+     * value in [defaults], in place, as the desktop's `drop_refused` takes it out of the data so
+     * it takes its default; the others stay. Checked again after each round, as
+     * `config._read_settings` and `settings_api._validated` validate again; returns the dotted
+     * names put back (`section.field`, or a top-level one).
+     */
+    fun dropRefused(schema: JSONObject, defaults: JSONObject, values: JSONObject): List<String> {
+        val dropped = ArrayList<String>()
+        repeat(values.length() + 1) { // each round puts at least one field back
+            val errors = validate(schema, defaults, values).errors
+            var took = false
+            for (i in 0 until errors.length()) {
+                val loc = errors.getJSONObject(i).getJSONArray("loc").let { a -> (0 until minOf(a.length(), 2)).map { a.get(it).toString() } }
+                if (loc.isEmpty()) continue
+                val holder = if (loc.size == 1) values else values.optJSONObject(loc[0]) ?: continue
+                val fallback = if (loc.size == 1) defaults.opt(loc[0]) else defaults.optJSONObject(loc[0])?.opt(loc[1])
+                if (holder.has(loc.last()) && holder.opt(loc.last())?.toString() == fallback?.toString()) continue // already the default
+                holder.put(loc.last(), copy(fallback))
+                dropped.add(loc.joinToString("."))
+                took = true
+            }
+            if (!took) return dropped
+        }
+        return dropped
     }
 
     /**

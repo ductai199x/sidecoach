@@ -612,9 +612,114 @@ class SettingsPhoneTest {
             assertEquals(mapOf("n" to 2, "tags" to listOf("a", "b")), extra["extra"])
             values.getJSONObject("capture").put("fps", 99)
             store.save(values)
-            assertEquals("kept in range", 30, store.captureFps())
+            // Past the field's bound (30): refused when the settings are read, so the default,
+            // as the desktop's start reads it (`config._read_settings`).
+            assertEquals("refused, the default", 10, store.captureFps())
         } finally {
             store.save(saved)
+            unreadableCopies().filter { "\"fps\":99" in it.readText() }.forEach { it.delete() }
         }
+    }
+
+    private fun unreadableCopies(): List<File> =
+        app.filesDir.listFiles { f -> f.name.startsWith("settings.unreadable-") }.orEmpty().toList()
+
+    /**
+     * Saved settings with a value the settings refuse are read field by field: that field takes
+     * its default, every other is kept, and the saved text is kept and said -- read unchecked, a
+     * value past its bound reached the code (the desktop's `config._read_settings` and
+     * `drop_refused`; the end of `test_a_settings_file_that_cannot_be_read_is_kept_not_run_over`).
+     */
+    @Test
+    fun aStoredValueTheSettingsRefuseTakesItsDefaultAndTheRestIsKept() {
+        val store = SettingsStore(app)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val stamp = System.nanoTime()
+        try {
+            val values = store.values()
+            values.getJSONObject("capture").put("fps", 99)
+            values.getJSONObject("profile").put("chesscom_user", "nosegazm-$stamp")
+            values.getJSONObject("coach").put("stuck_seconds", 61)
+            values.getJSONObject("voice").put("speed", "fast") // not a number
+            prefs.edit().putString("json", values.toString()).commit()
+            val cursor = PanelEngine.poll(0).getInt("cursor")
+            val read = store.values()
+            assertEquals("past its bound: the default", 10, read.getJSONObject("capture").getInt("fps"))
+            assertEquals("not a number: the default", 1.0, read.getJSONObject("voice").getDouble("speed"), 0.0)
+            assertEquals("nosegazm-$stamp", read.getJSONObject("profile").getString("chesscom_user"))
+            assertEquals(61, read.getJSONObject("coach").getInt("stuck_seconds"))
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            assertTrue(
+                "said, by field",
+                (0 until lines.length()).map { lines.getJSONObject(it).getString("text") }
+                    .any { "capture.fps" in it && "voice.speed" in it && "settings.unreadable-" in it },
+            )
+            assertEquals("the text is kept", 1, unreadableCopies().count { "nosegazm-$stamp" in it.readText() })
+        } finally {
+            unreadableCopies().filter { "nosegazm-$stamp" in it.readText() }.forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
+    /**
+     * A save of another field succeeds with a refused value held, and puts that value back to its
+     * default where it is kept: left, it refused every later save and mute for a field nobody had
+     * sent (`settings_api._validated` with `drop_refused`, the desktop's
+     * `test_a_change_is_never_dropped_for_a_value_already_held`). A field the change itself sets
+     * is still refused.
+     */
+    @Test
+    fun aSaveWithARefusedValueHeldSucceedsAndPutsItBack() {
+        val store = SettingsStore(app)
+        val api = SettingsApi(store)
+        val prefs = app.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val raw = prefs.getString("json", null)
+        val stamp = System.nanoTime()
+        try {
+            val values = store.values()
+            values.getJSONObject("capture").put("fps", 60)
+            values.getJSONObject("profile").put("chesscom_user", "nosegazm-$stamp")
+            prefs.edit().putString("json", values.toString()).commit()
+
+            val res = api.update(JSONObject().put("settings", JSONObject().put("profile", JSONObject().put("lichess_user", "tai"))))
+            assertTrue(res.toString(), res.getBoolean("ok"))
+            val kept = JSONObject(prefs.getString("json", null)!!)
+            assertEquals("back at the default where it is kept", 10, kept.getJSONObject("capture").getInt("fps"))
+            assertEquals("tai", kept.getJSONObject("profile").getString("lichess_user"))
+            assertEquals("nosegazm-$stamp", kept.getJSONObject("profile").getString("chesscom_user"))
+
+            api.remember(JSONObject().put("voice", JSONObject().put("muted", true)))
+            assertTrue("a switch is kept too", store.muted())
+
+            val refused = api.update(JSONObject().put("settings", JSONObject().put("capture", JSONObject().put("fps", 60))))
+            assertFalse("the change's own field is refused", refused.getBoolean("ok"))
+            assertEquals("[\"capture\",\"fps\"]", refused.getJSONArray("errors").getJSONObject(0).getJSONArray("loc").toString())
+        } finally {
+            unreadableCopies().filter { "nosegazm-$stamp" in it.readText() }.forEach { it.delete() }
+            if (raw == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", raw).commit()
+        }
+    }
+
+    /**
+     * The save-time half on its own ([SettingsCheck.dropRefused], `drop_refused`): a document
+     * holding refused values has each put back to its default, by name, and the others stay.
+     */
+    @Test
+    fun refusedFieldsArePutBackToTheirDefaultsByName() {
+        val store = SettingsStore(app)
+        val schema = JSONObject(store.schema)
+        val values = store.defaults()
+        values.getJSONObject("capture").put("fps", 60)
+        values.getJSONObject("engine").put("depth", 999)
+        values.getJSONObject("profile").put("chesscom_user", "nosegazm")
+        values.put("board", "not a section")
+        val dropped = SettingsCheck.dropRefused(schema, store.defaults(), values)
+        assertEquals(setOf("capture.fps", "engine.depth", "board"), dropped.toSet())
+        assertEquals(10, values.getJSONObject("capture").getInt("fps"))
+        assertEquals(store.defaults().getJSONObject("engine").getInt("depth"), values.getJSONObject("engine").getInt("depth"))
+        assertEquals(store.defaults().getJSONObject("board").toString(), values.getJSONObject("board").toString())
+        assertEquals("nosegazm", values.getJSONObject("profile").getString("chesscom_user"))
+        assertEquals("nothing more", emptyList<String>(), SettingsCheck.dropRefused(schema, store.defaults(), values))
     }
 }
