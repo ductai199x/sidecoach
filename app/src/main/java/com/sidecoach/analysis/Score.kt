@@ -194,9 +194,10 @@ fun standing(score: Double): Int = when {
  * - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent": the
  *   position offered a winning chance ([chance], read by [verdict] from the engine's lines) and
  *   the move played gave ground (a loss of an inaccuracy or more), whatever the size of the
- *   loss (Tai, 2026-10-02). A forced mate let go by a move that still wins as much -- under an
- *   inaccuracy's loss -- is labelled by that loss, never "inaccuracy": chess.com left five such
- *   moves of the six games unmarked.
+ *   loss (Tai, 2026-10-02). And a forced mate let go ([mateLetGo], read by [verdict]): the
+ *   player had a mate in N and the move played leaves none, or only a longer one -- a miss
+ *   whatever it cost, even while it still wins; a move that keeps a mate as short is labelled by
+ *   its loss (Tai, 2026-10-02 12:16).
  * - Great, "a move that altered the course of the game": the best move where every other lost
  *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
  *   Merely the best move after any error was great 30 times in the six games where chess.com
@@ -221,6 +222,7 @@ fun labelMove(
     opponentBlundered: Boolean,
     secondScore: Double? = null,
     chance: Boolean = false,
+    mateLetGo: Boolean = false,
     mateAllowed: Boolean = false,
     obvious: Boolean = false,
 ): Label {
@@ -228,10 +230,11 @@ fun labelMove(
     // Walking into a mate from a lost position is not the move that lost: chess.com leaves
     // those unmarked (eleven of them in the six games, the best move among them).
     val allowed = mateAllowed && !lost && !isBest
-    // A mate let go is a winning chance let go (`chance`): flagged only by what it cost, so the
-    // engine's own first move, or one that keeps the win, is never an inaccuracy for it.
+    // A mate let go is a miss of its own ([mateLetGo]), never flagged by what it cost: the
+    // engine's own first move, or one that keeps a mate as short, is never an inaccuracy.
     val flagged = !gradedGood(loss, thresholds) || allowed
     if (inBook && loss < thresholds.mistake) return Label.BOOK
+    if (mateLetGo && !isBest) return Label.MISS
     if (flagged && chance && !isBest) return Label.MISS
     if (allowed) return Label.BLUNDER
     if (!flagged) {
@@ -260,19 +263,46 @@ data class Previous(val loss: Double, val to: Int, val captured: Boolean)
  * Whether the move from the position measured by [beforeLines] to [after] let a winning chance
  * go, read off the engine's own lines (Tai, 2026-10-02: chess.com's miss -- the opponent's error
  * or a tactic already on the board, whichever gave it). The chance: the best line stood better
- * or winning ([standing] 3 or more, from 0.62), and the move played leaves a lower band; or the
- * best line mates, and the move played does not (nor mates itself, nor leaves a mate the engine
- * still sees). The engine's evaluation decides, not where the chance came from: an opponent's
- * error that left the player no better was no chance to win. `score.winning_chance`.
+ * or winning ([standing] 3 or more, from 0.62), and the move played leaves a lower band. The
+ * engine's evaluation decides, not where the chance came from: an opponent's error that left the
+ * player no better was no chance to win. A position with a forced mate is read by its mate
+ * instead ([mateLetGo]). `score.winning_chance`.
  */
 fun winningChance(after: Board, beforeLines: List<Line>, afterLines: List<Line>, beforeScore: Double): Boolean {
     val top = beforeLines.firstOrNull()
-    val afterTop = afterLines.firstOrNull()
-    if (top?.mate != null && top.mate > 0) {
-        return !after.isCheckmate() && !(afterTop?.mate != null && afterTop.mate < 0)
-    }
+    if (top?.mate != null && top.mate > 0) return false
     val left = 1.0 - positionScore(after, afterLines)
     return standing(beforeScore) >= standing(BETTER_FROM) && standing(left) < standing(beforeScore)
+}
+
+/**
+ * The player's shortest forced mate once [move] is played, counted as the engine counts a mate
+ * before it -- in the player's own moves, the one played included -- or null when the move
+ * leaves none. Like is compared with like: when the search before the move has a line for the
+ * move played (its candidates), that line's mate is the answer, the same search and depth the
+ * mate it is set against comes from; else the search after the move, whose mate against the
+ * opponent (in their moves) is one of the player's longer. `score.mate_after`.
+ */
+fun mateAfter(move: Move, after: Board, beforeLines: List<Line>, afterLines: List<Line>): Int? {
+    if (after.isCheckmate()) return 1
+    for (line in beforeLines) {
+        if (line.moves.firstOrNull() == move.uci()) return if (line.mate != null && line.mate > 0) line.mate else null
+    }
+    val top = afterLines.firstOrNull()
+    return if (top?.mate != null && top.mate < 0) 1 - top.mate else null
+}
+
+/**
+ * The player had a forced mate in N, and [move] leaves none or only a longer one (Tai,
+ * 2026-10-02 12:16: a mate in 5 traded for a move that keeps the advantage is a miss, a mate in
+ * 1 traded for a mate in 2 is a miss, another mate in 3 for a mate in 3 is fine). The engine's
+ * own first move is never one ([labelMove] checks it). `score.mate_let_go`.
+ */
+fun mateLetGo(move: Move, after: Board, beforeLines: List<Line>, afterLines: List<Line>): Boolean {
+    val top = beforeLines.firstOrNull()
+    if (top?.mate == null || top.mate <= 0) return false
+    val kept = mateAfter(move, after, beforeLines, afterLines)
+    return kept == null || kept > top.mate
 }
 
 /**
@@ -323,6 +353,7 @@ fun verdict(
         opponentBlundered = erred >= thresholds.blunder,
         secondScore = beforeLines.getOrNull(1)?.expectedScore,
         chance = winningChance(after, beforeLines, afterLines, beforeScore),
+        mateLetGo = mateLetGo(move, after, beforeLines, afterLines),
         mateAllowed = mateAllowed,
         obvious = obvious,
     )
