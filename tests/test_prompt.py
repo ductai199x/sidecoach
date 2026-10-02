@@ -100,6 +100,9 @@ def test_the_shipped_corrections_file_exists_and_is_read() -> None:
     assert prompt.CORRECTIONS_PATH.exists()
     prompt.corrections.cache_clear()
     assert prompt.corrections() == prompt.CORRECTIONS_PATH.read_text(encoding="utf-8").strip()
+    # An example is in the words it asks for: "White is clearly ahead" was neither the
+    # message's word nor "you" (the deep prompt review, 2026-10-01).
+    assert "clearly ahead" not in prompt.corrections()
 
 
 def test_the_model_is_never_told_of_messages_it_does_not_get() -> None:
