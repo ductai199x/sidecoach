@@ -109,12 +109,17 @@ fun worseMoves(board: Board, analysis: Analysis, player: Boolean, limit: Int = M
 fun worseText(worse: List<Worse>): String = worse.joinToString("; ") { "${it.san} ${it.wrong}" }
 
 /** The same as the coach says it to the player, for the template: a sentence per move. */
-fun worseSaid(worse: List<Worse>): String =
-    worse.joinToString(" ") { "${it.san} is clearly worse: it ${it.wrong}." }
+fun worseSaid(worse: List<Worse>, past: Boolean = false): String {
+    // [past]: of the position the player has moved from ("was clearly worse there").
+    val verb = if (past) "was clearly worse there" else "is clearly worse"
+    return worse.joinToString(" ") { "${it.san} $verb: it ${it.wrong}." }
+}
 
 /** "Nf6, Bc5 and Be7 are all fine here -- about equally good.", or the one move that is. */
-fun fineSaid(fine: List<String>): String {
-    if (fine.size == 1) return "${fine[0]} is the move here."
+fun fineSaid(fine: List<String>, past: Boolean = false): String {
+    // [past]: of the position the player has moved from ("were all fine there").
+    if (fine.size == 1) return if (past) "${fine[0]} was the move there." else "${fine[0]} is the move here."
     val names = fine.dropLast(1).joinToString(", ") + " and ${fine.last()}"
+    if (past) return "$names were all fine there -- about equally good."
     return "$names are all fine here -- about equally good."
 }

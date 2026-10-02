@@ -1901,6 +1901,8 @@ class CoachTest {
             "ok and after that?" to Unlock.ASK_LINE,
             "how would this position continues?" to Unlock.ASK_LINE,
             "which move should I play?" to Unlock.ASK_MOVE,
+            "which move?" to Unlock.ASK_MOVE, // bare, the whole question (desktop 9416b99, 0da008b)
+            "ok, which move ?" to Unlock.ASK_MOVE,
             "which move is best?" to Unlock.ASK_MOVE,
             "just tell me the answer" to Unlock.ASK_MOVE,
             "what's the answer to their threat?" to Unlock.ASK_MOVE,
