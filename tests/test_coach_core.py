@@ -22,16 +22,19 @@ from sidecoach.events import (
 )
 from tests.coaching import (
     SCHOLAR,
+    directive_of,
     drain,
+    harness_of,
     mate_analysis,
     mate_missed,
     offline_coach,
     play_to_scholar,
+    sent,
     start_game,
     stuck,
 )
 from tests.fakes import ScriptedProvider
-from tests.test_coach import _judged, _played
+from tests.test_coach import _judged, _looked, _played
 
 
 def _levels(messages: list) -> list[DisclosureLevel]:
@@ -157,6 +160,50 @@ def test_a_reply_checked_while_a_new_game_starts_is_still_the_old_games() -> Non
     assert [e for e in coach.conversation.entries if e.kind == "coach"] == [], (
         "no turn of the new game"
     )
+
+
+# "That move" after a bot's instant reply is the player's own
+
+
+def _asked_after_the_reply(reply_ts: float) -> tuple[Coach, ScriptedProvider]:
+    """Bxf7+ from SCHOLAR (a miss), answered by Kxf7 at `reply_ts`, then "why was that bad?"."""
+    provider = ScriptedProvider(
+        ["Qxf7 was mate on the spot.", "It gave the bishop away for a pawn."]
+    )
+    coach = Coach(provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)))
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    mate_missed(coach, 10.0)
+    drain(coach)
+    board = chess.Board(SCHOLAR)
+    board.push_san("Bxf7+")
+    _played(coach, board, 8, "e8f7", False, reply_ts)
+    _looked(coach, board, 8, ["h5f3", "h5h4"], reply_ts + 0.5)
+    coach.ask("why was that bad?", reply_ts + 2.0)
+    drain(coach)
+    return coach, provider
+
+
+def test_that_move_after_an_instant_reply_is_the_players_own_last_move() -> None:
+    """The opponent's reply was last on the board and "why was that bad?" went to the generic
+    branch, with no sheet of the position the player faced: the model critiqued the
+    opponent's move. The reply came straight away, so "that" is the player's own move
+    (Tai, 2026-10-01)."""
+    coach, provider = _asked_after_the_reply(10.5)
+    harness = harness_of(sent(provider))
+    assert "The position they faced, before Bxf7+" in harness
+    directive = directive_of(sent(provider))
+    assert "They ask about the move they already played, Bxf7+" in directive
+    assert 'By "that" they mean Bxf7+' in directive and "Kxf7" in directive
+    assert coach.user_to_move
+
+
+def test_that_move_after_a_slow_reply_stays_with_the_model() -> None:
+    """A human's reply a long time after the player's move: the player faced the position in
+    between, and what "that" is is the model's to read from the record."""
+    _, provider = _asked_after_the_reply(40.0)
+    assert "They ask about the move they already played" not in directive_of(sent(provider))
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves

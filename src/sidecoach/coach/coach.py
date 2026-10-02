@@ -1195,6 +1195,10 @@ FAST_PACE_S = 6.0
 PACE_MOVES = 4
 # How many plies back the coach keeps a position and its facts.
 POSITIONS_KEPT = 40
+# An opponent's move that follows the player's within this many seconds came straight away
+# (a bot): the player never faced the position in between, and "that move" they ask about
+# is their own (`Coach._replied_at_once`).
+INSTANT_REPLY_S = 2.0
 # How long the lesson on a mistake waits for the analysis of the position the move left:
 # the verdict comes first, from the best line alone, and the analysis about a second after
 # it -- without it the lesson had no "what your move allowed" (the parity audit, 2026-09-25).
@@ -2457,6 +2461,8 @@ class Coach:
         self.board = chess.Board()
         self.positions: dict[int, _Position] = {}
         self.moves: dict[int, MovePlayed] = {}
+        # When each move of `moves` arrived (the loop's clock).
+        self._moved_at: dict[int, float] = {}
         # The game as the model sees it: one message per move, the coach's turns between.
         self.conversation = Conversation(compact_record=compact_record)
         self.spoken: list[Spoken] = []
@@ -2949,6 +2955,7 @@ class Coach:
         self.board = chess.Board(event.start_fen)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
+        self._moved_at = {}
         self.conversation.new_game(event, profile=self._profile_lines())
         self._think_s.clear()
         self._mistakes = 0
@@ -3127,6 +3134,7 @@ class Coach:
             self._pending_ask = None  # they played on: the question is answered by the move
         self.board = board_after(self.board, event)
         self.moves[event.ply] = event
+        self._moved_at[event.ply] = ts
         self.conversation.move(event)
         position = _Position(ply=event.ply, board=self.board.copy(), last_move=event.san)
         self.positions[event.ply] = position
@@ -3168,6 +3176,8 @@ class Coach:
         # The withdrawn moves go too: a late word on one was taken for the move that replaced it.
         for gone in [p for p in self.moves if p > ply]:
             del self.moves[gone]
+        for gone in [p for p in self._moved_at if p > ply]:
+            del self._moved_at[gone]
         position = self.positions.get(ply)
         if position is None:
             position = _Position(ply=ply, board=self.board.copy())
@@ -3188,6 +3198,7 @@ class Coach:
         self.conversation.resync(event, self.board)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
+        self._moved_at = {}
         self._current = self.positions[0]
         # The pace is the position's play, as a game's own: the next puzzle in the same
         # orientation comes as a re-read, and the last one's quick finish made its first find
@@ -3644,7 +3655,11 @@ class Coach:
         answered four times running as a question about that move, from the position before
         it ("Best, and it cost nothing: Rxf1+ ...", Tai's puzzle, 2026-09-28)."""
         if _ASK_LAST_MOVE.search(text) or _ASK_COST.search(text):
-            return self._last_own_move(mine=bool(_MY_MOVE.search(text)))
+            # After a reply that came straight away "that move" is theirs too: they never
+            # faced the position between (the opponent's move is last on the board, and the
+            # model took it for the one asked about).
+            mine = bool(_MY_MOVE.search(text)) or self._replied_at_once()
+            return self._last_own_move(mine=mine)
         if self.finished or self.user_to_move or not self._offline:
             return None
         elsewhere = (
@@ -3659,6 +3674,18 @@ class Coach:
         if any(pattern.search(text) for pattern in elsewhere):
             return None
         return self._last_own_move()
+
+    def _replied_at_once(self) -> bool:
+        """Whether the last move on the board is the opponent's and came straight after the
+        player's own (`INSTANT_REPLY_S` by the loop's clock): a bot's."""
+        if not self.moves:
+            return False
+        last = max(self.moves)
+        reply, own = self.moves.get(last), self.moves.get(last - 1)
+        if reply is None or own is None or reply.by_user or not own.by_user:
+            return False
+        sent, answered = self._moved_at.get(own.ply), self._moved_at.get(reply.ply)
+        return sent is not None and answered is not None and 0 <= answered - sent <= INSTANT_REPLY_S
 
     def _last_opponent_move(self) -> PlyRecord | None:
         """The opponent's move, when it is the last move played and has its verdict."""
@@ -4910,6 +4937,13 @@ class Coach:
                         else f" {NO_FIGURES}"
                     )
                     + f" {TIE_TO_THE_GAME}"
+                )
+            reply = self.moves.get(record.move.ply + 1)
+            if reply is not None and not reply.by_user and self._replied_at_once():
+                # The opponent's move is last on the board; theirs is the one they ask about.
+                directive += (
+                    f' By "that" they mean {san}, their own move: {reply.san}, which the '
+                    "opponent played straight after it, is not what they ask about."
                 )
             if followup and not asks:
                 fallback = ""  # a nod needs no template: nothing, rather than the verdict again
