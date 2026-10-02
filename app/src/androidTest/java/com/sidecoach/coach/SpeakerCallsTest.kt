@@ -13,9 +13,7 @@ import com.sidecoach.llm.Transport
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -87,26 +85,43 @@ class SpeakerCallsTest {
         }
     }
 
-    /** A rate limit is waited out once, inside the provider's timeout, with the same request. */
+    /**
+     * A rate limit is waited out once, inside the provider's timeout, with the same request. Time
+     * is the test's: a clock it moves and a wait it records, no real delay.
+     */
     @Test
     fun aRateLimitIsWaitedOutOnceWithinTheTimeout() {
-        val before = RATE_BACKOFF_S
-        try {
-            RATE_BACKOFF_S = 0.05
-            var transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
-            var spoken = Speaker(provider(transport)).speakNow(request())
-            assertEquals(2, transport.bodies.size)
-            assertEquals(transport.bodies[0], transport.bodies[1])
-            assertEquals("Develop the knight to f3.", spoken.message.text)
-            // No time left for the wait: the template after one call.
-            RATE_BACKOFF_S = 5.0
-            transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
-            spoken = Speaker(provider(transport, timeoutS = 1.0)).speakNow(request())
-            assertEquals(1, transport.bodies.size)
-            assertEquals("TEMPLATE", spoken.message.text)
-        } finally {
-            RATE_BACKOFF_S = before
-        }
+        var now = 100_000_000_000L
+        val waits = ArrayList<Double>()
+
+        fun speaker(transport: Transport, timeoutS: Double = 60.0, closedMeanwhile: Boolean = false) =
+            Speaker(provider(transport, timeoutS)).apply {
+                clockNs = { now }
+                pause = { seconds ->
+                    waits.add(seconds)
+                    now += (seconds * 1e9).toLong()
+                    closedMeanwhile
+                }
+            }
+
+        var transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
+        var spoken = speaker(transport).speakNow(request())
+        assertEquals(listOf(RATE_BACKOFF_S), waits)
+        assertEquals(2, transport.bodies.size)
+        assertEquals(transport.bodies[0], transport.bodies[1])
+        assertEquals("Develop the knight to f3.", spoken.message.text)
+        // No room left in the provider's timeout for the wait: the template after one call.
+        waits.clear()
+        transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
+        spoken = speaker(transport, timeoutS = RATE_BACKOFF_S).speakNow(request())
+        assertTrue(waits.isEmpty())
+        assertEquals(1, transport.bodies.size)
+        assertEquals("TEMPLATE", spoken.message.text)
+        // Closed during the wait: the template, and no second call.
+        transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
+        spoken = speaker(transport, closedMeanwhile = true).speakNow(request())
+        assertEquals(1, transport.bodies.size)
+        assertEquals("TEMPLATE", spoken.message.text)
     }
 
     /** A call lost after it reached the server is billed: counted; a refused connection is not. */
@@ -147,15 +162,16 @@ class SpeakerCallsTest {
         assertEquals(com.sidecoach.llm.KNOWN_PRICES.getValue("gpt-5.6-luna").prompt!!, luna["cost"] as Double, 1e-9)
     }
 
-    /** A model that takes a while a call, and says when it has started one. */
-    private class Slow : LLMProvider {
-        override val name = "slow"
+    /** A model whose call waits for the test to let it finish. */
+    private class Held : LLMProvider {
+        override val name = "held"
         val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
 
         @Volatile
         var calls = 0
 
-        override fun healthcheck(): Pair<Boolean, String> = true to "slow"
+        override fun healthcheck(): Pair<Boolean, String> = true to "held"
 
         override fun chat(
             system: String,
@@ -166,7 +182,7 @@ class SpeakerCallsTest {
         ): Completion {
             calls += 1
             started.countDown()
-            Thread.sleep(300)
+            release.await()
             return Completion(text = "Fine move.")
         }
     }
@@ -174,16 +190,22 @@ class SpeakerCallsTest {
     /** Closing drops what is queued: the call in flight finishes, nothing behind it is asked. */
     @Test
     fun closingDropsWhatIsQueued() {
-        val model = Slow()
+        val model = Held()
         val speaker = Speaker(model)
         speaker.start()
         for (trigger in listOf(Trigger.POST_MOVE, Trigger.USER_ASK, Trigger.USER_ASK, Trigger.USER_ASK)) {
             speaker.submit(request(trigger))
         }
-        assertTrue(model.started.await(5, TimeUnit.SECONDS))
-        speaker.close(5000)
-        Thread.sleep(500)
+        model.started.await()
+        val closer = Thread { speaker.close(60000) }
+        closer.start()
+        try {
+            speaker.awaitClosing() // close has emptied the queue and waits on the call in flight
+        } finally {
+            model.release.countDown()
+        }
+        closer.join()
         assertEquals(1, model.calls)
-        assertFalse(speaker.pending > 0)
+        assertEquals(0, speaker.pending)
     }
 }
