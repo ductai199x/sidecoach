@@ -221,7 +221,6 @@ class CoachSessionTest {
                 checkCalls("$where call", freshCalls, wanted)
                 check("$where fallbacks", coach.speaker.fallbacks, step.getInt("fallbacks"))
                 check("$where failures", coach.speaker.failures, step.getInt("failures"))
-                check("$where dropped", coach.speaker.dropped, step.getInt("dropped"))
                 check(
                     "$where last reason",
                     coach.policy.lastReason,

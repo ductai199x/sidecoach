@@ -1412,8 +1412,13 @@ fun boardBack(board: Board, fen: String): Board {
 const val FAST_PACE_S = 6.0
 const val PACE_MOVES = 4
 
-/** What a player's question makes stale while it waits unstarted: a word on a move, a nudge. */
-internal val STALE_BY_AN_ASK = setOf(Trigger.POST_MOVE, Trigger.STUCK, Trigger.DECISIVE_QUESTION)
+/**
+ * The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
+ * The hint was said first -- the ladder and the policy count it already -- and the answer, at
+ * the next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a
+ * higher (Tai, 2026-09-29: "if the level higher was said then the lower one can't be said").
+ */
+internal val UNASKED_HINTS = setOf(Trigger.STUCK, Trigger.DECISIVE_QUESTION)
 
 /** How many plies back the coach keeps a position and its facts. */
 const val POSITIONS_KEPT = 40
@@ -1797,9 +1802,6 @@ class Speaker(
     var fallbacks = 0
         internal set
 
-    /** Unprompted requests an ask overtook before they started. */
-    var dropped = 0
-        internal set
     var lastError: String? = null
 
     private val requests = LinkedBlockingQueue<Any>()
@@ -1890,12 +1892,13 @@ class Speaker(
     }
 
     /**
-     * Queue a request. An ask goes ahead of any unprompted request still waiting: the player
-     * is waiting for this one, and a post-move remark or a nudge that has not started yet
-     * would only be stale by the time the answer came out. A lesson on a mistake and the review
-     * are no remark: the player's question does not make them stale, and dropped, the rule they
-     * were charged against and the question they were to end with ([CoachSession.elicitDue])
-     * went unsaid -- they wait for the answer instead.
+     * Queue a request. An ask goes ahead of a word on a move, a lesson and the review still
+     * waiting: the player is waiting for this one, and they wait for the answer and go after it.
+     * Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message should
+     * come out in the same correct order"): a remark dropped here was never seen, and a lesson
+     * dropped took the rule it was charged against and the question it was to end with
+     * ([CoachSession.elicitDue]) with it. A hint said unasked keeps its place ahead of the ask
+     * ([UNASKED_HINTS]).
      */
     fun submit(request: CoachRequest) {
         if (request.trigger != Trigger.USER_ASK) {
@@ -1904,13 +1907,13 @@ class Speaker(
         }
         val waiting = ArrayList<Any>()
         while (true) waiting.add(requests.poll() ?: break)
-        val ahead = ArrayList<Any>() // said already, and the asks before this one
+        val ahead = ArrayList<Any>() // said already, the asks before this one, the hints
         val behind = ArrayList<Any>()
         for (item in waiting) {
-            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK) {
+            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK ||
+                item.trigger in UNASKED_HINTS
+            ) {
                 ahead.add(item)
-            } else if (item.trigger in STALE_BY_AN_ASK) {
-                dropped += 1
             } else {
                 behind.add(item)
             }

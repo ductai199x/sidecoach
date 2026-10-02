@@ -589,7 +589,7 @@ class CoachCoreTest {
     }
 
     @Test
-    fun aQuestionOvertakesARemarkButNotTheLessonOrTheReview() {
+    fun aQuestionDropsNothingQueued() {
         val coach = offlineCoach()
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
@@ -599,11 +599,17 @@ class CoachCoreTest {
         )) {
             speaker.submit(request)
         }
-        assertEquals(2, speaker.dropped)
-        assertEquals(3, speaker.pending)
+        // Nothing is dropped (Tai, 2026-10-02); the stuck hint, said first, stays first.
+        assertEquals(5, speaker.pending)
         speaker.runPending()
         assertEquals(
-            listOf(Trigger.USER_ASK, Trigger.POST_MISTAKE, Trigger.REVIEW),
+            listOf(
+                Trigger.STUCK,
+                Trigger.USER_ASK,
+                Trigger.POST_MISTAKE,
+                Trigger.REVIEW,
+                Trigger.POST_MOVE,
+            ),
             speaker.poll().map { it.message.trigger },
         )
     }

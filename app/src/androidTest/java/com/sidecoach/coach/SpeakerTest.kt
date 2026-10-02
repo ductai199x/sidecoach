@@ -384,11 +384,11 @@ class SpeakerTest {
     }
 
     /**
-     * An ask goes ahead of the unprompted requests still waiting: they would only be stale by
-     * the time its answer came out (`test_coach.py`).
+     * An ask goes ahead of a remark still waiting, never instead of it (Tai, 2026-10-02: no reply
+     * is dropped); the stuck hint, said first, stays first (`test_coach.py`).
      */
     @Test
-    fun anAskOvertakesUnpromptedRequestsStillWaiting() {
+    fun anAskOvertakesARemarkStillWaiting() {
         val speaker = Speaker(Streaming("[p=1.0] x"))
         fun ask(trigger: Trigger) = CoachRequest(
             trigger = trigger,
@@ -404,9 +404,12 @@ class SpeakerTest {
         speaker.submit(ask(Trigger.STUCK))
         speaker.submit(ask(Trigger.POST_MOVE))
         speaker.submit(ask(Trigger.USER_ASK))
-        assertTrue(speaker.dropped == 2 && speaker.pending == 1)
+        assertEquals(3, speaker.pending)
         speaker.runPending()
-        assertEquals(listOf(Trigger.USER_ASK), speaker.poll().map { it.message.trigger })
+        assertEquals(
+            listOf(Trigger.STUCK, Trigger.USER_ASK, Trigger.POST_MOVE),
+            speaker.poll().map { it.message.trigger },
+        )
     }
 
     companion object {

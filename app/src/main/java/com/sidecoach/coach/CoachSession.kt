@@ -640,11 +640,16 @@ class Coach(
             is MoveAssessment -> onAssessment(event, ts)
             is ClockObservation -> onClock(event, ts)
             is Takeback -> {
-                heldLesson = null // the move it was on is gone
+                // A lesson held for its analysis is said now, in the moment it was about, before
+                // the takeback starts another: shown in its place, not spoken, no turn of the
+                // moment after ([poll]). Dropped, the lesson on a mistake taken back at once was
+                // never seen (Tai, 2026-10-02: no reply or lesson is dropped because its moment
+                // passed).
+                releaseLesson(ts)
                 onTakeback(event, ts)
             }
             is Resync -> {
-                heldLesson = null
+                releaseLesson(ts) // as at a takeback
                 onResync(event, ts)
             }
             is GameEnded -> {
@@ -1125,10 +1130,13 @@ class Coach(
     }
 
     private fun newGame(event: GameStarted, ts: Double) {
+        // A lesson held for its analysis is the last game's: said now, in that game's moment,
+        // before this one starts -- shown in its place, not spoken, and no turn of this game
+        // ([poll]). Kept, the next tick said it in this one, over its first position (the coach
+        // review, 2026-10-01); dropped, it was never seen (Tai, 2026-10-02: no reply or lesson
+        // is dropped because its moment passed).
+        releaseLesson(ts)
         epoch += 1
-        // A lesson held for its analysis is the last game's: kept, the next tick said it in this
-        // one, over this one's first position (the coach review, 2026-10-01).
-        heldLesson = null
         gameId = event.gameId
         userSide = event.userSide
         kind = event.kind
