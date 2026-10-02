@@ -1,15 +1,13 @@
 package com.sidecoach.ui
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
-import com.sidecoach.analysis.GameReviewParityTest
+import com.sidecoach.TestAssets
+import com.sidecoach.analysis.GameReviewParity
 import com.sidecoach.chess.Board
 import com.sidecoach.events.ReviewJson
-import com.sidecoach.profile.LibraryParityTest
+import com.sidecoach.profile.LibraryRows
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.junit.runner.RunWith
 import java.time.ZoneOffset
 
 /**
@@ -19,15 +17,13 @@ import java.time.ZoneOffset
  * answered), the explorer of the games, each game's PGN with side lines grafted on (annotated
  * with the review and the AI coach's words, and plain), the file names, the move comments.
  */
-@RunWith(AndroidJUnit4::class)
 class ReviewAnalysisParityTest {
     private val fixture: JSONObject by lazy {
-        val context = InstrumentationRegistry.getInstrumentation().context
-        JSONObject(context.assets.open("ui/analysis.json").bufferedReader().use { it.readText() })
+        JSONObject(TestAssets.text("ui/analysis.json"))
     }
 
     private fun same(path: String, mine: Any?, theirs: Any?, failures: MutableList<String>) =
-        GameReviewParityTest.same(path, mine, theirs, failures)
+        GameReviewParity.same(path, mine, theirs, failures)
 
     @Test
     fun positionsAndMovesAreTheDesktops() {
@@ -68,7 +64,7 @@ class ReviewAnalysisParityTest {
     @Test
     fun theExplorerIsTheDesktops() {
         val failures = ArrayList<String>()
-        val rows = fixture.getJSONArray("rows").let { r -> (0 until r.length()).map { LibraryParityTest.libraryRow(r.getJSONObject(it)) } }
+        val rows = fixture.getJSONArray("rows").let { r -> (0 until r.length()).map { LibraryRows.libraryRow(r.getJSONObject(it)) } }
         val explorer = ReviewAnalysis.Explorer(rows)
         val explore = fixture.getJSONArray("explore")
         for (i in 0 until explore.length()) {
@@ -84,7 +80,7 @@ class ReviewAnalysisParityTest {
         val pgns = fixture.getJSONArray("pgn")
         for (i in 0 until pgns.length()) {
             val p = pgns.getJSONObject(i)
-            val row = LibraryParityTest.libraryRow(p.getJSONObject("row"))
+            val row = LibraryRows.libraryRow(p.getJSONObject("row"))
             val got = ReviewAnalysis.pgn(
                 row,
                 p.getJSONArray("moves"),
@@ -97,7 +93,7 @@ class ReviewAnalysisParityTest {
         val names = fixture.getJSONArray("names")
         for (i in 0 until names.length()) {
             val n = names.getJSONObject(i)
-            val got = ReviewAnalysis.pgnName(LibraryParityTest.libraryRow(n.getJSONObject("row")), ZoneOffset.UTC)
+            val got = ReviewAnalysis.pgnName(LibraryRows.libraryRow(n.getJSONObject("row")), ZoneOffset.UTC)
             if (got != n.getString("out")) failures.add("name $i: '$got', python '${n.getString("out")}'")
         }
         val comments = fixture.getJSONArray("comments")

@@ -19,6 +19,9 @@ object TestAssets {
 
     fun text(path: String): String = open(path).bufferedReader(Charsets.UTF_8).use { it.readText() }
 
+    /** The names in a fixture folder, as AssetManager.list gives them (none for a missing folder). */
+    fun list(path: String): List<String> = File(fixtures, path).list().orEmpty().sorted()
+
     /** An asset of the app itself (`main/assets`), as the app's AssetManager gives it. */
     fun openApp(path: String): InputStream = read(app, path)
 

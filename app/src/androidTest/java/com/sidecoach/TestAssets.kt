@@ -15,6 +15,10 @@ object TestAssets {
 
     fun text(path: String): String = open(path).bufferedReader(Charsets.UTF_8).use { it.readText() }
 
+    /** The names in a fixture folder (none for a missing folder). */
+    fun list(path: String): List<String> =
+        InstrumentationRegistry.getInstrumentation().context.assets.list(path).orEmpty().toList()
+
     /** An asset of the app itself (`main/assets`). */
     fun openApp(path: String): InputStream =
         InstrumentationRegistry.getInstrumentation().targetContext.assets.open(path)
