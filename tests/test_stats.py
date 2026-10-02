@@ -295,3 +295,32 @@ def test_names_are_read_as_players_read_them() -> None:
     assert termination_kind("nosegazm won on time") == "time"
     assert termination_kind("Time forfeit") == "time"
     assert termination_kind("Game drawn by repetition") == "repetition"
+
+
+def test_stats_read_the_store_in_a_few_queries(tmp_path: Path) -> None:
+    """Stats took 1.4 s, and each area's positions 0.64 s more, at a thousand games (the review of
+    2026-10-01): a library row read a game for its ratings, a review a game for its shape, every
+    game's moves for each area's positions. Now one query each, and the positions read the
+    latest games a batch at a time until they have enough."""
+    from sidecoach.profile import stats as st
+
+    store = Store(tmp_path / "profile.sqlite")
+    for i in range(st.POSITIONS_BATCH * 3):
+        game = _game(f"g{i:03}", played_at=time.time() - 3600 * (i + 1))
+        store.save_stats("standard", game, [_move(3, "white", label="blunder", loss=0.4)])
+    asked: list[int] = []
+    moves = store.stat_moves
+
+    def counted(keys: list[str]) -> list[dict[str, Any]]:
+        asked.append(len(keys))
+        return moves(keys)
+
+    store.stat_moves = counted  # type: ignore[method-assign]
+    store.library_game = None  # type: ignore[assignment,method-assign]
+    store.review = None  # type: ignore[assignment,method-assign]
+    stats(store, Filter())
+    assert asked == [st.POSITIONS_BATCH * 3]
+    asked.clear()
+    found = positions(store, Filter(), "gallery", "blunder")
+    assert len(found) == st.POSITIONS_MAX and asked == [st.POSITIONS_BATCH, st.POSITIONS_BATCH]
+    assert found[0]["key"] == "g000", "the latest first"

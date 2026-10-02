@@ -1184,10 +1184,30 @@ class Store:
             return []
         marks = ",".join("?" * len(keys))
         with self._lock:
-            rows = self._db.execute(
+            cursor = self._db.cursor()
+            cursor.row_factory = None
+            cursor.execute(
                 f"SELECT * FROM stat_moves WHERE key IN ({marks}) ORDER BY key, ply", keys
+            )
+            names = [c[0] for c in cursor.description]
+            rows = cursor.fetchall()
+        found = names.index("found")
+        return [{**dict(zip(names, r, strict=True)), "found": bool(r[found])} for r in rows]
+
+    def library_elos(self) -> dict[str, tuple[int | None, int | None]]:
+        """Each imported game's players' ratings, White's and Black's, by its key."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, white_elo, black_elo FROM library").fetchall()
+        return {str(r["key"]): (r["white_elo"], r["black_elo"]) for r in rows}
+
+    def review_shapes(self) -> dict[tuple[str, str], str | None]:
+        """Each saved review's game shape (its summary's), by the game's key and strength."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT key, strength, json_extract(summary, '$.shape') AS shape FROM reviews"
+                " WHERE json_valid(summary)"
             ).fetchall()
-        return [{**dict(r), "found": bool(r["found"])} for r in rows]
+        return {(str(r["key"]), str(r["strength"])): r["shape"] for r in rows}
 
     def unreviewed(self) -> list[LibraryRow]:
         """The library's imported games no review covers yet, the latest played first."""
