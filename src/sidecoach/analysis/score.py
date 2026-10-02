@@ -93,13 +93,27 @@ class Thresholds:
 DEFAULT_THRESHOLDS = Thresholds()
 
 
+def game_over(board: chess.Board) -> bool:
+    """Whether the game is over on the board as the sites play it: mate, stalemate, no mating
+    material, or a draw by rule that has happened -- the third occurrence of a position, or
+    fifty moves without a capture or a pawn move. Chess.com and Lichess end the game there
+    themselves. A draw the side to move could merely claim with its next move is not one:
+    that position is played on, and a queen up is still a queen up. The repetition needs the
+    board's moves; a board without them knows no history and repeats nothing."""
+    return (
+        board.outcome(claim_draw=False) is not None
+        or board.is_repetition(3)
+        or board.is_fifty_moves()
+    )
+
+
 def terminal_expected_score(board: chess.Board) -> float | None:
     """The value of a finished position to the side to move, or None if it is not finished."""
-    outcome = board.outcome(claim_draw=True)
-    if outcome is None:
+    if not game_over(board):
         return None
-    if outcome.winner is None:
-        return DRAW
+    outcome = board.outcome(claim_draw=False)
+    if outcome is None or outcome.winner is None:
+        return DRAW  # a draw by rule (`game_over`)
     return 1.0 if outcome.winner == board.turn else 0.0
 
 

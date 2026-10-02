@@ -168,6 +168,42 @@ def test_a_finished_position_scores_its_result_from_the_side_to_move() -> None:
     assert position_score(chess.Board(), []) == 0.5
 
 
+def _shuffled(*sans: str) -> chess.Board:
+    """White a queen up, the kings shuffling: K+Q against K, black to move first."""
+    board = chess.Board("4k3/8/8/8/8/8/8/Q3K3 b - - 0 1")
+    for san in sans:
+        board.push_san(san)
+    return board
+
+
+# White, a queen up, to move, and Ke1 would repeat the position a third time.
+CLAIMABLE = ("Kd8", "Ke2", "Ke8", "Ke1", "Kd8", "Ke2", "Ke8")
+
+
+def test_a_draw_that_could_be_claimed_is_not_a_finished_game() -> None:
+    """A repetition the side to move could claim is not one played: the sites end the game
+    on the third occurrence itself, so until then the position is played on, and a queen up
+    is a queen up (it was 0.5, "no lines", and the repeating move "excellent")."""
+    claimable = _shuffled(*CLAIMABLE)
+    assert claimable.can_claim_threefold_repetition() and not claimable.is_repetition(3)
+    assert terminal_expected_score(claimable) is None
+    # The third occurrence, played, is the end of the game.
+    repeated = _shuffled(*CLAIMABLE, "Ke1")
+    assert repeated.is_repetition(3) and terminal_expected_score(repeated) == 0.5
+    # Fifty moves without a capture or a pawn move, played, is the end too.
+    fifty = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 100 80")
+    assert terminal_expected_score(fifty) == 0.5
+    near = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 99 80")
+    assert near.can_claim_fifty_moves() and terminal_expected_score(near) is None
+
+
+@needs_engine
+def test_a_claimable_draw_is_searched_like_any_position(engine: Engine) -> None:
+    lines = engine.analyse(_shuffled(*CLAIMABLE), depth=DEPTH)
+    assert lines, "the side to move has moves to play"
+    assert lines[0].expected_score > 0.8, "a queen up, white plays on"
+
+
 def test_severity_names_the_thresholds() -> None:
     t = Thresholds(inaccuracy=0.05, mistake=0.10, blunder=0.20)
     assert severity(0.0, t) is Severity.NONE

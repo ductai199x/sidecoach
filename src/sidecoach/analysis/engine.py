@@ -24,7 +24,7 @@ from typing import Any
 import chess
 import chess.engine
 
-from sidecoach.analysis.score import expected_score
+from sidecoach.analysis.score import expected_score, game_over
 from sidecoach.events import Line
 
 # A principal variation can run thirty plies; nobody reads that far and events stay small.
@@ -173,7 +173,7 @@ class Engine:
         A finished position has no lines: there is nothing to play. Callers read its value
         from the result instead, with `sidecoach.analysis.score.terminal_expected_score`.
         """
-        if board.is_game_over(claim_draw=True):
+        if game_over(board):
             return []
         if depth is None and time_s is None:
             raise ValueError("analyse needs a depth or a time limit")
@@ -209,11 +209,11 @@ class Engine:
         """`line` carried on by searches from its end until it is `plies` long or the game
         is over there; its score and depth stay the first search's."""
         moves = list(line.moves)
-        end = board.copy(stack=False)
+        end = board.copy()  # with its moves: a repetition on the way ends the line
         for uci in moves:
             end.push(chess.Move.from_uci(uci))
         for _ in range(EXTEND_TRIES):
-            if len(moves) >= plies or end.is_game_over(claim_draw=True):
+            if len(moves) >= plies or game_over(end):
                 break
             limit = chess.engine.Limit(depth=EXTEND_DEPTH, time=EXTEND_SECONDS)
             with self._lock:
