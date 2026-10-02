@@ -1035,6 +1035,9 @@ class Spoken:
     # never a reason the reply was refused.
     leaks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # The moment of the game it was asked for (`Coach._epoch`): one that lands after a new
+    # game, a takeback or a re-read is no turn of the moment now.
+    epoch: int = 0
 
 
 @dataclass
@@ -1161,6 +1164,8 @@ class _Request:
     # The engine at the model's call while it answers (a question of the player's), when the
     # coach has an engine and the model takes tools.
     tools: EngineTools | None = None
+    # The moment of the game the request was built in (`Coach._epoch`).
+    epoch: int = 0
 
 
 def _player(facts: PositionFacts) -> chess.Color | None:
@@ -1521,6 +1526,7 @@ class Speaker:
                 level=request.level,
                 problems=[],
                 attempts=0,
+                epoch=request.epoch,
             )
         while attempts < 2:
             attempts += 1
@@ -1636,6 +1642,7 @@ class Speaker:
             streamed=streamed,
             leaks=leaks,
             notes=notes,
+            epoch=request.epoch,
         )
 
     @staticmethod
@@ -2116,16 +2123,26 @@ def may_carry_claims(text: str) -> bool:
     return _CLAIM_WORDS.search(text) is not None
 
 
+# The move asked for, in words that ask for it: "which move" and "the answer" said of a move
+# already played -- "which move did they just play?", "what was the answer to their last
+# threat?" -- opened the move level, and the answer was given (the coach review, 2026-10-01).
 _ASK_MOVE = re.compile(
-    r"\b(best move|what (should|do|would) i (play|do)|what would you play|which move|"
-    r"just tell me|what'?s the move|tell me the move|the answer)\b",
+    r"\b((?<!\bwas the )(?<!\bwas that the )(?<!\bwas it the )best move|"
+    r"what (should|do|would) i (play|do)|what would you play|"
+    r"which move(?! (?:did|was|were|had|has|have|do|does) (?:they|he|she|i|it|that|the opponent|"
+    r"my opponent)\b)|"
+    r"just tell me|what'?s the move|tell me the move|(?<!\bwas )(?<!\bwere )the answer)\b",
     re.I,
 )
 # How the position goes on is the line: "how would this position continues?" and "ok and after
 # that?" after a puzzle's last move unlocked nothing (Tai's puzzle, 2026-09-28). "After that"
 # only as a question: in a statement ("and after that I lost my queen") it asks for nothing.
+# A line asked for as one -- "the line", "some lines", "the main variation" -- not the word: "are
+# there any open lines for my rooks?" opened the line (the coach review, 2026-10-01).
 _ASK_LINE = re.compile(
-    r"\b(?:the line|a line|lines|variation|continuation|what happens (?:after|next)|"
+    r"\b(?:the|a|some|main|best|engine'?s?)\s+(?:(?:main|best|whole|full|engine'?s?|critical|"
+    r"forcing|winning)\s+)?(?:lines?|variations?|continuations?)\b"
+    r"|\b(?:what happens (?:after|next)|"
     r"and then what|what follows|what(?:'s| is| comes) next|then what)\b"
     r"|\bafter that\s*\?"
     r"|\bhow (?:would|will|does|do|could|can) (?:it|this|that|the game|(?:this|the) position|"
@@ -2281,6 +2298,13 @@ class Coach:
         # answered the moment the analysis lands (see `ask`).
         self._pending_ask: tuple[str, float] | None = None
         self._elicit_answered = False
+        # The moment of the game: a new game, a takeback and a re-read each start another. A
+        # reply asked for in an earlier one and landing in this one is not a turn of this one:
+        # recorded where it landed, the lesson on a withdrawn move stood under "Said here" of
+        # the position taken back to, and a reply about the last puzzle under the next one's,
+        # where they made the player's next words a follow-up or the answer to their question
+        # (the coach review, 2026-10-01).
+        self._epoch = 0
 
     # Lifecycle
 
@@ -2289,6 +2313,17 @@ class Coach:
 
     def close(self) -> None:
         self.speaker.close()
+
+    def pause(self, ts: float) -> None:
+        """The screen is no longer read (the panel's Stop; the coach outlives it): a lesson
+        held for its analysis is said now, as at a game's end, and nothing more is said
+        unasked until the board is read again -- the next Start's new game or re-read. Kept
+        on the position it last read, the coach gave stuck hints about the last session's
+        board on the next Start's first ticks (the game-state review, 2026-10-01). Asked before
+        then, it answers from the last position it read."""
+        self._release_lesson(ts)
+        self._current = None
+        self.policy.pause()
 
     @property
     def user_colour(self) -> chess.Color:
@@ -2322,6 +2357,12 @@ class Coach:
             self._current = None
             self.finished = True
             self.conversation.ended(event)
+            if self._pending_ask is not None:
+                # The question held for the engine's look, answered now: nothing is withheld
+                # from a game that is over, and left waiting it was never answered.
+                text, _asked = self._pending_ask
+                self._pending_ask = None
+                self.ask(text, ts)
         elif isinstance(event, Recommendation):
             self._on_recommendation(event, ts)
         elif isinstance(event, PuzzleOutcome):
@@ -2388,8 +2429,9 @@ class Coach:
         if (
             position is not None
             and position.facts is None
-            and self.user_to_move
+            and (self.user_to_move or self._waits_for_the_board(text))
             and not self.finished
+            and not position.board.is_game_over()  # a finished board has nothing to read
         ):
             # The engine is still looking at the position on the board: said so, and
             # answered the moment its analysis lands -- never from an older position's
@@ -2397,7 +2439,10 @@ class Coach:
             # enough of this game yet to say. Give me a move or two.").
             if self._pending_ask is None:
                 self._queue_plain(
-                    Trigger.USER_ASK, "One moment -- still looking at this position.", ts
+                    Trigger.USER_ASK,
+                    "One moment -- still looking at this position.",
+                    ts,
+                    turn=False,
                 )
             self._pending_ask = (text, ts)
             return
@@ -2411,10 +2456,16 @@ class Coach:
             )
             return
         unlock = unlock_for(text, position.board, position.facts.candidates)
-        # A hint asked for climbs from what the combination has had already.
-        position.disclosure.carry(self._ladder(position))
-        if unlock is not None:
-            position.disclosure.apply(unlock)
+        if position is self._current:
+            # A hint asked for climbs from what the combination has had already -- in the
+            # position the player faces only: climbed in the one they had moved from, a hint
+            # asked before the new one was read made the combination's next hint skip a rung
+            # (the coach review, 2026-10-01).
+            position.disclosure.carry(self._ladder(position))
+            if unlock is not None:
+                position.disclosure.apply(unlock)
+            # Answered here, the stuck spell starts again (`InterjectionPolicy.asked`).
+            self.policy.asked(ts)
         level = max(position.disclosure.level, DisclosureLevel.IDEA)
         if self.finished or position.board.is_game_over():
             # Nothing is withheld from a game that is over.
@@ -2601,6 +2652,33 @@ class Coach:
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)
 
+    def _waits_for_the_board(self, text: str) -> bool:
+        """On the opponent's move, the position on the board not yet read: whether the words
+        wait for it. Their threat is read from it: answered from the position before the
+        player's move, "they threaten Qxf2#" was said of the threat the move had just
+        stopped. So is anything but the player's last move once its verdict is in and the
+        position it was played from is read: answered from an older position, the coach said
+        "Give me a moment; I am still reading this position." with nothing waiting (the coach
+        review, 2026-10-01)."""
+        if _ASK_THREAT.search(text):
+            return True
+        own = self._last_own_move()
+        if own is None:
+            return True
+        faced = self.positions.get(own.move.ply - 1)
+        return faced is None or faced.facts is None
+
+    def _answer_pending(self, ts: float) -> None:
+        """The question held for the engine's look, answered at the position the player faces
+        now once the coach has read it: wherever the board went meanwhile -- a takeback, a
+        re-read, the next game -- "One moment" was a promise (the coach review, 2026-10-01)."""
+        position = self._current
+        if self._pending_ask is None or position is None or position.facts is None:
+            return
+        text, _asked = self._pending_ask
+        self._pending_ask = None
+        self.ask(text, ts)
+
     def poll(self) -> list[CoachMessage]:
         out: list[CoachMessage] = []
         for spoken in self.speaker.poll():
@@ -2609,7 +2687,7 @@ class Coach:
                 # A failed model reply with nothing to fall back on: kept for the log (its
                 # calls say why), said to no one.
                 continue
-            if not spoken.recorded:
+            if not spoken.recorded and spoken.epoch == self._epoch:
                 with self._lock:
                     self.conversation.coach_said(
                         spoken.message.text, nod=spoken.message.trigger is Trigger.POST_MOVE
@@ -2632,6 +2710,10 @@ class Coach:
         self.strong_player = rating is not None and rating[0] >= STRONG_FROM
 
     def _new_game(self, event: GameStarted, ts: float) -> None:
+        self._epoch += 1
+        # A lesson held for its analysis is the last game's: kept, the next tick said it in
+        # this one, over this one's first position (the coach review, 2026-10-01).
+        self._held_lesson = None
         self.game_id = event.game_id
         self.user_side = event.user_side
         self.kind = event.kind
@@ -2645,7 +2727,8 @@ class Coach:
         # the last game's sentences when the model failed (the parity audit, 2026-09-26).
         self._review_lines = []
         self._elicit_asked, self._elicit_answered = None, False
-        self._pending_ask = None
+        # A question held for the engine's look stays: it is answered at this game's first
+        # position once read (`_answer_pending`), as a hint pressed as the next puzzle appears.
         self.finished = False
         self._current = self.positions[0]
         self.policy.restart()
@@ -2846,6 +2929,7 @@ class Coach:
     def _on_takeback(self, event: Takeback, ts: float) -> None:
         """Moves withdrawn: the conversation says so, and the game goes on from the position
         the board is back at; the replacement moves arrive as ordinary moves."""
+        self._epoch += 1
         self.conversation.takeback(event)
         self.board = board_back(self.board, event.fen)
         active = self.conversation.active_records()
@@ -2860,16 +2944,24 @@ class Coach:
             position = _Position(ply=ply, board=self.board.copy())
             self.positions[ply] = position
         self._current = position
+        self.policy.withdraw(ply)
         self.policy.new_position(ply, ts, user_to_move=self.user_to_move)
+        # A question held for the engine's look is answered here, read already or once read.
+        self._answer_pending(ts)
 
     def _on_resync(self, event: Resync, ts: float) -> None:
         """The board was re-read: the position jumped; the move numbering restarts."""
+        self._epoch += 1
         self.board = chess.Board(event.fen)
         self.conversation.resync(event, self.board)
         self.positions = {0: _Position(ply=0, board=self.board.copy())}
         self.moves = {}
         self._current = self.positions[0]
-        self._pending_ask = None
+        # The pace is the position's play, as a game's own: the next puzzle in the same
+        # orientation comes as a re-read, and the last one's quick finish made its first find
+        # "fast", only shown (the game-state review, 2026-10-01; FAST_PACE_S).
+        self._think_s.clear()
+        # A question held for the engine's look stays, answered once this position is read.
         self.policy.restart()
         self.policy.new_position(0, ts, user_to_move=self.user_to_move)
 
@@ -2893,22 +2985,21 @@ class Coach:
             position.board, event, last_move=position.last_move, user=self.user_colour, pick=peek
         )
         position.leads = leads
+        # The record shows what the coach answers from, the early depth until the full one
+        # replaces it: kept back until the full depth, a question answered from the early
+        # one was asked of the model with "Engine lines: not in yet." and no facts (the coach
+        # review, 2026-10-01).
+        self.conversation.analysed(event, position.facts)
         if event.provisional:
             # Measured early, the full depth to follow: what the player asks is answered
-            # from it now; the coach's own words -- a lesson -- and the conversation's record
-            # wait for the full depth.
-            if position is self._current and self._pending_ask is not None:
-                text, _asked = self._pending_ask
-                self._pending_ask = None
-                self.ask(text, ts)
+            # from it now; the coach's own words -- a lesson -- wait for the full depth.
+            if position is self._current:
+                self._answer_pending(ts)
             return
-        self.conversation.analysed(event, position.facts)
         if self._held_lesson is not None and self._held_lesson[3].ply == event.ply:
             self._release_lesson(ts)  # what the move allowed is known now
-        if position is self._current and self._pending_ask is not None:
-            text, _asked = self._pending_ask
-            self._pending_ask = None
-            self.ask(text, ts)
+        if position is self._current:
+            self._answer_pending(ts)
         # Nothing is said of its own at a decisive moment: while the player thinks, the
         # first word unasked is the stuck hint (Tai, 2026-10-01: nothing "until the user is
         # stuck or actively request a hint or after they have made a move").
@@ -3454,7 +3545,16 @@ class Coach:
         # The player faces a position again only once it is their turn: on the opponent's,
         # what the move allowed is the lesson, and "nothing about the position" forbade it.
         facing = past and now is not None and now.board.turn == self.user_colour
-        line = self._level_line(level, position, render_level if facing else None, past=past)
+        # Asked on the opponent's move, there is no move of the player's to keep back.
+        theirs = (
+            trigger is Trigger.USER_ASK
+            and not past
+            and not self.finished
+            and position.board.turn != self.user_colour
+        )
+        line = self._level_line(
+            level, position, render_level if facing else None, past=past, theirs=theirs
+        )
         # A question is answered as asked: its words head the Task. Found only under "Said
         # here", far above, "whose bishop? ... he will just move away to the right, no?" got the
         # line again (Tai's puzzle, 2026-09-28).
@@ -3580,7 +3680,18 @@ class Coach:
             messages: list[ChatMessage] = [
                 {"role": "user", "content": f"{harness}{faced}{earlier}\n\n# Task\n{directive}"},
             ]
-            problem = harness_problem(harness, self.board, self.user_side)
+            # What the coach holds for the position on the board, which the position now must
+            # show (the early depth was answered from but never shown: the coach review).
+            held = self._current
+            if held is not None and held.board.fen() != self.board.fen():
+                held = None
+            problem = harness_problem(
+                harness,
+                self.board,
+                self.user_side,
+                lines=held is not None and held.analysis is not None and bool(held.analysis.lines),
+                facts=held is not None and held.facts is not None,
+            )
         if problem:
             self.harness_problems.append(f"{trigger.value} at ply {position.ply}: {problem}")
         unlisted: frozenset[str] | None = None
@@ -3631,6 +3742,7 @@ class Coach:
             record=self._numbered_moves(),
             unlisted=unlisted,
             tools=tools,
+            epoch=self._epoch,
         )
         self.speaker.submit(request)
 
@@ -3808,14 +3920,23 @@ class Coach:
         now_level: DisclosureLevel | None = None,
         *,
         past: bool = False,
+        theirs: bool = False,
     ) -> str:
         """What may be said about the position the player faces, stated on the directive, the
         one place it is stated; with `now_level`, the reply is about a position already moved
         from, and the one on the board has its own level. Below the move, why the model sees
         the answer all the same: said as "never" in five places, it gave the vague hint Tai
-        ranks below one that says a little too much (the prompt audit, 2026-09-28)."""
+        ranks below one that says a little too much (the prompt audit, 2026-09-28). `theirs`:
+        the position is the opponent's to move, and told to keep back "the player's move" there
+        the model gave the player's hint on the opponent's position (the coach review,
+        2026-10-01)."""
         if position.board.is_game_over():
             return ""
+        if theirs:
+            return (
+                "It is the opponent's move: what they threaten -- their best move and what it "
+                "does -- may be said.\n\n"
+            )
         words = {
             DisclosureLevel.SILENT: "nothing about the position",
             DisclosureLevel.IDEA: IDEA_LEVEL_WORDS,
@@ -3849,10 +3970,15 @@ class Coach:
         fen: str | None = None,
         now: bool = False,
         record_now: bool = False,
+        turn: bool = True,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing,
         unless `now`, when it goes out at once. With `record_now` it is a turn of the
-        conversation from this moment, so a request built next already shows it."""
+        conversation from this moment, so a request built next already shows it. Without
+        `turn` it is never one: "One moment -- still looking at this position." recorded as
+        the coach's turn made the question it held, answered when the analysis landed, a
+        follow-up -- "You have already told them the verdict ... do not repeat either" (the
+        coach review, 2026-10-01)."""
         message = CoachMessage(
             text=text,
             level=level,
@@ -3866,7 +3992,14 @@ class Coach:
             with self._lock:
                 self.conversation.coach_said(text)
         self.speaker.submit_ready(
-            Spoken(message=message, level=level, problems=[], attempts=0, recorded=record_now),
+            Spoken(
+                message=message,
+                level=level,
+                problems=[],
+                attempts=0,
+                recorded=record_now or not turn,
+                epoch=self._epoch,
+            ),
             now=now,
         )
 
@@ -4072,8 +4205,16 @@ class Coach:
                     f"lesson, no question. {NOT_THE_MOVE} {NO_FIGURES}"
                 )
             else:
-                # The better move and what it does, when the sheet has it, is the lesson.
-                opener = self._bags.draw("fine", FINE_TIGHTER).format(best=best)
+                # The better move and what it does, when the sheet has it, is the lesson. An
+                # inaccuracy cost something, and is said so: given a sound move's word, one
+                # was "Fine, but Qxf7# was a little tighter", the model told "an inaccuracy:
+                # sound, a little behind" (the coach review, 2026-10-01).
+                slip = assessment.severity is Severity.INACCURACY or label == "inaccuracy"
+                opener = (
+                    self._bags.draw("cost", COST_YOU)
+                    if slip
+                    else self._bags.draw("fine", FINE_TIGHTER)
+                ).format(best=best)
                 fallback, held = self._fresh_lesson(
                     opener,
                     lambda with_rule: lesson_template(
@@ -4089,11 +4230,16 @@ class Coach:
                 )
                 # How it rated goes in passing: asked for first, it opened half these replies
                 # with "Fine", "Playable" or "That works, though" (the prompt audit, 2026-09-28).
+                rated = (
+                    f"it cost a little, and {best} ({better_words}) was better"
+                    if slip
+                    else f"sound, a little behind {best} ({better_words})"
+                )
                 instruction = (
-                    f"The player just played {played.san}, which was {_rated(label)}: sound, a "
-                    f"little behind {best} ({better_words}). One or two sentences: the better "
-                    "move, what it does, and the idea behind it as a lesson to keep, with how "
-                    "theirs rated in passing. No lecture, no question. "
+                    f"The player just played {played.san}, which was {_rated(label)}: {rated}. "
+                    "One or two sentences: the better move, what it does, and the idea behind it "
+                    "as a lesson to keep, with how theirs rated in passing. No lecture, no "
+                    "question. "
                     f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}"
                     + _lesson_data(position.board, best, played.uci, None)
                 )
@@ -4217,7 +4363,20 @@ class Coach:
             # own claim") gave the model no lesson to give (parity pass 2, 2026-09-25).
             aim = "" if _ASK_HINT.match(said) else "They asked what to aim for: answer with "
             aim += "the hint at this rung. " if aim else ""
-            if level >= DisclosureLevel.MOVE:
+            if position.board.turn != self.user_colour and not position.board.is_game_over():
+                # On the opponent's move there is no move of the player's to find: asked for
+                # "the first hint" there, the model gave the player's hint on the opponent's
+                # position (the coach review, 2026-10-01). Their threat is the hint, as
+                # `their_move_now` says it without a model.
+                directive = (
+                    f"They asked {'for a hint' if _ASK_HINT.match(said) else 'what to aim for'}"
+                    ", and it is the opponent's move, not theirs: there is no move of theirs to "
+                    "find yet. Say what the opponent threatens now -- their best move and what "
+                    "it does, from the engine lines (the opponent's move) -- and what the "
+                    "player should be ready for once it is played. One or two sentences, no "
+                    "question."
+                )
+            elif level >= DisclosureLevel.MOVE:
                 directive = aim + MOVE_DIRECTIVE
             elif level >= DisclosureLevel.FOCUS:
                 directive = (aim or "They asked for another hint. ") + FOCUS_DIRECTIVE

@@ -102,6 +102,22 @@ class InterjectionPolicy:
         self._spoken.clear()
         self._said_ts = None
 
+    def pause(self) -> None:
+        """The screen is no longer read (Stop): no position is being thought in until the board
+        is read again, and no stuck spell runs. Kept, the next Start's first ticks gave stuck
+        hints about the last session's board (the game-state review, 2026-10-01)."""
+        self._ply = None
+        self._since = None
+        self._said_ts = None
+        self._user_to_move = False
+
+    def withdraw(self, ply: int) -> None:
+        """The moves after `ply` were taken back: what was said unasked at the plies past it
+        was said of positions that are gone. Kept by ply, both hints said after 1.e4 left
+        1.d4, played in its place, with no stuck hint (the coach review, 2026-10-01)."""
+        for gone in [p for p in self._spoken if p > ply]:
+            del self._spoken[gone]
+
     def set_remaining(self, remaining_ms: int | None) -> None:
         """The user's clock, when the screen shows one."""
         self._remaining_ms = remaining_ms
@@ -177,6 +193,12 @@ class InterjectionPolicy:
         self._spoken[ply] = self._spoken.get(ply, 0) + 1
         if ply == self._ply and ts is not None:
             self._said_ts = ts
+
+    def asked(self, ts: float) -> None:
+        """The player asked, and was answered, in the position they are thinking in: the next
+        hint unasked waits a full stuck spell from here, as from one said unasked. A hint asked
+        at 15 s was followed by the focus unasked at 16 s (the coach review, 2026-10-01)."""
+        self._said_ts = ts if self._said_ts is None else max(self._said_ts, ts)
 
     def exhausted(self, ply: int) -> None:
         """The hints unasked for the position at `ply` are all given, here or earlier in the

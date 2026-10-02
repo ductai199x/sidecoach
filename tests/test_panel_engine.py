@@ -231,6 +231,34 @@ def test_the_engine_coach_and_listening_outlive_a_session(
     assert engine._listener.mode == "off" and not mic.opened
 
 
+def test_after_a_stop_the_coach_says_nothing_unasked_until_the_board_is_read_again(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """The coach outlives a Stop, and kept the position it last read: the first ticks after
+    the next Start gave stuck hints about the last session's board (the game-state review,
+    2026-10-01). After a Stop it is quiet until the board is read again."""
+    from sidecoach.events import Trigger
+    from tests.coaching import drain, mate_analysis, offline_coach, play_to_scholar, stuck
+
+    engine = make_panel(record=False)
+    engine.warm(background=False)
+    assert engine._coaching is not None
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    engine._coaching.coach = coach  # a coach that has read a position
+    engine.start()  # a session that reads nothing, then stops
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+    for ts in (100.0, 1_000.0, 100_000.0):
+        coach.tick(ts)
+    assert drain(coach) == [], "the last session's position"
+    play_to_scholar(coach)  # the board read again
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    assert [m.trigger for m in stuck(coach)] == [Trigger.STUCK]
+
+
 def test_a_coach_message_is_handled_once_across_sessions(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

@@ -199,13 +199,22 @@ def ways(board: chess.Board, sans: Sequence[str], side: Side) -> str:
 _NOW_FEN = re.compile(r"# Position now\n## Board\nFEN: (\S+ [wb])")
 
 
-def harness_problem(harness: str, board: chess.Board, user_side: Side) -> str | None:
+def harness_problem(
+    harness: str,
+    board: chess.Board,
+    user_side: Side,
+    *,
+    lines: bool = False,
+    facts: bool = False,
+) -> str | None:
     """What is wrong with a harness about to go to the model, or None: it must have the position
     now, that position must be the game's as it stands (`board`) with its side to move, and the
     setting must name the player's colour. Checked before every request and logged when it
     fails, so a gap like the puzzle start's -- no position now at all, and the model named the
     player's own Qxf2+ as the opponent's threat (2026-10-01) -- shows the first time it
-    happens."""
+    happens. `lines` and `facts`: the coach has the engine's lines and the facts for that
+    position, so the position now must show them -- a question answered from the early depth
+    was asked with "Engine lines: not in yet." and no facts (the coach review, 2026-10-01)."""
     side = "White" if user_side == Side.WHITE else "Black"
     if f"You coach {side}." not in harness:
         return f"the setting does not say the player is {side}"
@@ -215,6 +224,13 @@ def harness_problem(harness: str, board: chess.Board, user_side: Side) -> str | 
     now = " ".join(board.fen().split(" ")[:2])
     if found.group(1) != now:
         return f"the position now is {found.group(1)}, the game's is {now}"
+    shown = harness[found.start() :].split("\n\n## Said here\n", 1)[0]
+    if lines:
+        body = shown.split("\n## Engine lines", 1)[-1].split("\n", 2)
+        if "\n## Engine lines" not in shown or len(body) < 2 or body[1].strip() == "not in yet.":
+            return "the position now has no engine lines, though the coach has them"
+    if facts and not board.is_game_over() and "\n## Facts (" not in shown:
+        return "the position now has no facts, though the coach has them"
     return None
 
 
@@ -255,6 +271,9 @@ class Entry:
     # A routine word after a sound move (the POST_MOVE nod): the verdict is on the move's
     # line, so the nod is written out only while recent, and never summarised.
     nod: bool = False
+    # About a position already left (a late engine note): written in the record, never under
+    # what was said at the position now.
+    past: bool = False
 
 
 @dataclass
@@ -301,24 +320,29 @@ class Conversation:
         )
         if control:
             text += f" Time control: {control}."
+        # The board the record starts from, without its legal moves: the position the player
+        # faces is "# Position now", the one board with them. Shown here as "the position as
+        # it stands", after a re-read -- the next puzzle -- the model had two current boards
+        # (the coach review, 2026-10-01).
+        start = position_text(chess.Board(event.start_fen), legal=False)
         if event.kind == "puzzle":
             text += (
                 f"\nThis is a puzzle the player is solving on the panel's board, {side} to "
                 "move and to find the best line. Say nothing unasked; when they ask for a "
                 "hint, give one at the level allowed -- the move itself only at the third hint "
-                "or when asked for it:\n" + position_text(chess.Board(event.start_fen))
+                "or when asked for it. The record starts from this position:\n" + start
             )
         elif event.kind != "game":
             text += (
                 "\nThis is a position, not a game from the start: a puzzle, an analysis "
                 "board, or a game joined from the middle. There is no earlier history to "
                 "speak of. The player is the side at the bottom and, on a puzzle, to move; "
-                "coach the position as it stands:\n" + position_text(chess.Board(event.start_fen))
+                "coach the position they face, the position now. The record starts from this "
+                "position:\n" + start
             )
         elif event.start_fen != chess.STARTING_FEN:
-            text += "\nThe game is joined in progress; the position is:\n" + position_text(
-                chess.Board(event.start_fen)
-            )
+            text += "\nThe game is joined in progress; the record starts from this position:\n"
+            text += start
         if profile:
             text += (
                 "\nWhat earlier games say about this player (computed, not opinion): "
@@ -342,7 +366,9 @@ class Conversation:
 
     def analysed(self, event: Analysis, facts: PositionFacts) -> PlyRecord | None:
         """The engine's word on a position: the move's that led to it, or the start's (ply
-        0) -- kept by the start record, as no move led there."""
+        0) -- kept by the start record, as no move led there. The early depth stands until
+        the full one replaces it; only the full depth, landing after the model has seen the
+        move's line, gets a note of its own."""
         same = event.fen.split(" ")[:3]
         if event.ply == 0 and self.start.fen.split(" ")[:3] == same:
             self.start.analysis = event
@@ -353,7 +379,8 @@ class Conversation:
             return None
         record.analysis = event
         record.facts = facts
-        self._note_if_frozen(record, "analysis")
+        if not event.provisional:
+            self._note_if_frozen(record, "analysis")
         return record
 
     def clock(self, white_ms: int | None, black_ms: int | None) -> None:
@@ -372,9 +399,11 @@ class Conversation:
             record.withdrawn = True
         board = chess.Board(event.fen)
         names = ", ".join(self._numbered(r.move) for r in withdrawn) or "the last move"
+        # The board without its legal moves, as the record's: the position now has them.
         text = (
             f"Takeback: {names} withdrawn. The game is back at the position after "
-            f"{self._last_active_name()}, {self._turn_text(board)}:\n{position_text(board)}\n"
+            f"{self._last_active_name()}, {self._turn_text(board)}:\n"
+            f"{position_text(board, legal=False)}\n"
             "Play continues from here; the next message is the replacement move."
         )
         self.entries.append(Entry("user", "takeback", text))
@@ -385,7 +414,7 @@ class Conversation:
             record.superseded = True  # the move list restarts here
         text = (
             f"The board was re-read ({event.reason}). Moves may have gone unseen. The position "
-            f"is now, {self._turn_text(board)}:\n{position_text(board)}\n"
+            f"is now, {self._turn_text(board)}:\n{position_text(board, legal=False)}\n"
             "The move numbering restarts from this position."
         )
         self.entries.append(Entry("user", "resync", text))
@@ -456,7 +485,7 @@ class Conversation:
         for i, entry in enumerate(self.entries):
             if entry.kind == "game" or entry.folded or id(entry) in stale_nods:
                 continue
-            sink = said if i > reached else game
+            sink = said if i > reached and not entry.past else game
             if entry.kind == "ply":
                 assert entry.record is not None
                 if i == reached:
@@ -1275,7 +1304,15 @@ class Conversation:
         return None
 
     def _note_if_frozen(self, record: PlyRecord, what: str) -> None:
-        """A fact that lands after its ply message went out goes in a note of its own."""
+        """A fact that lands after its ply message went out goes in a note of its own, in the
+        record: it is about a position already left. Appended as any note, the late analysis of
+        the position a move left went under "Said here" of the position the player faces now,
+        its standing beside the one now's, and its lines were dropped: their title had grown
+        a tail ("Engine lines (the opponent's move; ...)", the coach review, 2026-10-01). The
+        position now needs none: it is shown in full."""
+        active = self.active_records()
+        if active and active[-1] is record:
+            return
         for entry in self.entries:
             if entry.record is record and entry.frozen is not None:
                 board_before = chess.Board(record.move.fen_before)
@@ -1291,10 +1328,10 @@ class Conversation:
                         for title, body in self._position_sections(
                             record, after, user_colour, DisclosureLevel.LINE
                         )
-                        if title in ("Standing", "Engine lines")
+                        if title == "Standing" or title.startswith("Engine lines")
                     )
                     text = f"Engine note on the position after {name}:\n{shown}"
-                self.entries.append(Entry("user", "note", text))
+                self.entries.append(Entry("user", "note", text, past=True))
                 return
 
     @staticmethod

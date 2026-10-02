@@ -180,6 +180,20 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 2
 
 
+def test_a_question_starts_the_stuck_spell_again() -> None:
+    """A hint asked at 15 s was followed by the focus unasked at 16 s: the stuck spell ran
+    from the position, not from the answer (the coach review, 2026-10-01). The next hint
+    unasked waits a full spell from the answer, as from one said unasked."""
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 15.0)
+    assert [m.level for m in drain(coach)] == [DisclosureLevel.IDEA]
+    coach.tick(16.0)
+    assert drain(coach) == [], "a second after the answer"
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.FOCUS]
+
+
 def test_naming_the_move_yourself_earns_the_move_level() -> None:
     coach, _ = scripted_coach(["What do you think?", "Yes, Qxf7 is mate."])
     play_to_scholar(coach)
@@ -195,6 +209,31 @@ def test_naming_the_move_yourself_earns_the_move_level() -> None:
     assert unlock_for("HINT please", board, []) is Unlock.HINT
     assert unlock_for("what should I play here", board, []) is Unlock.ASK_MOVE
     assert unlock_for("how are you", board, []) is None
+    # Words, not a word: "open lines" opened the line, and "which move" or "the answer" about
+    # a move already played opened the move, and the answer was given (the coach review,
+    # 2026-10-01).
+    for said in (
+        "are there any open lines for my rooks?",
+        "which move did they just play?",
+        "which move did I miss there?",
+        "what was the answer to their last threat?",
+        "was that the best move?",
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is None, said
+    for said, unlock in (
+        ("what's the line?", Unlock.ASK_LINE),
+        ("what are the lines here?", Unlock.ASK_LINE),
+        ("give me a line", Unlock.ASK_LINE),
+        ("show me some lines", Unlock.ASK_LINE),
+        ("what's the main variation?", Unlock.ASK_LINE),
+        ("ok and after that?", Unlock.ASK_LINE),
+        ("how would this position continues?", Unlock.ASK_LINE),
+        ("which move should I play?", Unlock.ASK_MOVE),
+        ("which move is best?", Unlock.ASK_MOVE),
+        ("just tell me the answer", Unlock.ASK_MOVE),
+        ("what's the answer to their threat?", Unlock.ASK_MOVE),
+    ):
+        assert unlock_for(said, board, ["Qxf7#"]) is unlock, said
 
 
 def test_feedback_after_the_users_move_may_say_everything_about_that_position() -> None:
@@ -1778,6 +1817,16 @@ def test_the_pace_is_the_last_think_times_and_the_games_own() -> None:
         GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.Board().fen()), 10.0
     )
     assert coach.pace_s is None and not coach.fast_pace
+    # The next puzzle in the same orientation comes as a re-read of the board: the pace was
+    # kept, and its first find was only shown (the game-state review, 2026-10-01).
+    from sidecoach.events import Resync
+
+    coach, _provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES, think_ms=1000)
+    assert coach.fast_pace
+    coach.on_event(Resync(game_id="g", fen=SCHOLAR, reason="position adopted"), 10.0)
+    assert coach.pace_s is None and not coach.fast_pace
 
 
 def _after_move_request(fen: str, san: str, best_uci: str):  # noqa: ANN202
@@ -1969,6 +2018,19 @@ def test_their_threat_on_their_turn_is_their_best_move_not_the_players() -> None
     out = drain(coach)
     assert "it is the opponent's move" in directive_of(sent(provider, 0))
     assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
+    # A hint asked on their turn is the same, never the player's hint on the opponent's
+    # position: the model was asked for "the first hint" and to keep back "the player's move"
+    # (the coach review, 2026-10-01).
+    coach, provider = scripted_coach(["", ""])
+    start_game(coach, Side.BLACK)
+    play(coach, SCHOLAR_MOVES, user_side=Side.BLACK)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 9.0)
+    out = drain(coach)
+    directive = directive_of(sent(provider, 0))
+    assert "it is the opponent's move" in directive
+    assert "Give the first hint" not in directive and "Keep back only the answer" not in directive
+    assert out and out[-1].text.startswith("It's their move, and their best is Qxf7#"), out
 
 
 def test_a_mistakes_lesson_waits_for_what_the_move_allowed() -> None:
@@ -2090,3 +2152,267 @@ def test_a_saved_rating_changes_the_templates_register() -> None:
     start_game(coach, Side.BLACK)
     setting = coach.conversation.messages()[0]["content"]
     assert setting.startswith("# Setting\nYou coach Black.") and "rated" not in setting
+
+
+def test_a_reply_about_a_moment_the_game_has_left_is_no_turn_of_the_one_now() -> None:
+    """A reply still being written when the game moved on -- a takeback, a re-read, the next
+    game -- was recorded wherever the game was when it landed: under "Said here" of the
+    position taken back to or of the new game, where it made the player's next words a
+    follow-up, or the answer to its question (the coach review, 2026-10-01). And a lesson held
+    for its analysis was said in the next game."""
+    from sidecoach.coach.coach import LESSON_WAIT_S
+    from sidecoach.events import Resync, Takeback
+
+    for change in ("takeback", "re-read", "new game"):
+        coach, _ = scripted_coach(["[p=1.0] The queen mates on f7. What did you miss?"])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 7.0)
+        mate_missed(coach)  # the lesson, asked of the model
+        if change == "takeback":
+            coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
+        elif change == "re-read":
+            coach.on_event(Resync(game_id="g", fen=SCHOLAR, reason="re-read"), 12.0)
+        else:
+            start_game(coach)
+        out = drain(coach)  # the reply lands now
+        assert [m.trigger for m in out] == [Trigger.POST_MISTAKE], change
+        assert coach._said_since_move() == [], change
+        assert not coach._answering_our_question("the bishop check"), change
+        assert out[0].text not in coach.conversation.render(), change
+    coach = Coach(
+        ScriptedProvider([]),
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        lesson_wait_s=LESSON_WAIT_S,
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    mate_missed(coach)
+    assert drain(coach) == [], "held for the analysis of the position it left"
+    start_game(coach)
+    coach.tick(12.0 + LESSON_WAIT_S)
+    assert drain(coach) == [], "the last game's lesson"
+
+
+def _bishop_check_then_ke7(coach: Coach) -> chess.Board:
+    """At SCHOLAR, the player's Bxf7+ (a miss: Qxf7 mated) judged in quiet mode -- no word
+    after it -- and the opponent's Ke7 played, its position not yet analysed."""
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    coach.quiet = True
+    mate_missed(coach)
+    coach.quiet = False
+    board = chess.Board(SCHOLAR)
+    board.push_san("Bxf7+")
+    before = board.fen()
+    board.push_san("Ke7")
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=8,
+            san="Ke7",
+            uci="e8e7",
+            fen_before=before,
+            fen_after=board.fen(),
+            by_user=False,
+        ),
+        12.0,
+    )
+    assert drain(coach) == []
+    return board
+
+
+def test_the_coachs_one_moment_is_no_turn_of_the_conversation() -> None:
+    """The coach's "One moment -- still looking at this position." was recorded as its turn, so
+    the question it held, answered when the analysis landed, read as a follow-up: "what should
+    I have played?" was answered "You have already told them the verdict on it and the better
+    move ... do not repeat either" (the coach review, 2026-10-01)."""
+    coach, provider = scripted_coach(["[p=1.0] Qxf7# was mate on the spot."])
+    board = _bishop_check_then_ke7(coach)
+    coach.ask("what should I have played?", 12.5)
+    assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "one moment"
+    assert coach._said_since_move() == []
+    _looked(coach, board, 8, ["h5e5", "d2d3"], 13.0)
+    drain(coach)
+    directive = directive_of(sent(provider))
+    assert "They ask about the move they already played, Bxf7+" in directive
+    assert "You have already told them the verdict" not in directive
+
+
+def _looked(
+    coach: Coach,
+    board: chess.Board,
+    ply: int,
+    ucis: list[str],
+    ts: float,
+    threats: list[str] | None = None,
+) -> None:
+    """The engine's look at `board`: `ucis` its lines, best first; `threats` (UCI) what the
+    other side would play if the side to move passed."""
+    lines = [Line(moves=[u], depth=18, expected_score=0.5 - i / 10) for i, u in enumerate(ucis)]
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=ply,
+            lines=lines,
+            decisive=False,
+            only_move=False,
+            threats=threats or [],
+        ),
+        ts,
+    )
+
+
+def _judged(coach: Coach, ply: int, uci: str, ts: float) -> None:
+    """The engine's verdict on the move at `ply`: its own best."""
+    coach.on_event(
+        MoveAssessment(
+            game_id="g",
+            ply=ply,
+            uci=uci,
+            expected_loss=0.0,
+            severity=Severity.NONE,
+            best=[uci],
+            label=Label.BEST,
+        ),
+        ts,
+    )
+
+
+# White to move; Black's queen and bishop threaten Qxf2#.
+QH4 = "rnb1k1nr/pppp1ppp/8/2b1p3/2B1P2q/2N5/PPPP1PPP/R1BQK1NR w KQkq - 6 4"
+
+
+def test_their_threat_after_the_players_move_waits_for_the_position_now() -> None:
+    """Right after the player's move, its position not yet read, "what are they threatening?"
+    was answered from the position before the move: "They threaten Qxf2#", the threat the
+    move had just stopped (the coach review, 2026-10-01). It waits for the engine's look at
+    the position on the board, where their threat is their best move."""
+    coach = offline_coach()
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=QH4, kind="position"), 0.0
+    )
+    board = chess.Board(QH4)
+    _looked(coach, board, 0, ["d1e2", "d1f3"], 0.5, threats=["h4f2"])
+    assert coach.positions[0].facts is not None and coach.positions[0].facts.threats == ["Qxf2#"]
+    _played(coach, board, 1, "d1e2", True, 3.0)  # Qe2 guards f2
+    _judged(coach, 1, "d1e2", 3.2)
+    drain(coach)
+    coach.ask("what are they threatening?", 3.5)
+    assert not any("Qxf2" in m.text for m in drain(coach))
+    _looked(coach, board, 1, ["g8f6", "b8c6"], 4.0)
+    said = [m.text for m in drain(coach)]
+    assert said and said[-1].startswith("It's their move, and their best is"), said
+
+
+def test_a_hint_before_the_verdict_is_answered_and_climbs_no_rung_of_the_position_left() -> None:
+    """Pressed between the player's move and its verdict, "hint" got "Give me a moment; I am
+    still reading this position." with nothing queued -- the promise never kept -- and the
+    rung was climbed at the position the player had moved from: the combination's next stuck
+    hint skipped the idea (the coach review, 2026-10-01)."""
+    coach = offline_coach()
+    start_game(coach, Side.BLACK)
+    board = play(coach, ["e4"], user_side=Side.BLACK)
+    _looked(coach, board, 1, ["e7e5", "c7c5"], 1.5)
+    _played(coach, board, 2, "e7e5", True, 3.0)  # the engine's best
+    coach.ask("hint", 3.05)
+    assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "a moment"
+    _judged(coach, 2, "e7e5", 3.1)
+    drain(coach)
+    _looked(coach, board, 2, ["g1f3", "b1c3"], 3.6)
+    kept = [m.text for m in drain(coach) if m.trigger is Trigger.USER_ASK]
+    assert len(kept) == 1 and "moment" not in kept[0], kept
+    assert coach.positions[1].disclosure.hinted is DisclosureLevel.SILENT
+    _played(coach, board, 3, "g1f3", False, 5.0)
+    _looked(coach, board, 3, ["b8c6", "g8f6"], 5.5)
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.IDEA]
+
+
+def test_a_question_held_for_the_engine_is_answered_whatever_the_board_does() -> None:
+    """The coach's "One moment" was a promise it did not keep when the board changed under it:
+    a takeback neither answered nor dropped the question, a re-read and a new game dropped it,
+    and the game's end left it waiting (the coach review, 2026-10-01). It is answered at the
+    position the player faces once the coach has read it, and at the game's end at once."""
+    from sidecoach.events import Resync, Takeback
+
+    four = chess.Board()
+    for san in SCHOLAR_MOVES[:4]:
+        four.push_san(san)
+    other = chess.Board(QH4)
+    for change in ("takeback", "re-read", "new game", "game over"):
+        coach = offline_coach()
+        play_to_scholar(coach)
+        _looked(coach, four, 4, ["d1h5", "g1f3"], 6.5)
+        coach.ask("hint", 7.0)  # the position now not read yet
+        assert [m.trigger for m in drain(coach)] == [Trigger.USER_ASK], "a moment"
+        if change == "takeback":
+            coach.on_event(Takeback(game_id="g", plies=2, fen=four.fen()), 8.0)
+        elif change == "re-read":
+            coach.on_event(Resync(game_id="g", fen=QH4, reason="re-read"), 8.0)
+            _looked(coach, other, 0, ["d1e2", "d1f3"], 8.5)
+        elif change == "new game":
+            coach.on_event(
+                GameStarted(game_id="g", user_side=Side.WHITE, start_fen=QH4, kind="position"),
+                8.0,
+            )
+            _looked(coach, other, 0, ["d1e2", "d1f3"], 8.5)
+        else:
+            coach.on_event(GameEnded(game_id="g", result="1-0", reason="resigned"), 8.0)
+        answered = drain(coach)
+        assert [m.trigger for m in answered] == [Trigger.USER_ASK], change
+        assert "moment" not in answered[0].text, change
+
+
+def test_the_hints_said_at_a_withdrawn_ply_do_not_count_against_the_next_position_there() -> None:
+    """What was said unasked at the plies taken back is not counted against the positions
+    played to there after: counted by ply, both hints said after 1.e4 left 1.d4, played in its
+    place, with no stuck hint at all (the coach review, 2026-10-01)."""
+    from sidecoach.events import Takeback
+
+    coach = offline_coach()
+    start_game(coach, Side.BLACK)
+    board = play(coach, ["e4"], user_side=Side.BLACK)
+    _looked(coach, board, 1, ["e7e5", "c7c5"], 1.5)
+    assert [m.level for m in [*stuck(coach), *stuck(coach)]] == [
+        DisclosureLevel.IDEA,
+        DisclosureLevel.FOCUS,
+    ]
+    coach.on_event(Takeback(game_id="g", plies=1, fen=chess.STARTING_FEN), 40.0)
+    board = chess.Board()
+    board.push_san("d4")
+    coach.on_event(
+        MovePlayed(
+            game_id="g",
+            ply=1,
+            san="d4",
+            uci="d2d4",
+            fen_before=chess.STARTING_FEN,
+            fen_after=board.fen(),
+            by_user=False,
+        ),
+        41.0,
+    )
+    _looked(coach, board, 1, ["d7d5", "g8f6"], 41.5)
+    assert [m.level for m in stuck(coach)] == [DisclosureLevel.IDEA]
+
+
+def test_an_inaccuracy_is_never_called_sound() -> None:
+    """An inaccuracy got the word for a sound move -- "Fine, but Qxf7# was a little tighter",
+    and the model was told "an inaccuracy: sound, a little behind Qxf7#" -- while asked "was
+    that a mistake?" right after, the coach answered it as the costly move it was (the coach
+    review, 2026-10-01)."""
+    from sidecoach.coach.coach import FINE_TIGHTER
+    from tests.coaching import _judged_at_scholar
+
+    fine = tuple(opener.split("{best}")[0] for opener in FINE_TIGHTER)
+    for offline in (True, False):
+        coach, provider = (offline_coach(), None) if offline else scripted_coach(["", ""])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 7.0)
+        _judged_at_scholar(coach, "Bxf7+", 0.07, Severity.INACCURACY, Label.INACCURACY, 10.0)
+        out = drain(coach)
+        assert len(out) == 1 and out[0].trigger is Trigger.POST_MOVE, out
+        assert "Qxf7" in out[0].text and not out[0].text.startswith(fine), out[0].text
+        if provider is not None:
+            directive = directive_of(sent(provider, 0))
+            assert "which was an inaccuracy" in directive and "sound" not in directive

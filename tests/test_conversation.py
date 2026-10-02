@@ -322,19 +322,22 @@ STARTS = {
 }
 
 
-def _analysis(board: chess.Board, ply: int) -> Analysis:
-    """The engine's look at `board`: two of its legal moves, the first the best."""
+def _analysis(board: chess.Board, ply: int, *, provisional: bool = False) -> Analysis:
+    """The engine's look at `board`: two of its legal moves, the first the best; `provisional`
+    the early depth, the full one to follow."""
     first, second = sorted(board.legal_moves, key=lambda m: (not board.is_capture(m), m.uci()))[:2]
+    depth = 12 if provisional else 18
     return Analysis(
         game_id="g",
         fen=board.fen(),
         ply=ply,
         lines=[
-            Line(moves=[first.uci()], depth=18, expected_score=0.7),
-            Line(moves=[second.uci()], depth=18, expected_score=0.5),
+            Line(moves=[first.uci()], depth=depth, expected_score=0.7),
+            Line(moves=[second.uci()], depth=depth, expected_score=0.5),
         ],
         decisive=False,
         only_move=False,
+        provisional=provisional,
     )
 
 
@@ -346,12 +349,27 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
     asked to speak: the model is given the position the player faces -- its board, the side
     to move, the engine's lines, the facts -- and no other as the position now. At a puzzle's
     start, a joined game's, a re-read board's or after a takeback to the start, it was given
-    none, or the withdrawn move's (Tai, 2026-10-01)."""
+    none, or the withdrawn move's (Tai, 2026-10-01). Asked before the engine has looked, the
+    question is answered from its early depth, and the position now shows that depth's lines
+    and facts: only the full depth reached the record, and the model was told "Engine lines:
+    not in yet." with no facts (the coach review, 2026-10-01). Only the position now has its
+    legal moves: the setting, the takeback and the re-read show a board as where the record
+    starts or went back to, and after a re-read the setting's board was a second "position as
+    it stands"."""
     fen, side, kind = STARTS[start]
     coach, provider = scripted_coach([])
     coach.on_event(GameStarted(game_id="g", user_side=side, start_fen=fen, kind=kind), 0.0)
     board = chess.Board(fen)
-    coach.on_event(_analysis(board, 0), 0.5)
+    # Asked, the position now's analysis lands after the question, at its early depth.
+    later: list[tuple[chess.Board, int]] = []
+
+    def look(at: chess.Board, ply: int, ts: float, *, now: bool = False) -> None:
+        if now and trigger == "asked":
+            later.append((at.copy(), ply))
+        else:
+            coach.on_event(_analysis(at, ply), ts)
+
+    look(board, 0, 0.5, now=state == "start")
     gone: str | None = None
     if state in ("moved", "taken back"):
         for ply in (1, 2):
@@ -370,7 +388,7 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
                 ),
                 float(ply),
             )
-            coach.on_event(_analysis(board, ply), ply + 0.5)
+            look(board, ply, ply + 0.5, now=state == "moved" and ply == 2)
         if state == "taken back":
             gone = board.fen()
             board = chess.Board(fen)
@@ -383,13 +401,17 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
         board = chess.Board(REREAD[side])
         coach.conversation.coach_said("Look at the knight.")  # of the board before the re-read
         coach.on_event(Resync(game_id="g", fen=board.fen(), reason="re-read"), 3.0)
-        coach.on_event(_analysis(board, 0), 3.5)
+        look(board, 0, 3.5, now=True)
     assert coach.user_to_move and coach.board.fen() == board.fen()
     assert not coach._said_since_move(), "nothing said yet at the position now"
     if trigger == "stuck":
         stuck(coach)
     else:
         coach.ask("what should I be thinking about here?", 10.0)
+        for at, ply in later:
+            drain(coach)
+            assert not provider.calls, "the question waits for the engine's look"
+            coach.on_event(_analysis(at, ply, provisional=True), 10.5)
         drain(coach)
     assert provider.calls, "the model was asked"
     harness = harness_of(sent(provider))
@@ -400,11 +422,40 @@ def test_the_position_now_is_the_board_the_player_faces(start: str, state: str, 
         assert f"FEN: {gone}" not in now, "a position no longer the game's"
         assert "Look at the knight." not in now, "said of a position no longer the game's"
     assert ("White" if board.turn else "Black") + " to move" in now
+    assert harness.count("Legal moves: ") == 1 and "Legal moves: " in now, "one board to play on"
     best = board.san(chess.Move.from_uci(_analysis(board, 0).lines[0].moves[0]))
     lines = now.split("## Engine lines", 1)[1].split("\n## ", 1)[0]
     assert f" {best}  0.70" in lines.split("\n")[1], "the engine's best line for this position"
     assert "\n## Facts (" in now, "the facts sheet for this position"
     assert coach.harness_problems == [], "the prompt check passes every prompt built right"
+
+
+def test_a_late_engine_note_is_the_records_and_has_its_lines() -> None:
+    """The analysis of the position the player's move left can land after the opponent's
+    reply (the engine measures the newest position first): its note went under "Said here" of
+    the position the player now faces, the past position's standing beside the one now's, and
+    without its engine lines, filtered by a title they no longer have (the coach review,
+    2026-10-01). It is the record's, under the move it is about, lines and all."""
+    from tests.coaching import SCHOLAR, SCHOLAR_MOVES, play, start_game
+
+    coach, provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES)
+    coach.on_event(_analysis(chess.Board(SCHOLAR), 6), 7.0)
+    coach.ask("what is my plan?", 8.0)  # the model has seen the record: its lines are frozen
+    drain(coach)
+    after_qh5 = chess.Board()
+    for san in SCHOLAR_MOVES[:5]:
+        after_qh5.push_san(san)
+    coach.on_event(_analysis(after_qh5, 5), 9.0)  # 3. Qh5's position, read late
+    coach.ask("and what should I watch out for?", 10.0)
+    drain(coach)
+    harness = harness_of(sent(provider))
+    record, now = harness.split("# Position now\n", 1)
+    assert "Engine note on the position after 3. Qh5" in record
+    note = record.split("Engine note on the position after 3. Qh5", 1)[1]
+    assert "Engine lines (the opponent's move" in note and "Standing:" in note
+    assert "Engine note" not in now
 
 
 def test_the_prompt_check_names_what_is_wrong() -> None:
@@ -428,3 +479,20 @@ def test_the_prompt_check_names_what_is_wrong() -> None:
     )
     wrong_side = harness_problem(good, board, Side.WHITE)
     assert wrong_side == "the setting does not say the player is White"
+    # The engine's lines and the facts, when the coach has them for the position now: the early
+    # depth was answered from and never shown (the coach review, 2026-10-01).
+    unread = good + "\n\n## Engine lines\nnot in yet.\n\n## On the board (complete lists)\n..."
+    assert harness_problem(unread, board, Side.BLACK) is None, "nothing known: nothing missing"
+    assert harness_problem(unread, board, Side.BLACK, lines=True) == (
+        "the position now has no engine lines, though the coach has them"
+    )
+    read = good + (
+        "\n\n## Engine lines (the player's move)\n  1. Qxf2+  0.70\n\n"
+        "## On the board (complete lists)\n...\n\n## Said here\n    EVENT: ## Facts (a quote)"
+    )
+    assert harness_problem(read, board, Side.BLACK, lines=True) is None
+    assert harness_problem(read, board, Side.BLACK, lines=True, facts=True) == (
+        "the position now has no facts, though the coach has them"
+    )
+    with_facts = read.replace("\n\n## On the board", "\n\n## Facts (the player to move)\nphase: x")
+    assert harness_problem(with_facts, board, Side.BLACK, lines=True, facts=True) is None
