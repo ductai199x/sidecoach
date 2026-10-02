@@ -417,6 +417,35 @@ def test_listening_saved_during_the_microphone_test_is_kept(
     assert listener.mode == "off" and engine.settings.voice.listen == "off"
 
 
+def test_a_microphone_test_whose_window_closed_ends_at_the_next_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Voice finding 10: Settings closed during the test (its onDestroy does not run on a
+    window's close) left it on, listening in voice mode, until the next utterance."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui import panel as panel_mod
+
+    _, engine = _client(tmp_path, monkeypatch)
+
+    def set_mode(mode: str) -> str:
+        listener.mode = mode
+        return mode
+
+    listener = SimpleNamespace(mode="off", level=0.0, set_mode=set_mode)
+    engine._listener = listener  # type: ignore[assignment]
+    engine._hotkey = SimpleNamespace(start=lambda: True, stop=lambda: None, detail="")  # type: ignore[assignment]
+    engine._mic = SimpleNamespace(healthcheck=lambda: (True, "mic"))  # type: ignore[assignment]
+    engine._stt = SimpleNamespace(healthcheck=lambda: (True, "stt"))  # type: ignore[assignment]
+    engine.set_listen("ptt")
+    assert engine.set_hear_test(True)["on"] and listener.mode == "vad"
+    engine.poll(0)  # the main window's poll, the test's page still polling
+    assert engine._hear_test_on
+    engine._hear_test_seen -= panel_mod.HEAR_TEST_TIMEOUT_S + 1  # the page went away
+    engine.poll(0)
+    assert not engine._hear_test_on and listener.mode == "ptt"
+
+
 def test_a_change_is_never_dropped_for_a_value_already_held(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

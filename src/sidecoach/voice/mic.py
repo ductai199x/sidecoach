@@ -38,6 +38,8 @@ log = logging.getLogger(__name__)
 MODES = ("off", "ptt", "vad")
 PRE_ROLL_FRAMES = 10  # 320 ms kept before a detected start, so "knight" is not "ight"
 MAX_UTTERANCE_S = 20.0
+# How often a microphone whose stream died is tried again.
+MIC_REOPEN_S = 3.0
 QUEUE_FRAMES = SAMPLE_RATE // HOP * 10  # ten seconds of backlog before the oldest is dropped
 
 
@@ -118,6 +120,17 @@ class Microphone:
             self._stream = None
             return False
 
+    def stalled(self) -> bool:
+        """The stream is open but no longer running: its device went away (a headset
+        unplugged, a USB microphone reset), and no frame will come again."""
+        stream = self._stream
+        if stream is None:
+            return False
+        try:
+            return not bool(stream.active)
+        except Exception:  # noqa: BLE001
+            return True
+
     def close(self) -> None:
         stream, self._stream = self._stream, None
         if stream is not None:
@@ -183,6 +196,7 @@ class Listener:
         # which the system removes the hook and push-to-talk silently dies (2026-09-22).
         self._deliveries: queue.Queue[tuple[np.ndarray, float] | None] = queue.Queue()
         self._deliverer: threading.Thread | None = None
+        self._reopen_tried = 0.0
 
     # ---- control ------------------------------------------------------------------------
 
@@ -193,6 +207,8 @@ class Listener:
         with self._lock:
             self._finish(discard=True)
             self.mode = mode
+            # A key held across the switch: the next press starts afresh (it was ignored).
+            self._ptt = False
         if mode == "off":
             self._stop.set()
             if self._thread is not None:
@@ -241,6 +257,7 @@ class Listener:
                 frame = self.mic.frames.get(timeout=0.2)
             except queue.Empty:
                 self.level *= 0.5
+                self._reopen_if_stalled()
                 continue
             self.level = max(float(np.abs(frame).max()), self.level * 0.8)
             partial: np.ndarray | None = None
@@ -249,7 +266,14 @@ class Listener:
                 if mode == "ptt":
                     if self._ptt:
                         self._buffer.append(frame)
-                        self._cap()
+                        if self._cap():
+                            # A key held past the longest utterance: what was said goes to
+                            # the recogniser, and holding on keeps nothing more until the
+                            # next press. The buffer grew without end, and each partial
+                            # recognised it all (voice finding 7, 2026-10-01).
+                            self._ptt = False
+                            self._finish(discard=False)
+                            continue
                         partial = self._partial_due()
                     else:
                         self._pre.append(frame)
@@ -283,6 +307,19 @@ class Listener:
                     self._on_event("debug", "a sound too short to be an ask, ignored")
             if partial is not None:
                 self._on_partial(partial)  # type: ignore[misc]
+
+    def _reopen_if_stalled(self) -> None:
+        """A microphone whose stream died is reopened, at most once every few seconds:
+        it was never reopened, and the coach stayed deaf until the mode was switched
+        (voice finding 17, 2026-10-01)."""
+        stalled = getattr(self.mic, "stalled", None)
+        now = time.monotonic()
+        if stalled is None or now - self._reopen_tried < MIC_REOPEN_S or not stalled():
+            return
+        self._reopen_tried = now
+        self.mic.close()
+        if self.mic.open():
+            self._on_event("info", f"microphone reopened ({self.mic.detail})")
 
     def _cap(self) -> bool:
         """True (and stop growing) once an utterance has reached its maximum length."""

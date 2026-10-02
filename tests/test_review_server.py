@@ -275,15 +275,32 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     assert client.post(f"/api/review/{key}/open", json={"strength": "fast"}).json()["voice"]
 
-    # A card cuts off the one before it, is said, and is captioned as the panel's words are.
+    # The live coach speaking: a card does not cut it off (voice finding 12, 2026-10-01) ...
+    engine._voicing = ("post_move", 10)
     assert client.post(f"/api/review/{key}/say", json={"text": "Na5 is a mistake."}).json()["ok"]
-    assert voice.heard == ["stop", "say Na5 is a mistake."]
+    assert voice.heard == ["say Na5 is a mistake."]
     captioned = [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
     assert "Na5 is a mistake." in captioned
+    # ... and a card cuts off the card before it.
+    assert client.post(f"/api/review/{key}/say", json={"text": "Bb5 was better."}).json()["ok"]
+    assert voice.heard[-2:] == ["stop", "say Bb5 was better."]
+    # Muted: the card is captioned, not said.
+    engine.set_muted(True)
+    voice.heard.clear()
+    assert client.post(f"/api/review/{key}/say", json={"text": "Nf3 is best."}).json()["ok"]
+    assert [h for h in voice.heard if h.startswith("say")] == []
+    assert "Nf3 is best." in [text for _, text, _ in engine.poll()["state"]["caption_lines"]]
+    engine.set_muted(False)
     # Hushed, and closing the review silences it too.
+    assert client.post(f"/api/review/{key}/say", json={"text": "Qd2 holds."}).json()["ok"]
     assert client.post(f"/api/review/{key}/hush").json()["ok"]
     client.post(f"/api/review/{key}/close")
     assert voice.heard[-2:] == ["stop", "stop"]
+    # Closing a review while the coach has the voice leaves the coach speaking.
+    engine._voicing = ("post_move", 12)
+    voice.heard.clear()
+    client.post(f"/api/review/{key}/close")
+    assert voice.heard == []
 
 
 def test_a_move_is_retried_and_graded_as_the_review_graded_it(

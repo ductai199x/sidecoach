@@ -178,6 +178,7 @@
       onmouseleave={() => store.setPtt(false)}
       ontouchstart={(e) => { if (sendState === "ptt") { e.preventDefault(); store.setPtt(true); } }}
       ontouchend={() => store.setPtt(false)}
+      ontouchcancel={() => store.setPtt(false)}
     >
       <svg class="ic ic-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z"/></svg>
       <svg class="ic ic-mic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3h2a7 7 0 0 1-6 6.9V21h-2v-2.1A7 7 0 0 1 5 12h2a5 5 0 0 0 10 0z"/></svg>

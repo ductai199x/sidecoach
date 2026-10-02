@@ -273,6 +273,11 @@ class PanelEngine:
     # What the voice was last given: the trigger and the ply of that message, so the
     # next one knows whether what is playing is about a position the board has left.
     _voicing: tuple[str, int | None] | None = field(default=None, init=False)
+    # Counts the times the voice was cut off by the player (a barge-in, a mute): a reply
+    # being written sentence by sentence says nothing more once it moves.
+    _hushed: int = field(default=0, init=False)
+    # Counts the presses and utterances begun (see _dictation_settle).
+    _dictation_holds: int = field(default=0, init=False)
     # The puzzles recommended lately, in order, and the motif each was for: the puzzle
     # page (ui/puzzle_room.py) opens them in a tab of their own, with Next in that order.
     practice_ids: list[str] = field(default_factory=list, init=False)
@@ -411,6 +416,9 @@ class PanelEngine:
             # the vision follows is on the screen, in pixels (none while it follows none).
             "captions": caption_settings(self.settings, preview=0),
             "caption_lines": [],
+            # Raised when a line captioned earlier is said now (a word held back in a fast
+            # game): the box, faded since, comes back for it.
+            "caption_again": 0,
             # Raised by every change the server makes to the settings or a piece set: the main
             # window reads it with each poll and tells the other windows (lib/panel.svelte.ts).
             "settings_version": 0,
@@ -850,8 +858,14 @@ class PanelEngine:
     def _reload_voice(self) -> None:
         """A new voice model, provider, language, folder or device: the old voice is cut
         off, the new one built and loaded off the caller's thread."""
+        old = self._tts
         with contextlib.suppress(Exception):
-            self._tts.stop()
+            old.stop()
+        # Its worker, model session and output stream are released, not left running.
+        close = getattr(old, "close", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                close()
         self._tts = self._build_tts(self.settings.voice.voice)
         self._hook_voice()
         with self._lock:
@@ -1147,12 +1161,18 @@ class PanelEngine:
             self.muted = muted
             self._state["muted"] = muted
         if muted:
+            self._hushed += 1
             self._tts.stop()
         self._emit("voice", "info", "muted" if muted else "unmuted")
 
     def poll(self, since: int = 0) -> dict[str, Any]:
         """A snapshot for the page: the current state and every log record after `since`;
         and whether the voice is speaking now, for the captions to fade once it stops."""
+        if self._hear_test_on and time.monotonic() - self._hear_test_seen > HEAR_TEST_TIMEOUT_S:
+            # The Settings window closed during the microphone test without saying so: the
+            # test ended only with the next utterance, listening on meanwhile in voice mode
+            # whatever the player had chosen (voice finding 10, 2026-10-01).
+            self.set_hear_test(False)
         with self._lock:
             state = dict(self._state)
         state["speaking"] = bool(self._tts.busy)
@@ -1266,21 +1286,33 @@ class PanelEngine:
 
     def _dictation_arm(self) -> None:
         """(Re)start the second of quiet after which the dictation is sent."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-        self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
-        self._dictation_timer.daemon = True
-        self._dictation_timer.start()
         with self._lock:
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+            self._dictation_timer = threading.Timer(DICTATION_SEND_DELAY_S, self._dictation_send)
+            self._dictation_timer.daemon = True
+            self._dictation_timer.start()
             self._state["dictation"] = {
                 "text": self._dictation_text,
                 "live": False,
                 "sends_at": int((time.time() + DICTATION_SEND_DELAY_S) * 1000),
             }
 
-    def _dictation_settle(self) -> None:
-        """An utterance that came to nothing: earlier words (if any) go on to send, else
-        the box stops saying it is listening."""
+    def _dictation_settle(self, holds: int | None = None) -> None:
+        """An utterance ended (with words or with none): the words (if any) go on to send
+        after the second of quiet, else the box stops saying it is listening. `holds`: the
+        count of presses and utterances when this one ended its recording; one more came while
+        it was being recognised, and the box waits for that one, which settles it in turn: the
+        second of quiet ran from the first, and the question went in two halves (voice
+        finding 5, 2026-10-01)."""
+        if holds is not None and holds != self._dictation_holds:
+            with self._lock:
+                self._state["dictation"] = {
+                    "text": self._dictation_text,
+                    "live": True,
+                    "sends_at": None,
+                }
+            return
         if self._dictation_text:
             self._dictation_arm()
         else:
@@ -1289,10 +1321,11 @@ class PanelEngine:
 
     def _dictation_hold(self) -> None:
         """A new press or a new utterance: whatever was about to send waits for the rest."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-            self._dictation_timer = None
         with self._lock:
+            self._dictation_holds += 1
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+                self._dictation_timer = None
             self._state["dictation"] = {
                 "text": self._dictation_text,
                 "live": True,
@@ -1309,10 +1342,10 @@ class PanelEngine:
 
     def cancel_dictation(self) -> dict[str, Any]:
         """The person typed: the words stay theirs in the box, nothing sends on its own."""
-        if self._dictation_timer is not None:
-            self._dictation_timer.cancel()
-            self._dictation_timer = None
         with self._lock:
+            if self._dictation_timer is not None:
+                self._dictation_timer.cancel()
+                self._dictation_timer = None
             text, self._dictation_text = self._dictation_text, ""
             self._state["dictation"] = {"text": "", "live": False, "sends_at": None}
         return {"ok": True, "text": text}
@@ -1322,6 +1355,9 @@ class PanelEngine:
         dictation about to send waits for what is coming."""
         if not self._hear_test_on:
             self._dictation_hold()
+        # A reply still being written says nothing more, even between two sentences, when
+        # the voice is briefly idle: the voice never talks over the player.
+        self._hushed += 1
         if self._tts.busy:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
@@ -1338,6 +1374,7 @@ class PanelEngine:
         Runs on the listener thread; the ask is queued for the pipeline thread.
         """
         self._utterance_gen += 1
+        holds = self._dictation_holds  # a press or an utterance after this one began
         begun = time.perf_counter()
         raw = self._stt.transcribe(audio)
         ms = (time.perf_counter() - begun) * 1000
@@ -1350,12 +1387,12 @@ class PanelEngine:
             self._emit(
                 "voice", "debug", f"heard nothing in {seconds:.1f}s of audio", stt_ms=round(ms)
             )
-            self._dictation_settle()
+            self._dictation_settle(holds)
             return
         fixed = correct(raw, self._board_on_screen())
         text = fixed.text
         if not text:
-            self._dictation_settle()
+            self._dictation_settle(holds)
             return
         # Into the text box, after whatever was said before in this dictation; sent after
         # a second of quiet unless more comes. The terminal keeps the detail.
@@ -1371,7 +1408,7 @@ class PanelEngine:
             seconds=round(seconds, 2),
             stt_ms=round(ms),
         )
-        self._dictation_arm()
+        self._dictation_settle(holds)
 
     def _emit(self, chan: str, level: str, text: str, **data: Any) -> None:
         self._log.emit(chan, level, text, **data)
@@ -1441,14 +1478,22 @@ class PanelEngine:
             return None
         name = getattr(trigger, "value", str(trigger))
         started: list[str] = []
+        hushed_at = [self._hushed]
 
         def sink(sentence: str) -> bool:
+            continues = bool(started)
+            if started and (self.muted or self._hushed != hushed_at[0]):
+                # Muted, or cut off (barge-in, hush) mid-reply: the rest of the reply is
+                # still the reply -- in the chat, the record and the captions -- only
+                # silent. Declining here cut the reply's text at what had been said.
+                self.caption(sentence, continues=True)
+                return True
             if self.muted:
                 return False
             with self._lock:
                 ply_now = int(self._state.get("ply") or 0)
-            continues = bool(started)
             if not started:
+                hushed_at[0] = self._hushed
                 action = self.voice_action(
                     name, sentence, ply, ply_now, self._tts.busy, self._voicing, self._coach_fast()
                 )
@@ -1525,6 +1570,10 @@ class PanelEngine:
         self._held_word = None
         self._voicing = (trigger, ply)
         self._await_audio(trigger, ply, text)
+        with self._lock:
+            # Captioned when it was held back, long faded: the box comes back while it is
+            # said (voice finding 20, 2026-10-01).
+            self._state["caption_again"] = int(self._state.get("caption_again") or 0) + 1
         self._tts.say(text)
         self._emit("voice", "debug", f"speaking ({self.voice}), the game slowed: {elide(text, 60)}")
 

@@ -975,6 +975,10 @@ def _rooms_for(engine: PanelEngine) -> Any:
     return rooms
 
 
+# What the panel's voice was last given, when a room (a review, a puzzle) gave it.
+ROOM_VOICE = "room"
+
+
 def _room_voice(
     engine: PanelEngine,
 ) -> tuple[Callable[[str], None] | None, Callable[[], None] | None]:
@@ -991,10 +995,18 @@ def _room_voice(
         caption = getattr(engine, "caption", None)
         if caption is not None:
             caption(text)
+        # Mute is silence everywhere: the coach's Mute silenced the coach only, and Game
+        # Review and the puzzles talked on (voice finding 12, 2026-10-01). Still captioned.
+        if getattr(engine, "muted", False):
+            return
+        engine._voicing = (ROOM_VOICE, None)
         engine._tts.say(text)
 
     def stop() -> None:
-        engine._tts.stop()
+        # Only a room's own words: closing a review cut off the live coach mid-sentence.
+        voicing = getattr(engine, "_voicing", None)
+        if voicing is not None and voicing[0] == ROOM_VOICE:
+            engine._tts.stop()
 
     return speak, stop
 

@@ -53,6 +53,7 @@
   let front = false; // Sidecoach's own window in front
   let lastN = -1; // the last caption taken
   let lastPreview = -1;
+  let lastAgain = -1; // the last caption_again seen
   let lastKeep: boolean | null = null;
   let turnedOff = false; // off from the box, until the saved setting comes back
   let busy = false; // a pointer on the box: it neither fades nor moves on its own meanwhile
@@ -75,6 +76,10 @@
     // their look is, when it came in the last few seconds -- the window is built when they
     // are turned on, after the change that turned them on.
     if (lastN < 0 || !c.on) lastN = newest;
+    const again = next.caption_again ?? 0;
+    // A line captioned when it was held back, said now: the box comes back for it.
+    const sayAgain = lastAgain >= 0 && again !== lastAgain && !front;
+    lastAgain = again;
     if (lastPreview < 0) lastPreview = Date.now() - c.preview < 5000 ? 0 : c.preview;
     if (!c.on) turnedOff = false;
     if (!c.on || turnedOff) {
@@ -102,6 +107,11 @@
         lastN = n;
         begin(text, false, !!continues);
       }
+    }
+    if (sayAgain && !shown && said) {
+      cancelHide();
+      void showBox();
+      void scrollWords();
     }
     if (!shown) {
       restore();

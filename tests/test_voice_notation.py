@@ -80,3 +80,18 @@ def test_the_voice_says_the_a_file_as_the_letter(text: str, voiced: str) -> None
     voice gets "eh"; the words the speech correction matches keep "a", as a person says it."""
     assert speak_notation(text, voice=True) == voiced
     assert "eh" not in speak_notation(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "spoken"),
+    [
+        ("Castle with 0-0 now.", "Castle with castles kingside now."),
+        ("0-0-0+ wins", "castles queenside check wins"),
+        ("Then e8Q wins.", "Then e eight promotes to queen wins."),
+        ("d1N+", "d one promotes to knight check"),
+        ("The score was 10-0.", "The score was 10-0."),
+    ],
+)
+def test_castling_with_zeros_and_a_promotion_without_the_sign(text: str, spoken: str) -> None:
+    """Voice finding 19: "0-0" was read "zero dash zero", "e8Q" "e eight Q"."""
+    assert speak_notation(text) == spoken

@@ -151,8 +151,11 @@ def test_a_word_held_in_a_fast_game_is_said_once_the_player_slows(
     assert fake.calls == []
     engine._say_held_word(coaching, 7.0)  # a second into the position: still fast
     assert fake.calls == []
+    assert engine.poll()["state"]["caption_again"] == 0
     engine._say_held_word(coaching, 6.0 + PACE_RESUME_S + 1)  # the game slowed
     assert fake.calls == ["say:Nf6: good."]
+    # The box, faded since the word was captioned, comes back while it is said (finding 20).
+    assert engine.poll()["state"]["caption_again"] == 1
     engine._say_held_word(coaching, 20.0)
     assert len(fake.calls) == 1, "said once"
     # A word about a position the board has left is dropped, not said late.
