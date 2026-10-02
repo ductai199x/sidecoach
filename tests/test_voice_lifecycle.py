@@ -85,6 +85,15 @@ class FakeOutputStream:
 
     def close(self) -> None:
         self.closed = True
+        self.closing.set()
+
+    @property
+    def closing(self) -> threading.Event:
+        """Set once the stream is closed."""
+        event = self.__dict__.get("_closing")
+        if event is None:
+            event = self.__dict__["_closing"] = threading.Event()
+        return event
 
 
 class FakeSD:
@@ -226,6 +235,77 @@ def test_a_live_stream_slow_to_take_a_line_is_waited_for_not_dropped(
     assert not voice.busy and not stream.dead
     assert FakeOutputStream.instances == [stream], "the same stream, not reopened"
     assert stream.played > played, "the second line played on it"
+
+
+class SystemOutput:
+    """The system's default output as the voice reads it (`devices.output_changes`): changed
+    when the test says (headphones plugged in, the default switched in Windows)."""
+
+    def __init__(self) -> None:
+        self.changes = 0
+
+    def switch(self) -> None:
+        self.changes += 1
+
+
+@pytest.fixture
+def system(monkeypatch: pytest.MonkeyPatch, voice: WatchedTTS) -> SystemOutput:
+    """The voice on the device that follows the system default, as it is when none is set."""
+    output = SystemOutput()
+    monkeypatch.setattr(kk, "follows_system_default", lambda device, kind: True)
+    monkeypatch.setattr(kk, "output_changes", lambda: output.changes, raising=False)
+    voice.output_device = 0
+    return output
+
+
+def test_the_voice_follows_the_systems_output_at_the_next_line(
+    voice: WatchedTTS, system: SystemOutput
+) -> None:
+    """Headphones plugged in between two lines: the second is said on a stream opened on the new
+    default, the old one closed. Before, the voice compared PortAudio's default as it read it at
+    start, which never changes, and kept playing to the speakers (voice finding 6)."""
+    voice.say("First line.")
+    voice.line_done()
+    first = FakeOutputStream.instances[0]
+    voice.say("Still the speakers.")
+    voice.line_done()
+    assert FakeOutputStream.instances == [first], "nothing changed: the same stream"
+    system.switch()
+    voice.say("Second line.")
+    voice.line_done()
+    assert len(FakeOutputStream.instances) == 2 and first.closed
+    second = FakeOutputStream.instances[1]
+    second.halt()
+    assert second.played > 0
+
+
+def test_the_voice_follows_the_systems_output_mid_line(
+    voice: WatchedTTS, system: SystemOutput
+) -> None:
+    """The default switched while a line plays: the rest of the line goes on a stream opened on
+    the new output, at once, and the old stream is closed without playing it."""
+    voice.say("First line.")
+    voice.line_done()
+    first = FakeOutputStream.instances[0]
+    played = first.played
+    FakeOutputStream.held = True  # the line queued on the speakers, not yet asked for
+    FakeOutputStream.opening = threading.Event()
+    queued = threading.Event()
+    voice.on_play = lambda line: queued.set()  # said by the voice once the line is queued
+    voice.say("A long line about the knight on f5.")
+    assert queued.wait(HANG_S), "the line never reached its stream"
+    assert voice._stream._stream is first and voice.busy  # noqa: SLF001 - on the speakers, playing
+    system.switch()  # ... and the default changes under it
+    assert FakeOutputStream.opening.wait(HANG_S), "no stream opened on the new output"
+    assert first.closing.wait(HANG_S), "the old stream was never closed"
+    FakeOutputStream.held = False
+    voice.line_done()
+    assert not voice.busy
+    second = FakeOutputStream.instances[1]
+    second.halt()
+    first.halt()
+    assert first.played == played, "the old output said nothing of the line"
+    assert second.played >= 2400, "the whole line on the new output"
 
 
 def test_a_closed_voice_releases_its_worker_model_and_stream(voice: WatchedTTS) -> None:

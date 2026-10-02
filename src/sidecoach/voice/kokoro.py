@@ -22,7 +22,7 @@ from collections.abc import Callable
 from importlib.util import find_spec
 from pathlib import Path
 
-from sidecoach.voice.devices import follows_system_default, system_default
+from sidecoach.voice.devices import follows_system_default, output_changes, system_default
 from sidecoach.voice.notation import speak_notation
 from sidecoach.voice.runtime import Device
 from sidecoach.voice.runtime import session as make_session
@@ -38,8 +38,8 @@ TAIL_SILENCE_S = 0.35
 # The output stream stays open between lines, silence flowing: opened per line, a
 # Bluetooth headset swallowed the first syllables while its link woke and the last while
 # the stream closed under it (Tai, 2026-09-20: "beginnings or ends of sentences cut off").
-# The stream is reopened when the system's default output changes, checked this often.
-DEVICE_CHECK_S = 2.0
+# The stream is reopened on the new device when the system's default output changes
+# (`devices.output_changes`), before a line or while one plays.
 VOICES_FILE = "voices-v1.0.bin"
 # A stream whose device has not asked for samples for this long is taken for dead and
 # reopened at the next line.
@@ -101,19 +101,34 @@ class _Stream:
             self._chunks.append(block)
             self._idle.clear()
 
-    def wait(self, timeout: float) -> bool:
+    def wait(self, timeout: float, between: Callable[[], _Stream | None] | None = None) -> bool:
         """Wait until what is queued has been handed to the device; False, and the stream
         marked dead, when the device stopped asking for samples (it went away) or the
         timeout passed. A dead stream held each line for its length and five seconds,
-        silent, and kept the voice `busy` (voice finding 6, 2026-10-01)."""
+        silent, and kept the voice `busy` (voice finding 6, 2026-10-01). `between` is asked
+        at every look meanwhile: a stream it returns has taken the rest of the line over
+        (the system's output changed), and the wait goes on there."""
         end = time.monotonic() + timeout
-        while not self._idle.wait(0.1):
+        stream = self
+        while not stream._idle.wait(0.1):
+            if between is not None:
+                moved = between()
+                if moved is not None:
+                    stream = moved
+                    continue
             now = time.monotonic()
-            if now >= end or now - self.last_callback > STREAM_DEAD_S:
-                self.dead = True
-                self.clear()
+            if now >= end or now - stream.last_callback > STREAM_DEAD_S:
+                stream.dead = True
+                stream.clear()
                 return False
         return True
+
+    def take(self) -> list:
+        """What is still queued, taken off this stream (for another to play)."""
+        with self._lock:
+            chunks, self._chunks = self._chunks, []
+            self._idle.set()
+        return chunks
 
     def play(self, samples: object, timeout: float) -> bool:
         """Queue `samples` and return once they have been handed to the device."""
@@ -171,12 +186,13 @@ class KokoroTTS:
         self._generation = 0
         self._lock = threading.Lock()
         self._playing = False
-        # The open output stream (see _Stream), the device name it was opened on and when
-        # that was last checked against the system default; None when the stream could
-        # not be opened, and lines then play one by one.
+        # The open output stream (see _Stream) and the output it was opened for (`_output`):
+        # None when the stream could not be opened, and lines then play one by one.
         self._stream: _Stream | None = None
-        self._stream_device_name: str | None = None
-        self._stream_checked = 0.0
+        self._stream_output: tuple | None = None
+        # The output a stream would not open on: not tried again until the output changes.
+        self._failed_output: tuple | None = None
+        self._follows: tuple[int | str | None, bool] | None = None
 
     @property
     def onnx_path(self) -> Path:
@@ -238,8 +254,9 @@ class KokoroTTS:
         reopened on it."""
         self.output_device = device
         self._playback = None
+        self._follows = None
         stream, self._stream = self._stream, None
-        self._stream_device_name = None
+        self._stream_output = None
         if stream is not None:
             with contextlib.suppress(Exception):
                 stream.close()
@@ -267,6 +284,7 @@ class KokoroTTS:
                 self._sd = sounddevice
                 self.device = where
                 self.load_seconds = time.perf_counter() - begun
+                output_changes()  # the watch on the system's output set up now, not at a line
                 return True
             except Exception as exc:  # noqa: BLE001 - any load failure degrades to silence
                 log.warning("Kokoro voice unavailable, going silent: %s", exc)
@@ -323,13 +341,15 @@ class KokoroTTS:
         """Drop everything queued and silence anything now playing."""
         with self._lock:
             self._generation += 1
+            # Under the lock with the voice's following of the output: a line moving to a new
+            # stream is cleared there too, never carried past the stop.
+            if self._stream is not None:
+                self._stream.clear()
         while True:
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
-        if self._stream is not None:
-            self._stream.clear()
         if self._sd is not None:
             # Stopping audio must never raise out of stop().
             with contextlib.suppress(Exception):
@@ -344,7 +364,7 @@ class KokoroTTS:
         if worker is not None and worker.is_alive():
             self._queue.put(None)
         stream, self._stream = self._stream, None
-        self._stream_device_name = None
+        self._stream_output = None
         if stream is not None:
             stream.close()
         with self._load_lock:
@@ -406,9 +426,12 @@ class KokoroTTS:
                 with contextlib.suppress(Exception):
                     self.on_play(given or text)
             if stream is not None:
-                if not stream.wait(len(samples) / sample_rate + 5.0) and stream.dead:
-                    log.warning("Kokoro output stream stopped; reopening at the next line")
-                    self._drop_stream(stream)
+                follow = lambda: self._follow_output(int(sample_rate))  # noqa: E731
+                if not stream.wait(len(samples) / sample_rate + 5.0, follow):
+                    current = self._stream
+                    if current is not None and current.dead:
+                        log.warning("Kokoro output stream stopped; reopening at the next line")
+                        self._drop_stream(current)
                 return
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
@@ -417,43 +440,76 @@ class KokoroTTS:
     def _drop_stream(self, stream: _Stream) -> None:
         if self._stream is stream:
             self._stream = None
-            self._stream_device_name = None
+            self._stream_output = None
         with contextlib.suppress(Exception):
             stream.close()
 
     def _open_stream(self, sample_rate: int) -> _Stream | None:
-        """The open output stream for this rate and the current output device, opened or
-        reopened as needed; None when the device will not take a stream, in which case
-        lines play one by one as before."""
+        """The open output stream for this rate and the current output, opened or reopened as
+        needed; None when the device will not take a stream, in which case lines play one by
+        one as before."""
         if self._sd is None:
             return None
-        now = time.monotonic()
+        output = self._output()
         stream = self._stream
-        if stream is not None and now - self._stream_checked >= DEVICE_CHECK_S:
-            self._stream_checked = now
-            if stream.samplerate != sample_rate or self._device_name() != self._stream_device_name:
-                stream.close()
-                stream = self._stream = None
+        if stream is not None and (
+            stream.samplerate != sample_rate or output != self._stream_output
+        ):
+            self._drop_stream(stream)
+            stream = None
         if stream is not None:
             return stream
+        stream = self._new_stream(sample_rate, output)
+        if stream is not None:
+            self._stream = stream
+            self._stream_output = output
+        return stream
+
+    def _new_stream(self, sample_rate: int, output: tuple) -> _Stream | None:
         try:
             stream = _Stream(self._sd, sample_rate, self.playback_device())
         except Exception as exc:  # noqa: BLE001 - no stream: the per-line path stands in
             log.warning("Kokoro output stream unavailable, playing line by line: %s", exc)
+            self._failed_output = output
             return None
-        self._stream = stream
-        self._stream_device_name = self._device_name()
-        self._stream_checked = now
+        self._failed_output = None
         return stream
 
-    def _device_name(self) -> str | None:
-        """The name of the output the voice plays through now: the configured device,
-        or whatever the system default is at the moment."""
-        try:
-            device = self.playback_device()
-            if follows_system_default(device, "output"):
-                return str(self._sd.query_devices(self._sd.default.device[1]).get("name"))  # type: ignore[attr-defined]
-            index = device if device is not None else self._sd.default.device[1]  # type: ignore[attr-defined]
-            return str(self._sd.query_devices(index).get("name", index))  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
+    def _follow_output(self, sample_rate: int) -> _Stream | None:
+        """While a line plays: when the system's default output has changed, the rest of the
+        line goes on a stream opened on the new one, and that stream is returned (Tai,
+        2026-10-02: the voice follows headphones plugged in, mid-line if it must). None while
+        nothing changed, or when the new output takes no stream (the old one plays on)."""
+        output = self._output()
+        old = self._stream
+        if old is None or output == self._stream_output or output == self._failed_output:
             return None
+        with self._lock:
+            generation = self._generation
+        new = self._new_stream(sample_rate, output)
+        if new is None:
+            return None
+        with self._lock:
+            if self._stream is not old or generation != self._generation:
+                new.close()  # stopped or replaced meanwhile: nothing to carry over
+                return None
+            for chunk in old.take():
+                new.queue(chunk)
+            self._stream = new
+            self._stream_output = output
+        log.info("the system's output changed; the voice follows it")
+        with contextlib.suppress(Exception):
+            old.close()
+        return new
+
+    def _output(self) -> tuple:
+        """The output the voice plays through, as a key that changes when it does: the
+        configured device as given, or, when it follows the system default, the count of the
+        system's changes of its default output (`devices.output_changes`, Windows' own word,
+        free to read)."""
+        device = self.playback_device()
+        if self._follows is None or self._follows[0] != device:
+            self._follows = (device, follows_system_default(device, "output"))
+        if self._follows[1]:
+            return ("default", output_changes())
+        return ("device", device)
