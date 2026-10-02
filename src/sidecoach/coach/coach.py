@@ -2626,8 +2626,12 @@ class Coach:
         its own, and run on the caller's thread it stalled the whole pipeline for seconds
         (the first live games: every button press froze the vision until it returned).
         """
+        # The moment it was asked in: the reply is that moment's, whatever the game does
+        # while a worker checks the words and the model writes (a new game starting then
+        # filed the answer under the next game).
+        moment = (self._epoch, self.game_id)
         if self.profile_ask is not None and _ASK_PROFILE.search(text):
-            self._ask_profile(text, ts)
+            self._ask_profile(text, ts, moment)
             return
         if self._elicit_asked is not None and ts - self._elicit_asked <= ELICIT_ANSWER_S:
             self._elicit_answered = True
@@ -2786,6 +2790,7 @@ class Coach:
                     fen=position.board.fen(),
                     now=True,
                     record_now=True,
+                    moment=moment,
                 )
             return found
 
@@ -2800,7 +2805,13 @@ class Coach:
                 verdicts = examined() if may_carry_claims(text) else []
                 if not shown_examination:  # offline, the engine's word on it was the answer
                     self._speak(
-                        Trigger.USER_ASK, position, level, ts, user_text=text, verdicts=verdicts
+                        Trigger.USER_ASK,
+                        position,
+                        level,
+                        ts,
+                        user_text=text,
+                        verdicts=verdicts,
+                        moment=moment,
                     )
 
             if tools and not self.sync_claims:
@@ -2827,6 +2838,7 @@ class Coach:
                 ts,
                 user_text=text,
                 verdicts=[*verdicts, *found],
+                moment=moment,
             )
 
         if self.sync_claims:
@@ -2834,7 +2846,7 @@ class Coach:
         else:
             self.spawn(checked, "sidecoach-claims")
 
-    def _ask_profile(self, text: str, ts: float) -> None:
+    def _ask_profile(self, text: str, ts: float, moment: tuple[int, str | None]) -> None:
         """A question about the player over their games: answered from the record by the
         profile's own model loop, off this thread (several model calls), and spoken as
         the coach's turn when it lands. The queries it ran are kept for the log."""
@@ -2852,6 +2864,7 @@ class Coach:
                     "I could not read the record just now; ask me again in a moment.",
                     ts,
                     record_now=True,
+                    moment=moment,
                 )
                 self.profile_answers.append(("error", repr(exc)))
                 return
@@ -2861,7 +2874,7 @@ class Coach:
                     f"quer{'y' if len(answer.exchanges) == 1 else 'ies'})."
                 )
             self.profile_answers.append(("answer", answer))
-            self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True)
+            self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True, moment=moment)
 
         self.spawn(run, "profile-ask")
 
@@ -3758,8 +3771,10 @@ class Coach:
         candidates: int | None = None,
         routine: bool = False,
         elicit: bool = False,
+        moment: tuple[int, str | None] | None = None,
     ) -> None:
         assert position.facts is not None
+        epoch, game_id = moment if moment is not None else (self._epoch, self.game_id)
         instruction, fallback = self._instruction(
             trigger, position, level, user_text, verdicts, assessment, played, elicit=elicit
         )
@@ -3961,7 +3976,7 @@ class Coach:
             board=position.board,
             fallback=fallback,
             ply=position.ply,
-            game_id=self.game_id or "",
+            game_id=game_id or "",
             user_text=user_text,
             disclosed="\n".join(v for v in verdicts if v.startswith("Engine on ")),
             annotations=annotations_for(
@@ -3991,7 +4006,7 @@ class Coach:
             record=self._numbered_moves(),
             unlisted=unlisted,
             tools=tools,
-            epoch=self._epoch,
+            epoch=epoch,
         )
         self.speaker.submit(request)
 
@@ -4220,6 +4235,7 @@ class Coach:
         now: bool = False,
         record_now: bool = False,
         turn: bool = True,
+        moment: tuple[int, str | None] | None = None,
     ) -> None:
         """A message that needs no model; it queues behind whatever the model is writing,
         unless `now`, when it goes out at once. With `record_now` it is a turn of the
@@ -4228,16 +4244,19 @@ class Coach:
         the coach's turn made the question it held, answered when the analysis landed, a
         follow-up -- "You have already told them the verdict ... do not repeat either" (the
         coach review, 2026-10-01)."""
+        epoch, game_id = moment if moment is not None else (self._epoch, self.game_id)
         message = CoachMessage(
             text=text,
             level=level,
             trigger=trigger,
-            game_id=self.game_id,
+            game_id=game_id,
             ply=ply,
             fen=fen,
             annotations=list(annotations or []),
         )
-        if record_now:
+        # Asked for in a moment gone by, it is no turn of this one (`poll`).
+        record = record_now and epoch == self._epoch
+        if record:
             with self._lock:
                 self.conversation.coach_said(text)
         self.speaker.submit_ready(
@@ -4247,7 +4266,7 @@ class Coach:
                 problems=[],
                 attempts=0,
                 recorded=record_now or not turn,
-                epoch=self._epoch,
+                epoch=epoch,
             ),
             now=now,
         )

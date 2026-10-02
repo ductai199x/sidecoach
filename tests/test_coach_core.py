@@ -4,14 +4,19 @@ to their moment. Logic only: time is the policy's `ts` and the Speaker's own hoo
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import chess
 
 from sidecoach.coach.coach import Coach, unlock_for
 from sidecoach.coach.disclosure import Unlock
+from sidecoach.coach.policy import InterjectionPolicy, PolicySettings
 from sidecoach.events import (
     Analysis,
     DisclosureLevel,
+    GameStarted,
     Line,
+    Side,
     Takeback,
     Trigger,
 )
@@ -25,6 +30,7 @@ from tests.coaching import (
     start_game,
     stuck,
 )
+from tests.fakes import ScriptedProvider
 from tests.test_coach import _judged, _played
 
 
@@ -119,6 +125,38 @@ def test_ordinary_words_open_neither_the_move_nor_the_line_nor_a_hint() -> None:
         ("give me a hint", Unlock.HINT),
     ):
         assert unlock_for(said, board, ["Qxf7#"]) is unlock, said
+
+
+# 4. A reply is the moment it was asked in
+
+
+def test_a_reply_checked_while_a_new_game_starts_is_still_the_old_games() -> None:
+    """The words were checked on a worker, and the epoch and the game id read when the
+    request was built: a new game starting meanwhile filed the answer under itself, a turn of
+    the new game's dialogue (the deep coach.py review, 2026-10-01). Taken at ask()."""
+    provider = ScriptedProvider(["Yes, Qxf7 is mate."])
+    coach = Coach(
+        provider,
+        policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)),
+        claims=lambda text, board, facts: [],
+    )
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6), 7.0)
+    drain(coach)
+    held: list[Callable[[], None]] = []
+    coach.spawn = lambda work, name: held.append(work)
+    coach.ask("Is Qxf7 mate?", 8.0)
+    assert len(held) == 1, "the claims check is on a worker"
+    coach.on_event(
+        GameStarted(game_id="h", user_side=Side.WHITE, start_fen=chess.STARTING_FEN), 9.0
+    )
+    held[0]()
+    answers = drain(coach)
+    assert [m.text for m in answers] == ["Yes, Qxf7 is mate."]
+    assert answers[0].game_id == "g", "the game it was asked in"
+    assert [e for e in coach.conversation.entries if e.kind == "coach"] == [], (
+        "no turn of the new game"
+    )
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves
