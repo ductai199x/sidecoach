@@ -72,6 +72,28 @@ def test_engine_follows_a_game_and_reports_it(
     assert any(t.startswith("session:") for t in texts)
 
 
+@pytest.mark.embedder  # a session started builds the stages: the net loads
+def test_a_session_ended_on_a_repetition_played_records_the_draw(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """The session ends (here the recording runs out) with a game whose end was never seen:
+    its final position is the third repetition, which the sites draw. It is a draw by
+    repetition, as a game the next one replaced is (Tai, 2026-10-02), not a game left
+    unfinished ("*", "the end was not seen")."""
+    opening = ("d4", "d5", "e3", "e6", "Bd3", "Bd6", "Nf3", "Nf6")
+    shuffle = ("Nc3", "Nc6", "Nb1", "Nb8")
+    engine = make_panel(record=False, frame_source=game_frames((*opening, *shuffle, *shuffle)))
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=90)
+    assert not engine._thread.is_alive(), "engine loop did not finish the game in time"
+    snap = engine.poll(0)
+    review = snap["state"]["review"]
+    assert review is not None
+    assert (review["result"], review["reason"]) == ("1/2-1/2", "repetition")
+    assert any(ln["text"] == "game over 1/2-1/2 (repetition)" for ln in snap["lines"])
+
+
 def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
     outcome = PanelEngine.outcome_result
     assert outcome("resigned", "white") == ("0-1", "user resigned or lost on time")

@@ -545,6 +545,13 @@ class GamePipeline:
             return []
         return self._stamp(self.reconciler.end(result, reason), ts, frame_id)
 
+    def end_unseen(self, ts: float, frame_id: int | None = None) -> list[Event]:
+        """The session's end: the game under way, its end never seen, ends with the result its
+        final position proves (`Reconciler.end_unseen`), stamped like every other event."""
+        if self.reconciler is None:
+            return []
+        return self._stamp(self.reconciler.end_unseen(), ts, frame_id)
+
     def reset(self) -> None:
         """Forget the game and the recogniser; the next start position bootstraps again.
         Every field returns to its default but what `_RESET_KEEPS` names."""

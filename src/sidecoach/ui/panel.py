@@ -2259,7 +2259,13 @@ class PanelEngine:
             patience = 5.0 if self._stop.is_set() else (30.0 if live else 1800.0)
             late = assessing.wait(timeout=patience)
             coaching.events(late, time.monotonic())
-            coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
+            # A game whose end was never seen ends with the result its final position proves,
+            # as a replaced game's does (a repetition or fifty moves played); one whose
+            # position proves nothing stays unfinished in the record (Tai, 2026-10-02).
+            unseen = pipe.end_unseen(ts)
+            for event in unseen:
+                self._dispatch_game(event, assessing, chess, followed=None)
+            coaching.events(self._profile(profiler, [*late, *unseen], flush=True), time.monotonic())
             # The session's end is written before the wait for the coach's replies below (up
             # to 30 s): at a quit the shell's close gives the loop 10 s (`close`), and the
             # session's end, last, was never written when a reply was on its way.

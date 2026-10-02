@@ -2130,6 +2130,16 @@ class Reconciler:
             return self.ended_event("*", reason)
         return self.ended_event(*proved)
 
+    def end_unseen(self) -> list[Event]:
+        """The session ends with this game under way and its end never seen: it ends with the
+        result its final position proves, by the rule a replaced game's is set with
+        (`replaced_event`). Nothing when the position proves none: the record keeps the game
+        unfinished ("*"), as it did (Tai, 2026-10-02)."""
+        if not self.in_progress or self._finished:
+            return []
+        proved = result_on_board(self.board)
+        return [] if proved is None else self.end(*proved)
+
     def ended_event(self, result: str, reason: str) -> GameEnded:
         return GameEnded(
             game_id=self.game_id,

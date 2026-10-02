@@ -340,6 +340,26 @@ def test_a_game_replaced_by_the_next_has_the_result_its_final_position_proves() 
     assert rec.game_id != first_id and rec.pgn() == "1. d4"
 
 
+def test_a_game_whose_end_was_never_seen_ends_at_the_session_by_its_final_position() -> None:
+    """The session's end with a game under way (Tai, 2026-10-02): a position that proves
+    nothing ends nothing (the record keeps the game unfinished, "*"); the third repetition
+    played is a draw, by the rule a replaced game's result is set with, and once only."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    shuffle = ["Nf3", "Nc6", "Ng1", "Nb8"]
+    ts = _play(model, rec, board, ["e4", "e5", *shuffle])
+    assert rec.end_unseen() == [] and not rec.finished, "twice is no draw: nothing is set"
+    _play(model, rec, board, shuffle, ts=ts)
+    ended = rec.end_unseen()
+    assert [(e.result, e.reason) for e in ended if isinstance(e, GameEnded)] == [
+        ("1/2-1/2", "repetition")
+    ]
+    assert len(ended) == 1
+    assert rec.finished and rec.result == "1/2-1/2"
+    assert rec.end_unseen() == []
+
+
 def test_the_final_position_proves_a_result_only_when_the_game_is_over_on_it() -> None:
     """`result_on_board`, the rule for a replaced game's result: a mate, a stalemate, dead
     material, a repetition or fifty moves played; nothing for a position a resignation, a
