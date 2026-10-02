@@ -88,3 +88,24 @@ def test_capture_loop_reads_the_rate_every_frame() -> None:
     for _ in range(5):
         next(frames)
     assert len(asked) - before == 5
+
+
+def test_a_frame_to_confirm_comes_early_and_the_rate_goes_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rate read after a frame decides when the next is grabbed: a move seen once brings
+    its confirming frame 1/30 s later, and the frame after that keeps the capture's own 10 fps
+    (the panel's `capture_rate`, GamePipeline.awaiting_confirmation). On a clock the test moves:
+    the loop sleeps exactly the time to the next frame's due moment."""
+    import sidecoach.capture.loop as loop_mod
+    from tests.fakes import ManualClock
+
+    clock = ManualClock()
+    monkeypatch.setattr(loop_mod, "time", clock.time_module())
+    # Read once before the first frame (a rate of zero is refused), then after each frame:
+    # the second frame shows a move seen once.
+    rates = iter([10.0, 10.0, 30.0, 10.0, 10.0])
+    frames = capture_loop(FlakyBackend(failures=0), Region(0, 0, 8, 8), fps=lambda: next(rates))
+    stamps = [next(frames)[1] for _ in range(4)]
+    gaps = [round(b - a, 6) for a, b in zip(stamps, stamps[1:], strict=False)]
+    assert gaps == [0.1, round(1 / 30, 6), 0.1]

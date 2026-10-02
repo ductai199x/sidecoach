@@ -1972,7 +1972,7 @@ class PanelEngine:
         import chess
 
         from sidecoach.events import Event, Side
-        from sidecoach.state.pipeline import GamePipeline
+        from sidecoach.state.pipeline import CONFIRM_INTERVAL_S, GamePipeline
         from sidecoach.vision.clock import ClockReader
         from sidecoach.vision.squares import BoardGeometry
 
@@ -2060,10 +2060,15 @@ class PanelEngine:
             ensure_recording()
             if recorder is None:
                 self._emit("sys", "info", "not recording")
-            # The rate is read every frame, so a saved capture.fps applies at once.
-            frames: Iterable[Frame] = capture_loop(
-                cap, region, lambda: float(self.settings.capture.fps)
-            )
+
+            def capture_rate() -> float:
+                """Read after every frame: a saved capture.fps applies at once, and the frame
+                that confirms a move just seen comes early (CONFIRM_INTERVAL_S)."""
+                if pipe.awaiting_confirmation:
+                    return 1.0 / CONFIRM_INTERVAL_S
+                return float(self.settings.capture.fps)
+
+            frames: Iterable[Frame] = capture_loop(cap, region, capture_rate)
         else:
             frames = self.frame_source or ()
             self._emit("sys", "info", "replaying a recording (not recorded again)")

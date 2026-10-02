@@ -38,7 +38,7 @@ sys.path.insert(0, str(REPO))
 
 from sidecoach.events import Event, MovePlayed  # noqa: E402
 from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
-from sidecoach.state.pipeline import GamePipeline  # noqa: E402
+from sidecoach.state.pipeline import CONFIRM_INTERVAL_S, GamePipeline  # noqa: E402
 from tests.synth import synthetic_board  # noqa: E402
 
 # A Ruy Lopez, 32 plies: quiet moves, captures, castling on both sides.
@@ -84,23 +84,31 @@ class Result:
     move_ticks: list[float]  # the first frame showing each move
     still_ticks: list[float]  # every other frame
     commit_frames: list[int | None]  # per move: frames until MovePlayed, None if never
+    # Per committed move: from the capture of the first frame showing it to the end of the
+    # tick that committed it, frames paced as the panel paces them.
+    commit_seconds: list[float]
 
 
 def run(screen: Screen, fps: float, sans: Sequence[str]) -> Result:
     pipe = GamePipeline()
     gate = ChangeGate(keyframe_interval_s=1.0)  # the panel's
-    clock = 0.0
-    step = 1.0 / fps
+    clock = 0.0  # the capture time of the frame being handled
 
-    def tick(frame: np.ndarray) -> tuple[list[Event], float]:
-        """One tick of the panel's loop (`PanelEngine` in ui/panel.py), timed."""
+    def tick(frame: np.ndarray) -> tuple[list[Event], float, float]:
+        """One tick of the panel's loop (`PanelEngine` in ui/panel.py), timed; the clock then
+        moves to the next frame's capture as `capture_loop` paces it with the panel's rate
+        (the confirming frame early, `CONFIRM_INTERVAL_S`), or later if the tick overran.
+        Returns the events, the tick's cost and the capture time of the frame it handled."""
         nonlocal clock
+        captured = clock
         start = time.perf_counter()
         gate.region = board_gate(pipe.board, screen.width, screen.height)
         changed = gate.changed(frame, clock)
         events = pipe.process(frame, clock, changed=changed)
-        clock += step
-        return events, time.perf_counter() - start
+        cost = time.perf_counter() - start
+        interval = CONFIRM_INTERVAL_S if pipe.awaiting_confirmation else 1.0 / fps
+        clock += max(interval, cost)
+        return events, cost, captured
 
     board = chess.Board()
     start_frame = screen.frame(board, None)
@@ -108,28 +116,38 @@ def run(screen: Screen, fps: float, sans: Sequence[str]) -> Result:
     lock_seconds = 0.0
     still: list[float] = []
     for n in range(1, PATIENCE + 1):
-        _, cost = tick(start_frame)
+        _, cost, _ = tick(start_frame)
         lock_seconds += cost
         if pipe.reconciler is not None:
             lock_frames = n
             break
     if lock_frames is None:
-        return Result(None, lock_seconds, [], still, [None] * len(sans))
+        return Result(None, lock_seconds, [], still, [None] * len(sans), [])
 
     moves: list[float] = []
     commits: list[int | None] = []
+    commit_seconds: list[float] = []
     for san in sans:
         move = board.push_san(san)
         frame = screen.frame(board, move)
         commit: int | None = None
+        first = 0.0
         for n in range(1, PATIENCE + 1):
-            events, cost = tick(frame)
-            (moves if n == 1 else still).append(cost)
+            events, cost, captured = tick(frame)
+            if n == 1:
+                first = captured
+                moves.append(cost)
+            else:
+                still.append(cost)
             if any(isinstance(event, MovePlayed) for event in events):
                 commit = n
+                commit_seconds.append(captured + cost - first)
                 break
         commits.append(commit)
-    return Result(lock_frames, lock_seconds, moves, still, commits)
+        # The board then sits still until the next move: a frame at the capture's own rate.
+        _, cost, _ = tick(frame)
+        still.append(cost)
+    return Result(lock_frames, lock_seconds, moves, still, commits, commit_seconds)
 
 
 def summary(seconds: list[float]) -> str:
@@ -158,18 +176,16 @@ def report(result: Result, screen: Screen, fps: float) -> None:
     committed = [n for n in result.commit_frames if n is not None]
     missed = len(result.commit_frames) - len(committed)
     if committed:
-        frames = statistics.median(committed)
-        compute = statistics.median(result.move_ticks) + statistics.median(result.still_ticks) * (
-            frames - 1
-        )
-        wait = (frames - 1) * 1e3 / fps
         print(
             f"commit        on frame {min(committed)}-{max(committed)} showing the move "
-            f"(median {frames:g}), missed {missed}"
+            f"(median {statistics.median(committed):g}), missed {missed}"
         )
+        print(f"seen->commit  {summary(result.commit_seconds)}")
+        idle = 1e3 / fps
+        seen = statistics.median(result.commit_seconds) * 1e3
         print(
-            f"move->commit  capture wait 0-{1e3 / fps:.0f} ms + {wait:.0f} ms of later frames "
-            f"+ ~{compute * 1e3:.0f} ms compute"
+            f"move->commit  + the wait for the first frame, 0-{idle:.0f} ms (on average "
+            f"{idle / 2:.0f}): {seen:.0f}-{seen + idle:.0f} ms, {seen + idle / 2:.0f} ms on average"
         )
 
 

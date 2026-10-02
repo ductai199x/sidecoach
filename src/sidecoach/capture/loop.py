@@ -37,7 +37,10 @@ def capture_loop(
     if rate() <= 0:
         raise ValueError(f"fps must be positive, got {rate()}")
     started = time.monotonic()
-    next_due = started
+    # Paced on the performance counter: `time.monotonic` steps in 15.6 ms on Windows, which
+    # put a frame due in 33 ms anywhere from 31 to 47 ms. Frame timestamps stay monotonic,
+    # the clock every other stage reads.
+    next_due = time.perf_counter()
     frame_id = 0
     failures = 0
     while True:
@@ -55,16 +58,17 @@ def capture_loop(
             with contextlib.suppress(Exception):  # the next grab decides if the capture is back
                 backend.reopen()
             time.sleep(retry_delay)
-            next_due = time.monotonic()
+            next_due = time.perf_counter()
             continue
         failures = 0
         yield frame_id, now, frame
         frame_id += 1
-        # The rate is read every frame: capture.fps applies now (it was read once,
-        # before the loop: the parity audit, 2026-09-26).
+        # The rate is read after the frame was handled: capture.fps applies now (it was read
+        # once, before the loop: the parity audit, 2026-09-26), and a frame that the next one
+        # must confirm brings that one early (the panel's rate, GamePipeline.awaiting_confirmation).
         next_due += 1.0 / max(rate(), 1e-3)
-        delay = next_due - time.monotonic()
+        delay = next_due - time.perf_counter()
         if delay > 0:
             time.sleep(delay)
         else:
-            next_due = time.monotonic()
+            next_due = time.perf_counter()

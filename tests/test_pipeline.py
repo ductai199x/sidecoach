@@ -28,6 +28,27 @@ def _start_game(pipe: GamePipeline, ts: float, **theme) -> tuple[chess.Board, fl
     return board, ts
 
 
+def test_a_frame_that_needs_confirming_is_said_so_until_it_is() -> None:
+    """`awaiting_confirmation` is what brings the capture's next frame early: the start seen
+    once, then a move seen once; never while nothing waits (Tai, 2026-10-02: one early frame
+    per move, never a higher rate all the time)."""
+    pipe = GamePipeline()
+    board = chess.Board()
+    assert not pipe.awaiting_confirmation
+    pipe.process(synthetic_board(board=board), 0.0)
+    assert pipe.awaiting_confirmation, "the start seen once"
+    pipe.process(synthetic_board(board=board), 0.1)
+    assert pipe.reconciler is not None and not pipe.awaiting_confirmation, "the game began"
+    pipe.process(synthetic_board(board=board), 0.2)
+    assert not pipe.awaiting_confirmation, "nothing new on the board"
+    move = board.push_san("e4")
+    pipe.process(synthetic_board(board=board, highlight=move), 0.3)
+    assert pipe.awaiting_confirmation, "e4 seen once"
+    events = pipe.process(synthetic_board(board=board, highlight=move), 0.333)
+    assert sans_of(events) == ["e4"]
+    assert not pipe.awaiting_confirmation, "e4 committed"
+
+
 def test_browsing_to_the_start_position_keeps_the_game() -> None:
     """The move list's first entry shows the start position on the same theme for a while."""
     pipe = GamePipeline()

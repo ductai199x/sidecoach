@@ -75,6 +75,11 @@ BADGE_FRAMES = 2
 BADGE_PATIENCE = 12
 # A loser whose clock read this little at the end lost on time.
 FLAG_MS = 1000
+# A frame that a move (or the start position) needs to be confirmed by is taken this soon
+# after the one that showed it, not at the capture's own rate: the confirming frame was most
+# of a move's 190 ms from screen to commit at 10 fps (Tai, 2026-10-02: latency first, and
+# "very selectively" -- one early frame per move, never a higher rate all the time).
+CONFIRM_INTERVAL_S = 1 / 30
 # A resync or a cold start that left the side to move open takes it from the clock
 # that is running, when the clock was read this recently (see Reconciler.turn_from_clock).
 CLOCK_TURN_FRESH_S = 3.0
@@ -833,6 +838,15 @@ class GamePipeline:
     def readings(self) -> Readings | None:
         """What the recogniser read from the last changed frame."""
         return self._readings
+
+    @property
+    def awaiting_confirmation(self) -> bool:
+        """Whether the last frame showed something that the next frame confirms: a move seen
+        once (`Reconciler.pending_story`), or the start position seen fewer times than a game
+        needs to begin. The capture takes that next frame early (`CONFIRM_INTERVAL_S`)."""
+        if self.reconciler is not None:
+            return self.reconciler.pending_story
+        return self._start_on_screen and 0 < self._start_seen < self.start_frames_needed
 
     def _rebuild_model(self, frame: np.ndarray, geometry: BoardGeometry) -> bool:
         bottom = orientation_from_start(frame, geometry)
