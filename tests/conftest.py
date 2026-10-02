@@ -1,11 +1,11 @@
 """How the suite runs (Tai, 2026-10-02: the whole suite in under two minutes, on at most 70% of
 the machine, nothing cut to get there):
 
-- **A CPU budget.** `-n auto` starts CPU_SHARE of the logical processors as workers, less
-  RESERVED for the controller and the threads a test starts of its own, and every process
-  computes on one thread: the BLAS/OpenMP pools, OpenCV, onnxruntime's sessions and Stockfish
-  (`_one_thread_each`). A worker per core, each with pools a core wide, had peaked at the
-  whole machine (2026-10-02: 12 workers, 100% for seconds at a time).
+- **A CPU budget for the whole machine.** Every test process computes on one thread (the
+  BLAS/OpenMP pools, OpenCV, onnxruntime's sessions and Stockfish: `_one_thread_each`), and
+  `-n auto` starts as many workers as keep the machine, not only the suite, under CPU_SHARE
+  (`WORKER_COST`). A worker per core, each with pools a core wide, had peaked at the whole
+  machine (2026-10-02: 12 workers, 100% for seconds at a time).
 - **Longest first.** The tests go to the workers longest first by `tests/durations.json`
   (tests/scheduling.py); `--store-durations` measures them again.
 - **A run of a few files on one process**, the workers started together, and the guard that
@@ -44,11 +44,16 @@ if TYPE_CHECKING:
     from sidecoach.config import Settings
     from sidecoach.ui.panel import PanelEngine
 
-# The share of the machine's logical processors the suite may keep busy (Tai, 2026-10-02).
+# The share of the machine's logical processors that may be busy while the suite runs (Tai,
+# 2026-10-02: "no crazy maxing out the whole machine either, 70% max").
 CPU_SHARE = 0.70
-# Processors of that share left to the controller and to the threads a test starts besides
-# its worker's (a panel's pipeline and analyser, a server, a Stockfish search).
-RESERVED = 2
+# Logical processors of the machine one worker keeps busy: its own thread, and about as much
+# again outside the suite's processes -- Defender scanning what the tests write and start,
+# the system's work for them -- with the desktop's own tenth beside. Measured over the whole
+# machine (psutil, every 0.5 s), 2026-10-02: 14 workers peaked at 92% (the suite's own
+# processes at 61%), 10 at 79%, 8 at 60-65% with a mean of 46%: a wall of 35 s cold, 30 s
+# with the net's outputs kept (tests/netcache.py), against 29 s and 23 s for 14.
+WORKER_COST = 2
 # A run of this many test files or fewer goes on one process: starting the workers (each
 # importing the app) costs seconds before the first test, and a few files run in one or two.
 FEW_FILES = 3
@@ -234,7 +239,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
         and len({a.split("::")[0] for a in named}) <= FEW_FILES
     ):
         return 0
-    return max(1, int((os.cpu_count() or 1) * CPU_SHARE) - RESERVED)
+    return max(1, int((os.cpu_count() or 1) * CPU_SHARE / WORKER_COST))
 
 
 def pytest_xdist_make_scheduler(config: pytest.Config, log: Any) -> Any:

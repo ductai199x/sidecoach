@@ -99,9 +99,9 @@ line-ending = "native"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The default run needs no local data: unit tests, the synthetic vision-pipeline suite (on
-# rendered boards and a few committed board crops), the panel and the server, a worker per
-# core at below-normal priority; a vision module's tests go to a worker together
-# (tests/conftest.py), the rest go everywhere. `-m slow` adds what needs the optional voice
+# rendered boards and a few committed board crops), the panel and the server, on as many
+# workers as keep the machine under 70% (tests/conftest.py), at below-normal priority, the
+# longest tests first (tests/scheduling.py). `-m slow` adds what needs the optional voice
 # models or the GPU; `-m ""` is everything.
 addopts = "-m 'not slow' -n auto --dist loadgroup -p no:cacheprovider"
 markers = [
