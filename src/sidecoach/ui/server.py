@@ -513,14 +513,18 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     app.state.backlog = backlog  # closed with the panel (`serve`)
 
     def rederive_saved() -> None:
-        """The saved reviews' summaries and Stats made again when their rule changed."""
+        """The saved reviews' labels, openings, summaries and Stats made again when their rule
+        changed."""
+        from sidecoach.analysis.score import Thresholds
+        from sidecoach.cli import _load_book
         from sidecoach.profile.store import Store
         from sidecoach.ui.review_room import rederive
 
         with contextlib.suppress(Exception):  # never in the way of the panel
             store = Store(store_path)
             try:
-                rederive(store)
+                settings = engine.settings
+                rederive(store, Thresholds.from_settings(settings.coach), _load_book(settings))
             finally:
                 store.close()
 

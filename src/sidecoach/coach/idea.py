@@ -21,8 +21,9 @@ from dataclasses import dataclass, replace
 import chess
 
 from sidecoach.analysis import exchange, motifs
+from sidecoach.analysis.score import human_expected_score, severity
 from sidecoach.coach import plans
-from sidecoach.events import Analysis, MotifTag
+from sidecoach.events import Analysis, Line, MotifTag, Severity
 
 VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 _COUNTED = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
@@ -235,12 +236,15 @@ def read(board: chess.Board, analysis: Analysis, *, owed: dict[int, int] | None 
         upto = 2
     top = analysis.lines[0]
     winning = (top.mate is not None and top.mate > 0) or top.expected_score >= WON
-    sacrifices = _sacrifices(boards, pv, upto)
-    if sacrifices and idea.goal != "draw" and not winning and top.expected_score < 0.5:
-        # Given for nothing: a piece the line neither wins back nor buys anything with, the
-        # position no better for it, was given up, not sacrificed ("Use your queen on d1 --
-        # the piece you give up" of a queen thrown in front of a mate, 2026-10-01).
-        sacrifices = tuple(s for s in sacrifices if _won_back(boards, s[0], board.turn))
+    # A sacrifice is material given up in a line the engine rates as sound: giving it keeps at
+    # least a Good move's label (`_sound`). Given for nothing -- a queen thrown in front of a
+    # mate ("Use your queen on d1 -- the piece you give up", 2026-10-01) -- the line is worth
+    # far less than the material given, and the piece was given up, not sacrificed (Tai,
+    # 2026-10-02: no score or points-back gate and no margin of its own; the label bands
+    # decide).
+    sacrifices = tuple(
+        s for s in _sacrifices(boards, pv, upto) if _sound(top, _balance(boards[s[0]], board.turn))
+    )
     return replace(
         idea,
         pinned_guard=_pinned_guard(idea, boards, pv),
@@ -719,36 +723,37 @@ def _sacrifices(
 
 
 def _lost_anyway(board: chess.Board, square: chess.Square) -> bool:
-    """The piece on `square`, its side to move, is lost whatever it does: it can be won
-    where it stands, and every move of it lands where it can be won too, or takes something
-    worth less than itself. Leaving such a piece, or cashing it in for a pawn, was called
-    a sacrifice (the facts audit, 2026-10-01)."""
+    """The piece on `square`, its side to move, is lost whatever its side does: it can be
+    won where it stands, and no move saves it -- not a move of it (each lands where it can be
+    won too, or takes something worth less than itself), nor one that defends it, blocks the
+    attack or takes the attacker. Leaving such a piece, or cashing it in for a pawn, was
+    called a sacrifice (the facts audit, 2026-10-01); a piece another move could have saved
+    is one (Tai, 2026-10-02)."""
     piece = board.piece_at(square)
     if piece is None or piece.piece_type in (chess.KING, chess.PAWN):
         return False
     if not exchange.can_be_won(board, square):
         return False
     for move in board.legal_moves:
-        if move.from_square != square:
-            continue
-        if board.is_capture(move):
+        if move.from_square == square and board.is_capture(move):
             if exchange.exchange(board, move) >= 0:
                 return False
             continue
         after = board.copy(stack=False)
         after.push(move)
-        if not exchange.can_be_won(after, move.to_square):
+        if not exchange.can_be_won(after, move.to_square if move.from_square == square else square):
             return False
     return True
 
 
-def _won_back(boards: Sequence[chess.Board], i: int, us: chess.Color) -> bool:
-    """The material given at ply `i` comes back later in the line (two points of it at
-    least), or the line mates."""
-    if boards[-1].is_checkmate() and boards[-1].turn != us:
-        return True
-    given = _balance(boards[i + 2], us)
-    return any(_balance(b, us) >= given + 2 for b in boards[i + 3 :])
+def _sound(top: Line, had: int) -> bool:
+    """The engine rates the line as sound for what it gives: judged as a move is, giving the
+    material keeps at least the Good label -- what the line is worth falls short of what the
+    material the player had before the gift (`had`, in pawns) is worth on the same curve by
+    less than an inaccuracy (`score.severity`, the labels' own bands; the default thresholds,
+    the idea reader has no settings). A line that mates is; one that gets mated is not."""
+    lost = max(0.0, human_expected_score(100 * had, None) - top.expected_score)
+    return severity(lost) is Severity.NONE
 
 
 def _first_gift(boards: Sequence[chess.Board], pv: Sequence[chess.Move], reach: int) -> int:

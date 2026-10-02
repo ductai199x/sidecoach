@@ -15,10 +15,11 @@ which Stockfish already answers better for coaching purposes.
 Indexing is by position, not by move order: each line is replayed on a board and every
 position along it is stored as an EPD, so 3810 lines become 7855 positions of which 3810
 carry a name. Transpositions therefore resolve for free, and 1.d4 Nf6 2.c4 e6 3.Nc3 d5
-is named the same as 1.d4 d5 2.c4 e6 3.Nc3 Nf6. A game is walked only as far as its first
-deviation, so a transposition is caught when every position on the way is also in the
-book, which the tables are dense enough to give in practice, and a game that wanders out
-of theory and back does not silently become book again.
+is named the same as 1.d4 d5 2.c4 e6 3.Nc3 Nf6. Whether a move is in book is walked only
+as far as the game's first deviation, so a game that wanders out of theory and back does
+not silently become book again. Its name is Lichess's (scalachess `OpeningDb.search`): the
+last named position the game reaches in its first 40 plies, so a game that leaves theory
+and transposes back into a named line takes that line's name (Tai, 2026-10-02).
 
 EPD rather than FEN because it drops the halfmove and fullmove counters, so two move
 orders of unequal length still match, and it names an en passant square only when the
@@ -46,6 +47,8 @@ log = logging.getLogger(__name__)
 
 CACHE_FILE = "openings.cache.json"
 CACHE_VERSION = 1
+# How far into a game its opening is named: Lichess's SEARCH_MAX_PLIES.
+NAME_PLIES = 40
 
 
 @dataclass(frozen=True)
@@ -179,42 +182,46 @@ class OpeningBook:
             log.warning("could not write the opening cache %s: %s", cache, exc)
             scratch.unlink(missing_ok=True)
 
-    def _trace(self, moves: Sequence[chess.Move]) -> tuple[Opening | None, int | None]:
-        """Walk `moves` from the start position until they leave the book.
-
-        Returns the deepest named line that matched and the index of the first move that
-        left every line, or None when the game never left.
-        """
+    def _trace(self, moves: Sequence[chess.Move]) -> int | None:
+        """Walk `moves` from the start position until they leave the book: the index of the
+        first move that left every line, or None when the game never left."""
         board = chess.Board()
-        found: Opening | None = None
         for index, move in enumerate(moves):
             if move not in board.legal_moves:
                 # Not a game from the start position: a caller handed us moves that do not
-                # belong to this history, and no opening can be claimed for them.
-                return found, index
+                # belong to this history, and it is in no book.
+                return index
             board.push(move)
-            epd = board.epd()
-            if epd not in self._positions:
-                return found, index
-            named = self._names.get(epd)
+            if board.epd() not in self._positions:
+                return index
+        return None
+
+    def identify(self, moves: Sequence[chess.Move]) -> Opening | None:
+        """The opening as Lichess names it (scalachess `OpeningDb.search`): the last named
+        position the game reaches within its first NAME_PLIES plies, whatever it passed
+        through on the way -- a game that leaves theory and transposes back into a named
+        line takes that line's name (Tai, 2026-10-02).
+
+        The latest is the most specific name: after 1.e4 e5 2.Nf3 Nc6 3.Bc4 that is the
+        Italian Game rather than the King's Pawn Game it also passed. None when no named
+        position comes up in those plies, or the moves are not a game from the start.
+        """
+        board = chess.Board()
+        found: Opening | None = None
+        for index, move in enumerate(moves[:NAME_PLIES]):
+            if move not in board.legal_moves:
+                return found
+            board.push(move)
+            named = self._names.get(board.epd())
             if named is not None:
                 eco, name = named.split("\t", 1)
                 found = Opening(eco=eco, name=name, ply=index + 1)
-        return found, None
-
-    def identify(self, moves: Sequence[chess.Move]) -> Opening | None:
-        """The longest known opening line that is a prefix of `moves`.
-
-        The longest match is the most specific name: after 1.e4 e5 2.Nf3 Nc6 3.Bc4 that
-        is the Italian Game rather than the King's Pawn Game it also matches. None when
-        the game left the book before reaching any named line.
-        """
-        return self._trace(moves)[0]
+        return found
 
     def in_book(self, moves: Sequence[chess.Move]) -> bool:
         """Whether `moves` is a prefix of at least one known line."""
-        return self._trace(moves)[1] is None
+        return self._trace(moves) is None
 
     def deviation(self, moves: Sequence[chess.Move]) -> int | None:
         """Index of the first move that leaves every known line, None if it never does."""
-        return self._trace(moves)[1]
+        return self._trace(moves)

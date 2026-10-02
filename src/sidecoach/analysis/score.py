@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import chess
 
+from sidecoach.analysis import exchange
 from sidecoach.config import CoachSettings
 from sidecoach.events import Label, Line, Severity
 
@@ -177,6 +178,29 @@ def severity(loss: float, thresholds: Thresholds | None = None) -> Severity:
     return Severity.NONE
 
 
+# How a side stands, by its expected score: the bands the coach speaks in (`facts.standing_words`:
+# losing, worse, about equal, better, winning). "Better" starts at 0.62 and "winning" at 0.8, as
+# the idea reader counts a level and a won position (`idea.LEVEL`, `idea.WON`).
+WORSE_FROM = 0.2
+EQUAL_FROM = 0.38
+BETTER_FROM = 0.62
+WINNING_FROM = 0.8
+
+
+def standing(score: float) -> int:
+    """The band an expected score falls in: 0 losing, 1 worse, 2 about equal, 3 better, 4
+    winning."""
+    if score >= WINNING_FROM:
+        return 4
+    if score >= BETTER_FROM:
+        return 3
+    if score > EQUAL_FROM:
+        return 2
+    if score > WORSE_FROM:
+        return 1
+    return 0
+
+
 def label_move(
     loss: float,
     thresholds: Thresholds,
@@ -189,7 +213,7 @@ def label_move(
     opponent_blundered: bool,
     second_score: float | None = None,
     chance: bool = False,
-    mate_missed: bool = False,
+    mate_let_go: bool = False,
     mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
@@ -205,9 +229,12 @@ def label_move(
       the game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does
       not, calling 1...f5 a mistake.
     - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent":
-      the best move won material or mated (`chance`, read off its line by the annotator)
-      and the move played gave ground. It names the move whatever the size of the loss; a
-      forced mate let go (`mate_missed`) is one even when the move still wins.
+      the position offered a winning chance (`chance`, read by `verdict` from the engine's
+      lines) and the move played gave ground (a loss of an inaccuracy or more), whatever
+      the size of the loss (Tai, 2026-10-02). And a forced mate let go (`mate_let_go`,
+      read by `verdict`): a mate in 1 not given, no mate left, or one MATE_LONGER moves
+      longer while the opponent still has a piece -- a miss whatever it cost, even while it
+      still wins; any other longer mate is labelled by its loss (Tai, 2026-10-02 12:50).
     - Great, "a move that altered the course of the game": the best move where every other
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
@@ -225,12 +252,13 @@ def label_move(
     # Walking into a mate from a lost position is not the move that lost: chess.com leaves
     # those unmarked (eleven of them in the six games, the best move among them).
     mate_allowed = mate_allowed and not lost and not is_best
-    # The engine's own first move lets no mate go, whatever the search after it reports (a
-    # long mate past its horizon): it was flagged, and with no loss labelled an inaccuracy.
-    mate_missed = mate_missed and not is_best
-    flagged = not graded_good(loss, thresholds) or mate_missed or mate_allowed
+    # A mate let go is a miss of its own (`mate_let_go`), never flagged by what it cost: the
+    # engine's own first move, or one that keeps a mate as short, is never an inaccuracy.
+    flagged = not graded_good(loss, thresholds) or mate_allowed
     if in_book and loss < thresholds.mistake:
         return Label.BOOK
+    if mate_let_go and not is_best:
+        return Label.MISS
     if flagged and chance and not is_best:
         return Label.MISS
     if mate_allowed:
@@ -251,49 +279,159 @@ def label_move(
     return Label.MISTAKE if verdict is Severity.MISTAKE else Label.INACCURACY
 
 
-# What a line wins, in pawns: the piece values every club player counts by.
-PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
-# A line that wins this much is a tactic to find (the coach's facts count the same).
-TACTIC_GAIN = 2
-# How far into a line a tactic is looked for: four moves each.
-TACTIC_PLIES = 8
+@dataclass(frozen=True)
+class Previous:
+    """The move before, as far as the next move's label needs it: what it cost its mover
+    (the opponent), where it landed and whether it captured."""
+
+    loss: float
+    to_square: chess.Square
+    captured: bool
 
 
-def _balance(board: chess.Board, us: chess.Color) -> int:
-    return sum(
-        PIECE_VALUES.get(piece.piece_type, 0) * (1 if piece.color == us else -1)
-        for piece in board.piece_map().values()
+def winning_chance(
+    after: chess.Board,
+    before_lines: Sequence[Line],
+    after_lines: Sequence[Line],
+    before_score: float,
+) -> bool:
+    """Whether the move from the position measured by `before_lines` to `after` let a
+    winning chance go, read off the engine's own lines (Tai, 2026-10-02: chess.com's miss --
+    the opponent's error or a tactic already on the board, whichever gave it). The chance:
+    the best line stood better or winning (`standing` 3 or more, from 0.62), and the move
+    played leaves a lower band. The engine's evaluation decides, not where the chance came
+    from: an opponent's error that left the player no better was no chance to win. A
+    position with a forced mate is read by its mate instead (`mate_let_go`)."""
+    top = before_lines[0] if before_lines else None
+    if top is not None and top.mate is not None and top.mate > 0:
+        return False
+    left = 1.0 - position_score(after, after_lines)
+    return standing(before_score) >= standing(BETTER_FROM) and standing(left) < standing(
+        before_score
     )
 
 
-def material_won(board: chess.Board, moves: Sequence[str], plies: int = TACTIC_PLIES) -> int:
-    """What the side to move wins over the first `plies` of `moves` (UCI), in pawns, counted
-    after the opponent's replies; a line that mates wins everything (99). Material the
-    opponent has just taken, which the side to move is owed back, is not won: taking back is
-    a trade (read from the board's moves; a board without them owes nothing)."""
-    us = board.turn
-    base = _balance(board, us)
-    back = board.copy()
-    while back.move_stack:
-        move = back.pop()
-        if not back.is_capture(move):
-            break
-        base = max(base, _balance(back, us))
-    at = board.copy(stack=False)
-    best = 0
-    for i, uci in enumerate(moves[:plies]):
-        try:
-            move = chess.Move.from_uci(uci)
-        except ValueError:
-            break
-        if move not in at.legal_moves:
-            break
-        at.push(move)
-        if at.is_checkmate():
-            return 99 if at.turn != us else best
-        if i % 2 == 1:
-            best = max(best, _balance(at, us) - base)
-    return best
+def mate_after(
+    move: chess.Move, after: chess.Board, before_lines: Sequence[Line], after_lines: Sequence[Line]
+) -> int | None:
+    """The player's shortest forced mate once `move` is played, counted as the engine counts a
+    mate before it -- in the player's own moves, the one played included -- or None when the
+    move leaves none. Like is compared with like: when the search before the move has a line
+    for the move played (its candidates, `multipv`), that line's mate is the answer, the same
+    search and depth the mate it is set against comes from; else the search after the move,
+    whose mate against the opponent (in their moves) is one of the player's longer."""
+    if after.is_checkmate():
+        return 1
+    for line in before_lines:
+        if line.moves[:1] == [move.uci()]:
+            return line.mate if line.mate is not None and line.mate > 0 else None
+    top = after_lines[0] if after_lines else None
+    if top is not None and top.mate is not None and top.mate < 0:
+        return 1 - top.mate
+    return None
+
+
+# How much longer a forced mate may get, in the player's moves, before letting it go is a
+# Miss -- with a piece still on the opponent's side. Tai, 2026-10-02 12:45: "instead of 1 move
+# longer, change it to 3-4 moves longer"; 12:50: four, the rule "mate in 1 missed, or the mate
+# gone, or 4+ moves longer" with technique endgames exempt. One move longer gave 41 Misses in
+# the six recorded games, nearly all in won endgames chess.com left unmarked.
+MATE_LONGER = 4
+
+
+def mate_let_go(
+    move: chess.Move, after: chess.Board, before_lines: Sequence[Line], after_lines: Sequence[Line]
+) -> bool:
+    """The player had a forced mate in N and `move` let it go (Tai, 2026-10-02 12:50):
+    1. it was a mate in 1, and the move does not mate ("missing mate in 1 is a miss regardless
+       - it's a special rule", 12:46);
+    2. the move leaves no forced mate at all;
+    3. or the mate gets MATE_LONGER or more of the player's moves longer while the opponent
+       still has a piece -- against a bare king, or a king and pawns, the technique mate (the
+       box, the ladder, queening first) is the method to learn, and a longer route is fine.
+    Any other longer mate is labelled by its loss. The engine's own first move is never one
+    (`label_move` checks it): its line is the mate. No deeper search for "no mate left": the
+    analyses the labels use decide."""
+    top = before_lines[0] if before_lines else None
+    if top is None or top.mate is None or top.mate <= 0:
+        return False
+    kept = mate_after(move, after, before_lines, after_lines)
+    if kept is None:
+        return True
+    if top.mate == 1:
+        return kept != 1
+    return kept >= top.mate + MATE_LONGER and _has_a_piece(after, after.turn)
+
+
+def _has_a_piece(board: chess.Board, color: chess.Color) -> bool:
+    """Whether `color` has anything but its king and pawns."""
+    return any(
+        p.color == color and p.piece_type not in (chess.KING, chess.PAWN)
+        for p in board.piece_map().values()
+    )
+
+
+def verdict(
+    before: chess.Board,
+    move: chess.Move,
+    before_lines: Sequence[Line],
+    after_lines: Sequence[Line],
+    *,
+    loss: float,
+    before_score: float,
+    decisive: bool,
+    in_book: bool,
+    sacrifice: bool,
+    previous: Previous | None,
+    thresholds: Thresholds,
+) -> Label:
+    """The label of `move` from `before`, read off the two positions' measured lines: the
+    annotator's as it judges a move, and a saved review's made again from what it kept
+    (`game_review.relabel`), so the two cannot drift. `previous`: the move before, None when
+    it is not known (the game's first move, or a move that did not lead here)."""
+    after = before.copy(stack=False)
+    after.push(move)
+    best = before_lines[0].moves if before_lines else []
+    erred = previous.loss if previous is not None else 0.0
+    captures = before.is_capture(move)
+    # Taking back on the square the opponent just captured on. Taking a piece that merely
+    # moved there is not obvious: that is how a blunder gets punished.
+    recapture = (
+        previous is not None
+        and previous.captured
+        and captures
+        and move.to_square == previous.to_square
+    )
+    # A capture nobody can take back is a grab, not a find; a king's capture always is.
+    # Taking back is read by the rules: a piece guarded only by one pinned to its own king
+    # is taken for nothing.
+    free_grab = captures and not exchange.can_retake(before, move)
+    obvious = recapture or free_grab or before.legal_moves.count() == 1
+    top = before_lines[0] if before_lines else None
+    after_top = after_lines[0] if after_lines else None
+    # A forced mate the move walks into. The mates are the lines' own: the curve puts a
+    # thousand centipawns a fortieth of a game below a mate.
+    mate_allowed = (
+        after_top is not None
+        and after_top.mate is not None
+        and after_top.mate > 0
+        and not (top is not None and top.mate is not None and top.mate < 0)
+    )
+    return label_move(
+        loss,
+        thresholds,
+        is_best=bool(best) and best[0] == move.uci(),
+        in_book=in_book,
+        decisive=decisive,
+        sacrifice=sacrifice,
+        before_score=before_score,
+        second_score=before_lines[1].expected_score if len(before_lines) > 1 else None,
+        opponent_blundered=erred >= thresholds.blunder,
+        chance=winning_chance(after, before_lines, after_lines, before_score),
+        mate_let_go=mate_let_go(move, after, before_lines, after_lines),
+        mate_allowed=mate_allowed,
+        obvious=obvious,
+    )
 
 
 # Per-move accuracy: 100 for no loss, falling off exponentially with the drop in winning

@@ -1359,6 +1359,21 @@ class Store:
             self._db.commit()
         reviews_touched()
 
+    def set_review_report(
+        self, key: str, strength: str, reviewed_at: float, report: str, summary: str
+    ) -> bool:
+        """A saved review's report and summary made again from what it kept (`rederive`):
+        its words -- the AI coach's, paid for -- stay as they are. Only the review read at
+        `reviewed_at`: one replaced meanwhile is left alone. Whether it was written."""
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE reviews SET report = ?, summary = ?"
+                " WHERE key = ? AND strength = ? AND reviewed_at = ?",
+                (report, summary, key, strength, reviewed_at),
+            )
+            self._db.commit()
+        return cursor.rowcount > 0
+
     def stat_strengths(self) -> dict[str, str]:
         """The strength of the review each game's Stats facts come from, by its key."""
         with self._lock:

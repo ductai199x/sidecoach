@@ -17,7 +17,7 @@ import chess
 from sidecoach.analysis import exchange, positional
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.phase import phase_of
-from sidecoach.analysis.score import about_as_good, graded_good
+from sidecoach.analysis.score import about_as_good, graded_good, standing
 from sidecoach.coach import idea as idea_of
 from sidecoach.coach import idea_words, plans, situation, story
 from sidecoach.coach.disclosure import PositionFacts
@@ -127,17 +127,16 @@ def standing_words(score: float, *, third_person: bool = False) -> str:
     """An expected score from the player's side, in words: as the coach says it to the
     player ("you are better"), or as the harness writes it ("the player is better")."""
     who = "the player is" if third_person else "you are"
-    # Won at 0.8, as the idea reader counts a won position (`idea.WON`): "better" of a
-    # position four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
-    if score >= 0.8:
-        return f"{who} winning"
-    if score >= 0.62:
-        return f"{who} better"
-    if score > 0.38:
-        return "it is about equal"
-    if score > 0.2:
-        return f"{who} worse"
-    return f"{who} losing"
+    # The bands are `score.standing`'s, which the move labels read a winning chance by. Won
+    # at 0.8, as the idea reader counts a won position (`idea.WON`): "better" of a position
+    # four pawns up read wrong against ChessQA's bands (93% -> 96% at one line).
+    return (
+        f"{who} losing",
+        f"{who} worse",
+        "it is about equal",
+        f"{who} better",
+        f"{who} winning",
+    )[standing(score)]
 
 
 def motif_words(name: str) -> str:

@@ -197,8 +197,9 @@ class Analysis(Event):
     threatens: list[Line] = Field(default_factory=list)
     tags: list[MotifTag] = Field(default_factory=list)
     opening: str | None = None
-    # The game is still in the opening book at this position (`opening` is the deepest line
-    # it passed through, and stays after the game leaves the book).
+    # The game is still in the opening book at this position (`opening` is the last named
+    # position it reached in its first 40 plies, as Lichess names it, and stays after the game
+    # leaves the book).
     in_book: bool = False
     # The position measured early (`annotator.EARLY_DEPTH`), the full depth to follow: what
     # the player asks is answered from it at once; the coach's own words, a verdict and the
