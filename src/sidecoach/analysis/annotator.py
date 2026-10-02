@@ -27,11 +27,13 @@ from sidecoach.analysis.computed import Computed
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines
 from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import (
+    TACTIC_GAIN,
     Thresholds,
     eval_loss,
     is_decisive,
     is_only_move,
     label_move,
+    material_won,
     move_accuracy,
     position_score,
     severity,
@@ -410,7 +412,7 @@ class GameAnnotator:
         if previous is not None and (previous[0] != game_id or previous[1] != before.epd()):
             # Another game, or a move that did not lead here: the move before is unknown.
             previous = None
-        opponent_erred = previous is not None and previous[2] >= self.thresholds.mistake
+        erred = previous[2] if previous is not None else 0.0
         # Taking back on the square the opponent just captured on. Taking a piece that
         # merely moved there is not obvious: that is how a blunder gets punished.
         recapture = (
@@ -424,15 +426,43 @@ class GameAnnotator:
         # is taken for nothing.
         free_grab = before.is_capture(move) and not exchange.can_retake(before, move)
         obvious = recapture or free_grab or before.legal_moves.count() == 1
+        top = measured_before.lines[0] if measured_before.lines else None
+        after_top = measured_after.lines[0] if measured_after.lines else None
+        # A forced mate the best move had, and the move played let go; one the move walks
+        # into. The mates are the lines' own: the curve puts a thousand centipawns a fortieth
+        # of a game below a mate, and a mate in four let go read as an inaccuracy.
+        mating = top is not None and top.mate is not None and top.mate > 0
+        mate_missed = (
+            mating
+            and not after.is_checkmate()
+            and not (after_top is not None and after_top.mate is not None and after_top.mate < 0)
+        )
+        mate_allowed = (
+            after_top is not None
+            and after_top.mate is not None
+            and after_top.mate > 0
+            and not (top is not None and top.mate is not None and top.mate < 0)
+        )
+        # What the best move had to find: a mate, material won, or -- after the opponent's
+        # error -- any material at all (chess.com's miss: "a tactical opportunity or a chance
+        # to punish the opponent").
+        won = material_won(before, top.moves) if top is not None else 0
+        chance = mating or won >= TACTIC_GAIN or (erred >= self.thresholds.mistake and won >= 1)
         label = label_move(
             loss,
             self.thresholds,
             is_best=bool(best) and best[0] == move.uci(),
             in_book=self._in_book(after),
-            only_move=measured_before.only_move,
+            decisive=measured_before.decisive,
             sacrifice=any(tag.name == "sacrifice" for tag in tags),
             before_score=measured_before.score,
-            opponent_erred=opponent_erred,
+            second_score=(
+                measured_before.lines[1].expected_score if len(measured_before.lines) > 1 else None
+            ),
+            opponent_blundered=erred >= self.thresholds.blunder,
+            chance=chance,
+            mate_missed=mate_missed,
+            mate_allowed=mate_allowed,
             obvious=obvious,
         )
         self._assessed[ply] = (

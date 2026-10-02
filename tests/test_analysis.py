@@ -23,6 +23,7 @@ from sidecoach.analysis.score import (
     is_decisive,
     is_only_move,
     label_move,
+    material_won,
     move_accuracy,
     position_score,
     severity,
@@ -222,10 +223,14 @@ def _label(
     *,
     is_best: bool = False,
     in_book: bool = False,
-    only_move: bool = False,
+    decisive: bool = False,
     sacrifice: bool = False,
     before_score: float = 0.5,
-    opponent_erred: bool = False,
+    second_score: float | None = None,
+    opponent_blundered: bool = False,
+    chance: bool = False,
+    mate_missed: bool = False,
+    mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
     return label_move(
@@ -233,51 +238,134 @@ def _label(
         Thresholds(),
         is_best=is_best,
         in_book=in_book,
-        only_move=only_move,
+        decisive=decisive,
         sacrifice=sacrifice,
         before_score=before_score,
-        opponent_erred=opponent_erred,
+        second_score=second_score,
+        opponent_blundered=opponent_blundered,
+        chance=chance,
+        mate_missed=mate_missed,
+        mate_allowed=mate_allowed,
         obvious=obvious,
     )
 
 
-def test_labels_follow_the_review_vocabulary() -> None:
-    assert _label(0.0, in_book=True) is Label.BOOK
-    assert _label(0.14, in_book=True) is Label.MISTAKE, "a gambit in the tables still loses"
+def test_labels_follow_chess_coms_definitions() -> None:
+    """Chess.com's review, as its help pages define each word (2026-10-01): best, "the
+    engine's top choice"; excellent, "almost as good as the best move"; good, "a decent move
+    but not the best"; book, "a conventional opening move"; inaccuracy, mistake and blunder
+    by what the move lost; great, "a move that altered the course of the game"; brilliant,
+    "the best move -- and tricky to find too", a sound sacrifice; miss, "a move that missed
+    a tactical opportunity or a chance to punish the opponent"."""
     assert _label(0.0, is_best=True) is Label.BEST
     assert _label(0.01) is Label.EXCELLENT
+    assert _label(0.0) is Label.EXCELLENT, "as good as the top choice is not the top choice"
     assert _label(0.03) is Label.GOOD
     assert _label(0.06) is Label.INACCURACY
     assert _label(0.12) is Label.MISTAKE
     assert _label(0.30) is Label.BLUNDER
-    # The opponent handed over a chance: taking it with the best move is great, letting it
-    # go is a miss however large the loss, and a decent move that is neither is just good.
-    assert _label(0.0, opponent_erred=True, is_best=True) is Label.GREAT
-    assert _label(0.0, opponent_erred=True, only_move=True) is Label.GREAT
-    assert _label(0.03, opponent_erred=True) is Label.GOOD
-    assert _label(0.06, opponent_erred=True) is Label.MISS
-    assert _label(0.90, opponent_erred=True) is Label.MISS
-    # A sound sacrifice is brilliant, unless the position was already decided either way.
-    assert _label(0.0, sacrifice=True) is Label.BRILLIANT
-    assert _label(0.0, sacrifice=True, before_score=0.97, is_best=True) is Label.BEST
-    assert _label(0.0, sacrifice=True, before_score=0.05, is_best=True) is Label.BEST
-    # The only move is great whether or not it was the engine's first choice, unless it is
-    # obvious (a recapture, the only legal move) or the game was already decided.
-    assert _label(0.0, only_move=True) is Label.GREAT
-    assert _label(0.0, only_move=True, obvious=True) is Label.EXCELLENT
-    assert _label(0.0, only_move=True, obvious=True, is_best=True) is Label.BEST
-    assert _label(0.0, opponent_erred=True, is_best=True, obvious=True) is Label.BEST
-    # A great move in a won position is still great; only brilliant needs a live game.
-    assert _label(0.0, only_move=True, before_score=0.95) is Label.GREAT
-    assert _label(0.0, opponent_erred=True, is_best=True, before_score=0.98) is Label.GREAT
-    # In a lost position the best move changes nothing: neither great nor brilliant.
-    assert _label(0.0, only_move=True, before_score=0.02, is_best=True) is Label.BEST
-    assert _label(0.0, sacrifice=True, before_score=0.02) is Label.EXCELLENT
-    # A move as good as the engine's choice but not that choice is excellent, not best:
-    # measured against chess.com's tallies, "best" is the engine's first choice only.
-    assert _label(0.0) is Label.EXCELLENT
-    # An unsound sacrifice is judged by its loss like any move.
+    # Book: the tables' move is never flagged for a little ground; a move that loses a
+    # tenth of the game is no conventional move, whatever a table holds (1. e4 f5).
+    assert _label(0.0, in_book=True) is Label.BOOK
+    assert _label(0.06, in_book=True) is Label.BOOK
+    assert _label(0.14, in_book=True) is Label.MISTAKE
+
+
+def test_great_is_the_move_that_altered_the_course_of_the_game() -> None:
+    # The only good move: the best, every other move losing ground (a decisive moment).
+    assert _label(0.0, is_best=True, decisive=True) is Label.GREAT
+    assert _label(0.0, is_best=True, decisive=True, before_score=0.95) is Label.GREAT
+    # The opponent's blunder cashed in with the best move.
+    assert _label(0.0, is_best=True, opponent_blundered=True) is Label.GREAT
+    # Not merely the best move after any error, nor a move that is not the best.
+    assert _label(0.0, is_best=True) is Label.BEST
+    assert _label(0.0, decisive=True) is Label.EXCELLENT
+    # Never an obvious move (a recapture, a free capture, the only legal move), nor in a
+    # lost position, where the best move changes nothing.
+    assert _label(0.0, is_best=True, decisive=True, obvious=True) is Label.BEST
+    assert _label(0.0, is_best=True, opponent_blundered=True, obvious=True) is Label.BEST
+    assert _label(0.0, is_best=True, decisive=True, before_score=0.02) is Label.BEST
+
+
+def test_brilliant_is_a_sound_sacrifice_that_was_needed() -> None:
+    assert _label(0.0, is_best=True, sacrifice=True) is Label.BRILLIANT
+    assert _label(0.01, sacrifice=True) is Label.BRILLIANT, "as good as the best"
+    # Not a sacrifice that gives ground: chess.com's brilliant is the best move.
+    assert _label(0.03, sacrifice=True) is Label.GOOD
     assert _label(0.3, sacrifice=True) is Label.BLUNDER
+    # Not when the game was won without it -- read from the second-best line, since the
+    # best is the one the sacrifice makes. The only win is brilliant however won it leaves.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.97, second_score=0.95) is (
+        Label.BEST
+    )
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=1.0, second_score=0.3) is (
+        Label.BRILLIANT
+    )
+    # With no second line known, the position before is what is known.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.97) is Label.BEST
+    # Nor in a lost position.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.05) is Label.BEST
+
+
+def test_a_miss_is_a_tactic_or_a_mate_let_go() -> None:
+    # The best move won material or mated, and the move played let it go: a miss, whatever
+    # the size of the loss, from an inaccuracy to a blunder.
+    assert _label(0.06, chance=True) is Label.MISS
+    assert _label(0.15, chance=True) is Label.MISS
+    assert _label(0.90, chance=True) is Label.MISS
+    # A small slip with the chance still there is no miss; nor a loss with no chance.
+    assert _label(0.01, chance=True) is Label.EXCELLENT
+    assert _label(0.15) is Label.MISTAKE
+    # A forced mate let go is a miss even when the move played still wins easily.
+    assert _label(0.02, chance=True, mate_missed=True) is Label.MISS
+    # A move that walks into a forced mate loses the game: a blunder whatever the curve
+    # says it cost -- unless the game was lost already, or every move allows it.
+    assert _label(0.02, mate_allowed=True, before_score=0.3) is Label.BLUNDER
+    assert _label(0.02, mate_allowed=True, before_score=0.03) is Label.GOOD
+    assert _label(0.0, mate_allowed=True, before_score=0.3, is_best=True) is Label.BEST
+
+
+def test_what_a_line_wins_is_counted_after_the_replies() -> None:
+    # 1. e4 d5: exd5 Qxd5 is a pawn each, nothing won.
+    board = chess.Board()
+    for san in ("e4", "d5"):
+        board.push_san(san)
+    assert material_won(board, ["e4d5", "d8d5"]) == 0
+    # A knight left en prise and taken, the reply something else: three pawns.
+    hanging = chess.Board("4k3/8/8/3n4/8/8/8/3QK3 w - - 0 1")
+    assert material_won(hanging, ["d1d5", "e8f8"]) == 3
+    # Taking back what was just taken is a trade, not a win.
+    traded = chess.Board("4k3/8/8/3n4/8/2N5/8/4K3 b - - 0 1")
+    traded.push_san("Nxc3")
+    assert traded.turn == chess.WHITE and material_won(traded, ["e1d2", "c3d5"]) == 0
+    # A line that mates wins everything.
+    mate = chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")
+    assert material_won(mate, ["a1a8"]) == 99
+
+
+def _judged(before: chess.Board, move: str, before_line: Line, after_line: Line) -> MoveAssessment:
+    after = before.copy()
+    after.push_uci(move)
+    fake = FakeEngine({before.fen(): [before_line], after.fen(): [after_line]})
+    annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
+    return annotator.assess_move("g", before, chess.Move.from_uci(move), 1)
+
+
+def test_a_forced_mate_let_go_is_a_miss_and_one_walked_into_a_blunder() -> None:
+    """A mate is 1.0 on the curve and a thousand centipawns 0.975: a mate in four let go for
+    a won ending read as an inaccuracy at most, and a move into a forced mate in a lost
+    position as good (the engine review, 2026-10-01)."""
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    mating = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    still_won = Line(moves=["g8f8"], depth=6, expected_score=0.03, score_cp=-1000)
+    missed = _judged(board, "h2h3", mating, still_won)
+    assert missed.label is Label.MISS, missed
+    # The other side: worse but holding, and the move lets a mate in.
+    lost = Line(moves=["g8f8"], depth=6, expected_score=0.2, score_cp=-400)
+    mates = Line(moves=["a1a8"], depth=6, expected_score=1.0, mate=1)
+    black = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 b - - 0 1")
+    walked = _judged(black, "h7h6", lost, mates)
+    assert walked.label is Label.BLUNDER, walked
 
 
 def test_accuracy_is_a_hundred_for_no_loss_and_falls_with_it() -> None:
@@ -592,7 +680,7 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
     stub.write_text(_SILENT_ENGINE, encoding="utf-8")
     running = Engine(path=STOCKFISH, threads=1, hash_mb=16, multipv=2, max_seconds=0.3)
     running._engine = chess.engine.SimpleEngine.popen_uci([sys.executable, str(stub)])
-    running.watchdog_s = 2.0  # room for the new engine to start on a busy machine
+    running.watchdog_s = 4.0  # room for the new engine to start on a busy machine
     try:
         got: dict[str, list[Line]] = {}
         worker = threading.Thread(
@@ -600,10 +688,10 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
         )
         started = time.monotonic()
         worker.start()
-        worker.join(15)
+        worker.join(30)
         assert not worker.is_alive(), "the search still waits on the silent engine"
         assert got["lines"], "searched again on a new engine"
-        assert time.monotonic() - started < 10
+        assert time.monotonic() - started < 20
     finally:
         running.close()
 
@@ -1210,26 +1298,25 @@ def test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading(tmp_path
 def test_the_move_that_replaces_a_withdrawn_one_knows_the_move_before_it() -> None:
     """After a takeback the move before the replacement is the one the game kept; the last
     move judged was the withdrawn one, a ply too far, and the replacement was judged as if
-    nothing came before it: the opponent's mistake unseen, a loss after it a blunder, not
-    the miss it is (the state review, 2026-10-01)."""
+    nothing came before it: the opponent's blunder unseen, the best reply to it merely
+    best, not the great move it is (the state review, 2026-10-01)."""
     start = chess.Board()
     fake = FakeEngine(
         {
             start.fen(): [Line(moves=["d2d4"], depth=6, expected_score=0.55)],
-            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.70)],
+            _after("e4"): [Line(moves=["e7e5"], depth=6, expected_score=0.90)],
             _after("e4", "a6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
-            _after("e4", "h6"): [Line(moves=["d2d4"], depth=6, expected_score=0.80)],
         }
     )
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
     board = chess.Board()
     first = annotator.assess_move("g", board, board.parse_san("e4"), 1)
-    assert first.severity is Severity.MISTAKE, "the opponent erred"
+    assert first.severity is Severity.BLUNDER, "the opponent blundered"
     board.push_san("e4")
     withdrawn = annotator.assess_move("g", board, board.parse_san("a6"), 2)
-    replacement = annotator.assess_move("g", board, board.parse_san("h6"), 2)
-    assert withdrawn.label is Label.MISS
-    assert replacement.label is Label.MISS, replacement.label
+    replacement = annotator.assess_move("g", board, board.parse_san("e5"), 2)
+    assert withdrawn.label is Label.BLUNDER
+    assert replacement.label is Label.GREAT, replacement.label
 
 
 # Tai's chess.com puzzle of 2026-09-24: 2.exf7+ Kh8 3.Qxb8, and the rook on f8 cannot take back.

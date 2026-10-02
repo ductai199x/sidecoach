@@ -164,40 +164,61 @@ def label_move(
     *,
     is_best: bool,
     in_book: bool,
-    only_move: bool,
+    decisive: bool,
     sacrifice: bool,
     before_score: float,
-    opponent_erred: bool,
+    opponent_blundered: bool,
+    second_score: float | None = None,
+    chance: bool = False,
+    mate_missed: bool = False,
+    mate_allowed: bool = False,
     obvious: bool = False,
 ) -> Label:
-    """What kind of move it was, in the vocabulary the user reads on chess.com.
+    """What kind of move it was, in the words chess.com's review uses, as its help pages
+    define them (2026-10-01) and as far as six of the user's reviewed games bear them out.
 
-    Two axes. The loss says how good the move was: best, excellent, good, then the three
-    names for losing ground. The moment says whether it mattered, which is what great,
-    brilliant and miss add. `opponent_erred` says the move before this one was a mistake
-    or worse, so this move either took the chance (great, when it is the best move) or let
-    it go (miss, whatever the size of the loss); `only_move` says everything else lost, so
-    finding it was great; a sound `sacrifice` is brilliant unless the position was already
-    decided, where giving material back is just technique. Neither great nor brilliant
-    applies to an `obvious` move (a recapture, a free capture nobody can take back, the
-    only legal move), nor in a lost position, where the best move changes nothing. A great
-    move in a won position stays great; chess.com's review awards it there and the user
-    reads that.
+    - Best, "the engine's top choice" (`is_best`); excellent, "almost as good as the best
+      move" (a loss under `excellent`); good, "a decent move but not the best".
+    - Inaccuracy, mistake, blunder: by the loss. A move that walks into a forced mate
+      (`mate_allowed`) "loses the game" and is a blunder, unless the game was lost already
+      (the curve puts a mate at 0.0 and a thousand centipawns at 0.025).
+    - Book, "a conventional opening move": the tables' move, unless it threw away a tenth of
+      the game -- the tables hold dubious gambits too (1. e4 f5), and chess.com's book does
+      not, calling 1...f5 a mistake.
+    - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent":
+      the best move won material or mated (`chance`, read off its line by the annotator)
+      and the move played gave ground. It names the move whatever the size of the loss; a
+      forced mate let go (`mate_missed`) is one even when the move still wins.
+    - Great, "a move that altered the course of the game": the best move where every other
+      lost ground (`decisive`, the only good move), or the best reply to the opponent's
+      blunder. Merely the best move after any error was great 30 times in the six games
+      where chess.com said so 20 times.
+    - Brilliant, "the best move -- and tricky to find too": a sound sacrifice, as good as
+      the best, in a game still to be won. Whether it was won already is read from the
+      second-best line (`second_score`): the best is the line the sacrifice makes, and a
+      sacrifice that is the only win was never brilliant.
+
+    Neither great nor brilliant applies to an `obvious` move (a recapture, a free capture
+    nobody can take back, the only legal move), nor in a lost position, where the best move
+    changes nothing.
     """
-    flagged = loss >= thresholds.inaccuracy
-    if in_book and not flagged:
-        # The opening tables hold dubious gambits too; a move that loses ground is judged
-        # by what it lost, whatever a book calls it. 1. e4 f5 is in the tables.
-        return Label.BOOK
-    won = before_score >= thresholds.decided
     lost = before_score <= 1.0 - thresholds.decided
-    if opponent_erred and flagged:
+    # Walking into a mate from a lost position is not the move that lost: chess.com leaves
+    # those unmarked (eleven of them in the six games, the best move among them).
+    mate_allowed = mate_allowed and not lost and not is_best
+    flagged = loss >= thresholds.inaccuracy or mate_missed or mate_allowed
+    if in_book and loss < thresholds.mistake:
+        return Label.BOOK
+    if flagged and chance and not is_best:
         return Label.MISS
+    if mate_allowed:
+        return Label.BLUNDER
     if not flagged:
         if not obvious and not lost:
-            if sacrifice and not won:
+            without = second_score if second_score is not None else before_score
+            if sacrifice and loss < thresholds.excellent and without < thresholds.decided:
                 return Label.BRILLIANT
-            if only_move or (opponent_erred and is_best):
+            if is_best and (decisive or opponent_blundered):
                 return Label.GREAT
         if is_best:
             return Label.BEST
@@ -206,6 +227,51 @@ def label_move(
     if verdict is Severity.BLUNDER:
         return Label.BLUNDER
     return Label.MISTAKE if verdict is Severity.MISTAKE else Label.INACCURACY
+
+
+# What a line wins, in pawns: the piece values every club player counts by.
+PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+# A line that wins this much is a tactic to find (the coach's facts count the same).
+TACTIC_GAIN = 2
+# How far into a line a tactic is looked for: four moves each.
+TACTIC_PLIES = 8
+
+
+def _balance(board: chess.Board, us: chess.Color) -> int:
+    return sum(
+        PIECE_VALUES.get(piece.piece_type, 0) * (1 if piece.color == us else -1)
+        for piece in board.piece_map().values()
+    )
+
+
+def material_won(board: chess.Board, moves: Sequence[str], plies: int = TACTIC_PLIES) -> int:
+    """What the side to move wins over the first `plies` of `moves` (UCI), in pawns, counted
+    after the opponent's replies; a line that mates wins everything (99). Material the
+    opponent has just taken, which the side to move is owed back, is not won: taking back is
+    a trade (read from the board's moves; a board without them owes nothing)."""
+    us = board.turn
+    base = _balance(board, us)
+    back = board.copy()
+    while back.move_stack:
+        move = back.pop()
+        if not back.is_capture(move):
+            break
+        base = max(base, _balance(back, us))
+    at = board.copy(stack=False)
+    best = 0
+    for i, uci in enumerate(moves[:plies]):
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            break
+        if move not in at.legal_moves:
+            break
+        at.push(move)
+        if at.is_checkmate():
+            return 99 if at.turn != us else best
+        if i % 2 == 1:
+            best = max(best, _balance(at, us) - base)
+    return best
 
 
 # Per-move accuracy: 100 for no loss, falling off exponentially with the drop in winning
