@@ -210,6 +210,13 @@ class PipelineTest {
                         "\n  python: ${theirs.joinToString(" | ")}",
                 )
             }
+            // Whether the next frame is taken early to confirm this one (`awaiting_confirmation`).
+            if (pipeline.awaitingConfirmation != frame.getBoolean("awaiting") && failures.size < 8) {
+                failures.add(
+                    "$name frame $f ($file): awaiting confirmation ${pipeline.awaitingConfirmation}, " +
+                        "python's ${frame.getBoolean("awaiting")}",
+                )
+            }
             if (frame.has("lock")) {
                 // Where the tracker's lock stands after this frame (a board moved: desktop
                 // 17c45a6's `test_a_board_moved_any_fraction_of_a_cell_is_found_again`).

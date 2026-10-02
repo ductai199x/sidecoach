@@ -87,6 +87,14 @@ class GamePipeline(
         const val FLAG_MS = 1000
 
         /**
+         * A frame that a move (or the start position) needs to be confirmed by is taken this
+         * soon after the one that showed it, not at the capture's own rate (Tai, 2026-10-02:
+         * latency first, and "very selectively" -- one early frame per move).
+         * `CONFIRM_INTERVAL_S`.
+         */
+        const val CONFIRM_INTERVAL_S = 1.0 / 30
+
+        /**
          * A resync or a cold start that left the side to move open takes it from the clock
          * that is running, when the clock was read this recently.
          */
@@ -248,6 +256,16 @@ class GamePipeline(
 
     /** What the recogniser read from the last changed frame. */
     val readings: Readings? get() = game.readingsValue
+
+    /**
+     * Whether the last frame showed something that the next frame confirms: a move seen once
+     * ([Reconciler.pendingStory]), or the start position seen fewer times than a game needs to
+     * begin. The capture takes that next frame early ([CONFIRM_INTERVAL_S]).
+     * `awaiting_confirmation`.
+     */
+    val awaitingConfirmation: Boolean
+        get() = reconciler?.pendingStory
+            ?: (game.startOnScreen && game.startSeen in 1 until startFramesNeeded)
 
     /**
      * Events for one frame, stamped with its time and id.

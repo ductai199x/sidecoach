@@ -1613,6 +1613,8 @@ def run(name: str, states: list[dict]) -> dict:
                 "ts": ts,
                 "changed": changed,
                 "events": [event_json(event) for event in events],
+                # Whether the capture takes the next frame early to confirm this one.
+                "awaiting": pipeline.awaiting_confirmation,
             }
             if forced is not None:
                 frame["forced"] = True

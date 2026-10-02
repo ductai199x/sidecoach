@@ -492,6 +492,12 @@ class GameWatcher(
     }
 
     /**
+     * Whether the next tick confirms what the last one saw (a move seen once): the capture
+     * takes it early. [GamePipeline.awaitingConfirmation]; false with no pipeline.
+     */
+    val awaitingConfirmation: Boolean get() = pipeline?.awaitingConfirmation ?: false
+
+    /**
      * Time passing for the coach, and whatever it has finished saying; then the page's state,
      * the status strip once a second, and a word on a tick that stalled.
      *

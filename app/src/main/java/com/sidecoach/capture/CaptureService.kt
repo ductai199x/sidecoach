@@ -34,6 +34,7 @@ import com.sidecoach.ui.Captions
 import com.sidecoach.ui.PanelEngine
 import com.sidecoach.ui.PanelListen
 import com.sidecoach.ui.PanelWarm
+import com.sidecoach.state.GamePipeline
 import com.sidecoach.vision.GameWatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -414,11 +415,16 @@ class CaptureService : Service() {
     /**
      * The tick after a read, as `capture_loop` paces it: one interval after the last tick was
      * due, the rate read as it stands now; a read that ran past that is followed by the next
-     * at once, not a whole interval later.
+     * at once, not a whole interval later. A read that saw a move once brings the tick that
+     * confirms it in [GamePipeline.CONFIRM_INTERVAL_S] (the panel's `capture_rate`).
      */
     private fun nextTick() {
         val handler = handler ?: return
-        nextDue += 1000.0 / maxOf(fps.toDouble(), 1e-3)
+        nextDue += if (vision?.awaitingConfirmation == true) {
+            GamePipeline.CONFIRM_INTERVAL_S * 1000.0
+        } else {
+            1000.0 / maxOf(fps.toDouble(), 1e-3)
+        }
         val now = SystemClock.elapsedRealtime().toDouble()
         val delay = nextDue - now
         if (delay > 0) {

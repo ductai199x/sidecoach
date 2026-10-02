@@ -81,18 +81,28 @@ class VisionBenchTest {
             val moveTicks = ArrayList<Double>()
             val stillTicks = ArrayList<Double>()
             val commits = ArrayList<Int?>()
+            val seenToCommit = ArrayList<Double>()
             for (i in 1 until positions.length()) {
                 val frame = frame(i)
                 var commit: Int? = null
+                var first = 0.0
                 for (n in 1..patience) {
                     val tick = ticker.tick(if (n == 1) frame else null)
-                    (if (n == 1) moveTicks else stillTicks).add(tick.ms)
+                    if (n == 1) {
+                        first = tick.captured
+                        moveTicks.add(tick.ms)
+                    } else {
+                        stillTicks.add(tick.ms)
+                    }
                     if (tick.events.any { it is MovePlayed }) {
                         commit = n
+                        seenToCommit.add((tick.captured - first) * 1000 + tick.ms)
                         break
                     }
                 }
                 commits.add(commit)
+                // The board then sits still until the next move: a tick at the capture's own rate.
+                stillTicks.add(ticker.tick(null).ms)
             }
 
             val committed = commits.filterNotNull()
@@ -105,11 +115,24 @@ class VisionBenchTest {
                 "commit        on frame ${committed.minOrNull()}-${committed.maxOrNull()} showing the move, " +
                     "missed ${commits.size - committed.size}",
             )
+            Log.i(TAG, "seen->commit  ${summary(seenToCommit)}")
+            val idle = step * 1000
+            val seen = median(seenToCommit)
+            Log.i(
+                TAG,
+                "move->commit  + the wait for the first frame, 0-${"%.0f".format(idle)} ms: " +
+                    "${"%.0f".format(seen)}-${"%.0f".format(seen + idle)} ms, " +
+                    "${"%.0f".format(seen + idle / 2)} ms on average",
+            )
             assertTrue("moves missed: $commits", committed.size == commits.size)
         }
     }
 
-    /** `GameWatcher.read`'s tick over a new screen ([bitmap]) or the same one again (null), timed. */
+    /**
+     * `GameWatcher.read`'s tick over a new screen ([bitmap]) or the same one again (null), timed;
+     * the clock then moves to the next tick as `CaptureService.nextTick` paces it: the confirming
+     * tick early ([GamePipeline.CONFIRM_INTERVAL_S]), or later if this one overran.
+     */
     private class Ticker(private val pipeline: GamePipeline, private val step: Double) {
         private val gate = ChangeGate()
         private var clock = 0.0
@@ -117,9 +140,11 @@ class VisionBenchTest {
         private var lastFrame: Mat? = null
         private var lastPixels: FramePixels? = null
 
-        class Tick(val events: List<Event>, val ms: Double)
+        /** [captured]: when the tick began on the capture's clock, in seconds. */
+        class Tick(val events: List<Event>, val ms: Double, val captured: Double)
 
         fun tick(bitmap: Bitmap?): Tick {
+            val captured = clock
             val began = System.nanoTime()
             val same = bitmap == null
             val bgr = if (same) lastFrame!! else toBgr(bitmap!!).also { fresh -> lastFrame?.release(); lastFrame = fresh }
@@ -128,8 +153,10 @@ class VisionBenchTest {
             val changed = if (same) gate.changedAgain(pixels, clock) else gate.changed(pixels, clock)
             lastPixels = pixels
             val events = pipeline.process(bgr, clock, changed, frameId++, pixels, sameFrame = same)
-            clock += step
-            return Tick(events, (System.nanoTime() - began) / 1e6)
+            val ms = (System.nanoTime() - began) / 1e6
+            val interval = if (pipeline.awaitingConfirmation) GamePipeline.CONFIRM_INTERVAL_S else step
+            clock += maxOf(interval, ms / 1000)
+            return Tick(events, ms, captured)
         }
 
         private fun toBgr(bitmap: Bitmap): Mat {
@@ -149,15 +176,19 @@ class VisionBenchTest {
         }
     }
 
-    private fun summary(ms: List<Double>): String {
-        val ordered = ms.sorted()
-        val median = if (ordered.size % 2 == 1) {
+    private fun median(values: List<Double>): Double {
+        val ordered = values.sorted()
+        return if (ordered.size % 2 == 1) {
             ordered[ordered.size / 2]
         } else {
             (ordered[ordered.size / 2 - 1] + ordered[ordered.size / 2]) / 2
         }
+    }
+
+    private fun summary(ms: List<Double>): String {
+        val ordered = ms.sorted()
         val p90 = ordered[maxOf(0, Math.round(0.9 * ordered.size).toInt() - 1)]
-        return "median ${"%5.1f".format(median)} ms   p90 ${"%5.1f".format(p90)} ms   " +
+        return "median ${"%5.1f".format(median(ordered))} ms   p90 ${"%5.1f".format(p90)} ms   " +
             "max ${"%5.1f".format(ordered.last())} ms   (n=${ordered.size})"
     }
 
