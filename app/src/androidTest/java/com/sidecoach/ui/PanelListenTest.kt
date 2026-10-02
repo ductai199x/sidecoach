@@ -644,6 +644,45 @@ class PanelListenTest {
         }
     }
 
+    /**
+     * A 45 s question held on the key is handed over whole
+     * (`test_a_45_second_question_held_on_the_key_is_handed_over_whole`; E3, Tai 2026-10-02: the
+     * longest utterance is 60 s, not 20 s). The listener asks its queue for the next frame only
+     * once it has handled the last one, so an empty poll says every frame fed was handled.
+     */
+    @Test
+    fun aFortyFiveSecondQuestionHeldOnTheKeyIsHandedOverWhole() {
+        val handled = CountDownLatch(1)
+        val fed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val mic = object : FrameSource {
+            override val frames: BlockingQueue<FloatArray> = object : LinkedBlockingQueue<FloatArray>() {
+                override fun poll(timeout: Long, unit: TimeUnit): FloatArray? {
+                    if (fed.get() && isEmpty()) handled.countDown()
+                    return super.poll(timeout, unit)
+                }
+            }
+            override val detail = "fed by the test"
+            override val isOpen = true
+            override fun open() = true
+            override fun close() = Unit
+        }
+        val heard = LinkedBlockingQueue<Double>()
+        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ -> heard.put(audio.size / 16000.0) })
+        listener.setMode("ptt")
+        try {
+            listener.press()
+            repeat(45 * 16000 / HOP) { mic.frames.put(FloatArray(HOP) { 0.01f }) }
+            fed.set(true)
+            assertTrue(handled.await(10, TimeUnit.SECONDS))
+            assertTrue("handed over while still held", heard.isEmpty() && listener.pressTaken)
+            listener.release()
+            val seconds = heard.poll(5, TimeUnit.SECONDS)
+            assertTrue("$seconds", seconds != null && seconds >= 45 - HOP / 16000.0)
+        } finally {
+            listener.setMode("off")
+        }
+    }
+
     /** A microphone whose input failed is reopened (`test_a_microphone_whose_stream_died_is_reopened`,
      * voice finding 17). */
     @Test
