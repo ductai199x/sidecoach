@@ -125,6 +125,88 @@ class ReviewFixesTest {
         assertEquals("the legal one mates", "checkmate", StatFacts.endedBy(null, "0-1", stored(played, "0-1")))
     }
 
+    /**
+     * For Tai #9 (decided 2026-10-02): the AI words paid for on a watched game whose record
+     * differs from its import show in the import's review on the moves the two share -- the same
+     * position, the same move, whatever the move numbers (a game joined late) -- and not on a
+     * move the import does not have; the watched review keeps every word. The desktop's
+     * test_words_go_by_position_and_move_whatever_the_move_numbers and
+     * test_the_words_paid_on_a_watched_game_show_in_its_imports_review.
+     */
+    @Test
+    fun theWordsPaidOnAWatchedGameShowWhereTheMovesMatch() {
+        val g = fixture.getJSONArray("games").getJSONObject(0)
+        val imported = ReviewJson.reviewed(g.getJSONObject("reviewed"))
+        val misread = 7 // a move Sidecoach read otherwise: its position is not the import's
+        val watched = com.sidecoach.events.ReviewedGame(
+            headers = imported.headers,
+            start = imported.start,
+            moves = imported.moves.map { m ->
+                val fields = m.fenBefore.split(" ").toMutableList()
+                fields[5] = (fields[5].toInt() + 20).toString() // joined at move 21
+                if (m.ply == misread) fields[0] = "8/8/8/8/8/8/8/K6k"
+                com.sidecoach.events.ReviewedMove(m.ply, m.san, m.side, fields.joinToString(" "), m.assessment, m.after, m.clockMs, m.spentMs)
+            },
+            strength = imported.strength,
+            depth = imported.depth,
+            seconds = imported.seconds,
+        )
+        val store = Store(null)
+        try {
+            store.startGame("w", 1.0, "black", com.sidecoach.chess.STARTING_FEN)
+            store.addLibraryGame(com.sidecoach.profile.LibraryRow("pgn:i", "pgn", 0.0, "*"))
+            assertEquals(true, store.saveReview("watched:w", "fast", ReviewRoom.REVIEW_VERSION, 1.0, ReviewJson.reviewed(watched).toString(), null))
+            val paid = JSONObject().put("model", "m").put(
+                "texts",
+                JSONObject().put("4", JSONObject().put("why", "W4")).put("$misread", JSONObject().put("why", "W$misread")),
+            ).toString()
+            store.setReviewWords("watched:w", "fast", paid)
+            store.addTwin("watched:w", "pgn:i")
+            val (carried, model) = ReviewRoom.carriedWords(store, "pgn:i", imported, "standard")
+            assertEquals(mapOf(4 to "{\"why\":\"W4\"}"), carried.mapValues { it.value.toString() })
+            assertEquals("m", model)
+            assertEquals("the watched review keeps every word", paid, store.review("watched:w", "fast")!!.words)
+            assertEquals("one way", emptyMap<Int, JSONObject>(), ReviewRoom.carriedWords(store, "watched:w", watched, "fast").first)
+        } finally {
+            store.close()
+        }
+    }
+
+    /**
+     * `test_the_words_paid_on_a_watched_game_show_in_its_imports_review`: the key moves with words
+     * carried from the watched game are not asked (paid) again; an answer of the game's own, paid
+     * for before, stays its own.
+     */
+    @Test
+    fun theKeyMovesWithCarriedWordsAreNotAskedAgain() {
+        val game = ReviewJson.reviewed(fixture.getJSONArray("games").getJSONObject(0).getJSONObject("reviewed"))
+        val plies = com.sidecoach.coach.ReviewWords.keyPlies(game)
+        assertEquals(true, plies.size >= 2)
+        val asked = ArrayList<Int>()
+        val model = object : com.sidecoach.llm.LLMProvider {
+            override val name = "fake"
+            override fun healthcheck(): Pair<Boolean, String> = true to "fake"
+            override fun chat(system: String, messages: List<com.sidecoach.llm.ChatMessage>, maxTokens: Int, temperature: Double, thinking: Boolean): com.sidecoach.llm.Completion {
+                val ply = JSONObject(messages[0].content).getJSONObject("key move").getInt("ply")
+                synchronized(asked) { asked.add(ply) }
+                return com.sidecoach.llm.Completion(text = "### why\nA move.", stats = emptyMap())
+            }
+        }
+        val words = com.sidecoach.coach.ReviewWords.write(
+            game, model, user = "black", opening = null, prices = com.sidecoach.llm.Prices(),
+            carried = setOf(plies[0]),
+        )
+        assertEquals(plies.drop(1).sorted(), asked.sorted())
+        assertEquals(false, plies[0] in words.texts)
+        asked.clear()
+        val own = com.sidecoach.coach.ReviewWords.write(
+            game, model, user = "black", opening = null, prices = com.sidecoach.llm.Prices(),
+            answered = mapOf(plies[0] to "### why\nOwn."), carried = setOf(plies[0]),
+        )
+        assertEquals(plies.drop(1).sorted(), asked.sorted())
+        assertEquals(mapOf("why" to "Own."), own.texts[plies[0]])
+    }
+
     /** `test_a_game_set_up_from_a_position_is_rated_from_where_it_starts`, test_performance.py. */
     @Test
     fun aGameSetUpFromAPositionIsRatedFromWhereItStarts() {

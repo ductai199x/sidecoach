@@ -496,4 +496,49 @@ class PanelEngineTest {
             PanelVoice.setVoice(voice)
         }
     }
+
+    /**
+     * For Tai #11 (decided 2026-10-02): the card said 78.0 and Game Review 78.3. The card says
+     * the live accuracy while the game's review is not done, then Game Review's, as the poll
+     * carries it: read again when a review is saved (by any store: a review page's), and not
+     * asked of the store between changes. The desktop's
+     * test_the_end_of_game_card_says_the_reviews_accuracy_once_it_is_done.
+     */
+    @Test
+    fun theEndOfGameCardSaysTheReviewsAccuracyOnceItIsDone() {
+        val files = File(app.cacheDir, "card-accuracy").apply { deleteRecursively(); mkdirs() }
+        val path = File(files, "profile.sqlite")
+        val store = Store(path)
+        val profiler = Profiler(store, sessionId = "s", ts = 0.0)
+        val before = PanelEngine.profiler
+        PanelEngine.profiler = profiler
+        try {
+            val board = com.sidecoach.chess.Board()
+            profiler.onEvent(GameStarted("card", Pieces.Side.BLACK, STARTING_FEN), 1.0)
+            val sans = listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Bc5", "Nc3", "d6", "h3", "Na5")
+            for ((i, san) in sans.withIndex()) {
+                val move = board.parseSan(san)!!
+                val fen = board.fen()
+                board.push(move)
+                val played = com.sidecoach.events.MovePlayed("card", i + 1, san, move.uci(), fen, board.fen(), byUser = i % 2 == 1)
+                profiler.onEvent(played, 2.0 + i)
+            }
+            val cursor = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+            PanelEngine.profile(profiler, listOf(com.sidecoach.events.GameEnded("card", "0-1", "resignation")), flush = true)
+            val lines = PanelEngine.poll(cursor).getJSONArray("lines")
+            val card = (0 until lines.length()).map { lines.getJSONObject(it) }
+                .first { it.optJSONObject("data")?.has("review") == true }
+            assertEquals("watched:card", card.getJSONObject("data").getString("review_key"))
+            assertEquals("not reviewed: the live accuracy", 0, state().getJSONObject("review_accuracy").length())
+
+            val other = Store(path) // a review page's own store
+            val summary = JSONObject().put("white", JSONObject().put("accuracy", 90.1)).put("black", JSONObject().put("accuracy", 78.3))
+            assertTrue(other.saveReview("watched:card", "standard", ReviewRoom.REVIEW_VERSION, 1.0, "{}", summary.toString()))
+            other.close()
+            assertEquals("Game Review's", 78.3, state().getJSONObject("review_accuracy").getDouble("watched:card"), 0.0)
+        } finally {
+            PanelEngine.profiler = before
+            store.close()
+        }
+    }
 }

@@ -28,7 +28,10 @@ class ReviewWordsFixesTest {
     }
 
     /** Answers every key move's call, failing those in [failing]; records the plies and threads. */
-    private inner class Model(private val failing: Set<Int> = emptySet()) : LLMProvider {
+    private inner class Model(
+        private val failing: Set<Int> = emptySet(),
+        private val answers: Map<Int, String> = emptyMap(),
+    ) : LLMProvider {
         override val name = "fake"
         val asked = ArrayList<Int>()
         val threads = HashSet<String>()
@@ -43,7 +46,7 @@ class ReviewWordsFixesTest {
                 threads.add(Thread.currentThread().name + "#" + Thread.currentThread().id)
             }
             if (ply in failing) throw RuntimeException("429: slow down")
-            return Completion(text = "### why\nA move.", stats = mapOf("prompt_tokens" to 10, "completion_tokens" to 10))
+            return Completion(text = answers[ply] ?: "### why\nA move.", stats = mapOf("prompt_tokens" to 10, "completion_tokens" to 10))
         }
     }
 
@@ -87,11 +90,13 @@ class ReviewWordsFixesTest {
     }
 
     /**
-     * `test_the_better_move_waits_for_the_answer`: a "why" giving the better move in words ("the
-     * knight to e4") waits for the answer as one in notation does.
+     * `test_a_why_naming_the_better_move_is_shown_as_written`, `test_a_side_named_you_is_shown_as_
+     * written`, `test_a_lesson_is_shown_as_written`: no rule over the words drops or holds one back
+     * (Tai, 2026-10-02) -- a "why" that gives the better move away in words and says "your
+     * opponent", and a lesson that names a square, are shown as written, and nothing is dropped.
      */
     @Test
-    fun theBetterMoveInWordsWaitsForTheAnswer() {
+    fun theWordsAreShownAsWritten() {
         val move = game.moves.first {
             val label = it.assessment.label?.let { l -> ReviewJson.labelName(l) }
             label in ReviewWords.BAD && it.assessment.best.isNotEmpty() &&
@@ -101,8 +106,13 @@ class ReviewWordsFixesTest {
         val answer = com.sidecoach.chess.Move.fromUci(move.assessment.best[0])
         val piece = listOf("", "pawn", "knight", "bishop", "rook", "queen", "king")[board.pieceTypeAt(answer.from)]
         val square = com.sidecoach.chess.squareName(answer.to)
-        assertTrue(ReviewWords.namesTheAnswer("Bringing the $piece over to $square was better.", game, move.ply))
-        assertTrue(ReviewWords.namesTheAnswer("The ${piece.replaceFirstChar { it.uppercase() }} to $square first.", game, move.ply))
-        assertEquals(false, ReviewWords.namesTheAnswer("The $piece belonged somewhere safer.", game, move.ply))
+        val why = "Bringing the $piece over to $square was better, and your opponent knew it."
+        val lesson = "Keep an eye on $square before you commit."
+        val words = ReviewWords.write(
+            game, Model(answers = mapOf(move.ply to "### why\n$why\n### lesson\n$lesson")),
+            user = "black", opening = null, prices = Prices(),
+        )
+        assertEquals(mapOf("why" to why, "lesson" to lesson), words.texts[move.ply])
+        assertEquals(null, words.dropped[move.ply])
     }
 }

@@ -9,7 +9,7 @@ wrong side, a piece the board puts elsewhere, a lesson naming a square, an answe
 so the cost is exercised. Recorded for each game: the key moves, the estimate at several prices
 and with moves already answered, and runs of `write` -- every request as the model was asked it
 (system, messages, max_tokens, temperature, thinking), the replies it was handed, each
-`on_answer`, and the result (texts, dropped, reveals, answers, model, cost, calls) or the error
+`on_answer`, and the result (texts, dropped, answers, model, cost, calls) or the error
 raised -- with `linked` of the result's texts; and hand-written paragraphs on every key move that
 hit every linking rule. Then the pieces on their own: `to_student`, `parse`, `in_colours` and
 `checked` on the short game of the desktop's tests.
@@ -246,7 +246,6 @@ def words_json(words: review_words.ReviewWords) -> dict[str, Any]:
     return {
         "texts": {str(p): parts for p, parts in words.texts.items()},
         "dropped": {str(p): why for p, why in words.dropped.items()},
-        "reveals": sorted(words.reveals),
         "answers": {str(p): text for p, text in words.answers.items()},
         "model": words.model,
         "cost": words.cost,
@@ -531,7 +530,7 @@ def checks() -> list[dict[str, Any]]:
     ]
     out = []
     for parts, ply, user in cases:
-        kept, dropped, reveals = review_words.checked(parts, game, ply, user)
+        kept, dropped = review_words.checked(parts, game, ply, user)
         out.append(
             {
                 "parts": parts,
@@ -539,11 +538,6 @@ def checks() -> list[dict[str, Any]]:
                 "user": user,
                 "kept": kept,
                 "dropped": dropped,
-                "reveals": reveals,
-                "names_the_answer": {
-                    part: review_words.names_the_answer(text, game, ply, user)
-                    for part, text in parts.items()
-                },
                 "wrong_side": {
                     part: review_words.wrong_side(text, game, ply) for part, text in parts.items()
                 },

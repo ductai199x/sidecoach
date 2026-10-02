@@ -40,11 +40,12 @@ import java.util.concurrent.Executors
  * paragraphs ([toStudent]: White and Black become "you" and "your opponent"). Asked to say "you"
  * itself, it spoke to whoever played the move -- about one shown paragraph in four, the
  * student's own move given to their opponent among them (luna at medium effort, 2026-09-30) --
- * and colours it does not turn round. Each paragraph is checked in colours first: against the
- * board ([checkDraft]: whose piece stands where), for the side it gives a move to, and for a side
- * named any other way; the lesson, general advice, names no side, square or move. A "why" that
- * names the better move of the student's own mistake is shown only once the answer is (Retry
- * asks them to find it).
+ * and colours it does not turn round. The words are shown as the model wrote them: only a false
+ * claim about the board refuses a paragraph, as in the live coach -- a piece the board puts
+ * elsewhere or with the other side ([checkDraft]), a move given to the side that does not play
+ * it. No rule over the words themselves drops or holds one back (Tai, 2026-10-02): a "why" that
+ * says "you", a lesson that names a square, a "why" that names the better move are shown as
+ * written.
  *
  * The regexes are Python's, read as `re` reads them: `pattern.search(text, pos, endpos)` is a
  * search from `pos` in the text cut at `endpos` (lookbehind sees before `pos`, nothing is seen
@@ -122,14 +123,13 @@ object ReviewWords {
 
     /**
      * The student's words by ply ("why", "lesson", and for a bad move "better"); the plies with a
-     * part dropped, and why; the plies whose "why" names the better move (shown only once the
-     * answer is); the model's answers by ply (in colours, for reading by hand); what the calls
-     * cost, and each call's measures. `review_words.ReviewWords`.
+     * part refused for a false claim about the board, and why; the model's answers by ply (in
+     * colours, for reading by hand); what the calls cost, and each call's measures.
+     * `review_words.ReviewWords`.
      */
     class Words(
         val texts: LinkedHashMap<Int, Map<String, String>> = LinkedHashMap(),
         val dropped: LinkedHashMap<Int, String> = LinkedHashMap(),
-        val reveals: LinkedHashSet<Int> = LinkedHashSet(),
         val answers: LinkedHashMap<Int, String> = LinkedHashMap(),
         val model: String = "",
         var cost: Double? = null,
@@ -598,16 +598,7 @@ object ReviewWords {
         return out.append(one(text.substring(at))).toString()
     }
 
-    // --- The checks, in colours ----------------------------------------------------------------
-
-    // A side named but by its colour: in colours, "your" and "the opponent" could be either.
-    private val PERSON = Regex(
-        "\\b(you|your|yours|yourself|opponent|opponent's|opponents)\\b",
-        RegexOption.IGNORE_CASE,
-    )
-
-    // What general advice leaves out: a side, a square (a move ends in one).
-    private val PARTICULAR = Regex("\\b(White|Black|[a-h][1-8])\\b")
+    // --- The checks: false claims about the board ----------------------------------------------
 
     // A move given to a side: "White's Nf3", "Black played Nc6", "White could have played Bc4".
     private const val GIVEN =
@@ -677,56 +668,26 @@ object ReviewWords {
     }
 
     /**
-     * Whether a paragraph on the student's bad move gives the better move, in notation or in
-     * words (the piece sent to its square, or castling): it is Retry's answer. The opponent's moves are not the student's to find (with the student's side
-     * unknown, every bad move is kept back). `names_the_answer`.
+     * The false claims about the board a "why" or "better" on move [ply] makes, in words; empty
+     * when none: a piece the board puts elsewhere or with the other side, a move given to the side
+     * that does not play it. A "your" the model wrote anyway is the student's, as the student
+     * reads it (the mover's when their side is not known). The lesson, general advice, makes no
+     * claim about the board. `problems`.
      */
-    fun namesTheAnswer(text: String, game: ReviewedGame, ply: Int, user: String? = null): Boolean {
-        val move = game.moves[ply - 1]
-        val label = move.assessment.label?.let { ReviewJson.labelName(it) }
-        val theirs = user != null && move.side.value != user
-        if (label == null || label !in BAD || move.assessment.best.isEmpty() || theirs) return false
-        val board = Board(move.fenBefore)
-        val answer = Move.fromUci(move.assessment.best[0])
-        val best = board.san(answer).trimEnd('+', '#')
-        if (Regex("(?<![\\w])${escaped(best)}(?![\\w])").containsMatchIn(text)) return true
-        // In words: the piece sent to its square ("the knight to e4", "the rook takes on d8"), or
-        // castling. Notation alone was caught, and "the knight to e4" showed the answer before it
-        // was asked for (the review of 2026-10-01).
-        if (board.isCastling(answer)) return Regex("\\bcastl(?:e|es|ed|ing)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
-        val name = PIECE_NAMES.getOrElse(board.pieceTypeAt(answer.from)) { "piece" }
-        val square = squareName(answer.to)
-        val verbs = "(?:to|onto|into|on|lands on|jumps to|goes to|takes(?: on)?|captures(?: on)?)"
-        return Regex("\\b${name}s?\\b(?:\\s+\\w+){0,2}\\s+$verbs\\s+$square\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
-    }
-
-    /** `chess.piece_name`, by piece type (1 pawn ... 6 king). */
-    private val PIECE_NAMES = mapOf(1 to "pawn", 2 to "knight", 3 to "bishop", 4 to "rook", 5 to "queen", 6 to "king")
-
-    /**
-     * What stops a part on move [ply] from being shown, in words; empty when nothing. "why" and
-     * "better", written in colours: a side named but by its colour, a piece the board puts
-     * elsewhere or with the other side, a move given to the side that does not play it. The
-     * lesson, general advice: a side, a square or a move named. `problems`.
-     */
-    fun problems(part: String, paragraph: String, game: ReviewedGame, ply: Int): String {
-        if (part == "lesson") {
-            val named = PARTICULAR.find(paragraph)
-            return if (named != null) "names \"${named.groupValues[1]}\"" else ""
-        }
-        val person = PERSON.find(paragraph)
-        if (person != null) return "names a side \"${person.groupValues[1]}\""
+    fun problems(part: String, paragraph: String, game: ReviewedGame, ply: Int, user: String? = null): String {
+        if (part == "lesson") return ""
         val board = Board(game.moves[ply - 1].fenBefore)
-        val found = checkDraft(paragraph, board, after = frames(game, ply))
+        val us = user?.let { it == "white" }
+        val found = checkDraft(paragraph, board, after = frames(game, ply), us = us)
         if (found.isNotEmpty()) return found.joinToString("; ") { "${it.text}: ${it.reason}" }
         return wrongSide(paragraph, game, ply)
     }
 
     /**
-     * A move's parts the checks pass, in the student's words, each on its own; why a part was
-     * dropped (empty when none); whether its "why" names the better move. `checked`.
+     * A move's parts with no false claim about the board, in the student's words, each on its
+     * own; why a part was refused (empty when none). `checked`.
      */
-    fun checked(parts: Map<String, String>, game: ReviewedGame, ply: Int, user: String?): Triple<Map<String, String>, String, Boolean> {
+    fun checked(parts: Map<String, String>, game: ReviewedGame, ply: Int, user: String?): Pair<Map<String, String>, String> {
         val label = game.moves[ply - 1].assessment.label
         // "better" is a bad move's alone: a good move was the better move.
         val wanted = if (label != null && ReviewJson.labelName(label) in BAD) PARTS else listOf("why", "lesson")
@@ -734,20 +695,19 @@ object ReviewWords {
         val reasons = ArrayList<String>()
         for (part in wanted) {
             val paragraph = parts[part] ?: continue
-            val problem = problems(part, paragraph, game, ply)
+            val problem = problems(part, paragraph, game, ply, user)
             if (problem.isNotEmpty()) {
                 reasons.add("$part: $problem")
                 if (part == "why") {
                     // Wrong about the board or a side: the model misread the move, so nothing it
                     // said of it stands.
-                    return Triple(emptyMap(), reasons.joinToString("; "), false)
+                    return Pair(emptyMap(), reasons.joinToString("; "))
                 }
                 continue
             }
             kept[part] = toStudent(paragraph, user)
         }
-        val reveals = "why" in kept && namesTheAnswer(parts.getValue("why"), game, ply, user)
-        return Triple(kept, reasons.joinToString("; "), reveals)
+        return Pair(kept, reasons.joinToString("; "))
     }
 
     /**
@@ -756,7 +716,9 @@ object ReviewWords {
      * 2026-09-30). A call that fails leaves its move in `failed`, to ask again; when every one
      * fails (and none was answered before), the first failure is thrown. [answered]: the answers already paid for (words the
      * app was closed in the middle of), not asked again; [onAnswer] (ply, text, stats) is handed
-     * each new answer the moment it arrives, to keep it. The cost is of the new calls. `write`.
+     * each new answer the moment it arrives, to keep it. [carried]: the key moves that have words
+     * already, paid for on the watched game this one stands for (ReviewRoom.kt), not asked again
+     * (an answer of this game's own stays its own). The cost is of the new calls. `write`.
      */
     fun write(
         game: ReviewedGame,
@@ -768,9 +730,10 @@ object ReviewWords {
         answered: Map<Int, String>? = null,
         onAnswer: ((Int, String, Map<String, Any?>) -> Unit)? = null,
         stop: (() -> Boolean)? = null,
+        carried: Set<Int> = emptySet(),
     ): Words {
         val paid = LinkedHashMap(answered ?: emptyMap())
-        val plies = keyPlies(game)
+        val plies = keyPlies(game).filter { it !in carried || it in paid }
         // `getattr(provider, "model", "")`.
         val words = Words(model = modelOf(provider) ?: "")
         if (plies.isEmpty()) return words
@@ -841,10 +804,9 @@ object ReviewWords {
                 paid.getValue(ply)
             }
             words.answers[ply] = text
-            val (kept, dropped, reveals) = checked(parse(text), game, ply, user)
+            val (kept, dropped) = checked(parse(text), game, ply, user)
             if (kept.isNotEmpty()) words.texts[ply] = kept
             if (dropped.isNotEmpty()) words.dropped[ply] = dropped
-            if (reveals) words.reveals.add(ply)
         }
         words.cost = spent.cost(prices)
         return words

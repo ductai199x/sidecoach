@@ -577,12 +577,21 @@ class Store(val path: File?) {
      * reset. `in_record`.
      */
     fun inRecord(key: String): Boolean = lock.withLock {
-        if (key.startsWith(WATCHED)) {
-            rows("SELECT 1 FROM games WHERE game_id = ?", key.removePrefix(WATCHED)) { true }.isNotEmpty()
-        } else {
-            rows("SELECT 1 FROM library WHERE key = ?", key) { true }.isNotEmpty()
-        }
+        val (condition, value) = held(key)
+        rows("SELECT $condition", value) { it.getInt(0) != 0 }.single()
     }
+
+    /**
+     * Whether the player's record holds a game (by its library key), as an SQL condition of one
+     * parameter, and that parameter ([inRecord]): its import in the library, or Sidecoach's record
+     * of the watched game. `_held`.
+     */
+    private fun held(key: String): Pair<String, String> =
+        if (key.startsWith(WATCHED)) {
+            "EXISTS (SELECT 1 FROM games WHERE game_id = ?)" to key.removePrefix(WATCHED)
+        } else {
+            "EXISTS (SELECT 1 FROM library WHERE key = ?)" to key
+        }
 
     /** Games the player brought in by hand (a pasted PGN): no longer left out. `unremove`. */
     fun unremove(keys: List<String>) {
@@ -663,21 +672,27 @@ class Store(val path: File?) {
     /**
      * A game's facts from its review at [strength], in place of any before from a review no
      * stronger: Stats keeps the strongest review's facts (a Fast look after a Deep review lowered
-     * Stats, the review of 2026-10-01). `save_stats`.
+     * Stats, the review of 2026-10-01). [held]: only while the game is in the player's record,
+     * asked in the same transaction (a review just saved: a profile reset landing between that
+     * save and this one left Stats a game nothing listed; the audit of 2026-10-02). `save_stats`.
      */
-    fun saveStats(strength: String, game: GameFact, moves: List<MoveFact>) {
+    fun saveStats(strength: String, game: GameFact, moves: List<MoveFact>, held: Boolean = false) {
         lock.withLock {
             val kept = rows("SELECT $RANK AS rank FROM stat_games WHERE key = ?", game.key) { it.getInt(0) }.firstOrNull()
             if (kept != null && kept > (STRENGTH_RANK[strength] ?: 0)) return
             db.beginTransaction()
             try {
                 exec("DELETE FROM stat_moves WHERE key = ?", game.key)
-                exec(
+                val (condition, value) = if (held) held(game.key) else "? IS NULL" to null
+                val saved = exec(
                     "INSERT OR REPLACE INTO stat_games (key, strength, source, time_class, played_at," +
-                        " user_side, bot, result, opening, termination) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " user_side, bot, result, opening, termination) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?" +
+                        " WHERE $condition",
                     game.key, strength, game.source, game.timeClass, game.playedAt, game.userSide,
-                    game.bot, game.result, game.opening, game.termination,
+                    game.bot, game.result, game.opening, game.termination, value,
                 )
+                // Out of the record: nothing of it is kept (the transaction ends uncommitted).
+                if (saved == 0) return
                 for (m in moves) {
                     exec(
                         "INSERT INTO stat_moves (key, ply, side, fen, uci, san, phase, loss, label," +
@@ -778,19 +793,24 @@ class Store(val path: File?) {
      * its words go with it. One of this format saved already stays: another reviewer finished
      * first (the review of 2026-10-01: the desktop's background review and a review window on
      * one game at once -- the window saved first, the player paid for the AI coach's words, and
-     * the background's save wiped them). Nor is a game the player removed meanwhile saved. One
-     * statement, so no other connection's save or removal comes in between. `save_review`.
+     * the background's save wiped them). Nor is a game saved that is no longer in the player's
+     * record ([inRecord]): removed meanwhile, or the profile reset between the reviewer's own look
+     * and this save (the audit of 2026-10-02). One statement, so no other connection's save,
+     * removal or reset comes in between. `save_review`.
      */
     fun saveReview(key: String, strength: String, version: Int, reviewedAt: Double, report: String, summary: String?): Boolean =
         lock.withLock {
-            exec(
+            val (condition, value) = held(key)
+            val saved = exec(
                 "INSERT INTO reviews (key, strength, version, reviewed_at, report, summary, words)" +
-                    " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS (SELECT 1 FROM removed WHERE key = ?)" +
+                    " SELECT ?, ?, ?, ?, ?, ?, NULL WHERE NOT EXISTS (SELECT 1 FROM removed WHERE key = ?) AND $condition" +
                     " ON CONFLICT (key, strength) DO UPDATE SET version = excluded.version," +
                     " reviewed_at = excluded.reviewed_at, report = excluded.report," +
                     " summary = excluded.summary, words = NULL WHERE reviews.version != excluded.version",
-                key, strength, version, reviewedAt, report, summary, key,
+                key, strength, version, reviewedAt, report, summary, key, value,
             ) > 0
+            if (saved) reviewsTouched()
+            saved
         }
 
     fun review(key: String, strength: String): ReviewRow? = lock.withLock {
@@ -819,6 +839,7 @@ class Store(val path: File?) {
     /** `set_review_summary`. */
     fun setReviewSummary(key: String, strength: String, summary: String) {
         lock.withLock { exec("UPDATE reviews SET summary = ? WHERE key = ? AND strength = ?", summary, key, strength) }
+        reviewsTouched()
     }
 
     /** The strength of the review each game's Stats facts come from, by its key. `stat_strengths`. */
@@ -1009,6 +1030,22 @@ class Store(val path: File?) {
 
         /** The watched games Stats leaves out: those whose import's facts are kept (the import counts). */
         private const val STOOD_FOR = "SELECT t.watched FROM twins t JOIN stat_games s ON s.key = t.imported"
+
+        // Raised by every review saved or summed up again, by any store of this process (a review
+        // page's): what was read of the reviews is stale once it moves ([reviewsRevision]).
+        private val reviewsSaved = java.util.concurrent.atomic.AtomicInteger()
+
+        /**
+         * A count raised with every review saved, or summed up again, in this process: the panel
+         * reads the reviews again once it moves (the end-of-game card's accuracy, PanelEngine.kt).
+         * `reviews_revision`.
+         */
+        fun reviewsRevision(): Int = reviewsSaved.get()
+
+        /** A review was saved or summed up again: [reviewsRevision] moves. `reviews_touched`. */
+        fun reviewsTouched() {
+            reviewsSaved.incrementAndGet()
+        }
 
         /** What the desktop's authorizer answers a statement it denies (`SQLITE_DENY`). */
         private const val NOT_AUTHORIZED = "not authorized"
