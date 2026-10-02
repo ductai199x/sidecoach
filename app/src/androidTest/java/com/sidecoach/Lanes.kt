@@ -30,15 +30,24 @@ annotation class Lane(val value: Kind) {
         APP,
 
         /**
-         * OpenCV and the cell embedder over rendered frames: a class's frames, planes and nets
-         * fill much of the process's 192 MB heap, so one at a time. Nothing of the app's shared
-         * state.
+         * The cell embedder (CellEmbedder): each one's onnxruntime holds about 350 MB of native
+         * memory once it has read a start position, and PipelineTest runs two. Side by side with
+         * the voice's models and the app lane's panel they took the emulator's 4 GB down to 400
+         * MB free, into swap, and every lane ran four times slower (2026-10-02, measured). One
+         * class at a time. Nothing of the app's shared state.
          */
         VISION,
 
         /**
-         * Everything a class uses is its own (its engine, its store in a folder of its own, its
-         * fixtures): any number of them side by side.
+         * The voice's and the ear's models (Kokoro, Parakeet, Silero): hundreds of MB of native
+         * memory each, and onnxruntime threads of their own. One class at a time. Nothing of the
+         * app's shared state.
+         */
+        VOICE,
+
+        /**
+         * Everything a class uses is its own and light (its engine, its store in a folder of its
+         * own, its fixtures): any number of them side by side.
          */
         FREE,
     }
@@ -46,11 +55,13 @@ annotation class Lane(val value: Kind) {
 
 /**
  * The suite's classes in lanes side by side. Each lane runs its classes one at a time, as the
- * whole suite ran before; the lanes run at once: [Lane.Kind.APP] on one thread,
- * [Lane.Kind.VISION] on another, [Lane.Kind.FREE] on [FREE_THREADS] threads that take its
+ * whole suite ran before; the lanes run at once: [Lane.Kind.APP], [Lane.Kind.VISION] and
+ * [Lane.Kind.VOICE] on a thread each, [Lane.Kind.FREE] on [FREE_THREADS] threads that take its
  * classes longest first (the seconds each took last, from `lanes/seconds.tsv` in the test
  * assets; a class it does not know goes first). The device's four cores were a quarter used:
- * most classes run on one thread, and many wait on a window, a voice or an engine.
+ * most classes run on one thread, and many wait on a window, a voice or an engine. The lanes
+ * are drawn by what a class holds -- the app's shared state, or hundreds of MB of a model --
+ * so the classes side by side never share state and fit the emulator's memory together.
  *
  * What the listeners see is the same as before: every test's events -- started, its failures,
  * finished -- are handed on together, one test at a time, so AndroidJUnitRunner's printer and
@@ -63,7 +74,10 @@ annotation class Lane(val value: Kind) {
 object Lanes {
     private const val TAG = "sidecoach.lanes"
 
-    /** The [Lane.Kind.FREE] lane's threads: with APP and VISION, the device's four cores. */
+    /**
+     * The [Lane.Kind.FREE] lane's threads. With the other three lanes, five on four cores: the app
+     * and voice lanes spend much of their time waiting on a window, a voice or an engine.
+     */
     private const val FREE_THREADS = 2
 
     @JvmStatic
@@ -141,7 +155,7 @@ object Lanes {
             if (serial) {
                 lane("serial") { children.forEach { runOne(it, "serial") } }
             } else {
-                for (kind in listOf(Lane.Kind.APP, Lane.Kind.VISION)) {
+                for (kind in listOf(Lane.Kind.APP, Lane.Kind.VISION, Lane.Kind.VOICE)) {
                     val mine = byLane[kind].orEmpty()
                     if (mine.isNotEmpty()) lane(kind.name.lowercase()) { mine.forEach { runOne(it, kind.name.lowercase()) } }
                 }

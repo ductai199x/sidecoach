@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
  * before plays, the engine paused around every piece and never left paused, the line's start
  * told once, and a stop that ends a line part-way.
  */
-@Lane(Lane.Kind.FREE)
+@Lane(Lane.Kind.VOICE)
 @RunWith(AndroidJUnit4::class)
 class KokoroTtsTest {
 
@@ -55,6 +55,29 @@ class KokoroTtsTest {
         return true
     }
 
+    /**
+     * An output that takes every sample at once: a line plays as fast as it is made, where the
+     * phone's plays it out in real time. What is under test -- the pieces, the pauses around
+     * them, the first sound after the first piece -- happens as it does on the phone; the ten
+     * seconds of speech are not waited out. ([aStopEndsALineMidWay] plays through the phone's
+     * own output.)
+     */
+    private class InstantOutput : KokoroTts.Output {
+        @Volatile var taken = 0
+            private set
+
+        override val underrunCount: Int = 0
+
+        override fun write(samples: FloatArray, at: Int, n: Int): Int {
+            taken += n
+            return n
+        }
+
+        override fun cut() = Unit
+
+        override fun release() = Unit
+    }
+
     @Test
     fun aLongLineIsSpokenInPiecesWhileTheRestIsMade() {
         val tts = tts()
@@ -71,16 +94,17 @@ class KokoroTtsTest {
             times.add(SystemClock.elapsedRealtime())
             synchronized(heard) { heard.add(line) }
         }
-        // Long enough to be cut in two (past Kokoro.WHOLE_BELOW_S of speech): the second piece is
-        // made while the first plays. The line used to be four pieces, ten seconds of speech made
-        // and then played out in real time, for the same order of events.
-        val line = "That was fine. The centre holds, and the bishop is doing real work on the long diagonal."
+        val line = "That was fine. The centre holds, and the bishop is doing real work; your knight is " +
+            "still waiting on b1, though, and it wants to come to c3 or d2 before you castle."
         val pieces = Kokoro.plan(KokoroTokenizer(app), Py.strip(Notation.speak(line, voice = true)), 1.0f, "en-us")
         assertTrue("the line is not cut: ${pieces.map { it.first }}", pieces.size > 1)
+        val output = InstantOutput()
+        tts.makeOutput = { output }
         val began = SystemClock.elapsedRealtime()
         tts.say(line)
         assertTrue("the line never finished", quiet(tts, 60))
         tts.close()
+        assertTrue("nothing was played", output.taken > 0)
         val made = events.filter { it != "play" }
         assertEquals("a pause and a resume around every piece", List(pieces.size) { listOf("make", "made") }.flatten(), made)
         assertEquals("the line's start told once", listOf(line), heard)

@@ -23,7 +23,7 @@ import kotlin.math.sqrt
  * of the recorded sessions and the edge cases; the silence trims; the long strings' batches; and
  * Kokoro's audio within a tolerance.
  */
-@Lane(Lane.Kind.FREE)
+@Lane(Lane.Kind.VOICE)
 @RunWith(AndroidJUnit4::class)
 class VoiceParityTest {
 

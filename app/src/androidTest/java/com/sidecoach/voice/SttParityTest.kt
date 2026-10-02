@@ -23,7 +23,7 @@ import kotlin.math.abs
  * difflib's ratio, exactly; Silero's probabilities within a tolerance and the endpointer's events
  * exactly; Parakeet int8's transcript and tokens for speech clips.
  */
-@Lane(Lane.Kind.FREE)
+@Lane(Lane.Kind.VOICE)
 @RunWith(AndroidJUnit4::class)
 class SttParityTest {
 
