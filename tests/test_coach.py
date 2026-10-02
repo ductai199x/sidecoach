@@ -2093,6 +2093,71 @@ def test_what_to_play_on_their_turn_never_gives_their_move_as_the_players() -> N
         assert texts and texts[0].startswith("It's their move"), texts  # the empty reply's
 
 
+MOVES_INSTEAD = (
+    "Qxf7# was the move there. Yours, Bxf7+, was a miss. "
+    "Bxf7+ was clearly worse there: it passes up the mate."
+)
+
+
+def test_the_other_good_moves_on_their_turn_are_the_players_last_turns() -> None:
+    """On the opponent's move the player has just moved: "any other good moves?", "does
+    anything else work too?" and "what else could I have played?" ask what they could have
+    played instead of it (Tai, 2026-10-02: "since they have not made a move yet (else it would
+    have been your turn), that question should have been about other alternatives moves you
+    could have taken during your previous turn"). Answered from the position they faced, with
+    how theirs compares -- never with the opponent's near-equal moves named as the player's
+    (the desktop's alternatives branch did that on their move) nor with the opponent's threat
+    (the phone's). "What is their best move?" stays the opponent's."""
+    from sidecoach.coach.coach import AI_GUIDELINES
+
+    for said in (
+        "any other good moves?",
+        "does anything else work too?",
+        "what else could I have played?",
+    ):
+        coach = offline_coach()
+        play_to_scholar(coach)
+        coach.quiet = True  # no word on the move: the answer is the only message
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        mate_missed(coach)  # Bxf7+, a miss: the opponent to move, their position not read
+        coach.ask(said, 11.0)
+        [answer] = drain(coach)
+        assert answer.text == MOVES_INSTEAD, (said, answer.text)
+        # The AI is told the same reading, and given the moves of that position as data.
+        coach, provider = scripted_coach(["Qxf7# would have mated."])
+        play_to_scholar(coach)
+        coach.quiet = True
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        mate_missed(coach)
+        board = chess.Board(SCHOLAR)
+        board.push_san("Bxf7+")
+        _looked(coach, board, 7, ["e8e7"], 10.5)  # the opponent's position read
+        coach.ask(said, 11.0)
+        assert [m.text for m in drain(coach)] == ["Qxf7# would have mated."]
+        directive = directive_of(sent(provider))
+        assert AI_GUIDELINES in directive and "what they could have played instead" in directive
+        assert (
+            "Before Bxf7+, the player's last move, the moves about equally good were: Qxf7#; "
+            "Bxf7+ was a miss." in directive
+        )
+        assert "Clearly worse there, and what goes wrong with them: Bxf7+ passes up the mate" in (
+            directive
+        )
+    # The opponent's move asked about is theirs, not the player's last turn's.
+    coach = offline_coach()
+    play_to_scholar(coach)
+    coach.quiet = True
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    mate_missed(coach)
+    board = chess.Board(SCHOLAR)
+    board.push_san("Bxf7+")
+    _looked(coach, board, 7, ["e8e7"], 10.5)
+    coach.ask("what is their best move?", 11.0)
+    [answer] = drain(coach)
+    assert answer.text.startswith("It's their move"), answer.text
+    assert "Ke7" in answer.text
+
+
 def test_a_refused_answer_about_a_move_falls_back_to_the_engines_word_on_it() -> None:
     """Both drafts refused, "is Bxf7+ good?" got the mate-in-one hint, about another move
     (the deep prompt review, 2026-10-01). The fallback is the engine's word on Bxf7+."""

@@ -738,7 +738,12 @@ AI_GUIDELINES = (
     "and name them.\n"
     "- Which moves are best, good or fine, or whether another move works too: read all of the "
     "engine lines, name every move about level with the best, and say which are clearly worse "
-    "and what goes wrong with them.\n"
+    "and what goes wrong with them. On the opponent's move the player has just moved, so 'any "
+    "other good moves?', 'is X also good?' or 'what else could I have played?' are about what "
+    "they could have played instead of their last move: answer from the position they faced "
+    "before it -- the moves about as good there and the clearly worse ones, given below -- and "
+    "say how their move compares. The opponent's best move or plan is another question, the "
+    "opponent's. When the words could mean either, say which you answer.\n"
     "- The line, or what happens next: the engine's line move by move, and the idea behind "
     "it; once given, what comes after its end.\n"
     "- A move, square or piece they name: whether it holds up and what it does or allows, from "
@@ -2562,6 +2567,26 @@ _ASK_ALSO = re.compile(
     r"|\b(?:good|fine|ok|okay|playable|works?)\b[^.?!]{0,15}\b(?:also|as well|too)\b",
     re.I,
 )
+# The moves besides the one the player already played: "what else could I have played?" --
+# alternatives on their last turn (`Coach._faced_alternatives`).
+_ASK_OTHER_PAST = re.compile(
+    r"\bwhat else (?:could|should|might|would|can) i have (?:played|done|tried|gone for)\b"
+    r"|\b(?:other|another|alternative|better) (?:moves?|options?) (?:could|should|might) i have "
+    r"(?:played|made|tried)\b",
+    re.I,
+)
+# The opponent's move or plan asked about: "what is their best move?", "what are they planning?"
+# -- the opponent's, never the moves besides the player's last (Tai, 2026-10-02: "this is diff
+# from you asking like what is their best move or what is their plans").
+_ASK_THEIR_MOVE = re.compile(
+    r"\b(?:their|his|her|the opponent'?s|my opponent'?s) (?:best |next |main )?"
+    r"(?:moves?|plans?|ideas?|reply|replies|answer|options?)\b"
+    r"|\bwhat (?:are|is|will) (?:they|he|she|the opponent|my opponent) "
+    r"(?:planning|going to (?:play|do))\b"
+    r"|\bwhat (?:should|will|would|might|can|could) (?:they|he|she|the opponent|my opponent) "
+    r"play\b",
+    re.I,
+)
 # "I am not stuck, just thinking" is no request for a hint.
 _NOT_STUCK = re.compile(r"(?:\bnot|n't|\bnever)\s+(?:\w+\s+)?stuck\b", re.I)
 # How the position goes on is the line: "how would this position continues?" and "ok and after
@@ -4003,6 +4028,7 @@ class Coach:
         elsewhere = (
             _ASK_THREAT,
             _ASK_OPPONENT_MOVE,
+            _ASK_THEIR_MOVE,
             _ASK_LINE,
             _ASK_MATERIAL,
             _ASK_OPENING,
@@ -4137,16 +4163,23 @@ class Coach:
         return None
 
     def _alternatives_answer(
-        self, position: _Position, facts: PositionFacts, said: str
+        self,
+        position: _Position,
+        facts: PositionFacts,
+        said: str,
+        played: PlyRecord | None = None,
     ) -> tuple[str, str]:
         """The directive and the template for a question about the moves besides the best:
         every move about level with it, named, and the clearly worse ones with what goes wrong
         with them, from the engine's lines (`alternatives`). Asked whether a move is also good,
-        the answer is the same set and the move they name among it or not."""
+        the answer is the same set and the move they name among it or not. With `played`,
+        `position` is the one the player faced before that move, their last: the moves they
+        could have played instead, and how theirs compares (`_faced_alternatives`)."""
         fine = list(facts.candidates)
         analysis = position.analysis
         worse = worse_moves(position.board, analysis, self.user_colour) if analysis else []
         also = bool(_ASK_ALSO.search(said)) and not _ASK_OTHER_MOVES.search(said)
+        past = played is not None
         if len(fine) > 1:
             level_part = (
                 f"The moves about level with the best, all fine: {', '.join(fine)}. Say they are "
@@ -4160,29 +4193,96 @@ class Coach:
             if worse
             else ""
         )
-        ask_part = (
-            "They ask whether another move is also good: say yes plainly when the move they "
-            "name is among the fine ones, and what it does; when it is not, say it is weaker "
-            "than the best, and what goes wrong with it when the sheet says."
-            if also
-            else "They ask about the good moves here, not only the best one."
-        )
+        if past:
+            assert played is not None
+            ask_part = (
+                f"It is the opponent's move, so they ask about the moves they could have played "
+                f"instead of {played.move.san}, their last, from the position they faced before "
+                "it (its sheet is above): "
+                + (
+                    "whether the move they name would also have been good -- yes plainly when it "
+                    "is among the fine ones, and what it does; when it is not, that it was weaker "
+                    "than the best, and what goes wrong with it when the sheet says."
+                    if also
+                    else "the good moves there, not only the best one."
+                )
+                + f" And say how {played.move.san} compares: {self._compared(played, fine)}."
+            )
+        elif also:
+            ask_part = (
+                "They ask whether another move is also good: say yes plainly when the move they "
+                "name is among the fine ones, and what it does; when it is not, say it is weaker "
+                "than the best, and what goes wrong with it when the sheet says."
+            )
+        else:
+            ask_part = "They ask about the good moves here, not only the best one."
         directive = (
             f"{ask_part} {ALTERNATIVES_READ} {level_part}{worse_part} Say it in words. "
             f"{NO_FIGURES} Two or three sentences, no question."
         )
-        text = fine_said(fine)
+        text = fine_said(fine, past=past)
         bare = [f.rstrip("+#") for f in fine]
         named = [m for m in _SAN.findall(said) if m.rstrip("+#") in bare]
         if also and named:
-            text = (
-                f"{named[0]} is the engine's top choice."
-                if named[0].rstrip("+#") == bare[0]
-                else f"Yes, {named[0]} is fine too -- about as good as {fine[0]}."
-            )
+            if past:
+                text = (
+                    f"{named[0]} was the engine's top choice there."
+                    if named[0].rstrip("+#") == bare[0]
+                    else f"Yes, {named[0]} would have been fine too -- about as good as {fine[0]}."
+                )
+            else:
+                text = (
+                    f"{named[0]} is the engine's top choice."
+                    if named[0].rstrip("+#") == bare[0]
+                    else f"Yes, {named[0]} is fine too -- about as good as {fine[0]}."
+                )
             if len(fine) > 1:
-                text += " " + fine_said(fine)
-        return directive, f"{text} {worse_said(worse)}".strip()
+                text += " " + fine_said(fine, past=past)
+        if past:
+            assert played is not None
+            text += f" Yours, {played.move.san}, {self._compared(played, fine)}."
+        return directive, f"{text} {worse_said(worse, past=past)}".strip()
+
+    @staticmethod
+    def _compared(played: PlyRecord, fine: Sequence[str]) -> str:
+        """How the player's move compares with the moves about as good as the best there: one
+        of them, or its verdict."""
+        if played.move.san.rstrip("+#") in {f.rstrip("+#") for f in fine}:
+            return "was one of them"
+        verdict = played.assessment
+        if verdict is None:
+            return "was not among them"
+        label = verdict.label.value if verdict.label else verdict.severity.value
+        return f"was {_rated(label)}"
+
+    def _faced_alternatives(
+        self, position: _Position, said: str
+    ) -> tuple[_Position, PlyRecord] | None:
+        """The position the player faced before their last move, and that move, when the words
+        ask for the moves besides it: on the opponent's move the player has just moved, so "any
+        other good moves?", "is Nf3 also good?" are about what they could have played instead
+        (Tai, 2026-10-02: "since they have not made a move yet (else it would have been your
+        turn), that question should have been about other alternatives moves you could have
+        taken during your previous turn"); "what else could I have played?" is about it on any
+        turn. What the opponent's best move or plan is stays the opponent's. None when the
+        words ask none of these, or the move or its position's analysis is not known."""
+        other = bool(
+            _ASK_OTHER_MOVES.search(said)
+            or (_ASK_ALSO.search(said) and not _ASK_LAST_MOVE.search(said))
+        )
+        past_words = bool(_ASK_OTHER_PAST.search(said))
+        own = self._last_own_move(mine=True)
+        if own is None or not (other or past_words) or _ASK_THEIR_MOVE.search(said):
+            return None
+        faced = self.positions.get(own.move.ply - 1)
+        if faced is None or faced.facts is None or faced.analysis is None:
+            return None
+        if not faced.facts.candidates:
+            return None
+        theirs = position.board.turn != self.user_colour and not position.board.is_game_over()
+        if position is faced or past_words or (theirs and position.ply >= own.move.ply):
+            return faced, own
+        return None
 
     def _speak(
         self,
@@ -5191,14 +5291,33 @@ class Coach:
             else:
                 directive = (aim or "They asked for a hint. ") + IDEA_DIRECTIVE
             directive += f" {NO_FIGURES} Do not comment on anything said earlier."
+        elif (instead := self._faced_alternatives(position, said)) is not None:
+            # The moves they could have played instead of their last one, from the position
+            # they faced before it, and how theirs compares (Tai, 2026-10-02).
+            faced, own = instead
+            assert faced.facts is not None
+            directive, alternatives = self._alternatives_answer(
+                faced, faced.facts, said, played=own
+            )
+            if not scored:  # a move they name, rated by the engine, is that word's to say
+                fallback = alternatives
         elif (
             position.board.turn != self.user_colour
             and not position.board.is_game_over()
-            and (_ASK_LINE.search(said) or _ASK_MOVE.search(said) or _ASK_OTHER_MOVES.search(said))
+            and (
+                _ASK_LINE.search(said)
+                or _ASK_MOVE.search(said)
+                or _ASK_OTHER_MOVES.search(said)
+                or (_ASK_ALSO.search(said) and not _ASK_LAST_MOVE.search(said))
+            )
         ):
             # On the opponent's move the engine's line and best move are the OPPONENT's: "what
             # should I play?" there told the model to give the player the opponent's best move
-            # as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
+            # as theirs (the deep prompt review, 2026-10-01). Answered like a hint there. The
+            # moves about as good asked for there are the player's last turn's (the branch
+            # above); with that move or its position unknown -- a game joined on their move --
+            # they too are answered here, never with the opponent's near-equal moves named as
+            # the player's fine ones (the round-3 parity audit).
             fallback = their_move_now(position.board, facts)
             asked = "to see the line" if _ASK_LINE.search(said) else "what to play"
             directive = (
@@ -5233,6 +5352,8 @@ class Coach:
         elif (
             level >= DisclosureLevel.MOVE
             and facts.candidates
+            # The player's moves: on the opponent's move it is the branch above.
+            and position.board.turn == self.user_colour
             and (
                 _ASK_OTHER_MOVES.search(said)
                 or (_ASK_ALSO.search(said) and not _ASK_LAST_MOVE.search(said))
@@ -5560,8 +5681,13 @@ class Coach:
         if self._last_turn_asked():
             out += AI_ANSWERING
         best = facts.candidates[0] if facts.candidates else ""
+        theirs = position.board.turn != self.user_colour and not position.board.is_game_over()
         if len(facts.candidates) > 1:
-            out += f" The moves about equally good here: {', '.join(facts.candidates)}."
+            # On the opponent's move these are the opponent's: named so, or they read as the
+            # player's fine moves.
+            whose = "The opponent's moves" if theirs else "The moves"
+            out += f" {whose} about equally good here: {', '.join(facts.candidates)}."
+        out += self._faced_alternatives_words(position)
         worse = (
             worse_moves(position.board, position.analysis, self.user_colour)
             if position.analysis is not None
@@ -5610,6 +5736,31 @@ class Coach:
         reply = self._reply_note()
         if reply:
             out += f" {reply}"
+        return out
+
+    def _faced_alternatives_words(self, position: _Position) -> str:
+        """For the AI coach, when the player's own move is the last or the one before the
+        opponent's reply: the moves about as good as the best in the position they faced before
+        it, the clearly worse ones, and how theirs compares -- what "any other good moves?" or
+        "what else could I have played?" asks about on the opponent's move (Tai, 2026-10-02).
+        "" when that move or its position's analysis is not known."""
+        own = self._last_own_move(mine=True)
+        if own is None or own.move.ply not in (position.ply, position.ply - 1):
+            return ""
+        faced = self.positions.get(own.move.ply - 1)
+        if faced is None or faced.facts is None or faced.analysis is None:
+            return ""
+        fine = list(faced.facts.candidates)
+        if not fine:
+            return ""
+        san = own.move.san
+        out = (
+            f" Before {san}, the player's last move, the moves about equally good were: "
+            f"{', '.join(fine)}; {san} {self._compared(own, fine)}."
+        )
+        worse = worse_moves(faced.board, faced.analysis, self.user_colour)
+        if worse:
+            out += f" Clearly worse there, and what goes wrong with them: {worse_text(worse)}."
         return out
 
     def _last_turn_asked(self) -> bool:
