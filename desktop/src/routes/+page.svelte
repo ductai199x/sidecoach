@@ -57,19 +57,18 @@
   // instead of the game's; the page tells the engine where its board is on screen.
   let lastRect = "";
   function reportBoardRect() {
-    if (!boardEl || !panes.board) return;
-    const r = boardEl.getBoundingClientRect();
-    if (!r.width) return;
+    const r = boardEl?.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
-    const rect = {
+    // No board on screen (its pane hidden, the window hidden or minimised): nothing to mask.
+    const rect = !r || !r.width || !panes.board || document.hidden ? { x: 0, y: 0, w: 0, h: 0 } : {
       x: Math.round((window.screenX + r.left) * dpr),
       y: Math.round((window.screenY + chromeH + r.top) * dpr),
       w: Math.round(r.width * dpr),
       h: Math.round(r.height * dpr),
     };
     const key = JSON.stringify(rect);
-    if (key !== lastRect) { lastRect = key; panel.exclude(rect); }
+    if (key !== lastRect) { lastRect = key; panel.exclude(rect).catch(() => { lastRect = ""; }); }
   }
 
   const typing = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName ?? "");
@@ -125,7 +124,8 @@
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && store.pinnedPly !== null) store.showLive();
-      if (e.code === "Space" && !e.repeat && !typing()) { e.preventDefault(); store.setPtt(true); }
+      // Space is hold-to-talk only while that mode is on; else it keeps its own job.
+      if (e.code === "Space" && !e.repeat && !typing() && store.listenMode === "ptt") { e.preventDefault(); store.setPtt(true); }
       // The header's and the board's one-key controls: M mutes the coach, C turns the captions
       // on or off where there are any, F flips the board.
       if (typing() || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
@@ -135,7 +135,7 @@
       }
       if (e.key.toLowerCase() === "f") void panel.flip();
     };
-    const onKeyUp = (e: KeyboardEvent) => { if (e.code === "Space" && !typing()) { e.preventDefault(); store.setPtt(false); } };
+    const onKeyUp = (e: KeyboardEvent) => { if (e.code === "Space" && !typing() && store.listenMode === "ptt") { e.preventDefault(); store.setPtt(false); } };
     const onBlur = () => store.setPtt(false);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
