@@ -50,6 +50,26 @@ from sidecoach.vision.pieces import CellReading
 from sidecoach.vision.squares import square_at
 
 
+def result_on_board(board: chess.Board) -> tuple[str, str] | None:
+    """The result a game's final position proves and how, in the words the review reads; None
+    when it proves none (the game was resigned, flagged, agreed or left). A draw by repetition or
+    by fifty moves counts only when it was played -- the position on the board for the third
+    time, or the hundredth half-move without a capture or a pawn move -- as the sites draw it,
+    never one the next move could reach (the library's `stat_facts.ended_by`, which reads an
+    import's ending the same way)."""
+    if board.is_checkmate():
+        return ("0-1" if board.turn == chess.WHITE else "1-0"), "checkmate"
+    if board.is_stalemate():
+        return "1/2-1/2", "stalemate"
+    if board.is_insufficient_material():
+        return "1/2-1/2", "insufficient material"
+    if board.is_repetition(3):
+        return "1/2-1/2", "repetition"
+    if board.halfmove_clock >= 100:
+        return "1/2-1/2", "fifty-move rule"
+    return None
+
+
 def _turn_valid(board: chess.Board, turn: chess.Color) -> bool:
     board.turn = turn
     return board.is_valid()
@@ -487,7 +507,7 @@ class Reconciler:
 
     def _restart(self) -> list[Event]:
         """The game under way ended, unless it had, and a new one begun from the start."""
-        ended = [] if self._finished else [self.ended_event("*", "new game started")]
+        ended = [] if self._finished else [self.replaced_event("new game started")]
         return ended + self.start()
 
     def reorient(self, bottom: Side) -> list[Event]:
@@ -2099,6 +2119,16 @@ class Reconciler:
         self._pending = None
         self._result = result
         return [self.ended_event(result, reason)]
+
+    def replaced_event(self, reason: str) -> GameEnded:
+        """The game under way ended because the next one replaced it, before its result was
+        seen: its result is what its final position proves, as the library reads an import's
+        (`stat_facts.ended_by`) -- a mate, a stalemate, dead material, a repetition or fifty
+        moves played -- and "*" only when the position proves nothing (Tai, 2026-10-02)."""
+        proved = result_on_board(self.board)
+        if proved is None:
+            return self.ended_event("*", reason)
+        return self.ended_event(*proved)
 
     def ended_event(self, result: str, reason: str) -> GameEnded:
         return GameEnded(

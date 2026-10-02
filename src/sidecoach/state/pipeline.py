@@ -720,7 +720,7 @@ class GamePipeline:
         previous = self.reconciler
         if previous is None or not previous.in_progress or previous.finished:
             return []
-        return [previous.ended_event("*", reason)]
+        return [previous.replaced_event(reason)]
 
     def _turn_from_clock(self, ts: float) -> list[Event]:
         """A side to move left open by a resync or a cold start, settled by the clock

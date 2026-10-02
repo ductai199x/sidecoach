@@ -313,6 +313,62 @@ def test_move_from_start_position_mid_game_is_a_new_game() -> None:
     assert rec.game_id != first_id and rec.pgn() == "1. d4"
 
 
+def test_a_game_replaced_by_the_next_has_the_result_its_final_position_proves() -> None:
+    """A game the next one replaced before its result was seen: a draw by repetition played
+    on the board (the sites draw it when the position comes the third time) is a draw, as the
+    library reads an import's ending, not a game left unfinished (Tai, 2026-10-02). A game whose
+    position proves nothing stays "*" (test_move_from_start_position_mid_game_is_a_new_game,
+    test_panel_engine's test_a_game_ended_by_the_next_one_is_not_offered_to_end_game)."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    shuffle = ["Nf3", "Nc6", "Ng1", "Nb8"]
+    ts = _play(model, rec, board, ["e4", "e5", *shuffle, *shuffle])
+    assert board.is_repetition(3) and not rec.finished
+    first_id = rec.game_id
+    fresh = chess.Board()
+    for _ in range(2):
+        ts += 0.1
+        _feed(model, rec, fresh, Side.WHITE, ts)
+    move = fresh.push_san("d4")
+    events = []
+    for _ in range(2):
+        ts += 0.1
+        events += _feed(model, rec, fresh, Side.WHITE, ts, highlight=move)
+    ended = [e for e in events if isinstance(e, GameEnded)]
+    assert [(e.game_id, e.result, e.reason) for e in ended] == [(first_id, "1/2-1/2", "repetition")]
+    assert rec.game_id != first_id and rec.pgn() == "1. d4"
+
+
+def test_the_final_position_proves_a_result_only_when_the_game_is_over_on_it() -> None:
+    """`result_on_board`, the rule for a replaced game's result: a mate, a stalemate, dead
+    material, a repetition or fifty moves played; nothing for a position a resignation, a
+    flag or an agreement ended, nor for a repetition or fifty moves the next move could only
+    reach."""
+    from sidecoach.state.reconcile import result_on_board
+
+    mated = chess.Board()
+    for san in ("f3", "e5", "g4", "Qh4#"):
+        mated.push_san(san)
+    assert result_on_board(mated) == ("0-1", "checkmate")
+    assert result_on_board(chess.Board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")) == (
+        "1/2-1/2",
+        "stalemate",
+    )
+    assert result_on_board(chess.Board("8/8/4k3/8/8/2K5/8/8 w - - 0 60")) == (
+        "1/2-1/2",
+        "insufficient material",
+    )
+    rooks = "8/8/4k3/8/r7/2K5/8/R7 w - - {} 80"
+    assert result_on_board(chess.Board(rooks.format(100))) == ("1/2-1/2", "fifty-move rule")
+    assert result_on_board(chess.Board(rooks.format(99))) is None, "one half-move short"
+    twice = chess.Board()
+    for san in ("Nf3", "Nf6", "Ng1", "Ng8"):
+        twice.push_san(san)
+    assert result_on_board(twice) is None, "the start position twice: a third is only possible"
+    assert result_on_board(chess.Board()) is None
+
+
 def test_position_resync_after_a_long_gap() -> None:
     """Many plies happened while the board was hidden: adopt the position, then continue."""
     model, rec = _setup()
