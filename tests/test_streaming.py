@@ -248,3 +248,87 @@ def test_the_coach_hands_its_sink_to_the_request() -> None:
     coach.speaker._requests.put(queued)
     coach.speaker.run_pending()
     assert provider.streamed_calls == 1, "the reply was streamed to the sink"
+
+
+class StreamingToolModel:
+    """Calls the engine in its first round, writing a preamble in the same turn (the chat
+    wire's content beside tool_calls), then answers; every round streamed in pieces of 7."""
+
+    name = "stream-tools"
+    tools_ok = True
+
+    def __init__(self, preamble: str, answer: str) -> None:
+        self.preamble = preamble
+        self.answer = answer
+        self.round = 0
+
+    def healthcheck(self) -> tuple[bool, str]:
+        return True, "x"
+
+    def chat(self, system: str, messages: Sequence[ChatMessage], **kw: object) -> Completion:
+        return self._go(None, kw)
+
+    def chat_stream(
+        self,
+        system: str,
+        messages: Sequence[ChatMessage],
+        *,
+        on_delta: Callable[[str], bool],
+        **kw: object,
+    ) -> Completion:
+        return self._go(on_delta, kw)
+
+    def _go(self, on_delta: Callable[[str], bool] | None, kw: dict[str, object]) -> Completion:
+        from sidecoach.llm.base import ToolCall
+
+        self.round += 1
+        calls: list[ToolCall] = []
+        if self.round == 1 and kw.get("tools"):
+            text = self.preamble
+            calls = [ToolCall(id="c1", name="analyse", arguments={"moves": ["Qxf7#"]})]
+        else:
+            text = self.answer
+        sent: list[str] = []
+        if on_delta is not None:
+            for i in range(0, len(text), 7):
+                sent.append(text[i : i + 7])
+                if not on_delta(text[i : i + 7]):
+                    break
+            text = "".join(sent)
+        return Completion(text=text, tool_calls=calls)
+
+
+def test_a_tool_rounds_preamble_is_not_said_and_the_answer_is_read_from_its_start() -> None:
+    """The model wrote "Let me check that with the engine." in the round that called it, and
+    the reader sliced the answer round with the preamble's spoken length: the voice said
+    "ith the queen is mate" (the deep prompt review, 2026-10-01). The preamble is not said;
+    the answer is said from its first word."""
+    from sidecoach.coach.coach import Coach as _Coach
+    from tests.coaching import _policy, drain, play_to_scholar
+    from tests.test_engine_tools import FirstLegal
+
+    answer = (
+        "[p=0.6] Taking on f7 with the queen is mate: the king has no square left. "
+        "[p=0.4] The queen takes on f7 and it is mate at once."
+    )
+    for preamble in (
+        "Good question. Let me check that with the engine first. ",
+        "Let me ask the engine about Qxf7. ",
+    ):
+        coach = _Coach(StreamingToolModel(preamble, answer), policy=_policy(), engine=FirstLegal())
+        heard: list[str] = []
+
+        def sink(sentence: str, heard: list[str] = heard) -> bool:
+            heard.append(sentence)
+            return True
+
+        coach.stream_sink = lambda trigger, ply, sink=sink: sink
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        drain(coach)
+        heard.clear()
+        coach.ask("what happens if I take on f7 with the queen?", 8.0)
+        out = [m.text for m in drain(coach) if getattr(m, "text", None)]
+        assert heard and heard[0].startswith("Taking on f7"), heard
+        assert not any("engine" in s for s in heard), heard
+        assert out and out[-1].startswith("Taking on f7"), out

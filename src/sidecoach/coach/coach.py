@@ -996,6 +996,45 @@ class _FirstCandidate:
         if text:
             self._offer(text, final=True)
 
+    def new_round(self) -> None:
+        """The model called the engine, and writes its reply again from the start: the next
+        round's text is read from its own start. Sliced with the last round's spoken length,
+        the voice said "ith the queen is mate" (the deep prompt review, 2026-10-01). A round
+        that already spoke ends the reading: what was said stands."""
+        self.buffer = ""
+        if self.spoken:
+            self.done = True
+
+
+class _RoundGate:
+    """A tool round's text held back from the voice: a model calling the engine writes a
+    preamble first ("Let me check that with the engine."), in the same turn as its calls, and
+    it was spoken. The text goes on once a candidate's marker is seen -- a preamble has none --
+    or whole at the round's end when the round calls nothing; a round that calls the engine
+    is dropped, and the reader starts over (`_FirstCandidate.new_round`)."""
+
+    def __init__(self, on_delta: Callable[[str], bool]) -> None:
+        self.on_delta = on_delta
+        self.held = ""
+        self.open = False
+        self.going = True  # what the reader last said: False closes the stream
+
+    def feed(self, delta: str) -> bool:
+        if self.open:
+            self.going = self.on_delta(delta)
+            return self.going
+        self.held += delta
+        if _VS_MARKER.search(_THINK_BLOCK.sub("", self.held)):
+            self.open = True
+            self.going = self.on_delta(self.held)
+            return self.going
+        return True
+
+    def end(self, called: bool) -> None:
+        """The round is over; `called`: it called the engine."""
+        if not called and not self.open and self.held:
+            self.going = self.on_delta(self.held)
+
 
 @dataclass
 class ModelCall:
@@ -1550,7 +1589,11 @@ class Speaker:
                 )
             try:
                 completion = self._complete(
-                    provider, request, messages, reader.feed if reader is not None else None
+                    provider,
+                    request,
+                    messages,
+                    reader.feed if reader is not None else None,
+                    reader.new_round if reader is not None else None,
                 )
                 raw = completion.text
                 stats = dict(completion.stats)
@@ -1651,6 +1694,7 @@ class Speaker:
         request: _Request,
         messages: list[ChatMessage],
         on_delta: Callable[[str], bool] | None,
+        new_round: Callable[[], None] | None = None,
     ) -> Completion:
         """The model's reply, streamed to `on_delta` when given. With engine tools on the
         request and a model that takes them, the engine calls it makes are answered and it is
@@ -1665,10 +1709,13 @@ class Speaker:
         round_ = 0
         while True:
             extra: dict[str, Any] = {}
+            gate: _RoundGate | None = None
             if tools is not None:
                 extra = {"tools": tools.specs, "turns": turns}
                 if round_ == TOOL_ROUNDS:
                     extra["tool_choice"] = "none"
+                elif on_delta is not None:
+                    gate = _RoundGate(on_delta)  # a round that may call the engine
             try:
                 if on_delta is not None:
                     completion = provider.chat_stream(  # type: ignore[attr-defined]
@@ -1676,9 +1723,14 @@ class Speaker:
                         messages,
                         max_tokens=VS_MAX_TOKENS,
                         temperature=VS_TEMPERATURE,
-                        on_delta=on_delta,
+                        on_delta=gate.feed if gate is not None else on_delta,
                         **extra,
                     )
+                    calling = tools is not None and bool(completion.tool_calls)
+                    if gate is not None:
+                        gate.end(calling and round_ < TOOL_ROUNDS)
+                    if calling and round_ < TOOL_ROUNDS and new_round is not None:
+                        new_round()
                 else:
                     completion = provider.chat(
                         request.system,
