@@ -88,10 +88,22 @@ const val PUZZLES_BYTES = 30_000_000L
  * Fetch [url] to [target] through a temporary file, resuming a partial one, with progress
  * callbacks; verified against [expectSha256] when given. `setup.download`.
  */
-fun download(url: String, target: File, progress: Progress? = null, expectSha256: String? = null): File {
-    target.parentFile?.mkdirs()
-    val part = File(target.path + ".part")
-    var done = if (part.exists()) part.length() else 0L
+/** The connection ended before the body did; the `.part` is kept for a resume. `IncompleteDownload`. */
+class IncompleteDownload(message: String) : IOException(message)
+
+/** The setup's Cancel, raised from the progress callback of the item under way. `Cancelled`. */
+class Cancelled : RuntimeException("cancelled")
+
+/** An HTTP status the download does not take, with the response's Content-Range. */
+class HttpStatus(val status: Int, val contentRange: String?, url: String) : IOException("HTTP $status for $url")
+
+/**
+ * One request for what [part] lacks (all of it when [from] is 0); the bytes it then holds.
+ * Fewer bytes than the server announced raise [IncompleteDownload]: a read that ends early
+ * looked like the end of the file. `_fetch_into`.
+ */
+private fun fetchInto(url: String, part: File, from: Long, progress: Progress?): Long {
+    var done = from
     val connection = (URL(url).openConnection() as HttpURLConnection).apply {
         setRequestProperty("User-Agent", USER_AGENT)
         if (done > 0) setRequestProperty("Range", "bytes=$done-")
@@ -101,10 +113,11 @@ fun download(url: String, target: File, progress: Progress? = null, expectSha256
     }
     try {
         val status = connection.responseCode
-        if (status >= 400) throw IOException("HTTP $status for $url")
+        if (status >= 400) throw HttpStatus(status, connection.getHeaderField("Content-Range"), url)
         if (done > 0 && status != 206) done = 0  // the server did not resume; start over
         val length = connection.contentLengthLong
         val total = if (length >= 0) length + done else null
+        var received = 0L
         connection.inputStream.use { input ->
             FileOutputStream(part, done > 0).use { output ->
                 val chunk = ByteArray(1 shl 20)
@@ -113,12 +126,53 @@ fun download(url: String, target: File, progress: Progress? = null, expectSha256
                     if (n < 0) break
                     output.write(chunk, 0, n)
                     done += n
+                    received += n
                     progress?.invoke(done, total)
                 }
             }
         }
+        if (length >= 0 && received < length) {
+            throw IncompleteDownload("${part.name}: $received of $length bytes came")
+        }
     } finally {
         connection.disconnect()
+    }
+    return done
+}
+
+fun download(
+    url: String,
+    target: File,
+    progress: Progress? = null,
+    expectSha256: String? = null,
+    expectSize: Long? = null,
+): File {
+    target.parentFile?.mkdirs()
+    val part = File(target.path + ".part")
+    var done = if (part.exists()) part.length() else 0L
+    if (expectSize != null && done > expectSize) {
+        part.delete()
+        done = 0
+    }
+    // A .part already whole (killed between the last write and the rename) is not fetched
+    // again: a Range past its end is answered 416.
+    if (expectSize == null || done != expectSize) {
+        done = try {
+            fetchInto(url, part, done, progress)
+        } catch (exc: HttpStatus) {
+            if (exc.status != 416 || done == 0L) throw exc
+            // The .part is whole when the server says it is exactly this long; else start over.
+            if (exc.contentRange?.trim() == "bytes */$done") {
+                done
+            } else {
+                part.delete()
+                fetchInto(url, part, 0, progress)
+            }
+        }
+    }
+    if (expectSize != null && done != expectSize) {
+        if (done > expectSize) part.delete()
+        throw IncompleteDownload("${target.name}: $done bytes, $expectSize expected")
     }
     if (expectSha256 != null) {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -152,6 +206,9 @@ class Item(
     val detail: () -> String = { "" },
 )
 
+/** Whether [file] is there at its full [size]: a file cut short is not the file. */
+private fun whole(file: File, size: Long): Boolean = file.isFile && file.length() == size
+
 /** What this phone needs, in the order they are fetched. `setup.items`. */
 fun items(context: Context): List<Item> {
     val files = context.filesDir
@@ -163,17 +220,17 @@ fun items(context: Context): List<Item> {
             "kokoro",
             "The coach's voice",
             KOKORO_FILES.values.sumOf { it.second },
-            present = { KOKORO_FILES.keys.all { File(kokoroDir, it).exists() } },
+            present = { KOKORO_FILES.all { (name, entry) -> whole(File(kokoroDir, name), entry.second) } },
             fetch = { progress ->
                 var base = 0L
                 for ((name, entry) in KOKORO_FILES) {
                     val (url, size) = entry
-                    if (File(kokoroDir, name).exists()) {
+                    if (whole(File(kokoroDir, name), size)) {
                         base += size
                         continue
                     }
                     val at = base
-                    download(url, File(kokoroDir, name), { done, _ -> progress(at + done, null) })
+                    download(url, File(kokoroDir, name), { done, _ -> progress(at + done, null) }, expectSize = size)
                     base += size
                 }
             },
@@ -187,11 +244,7 @@ fun items(context: Context): List<Item> {
             EngineAssets.NET_BYTES,
             present = { EngineAssets.found(context) != null },
             fetch = { progress ->
-                val target = download(EngineAssets.NET_URL, File(files, EngineAssets.NET), progress)
-                if (target.length() < 1_000_000) {
-                    target.delete()
-                    throw IOException("only ${target.length()} bytes came")
-                }
+                download(EngineAssets.NET_URL, File(files, EngineAssets.NET), progress, expectSize = EngineAssets.NET_BYTES)
             },
             detail = {
                 EngineAssets.found(context)?.let { "${it.length() / 1_000_000} MB, on the phone" }
@@ -223,6 +276,8 @@ fun items(context: Context): List<Item> {
             "Speech recognition, to talk to the coach",
             STT_FILES.values.sumOf { folder -> folder.values.sumOf { it.second } },
             present = {
+                // Present when there: the files are the hub's "main" (their sizes can move);
+                // a body cut short never becomes one (`download`).
                 STT_FILES.all { (folder, names) -> names.keys.all { File(files, "$folder/$it").exists() } }
             },
             fetch = { progress ->
@@ -344,8 +399,19 @@ private fun csvLine(row: List<String>): String = row.joinToString(",", postfix =
     }
 }
 
-/** The setup's state and the thread that runs it, one per app. `setup.Setup`. */
-class Setup(private val context: Context) {
+/** The bytes free where [dir] is, or null when unknown. `setup.free_space`. */
+fun freeSpace(dir: File): Long? = runCatching { (if (dir.exists()) dir else dir.parentFile ?: dir).usableSpace }
+    .getOrNull()?.takeIf { it > 0 }
+
+/**
+ * The setup's state and the thread that runs it, one per app. `setup.Setup`. [itemsOf] is
+ * what the phone needs ([items]); a test hands in its own.
+ */
+class Setup(
+    private val context: Context,
+    private val itemsOf: (Context) -> List<Item> = ::items,
+    private val freeSpace: (File) -> Long? = ::freeSpace,
+) {
 
     private val lock = Any()
     private var thread: Thread? = null
@@ -356,7 +422,7 @@ class Setup(private val context: Context) {
     fun status(): JSONObject {
         val rows = JSONArray()
         var needed = 0
-        for (item in items(context)) {
+        for (item in itemsOf(context)) {
             runCatching {
                 val present = item.present()
                 rows.put(
@@ -387,7 +453,10 @@ class Setup(private val context: Context) {
      */
     fun start(ids: List<String>? = null): Boolean {
         synchronized(lock) {
-            if (thread?.isAlive == true) return false
+            // "running" claimed under the lock: the thread is made only after the items are
+            // looked at, and a second tap in that time started a second run into the same
+            // .part files (setup finding 3).
+            if (thread?.isAlive == true || state.optBoolean("running")) return false
             cancelled = false
             state = JSONObject().apply {
                 put("running", true)
@@ -398,8 +467,13 @@ class Setup(private val context: Context) {
                 put("finished", JSONArray())
             }
         }
-        val todo = items(context).filter {
-            (ids == null && !it.optional && !it.present()) || (ids != null && it.id in ids && !it.present())
+        val todo = try {
+            itemsOf(context).filter {
+                (ids == null && !it.optional && !it.present()) || (ids != null && it.id in ids && !it.present())
+            }
+        } catch (exc: Throwable) {
+            synchronized(lock) { state.put("running", false) }
+            throw exc
         }
         val total = todo.sumOf { it.size }
         synchronized(lock) {
@@ -413,11 +487,21 @@ class Setup(private val context: Context) {
                 if (cancelled) break
                 synchronized(lock) { state.put("item", item.id) }
                 val start = base
+                val free = freeSpace(context.filesDir)
                 try {
+                    if (free != null && free < item.size) {
+                        throw IOException(
+                            "not enough free space: ${item.size / 1_000_000} MB needed, ${free / 1_000_000} MB free",
+                        )
+                    }
                     item.fetch { done, _ ->
+                        // Cancel stops the item under way at its next chunk; its .part stays.
+                        if (cancelled) throw Cancelled()
                         synchronized(lock) { state.put("done", start + minOf(done, item.size)) }
                     }
                     synchronized(lock) { state.getJSONArray("finished").put(item.id) }
+                } catch (_: Cancelled) {
+                    break
                 } catch (exc: Exception) {
                     // Reported; the next item goes on.
                     synchronized(lock) {

@@ -179,7 +179,9 @@ object PanelWarm {
                 if (!coach.on) stage("coach", "off", coach.detail)
                 warmEngines()
                 if (engine.on) stage("engine", "done", engine.detail)
-                warmModel()
+                // In the background, as the desktop's (setup finding 18): a local model's
+                // first load took up to a minute and the splash waited on it.
+                Thread({ runCatching { warmModel() } }, "warm-model").apply { isDaemon = true }.start()
                 if (coach.on) stage("coach", "done", coach.detail)
                 stage("ready", "done")
             } catch (exc: Throwable) {

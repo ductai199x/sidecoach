@@ -22,11 +22,12 @@ object EngineAssets {
     const val NET_URL = "https://tests.stockfishchess.org/api/nn/$NET"
     const val NET_BYTES = 98_511_183L
 
-    /** The network already on disk, or null. */
+    /**
+     * The network already on disk, whole, or null. Only the pinned one at its full size: any
+     * other .nnue was taken before (setup finding 17), and a file cut short was "present".
+     */
     fun found(context: Context): File? {
         val file = File(context.filesDir, NET)
-        if (file.exists() && file.length() > 1_000_000) return file
-        // A network put there by hand for development may have another name.
-        return context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
+        return if (file.isFile && file.length() == NET_BYTES) file else null
     }
 }
