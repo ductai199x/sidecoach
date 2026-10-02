@@ -1767,22 +1767,26 @@ internal fun player(facts: PositionFacts): Boolean? {
 }
 
 /**
- * A rate-limited call is asked again once after this long, when the provider's timeout,
- * counted from the first call, leaves room for it. `coach.py` RATE_BACKOFF_S.
+ * The wait before a rate-limited call is asked again when the server named none (no
+ * Retry-After): the server's own word wins whenever it gives one. `coach.py` RATE_BACKOFF_S.
  */
 @Volatile
 var RATE_BACKOFF_S = 2.0
 
 /**
  * How long to wait before asking again after a failed call, or null to give up: only a rate
- * limit (429) is worth a second call; a timeout spent the time, a refused key or a bad request
- * will fail the same way, and each would be paid or wasted twice. `coach.py` `_retry_wait`.
+ * limit (429) is worth another call; a timeout spent the time, a refused key or a bad request
+ * will fail the same way, and each would be paid or wasted twice. A rate limit waits as long
+ * as the server's Retry-After says, and is asked again as often as the provider's timeout,
+ * counted from the first call, leaves room for (Tai, 2026-10-02); a provider with no timeout
+ * is not asked again. `coach.py` `_retry_wait`.
  */
 internal fun retryWait(exc: Exception, provider: LLMProvider, elapsedS: Double): Double? {
     if (!(exc.message ?: "").startsWith("429")) return null
-    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS
-    if (budget != null && elapsedS + RATE_BACKOFF_S >= budget) return null
-    return RATE_BACKOFF_S
+    val wait = (exc as? com.sidecoach.llm.ProviderError)?.retryAfterS ?: RATE_BACKOFF_S
+    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS ?: return null
+    if (elapsedS + wait >= budget) return null
+    return wait
 }
 
 /**
@@ -2123,11 +2127,13 @@ class Speaker(
             }
             if (failed != null) {
                 // A failed call is not a draft: no complaint, no second paid call for a
-                // timeout or a refused key. A rate limit is waited out once, inside the
-                // provider's timeout counted from the first call.
+                // timeout or a refused key. A rate limit is waited out as the server asks,
+                // inside the provider's timeout counted from the first call; the call is the
+                // same one again, so it spends no attempt.
                 problems = listOf("the call failed: $lastError")
                 val wait = retryWait(failed, provider, (clockNs() - began) / 1e9) ?: break
                 if (pause(wait)) break
+                attempts -= 1
                 continue
             }
             // Declined, the stream was closed in the first candidate's first sentence: that

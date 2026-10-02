@@ -86,11 +86,12 @@ class SpeakerCallsTest {
     }
 
     /**
-     * A rate limit is waited out once, inside the provider's timeout, with the same request. Time
-     * is the test's: a clock it moves and a wait it records, no real delay.
+     * Tai, 2026-10-02: a 429 waits as long as the server's Retry-After says, asked again until
+     * the call's timeout, not a fixed 2 s once. Time is the test's: a clock it moves and a wait
+     * it records, no real delay.
      */
     @Test
-    fun aRateLimitIsWaitedOutOnceWithinTheTimeout() {
+    fun aRateLimitWaitsAsTheServerAsksWithinTheTimeout() {
         var now = 100_000_000_000L
         val waits = ArrayList<Double>()
 
@@ -104,11 +105,31 @@ class SpeakerCallsTest {
                 }
             }
 
-        var transport = Scripted(mutableListOf(HttpReply(429, "Rate limit reached")), okReply)
+        fun busy() = HttpReply(429, "Rate limit reached", headers = mapOf("retry-after" to "20"))
+        var transport = Scripted(mutableListOf(busy(), busy()), okReply)
         var spoken = speaker(transport).speakNow(request())
-        assertEquals(listOf(RATE_BACKOFF_S), waits)
-        assertEquals(2, transport.bodies.size)
+        assertEquals(listOf(20.0, 20.0), waits)
+        assertEquals(3, transport.bodies.size)
+        // The same request again each time, not a complaint about the failure.
         assertEquals(transport.bodies[0], transport.bodies[1])
+        assertEquals(transport.bodies[1], transport.bodies[2])
+        assertEquals("Develop the knight to f3.", spoken.message.text)
+        // A third wait of 20 s would end at the timeout (60 s from the first call): given up there.
+        waits.clear()
+        transport = Scripted(mutableListOf(busy(), busy(), busy()), okReply)
+        spoken = speaker(transport).speakNow(request())
+        assertEquals(listOf(20.0, 20.0), waits)
+        assertEquals(3, transport.bodies.size)
+        assertEquals("TEMPLATE", spoken.message.text)
+        // The server named no time: the default wait, as often as the timeout leaves room.
+        waits.clear()
+        transport = Scripted(
+            mutableListOf(HttpReply(429, "Rate limit reached"), HttpReply(429, "Rate limit reached")),
+            okReply,
+        )
+        spoken = speaker(transport).speakNow(request())
+        assertEquals(listOf(RATE_BACKOFF_S, RATE_BACKOFF_S), waits)
+        assertEquals(3, transport.bodies.size)
         assertEquals("Develop the knight to f3.", spoken.message.text)
         // No room left in the provider's timeout for the wait: the template after one call.
         waits.clear()
@@ -122,6 +143,34 @@ class SpeakerCallsTest {
         spoken = speaker(transport, closedMeanwhile = true).speakNow(request())
         assertEquals(1, transport.bodies.size)
         assertEquals("TEMPLATE", spoken.message.text)
+    }
+
+    /** The wait the server asks for reaches the backoff: `test_a_rate_limit_carries_the_servers_retry_after`. */
+    @Test
+    fun aRateLimitCarriesTheServersRetryAfter() {
+        val now = 1445412480_000L // 07:28:00 GMT that day: the date form is 30 s ahead
+        val cases = listOf(
+            mapOf("retry-after" to "20") to 20.0,
+            mapOf("retry-after-ms" to "1500", "retry-after" to "2") to 1.5,
+            mapOf("retry-after" to "Wed, 21 Oct 2015 07:28:30 GMT") to 30.0,
+            mapOf("retry-after" to "soon") to null,
+            emptyMap<String, String>() to null,
+        )
+        for ((headers, wait) in cases) {
+            assertEquals("$headers", wait, com.sidecoach.llm.retryAfter(headers, now))
+        }
+        // On the provider's wire, plain and streamed: the error carries it.
+        val reply = HttpReply(429, "slow down", headers = mapOf("retry-after" to "20"))
+        val failing = provider(Scripted(mutableListOf(reply, reply), okReply))
+        val plain = runCatching { failing.chat("sys", listOf(ChatMessage("user", "hi"))) }.exceptionOrNull()
+        val streamed = runCatching {
+            failing.chatStream("sys", listOf(ChatMessage("user", "hi")), onDelta = { true })
+        }.exceptionOrNull()
+        for (error in listOf(plain, streamed)) {
+            assertTrue("$error", error is com.sidecoach.llm.ProviderError)
+            assertEquals("429: slow down", error!!.message)
+            assertEquals(20.0, (error as com.sidecoach.llm.ProviderError).retryAfterS)
+        }
     }
 
     /** A call lost after it reached the server is billed: counted; a refused connection is not. */
