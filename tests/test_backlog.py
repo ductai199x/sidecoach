@@ -76,7 +76,9 @@ def test_a_game_brought_in_is_reviewed_in_the_background_and_its_facts_kept(
 
 
 def test_a_game_that_failed_once_is_counted_and_tried_again(
-    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+    make_panel: Callable[..., PanelEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The review of 2026-10-01: a game whose review raised once was skipped for the rest of the
     session and left out of the job's count, so the job said "empty" with games waiting; on a
@@ -115,6 +117,9 @@ def test_a_game_that_failed_once_is_counted_and_tried_again(
         state = backlog.state()
         assert (state["status"], state["total"], state["waiting"]) == ("reviewing", 1, 1)
         assert store.best_review(row.key) is None
+        # Said, never kept in silence (the audit of 2026-10-02): why a game stays waiting.
+        assert f"the background review of {row.key} failed" in caplog.text
+        assert "the engine would not start" in caplog.text
         # The engine starts again: the failed game rests until FAILED_RETRY_S has passed, then
         # it is tried again, without a restart, and reviewed.
         broken[0] = False

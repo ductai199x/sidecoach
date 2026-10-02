@@ -128,6 +128,7 @@ class _RoomSignals:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.outcomes: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.lines: queue.Queue[tuple[str, str]] = queue.Queue()  # every line, any channel
         self.finished: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         real_emit = PuzzleRoom._emit
@@ -136,6 +137,7 @@ class _RoomSignals:
 
         def emit(room: PuzzleRoom, chan: str, level: str, text: str, **data: Any) -> None:
             real_emit(room, chan, level, text, **data)
+            signals.lines.put((room._id, text))
             if chan == "game" and text.startswith("puzzle "):
                 signals.outcomes.put((room._id, text))
 
@@ -157,6 +159,16 @@ class _RoomSignals:
         assert room_id == puzzle_id and text.startswith(prefix), (room_id, text, prefix)
         lines = [ln["text"] for ln in client.get(f"/api/puzzle/{puzzle_id}/poll").json()["lines"]]
         assert any(ln.startswith(prefix) for ln in lines), lines
+
+    def said(self, client, puzzle_id: str, text: str) -> None:  # noqa: ANN001
+        """The room says `text` (any channel; the lines before it are passed over), and the
+        page's poll shows it. The 60 s is only a safety net."""
+        while True:
+            room_id, line = self.lines.get(timeout=HANG_S)
+            if room_id == puzzle_id and line == text:
+                break
+        lines = [ln["text"] for ln in client.get(f"/api/puzzle/{puzzle_id}/poll").json()["lines"]]
+        assert text in lines, lines
 
 
 HANG_S = 60.0  # a safety net for a thread's signal, never the expected path
@@ -201,8 +213,12 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
     assert store.setting("puzzle_level") == "1075"
-    # The user's question reaches the room's coach (off here: nothing answers, no error).
+    # The user's question reaches the room. Its coach is off here: the room says so, as the
+    # panel does, or the page's typing dots waited for an answer for good.
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
+    signals.said(client, FORK.id, "no coach to ask: hint")
+    texts = [ln["text"] for ln in client.get(f"/api/puzzle/{FORK.id}/poll").json()["lines"]]
+    assert "you: hint" not in texts, "no turn of a conversation nobody answers"
     assert client.post(f"/api/puzzle/{FORK.id}/voice", json={"on": False}).json()["ok"]
     # Closing ends the room; the outcome is not recorded twice, counted once the room's loop
     # has drained the close and finished (not merely once the close was asked for).

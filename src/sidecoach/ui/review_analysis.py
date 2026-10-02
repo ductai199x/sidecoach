@@ -30,15 +30,23 @@ from sidecoach.profile.store import LibraryRow
 # The engine's best lines for a position, and how far each is shown.
 LINES = 3
 LINE_PLIES = 10
-# A review's labels as PGN's move marks, and as the word its comment begins with.
+# A review's labels as PGN's move marks, and as the word its comment begins with. A miss has
+# no mark of its own: it takes its loss's (`severity`) -- "?" was put on every miss, one that
+# lost nothing (a mate let go, still winning) and a blunder-sized one alike.
 NAGS = {
     "brilliant": chess.pgn.NAG_BRILLIANT_MOVE,
     "great": chess.pgn.NAG_GOOD_MOVE,
     "inaccuracy": chess.pgn.NAG_DUBIOUS_MOVE,
     "mistake": chess.pgn.NAG_MISTAKE,
-    "miss": chess.pgn.NAG_MISTAKE,
     "blunder": chess.pgn.NAG_BLUNDER,
 }
+
+
+def nag(label: str | None, severity: str | None) -> int | None:
+    """The PGN mark of a reviewed move: its label's, a miss its loss's, else none."""
+    return NAGS.get(severity or "") if label == "miss" else NAGS.get(label or "")
+
+
 WORDS = {
     "brilliant": "Brilliant",
     "great": "Great move",
@@ -282,8 +290,9 @@ def pgn(
         if not annotated or view is None:
             return
         label = view.get("label")
-        if label in NAGS:
-            node.nags.add(NAGS[label])
+        mark = nag(label, view.get("severity"))
+        if mark is not None:
+            node.nags.add(mark)
         said = texts.get(str(ply)) or {}
         parts = [_comment(label, view.get("best_san"), view["san"], view.get("eval"))]
         parts += [said[p] for p in ("why", "better", "lesson") if said.get(p)]

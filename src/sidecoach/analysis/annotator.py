@@ -160,6 +160,9 @@ class GameAnnotator:
     # Every search's lines as it finishes each usable depth, for any reader at any time (the
     # coach's engine reads it before it searches).
     computed: Computed = field(default_factory=Computed, init=False, repr=False)
+    # How many times `forget_measured` has run: a search that began before it (another
+    # thread changed the settings mid-search) was made the old way, and is not kept.
+    _era: int = field(default=0, init=False, repr=False)
 
     def reset(self) -> None:
         """Forget the cache; a new game shares no positions with the last one."""
@@ -172,7 +175,10 @@ class GameAnnotator:
     def forget_measured(self) -> None:
         """Forget the positions measured, keeping the game's moves: the depth, the lines, the
         time cap, the curve or the thresholds changed, and a loss compares two positions
-        measured the same way, so none measured before is set against one measured after."""
+        measured the same way, so none measured before is set against one measured after.
+        Called from another thread (the settings' save): a search under way now finishes,
+        and is handed to its caller, but is not kept."""
+        self._era += 1
         self._cache.clear()
         self._verdict_cache.clear()
         self._ahead.clear()
@@ -186,7 +192,8 @@ class GameAnnotator:
         if cached is not None:
             return cached
         measured = self.measure(board)
-        self._ahead.add(measured.key)
+        if measured.key in self._cache:
+            self._ahead.add(measured.key)
         return measured
 
     def _cached(self, board: chess.Board) -> Measured | None:
@@ -214,8 +221,8 @@ class GameAnnotator:
         thin = self._verdict_cache.get(key)
         if thin is not None:
             return thin
+        era = self._era
         lines = self.engine.analyse(board, depth=self.depth, multipv=1)
-        self.computed.add(board, lines, thin=True)
         thin = Measured(
             fen=board.fen(),
             lines=lines,
@@ -224,7 +231,9 @@ class GameAnnotator:
             only_move=False,
             key=key,
         )
-        self._verdict_cache[key] = thin
+        if era == self._era:  # not searched the old way (`forget_measured`)
+            self.computed.add(board, lines, thin=True)
+            self._verdict_cache[key] = thin
         return thin
 
     def measure(
@@ -240,8 +249,10 @@ class GameAnnotator:
         cached = self._cached(board)
         if cached is not None:
             return cached
+        era = self._era
         measured = self._measured(board, self.depth, on_depth=on_depth)
-        self._cache[measured.key] = measured
+        if era == self._era:  # not searched the old way (`forget_measured`)
+            self._cache[measured.key] = measured
         return measured
 
     def measure_early(self, board: chess.Board) -> Measured:
@@ -258,10 +269,11 @@ class GameAnnotator:
         on_depth: Callable[[list[Line]], None] | None = None,
     ) -> Measured:
         usable = min(EARLY_DEPTH, depth)
+        era = self._era
 
         def finished(found: list[Line]) -> None:
             """A depth done: kept from the first usable one, and handed on."""
-            if found and found[0].depth >= usable:
+            if found and found[0].depth >= usable and era == self._era:
                 self.computed.add(board, found)
             if on_depth is not None:
                 on_depth(found)
@@ -275,7 +287,8 @@ class GameAnnotator:
             on_depth=finished,
         )
         # Before the side searches: the lines are the news, and a reader has them now.
-        self.computed.add(board, lines)
+        if era == self._era:
+            self.computed.add(board, lines)
         searched = self.with_threats
         return Measured(
             fen=board.fen(),

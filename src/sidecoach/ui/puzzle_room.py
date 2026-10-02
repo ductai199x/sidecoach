@@ -184,8 +184,13 @@ class PuzzleRoom:
                 self._record(solved=False)
             elif name == "ask":
                 text = str(payload)
-                self._emit("user", "info", f"you: {text}")
-                self._coaching.ask(text, ts)
+                if self._coaching.on:
+                    self._emit("user", "info", f"you: {text}")
+                    self._coaching.ask(text, ts)
+                else:
+                    # No coach here (no Stockfish yet): said, as the panel says it, so the
+                    # page's typing dots end; asked in silence, they stayed for good.
+                    self._emit("user", "warn", f"no coach to ask: {text}")
             elif name == "voice":
                 self.voice = bool(payload) and self._speak is not None
                 if not self.voice and self._stop_speaking is not None:

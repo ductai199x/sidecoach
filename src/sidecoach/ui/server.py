@@ -1190,7 +1190,10 @@ def _lock_owner(settings: Settings, host: str) -> dict[str, Any] | None:
 
         if psutil.pid_exists(pid):
             with socket.create_connection((host, port), timeout=0.5) as conn:
-                conn.sendall(b"GET /api/health HTTP/1.0\r\nHost: x\r\n\r\n")
+                # Named by its address: the server refuses any other Host (DNS rebinding),
+                # and a refusal read as a dead sidecar deleted a live one's lock.
+                name = f"[{host}]" if ":" in host else host
+                conn.sendall(f"GET /api/health HTTP/1.0\r\nHost: {name}:{port}\r\n\r\n".encode())
                 head = conn.recv(64)
             if head.startswith(b"HTTP/1.") and b" 200" in head:
                 return {"port": port, "pid": pid, "token": str(info.get("token") or "")}

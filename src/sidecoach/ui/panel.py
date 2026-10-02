@@ -849,8 +849,7 @@ class PanelEngine:
                 "engine.max_seconds",
             ]
             if any(c in changed for c in remeasure):
-                with contextlib.suppress(Exception):  # applied already; the cache is a cache
-                    analyser.annotator.forget_measured()
+                analyser.annotator.forget_measured()
         return sorted(set(applied))
 
     def reprovision(self, names: Sequence[str]) -> bool:
@@ -2079,6 +2078,15 @@ class PanelEngine:
             late = assessing.wait(timeout=patience)
             coaching.events(late, time.monotonic())
             coaching.events(self._profile(profiler, late, flush=True), time.monotonic())
+            # The session's end is written before the wait for the coach's replies below (up
+            # to 30 s): at a quit the shell's close gives the loop 10 s (`close`), and the
+            # session's end, last, was never written when a reply was on its way.
+            try:
+                summary = profiler.end_session(time.time())
+                if summary:
+                    self._emit("game", "info", f"session: {summary}")
+            except Exception as exc:  # noqa: BLE001 - the profile must not block the shutdown
+                self._emit("sys", "error", f"profile error at close: {exc!r}")
             if coaching.coach is not None:
                 # Nothing unasked until the next Start reads the board again: the coach
                 # outlives the session, and the first ticks after Start gave stuck hints about
@@ -2092,12 +2100,6 @@ class PanelEngine:
             # Stockfish and the coach stay for the next Start (only the screen stops);
             # the coach begins afresh with the next game's GameStarted.
             assessing.reset()
-            try:
-                summary = profiler.end_session(time.time())
-                if summary:
-                    self._emit("game", "info", f"session: {summary}")
-            except Exception as exc:  # noqa: BLE001 - the profile must not block the shutdown
-                self._emit("sys", "error", f"profile error at close: {exc!r}")
             self._profiler = None
             store.close()
             if recorder is not None:

@@ -303,6 +303,10 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     key = client.post("/api/games/import", json={"source": "pgn", "text": GAME}).json()["keys"][0]
     assert client.post(f"/api/review/{key}/open", json={"strength": "fast"}).json()["voice"]
+    # The room's own thread (the review on the fake engine, its saves to the store) done
+    # before the cards: nothing of it runs beside the steps below.
+    room = _room(client, key)
+    assert room.settled.wait(HANG_S), "the review never settled"
 
     # The live coach speaking: a card does not cut it off (voice finding 12, 2026-10-01) ...
     engine._voicing = ("post_move", 10)
@@ -325,6 +329,8 @@ def test_a_card_is_said_in_the_panels_voice_and_captioned(
     assert client.post(f"/api/review/{key}/hush").json()["ok"]
     client.post(f"/api/review/{key}/close")
     assert voice.heard[-2:] == ["stop", "stop"]
+    room.join(HANG_S)
+    assert room.closed, "the room's thread ended, its store closed"
     # Closing a review while the coach has the voice leaves the coach speaking.
     engine._voicing = ("post_move", 12)
     voice.heard.clear()
@@ -900,6 +906,76 @@ def test_no_ai_words_are_paid_for_on_a_game_removed(
     store.close()
 
 
+def test_words_that_fail_with_the_store_failing_too_still_end_and_the_room_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-02: the words' failure asked the store whether the game went,
+    unguarded; a store failing there too ended the thread with the words "writing" for good,
+    and the room, which stays open while words are written, never closed. The failure is said
+    and the room closes as any other."""
+    import sqlite3
+
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> Any:
+        raise RuntimeError("the model is down")
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None and room.settled.wait(HANG_S) and room.status == "ready"
+    asked: list[str] = []
+
+    def in_record(key: str) -> bool:
+        asked.append(key)
+        if len(asked) > 1:  # the words' own check passed; then the store fails too
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return True
+
+    monkeypatch.setattr(room.store, "in_record", in_record)
+    assert room.write_words() is None
+    assert room.words_done.wait(HANG_S)
+    assert room.words_status == "failed" and "the model is down" in (room.words_error or "")
+    room.close()
+    # Asked at the room's own times, not the real clock: closed, it ends even just touched.
+    assert room.closing(room.touched), "nothing being written: it closes"
+    room.join(HANG_S)
+    assert room.closed
+    store.close()
+
+
+def test_a_saved_review_that_cannot_be_summed_up_again_is_said(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The audit of 2026-10-02: a saved review rederive could not read was skipped in silence."""
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    store = Store(tmp_path / "profile.sqlite")
+    store.save_review("pgn:1", "fast", review_room.REVIEW_VERSION, 1.0, "not a report", None)
+    store.set_setting(review_room.DERIVED_KEY, "1")
+    assert review_room.rederive(store) == 0
+    assert "the saved review of pgn:1 (fast) could not be summed up again" in caplog.text
+    store.close()
+
+
 def test_the_review_saved_first_stays_with_the_words_paid_for(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1262,3 +1338,32 @@ def test_bringing_in_from_a_site_needs_the_username_first(
     assert not said["ok"] and "chess.com username" in said["error"]
     said = client.post("/api/games/import", json={"source": "lichess"}).json()
     assert not said["ok"] and "Lichess username" in said["error"]
+
+
+def test_a_miss_in_the_pgn_is_marked_by_what_it_cost() -> None:
+    """A miss has no PGN mark of its own; "?" went on every one -- one that lost nothing (a
+    mate let go, still winning) as on a blunder-sized one (the engine review, 2026-10-01). It
+    takes its loss's mark: none, ?!, ? or ??. The other labels keep theirs."""
+    from types import SimpleNamespace
+
+    from sidecoach.ui.review_analysis import pgn
+
+    row = SimpleNamespace(pgn="1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *")
+    rows = [
+        ("miss", "none"),
+        ("miss", "inaccuracy"),
+        ("miss", "mistake"),
+        ("miss", "blunder"),
+        ("mistake", "mistake"),
+        ("great", "none"),
+    ]
+    sans = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"]
+    moves = [
+        {"ply": ply, "san": san, "label": label, "severity": severity, "best_san": None}
+        for ply, (san, (label, severity)) in enumerate(zip(sans, rows, strict=True), start=1)
+    ]
+    text = pgn(row, moves, [])  # type: ignore[arg-type]
+    marked = " ".join(text.split("\n\n", 1)[1].split())
+    # PGN's numbers for them: $6 ?!, $2 ?, $4 ??, $1 !.
+    for san, mark in zip(sans, [" {", " $6 {", " $2 {", " $4 {", " $2 {", " $1 {"], strict=True):
+        assert f"{san}{mark}" in marked, (san, mark, marked)

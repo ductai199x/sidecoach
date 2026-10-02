@@ -155,6 +155,9 @@
     // The echo of the player's own line is not the answer: the dots stay until the coach's
     // (or a warning that none is coming).
     if (!you || line.level !== "info") pending = false;
+    // Only "you: ..." is the player's own turn; "no coach to ask: ..." ends the dots and is
+    // no bubble of theirs (as on the panel).
+    if (you && !line.text.startsWith("you: ")) return;
     const marks: Mark[] | null = !you && d.annotations && d.annotations.length ? d.annotations : null;
     messages.push({ id: nextId++, you, meta: you ? "you" : String(d.trigger || "coach").replace("_", " "), text: you ? line.text.replace(/^you: /, "") : d.full || line.text, marks });
     if (marks) coachMarks = marks;

@@ -22,32 +22,73 @@ def move_accuracy(loss: float, k: float) -> float:
     return min(100.0, max(0.0, 103.1668 * math.exp(-k * loss) - 3.1669))
 
 
-def lichess_game(moves: list[dict]) -> float | None:
-    """Lichess's game accuracy (lila AccuracyPercent): per-move accuracy from the win% drop
-    (+1 uncertainty bonus, 0..100), then the mean of a volatility-weighted mean (windows of
-    plies/10 in 2..8, weight = the std of win% in the window, 0.5..12) and the harmonic mean."""
-    if not moves:
-        return None
-    wins = [m["before"] * 100 for m in moves]
-    accs = []
-    for m in moves:
-        drop = max(0.0, m["loss"] * 100)
-        a = 103.1668 * math.exp(-0.04354 * drop) - 3.1669 + 1
-        accs.append(min(100.0, max(0.0, a)))
-    size = min(8, max(2, len(moves) // 10))
-    weights = []
-    for i in range(len(moves)):
-        window = wins[max(0, i - size + 1) : i + 1] if i >= size - 1 else wins[:size]
-        sd = statistics.pstdev(window) if len(window) > 1 else 0.0
-        weights.append(min(12.0, max(0.5, sd)))
-    weighted = sum(a * w for a, w in zip(accs, weights, strict=True)) / sum(weights)
-    harmonic = len(accs) / sum(1 / max(a, 1e-6) for a in accs)
-    return (weighted + harmonic) / 2
+# Lichess's win% curve (scalachess WinPercent.fromCentiPawns): ours, with the centipawns
+# capped at 1000 and a mate counted as the cap.
+_LICHESS_K = 0.00368208
+_CEILING = 100 / (1 + math.exp(-_LICHESS_K * 1000))
+_INITIAL = 100 / (1 + math.exp(-_LICHESS_K * 15))  # Cp.initial: 15 centipawns
+
+
+def _win_percent(score: float) -> float:
+    """An expected score as Lichess's win%, mates at the 1000-centipawn ceiling."""
+    return min(_CEILING, max(100 - _CEILING, score * 100))
+
+
+def _lichess_move(before: float, after: float) -> float:
+    """lila AccuracyPercent.fromWinPercents: 100 when the mover lost nothing."""
+    if after >= before:
+        return 100.0
+    raw = 103.1668100711649 * math.exp(-0.04354415386753951 * (before - after)) - 3.166924740191411
+    return min(100.0, max(0.0, raw + 1))
+
+
+def lichess_game(game: list[dict]) -> dict[int, float]:
+    """Lichess's game accuracy for each side (lila AccuracyPercent.gameAccuracy, read
+    2026-10-02), from a whole game's moves in order (ply, before_score, loss): White's win%
+    from the initial 15 centipawns through the position after every move; windows of
+    plies/10 win% values (2 to 8), the first ones padded with the first window; each move
+    weighted by its window's population standard deviation (0.5 to 12); per side the mean of
+    the weighted mean and the harmonic mean (each accuracy floored at 1). The position after
+    the last move is its mover's score less its loss. Keyed by parity: 1 White, 0 Black."""
+    if not game:
+        return {}
+    whites = [_INITIAL]
+    for i, m in enumerate(game):
+        white_moves = m["ply"] % 2 == 1
+        if i + 1 < len(game):
+            after = 1.0 - game[i + 1]["before"]  # the next mover's score, turned round
+        else:
+            after = max(0.0, m["before"] - m["loss"])
+        whites.append(_win_percent(after if white_moves else 1.0 - after))
+    size = min(8, max(2, len(game) // 10))
+    windows = [whites[:size]] * (min(size, len(whites)) - 2) + [
+        whites[i : i + size] for i in range(max(1, len(whites) - size + 1))
+    ]
+    weights = [min(12.0, max(0.5, statistics.pstdev(w))) for w in windows]
+    per: dict[int, list[tuple[float, float]]] = {1: [], 0: []}
+    for i, (m, weight) in enumerate(zip(game, weights, strict=False)):
+        prev, nxt = whites[i], whites[i + 1]
+        white_moves = m["ply"] % 2 == 1
+        accuracy = _lichess_move(prev, nxt) if white_moves else _lichess_move(100 - prev, 100 - nxt)
+        per[m["ply"] % 2].append((accuracy, weight))
+    out = {}
+    for side, pairs in per.items():
+        if not pairs:
+            continue
+        weighted = sum(a * w for a, w in pairs) / sum(w for _, w in pairs)
+        harmonic = len(pairs) / sum(1 / max(1.0, a) for a, _ in pairs)
+        out[side] = (weighted + harmonic) / 2
+    return out
 
 
 def sides(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     headers = data["headers"]
+    game = [
+        {"ply": m["ply"], "before": m["before_score"], "loss": m["loss"]}
+        for m in sorted(data["moves"], key=lambda m: m["ply"])
+    ]
+    lichess = lichess_game(game)
     out = []
     for colour, parity in (("White", 1), ("Black", 0)):
         theirs = headers.get(f"{colour}Accuracy")
@@ -71,6 +112,7 @@ def sides(path: Path) -> list[dict]:
                 "side": colour,
                 "theirs": float(theirs),
                 "moves": moves,
+                "lichess": lichess.get(parity),
                 "elo": headers.get(f"{colour}Elo"),
                 "time": headers.get("TimeClass"),
             }
@@ -104,8 +146,7 @@ def main() -> None:
         if any(m["label"] != "book" for m in r["moves"])
     ]
     report("ours without book moves", no_book)
-    lich = [(lichess_game(r["moves"]), r["theirs"]) for r in rows]
-    report("Lichess formula", [(a, t) for a, t in lich if a is not None])
+    report("Lichess formula", [(r["lichess"], r["theirs"]) for r in rows if r["lichess"]])
     for k in (8, 12, 16, 20, 25, 30):
         report(
             f"our curve k={k}, no book",

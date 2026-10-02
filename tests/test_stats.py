@@ -293,6 +293,9 @@ def test_a_game_reviewed_before_the_username_counts_once_it_is_set(tmp_path: Pat
     store.save_stats("standard", _game("pgn:1", user_side=None), [_move(1, "white")])
     shown = stats(store, Filter())
     assert (shown["overview"]["games"], shown["unsided"]) == (0, 1)
+    # A filter that takes no game says so, not "add your username" for a game it leaves out
+    # anyway (the audit of 2026-10-02).
+    assert stats(store, Filter(time_class="blitz"))["unsided"] == 0
     library.refresh(store, ["tai"])
     shown = stats(store, Filter())
     assert (shown["overview"]["games"], shown["unsided"]) == (1, 0)

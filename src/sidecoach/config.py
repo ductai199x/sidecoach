@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,15 @@ def _extra(**kw: Any) -> dict[str, Any]:
     return dict(kw)
 
 
-class CaptureSettings(BaseModel):
+class _Settings(BaseModel):
+    """What every section of the settings is: a number that is not finite ("inf", "nan") is
+    refused, as the phone, whose settings are JSON, must refuse it. Taken, a price of "inf"
+    made every cost infinite (the audit of 2026-10-02)."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class CaptureSettings(_Settings):
     backend: str = Field(
         default="auto",
         description="Automatic picks Windows Graphics Capture when it is available, else GDI. "
@@ -80,7 +88,7 @@ class CaptureSettings(BaseModel):
     )
 
 
-class EngineSettings(BaseModel):
+class EngineSettings(_Settings):
     stockfish_path: str | None = Field(
         default=None,
         description="The Stockfish executable. Leave empty: the one the app fetched (under the "
@@ -173,7 +181,7 @@ class EngineSettings(BaseModel):
     )
 
 
-class LLMSettings(BaseModel):
+class LLMSettings(_Settings):
     provider: str = Field(
         default="openai",
         description="The AI model the coach thinks with. OpenAI is the one the coach was "
@@ -359,7 +367,7 @@ class LLMSettings(BaseModel):
     )
 
 
-class CoachSettings(BaseModel):
+class CoachSettings(_Settings):
     stuck_seconds: int = Field(
         default=45,
         ge=5,
@@ -538,7 +546,7 @@ class CoachSettings(BaseModel):
     )
 
 
-class ProfileSettings(BaseModel):
+class ProfileSettings(_Settings):
     rating_low: int = Field(
         default=1000,
         ge=100,
@@ -580,7 +588,7 @@ class ProfileSettings(BaseModel):
         return v.strip()
 
 
-class VoiceSettings(BaseModel):
+class VoiceSettings(_Settings):
     voice: str = Field(
         default="af_sarah",
         description="The coach's voice: Kokoro's English ones, American or British, female "
@@ -745,7 +753,7 @@ class VoiceSettings(BaseModel):
     )
 
 
-class BoardSettings(BaseModel):
+class BoardSettings(_Settings):
     """How the boards look (looks.py): the pieces and the squares' colours."""
 
     pieces: str = Field(
@@ -782,7 +790,7 @@ class BoardSettings(BaseModel):
         return v
 
 
-class GpuSettings(BaseModel):
+class GpuSettings(_Settings):
     mode: str = Field(
         default="auto",
         description="Whether the voice, speech recognition and the board reader run on the "
@@ -802,7 +810,7 @@ class GpuSettings(BaseModel):
     )
 
 
-class Settings(BaseModel):
+class Settings(_Settings):
     # Where these settings were read from, so a save goes back there: the panel started
     # with `--config x.toml` once saved to `sidecoach.toml` in the working directory.
     _source: Path | None = PrivateAttr(default=None)

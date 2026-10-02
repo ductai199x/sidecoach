@@ -668,9 +668,11 @@ def nudge(idea: Idea, board: chess.Board | None = None) -> str | None:
     return None
 
 
-def target(idea: Idea, board: chess.Board) -> str | None:
+def target(idea: Idea, board: chess.Board, *, defender_named: bool = False) -> str | None:
     """The target on the board, grounded: the focus rung. Squares of their pieces and
-    their king; the player's piece is said separately (`piece`)."""
+    their king; the player's piece is said separately (`piece`). `defender_named`: the
+    loose piece's defender is named beside it (`story.defence`, a defender with another
+    job), so the target does not also say nothing defends it."""
     if idea.goal in ("mate", "attack") and idea.target is not None:
         free = [chess.square_name(s) for s in idea.flight]
         if not free:
@@ -765,6 +767,8 @@ def target(idea: Idea, board: chess.Board) -> str | None:
             # The tag reads the board after the blow itself: nothing defends the piece once
             # the player's blow_at-th move is on the board, not now ("nothing defends it" of
             # a piece the first move cuts off, 2026-10-01).
+            if defender_named and blow.name == "hangingPiece":
+                return f"their {_now(idea, board, theirs[0])}"
             state = "it has no safe square" if blow.name == "trappedPiece" else "nothing defends it"
             return (
                 f"their {_now(idea, board, theirs[0])}: after your {_after(idea.blow_at)}, {state}"

@@ -7,14 +7,16 @@ priority.
 A job the player sees and runs, as a download is (Tai, 2026-09-30: "we don't want to kick off a
 long running intensive cpu job without the user's notice"): its progress -- games reviewed of
 all, the game under way and its positions, the time left -- shown on the panel and in the Games
-window, and paused or resumed there at will; paused stays paused across restarts. It also steps
-aside by itself while the panel watches a game or a review room is analysing (the player's own
-work first). A review stopped part way, by either or by the app closing, keeps its positions
-(ui/review_room.py `review_row`) and goes on from there.
+window, and paused or resumed there at will; paused stays paused across restarts. It runs beside
+everything else -- a game followed, a review open -- below normal priority: only the player's
+Pause stops it (Tai, 2026-10-01: it stepped aside on its own, which he never asked for). A review
+stopped part way, by the Pause or by the app closing, keeps its positions (ui/review_room.py
+`review_row`) and goes on from there.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -30,9 +32,11 @@ from sidecoach.profile.stat_facts import keep_stats
 from sidecoach.profile.store import LibraryRow, Store
 from sidecoach.ui.review_room import NoStockfish, carry_twins, review_row
 
+log = logging.getLogger(__name__)
+
 WORKERS = 2
 STRENGTH = "standard"
-IDLE_S = 5.0  # between looks while waiting for the player's own work, or for Stockfish
+IDLE_S = 5.0  # between looks while paused, or while waiting for Stockfish
 REST_S = 30.0  # between looks when every game is reviewed
 # A game whose review failed is tried again this long after, and counted meanwhile: one failure
 # kept it out for the whole session, and out of the job's count (the review of 2026-10-01).
@@ -198,7 +202,10 @@ class Backlog:
                 keep_stats(
                     store, review.strength, ReviewedGame.model_validate_json(review.report), row
                 )
-            except Exception:  # noqa: BLE001 - a review that cannot be read is skipped
+            except Exception as exc:  # noqa: BLE001 - a review that cannot be read is skipped
+                # Said: a failure kept in silence left no way to tell why a game never reached
+                # Stats (the audit of 2026-10-02).
+                log.warning("the facts of %s's saved review could not be kept: %r", review.key, exc)
                 self._failed[review.key] = self._clock()
             return True
         return False
@@ -269,7 +276,10 @@ class Backlog:
                 self.left = max(0, self.left - 1)
         except NoStockfish:
             no_stockfish = True
-        except Exception:  # noqa: BLE001 - a game that cannot be reviewed is tried again later
+        except Exception as exc:  # noqa: BLE001 - a game that cannot be reviewed is tried again later
+            # Said: kept in silence, nothing told why a game stayed waiting (the audit of
+            # 2026-10-02).
+            log.warning("the background review of %s failed: %r", row.key, exc)
             self._failed[row.key] = self._clock()
         finally:
             self.reviewing = None

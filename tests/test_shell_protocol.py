@@ -250,6 +250,45 @@ def test_a_second_launch_attaches_through_the_lock_file(tmp_path: Path) -> None:
     listener.close()
 
 
+def test_the_lock_check_is_answered_by_a_server_that_refuses_foreign_hosts(
+    tmp_path: Path,
+) -> None:
+    """The lock check asked /api/health with `Host: x`. Since the server refuses a Host that
+    is not this machine (DNS rebinding), a live sidecar answered 403: its lock was taken for
+    stale and deleted, and a second sidecar started on the same data directory. The fake
+    answers as the server's own rule (`_refusal`) decides."""
+    import os
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    asked: list[str] = []
+
+    def serve() -> None:
+        conn, _ = listener.accept()
+        head = conn.recv(1024).decode("latin-1").split("\r\n")
+        headers = {
+            k.strip().lower(): v.strip()
+            for k, _, v in (line.partition(":") for line in head[1:] if ":" in line)
+        }
+        asked.append(headers.get("host", ""))
+        refused = server._refusal("GET", "/api/health", headers)
+        status = b"403 Forbidden" if refused else b"200 OK"
+        conn.sendall(b"HTTP/1.0 " + status + b"\r\nContent-Length: 2\r\n\r\n{}")
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    lock = tmp_path / server.LOCK_FILE
+    lock.write_text(json.dumps({"port": port, "pid": os.getpid(), "token": ""}), encoding="utf-8")
+    try:
+        assert server._attached_port(Settings(data_dir=tmp_path), "127.0.0.1") == port, asked
+        assert lock.exists(), "a live sidecar's lock is kept"
+        assert asked == [f"127.0.0.1:{port}"]
+    finally:
+        listener.close()
+
+
 def test_a_relaunch_never_attaches_to_a_sidecar_of_another_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

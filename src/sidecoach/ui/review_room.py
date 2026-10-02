@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -48,6 +49,8 @@ from sidecoach.profile.store import STRENGTH_RANK, WATCHED, LibraryRow, ReviewRo
 from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries, measured
+
+log = logging.getLogger(__name__)
 
 # Why a room has nothing more to do: its game was removed (or the profile reset) meanwhile.
 GONE = "This game is no longer in your record."
@@ -292,7 +295,13 @@ class ReviewRoom:
             }
             shown = self._shown(saved, reviewed)
         except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"
-            gone = not self.store.in_record(self.key)
+            # Whether the game went is asked of the store, which may be what failed: asked
+            # unguarded, its error ended the thread with the words "writing" for good, and the
+            # room, waiting on them, never closed (the audit of 2026-10-02).
+            try:
+                gone = not self.store.in_record(self.key)
+            except Exception:  # noqa: BLE001 - the failure said is the words'
+                gone = False
             with self._lock:
                 self.words_status, self.words_error = "failed", GONE if gone else str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
@@ -698,7 +707,10 @@ def rederive(store: Store) -> int:
             row = library.find(store, key)
             if counted.get(key) == strength and row is not None:
                 keep_stats(store, strength, reviewed, row)
-        except Exception:  # noqa: BLE001 - a review that cannot be read is left as it is
+        except Exception as exc:  # noqa: BLE001 - a review that cannot be read is left as it is
+            log.warning(
+                "the saved review of %s (%s) could not be summed up again: %r", key, strength, exc
+            )
             continue
         done += 1
     store.set_setting(DERIVED_KEY, str(DERIVED))
@@ -844,6 +856,7 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
                 "label": move.assessment.label.value if move.assessment.label else None,
                 "accuracy": move.assessment.accuracy,
                 "loss": round(move.assessment.expected_loss, 4),
+                "severity": move.assessment.severity.value,
                 "best_uci": best[0] if best else None,
                 "best_san": line[0]["san"] if line else None,
                 "best_line": line,

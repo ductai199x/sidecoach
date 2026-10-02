@@ -80,33 +80,58 @@ function headers(json: boolean): Record<string, string> {
   return h;
 }
 
+/** In the shell: whether the sidecar now serves on another port than this window's (a
+ *  Restart started a new one); this window follows it when it does. */
+async function moved(): Promise<boolean> {
+  if (!isTauri() || !base) return false;
+  const status = await invoke<{ port: number | null }>("sidecar_status").catch(() => null);
+  const now = status?.port ? `http://127.0.0.1:${status.port}` : "";
+  if (!now || now === base) return false;
+  base = now;
+  token = await invoke<string>("sidecar_token").catch(() => token);
+  return true;
+}
+
+/** A request to the sidecar. One that cannot reach it asks whether the sidecar moved: the
+ *  panel's Restart starts a new one on another port, and every other window (Settings, Your
+ *  games, a review, a puzzle, the captions) kept calling the old one, dead until reopened.
+ *  It is sent once more to where the sidecar is now; otherwise the failure stands. */
+async function send(path: string, init: () => RequestInit): Promise<Response> {
+  try {
+    return await fetch(base + path, init());
+  } catch (e) {
+    if (await moved()) return fetch(base + path, init());
+    throw e;
+  }
+}
+
 export async function get<T = unknown>(path: string): Promise<T> {
-  const r = await fetch(base + path, { headers: headers(false) });
+  const r = await send(path, () => ({ headers: headers(false) }));
   return (await r.json()) as T;
 }
 
 export async function post<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const r = await fetch(base + path, {
+  const r = await send(path, () => ({
     method: "POST",
     headers: headers(true),
     body: JSON.stringify(body ?? {}),
-  });
+  }));
   return (await r.json()) as T;
 }
 
 /** `keepalive`: the request is sent even if the page is closing (a save on the way out). */
 export async function put<T = unknown>(path: string, body?: unknown, opts: { keepalive?: boolean } = {}): Promise<T> {
-  const r = await fetch(base + path, {
+  const r = await send(path, () => ({
     method: "PUT",
     headers: headers(true),
     body: JSON.stringify(body ?? {}),
     keepalive: !!opts.keepalive,
-  });
+  }));
   return (await r.json()) as T;
 }
 
 export async function del<T = unknown>(path: string): Promise<T> {
-  const r = await fetch(base + path, { method: "DELETE", headers: headers(false) });
+  const r = await send(path, () => ({ method: "DELETE", headers: headers(false) }));
   return (await r.json()) as T;
 }
 
