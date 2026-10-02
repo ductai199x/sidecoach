@@ -268,6 +268,15 @@ def test_the_rung_a_reply_said_is_read_from_its_words() -> None:
     assert said_level("Look for a check.", facts) is DisclosureLevel.SILENT
     long = facts.model_copy(update={"line": ["Qxf7#", "Kd8"]})
     assert said_level("Qxf7 and then Kd8 is forced.", long) is DisclosureLevel.LINE
+    # A pawn move is named only as a whole move: "e4" is not named by "Nxe4" or "Qe4" (the phone
+    # read it as a square; the round-3 parity audit). The phone twin holds the same cases.
+    pawn = facts.model_copy(
+        update={"target": None, "piece": None, "candidates": ["e4"], "line": ["e4", "e5"]}
+    )
+    assert said_level("Nxe4 wins a pawn.", pawn) is DisclosureLevel.SILENT
+    assert said_level("Qe4 is fine.", pawn) is DisclosureLevel.SILENT
+    assert said_level("e4 grabs the centre.", pawn) is DisclosureLevel.MOVE
+    assert said_level("After e4 e5 it is level.", pawn) is DisclosureLevel.LINE
     ladder = Disclosure()
     assert ladder.said(DisclosureLevel.IDEA) is DisclosureLevel.IDEA
     assert ladder.said(DisclosureLevel.IDEA) is None
