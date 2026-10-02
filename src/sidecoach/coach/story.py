@@ -446,6 +446,10 @@ def effects(board: chess.Board, move: chess.Move, threat: chess.Move | None) -> 
         piece = after.piece_at(square)
         if piece is None or piece.color == us or piece.piece_type == chess.KING:
             continue
+        if move.to_square not in exchange.capturers(after, us, square):
+            # A line it cannot take along is no attack: a pinned piece, or a king onto a
+            # guarded piece (the facts audit, 2026-10-01).
+            continue
         loose = not exchange.defenders(after, piece.color, square)
         if trapped(after, square):
             out.append(

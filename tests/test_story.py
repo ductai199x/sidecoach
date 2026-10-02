@@ -329,3 +329,13 @@ def test_covers_only_when_the_moved_piece_guards_it() -> None:
     assert not any(s.startswith("covers") for s in said)
     said = [e.said for e in story.effects(board, board.parse_san("g3"), None)]
     assert "covers your pawn on f4" in said
+
+
+def test_attacks_only_what_the_moved_piece_can_take() -> None:
+    """Kf7 next to a rook on e8 that the queen on e5 guards: no attack, the king cannot take
+    (the facts audit, 2026-10-01)."""
+    from sidecoach.coach import story
+
+    board = chess.Board("1r2R1k1/p5p1/2p4p/2PpQ3/2nP4/B3PP1P/P5PK/4q3 b - - 10 34")
+    said = [e.said for e in story.effects(board, board.parse_san("Kf7"), None)]
+    assert not any(s.startswith("attacks") for s in said)
