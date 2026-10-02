@@ -1568,7 +1568,13 @@ class Speaker(
         }
     }
 
+    /**
+     * Stop: what is queued is dropped unasked (the session is gone; nobody would hear it, and
+     * each would be paid), and a call in flight is not asked again.
+     */
     fun close(timeoutMs: Long = 10000) {
+        closed.countDown()
+        requests.clear()
         val running = thread
         thread = null
         if (running != null) {
@@ -1670,7 +1676,7 @@ class Speaker(
                 epoch = request.epoch,
             )
         }
-        while (attempts < 2) {
+        while (attempts < 2 && !(attempts > 0 && closed.count == 0L)) {
             attempts += 1
             var stats: MutableMap<String, Any?> = LinkedHashMap()
             var reader: FirstCandidate? = null
@@ -2093,7 +2099,7 @@ class Speaker(
     private fun run() {
         while (true) {
             val request = requests.take()
-            if (request === Stop) return
+            if (request === Stop || closed.count == 0L) return
             busy = true
             try {
                 when (request) {
