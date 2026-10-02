@@ -7,9 +7,12 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
+import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -96,6 +99,55 @@ def test_the_frame_ring_bounds_itself() -> None:
     for ts in range(5):
         ring.push(float(ts), frame)
     assert len(ring) == 3
+
+
+@pytest.mark.embedder  # a session started builds the stages: the net loads
+def test_shutdown_ends_the_session_before_the_process_goes(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: Any, capsys: Any
+) -> None:
+    """The shell's quit: /api/shutdown stops the running session and the server, and
+    run_server returns only after the session's own close ran (the review and profile)."""
+    engines: list[PanelEngine] = []
+
+    def make(settings: Settings, **_: Any) -> PanelEngine:
+        engine = make_panel(settings, frame_source=game_frames())
+        engine.warm = lambda background=True: None  # type: ignore[method-assign]
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr(server, "make_engine", make)
+    settings = Settings(data_dir=tmp_path)
+    done = threading.Event()
+
+    def serve() -> None:
+        server.run_server(settings, port=0, open_browser=False, token="t", announce=True)
+        done.set()
+
+    threading.Thread(target=serve, daemon=True).start()
+    port = 0
+    deadline = time.monotonic() + 30
+    while not port and time.monotonic() < deadline:
+        for line in capsys.readouterr().out.splitlines():
+            if line.startswith("{"):
+                port = json.loads(line)["port"]
+        time.sleep(0.05)
+    assert port
+    base = f"http://127.0.0.1:{port}"
+    auth = {"Authorization": "Bearer t"}
+    assert httpx.post(f"{base}/api/start", headers=auth).json()["ok"] is True
+    engine = engines[0]
+    deadline = time.monotonic() + 30
+    while engine.poll(0)["state"]["ply"] < 4 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert engine.running
+    # Without the token the route is refused; with it the server ends.
+    assert httpx.post(f"{base}/api/shutdown").status_code == 401
+    assert httpx.post(f"{base}/api/shutdown", headers=auth).json() == {"ok": True}
+    assert done.wait(30), "run_server did not return"
+    assert not engine.running
+    texts = [ln["text"] for ln in engine.poll(0)["lines"]]
+    assert "engine stopped" in texts  # the loop's own close ran to its end
+    assert not (tmp_path / server.LOCK_FILE).exists()
 
 
 def test_a_second_launch_attaches_through_the_lock_file(tmp_path: Path) -> None:

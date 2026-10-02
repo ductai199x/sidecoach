@@ -288,6 +288,17 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     def stop() -> dict[str, bool]:
         return {"ok": api.stop()}
 
+    @app.post("/api/shutdown")
+    def shutdown() -> dict[str, bool]:
+        """The shell is quitting: stop the session and end the server, so its close (the
+        last game's review, the profile, Stockfish) runs before the process goes. The
+        shell waits a bounded time for the exit, then kills."""
+        engine.stop()
+        exit_server = getattr(app.state, "exit_server", None)
+        if exit_server is not None:
+            exit_server()
+        return {"ok": exit_server is not None}
+
     @app.post("/api/hint")
     def hint() -> dict[str, bool]:
         return {"ok": api.hint()}
@@ -1189,7 +1200,9 @@ def run_server(
             webbrowser.open(url)
     try:
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-        uvicorn.Server(config).run(sockets=[sock])
+        uv = uvicorn.Server(config)
+        app.state.exit_server = lambda: setattr(uv, "should_exit", True)
+        uv.run(sockets=[sock])
     finally:
         with contextlib.suppress(Exception):
             close()
