@@ -194,10 +194,10 @@ fun standing(score: Double): Int = when {
  * - Miss, "a move that missed a tactical opportunity or a chance to punish the opponent": the
  *   position offered a winning chance ([chance], read by [verdict] from the engine's lines) and
  *   the move played gave ground (a loss of an inaccuracy or more), whatever the size of the
- *   loss (Tai, 2026-10-02). And a forced mate let go ([mateLetGo], read by [verdict]): the
- *   player had a mate in N and the move played leaves none, or only a longer one -- a miss
- *   whatever it cost, even while it still wins; a move that keeps a mate as short is labelled by
- *   its loss (Tai, 2026-10-02 12:16).
+ *   loss (Tai, 2026-10-02). And a forced mate let go ([mateLetGo], read by [verdict]): a mate
+ *   in 1 not given, no mate left, or one [MATE_LONGER] moves longer while the opponent still has
+ *   a piece -- a miss whatever it cost, even while it still wins; any other longer mate is
+ *   labelled by its loss (Tai, 2026-10-02 12:50).
  * - Great, "a move that altered the course of the game": the best move where every other lost
  *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
  *   Merely the best move after any error was great 30 times in the six games where chess.com
@@ -293,17 +293,37 @@ fun mateAfter(move: Move, after: Board, beforeLines: List<Line>, afterLines: Lis
 }
 
 /**
- * The player had a forced mate in N, and [move] leaves none or only a longer one (Tai,
- * 2026-10-02 12:16: a mate in 5 traded for a move that keeps the advantage is a miss, a mate in
- * 1 traded for a mate in 2 is a miss, another mate in 3 for a mate in 3 is fine). The engine's
- * own first move is never one ([labelMove] checks it). `score.mate_let_go`.
+ * How much longer a forced mate may get, in the player's moves, before letting it go is a Miss --
+ * with a piece still on the opponent's side. Tai, 2026-10-02 12:45: "instead of 1 move longer,
+ * change it to 3-4 moves longer"; 12:50: four, the rule "mate in 1 missed, or the mate gone, or
+ * 4+ moves longer" with technique endgames exempt. One move longer gave 41 Misses in the six
+ * recorded games, nearly all in won endgames chess.com left unmarked. `score.MATE_LONGER`.
+ */
+const val MATE_LONGER = 4
+
+/**
+ * The player had a forced mate in N and [move] let it go (Tai, 2026-10-02 12:50): (1) it was a
+ * mate in 1, and the move does not mate ("missing mate in 1 is a miss regardless - it's a special
+ * rule", 12:46); (2) the move leaves no forced mate at all; (3) or the mate gets [MATE_LONGER] or
+ * more of the player's moves longer while the opponent still has a piece -- against a bare king,
+ * or a king and pawns, the technique mate is the method to learn, and a longer route is fine. Any
+ * other longer mate is labelled by its loss. The engine's own first move is never one ([labelMove]
+ * checks it). No deeper search for "no mate left": the analyses the labels use decide.
+ * `score.mate_let_go`.
  */
 fun mateLetGo(move: Move, after: Board, beforeLines: List<Line>, afterLines: List<Line>): Boolean {
     val top = beforeLines.firstOrNull()
     if (top?.mate == null || top.mate <= 0) return false
-    val kept = mateAfter(move, after, beforeLines, afterLines)
-    return kept == null || kept > top.mate
+    val kept = mateAfter(move, after, beforeLines, afterLines) ?: return true
+    if (top.mate == 1) return kept != 1
+    return kept >= top.mate + MATE_LONGER && hasAPiece(after, after.turn)
 }
+
+/** Whether [colour] has anything but its king and pawns. `score._has_a_piece`. */
+private fun hasAPiece(board: Board, colour: Boolean): Boolean =
+    board.pieceMap().values.any {
+        it.colour == colour && it.pieceType != com.sidecoach.chess.KING && it.pieceType != com.sidecoach.chess.PAWN
+    }
 
 /**
  * The label of [move] from [before], read off the two positions' measured lines: the

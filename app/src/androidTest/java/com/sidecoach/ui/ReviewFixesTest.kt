@@ -99,8 +99,8 @@ class ReviewFixesTest {
             val words = JSONObject().put("model", "luna").put("cost", 0.03)
                 .put("texts", JSONObject().put("4", JSONObject().put("why", "Paid for."))).toString()
             store.setReviewWords(row.key, "fast", words)
-            // Relabelled by the rule before the mate rule (Tai, 2026-10-02 12:16): made again.
-            store.setSetting(ReviewRoom.DERIVED_KEY, "3")
+            // Relabelled by an earlier mate rule (stamp 4, Tai 12:16): made again (12:50).
+            store.setSetting(ReviewRoom.DERIVED_KEY, "4")
             val folder = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "relabel-book").apply {
                 deleteRecursively()
                 mkdirs()

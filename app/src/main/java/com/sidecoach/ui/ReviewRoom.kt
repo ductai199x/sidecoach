@@ -643,8 +643,9 @@ class ReviewRoom(
         // the move labels are made again by today's rule (a miss is failing to punish the
         // opponent's error; chess.com's great, brilliant and book) and the openings named as
         // Lichess names them (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a
-        // longer one -- is a miss (Tai, 2026-10-02 12:16).
-        const val DERIVED = 4
+        // longer one -- is a miss (Tai, 2026-10-02 12:16). 5: only a mate in 1 not given, no mate
+        // left, or one 4+ moves longer with a piece on the opponent's side (Tai, 2026-10-02 12:50).
+        const val DERIVED = 5
         const val DERIVED_KEY = "reviews.derived"
 
         /**
