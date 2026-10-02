@@ -739,7 +739,7 @@ class GamePipeline(
     private fun endInProgress(reason: String): MutableList<Event> {
         val previous = reconciler
         if (previous == null || !previous.inProgress || previous.finished) return mutableListOf()
-        return mutableListOf(previous.endedEvent("*", reason))
+        return mutableListOf(previous.replacedEvent(reason))
     }
 
     /**

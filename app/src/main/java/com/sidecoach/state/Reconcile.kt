@@ -180,6 +180,22 @@ fun lastMoveSeen(board: Board, highlighted: Set<Int>): LastMoveSeen? {
     return LastMoveSeen(movers.first(), ep)
 }
 
+/**
+ * The result a game's final position proves and how, in the words the review reads; null when it
+ * proves none (the game was resigned, flagged, agreed or left). A draw by repetition or by fifty
+ * moves counts only when it was played -- the position on the board for the third time, or the
+ * hundredth half-move without a capture or a pawn move -- as the sites draw it, never one the next
+ * move could reach (the library's `stat_facts.ended_by`). `reconcile.result_on_board`.
+ */
+fun resultOnBoard(board: Board): Pair<String, String>? = when {
+    board.isCheckmate() -> (if (board.turn == WHITE) "0-1" else "1-0") to "checkmate"
+    board.isStalemate() -> "1/2-1/2" to "stalemate"
+    board.isInsufficientMaterial() -> "1/2-1/2" to "insufficient material"
+    board.isRepetition(3) -> "1/2-1/2" to "repetition"
+    board.halfmoveClock >= 100 -> "1/2-1/2" to "fifty-move rule"
+    else -> null
+}
+
 private fun turnValid(board: Board, turn: Boolean): Boolean {
     board.turn = turn
     return board.isValid()
@@ -561,7 +577,7 @@ class Reconciler(
 
     /** The game under way ended, unless it had, and a new one begun from the start (`_restart`). */
     private fun restart(): MutableList<Event> {
-        val events = if (finishedFlag) mutableListOf<Event>() else mutableListOf<Event>(endedEvent("*", "new game started"))
+        val events = if (finishedFlag) mutableListOf<Event>() else mutableListOf<Event>(replacedEvent("new game started"))
         events.addAll(start())
         return events
     }
@@ -2059,6 +2075,16 @@ class Reconciler(
         pending = null
         resultValue = result
         return mutableListOf(endedEvent(result, reason))
+    }
+
+    /**
+     * The game under way ended because the next one replaced it, before its result was seen
+     * (`replaced_event`): its result is what its final position proves ([resultOnBoard]), and "*"
+     * only when the position proves nothing (Tai, 2026-10-02).
+     */
+    fun replacedEvent(reason: String): GameEnded {
+        val proved = resultOnBoard(board) ?: return endedEvent("*", reason)
+        return endedEvent(proved.first, proved.second)
     }
 
     /** The GameEnded of this game as it stands (`ended_event`): also the pipeline's, for a game it drops. */
