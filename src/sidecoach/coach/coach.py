@@ -2748,7 +2748,7 @@ class Coach:
             self.profile_answers.append(("answer", answer))
             self._queue_plain(Trigger.USER_ASK, answer.text, ts, record_now=True)
 
-        threading.Thread(target=run, name="profile-ask", daemon=True).start()
+        self.spawn(run, "profile-ask")
 
     def hint(self, ts: float) -> None:
         self.ask("hint", ts)

@@ -977,7 +977,7 @@ def test_the_buttons_are_the_models_to_answer_and_the_templates_offline() -> Non
 
 
 def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any() -> None:
-    import threading
+    from collections.abc import Callable
 
     from sidecoach.coach.coach import may_carry_claims
 
@@ -989,28 +989,26 @@ def test_claims_are_checked_off_the_callers_thread_and_only_when_there_are_any()
     assert may_carry_claims("can I castle")
 
     calls: list[str] = []
-    started, release = threading.Event(), threading.Event()
 
-    def slow_claims(text: str, board: chess.Board, facts: object) -> list[str]:
-        calls.append(threading.current_thread().name)
-        started.set()
-        release.wait(5.0)  # held until the test has seen the caller come back
+    def claims(text: str, board: chess.Board, facts: object) -> list[str]:
+        calls.append(text)
         return ["'Nf3 is good': not the strongest, Qxf7# mates"]
 
     provider = ScriptedProvider(["Not quite. What is your most active piece already eyeing?"])
     coach = Coach(
-        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=slow_claims
+        provider, policy=InterjectionPolicy(PolicySettings(stuck_seconds=10)), claims=claims
     )
+    # The work handed off is kept, and run when the test chooses: no threads, no waits
+    # (rewritten from Events and timed joins, Tai's rule of 2026-10-01).
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
-    # ask() comes back while the check is still held: the caller never waits on it.
+    # ask() comes back with the check not yet run: the caller never waits on it.
     coach.ask("is Nf3 good here", 8.0)
-    assert started.wait(5.0)
-    assert calls == ["sidecoach-claims"] and calls[0] != threading.main_thread().name
-    release.set()
-    for thread in threading.enumerate():
-        if thread.name == "sidecoach-claims":
-            thread.join(5.0)
+    assert calls == [] and [name for _, name in spawned] == ["sidecoach-claims"]
+    spawned.pop()[0]()
+    assert calls == ["is Nf3 good here"]
     out = drain(coach)
     assert [m.text for m in out] == ["Not quite. What is your most active piece already eyeing?"]
     assert "Their claims, checked against the board" in provider.prompts[0][1][-1]["content"]
@@ -1557,7 +1555,7 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     """The record's answerer is asked off the coach's thread; the answer is spoken as the
     coach's turn, the player's words and a note of the lookup join the conversation, and
     the queries are kept for the log. Questions about this game stay with the game."""
-    import time
+    from collections.abc import Callable
 
     from sidecoach.profile.ask import Answer, Exchange
 
@@ -1575,10 +1573,13 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
         )
 
     coach.profile_ask = lookup
+    # Off the coach's thread: the work handed off, run here when the test chooses (rewritten
+    # from a sleep-and-poll loop, Tai's rule of 2026-10-01).
+    spawned: list[tuple[Callable[[], None], str]] = []
+    coach.spawn = lambda work, name: spawned.append((work, name))
     coach.ask("why am I always losing in the middlegame?", 7.0)
-    deadline = time.monotonic() + 5
-    while not coach.profile_answers and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert asked == [] and [name for _, name in spawned] == ["profile-ask"]
+    spawned.pop()[0]()
     said = drain(coach)
     assert asked == ["why am I always losing in the middlegame?"]
     assert (
