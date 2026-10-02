@@ -467,3 +467,18 @@ def test_the_calls_go_a_few_at_a_time() -> None:
     finally:
         review_words.PARALLEL = parallel
     assert most == 2
+
+
+def test_no_call_is_made_once_told_to_stop() -> None:
+    """The game removed while its words are written: the calls not made yet are not made."""
+    model = _Model(dict.fromkeys((3, 4, 6), {"why": "White played Nf3 early."}))
+    words = review_words.write(
+        _game(),
+        model,
+        user="black",
+        opening=None,
+        prices=Prices(),
+        answered={3: "### why\nWhite played Nf3 early."},
+        stop=lambda: True,
+    )
+    assert model.asked == [] and words.failed == {4, 6}

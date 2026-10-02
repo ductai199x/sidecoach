@@ -661,6 +661,7 @@ def write(
     thinking: bool = False,
     answered: dict[int, str] | None = None,
     on_answer: Callable[[int, str, dict[str, Any]], None] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> ReviewWords:
     """The model's review of the game's key moves, checked: a call a move, all at once. Without
     thinking unless asked: a small model reasons worse about chess, not better (Tai,
@@ -668,7 +669,8 @@ def write(
     fails (and none was answered before), the first failure is raised. `answered`: the answers
     already paid for (words the app was closed in the middle of), not asked again;
     `on_answer(ply, text, stats)` is handed each new answer the moment it arrives, to keep it.
-    The cost is of the new calls."""
+    `stop()` true asks no more (the game removed meanwhile): the calls not made fail. The cost
+    is of the new calls."""
     answered = dict(answered or {})
     plies = key_plies(game)
     words = ReviewWords(texts={}, model=getattr(provider, "model", ""))
@@ -681,6 +683,8 @@ def write(
         provider = at_effort("none")
 
     def ask(ply: int) -> Completion | Exception:
+        if stop is not None and stop():
+            return RuntimeError("stopped")
         try:
             return provider.chat(
                 SYSTEM,

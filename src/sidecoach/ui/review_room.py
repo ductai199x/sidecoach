@@ -49,6 +49,8 @@ from sidecoach.ui import review_analysis
 from sidecoach.ui.log import DebugLog
 from sidecoach.ui.review_retry import Retries, measured
 
+# Why a room has nothing more to do: its game was removed (or the profile reset) meanwhile.
+GONE = "This game is no longer in your record."
 # The review's format: a review saved in an older one is done again.
 REVIEW_VERSION = 1
 # What a review's summary and its Stats facts are made of from its report (`rederive`): raised
@@ -204,6 +206,10 @@ class ReviewRoom:
                 return None
             if model is None:
                 return unavailable
+            if not self.store.in_record(self.key):
+                # Removed meanwhile: the words would be paid for and saved on nothing (the
+                # review of 2026-10-01).
+                return GONE
             self.words_status, self.words_error = "writing", None
             reviewed = self.reviewed
         threading.Thread(
@@ -247,7 +253,10 @@ class ReviewRoom:
                 thinking=reasons,
                 answered=answered,
                 on_answer=keep,
+                stop=lambda: not self.store.in_record(self.key),
             )
+            if not self.store.in_record(self.key):
+                raise RuntimeError(GONE)
             if words.failed:
                 # Some calls failed: the answers paid for are kept (`keep`), and Try again asks
                 # the rest. They were saved as done, the failed moves without words for good and
@@ -271,8 +280,9 @@ class ReviewRoom:
             }
             shown = self._shown(saved, reviewed)
         except Exception as exc:  # noqa: BLE001 - a failure is said, never left "writing"
+            gone = not self.store.in_record(self.key)
             with self._lock:
-                self.words_status, self.words_error = "failed", str(exc)
+                self.words_status, self.words_error = "failed", GONE if gone else str(exc)
             self._emit("sys", "error", f"the AI coach's words failed: {exc!r}")
             return
         # The room stays open while they are written (`_run`), so its store is open to keep them.
@@ -462,7 +472,7 @@ class ReviewRoom:
             if not self._stop.is_set():  # not stopped: the game went from the record meanwhile
                 with self._lock:
                     self.status = "failed"
-                    self.error = "This game is no longer in your record."
+                    self.error = GONE
                 self._emit("sys", "warn", f"{self.key} left the record while it was reviewed")
             return
         reviewed, summary = done

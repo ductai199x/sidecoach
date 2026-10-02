@@ -796,6 +796,94 @@ def test_a_review_under_way_saves_nothing_for_a_game_removed_meanwhile(
     store.close()
 
 
+def test_a_review_window_on_a_game_removed_meanwhile_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A game removed while its review window analysed it left the page at 100% for good (the
+    review of 2026-10-01): the room ends failed, saying why."""
+    from sidecoach.config import Settings
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    progress = review_room.ReviewRoom._progress
+
+    def removing(self: Any, done: int, total: int) -> None:
+        if done == 3:
+            store.remove_game(row.key)
+        progress(self, done, total)
+
+    monkeypatch.setattr(review_room.ReviewRoom, "_progress", removing)
+    rooms = review_room.ReviewRooms(
+        Settings(data_dir=tmp_path), store_path=path, make_engine=lambda **_: FakeEngine()
+    )
+    room = rooms.open(row.key, "fast")
+    assert room is not None
+    deadline = time.monotonic() + 10
+    while room.status not in ("ready", "failed") and time.monotonic() < deadline:
+        time.sleep(0.02)
+    state = room.state()
+    assert state["status"] == "failed" and "no longer" in state["error"], state
+    room.close()
+    store.close()
+
+
+def test_no_ai_words_are_paid_for_on_a_game_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AI words on a game removed meanwhile were paid for, then saved on nothing (the review of
+    2026-10-01). Removed while they are written, no more calls are made and the room says why;
+    removed before, none are asked."""
+    from sidecoach.coach.review_words import ReviewWords
+    from sidecoach.config import Settings
+    from sidecoach.llm import factory
+    from sidecoach.profile import library
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    monkeypatch.setattr(review_room, "workers_for", lambda cores=None: 1)
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    stopped: list[bool] = []
+
+    class Model:
+        model = "gpt-x"
+
+    def write(game: Any, model: Any, **kw: Any) -> ReviewWords:
+        stopped.append(kw["stop"]())
+        store.remove_game(row.key)  # removed while the first answer is written
+        stopped.append(kw["stop"]())
+        return ReviewWords(texts={2: {"why": "a"}}, model="gpt-x", cost=0.01)
+
+    monkeypatch.setattr(factory, "make_provider", lambda llm, timeout_s=None: Model())
+    monkeypatch.setattr(review_room.review_words, "write", write)
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.provider = "local"
+    rooms = review_room.ReviewRooms(settings, store_path=path, make_engine=lambda **_: FakeEngine())
+    room = rooms.open(row.key, "fast")
+    assert room is not None
+    deadline = time.monotonic() + 10
+    while room.status != "ready" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert room.write_words() is None
+    while room.words_status == "writing" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert stopped == [False, True], "no more calls once it is gone"
+    assert (room.words_status, room.words_error) == ("failed", review_room.GONE)
+    assert room.write_words() == review_room.GONE, "none asked on a game gone"
+    room.close()
+    store.close()
+
+
 def test_the_review_saved_first_stays_with_the_words_paid_for(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
