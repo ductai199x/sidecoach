@@ -61,15 +61,8 @@ def row_for(
     a hash of its moves and players, so the same game pasted twice is one game."""
     headers = game.headers
     pgn = str(game)
-    names = {n.strip().lower() for n in user_names if n.strip()}
     white, black = headers.get("White"), headers.get("Black")
-    user_side = (
-        "white"
-        if white and white.lower() in names
-        else "black"
-        if black and black.lower() in names
-        else None
-    )
+    user_side = side_of(white, black, user_names)
     if key is None:
         movetext = " ".join(m.uci() for m in game.mainline_moves())
         digest = hashlib.sha1(f"{white}|{black}|{headers.get('Date')}|{movetext}".encode())
@@ -169,6 +162,23 @@ def from_lichess(
     finally:
         if client is None:
             own.close()
+
+
+def side_of(white: str | None, black: str | None, user_names: Iterable[str]) -> str | None:
+    """The player's side by their usernames, None when neither player is theirs."""
+    names = {n.strip().lower() for n in user_names if n.strip()}
+    if white and white.lower() in names:
+        return "white"
+    if black and black.lower() in names:
+        return "black"
+    return None
+
+
+def refresh(store: Store, user_names: Iterable[str]) -> None:
+    """The imported games' fields that follow the player's settings, as they read now: a game
+    brought in before the username was set has the player's side once it is set (the review of
+    2026-10-01: such a game never reached Stats, and Your games showed it sideless)."""
+    store.fill_sides([n.strip().lower() for n in user_names if n.strip()])
 
 
 def find(store: Store, key: str) -> LibraryRow | None:

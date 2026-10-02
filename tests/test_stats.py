@@ -263,6 +263,28 @@ def test_work_on_this_waits_for_several_games(tmp_path: Path) -> None:
     assert [(w["area"], w["moves"], w["games"]) for w in work] == [("opening", 4, 3)]
 
 
+def test_a_game_reviewed_before_the_username_counts_once_it_is_set(tmp_path: Path) -> None:
+    """A PGN pasted and reviewed before the username was set kept no side and never reached
+    Stats, even pasted again after (the review of 2026-10-01), and Stats said nothing of why.
+    The side is the library's as it is now; setting the username fills it."""
+    from sidecoach.profile import library
+
+    store = Store(tmp_path / "profile.sqlite")
+    row = LibraryRow("pgn:1", "pgn", 0.0, "1. e4 *", played_at=time.time(), white="Tai")
+    store.add_library_game(row)
+    store.save_stats("standard", _game("pgn:1", user_side=None), [_move(1, "white")])
+    shown = stats(store, Filter())
+    assert (shown["overview"]["games"], shown["unsided"]) == (0, 1)
+    library.refresh(store, ["tai"])
+    shown = stats(store, Filter())
+    assert (shown["overview"]["games"], shown["unsided"]) == (1, 0)
+    # Pasted again with the username known: the import's row has the side, and Stats follows.
+    other = LibraryRow("pgn:2", "pgn", 0.0, "1. e4 *", played_at=time.time(), black="Tai")
+    store.save_stats("standard", _game("pgn:2", user_side=None), [_move(2, "black")])
+    store.add_library_game(other.__class__(**{**other.__dict__, "user_side": "black"}))
+    assert stats(store, Filter())["overview"]["games"] == 2
+
+
 def test_chesscom_and_lichess_ratings_convert_both_ways() -> None:
     for rating in (800, 1000, 1500, 2200):
         assert performance.chesscom(performance.lichess(rating)) == rating

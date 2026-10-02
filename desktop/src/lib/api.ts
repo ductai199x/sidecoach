@@ -414,6 +414,8 @@ export type StatsNumbers = {
   costs: Record<string, Figure | Record<string, Figure>>;
   /** The areas that cost most, dearest first, with puzzles of their motif. */
   work: WorkArea[];
+  /** The reviewed games left out as their player's side is not known (no username set). */
+  unsided: number;
 };
 
 /** An area to work on: `area` its name ("missed.fork", "opening", "endgame.rook"...), what it

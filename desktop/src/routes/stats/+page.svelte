@@ -416,6 +416,8 @@
       <div class="rv-failed">{failure}</div>
     {:else if !numbers}
       <div class="rv-progress">Adding up your games…</div>
+    {:else if !numbers.overview.games && numbers.unsided}
+      <div class="st-empty">{plural(numbers.unsided, "reviewed game")} {numbers.unsided === 1 ? "does" : "do"} not say which side was yours. Add your chess.com or Lichess username in Settings and they count here.</div>
     {:else if !numbers.overview.games}
       <div class="st-empty">No reviewed games {filter.time_class || filter.days || filter.opponents !== "all" ? "for these filters" : "yet"}. {#if backlog}Games you bring in, and games Sidecoach watches, are reviewed in the background{backlog.waiting ? ` — ${backlog.waiting} waiting` : ""}.{:else}Every game you review in Your games counts here.{/if}</div>
     {:else if section === "overview"}

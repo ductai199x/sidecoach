@@ -622,6 +622,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             return {"ok": False, "error": str(exc)}
 
     # ---- Stats: the player's games added up (profile/stats.py; docs/stats-plan.md) ---------
+    from sidecoach.profile import library
     from sidecoach.profile import stats as stat_sums
     from sidecoach.profile.store import Store
 
@@ -634,6 +635,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     def stats_now(time_class: str = "", days: int = 0, opponents: str = "all") -> dict[str, Any]:
         store = Store(store_path)
         try:
+            library.refresh(store, _user_names(engine))
             numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
             _drills(numbers["work"], engine.settings.data_dir, store)
         finally:
@@ -796,6 +798,12 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     return app
 
 
+def _user_names(engine: PanelEngine) -> list[str]:
+    """The player's usernames from Settings."""
+    profile = engine.settings.profile
+    return [n for n in (profile.chesscom_user, profile.lichess_user) if n]
+
+
 def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
     """The games Game Review can open, the latest played first -- imported and watched, a
     watched game its import stands for once, as the import -- each with its review's
@@ -806,6 +814,7 @@ def _library(engine: PanelEngine, store_path: Path) -> dict[str, Any]:
 
     store = Store(store_path)
     try:
+        library.refresh(store, _user_names(engine))
         twins = library.reconcile(store)
         carry_twins(store, twins)  # a pair's review goes with the import that stands for it
         watched = [r for r in library.from_watched(store) if r.key not in twins]

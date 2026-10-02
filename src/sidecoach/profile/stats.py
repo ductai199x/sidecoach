@@ -183,6 +183,9 @@ def stats(store: Store, f: Filter) -> dict[str, Any]:
         compare(out, peers[0])
         out["peers"] = {"rating": performance.for_site(peers[0], _site(d)), "from": peers[1]}
     out["work"] = work(out["costs"])
+    # The reviewed games whose player's side is not known (no username of theirs in them): the
+    # page says why they are left out, rather than showing nothing (the review of 2026-10-01).
+    out["unsided"] = sum(1 for g in store.stat_games() if g["user_side"] not in ("white", "black"))
     return out
 
 

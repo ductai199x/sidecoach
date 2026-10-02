@@ -194,6 +194,8 @@ class Backlog:
         """The games no review covers, the latest played first; a watched game its import
         stands for is the import's to review. Counts the job's games as it goes: a game whose
         review failed is counted, waiting, though it is not tried again until later."""
+        profile = self.settings.profile
+        library.refresh(store, [n for n in (profile.chesscom_user, profile.lichess_user) if n])
         twins = library.reconcile(store)
         carry_twins(store, twins)
         imported = store.library()

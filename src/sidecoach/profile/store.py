@@ -945,6 +945,22 @@ class Store:
             )
             self._db.commit()
 
+    def fill_sides(self, names: Sequence[str]) -> None:
+        """The player's side in each imported game that has none, by their usernames (lower
+        case): a game brought in before the username was set."""
+        if not names:
+            return
+        marks = ",".join("?" * len(names))
+        with self._lock:
+            self._db.execute(
+                f"UPDATE library SET user_side = CASE WHEN lower(white) IN ({marks}) THEN 'white'"
+                f" WHEN lower(black) IN ({marks}) THEN 'black' END"
+                f" WHERE user_side IS NULL AND (lower(white) IN ({marks})"
+                f" OR lower(black) IN ({marks}))",
+                (*names, *names, *names, *names),
+            )
+            self._db.commit()
+
     def library(self) -> list[LibraryRow]:
         """Every imported game, the latest played first. Every one: the Games window listed 500
         while the background review and Stats counted all (the review of 2026-10-01), and the
@@ -1129,10 +1145,17 @@ class Store:
         """The reviewed games' facts, each game once: a watched game its import stands for is
         left out once the import's own facts are kept. Until then the watched game counts (the
         review of 2026-10-01: a game whose record differed from its import left Stats the moment
-        the import came in, until the import was reviewed -- on the phone, until it was opened)."""
+        the import came in, until the import was reviewed -- on the phone, until it was opened).
+        The player's side and the time class are the library's as it is now, when it has the
+        game: a game reviewed before the username was set kept no side and never reached Stats
+        (the review of 2026-10-01)."""
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM stat_games WHERE key NOT IN ({_STOOD_FOR}) ORDER BY played_at"
+                "SELECT s.key, s.strength, s.source, s.played_at, s.bot, s.result, s.opening,"
+                " s.termination, COALESCE(l.user_side, s.user_side) AS user_side,"
+                " COALESCE(l.time_class, s.time_class) AS time_class"
+                " FROM stat_games s LEFT JOIN library l ON l.key = s.key"
+                f" WHERE s.key NOT IN ({_STOOD_FOR}) ORDER BY s.played_at"
             ).fetchall()
         return [{**dict(r), "bot": bool(r["bot"])} for r in rows]
 
