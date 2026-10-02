@@ -1,9 +1,10 @@
 """How long the vision pipeline takes to see a move: per-frame cost and move-to-commit delay.
 
 A game is rendered frame by frame with `tests/synth.py` (so every move's first frame is known
-exactly) and fed to `GamePipeline` at the capture's frame rate. For each move it reports the
-frame it first shows on and the frame `MovePlayed` comes out on; for every frame, the wall time
-of `process`. Nothing else runs: no engine, no coach, no voice.
+exactly) and fed at the capture's frame rate through what the panel's loop runs on each frame:
+the change gate on the board (`board_gate`, `ChangeGate.changed`), then `GamePipeline.process`.
+For each move it reports the frame it first shows on and the frame `MovePlayed` comes out on;
+for every frame, the wall time of that tick. Nothing else runs: no engine, no coach, no voice.
 
 Run it with the installed app's interpreter to measure the shipped runtime as the app uses it
 (the piece net on the GPU when there is one):
@@ -32,6 +33,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.append(str(REPO))
 
 from sidecoach.events import Event, MovePlayed  # noqa: E402
+from sidecoach.replay.recording import ChangeGate, board_gate  # noqa: E402
 from sidecoach.state.pipeline import GamePipeline  # noqa: E402
 from tests.synth import synthetic_board  # noqa: E402
 
@@ -82,13 +84,17 @@ class Result:
 
 def run(screen: Screen, fps: float, sans: Sequence[str]) -> Result:
     pipe = GamePipeline()
+    gate = ChangeGate(keyframe_interval_s=1.0)  # the panel's
     clock = 0.0
     step = 1.0 / fps
 
     def tick(frame: np.ndarray) -> tuple[list[Event], float]:
+        """One tick of the panel's loop (`PanelEngine` in ui/panel.py), timed."""
         nonlocal clock
         start = time.perf_counter()
-        events = pipe.process(frame, clock)
+        gate.region = board_gate(pipe.board, screen.width, screen.height)
+        changed = gate.changed(frame, clock)
+        events = pipe.process(frame, clock, changed=changed)
         clock += step
         return events, time.perf_counter() - start
 
