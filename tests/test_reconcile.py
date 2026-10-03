@@ -821,6 +821,55 @@ def test_a_new_board_more_than_one_move_from_the_brief_one_is_adopted_alone() ->
 # Two moves away from PUZZLE's board (h6, Rd8+): no single move joins them.
 MIDGAME_AFTER = "3R2k1/5pp1/7p/8/8/8/5PPP/6K1 b - - 1 2"
 
+# Tai's puzzle on the Pixel (2026-10-03), as read: the knight on h4, on the highlighted
+# square of the site's opening move, read as a bishop.
+MISREAD_PUZZLE = "5rk1/ppp2ppp/2n3b1/2br4/6PB/1P2P2P/PB2BP2/R4RK1 b - - 0 1"
+
+
+def test_a_piece_misread_in_a_position_read_cold_is_corrected_by_its_move() -> None:
+    """A position read from the screen with one piece of the wrong kind: its first move looked
+    illegal, and the game's next moves went unread until a resync seconds later (Tai's
+    puzzle: Nxg6, hxg6 and Bf3 lost). The move that fits only with the piece corrected is
+    played from the corrected position, and the game goes on from it."""
+    model, rec = _setup(Side.BLACK)
+    shown = chess.Board(MISREAD_PUZZLE)  # what the screen reads: a bishop on h4
+    events = rec.start_from(shown.copy(), ts=0.0)
+    assert any(isinstance(e, GameStarted) for e in events)
+    ts = _play(model, rec, shown, ["Rd2"], bottom=Side.BLACK, ts=0.0)
+    assert rec.board.piece_at(chess.H4) == chess.Piece(chess.BISHOP, chess.WHITE)
+    truth = rec.board.copy()
+    truth.set_piece_at(chess.H4, chess.Piece(chess.KNIGHT, chess.WHITE))
+    events = []
+    move = truth.push_san("Nxg6")  # the knight moves: its kind read right where it lands
+    for k in range(4):
+        events += _feed(model, rec, truth, Side.BLACK, ts + 0.5 + 0.1 * k, highlight=move)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert len(resyncs) == 1 and resyncs[0].reason == "the bishop read on h4 was a knight"
+    assert sans_of(events) == ["Nxg6"]
+    events = []
+    for san in ["hxg6", "Bf3"]:
+        move = truth.push_san(san)
+        for _ in range(2):
+            ts += 0.1
+            events += _feed(model, rec, truth, Side.BLACK, ts + 1.0, highlight=move)
+    assert sans_of(events) == ["hxg6", "Bf3"]
+
+
+def test_a_piece_of_a_game_played_from_the_start_is_never_taken_for_misread() -> None:
+    """Pieces of a game followed from the start position are known by their moves: a frame
+    only another kind of piece would explain is no correction, and nothing is played."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5"])
+    fake = board.copy()
+    fake.remove_piece_at(chess.F1)  # the bishop on f1 shown "moving" like a knight
+    fake.set_piece_at(chess.E3, chess.Piece(chess.KNIGHT, chess.WHITE))
+    events = []
+    for k in range(6):
+        events += _feed(model, rec, fake, Side.WHITE, ts + 0.5 + 0.1 * k)
+    assert not sans_of(events) and not [e for e in events if isinstance(e, Resync)]
+
 
 def test_start_position_after_a_resync_is_a_new_game() -> None:
     model, rec = _setup()

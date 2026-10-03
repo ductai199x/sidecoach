@@ -338,6 +338,12 @@ class Reconciler:
     brief_frames: int = 2
     # How long before the adopted board the brief one may have been seen and still be its start.
     brief_recent_s: float = 2.0
+    # The squares of a position read from the screen whose pieces have not moved since: their
+    # kinds rest on that one read. A knight on a highlighted square read as a bishop made its
+    # first move illegal, and the game's next three moves went unread until a resync (Tai's
+    # puzzle on the Pixel, 2026-10-03); `_explain_misread` corrects such a piece by its move.
+    _read_squares: set[chess.Square] = field(default_factory=set)
+    misread_max_cells: int = 8
     # Last stable reading of every cell and the frame it was seen in, plus the key of the
     # previous frame's reading, which a reading must repeat to count as stable.
     memory_frames: int = 30
@@ -498,6 +504,9 @@ class Reconciler:
         first move's think time counts from now."""
         self.board = board
         self._base_fen = board.fen()
+        # The start position is known, not read; any other is the screen's word for it.
+        read = board.board_fen() != chess.STARTING_BOARD_FEN
+        self._read_squares = set(board.piece_map()) if read else set()
         self._finished = False
         self._result = None
         self._last_commit_ts = self._ts
@@ -884,6 +893,9 @@ class Reconciler:
         explained = self._explain_paths(obs, diff, obs)
         if explained is not None:
             return events + explained
+        corrected = self._explain_misread(obs, diff)
+        if corrected is not None:
+            return events + corrected
         stale = (
             {sq for sq in diff if self._stale[sq][1] > self.stale_after}
             if self.viewing is None
@@ -1674,6 +1686,65 @@ class Reconciler:
             return self._settle(key, full_obs, self._commit_moves(paths[0]))
         return None
 
+    def _explain_misread(self, obs: Observation, diff: set[chess.Square]) -> list[Event] | None:
+        """A move that fits only if one piece of a position read from the screen, never moved
+        since, is of another kind: the piece has left its square, and the one story found with
+        it of that kind lands it where the frame reads that kind. The position is adopted
+        again with the piece corrected, and the story is played from it. Without this the
+        game stood on a piece that could not make the move it made, and every move after it
+        went unread until the board was adopted afresh (Tai's puzzle, 2026-10-03: a knight
+        on h4 read as a bishop; Nxg6, hxg6 and Bf3 lost)."""
+        if self._finished or self.viewing is not None or self._turn_unknown:
+            return None
+        if len(diff) > self.misread_max_cells:
+            return None  # a new board, not a move or two: the resync's to adopt
+        found: list[tuple[chess.Square, chess.Board, Explanation]] = []
+        for square in diff & self._read_squares:
+            piece = self.board.piece_at(square)
+            reading = obs.get(square)
+            if piece is None or piece.piece_type == chess.KING:
+                continue
+            if reading is None or reading.kind != "empty":
+                continue
+            for kind in (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
+                if kind == piece.piece_type:
+                    continue
+                if kind == chess.PAWN and chess.square_rank(square) in (0, 7):
+                    continue
+                trial = self.board.copy(stack=False)
+                trial.set_piece_at(square, chess.Piece(kind, piece.color))
+                if not _turn_valid(trial, trial.turn):
+                    continue
+                stories = single_explanations(trial, obs, diff) or self._path_explanations(
+                    obs, diff, trial
+                )
+                found += [(square, trial, story) for story in stories]
+        if len(found) != 1:
+            return None
+        square, trial, story = found[0]
+        if not any(move.from_square == square for move in story):
+            return None
+        if not self._highlight_ok(obs, story, trial):
+            return None
+
+        def commit() -> list[Event]:
+            was = self.board.piece_at(square)
+            now = trial.piece_at(square)
+            assert was is not None and now is not None
+            read, since = self._read_squares - {square}, self._last_commit_ts
+            self._set_position(trial)
+            # Still the same game: the pieces that had moved stay known, and the move's
+            # think time counts from the last move, not from the correction.
+            self._read_squares, self._last_commit_ts = read, since
+            name = chess.piece_name(was.piece_type)
+            reason = (
+                f"the {name} read on {chess.square_name(square)} was a "
+                f"{chess.piece_name(now.piece_type)}"
+            )
+            return self._resynced(reason) + self._commit_moves(story)()
+
+        return self._settle(("misread", square, story), obs, commit)
+
     def _flight(self, moves: Explanation) -> bool:
         """Whether `moves`, the pending story or a story built on it, catch a piece in flight:
         the pending story seen on one frame only -- a piece that stood still on a square was
@@ -2037,7 +2108,7 @@ class Reconciler:
         needed = (
             self.settle_frames
             + (1 if len(moves) > 1 else 0)
-            + (1 if key[0] == "moves-cautious" else 0)
+            + (1 if key[0] in ("moves-cautious", "misread") else 0)
         )
         if self._pending[1] < needed:
             return []
@@ -2170,6 +2241,7 @@ class Reconciler:
         if self._last_commit_ts is not None and self._ts > self._last_commit_ts:
             think_ms = int(round((self._ts - self._last_commit_ts) * 1000))
         self._last_commit_ts = self._ts
+        self._read_squares -= {move.from_square, move.to_square}
         self.board.push(move)
         ply = len(self.board.move_stack)
         events: list[Event] = [
