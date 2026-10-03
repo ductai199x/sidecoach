@@ -440,7 +440,35 @@ object PanelEngine {
             )
             while (records.size > KEPT) records.removeFirst()
         }
+        toLogcat(chan, level, text, data)
     }
+
+    /**
+     * Every record in Android's log too, as `sidecoach.<chan>`, so the coach's whole story --
+     * each message, why one went unspoken, each model call -- can be read over adb at any time
+     * (Tai, 2026-10-02: the in-memory log reached disk only by Debug > Dump, and a release build
+     * keeps its files from adb). A long record goes in pieces: logcat cuts a line at about 4 KB.
+     */
+    private fun toLogcat(chan: String, level: String, text: String, data: JSONObject?) {
+        val priority = when (level) {
+            "error" -> android.util.Log.ERROR
+            "warn" -> android.util.Log.WARN
+            "debug" -> android.util.Log.DEBUG
+            else -> android.util.Log.INFO
+        }
+        val extra = data?.takeIf { it.length() > 0 }?.toString()
+        val whole = if (extra == null) text else "$text | $extra"
+        val tag = "sidecoach.$chan".take(23)
+        var at = 0
+        do {
+            val end = minOf(whole.length, at + LOGCAT_PIECE)
+            android.util.Log.println(priority, tag, if (at == 0) whole.substring(at, end) else "... " + whole.substring(at, end))
+            at = end
+        } while (at < whole.length)
+    }
+
+    /** The characters of a record per logcat line, under its ~4 KB cut with room for UTF-8. */
+    private const val LOGCAT_PIECE = 1800
 
     /** The position on the screen as the page shows it (`self._state.get("fen")`), or null. */
     fun fen(): String? = synchronized(lock) { state["fen"] as? String }
