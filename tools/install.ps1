@@ -61,7 +61,7 @@ Write-Host "installed com.sidecoach $version on $Serial at $updated ($commit)"
 
 if ($Voice) {
     $fast = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\data\models\kokoro\kokoro-v1.0-q8.onnx"
-    if (-not (Test-Path $fast)) { throw "no $fast: run the desktop's tools\kokoro_fast.py first" }
+    if (-not (Test-Path $fast)) { throw "no ${fast}: run the desktop's tools\kokoro_fast.py first" }
     $dir = "/sdcard/Android/data/com.sidecoach/files/models/kokoro"
     $size = (Get-Item $fast).Length
     $there = "$(& $adb -s $Serial shell "stat -c %s $dir/kokoro-v1.0-q8.onnx 2>/dev/null || echo none")".Trim()
