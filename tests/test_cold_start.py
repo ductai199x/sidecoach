@@ -212,6 +212,30 @@ def test_a_game_joined_from_the_middle_is_adopted_without_being_asked(tmp_path: 
     assert played[0].think_ms is not None and played[0].think_ms < 12_000
 
 
+def test_a_puzzle_read_cold_keeps_the_opening_move_played_before_it_was_adopted(
+    tmp_path: Path,
+) -> None:
+    """The first puzzle of a session, read cold: its first board is read once before the site
+    plays the opening move, and three reads of the board after it adopt the game. The first
+    board is the start and the opening move is played (Tai's puzzles, 2026-10-03)."""
+    from sidecoach.events import MovePlayed
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    puzzle = chess.Board("6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1")
+    live = GamePipeline(cache=cache)
+    events = _tick(live, synthetic_board(board=puzzle, coordinates=True), 0.0)
+    opening = puzzle.push_san("h6")
+    after = synthetic_board(board=puzzle, coordinates=True, highlight=opening)
+    for i in range(1, 6):
+        events += _tick(live, after, 0.6 * i)
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert len(started) == 1 and started[0].kind == "position"
+    assert started[0].start_fen.split()[0] == "6k1/5ppp/8/8/8/8/5PPP/3R2K1", "the first board"
+    assert [e.san for e in events if isinstance(e, MovePlayed)] == ["h6"]
+    assert live.reconciler is not None and live.reconciler.board.turn == chess.WHITE
+
+
 def test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock(
     tmp_path: Path,
 ) -> None:

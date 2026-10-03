@@ -91,6 +91,9 @@ CLOCK_TURN_FRESH_S = 3.0
 COLD_START_EVERY_S = 0.5
 COLD_START_HOLD = 3
 COLD_START_EXPIRE_S = 3.0
+# How recent a board read just before the adopted one must be to be its start, the site's
+# opening move between them (`Reconciler.start_from`'s `before`).
+COLD_BEFORE_S = 2.0
 # A board that has gone this long without being read, with no game followed on it, is
 # explained to the person once (`BoardUnread`) rather than left in silence.
 COLD_NOTICE_S = 6.0
@@ -246,6 +249,10 @@ class GamePipeline:
     # with how many times it has read the same and when it last did.
     _cold_tried: float | None = None
     _cold_candidate: tuple[_View, int, float] | None = None
+    # The read behind the candidate, and the read of the board before it with when it was
+    # last seen: the start an opening move may have been played from (`_auto_cold_start`).
+    _cold_candidate_read: _ColdRead | None = None
+    _cold_before: tuple[_ColdRead, float] | None = None
     # The last cold read and what it was read from (the lock and the side told), so pixels
     # that have not changed are not read again; since when no cold read has succeeded on
     # this lock, and whether the person has been told.
@@ -1149,12 +1156,24 @@ class GamePipeline:
         ):
             candidate = (view, candidate[1] + 1, ts)
         else:
+            if candidate is not None and self._cold_candidate_read is not None:
+                # Another board read moments ago: a new puzzle's first board, perhaps, before
+                # the site's opening move (`Reconciler.start_from`'s `before`).
+                self._cold_before = (self._cold_candidate_read, candidate[2])
             candidate = (view, 1, ts)
         self._cold_candidate = candidate
+        self._cold_candidate_read = read
         if candidate[1] < COLD_START_HOLD:
             return []
         self._cold_candidate = None
-        events = self._adopt_cold(*read, ts=ts)
+        before = None
+        if self._cold_before is not None and ts - self._cold_before[1] <= COLD_BEFORE_S:
+            prior = self._cold_before[0]
+            if prior[1] == read[1]:  # read the same way up
+                before = (prior[3], highlighted_squares(by_square(prior[2], prior[1])))
+        self._cold_before = None
+        self._cold_candidate_read = None
+        events = self._adopt_cold(*read, ts=ts, before=before)
         if events:
             self._learn_labels(frame, geometry, told=False)
         return events
@@ -1224,12 +1243,13 @@ class GamePipeline:
         readings: Readings,
         placement: chess.Board,
         ts: float | None = None,
+        before: tuple[chess.Board, frozenset[chess.Square]] | None = None,
     ) -> list[Event]:
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
         # The site's last-move highlight, for what a cold read cannot know: a pawn that has
         # just advanced two squares, and whose move it is (`reconcile.last_move_seen`).
         highlighted = highlighted_squares(by_square(readings, bottom))
-        events = reconciler.start_from(placement, ts, highlighted)
+        events = reconciler.start_from(placement, ts, highlighted, before=before)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
         # Only now, with a legal position begun, is the pipeline switched onto this theme.

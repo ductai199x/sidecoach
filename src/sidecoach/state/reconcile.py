@@ -326,6 +326,18 @@ class Reconciler:
     kind: str = "game"
     # The placement the resync would adopt, how many frames have shown it, and since when.
     _resync_candidate: tuple[str, int, float] | None = None
+    # The last two distinct placements a resync held for `brief_frames` clean frames: the
+    # placement, its highlighted squares, its view key, and when it was last seen. A new
+    # puzzle's first board stands for well under a second before the site plays the opening
+    # move, too briefly to be adopted; the board after the move was, and the move was lost
+    # (Tai's puzzles, 2026-10-03: "the coach misses the first move ... 75-80% of the time").
+    # Adopted, the board after is played from the brief one when one legal move joins them.
+    _resync_seen: list[tuple[chess.Board, frozenset[chess.Square], str, float]] = field(
+        default_factory=list
+    )
+    brief_frames: int = 2
+    # How long before the adopted board the brief one may have been seen and still be its start.
+    brief_recent_s: float = 2.0
     # Last stable reading of every cell and the frame it was seen in, plus the key of the
     # previous frame's reading, which a reading must repeat to count as stable.
     memory_frames: int = 30
@@ -1307,6 +1319,13 @@ class Reconciler:
         else:
             self._resync_candidate = (placement, 1, self._ts)
         _, frames, since = self._resync_candidate
+        if frames >= self.brief_frames:
+            # Remembered as a board shown: the start a move may have been played from.
+            seen = (loose_placement(obs), highlighted_squares(obs), placement, self._ts)
+            if self._resync_seen and self._resync_seen[-1][2] == placement:
+                self._resync_seen[-1] = seen
+            else:
+                self._resync_seen = [*self._resync_seen[-1:], seen]
         held = frames >= self.resync_hold_frames or (
             len(diff) >= self.resync_jump_cells
             and frames >= self.resync_min_frames
@@ -1324,9 +1343,23 @@ class Reconciler:
             self._resync_candidate = None
             return []
         board, self._turn_unknown = adopted
+        first = self._opening_move(board, placement, since)
+        self._resync_seen = []
         self._clear_story()
         self.viewing = None
         self._resync_candidate = None
+        if first is not None:
+            # The brief board before it is the start, and the move between them is played.
+            start, move = first
+            self._turn_unknown = False
+            if self._finished:
+                events = [self._begin(start, "position"), *self._positioned()]
+            else:
+                self._set_position(start)
+                events = self._resynced(
+                    f"position adopted after {len(diff)} unexplained cells; its first move seen"
+                )
+            return events + self._commit(move)
         if self._finished:
             # The finished game is over for good; a position that appears after it is
             # another game, seen from the middle -- or a puzzle, or an analysis board. Its
@@ -1339,6 +1372,43 @@ class Reconciler:
         if self._turn_unknown:
             reason += "; side to move pending"
         return self._resynced(reason)
+
+    def _opening_move(
+        self, after: chess.Board, placement: str, since: float
+    ) -> tuple[chess.Board, chess.Move] | None:
+        """The board shown just before the one being adopted, and the one legal move from it
+        to this one -- a new puzzle's first board and the site's opening move on it -- or
+        None. The earlier board must have held `brief_frames` clean frames, ended at most
+        `brief_recent_s` before this one began, and be one move away: anything else is a
+        jump no single move explains, and this board stands alone."""
+        prior = next((s for s in reversed(self._resync_seen) if s[2] != placement), None)
+        if prior is None or since - prior[3] > self.brief_recent_s:
+            return None
+        return self._one_move(prior[0], prior[1], after.board_fen())
+
+    def _one_move(
+        self, placed: chess.Board, highlighted: frozenset[chess.Square], target: str
+    ) -> tuple[chess.Board, chess.Move] | None:
+        """The position `placed` shows and the one legal move from it to the placement
+        `target`, when exactly one move by either side gets there."""
+        adopted = self._adopt_placement(placed, prefer=self.bottom.color, highlighted=highlighted)
+        if adopted is None:
+            return None
+        found: list[tuple[chess.Board, chess.Move]] = []
+        for turn in (chess.WHITE, chess.BLACK):
+            start = adopted[0].copy(stack=False)
+            start.turn = turn
+            if not _turn_valid(start, turn):
+                continue
+            start.ep_square = None
+            for move in start.legal_moves:
+                start.push(move)
+                hit = start.board_fen() == target
+                start.pop()
+                if hit:
+                    found.append((start.copy(stack=False), move))
+        # Exactly one move, or the jump is not read as one.
+        return found[0] if len(found) == 1 else None
 
     def _resynced(self, reason: str) -> list[Event]:
         """A new position for the game: Resync and PositionChanged, and the end when the
@@ -1427,12 +1497,18 @@ class Reconciler:
         placement: chess.Board,
         ts: float | None = None,
         highlighted: frozenset[chess.Square] = frozenset(),
+        before: tuple[chess.Board, frozenset[chess.Square]] | None = None,
     ) -> list[Event]:
         """Begin a game from an arbitrary observed position -- a puzzle or a mid-game board read
         cold from the theme cache -- rather than from the start. Rights and turn are assumed the
         same way a position resync assumes them; the game continues normally from here. `ts`
         is when the position was read, so the first move's think time counts from it (it
-        counted from zero: a first move that "took 412630 seconds")."""
+        counted from zero: a first move that "took 412630 seconds").
+
+        `before`: a placement read moments earlier, and its highlighted squares. When exactly
+        one legal move takes it to this one -- a new puzzle's first board and the site's
+        opening move, played before the read could confirm the first -- the game begins from
+        it and the move is played (`_one_move`)."""
         adopted = self._adopt_placement(
             placement, prefer=self.bottom.color, highlighted=highlighted
         )
@@ -1440,6 +1516,12 @@ class Reconciler:
             return []
         if ts is not None:
             self._ts = ts
+        if before is not None:
+            first = self._one_move(before[0], before[1], placement.board_fen())
+            if first is not None:
+                start, move = first
+                self._turn_unknown = False
+                return [self._begin(start, "position"), *self._commit(move)]
         board, self._turn_unknown = adopted
         return [self._begin(board, "position")]
 

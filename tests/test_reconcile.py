@@ -762,6 +762,66 @@ def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
 MIDDLEGAME = "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6"
 
 
+# A puzzle for White, far from the game before it: Black, to move, plays the opening move
+# (h6), then White checks on the back rank.
+PUZZLE = "6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1"
+
+
+def test_a_new_puzzles_opening_move_is_played_from_its_brief_first_board() -> None:
+    """A new puzzle's first board stands for well under a second before the site plays the
+    opening move: too briefly to be adopted, and the board after it was, so the move was lost
+    (Tai's puzzles, 2026-10-03: missed "75-80% of the time"). The brief board is the start and
+    the move is played; the solver's reply follows from there."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    puzzle = chess.Board(PUZZLE)
+    events = []
+    for k in range(2):  # the new puzzle's first board, briefly
+        events += _feed(model, rec, puzzle, Side.WHITE, ts + 1.0 + 0.1 * k)
+    opening = puzzle.push_san("h6")
+    for k in range(12):  # the site plays the opening move; the board after it holds
+        events += _feed(model, rec, puzzle, Side.WHITE, ts + 1.3 + 0.15 * k, highlight=opening)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert len(resyncs) == 1 and "its first move seen" in resyncs[0].reason
+    assert resyncs[0].fen.split()[0] == chess.Board(PUZZLE).board_fen(), (
+        "the brief board is the start"
+    )
+    assert sans_of(events) == ["h6"], "the opening move is played"
+    assert not rec.turn_unknown and rec.board.turn == chess.WHITE
+    # The solver's move follows from there.
+    check = puzzle.push_san("Rd8+")
+    events = []
+    for k in range(2):
+        events += _feed(model, rec, puzzle, Side.WHITE, ts + 5.0 + 0.1 * k, highlight=check)
+    assert sans_of(events) == ["Rd8+"]
+
+
+def test_a_new_board_more_than_one_move_from_the_brief_one_is_adopted_alone() -> None:
+    """Two boards shown in turn that no single move joins -- a page passing, two puzzles in a
+    row -- are no story: the second is adopted as it is, nothing invented between them."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    first = chess.Board(PUZZLE)
+    events = []
+    for k in range(2):
+        events += _feed(model, rec, first, Side.WHITE, ts + 1.0 + 0.1 * k)
+    second = chess.Board(MIDGAME_AFTER)
+    for k in range(12):
+        events += _feed(model, rec, second, Side.WHITE, ts + 1.3 + 0.15 * k)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert len(resyncs) == 1 and "its first move seen" not in resyncs[0].reason
+    assert resyncs[0].fen.split()[0] == second.board_fen()
+    assert not sans_of(events)
+
+
+# Two moves away from PUZZLE's board (h6, Rd8+): no single move joins them.
+MIDGAME_AFTER = "3R2k1/5pp1/7p/8/8/8/5PPP/6K1 b - - 1 2"
+
+
 def test_start_position_after_a_resync_is_a_new_game() -> None:
     model, rec = _setup()
     rec.resync_hold_frames = 3
