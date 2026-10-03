@@ -2713,6 +2713,19 @@ _SIDEWAYS = re.compile(
 )
 
 
+def asked_outright(text: str) -> Unlock | None:
+    """The move or the line asked for outright -- the Best move and Line buttons' words, or the
+    same typed or said -- opened exactly, the AI coach's as the offline one's, as it was before
+    the model read every question (0.1.57). Read by the model, the Best move button got a hint
+    on a fresh puzzle: the hint rung it was given beside the words won (Tai's Pixel, 2026-10-03:
+    "Any direct requests from user must be honored exactly and immediately")."""
+    if _ASK_LINE.search(text):
+        return Unlock.ASK_LINE
+    if _ASK_MOVE.search(text):
+        return Unlock.ASK_MOVE
+    return None
+
+
 def unlock_for(text: str, board: chess.Board, candidates: Sequence[str]) -> Unlock | None:
     """The unlock the user's words earn, if any."""
     if _ASK_LINE.search(text):
@@ -3061,10 +3074,14 @@ class Coach:
             )
             return
         offline = self._offline
-        # Only the offline coach reads the rung off the words: the keyword rules are its
-        # templates'. With the AI on the model reads what they ask, and the ladder follows what
-        # it said (`Coach._climb`; Tai, 2026-10-02).
-        unlock = unlock_for(text, position.board, position.facts.candidates) if offline else None
+        # The offline coach reads the rung off the words: the keyword rules are its templates'.
+        # With the AI on the model reads what they ask, and the ladder follows what it said
+        # (`Coach._climb`; Tai, 2026-10-02) -- but the move or the line asked for outright is
+        # opened exactly (`asked_outright`; Tai, 2026-10-03).
+        if offline:
+            unlock = unlock_for(text, position.board, position.facts.candidates)
+        else:
+            unlock = asked_outright(text)
         if position is self._current:
             # A hint asked for climbs from what the combination has had already -- in the
             # position the player faces only: climbed in the one they had moved from, a hint
@@ -4570,8 +4587,10 @@ class Coach:
             render_level if facing else None,
             past=past,
             theirs=theirs,
+            # The move or the line asked for outright is stated as the level, not as the ladder
+            # for the model to read the words against (`asked_outright`).
             ladder=self._ladder_words(now if past and now is not None else position)
-            if ai_ask and not self.finished
+            if ai_ask and not self.finished and asked_outright(user_text or "") is None
             else None,
         )
         # A question is answered as asked: its words head the Task. Found only under "Said
@@ -5018,13 +5037,18 @@ class Coach:
         said = faced.disclosure.level
         rung = self._next_rung(said)
         already = SAID_WORDS[said]
+        # Their words first, the ladder only for a hint: headed by the rung and its "keep back
+        # the answer", the task read as a ban on the move, and "what should I play" on a fresh
+        # puzzle got a hint (Tai's Pixel, 2026-10-03: "what if I ask a real question?").
         return (
-            f"What you have said of the position the player faces, by hints and answers (under "
-            f"'Said here'): {already}. A hint they ask for is the next rung of the ladder -- the "
-            "idea, then the target and the piece, then the move -- each said once and none "
-            f"lower than one already said: that is {RUNG_WORDS[rung]}. The move, the line, the "
-            "good moves, a move they name and anything about the moves played are theirs for "
-            "the asking, a hint or not."
+            "Their words decide what they get. A question is answered fully, nothing kept "
+            "back: the move ('what should I play', 'the best move', 'which move wins'), the "
+            "line, which moves are good, a move, square or piece they name, the moves played, "
+            "the threats, how they stand. Only a hint they ask for ('hint', 'help', 'I'm "
+            "stuck', 'what should I aim for') keeps the answer back: it is the next rung of "
+            "the ladder -- the idea, then the target and the piece, then the move -- each said "
+            f"once and none lower than one already said: now {RUNG_WORDS[rung]}. Said so far "
+            f"of the position they face, by hints and answers (under 'Said here'): {already}."
             + (f" {SEE_ALL_WORDS}" if DisclosureLevel.IDEA <= rung < DisclosureLevel.MOVE else "")
         )
 

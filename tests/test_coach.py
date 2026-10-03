@@ -169,17 +169,51 @@ def test_two_hints_give_the_idea_then_the_focus_and_asking_for_the_move_gives_it
     coach.ask("ok just tell me the move", 9.0)
     out = drain(coach)
     assert out[0].level is DisclosureLevel.MOVE and "Qxf7" in out[0].text
-    # Asked of the AI coach, the move is the model's to give too (Tai, 2026-09-28); what they
-    # ask is the model's to read, with the guidelines and the ladder as it stands (2026-10-02).
+    # Asked of the AI coach, the move is the model's to give too (Tai, 2026-09-28); asked for
+    # outright, the task states the move's level, not the ladder (2026-10-03).
     assert len(provider.prompts) == 3
     directive = directive_of(sent(provider, 2))
     assert "The move -- " in directive and "give it plainly, and why it works" in directive
-    assert "the idea, the target and the piece" in directive, "what the hints said so far"
+    assert directive.startswith("Disclosure for the position the player faces: the move")
     # Every earlier coach turn stands under the position: the two hints, each the model's.
     current = _current_move_message(sent(provider, 2))
     said = current.split("## Said here\n", 1)[1]
     lines = said.strip().splitlines()
     assert sum(line.startswith("    YOU (the coach) said: ") for line in lines) == 2
+
+
+def test_the_move_asked_for_first_in_a_fresh_position_is_given() -> None:
+    """Tai's Pixel, 2026-10-03: the Best move button ("what should I play") on a fresh puzzle got
+    a hint -- the AI coach was told the hint rung beside the words, and the rung won. The move
+    or the line asked for outright opens it exactly, and the task says so, not the ladder; a
+    real question is answered fully; a hint keeps the answer back."""
+    for asked, level in (
+        ("what should I play", DisclosureLevel.MOVE),
+        ("show me the line", DisclosureLevel.LINE),
+    ):
+        coach, provider = scripted_coach(["Qxf7# ends it."])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6, decisive=False), 7.0)
+        coach.ask(asked, 8.0)
+        out = drain(coach)
+        assert out[0].level is level, asked
+        directive = directive_of(sent(provider, 0))
+        assert "Keep back" not in directive and "A hint they ask for" not in directive, asked
+        assert directive.startswith("Disclosure for the position the player faces: "), asked
+    # A question in the player's own words: the ladder is only for a hint they ask for.
+    coach, provider = scripted_coach(["Qxf7# ends it."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("which move wins here?", 8.0)
+    drain(coach)
+    directive = directive_of(sent(provider, 0))
+    assert directive.startswith("Their words decide what they get. A question is answered fully")
+    # A hint asked for first is the idea, the answer kept back.
+    coach, provider = scripted_coach(["Their king has no square."])
+    play_to_scholar(coach)
+    coach.on_event(mate_analysis(6, decisive=False), 7.0)
+    coach.ask("hint", 8.0)
+    assert drain(coach)[0].level is DisclosureLevel.IDEA
 
 
 def test_a_question_starts_the_stuck_spell_again() -> None:

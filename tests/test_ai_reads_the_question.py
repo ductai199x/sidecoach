@@ -63,9 +63,10 @@ def test_a_question_the_keywords_would_miss_reaches_the_model_with_the_whole_she
 
 
 def test_the_ladder_follows_what_the_reply_said_not_what_the_question_was_guessed_to_mean() -> None:
-    """ "what should I play?" opened the move level before the model answered; now the rung is
-    what the reply said. A reply that names the move says it; one that only teaches the idea
-    does not, and the next hint is the next rung -- each rung once, never lower after higher."""
+    """A question the model reads -- not the move or the line asked for outright, which open them
+    exactly (`asked_outright`, 2026-10-03) -- climbs the rung its reply said. A reply that names
+    the move says it; one that only teaches the idea does not, and the next hint is the next
+    rung -- each rung once, never lower after higher."""
     coach, provider = scripted_coach(
         [
             "Their king is nearly boxed in: look for a check that ends it.",
@@ -78,7 +79,7 @@ def test_the_ladder_follows_what_the_reply_said_not_what_the_question_was_guesse
     drain(coach)
     position = coach._current
     assert position is not None
-    coach.ask("what should I play?", 8.0)
+    coach.ask("what's going on here?", 8.0)
     out = drain(coach)
     assert out[0].level is DisclosureLevel.IDEA, "the reply gave no move"
     assert position.disclosure.level is DisclosureLevel.IDEA

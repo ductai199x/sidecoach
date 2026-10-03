@@ -154,7 +154,8 @@ def test_a_hint_is_said_only_while_its_position_is_on_the_board() -> None:
 
 
 def test_blitz_says_the_lessons_and_leaves_the_praise_to_the_text() -> None:
-    """G2: three seconds a move. The word on a move is text; the lesson on the mistake is said."""
+    """G2: three seconds a move. The word on a move is text -- held for a next puzzle, never said
+    at a pause in the game; the lesson on the mistake is said."""
     plan, clock = plan_at()
     ply = 1
     for _ in range(3):
@@ -162,11 +163,51 @@ def test_blitz_says_the_lessons_and_leaves_the_praise_to_the_text() -> None:
         plan.player_moved(ply, 2.8)
         ply += 2
     clock.advance(0.15)
-    assert plan.offer(1, "post_move", ply - 3, 0, "Exactly.", streamed=False) == TEXT
+    assert plan.offer(1, "post_move", ply - 3, 0, "Exactly.", streamed=False) == HOLD
+    clock.advance(LINE_END_S)
+    plan.tick()
+    assert said(plan) == [], "a pause in a game says no template word"
     clock.advance(2.8)
     plan.player_moved(ply, 2.8)
     clock.advance(0.15)
     assert plan.offer(2, "post_mistake", ply - 1, 0, "Rg8 was stronger.", streamed=False) == SAY
+
+
+def test_the_word_on_a_retry_after_a_takeback_is_said() -> None:
+    """Tai's Pixel, 2026-10-03: a takeback, the right move played at the same ply, and its word
+    ("Just what the position wanted.") went to the text -- the ply was marked withdrawn, not the
+    move. The lesson on the withdrawn move stays unsaid."""
+    plan, clock = plan_at()
+    clock.advance(16.5)
+    plan.player_moved(1, 16.5)
+    clock.advance(1.0)
+    assert plan.offer(1, "post_mistake", 0, 0, "Bxd2+ was the move.", streamed=True) == SAY
+    assert said(plan) == ["Bxd2+ was the move."]
+    clock.advance(8.0)
+    plan.taken_back(0)
+    plan.stopped()
+    clock.advance(4.0)
+    plan.player_moved(1, 4.0)
+    clock.advance(0.3)
+    assert plan.offer(2, "post_move", 0, 0, "Just what the position wanted.", streamed=False) == SAY
+    assert said(plan) == ["Just what the position wanted."]
+    assert plan.offer(1, "post_mistake", 0, 1, "It wins a piece.", streamed=True) == TEXT
+
+
+def test_a_quickly_solved_puzzle_hears_its_word_when_the_next_comes_up() -> None:
+    """The puzzle solved in quick moves, no word of the model's: the last template word is said
+    as the next puzzle comes up, not lost to the text."""
+    plan, clock = plan_at()
+    clock.advance(20.0)
+    plan.player_moved(1, 20.0)
+    for ply in (3, 5):
+        clock.advance(1.2)
+        plan.player_moved(ply, 1.2)
+    clock.advance(0.2)
+    assert plan.offer(1, "post_move", 4, 0, "Spot on.", streamed=False) == HOLD
+    clock.advance(1.5)
+    plan.new_position()
+    assert said(plan) == ["Spot on."]
 
 
 def test_a_moderate_pace_hears_its_short_words() -> None:

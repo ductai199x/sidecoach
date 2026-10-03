@@ -9,6 +9,8 @@ experience is good"):
 - a fast line (moves under QUICK_S apart, or the game's fast pace): nothing during it; once
   the line is done (no move for LINE_END_S, or the next puzzle is up), one sentence on the
   move that took the thought -- the model's word on it, if it is LINE_WORD_FRESH_S young;
+  with no word of the model's, the line's latest short word ("Spot on."), once the next
+  puzzle is up (never at a pause in a game);
 - a mistake: its lesson, even after one more move of the player's (a premove), its first
   sentence only once they have moved on, never after a retry of that move (the lesson names
   the answer), never older than LESSON_FRESH_S;
@@ -109,7 +111,10 @@ class PacePlan:
         self._count = 0  # the player's moves so far, in any game
         # (epoch, ply) -> when the player's move there was played, and its number (`_count`)
         self._move_at: dict[tuple[int, int], tuple[float, int]] = {}
-        self._withdrawn: set[tuple[int, int]] = set()
+        # The player's moves taken back, by their number (`_count`), never by their square: a
+        # retry is played at the same ply, and its word was taken for the withdrawn move's and
+        # never said (Tai's Pixel, 2026-10-03: "Just what the position wanted." on a retry).
+        self._withdrawn: set[int] = set()
         self._position_since = clock()
         self._thinks: list[float] = []
         self._quick = False
@@ -122,6 +127,7 @@ class PacePlan:
         self._speaking: set[int] = set()  # words on a move begun in slow play
         self._dead: set[int] = set()
         self._fed: list[Line] = []  # handed to the voice, in order: playing, then waiting
+        self._board_heard = False  # a word on a move of this board was given to the voice
 
     # ---- the board ----------------------------------------------------------------------
 
@@ -156,9 +162,9 @@ class PacePlan:
         Returns whether the voice must stop now."""
         with self._lock:
             now = self._clock()
-            for epoch, ply in list(self._move_at):
+            for (epoch, ply), (_, seq) in self._move_at.items():
                 if epoch == self._epoch and ply > to_ply:
-                    self._withdrawn.add((epoch, ply))
+                    self._withdrawn.add(seq)
             self._ply = to_ply
             self._position_since = now
             return self._after_change(now, stop_kinds=("hint",), stop_withdrawn=True)
@@ -173,6 +179,7 @@ class PacePlan:
             self._thinks = []
             self._position_since = now
             self._release(now)
+            self._board_heard = False
             return self._after_change(now, stop_kinds=("hint",))
 
     def _after_change(
@@ -188,7 +195,7 @@ class PacePlan:
             return False
         if msg.kind in stop_kinds:
             return msg.kind != "hint" or not self._hint_fresh(msg)
-        return bool(stop_withdrawn and msg.about in self._withdrawn)
+        return bool(stop_withdrawn and self._withdrawn_word(msg))
 
     # ---- the coach's messages -----------------------------------------------------------
 
@@ -260,15 +267,41 @@ class PacePlan:
             self._speaking.add(key)
             self._enqueue(Line(key, msg.kind, index, text))
             return SAY
-        if msg.model and index == 0 and not self._held:
-            # A fast line, or the player already moved on: the model's word on a find is
-            # held for the end of the line (the line's first such).
-            self._held.append(Line(key, msg.kind, 0, text, prepared=True))
+        held = self._held[0] if self._held else None
+        if index == 0 and msg.model and (held is None or held.kind == "short"):
+            # A fast line, or the player already moved on: the model's word on the line's
+            # first find is held for the end of the line.
+            if held is not None:
+                self._dead.add(held.key)
+            self._held = [Line(key, msg.kind, 0, text, prepared=True)]
+            return HOLD
+        if (
+            index == 0
+            and not msg.model
+            and (held is None or held.kind == "short")
+            and now - msg.asked_at <= PRAISE_FRESH_S
+            and not self._board_heard
+        ):
+            # With no word of the model's, the latest template word, said when the next
+            # puzzle comes up: every "Spot on." of a quickly solved puzzle went to the text
+            # (Tai's Pixel, 2026-10-03: "it's not saying the good messages that it should").
+            # Never at a pause in a game: a blitz game's every pause would say one; never when a
+            # word on this board was said already: "Exactly." after "Excellent: the only move"
+            # is noise.
+            if held is not None:
+                self._dead.add(held.key)
+            self._held = [Line(key, msg.kind, 0, text, prepared=True)]
             return HOLD
         self._dead.add(key)
         return TEXT
 
     def _enqueue(self, line: Line) -> None:
+        if line.kind in ("praise", "short", "lesson"):
+            self._board_heard = True
+            if self._held and self._held[0].kind == "short":
+                # A template word held for the next puzzle: this board has its word now.
+                self._dead.add(self._held[0].key)
+                self._held = []
         self._queue.append(line)
         self._queue.sort(key=lambda line: (PRIORITY[line.kind], line.key, line.index))
 
@@ -277,6 +310,14 @@ class PacePlan:
     def _moves_since(self, msg: _Message) -> int:
         """The player's moves after the one the message is about (any board)."""
         return self._count - msg.seq
+
+    def _withdrawn_word(self, msg: _Message) -> bool:
+        """A word on a move the player took back (a hint and a question are on no move)."""
+        return (
+            msg.about is not None
+            and msg.kind not in ("hint", "answer")
+            and msg.seq in self._withdrawn
+        )
 
     def _hint_fresh(self, msg: _Message) -> bool:
         return msg.about == (self._epoch, self._ply)
@@ -294,13 +335,13 @@ class PacePlan:
         if msg.kind == "hint":
             return self._hint_fresh(msg)
         if msg.kind == "lesson":
-            if msg.about in self._withdrawn:
+            if self._withdrawn_word(msg):
                 return False
             return self._moves_since(msg) <= LESSON_MOVES and age <= LESSON_FRESH_S
         # A word on a move: the move is still the player's latest, and it is just made.
         if msg.about is None or msg.about[0] != self._epoch:
             return False
-        if msg.about in self._withdrawn:
+        if self._withdrawn_word(msg):
             return False
         if msg.key in self._speaking:
             return self._moves_since(msg) == 0
@@ -326,7 +367,12 @@ class PacePlan:
         """The fast line's word is released once the line is done (no move for LINE_END_S)."""
         with self._lock:
             now = self._clock()
-            if self._held and now - self._last_move_at >= LINE_END_S:
+            # A template word waits for the next puzzle (`new_position`), never a pause.
+            if (
+                self._held
+                and self._held[0].kind != "short"
+                and now - self._last_move_at >= LINE_END_S
+            ):
                 self._release(now)
 
     def _release(self, now: float) -> None:
