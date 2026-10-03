@@ -298,46 +298,55 @@ def _midgame(pipe: GamePipeline, look: dict[str, Any], ts: float) -> tuple[chess
     return board, ts
 
 
-@pytest.mark.parametrize(
-    ("before", "after", "first_move_at_once"),
-    [
-        ({"theme": "green"}, {"theme": "brown"}, False),
-        ({"theme": "brown"}, {"theme": "green"}, True),
-        ({"style": "cburnett"}, {"style": "pixel"}, False),
-        ({"style": "staunty"}, {"style": "papercut"}, True),
-        ({"style": "cburnett"}, {"style": "kosal"}, False),
-    ],
-    ids=["green to brown", "brown to green, a move", "pixel set", "papercut, a move", "kosal"],
-)
-def test_a_look_changed_mid_game_is_learned_from_the_game_s_own_position(
-    before: dict[str, Any], after: dict[str, Any], first_move_at_once: bool
+_LOOK_CHANGES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "green to brown": ({"theme": "green"}, {"theme": "brown"}),
+    "brown to green": ({"theme": "brown"}, {"theme": "green"}),
+    "cburnett to pixel": ({"style": "cburnett"}, {"style": "pixel"}),
+    "staunty to papercut": ({"style": "staunty"}, {"style": "papercut"}),
+    "cburnett to kosal": ({"style": "cburnett"}, {"style": "kosal"}),
+}
+
+
+def _told_and_back(
+    pipe: GamePipeline, board: chess.Board, ts: float, before: dict[str, Any], after: dict[str, Any]
 ) -> None:
-    """The board's theme or the piece set changed mid-game: the recogniser read the new look
-    as unknown (a theme) or as other pieces (a set), and the rest of the game went unread,
-    with no event (round 2 finding 2). The look is learned again from the position the game
-    is in -- or a legal move from it, played before the new look was read -- once the
-    pieces on the frame are where that position puts them and its cells read back as their
-    own labels."""
+    """The new look held still past the notice's wait: told once, nothing learned, the record
+    as it stood; then the old look back and two more plies, read on."""
+    from sidecoach.state.pipeline import COLD_NOTICE_S
+
+    model, recorded = pipe.model, board.fen()
+    changed = synthetic_board(board=board, highlight=board.peek(), **after)
+    told: list[BoardUnread] = []
+    for i in range(int((COLD_NOTICE_S + 2.0) / 0.3)):  # a tick every 0.3 s, as _watch's
+        told += [e for e in pipe.process(changed, ts, changed=i == 0) if isinstance(e, BoardUnread)]
+        ts += 0.3
+    assert [e.reason for e in told] == ["look"], told
+    assert pipe.model is model and pipe.bootstraps == 1, "nothing learned mid-game"
+    assert pipe.reconciler is not None and pipe.reconciler.board.fen() == recorded
+    for _ in range(2):
+        move = next(iter(board.legal_moves))
+        board.push(move)
+        for _ in range(3):
+            pipe.process(synthetic_board(board=board, highlight=move, **before), ts)
+            ts += 0.1
+    assert pipe.reconciler.board.fen() == board.fen(), "read on with the old look back"
+
+
+@pytest.mark.parametrize("case", list(_LOOK_CHANGES))
+def test_a_look_changed_mid_game_that_no_learned_set_reads_is_told_never_learned(
+    case: str,
+) -> None:
+    """The board's theme or the piece set changed mid-game, to a look no learned set reads:
+    the person is told, once, and the game goes unread until its look is back. Learned from
+    the game's position, a set knew only the kinds the position held, and one board gathered
+    several such sets, each disagreeing: a knight read as a bishop, whole puzzles unread, in
+    silence (Tai's Pixel, 2026-10-03; Tai: "bring it up to the user as an error and do not try
+    to get a partial read"). A look is learned whole, at a start position."""
+    before, after = _LOOK_CHANGES[case]
     pipe = GamePipeline()
     board, ts = _midgame(pipe, before, 0.0)
     assert pipe.reconciler is not None and pipe.reconciler.board.board_fen() == board.board_fen()
-    plies = ["b8c6", "f1b5", "a7a6"]
-    if first_move_at_once:
-        move = chess.Move.from_uci(plies.pop(0))
-        board.push(move)
-    # The new look stays on a still board for a second (unchanged ticks after the first).
-    changed = synthetic_board(board=board, highlight=board.peek(), **after)
-    for i in range(10):
-        pipe.process(changed, ts, changed=i == 0)
-        ts += 0.1
-    for uci in plies:
-        move = chess.Move.from_uci(uci)
-        board.push(move)
-        for _ in range(3):
-            pipe.process(synthetic_board(board=board, highlight=move, **after), ts)
-            ts += 0.1
-    assert pipe.reconciler.board.fen() == board.fen()
-    assert pipe.bootstraps == 1
+    _told_and_back(pipe, board, ts, before, after)
 
 
 def test_a_theme_changed_mid_game_to_a_cached_one_takes_the_cached_set(tmp_path) -> None:
@@ -365,58 +374,6 @@ def test_a_theme_changed_mid_game_to_a_cached_one_takes_the_cached_set(tmp_path)
     assert pipe.model is not None and pipe.model.exemplar_labels == learner.model.exemplar_labels
 
 
-def test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start(tmp_path) -> None:
-    """Round 3 audit E11 (Tai, 2026-10-02): a piece set changed mid-game was learned from the
-    game's position and used, but never cached; the app restarted mid-game read the new set as
-    nothing until a start position, which a puzzle never shows. It is cached now, as a set
-    learned at a start position is, once it has read its own frame back as the position --
-    beside the set learned at the start, which knows kinds it does not and is kept whole."""
-    from sidecoach.vision.squares import BoardGeometry
-    from sidecoach.vision.theme_cache import ThemeCache, sample_palette
-
-    cache = ThemeCache(tmp_path)
-    pipe = GamePipeline(cache=cache)
-    board, ts = _midgame(pipe, {"style": "cburnett"}, 0.0)
-    started = {key for key, _ in cache.candidates(*_palette_of(pipe, board))}
-    assert len(started) == 1, "the start position's set, cached"
-    changed = synthetic_board(board=board, highlight=board.peek(), style="pixel")
-    for i in range(10):
-        pipe.process(changed, ts, changed=i == 0)
-        ts += 0.1
-    assert pipe.model is not None and pipe.bootstraps == 1, "learned from the game's position"
-    move = chess.Move.from_uci("b8c6")
-    board.push(move)
-    later = synthetic_board(board=board, highlight=move, style="pixel")
-    assert pipe.board is not None
-    geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
-    sampled = sample_palette(later, geometry)
-    assert sampled is not None
-    kept = dict(cache.candidates(*sampled))
-    assert started <= set(kept), "the whole set learned at the start is kept"
-    new = [model for key, model in kept.items() if key not in started]
-    assert len(new) == 1, "the look learned mid-game, cached"
-    # The app restarted: the cached set reads the game's next position, every piece, and the
-    # board is read cold from the cache.
-    assert GamePipeline._reads_as(new[0].classify_frame(later, geometry), board, Side.WHITE)
-    assert new[0].exemplar_labels == pipe.model.exemplar_labels
-    restarted = GamePipeline(cache=cache)
-    events = restarted.cold_start(later, geometry, Side.WHITE)
-    assert any(isinstance(e, GameStarted) for e in events), "read cold after a restart"
-    assert restarted.reconciler is not None
-    assert restarted.reconciler.board.board_fen() == board.board_fen()
-
-
-def _palette_of(pipe: GamePipeline, board: chess.Board) -> tuple[Any, Any]:
-    from sidecoach.vision.squares import BoardGeometry
-    from sidecoach.vision.theme_cache import sample_palette
-
-    assert pipe.board is not None
-    geometry = BoardGeometry(pipe.board.region, pipe.board.cell_px)
-    sampled = sample_palette(synthetic_board(board=board), geometry)
-    assert sampled is not None
-    return sampled
-
-
 def test_another_position_in_a_new_look_is_not_learned_as_the_game() -> None:
     """A board in a new theme showing another game's position: no legal move from the game
     puts its pieces there, so nothing is learned from it and the record stands."""
@@ -431,36 +388,27 @@ def test_another_position_in_a_new_look_is_not_learned_as_the_game() -> None:
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
 
 
-# The look-change sweep's set changes that stalled (round 3): the opening played in the old
-# set, the moves played in the new one.
+# The look-change sweep's set changes that stalled before 0.1.69 (round 3): the opening played
+# in the old set, the board then shown in the new one. The old set read the new one with a
+# piece or two wrong, or right but off their squares.
 _SET_CHANGES = {
-    "maestro to cburnett": (
-        "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
-    ),
-    "maestro to leipzig": (
-        "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
-    ),
-    # Read as the right pieces, unsettled: the still board explained, the next moves pending.
+    "maestro to cburnett": ("maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5"),
+    "maestro to leipzig": ("maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8"),
     "cburnett to chess7": (
         "cburnett", "chess7",
         "e2e3 a7a6 d1e2 h7h6 e2d3 g8f6 d3f5 f6g8 f5e4 c7c5 e4c4 h6h5 c4e6 b7b6 g2g3 a6a5 f1d3"
         " d7d6 f2f3 c8d7 g1e2 g8h6 b1c3 a8a6",
-        "e6e7 d8e7 h1f1 f7f5",
     ),
-    "cburnett to leipzig": (
-        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4", "g3g4 h7h5 c2c4 f8h6"
-    ),
+    "cburnett to leipzig": ("cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4"),
 }  # fmt: skip
 
 
 @pytest.mark.parametrize("case", list(_SET_CHANGES))
-def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
-    """The old set's recogniser read the new set with one piece wrong, and a frame within a
-    cell of a position of the game was taken for "not a new look": the look was never
-    learned, and the rest of the game went unread (round 3; about one set change in six of
-    the look-change sweep). No story explains the frame, so the look is learned from the
-    game's position while the board stands still, and the game is read on."""
-    before, after, opening, rest = _SET_CHANGES[case]
+def test_a_set_changed_mid_game_read_nearly_right_is_told_never_learned(case: str) -> None:
+    """A piece set changed mid-game that the old set reads nearly right -- a piece or two
+    wrong, or every piece off its square -- is a look no learned set reads all the same: told,
+    never learned, and never followed as other pieces."""
+    before, after, opening = _SET_CHANGES[case]
     pipe = GamePipeline()
     board = chess.Board()
     ts = 0.0
@@ -472,19 +420,8 @@ def test_a_set_read_with_one_piece_wrong_is_learned_again(case: str) -> None:
         for _ in range(3):
             pipe.process(synthetic_board(board=board, highlight=move, style=before), ts)
             ts += 0.1
-    model = pipe.model
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
-    changed = synthetic_board(board=board, highlight=board.peek(), style=after)
-    for i in range(15):  # a second and a half, the board still
-        pipe.process(changed, ts, changed=i == 0)
-        ts += 0.1
-    assert pipe.model is not model
-    for uci in rest.split():
-        move = board.push_uci(uci)
-        for _ in range(3):
-            pipe.process(synthetic_board(board=board, highlight=move, style=after), ts)
-            ts += 0.1
-    assert pipe.reconciler.board.fen() == board.fen()
+    _told_and_back(pipe, board, ts, {"style": before}, {"style": after})
 
 
 _M = chess.Move.from_uci
@@ -566,30 +503,22 @@ def _overlay_and_rest(
     pipe: GamePipeline, board: chess.Board, ts: float, overlay: str, look: dict[str, Any]
 ) -> tuple[list[str], bool, int]:
     """The overlay held three seconds on the still board, then the rest of the game: the
-    events as said (the game's random id left out), whether the model was kept, and how often
-    a learning was tried."""
+    events as said (the game's random id left out), whether the model was kept, and on how
+    many frames the look was taken for changed (`_look_lost`)."""
     import re
-    import unittest.mock
-
-    from sidecoach.vision.pieces import ThemeModel
 
     said: list[str] = []
     model = pipe.model
-    learned: list[object] = []
-    real = ThemeModel.from_position
-
-    def counted(*args: Any) -> Any:
-        learned.append(args)
-        return real(*args)
+    judged = 0
 
     def say(events: list[Any]) -> None:
         said.append(re.sub(r"game_id='[0-9a-f]+'", "game_id=*", repr(events)))
 
     held = synthetic_board(board=board, highlight=board.peek(), **look, **_OVERLAYS[overlay])
-    with unittest.mock.patch.object(ThemeModel, "from_position", counted):
-        for i in range(30):
-            say(pipe.process(held, ts, changed=i == 0))
-            ts += 0.1
+    for i in range(30):
+        say(pipe.process(held, ts, changed=i == 0))
+        judged += pipe._look_lost is not None
+        ts += 0.1
     kept = pipe.model is model
     for uci in _OVERLAY_REST:
         move = board.push_uci(uci)
@@ -597,7 +526,7 @@ def _overlay_and_rest(
             say(pipe.process(synthetic_board(board=board, highlight=move, **look), ts))
             ts += 0.1
     assert pipe.reconciler is not None and pipe.reconciler.board.fen() == board.fen()
-    return said, kept, len(learned)
+    return said, kept, judged
 
 
 def _overlay_cases() -> list[Any]:
@@ -621,17 +550,17 @@ def _overlay_cases() -> list[Any]:
 def test_an_overlay_held_on_a_still_board_never_replaces_the_recogniser(
     overlay: str, style: str, theme: str
 ) -> None:
-    """The look is learned again on a still board when a kind of which two or more pieces
-    stand reads every one of them off its square (round 3, 8711b37): what a new set does, and
-    what something drawn over the board does not -- a measured rule, so its sweep is the
-    suite's (round 3 audit E13, Tai 2026-10-02: keep the rule, with the overlay sweep in the
-    suite). Sixteen overlays, six sets, two themes, 192 cases: held three seconds after the
-    opening, an overlay does not even set a learning off, and the game is read on after it."""
+    """Something drawn over the board -- arrows, red marks, a selected piece -- is never taken
+    for a changed look, which would leave the game unread and tell the person their pieces
+    changed (a look is told, never learned, since 0.1.69). Sixteen overlays, six sets, two
+    themes, 192 cases (round 3 audit E13, Tai 2026-10-02: the overlay sweep in the suite):
+    held three seconds after the opening, the look is never judged changed, the recogniser is
+    kept, and the game is read on after it."""
     pipe, board, ts = _opened(style, theme)
-    _said, kept, learned = _overlay_and_rest(
+    _said, kept, judged = _overlay_and_rest(
         pipe, board, ts, overlay, {"style": style, "theme": theme}
     )
-    assert kept and learned == 0
+    assert kept and judged == 0
 
 
 def test_a_copied_opening_reads_on_as_one_read_afresh() -> None:

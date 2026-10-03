@@ -486,6 +486,7 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     rec.stale_after = 2
     rec.resync_after = 4
     rec.resync_hold_s = 60.0  # the note is what is tested, not when a resync would adopt
+    rec.unexplained_note_frames = 2
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     _play(model, rec, board, ["e4", "e5"], ts=0.0)
@@ -493,7 +494,12 @@ def test_cells_unexplained_for_long_are_noted_and_the_game_is_kept() -> None:
     events = []
     for i in range(6):
         events += _feed(model, rec, weird, Side.WHITE, 1.0 + 0.1 * i)
-    assert any(isinstance(e, Unexplained) for e in events)
+    notes = [e for e in events if isinstance(e, Unexplained)]
+    # Early, for the log, what each square reads as against the game; later, the person told.
+    assert [e.told for e in notes] == [False, True], notes
+    assert notes[0].reason.startswith("unexplained for now: ")
+    assert "a1 empty, game R" in notes[0].reason and "d5 k, game -" in notes[0].reason
+    assert "a1 empty, game R" in notes[1].reason
     assert not any(isinstance(e, Resync) for e in events), "the position did not jump"
     assert rec.pgn() == "1. e4 e5", "the game is kept, its numbering with it"
 

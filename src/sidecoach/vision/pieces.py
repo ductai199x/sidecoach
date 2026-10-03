@@ -1455,26 +1455,8 @@ class ThemeModel:
         return cls._learn(frame, geometry, bottom, chess.Board())
 
     @classmethod
-    def from_position(
-        cls, frame: np.ndarray, geometry: BoardGeometry, bottom: Side, position: chess.Board
-    ) -> ThemeModel | None:
-        """The recogniser learned from a frame known to show `position`: the game's own
-        board when the theme or the piece set changed mid-game (round 2, finding 2). Nothing
-        else vouches for the frame, so it must show pieces exactly where `position` puts them
-        and none elsewhere, as the new look's own silhouettes read them, besides the start
-        frame's checks. A kind the position no longer holds (a queen traded) has no
-        exemplar until the next start position."""
-        return cls._learn(frame, geometry, bottom, position, check_occupancy=True)
-
-    @classmethod
     def _learn(
-        cls,
-        frame: np.ndarray,
-        geometry: BoardGeometry,
-        bottom: Side,
-        start: chess.Board,
-        *,
-        check_occupancy: bool = False,
+        cls, frame: np.ndarray, geometry: BoardGeometry, bottom: Side, start: chess.Board
     ) -> ThemeModel | None:
         net = embedder()
         if net is None:
@@ -1497,8 +1479,6 @@ class ThemeModel:
             for c in range(8):
                 sil = silhouette(crops[r][c], colours=colours, palette=palette)
                 piece = start.piece_at(square_at(r, c, bottom))
-                if check_occupancy and (sil.fraction >= PIECE_MIN_FRACTION) != (piece is not None):
-                    return None  # the frame is not this position
                 if piece is None:
                     (light_bgs if is_light(r, c) else dark_bgs).append(sil.background)
                     continue

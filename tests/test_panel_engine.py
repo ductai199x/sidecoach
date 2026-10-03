@@ -104,6 +104,55 @@ def test_ending_a_game_on_the_users_word_scores_it_from_their_side() -> None:
     assert outcome("forget", "black")[0] == "*"
 
 
+def test_a_board_lost_track_of_is_told_once_until_it_is_read_again(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """A board the reader fails on is never left in silence (Tai, 2026-10-03): the long
+    `Unexplained` note is said in the coach's pane, once, and again only after the board has
+    been read since (a move); the early note and a refused commit stay in the log."""
+    import chess
+
+    from sidecoach.events import MovePlayed, Unexplained
+    from sidecoach.ui.panel import LOST_TRACK
+
+    engine = make_panel()
+
+    class Glue:
+        def submit(self, event: object) -> None:
+            pass
+
+    def lost() -> int:
+        return sum(1 for r in engine._log.since(0) if r.get("text", "").startswith("board · lost"))
+
+    for told in (False, True, True):
+        engine._dispatch_game(
+            Unexplained(game_id="g", fen=chess.STARTING_FEN, reason="unexplained: x", told=told),
+            Glue(),
+            chess,
+        )
+    assert lost() == 1
+    assert any(r.get("data", {}).get("full") == LOST_TRACK for r in engine._log.since(0))
+    board = chess.Board()
+    before = board.fen()
+    move = board.push_san("e4")
+    played = MovePlayed(
+        game_id="g",
+        ply=1,
+        san="e4",
+        uci=move.uci(),
+        fen_before=before,
+        fen_after=board.fen(),
+        by_user=True,
+    )
+    engine._dispatch_game(played, Glue(), chess)
+    engine._dispatch_game(
+        Unexplained(game_id="g", fen=board.fen(), reason="unexplained: x", told=True),
+        Glue(),
+        chess,
+    )
+    assert lost() == 2
+
+
 def test_end_game_refuses_unknown_outcomes(make_panel: Callable[..., PanelEngine]) -> None:
     engine = make_panel()
     with pytest.raises(ValueError):

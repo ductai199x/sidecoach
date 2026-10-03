@@ -15,6 +15,7 @@ from sidecoach.events import Side
 from sidecoach.state.pipeline import GamePipeline
 from sidecoach.vision.pieces import ThemeModel
 from sidecoach.vision.theme_cache import ThemeCache, palette_key, sample_palette
+from tests.games import recogniser
 from tests.synth import GEOM, synthetic_board
 
 
@@ -45,6 +46,61 @@ def test_theme_cache_round_trips_a_learned_model(tmp_path: Path) -> None:
     assert cache.get(model.light_bg + 4, model.dark_bg - 3) is not None
     # An unseen palette is a miss.
     assert cache.get(np.array([10.0, 10.0, 10.0]), np.array([250.0, 250.0, 250.0])) is None
+
+
+def _lacking(model: ThemeModel, kinds: str) -> ThemeModel:
+    """`model` as a set learned from a position without `kinds`: what versions before 0.1.69
+    learned mid-game (its start cells of those kinds unlabelled)."""
+    import copy
+
+    partial = copy.deepcopy(model)
+    assert partial.exemplar_labels is not None
+    partial.exemplar_labels = tuple(
+        "empty" if label in kinds else label for label in partial.exemplar_labels
+    )
+    partial.exemplars = [e for e in partial.exemplars if e.symbol not in kinds]
+    return partial
+
+
+def test_a_set_lacking_a_kind_is_never_saved(tmp_path: Path, caplog) -> None:
+    """A set is learned whole, at a start position: one knowing only the kinds a position held
+    read the rest as look-alikes -- a knight as a bishop -- or as nothing (Tai's Pixel,
+    2026-10-03). Asked to save one, the cache refuses, and says so in the log."""
+    cache = ThemeCache(tmp_path)
+    assert cache.save(_lacking(recogniser(Side.WHITE), "NBQnbq")) is None
+    assert not list(tmp_path.glob("theme-*"))
+    assert "missing BNQbnq was not saved" in caplog.text
+
+
+def test_a_set_lacking_a_kind_found_in_the_cache_is_removed_and_never_read(
+    tmp_path: Path, caplog
+) -> None:
+    """Sets an older version learned from a game's position are in the cache (five for one
+    board on Tai's Pixel): each is removed on its first read, logged, and only the whole set
+    learned at a start position is a candidate."""
+    import pickle
+
+    from sidecoach.vision.theme_cache import CACHE_VERSION
+
+    frame = synthetic_board()
+    model = recogniser(Side.WHITE)
+    cache = ThemeCache(tmp_path)
+    kept = cache.save(model)
+    assert kept is not None
+    stale = tmp_path / "theme-old-partial.pkl"
+    partial = _lacking(model, "N")
+    payload = {
+        "version": CACHE_VERSION,
+        "model": partial,
+        "light_bg": partial.light_bg,
+        "dark_bg": partial.dark_bg,
+    }
+    stale.write_bytes(pickle.dumps(payload))
+    sampled = sample_palette(frame, GEOM)
+    assert sampled is not None
+    assert [key for key, _ in cache.candidates(*sampled)] == [kept]
+    assert not stale.exists()
+    assert "theme-old-partial.pkl knew no N: removed" in caplog.text
 
 
 def test_a_theme_learned_before_the_last_version_is_still_read(tmp_path: Path) -> None:

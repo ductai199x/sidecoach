@@ -113,6 +113,19 @@ def sample_palette(
     return light_bg, dark_bg
 
 
+# The twelve kinds every learned set knows. A set is learned whole, at a start position, and
+# nowhere else: one learned from a game's position mid-game knew only the kinds the position
+# held, read the others as look-alikes or as nothing, and one board could gather several such
+# sets, each disagreeing (Tai's Pixel, 2026-10-03: five for chess.com's green; a knight read as
+# a bishop, whole puzzles unread). Such a set is never saved, and one found is removed.
+KINDS = frozenset("PNBRQKpnbrqk")
+
+
+def whole(model: ThemeModel) -> bool:
+    """Whether a learned set knows every kind of piece."""
+    return set(model.exemplar_labels or ()) >= KINDS
+
+
 def _set_key(model: ThemeModel) -> str:
     """A name for a learned set among those on the same board colours, from its start
     cells' embeddings."""
@@ -140,6 +153,10 @@ class ThemeCache:
         kept beside any other set on these board colours. Returns the key, or None when the
         model has no palette to key on."""
         if model.light_bg is None or model.dark_bg is None:
+            return None
+        if not whole(model):
+            missing = "".join(sorted(KINDS - set(model.exemplar_labels or ())))
+            log.error("a learned set missing %s was not saved: a set is learned whole", missing)
             return None
         if key is None:
             key = f"{palette_key(model.light_bg, model.dark_bg)}-{_set_key(model)}"
@@ -200,6 +217,13 @@ class ThemeCache:
                     for symbol, crop in model.landing_crops.items()
                     for light in (True, False)
                 }
+            if payload["model"].exemplar_labels is not None and not whole(payload["model"]):
+                # Learned from a game's position by an older version: never read, and removed.
+                missing = "".join(sorted(KINDS - set(payload["model"].exemplar_labels or ())))
+                log.warning("theme file %s knew no %s: removed", path.name, missing)
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                return None
             return payload
         return None
 

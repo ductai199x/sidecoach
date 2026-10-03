@@ -289,6 +289,9 @@ class Reconciler:
     stale_after: int = 5
     resync_cells: int = 3
     resync_after: int = 150
+    # Frames a board stays unexplained before the log is told what each square reads as.
+    unexplained_note_frames: int = 20
+    _unexplained_noted: bool = False
     board: chess.Board = field(default_factory=chess.Board)
     game_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     viewing: int | None = None
@@ -525,6 +528,7 @@ class Reconciler:
         self._pending = None
         self._stale = {}
         self._unexplained_frames = 0
+        self._unexplained_noted = False
 
     def _restart(self) -> list[Event]:
         """The game under way ended, unless it had, and a new one begun from the start."""
@@ -867,6 +871,7 @@ class Reconciler:
             self._pending = None
             self.viewing = None
             self._unexplained_frames = 0
+            self._unexplained_noted = False
             return events
 
         blocked = self._blocked
@@ -1837,6 +1842,7 @@ class Reconciler:
         self._pending_age = 0
         self._stale = {}
         self._unexplained_frames = 0
+        self._unexplained_noted = False
         return events
 
     def _explain_opponent_move(self, obs: Observation) -> list[Event] | None:
@@ -1957,6 +1963,7 @@ class Reconciler:
         if not rest:
             # The queue formed or changed; nothing has happened on the board yet.
             self._unexplained_frames = 0
+            self._unexplained_noted = False
             return []
         replies = single_explanations(self.board, rest_obs, rest)
         if len(replies) != 1:
@@ -2187,16 +2194,54 @@ class Reconciler:
         numbering starting again."""
         if not diff:
             self._unexplained_frames = 0
+            self._unexplained_noted = False
             return []
         self._unexplained_frames += 1
+        if self._unexplained_frames >= self.unexplained_note_frames and not self._unexplained_noted:
+            self._unexplained_noted = True
+            # Early, for the log: what the reader sees on each square the game cannot explain,
+            # while it is still fresh -- a dump's log said only the squares' names (Tai's
+            # puzzle on the Pixel, 2026-10-03: 34 squares, and why was nowhere).
+            return [
+                Unexplained(
+                    game_id=self.game_id,
+                    fen=self.board.fen(),
+                    reason=f"unexplained for now: {self._describe(sorted(diff))}",
+                )
+            ]
         persistent = [sq for sq in diff if self._stale[sq][1] > self.stale_after]
         if len(persistent) < self.resync_cells or self._unexplained_frames < self.resync_after:
             return []
         self._unexplained_frames = 0
-        names = ", ".join(chess.square_name(sq) for sq in sorted(persistent))
         return [
-            Unexplained(game_id=self.game_id, fen=self.board.fen(), reason=f"unexplained: {names}")
+            Unexplained(
+                game_id=self.game_id,
+                fen=self.board.fen(),
+                reason=f"unexplained: {self._describe(sorted(persistent))}",
+                told=True,
+            )
         ]
+
+    def _describe(self, squares: list[chess.Square]) -> str:
+        """Each square as read against the game: "b1 N off its square, game N", "e4 empty,
+        game P", "d5 piece of no kind, game -"."""
+        parts = []
+        for sq in squares:
+            reading = self._last_obs.get(sq)
+            piece = self.board.piece_at(sq)
+            if reading is None:
+                read = "unread"
+            elif reading.kind == "empty":
+                read = "empty"
+            elif reading.kind != "piece":
+                read = "unknown"
+            else:
+                read = reading.symbol or "piece of no kind"
+                if not reading.settled:
+                    read += " off its square"
+            game = piece.symbol() if piece is not None else "-"
+            parts.append(f"{chess.square_name(sq)} {read}, game {game}")
+        return "; ".join(parts)
 
     def _advance_stale(self, diff: set[chess.Square], obs: Observation) -> None:
         """Count consecutive frames each cell has disagreed with an unchanged reading.

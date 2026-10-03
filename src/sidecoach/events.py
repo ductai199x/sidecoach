@@ -128,11 +128,16 @@ class Unexplained(Event):
     did not jump and the numbering goes on. Sent as a Resync, it made the coach and the
     engine restart their numbering while the reconciler kept its own, and every later ply
     and takeback disagreed (Tai's game on the Pixel, 2026-09-23: a "takeback of 10 plies"
-    the coach read as the last move)."""
+    the coach read as the last move).
+
+    `told`: the board has been unexplained so long that the person is told the game is lost
+    track of (Tai, 2026-10-03: a board the reader fails on "needs some sort of message"); an
+    early note, and a refused commit, are for the log only."""
 
     game_id: str
     fen: str
     reason: str
+    told: bool = False
 
 
 class BoardUnread(Event):

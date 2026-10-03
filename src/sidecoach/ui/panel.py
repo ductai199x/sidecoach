@@ -232,6 +232,14 @@ BOARD_UNREAD = {
 }
 
 
+# What the person is told when the game's board has stayed unexplained a long while
+# (`Unexplained.told`): the reader sees something no move of the game leads to.
+LOST_TRACK = (
+    "I've lost track of this board: what I see doesn't follow from the game. I'll pick it up "
+    "again as soon as it does, or at the next game or puzzle."
+)
+
+
 def _new_timer(delay: float, call: Callable[[], None]) -> Any:
     """`threading.Timer`, the module's `threading` read when the timer is made."""
     return threading.Timer(delay, call)
@@ -282,6 +290,8 @@ class PanelEngine:
     _forced_bottom: Any = field(default=None, init=False)  # a Side chosen by the flip button
     _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
     _fen_before: dict[int, str] = field(default_factory=dict, init=False)  # ply -> fen before
+    # Whether the person has been told the board is lost track of, since it was last read.
+    _lost_told: bool = field(default=False, init=False)
     # ply -> the engine's label for the move played to reach it (best, blunder, ...), for
     # the move list's badges.
     _labels: dict[int, str] = field(default_factory=dict, init=False)
@@ -2701,6 +2711,8 @@ class PanelEngine:
             Unexplained,
         )
 
+        if isinstance(event, GameStarted | MovePlayed | Resync | Takeback):
+            self._lost_told = False  # the board is read again: a later lapse is told again
         if isinstance(event, GameStarted):
             self._position_moved_on("a new game")
             self._fen_before.clear()
@@ -2775,6 +2787,20 @@ class PanelEngine:
             # A note: cells the game has not explained for a while. The game is kept as it
             # stands; nothing downstream starts again.
             self._emit("vision", "warn", f"board unexplained ({event.reason}); the game is kept")
+            if event.told and not self._lost_told:
+                # Said once until the board is read again (a move, a re-read, a new game):
+                # a board the reader fails on is never left in silence (Tai, 2026-10-03).
+                self._lost_told = True
+                self._emit(
+                    "coach",
+                    "info",
+                    f"board · lost — {LOST_TRACK}",
+                    full=LOST_TRACK,
+                    trigger="board",
+                    ply=None,
+                    voice="text",
+                )
+                self.caption(LOST_TRACK)
         elif isinstance(event, BoardUnread):
             # A board up and nothing read from it: said in the coach's pane, where the
             # person looks, as "Press Start first" is.
