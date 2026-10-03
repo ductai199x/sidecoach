@@ -646,9 +646,17 @@ class KokoroTts(
         var underruns = 0
         while (true) {
             val chunk = try {
-                chunks.take()
+                chunks.poll(idleReleaseMs, java.util.concurrent.TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 return
+            }
+            if (chunk == null) {
+                // Nothing to play: the track goes, and the next line opens a fresh one. Kept
+                // playing with nothing written, Android disabled it for underrun and restarted it
+                // at the next line -- and the first sentence after every pause was silent, the
+                // second heard, until the app was restarted (Tai's Pixel, 2026-10-03).
+                releaseIdle()
+                continue
             }
             try {
                 val line = chunk.first
@@ -718,7 +726,19 @@ class KokoroTts(
         return openOutput()
     }
 
-    /** The open output, opened at the first line and kept playing. */
+    /** [IDLE_RELEASE_MS], set lower by a test. */
+    @Volatile internal var idleReleaseMs = IDLE_RELEASE_MS
+
+    /** The output released when the voice has had nothing to play for [idleReleaseMs]. */
+    @Synchronized
+    private fun releaseIdle() {
+        val idle = output ?: return
+        if (playing || chunks.isNotEmpty()) return
+        output = null
+        runCatching { idle.release() }
+    }
+
+    /** The open output, opened at a line after a pause and kept while lines follow. */
     @Synchronized
     private fun openOutput(): Output {
         output?.let { return it }
@@ -791,6 +811,9 @@ class KokoroTts(
 
     companion object {
         private const val TAG = "sidecoach.voice"
+
+        /** How long the voice has nothing to play before its track is released ([play]). */
+        const val IDLE_RELEASE_MS = 1500L
 
         /** Samples written at a time, a stop checked between: 50 ms at 24 kHz. */
         internal const val WRITE_SLICE = 1200

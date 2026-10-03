@@ -130,6 +130,24 @@ class KokoroBench {
             Variant("fp16 t5 urgent", "kokoro-v1.0.fp16.onnx", threads(5, spin = true), android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY),
             Variant("fp16 t5 audio", "kokoro-v1.0.fp16.onnx", threads(5, spin = true), android.os.Process.THREAD_PRIORITY_AUDIO),
         ).filter { File(dir, it.model).exists() && (only == null || it.name in only) }
+        val piecesModel = InstrumentationRegistry.getArguments().getString("pieces")
+        if (piecesModel != null) {
+            // The lines cut into the pieces the app speaks ([Kokoro.pieces]), each piece's loudness
+            // (RMS, dB) logged: a piece made silent shows here, where whole lines did not.
+            val session = env().createSession(File(dir, piecesModel).path, threads(5, spin = true)())
+            Kokoro(session, voices, KokoroTokenizer(app)).use { model ->
+                for (line in PIECE_LINES) {
+                    val (style, pieces) = model.pieces(Py.strip(Notation.speak(line, voice = true)), "bm_george", 1.0f, "en-us")
+                    val levels = pieces.map { piece ->
+                        val s = model.synthesize(piece, style, 1.0f)
+                        val rms = kotlin.math.sqrt(s.fold(0.0) { a, v -> a + v * v } / maxOf(1, s.size))
+                        "%.1f dB/%d ms".format(20 * kotlin.math.log10(rms + 1e-9), s.size * 1000 / Kokoro.SAMPLE_RATE)
+                    }
+                    Log.i(TAG, "pieces $piecesModel: ${levels.joinToString(" | ")}  <- ${line.take(40)}")
+                }
+            }
+            return
+        }
         val dumpModel = InstrumentationRegistry.getArguments().getString("dump")
         if (dumpModel != null) {
             // The check lines as this phone makes them with [dumpModel], whole, as raw float32
@@ -239,6 +257,14 @@ class KokoroBench {
 
     companion object {
         private const val TAG = "sidecoach.bench"
+
+        /** Tai's coach's replies of 2026-10-03 12:49, heard only at their end. */
+        private val PIECE_LINES = listOf(
+            "There is a forcing fork here. Your Queen can first give itself for the knight on f6.",
+            "Which square lets your Knight give that check and fork the king and the queen?",
+            "Yes, the fork comes from e4.",
+            "Play Qxf6+: after Kxf6, Ne4+ forks the king on f6 and the queen on d6, and you win the queen back with interest.",
+        )
 
         /** The desktop's `tools/kokoro_fast.py` CHECK lines: what a graph is measured on. */
         private val CHECK = listOf(

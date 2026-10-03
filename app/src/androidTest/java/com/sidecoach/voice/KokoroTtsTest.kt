@@ -273,6 +273,35 @@ class KokoroTtsTest {
     }
 
     /**
+     * After a pause the next line plays on a fresh track: the track kept playing with nothing
+     * written was disabled by Android for underrun and restarted at the next line, and the first
+     * sentence after every pause was silent until the app was restarted (Tai's Pixel, 2026-10-03).
+     */
+    @Test
+    fun aLineAfterAPauseGoesToAFreshTrack() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val released = java.util.concurrent.Semaphore(0)
+        val opened = java.util.concurrent.atomic.AtomicInteger()
+        tts!!.idleReleaseMs = 50
+        tts.makeOutput = {
+            opened.incrementAndGet()
+            object : KokoroTts.Output {
+                override val underrunCount = 0
+                override fun write(samples: FloatArray, at: Int, n: Int) = n
+                override fun cut() = Unit
+                override fun release() = released.release()
+            }
+        }
+        tts.say("One.")
+        assertTrue("the idle track was never released", released.tryAcquire(30, TimeUnit.SECONDS))
+        tts.say("Two.")
+        assertTrue("the second line's track was never released", released.tryAcquire(30, TimeUnit.SECONDS))
+        tts.close()
+        assertEquals("a fresh track for the line after the pause", 2, opened.get())
+    }
+
+    /**
      * A kept phrase ([KokoroTts.keep]: the short praise, made at the warm-up) plays at once when
      * said: nothing of it is made again (Tai, 2026-10-03: the voice "truly real time").
      */
