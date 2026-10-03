@@ -1424,7 +1424,9 @@ def desktop_tests() -> dict:
         "line_notes": lambda board, moves, *, limit=8, player=None: {
             "fen": board.fen(), "moves": list(moves), "limit": limit, "player": colour(player)
         },
-        "line_spoken": lambda board, moves, *, limit=6: {"fen": board.fen(), "moves": list(moves), "limit": limit},
+        "line_spoken": lambda board, moves, *, limit=6, player=None: {
+            "fen": board.fen(), "moves": list(moves), "limit": limit, "player": colour(player)
+        },
         "region_of": lambda squares: {"squares": list(squares)},
         "phase_of": lambda board: {"fen": board.fen()},
         "material_text": lambda board, perspective=None: {"fen": board.fen(), "perspective": colour(perspective)},

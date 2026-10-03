@@ -349,9 +349,10 @@ private fun gerund(phrase: String): String {
  * a7 and attacking the rook on b8; c3, getting the pawn out of attack; Rf2". The template's
  * answer to "show me the line": asked to explain a line, the model gave its moves to the wrong
  * side or purposes the board denies in a third of its answers (the locked test set,
- * 2026-09-26). [moves] in UCI or SAN. `effects.line_spoken`.
+ * 2026-09-26). [moves] in UCI or SAN. With [player], each move says whose it is ("their Kd5;
+ * your Re5+, ..."): a line from the opponent's move begins with theirs. `effects.line_spoken`.
  */
-fun lineSpoken(board: Board, moves: List<String>, limit: Int = 6): String {
+fun lineSpoken(board: Board, moves: List<String>, limit: Int = 6, player: Boolean? = null): String {
     val current = board.copy(withStack = false)
     val parts = ArrayList<String>()
     for (text in moves.take(limit)) {
@@ -362,7 +363,8 @@ fun lineSpoken(board: Board, moves: List<String>, limit: Int = 6): String {
         } else {
             current.parseSan(text) ?: break
         }
-        val san = current.san(move)
+        var san = current.san(move)
+        if (player != null) san = (if (current.turn == player) "your " else "their ") + san
         val effects = describeEffects(current, move, limit = 2, hazards = false)
         val after = current.copy(withStack = false)
         after.push(move)

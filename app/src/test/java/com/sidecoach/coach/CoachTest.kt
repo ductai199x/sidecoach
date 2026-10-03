@@ -3033,6 +3033,12 @@ class CoachTest {
                 assertTrue(task, "They asked to see the line: give it" !in task)
             }
             assertTrue(texts.toString(), texts.isNotEmpty() && texts[0].startsWith("It's their move"))
+            if (said == "show me the line") {
+                // The line asked for is the line from their move on, each move named whose it is
+                // (Tai, 2026-10-03: their next move alone was said).
+                assertEquals("It's their move, and the line runs their Qxf7#, checkmate.", texts[0])
+                assertTrue("the line from here may be said" in directiveOf(given(provider, 0)))
+            }
         }
     }
 

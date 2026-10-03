@@ -336,7 +336,9 @@ class CoachPrimitivesTest {
                     board, Move.fromUci(a.getString("move")), limit = a.getInt("limit"), hazards = a.getBoolean("hazards"),
                 ) to strings(out as JSONArray)
                 "line_notes" -> lineNotes(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit"), player = colour("player")) to out
-                "line_spoken" -> lineSpoken(board, strings(a.getJSONArray("moves")), limit = a.getInt("limit")) to out
+                "line_spoken" -> lineSpoken(
+                    board, strings(a.getJSONArray("moves")), limit = a.getInt("limit"), player = colour("player"),
+                ) to out
                 "region_of" -> regionOf(strings(a.getJSONArray("squares"))) to (if (out == JSONObject.NULL) null else out)
                 "phase_of" -> phaseOf(board) to out
                 "material_text" -> materialText(board, colour("perspective")) to out

@@ -2459,6 +2459,7 @@ class Coach(
             position.board.turn != userColour
         val line = levelLine(
             level, position, if (facing) renderLevel else null, past = past, theirs = theirs,
+            lineAsked = askedOutright(userText ?: "") == Unlock.ASK_LINE,
             // The move or the line asked for outright is stated as the level, not as the ladder
             // for the model to read the words against ([askedOutright]).
             ladder = if (aiAsk && !finished && askedOutright(userText ?: "") == null) {
@@ -2880,8 +2881,14 @@ class Coach(
         past: Boolean = false,
         theirs: Boolean = false,
         ladder: String? = null,
+        lineAsked: Boolean = false,
     ): String {
         if (position.board.isGameOver()) return ""
+        if (theirs && lineAsked) {
+            // The line asked for there is the line from their move on (Tai, 2026-10-03).
+            return "It is the opponent's move: the line from here may be said -- their best move " +
+                "and how it goes on, naming whose each move is.\n\n"
+        }
         if (theirs) {
             return "It is the opponent's move: what they threaten -- their best move and what it " +
                 "does -- may be said.\n\n"
@@ -3438,14 +3445,26 @@ class Coach(
             // On the opponent's move the engine's line and best move are the OPPONENT's: "what
             // should I play?" there told the model to give the player the opponent's best move
             // as theirs (the deep prompt review, 2026-10-01). Answered like a hint there.
-            fallback = theirMoveNow(position.board, facts)
-            val asked = if (ASK_LINE.containsMatchIn(said)) "to see the line" else "what to play"
-            directive =
-                "They asked $asked, and it is the opponent's move, not theirs: there is no " +
-                    "move of theirs to play yet. Say so, then what the opponent threatens now -- " +
-                    "their best move and what it does, from the engine lines (the opponent's " +
-                    "move) -- and what the player should be ready for once it is played. One or two " +
-                    "sentences, no question. $NO_FIGURES"
+            if (ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()) {
+                // The line asked for is the line: from the opponent's best move on, each move named
+                // with whose it is -- not their next move alone (Tai, 2026-10-03).
+                fallback = theirLineNow(position.board, facts, userColour)
+                val notes = lineNotes(position.board, facts.line, player = userColour)
+                directive = "They asked to see the line, and it is the opponent's move: give the line " +
+                    "from here -- ${facts.line.joinToString(" ")} -- starting with the opponent's move, " +
+                    "and say whose each move is" +
+                    (if (notes.isNotEmpty()) ", from these notes: $notes" else "") +
+                    ". Then one short sentence on the idea behind it. No question. " + NO_FIGURES
+            } else {
+                fallback = theirMoveNow(position.board, facts)
+                val asked = if (ASK_LINE.containsMatchIn(said)) "to see the line" else "what to play"
+                directive =
+                    "They asked $asked, and it is the opponent's move, not theirs: there is no " +
+                        "move of theirs to play yet. Say so, then what the opponent threatens now -- " +
+                        "their best move and what it does, from the engine lines (the opponent's " +
+                        "move) -- and what the player should be ready for once it is played. One or " +
+                        "two sentences, no question. $NO_FIGURES"
+            }
         } else if (level.value >= DisclosureLevel.LINE.value &&
             ASK_LINE.containsMatchIn(said) && facts.line.isNotEmpty()
         ) {

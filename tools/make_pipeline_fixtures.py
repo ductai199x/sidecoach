@@ -362,6 +362,34 @@ def puzzle_flip(theme: str) -> list[dict]:
     ]
 
 
+FLIP_FIRST = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1"
+
+
+def puzzle_flip_opening(theme: str) -> list[dict]:
+    """`test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move` (Tai's puzzles,
+    2026-10-03): as `puzzle_flip`, but the puzzle for Black shows its first board a third of a
+    second before the site's opening move Nf3: the first board is its start, and Nf3 is played."""
+    states = puzzle_flip(theme)[:3]
+    first = chess.Board(FLIP_FIRST)
+    states.append(
+        dict(
+            board_kwargs(board=first, theme=theme, style="cburnett", bottom=synth.Side.BLACK),
+            _repeat=3,
+        )
+    )
+    after = first.copy()
+    opening = after.push_san("Nf3")
+    states.append(
+        dict(
+            board_kwargs(
+                board=after, theme=theme, style="cburnett", bottom=synth.Side.BLACK, highlight=opening
+            ),
+            _repeat=20,
+        )
+    )
+    return states
+
+
 def fast_reply(theme: str) -> list[dict]:
     """Lichess 000rO as chess.com plays it: the setup move a6-a5 highlighted, then the
     solver's Bc7 and the instant reply Kb4 seen together. Adopted with the side to move open,
@@ -1135,6 +1163,7 @@ SCENARIOS = {
     "unexplained-green": lambda: an_unexplained_stretch("green", "cburnett"),
     "piece-sets-green": lambda: piece_sets("green"),
     "puzzle-flip-green": lambda: puzzle_flip("green"),
+    "puzzle-flip-opening-green": lambda: puzzle_flip_opening("green"),
     "fast-reply-green": lambda: fast_reply("green"),
     "flip-slide-green": lambda: flip_slide("green"),
     "setup-lit-green": lambda: setup_lit("green"),
@@ -1217,6 +1246,7 @@ COUNT_READS = {"puzzle-read-once"}
 # (`PipelineTest.aStillScreenReadAgain...`): each pins a behaviour of the pipeline's, which
 # the shortcut the other scenarios hold it to adds nothing to, and a replay costs a minute.
 READ_ONCE = {
+    "puzzle-flip-opening-green",
     "new-theme-new-game",
     "theme-changed-mid-game",
     "set-changed-mid-game",
@@ -1263,6 +1293,10 @@ def _told_never_learned(lines: list[str], data: dict, plies: int) -> bool:
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
+    "puzzle-flip-opening-green": lambda lines, data: (
+        any(line.startswith("GameStarted position black " + FLIP_FIRST) for line in lines)
+        and any(line.startswith("MovePlayed 1 Nf3 g1f3") for line in lines)
+    ),
     "repetition-green": lambda lines, data: (
         _sans(lines) == list(REPETITION) and not any(ln.startswith("GameEnded") for ln in lines)
     ),

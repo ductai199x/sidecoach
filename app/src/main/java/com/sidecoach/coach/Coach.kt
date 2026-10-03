@@ -256,6 +256,19 @@ fun theirMoveNow(board: Board, facts: PositionFacts): String {
 }
 
 /**
+ * The line asked for on the opponent's move: from their best move on, each move with whose it is
+ * and what it does ([lineSpoken]). Only their next move was said: Tai, a puzzle solved on his
+ * Rb6+ and a mate in two left to see, asked for the line and heard "their best is a quiet one,
+ * Kd5" (2026-10-03). `coach.their_line_now`.
+ */
+fun theirLineNow(board: Board, facts: PositionFacts, player: Boolean): String {
+    if (facts.line.isEmpty()) return theirMoveNow(board, facts)
+    val spoken = lineSpoken(board, facts.line, player = player)
+    if (spoken.isEmpty()) return theirMoveNow(board, facts)
+    return "It's their move, and the line runs $spoken."
+}
+
+/**
  * What the opponent threatens when the player is in check: the check, and what else the
  * checking piece can win, read from the board ("their queen on e6 gives check, and it also
  * attacks your pawn on c6"). `coach.in_check_threat`.

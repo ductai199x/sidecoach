@@ -214,6 +214,13 @@ class GamePipeline(
          * the position then read that way round.
          */
         var flipSeen: Triple<Side, Double, View?>? = null
+
+        /**
+         * The read the flip check last saw before the one it holds, and when: a new puzzle's
+         * brief first board, the start its opening move is played from ([flipIfTurned]).
+         */
+        var flipRead: ColdRead? = null
+        var flipBefore: Pair<ColdRead, Double>? = null
         var screenState: ScreenState = ScreenState.UNKNOWN
         var dialogSince: Double? = null
         var covered = false
@@ -700,6 +707,8 @@ class GamePipeline(
         val current = model
         if (rec == null || current == null || rec.unexplainedFor < 1) {
             game.flipSeen = null
+            game.flipRead = null
+            game.flipBefore = null
             return mutableListOf()
         }
         val seen = game.flipSeen
@@ -709,22 +718,42 @@ class GamePipeline(
             game.flipSeen = null
             return mutableListOf()
         }
-        if (seen == null || seen.first != labelled) {
-            game.flipSeen = Triple(labelled, ts, null)
-            return mutableListOf()
-        }
         // The position must read the same twice too: a piece still sliding in reads as two
         // empty squares, and a board adopted then lacks it for good -- the next puzzle's setup
         // move caught mid-slide at two frames a second, and nothing after it was recorded
-        // (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
+        // (Tai, 2026-09-24: "sometimes there is no move list whatsoever"). Two reads after the
+        // first look at the labels must agree; the board the first look reads is kept only as
+        // what came before: read only at the second look, a new puzzle's first board, up for a
+        // third of a second, was gone before it was ever read (Tai's puzzles, 2026-10-03: the
+        // first move missed whenever the next puzzle was the other side's).
         val read = reread(labelled) ?: coldRead(frame, geometry, labelled)
         val placed = read?.let { view(it) }
+        if (seen == null || seen.first != labelled) {
+            game.flipSeen = Triple(labelled, ts, null)
+            game.flipRead = read
+            return mutableListOf()
+        }
         if (placed == null || placed != seen.third) {
+            val earlier = game.flipRead
+            if (placed != null && earlier != null && view(earlier) != placed) {
+                // Another board read a moment ago: a new puzzle's first board, before the site's
+                // opening move. One legal move must join it to the board adopted
+                // ([Reconciler.startFrom]), or it is let go.
+                game.flipBefore = earlier to seen.second
+            }
             game.flipSeen = Triple(labelled, ts, placed)
+            game.flipRead = read
             return mutableListOf()
         }
         game.flipSeen = null
-        val events = reorientRead(read!!, ts)
+        game.flipRead = null
+        var before: Pair<Board, Set<Int>>? = null
+        val prior = game.flipBefore
+        if (prior != null && ts - prior.second <= COLD_BEFORE_S && prior.first.bottom == labelled) {
+            before = prior.first.placement to highlightedSquares(bySquare(prior.first.readings, prior.first.bottom))
+        }
+        game.flipBefore = null
+        val events = reorientRead(read!!, ts, before = before)
         if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
         return events
     }
@@ -797,9 +826,14 @@ class GamePipeline(
     }
 
     /** `reorient` with its read already taken (the desktop's `read=`): [ColdRead] is private. */
-    private fun reorientRead(read: ColdRead, ts: Double, endPrevious: Boolean = true): MutableList<Event> {
+    private fun reorientRead(
+        read: ColdRead,
+        ts: Double,
+        endPrevious: Boolean = true,
+        before: Pair<Board, Set<Int>>? = null,
+    ): MutableList<Event> {
         val events = if (endPrevious) endInProgress("board reoriented") else mutableListOf()
-        events.addAll(adoptCold(read, ts))
+        events.addAll(adoptCold(read, ts, before))
         return events
     }
 
