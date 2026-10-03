@@ -3258,7 +3258,7 @@ class CoachTest {
             coach.engine = firstLegal
             coach.syncClaims = true
             val heard = ArrayList<String>()
-            coach.streamSink = { _, _, _ -> { s -> heard.add(s); true } }
+            coach.streamSink = { _, _, _, _ -> { s -> heard.add(s); true } }
             playToScholar(coach)
             coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
             messages(coach)

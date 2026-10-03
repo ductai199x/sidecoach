@@ -94,7 +94,36 @@ class KokoroTts(
         val voice: String?,
         val stamp: Stamp,
         val queuedAt: Long = SystemClock.elapsedRealtime(),
-    )
+        val id: Long = 0,
+    ) {
+        /**
+         * When this line may start to play, in elapsed-realtime milliseconds: its own, as the
+         * next line is made while it plays (one value for "the line being made" was overwritten
+         * by the next). Under [lock].
+         */
+        var startAt: Long = Long.MAX_VALUE
+    }
+
+    /** Numbers the lines queued (`Line.id`). */
+    private val lineIds = java.util.concurrent.atomic.AtomicLong()
+
+    /**
+     * The lines the worker has taken and the player has not begun, by id, with their owner: the
+     * next line made while one plays among them (`waiting`). Under [lock].
+     */
+    private val taken = LinkedHashMap<Long, String>()
+
+    /** Taken lines dropped by [dropWaiting]: never played. Under [lock]. */
+    private val dropped = HashSet<Long>()
+
+    /** The line playing now (its id and owner), null between lines. Under [lock]. */
+    private var playingLine: Pair<Long, String>? = null
+
+    /** Lines made ahead by [prepare] (a fast line's word), by their words, in pieces. Under [lock]. */
+    private val prepared = LinkedHashMap<String, List<FloatArray>>()
+
+    /** Lines being made ahead by [prepare], by their words: counted down once filed. Under [lock]. */
+    private val preparing = HashMap<String, CountDownLatch>()
 
     private val queue = LinkedBlockingQueue<Line>()
     private var worker: Thread? = null
@@ -110,6 +139,8 @@ class KokoroTts(
         val done: CountDownLatch?,
         /** With the first piece: the line's speech, what is made and the rest's estimate. */
         val speechMs: Long = 0,
+        /** The line it is a piece of (`Line.id`). */
+        val lineId: Long = 0,
     )
 
     private val chunks = LinkedBlockingQueue<Chunk>()
@@ -132,10 +163,12 @@ class KokoroTts(
         stamp.generation != generation || stamp.cut != (cuts[stamp.owner] ?: 0)
 
     private fun staleNow(stamp: Stamp): Boolean = synchronized(lock) { stale(stamp) }
-    @Volatile private var playing = false
 
-    /** When the line being made may start to play, in elapsed-realtime milliseconds. Under [lock]. */
-    private var startAt = Long.MAX_VALUE
+    /** A stop since the line was queued, or [dropWaiting] since it was taken. Under [lock]. */
+    private fun gone(stamp: Stamp, id: Long): Boolean = stale(stamp) || id in dropped
+
+    private fun goneNow(stamp: Stamp, id: Long): Boolean = synchronized(lock) { gone(stamp, id) }
+    @Volatile private var playing = false
 
     /** Milliseconds of synthesis a millisecond of speech takes now, as the last piece took. */
     @Volatile private var pace = PACE_GUESS
@@ -236,11 +269,71 @@ class KokoroTts(
         if (spoken.isEmpty()) return
         ensureWorker()
         val stamp = synchronized(lock) { Stamp(owner, generation, cuts[owner] ?: 0) }
-        queue.put(Line(spoken, text, voice, stamp))
+        synchronized(lock) {
+            queue.put(Line(spoken, text, voice, stamp, id = lineIds.incrementAndGet()))
+            lock.notifyAll() // the worker, waiting for a line ([run])
+        }
     }
 
     /** Whether a line is playing or waiting to play. */
     override val busy: Boolean get() = playing || queue.isNotEmpty()
+
+    /**
+     * How many lines wait behind the one playing: the queued, and the one taken and made while
+     * it plays. Before anything plays, the line being made is the one to play, not a waiting one.
+     */
+    override val waiting: Int
+        get() = synchronized(lock) {
+            val live = taken.keys.count { it !in dropped } // a dropped line never plays
+            val ahead = live - (if (playingLine == null && live > 0) 1 else 0)
+            queue.size + ahead
+        }
+
+    /**
+     * Drop [owner]'s lines waiting behind the one playing -- the one made ahead too -- and leave
+     * the one playing to finish: what waits is no longer the news (the pace plan). `drop_waiting`.
+     */
+    override fun dropWaiting(owner: String) {
+        synchronized(lock) {
+            val playingNow = playingLine?.first
+            for ((id, who) in taken) if (who == owner && id != playingNow) dropped.add(id)
+            lock.notifyAll()
+        }
+        queue.removeIf { it.stamp.owner == owner }
+    }
+
+    /**
+     * Make [text] now, in its pieces, off the voice's threads, to play at once when it is said (a
+     * fast line's word, held to the line's end). Nothing when the voice is not loaded. `prepare`.
+     */
+    override fun prepare(text: String) {
+        val spoken = Py.strip(Notation.speak(text, voice = true))
+        if (spoken.isEmpty() || kokoro == null) return
+        val done = CountDownLatch(1)
+        synchronized(lock) {
+            if (spoken in prepared || spoken in preparing) return
+            preparing[spoken] = done
+        }
+        Thread({
+            val shared = using.readLock()
+            shared.lock()
+            try {
+                val model = kokoro ?: return@Thread
+                val (style, pieces) = model.pieces(spoken, voice, speed, lang)
+                val made = pieces.map { piece -> model.synthesize(piece, style, speed) }
+                synchronized(lock) {
+                    prepared[spoken] = made
+                    while (prepared.size > 4) prepared.remove(prepared.keys.first())
+                }
+            } catch (exc: Exception) { // only an early start lost
+                Log.d(TAG, "could not prepare ${Py.repr(spoken)}: ${VoiceLog.said(exc)}")
+            } finally {
+                shared.unlock()
+                synchronized(lock) { preparing.remove(spoken) }
+                done.countDown()
+            }
+        }, "kokoro-prepare").apply { isDaemon = true }.start()
+    }
 
     /**
      * Drop everything queued and silence anything now playing. With [owner], only that owner's
@@ -252,14 +345,28 @@ class KokoroTts(
         val cutNow: Boolean
         synchronized(lock) {
             if (owner == null) generation += 1 else cuts[owner] = (cuts[owner] ?: 0) + 1
+            // What is playing is cut when it is the owner's: the line playing, or before anything
+            // plays the line being made. The next line is made while one plays, so the line being
+            // made can be a room's while the coach's plays: that one plays on.
+            val playingNow = playingLine
             val now = current
-            cutNow = owner == null || (now != null && now.owner == owner)
+            cutNow = owner == null ||
+                playingNow?.second == owner ||
+                (playingNow == null && now != null && now.owner == owner)
             lock.notifyAll()
         }
         // The queue's own lock: the lines kept stay in their order.
         if (owner == null) queue.clear() else queue.removeIf { it.stamp.owner == owner }
+        // The pieces handed to the player: everyone's, or only the owner's (a line of another
+        // owner's, made ahead, plays on).
+        if (owner == null) {
+            while (true) chunks.poll()?.done?.countDown() ?: break
+        } else {
+            val gone = chunks.filter { it.mine.owner == owner }
+            chunks.removeAll(gone.toSet())
+            gone.forEach { it.done?.countDown() }
+        }
         if (!cutNow) return
-        while (true) chunks.poll()?.done?.countDown() ?: break
         runCatching { output?.cut() }
     }
 
@@ -307,32 +414,87 @@ class KokoroTts(
         }
     }
 
+    /**
+     * The worker: each line made in turn, one line ahead of the player -- the next is made while
+     * one plays, and a line that comes while one plays is taken the moment it comes -- so a
+     * sentence follows the one before with no wait (Tai, 2026-10-03: "zero waits between
+     * sentences"; the next was made only once the one before had played, 0.7 to 1.8 s of
+     * silence on the Pixel). Never more than one ahead: before the next is taken, the line before
+     * the one just made has played.
+     */
     private fun run() {
+        var before: CountDownLatch? = null // the line before the one just made: played?
         while (true) {
+            // Busy from the moment a line is taken up, through synthesis, until it has been
+            // handed to the output -- so a caller asking `busy` mid-synthesis gets the truth.
+            // Marked busy before the line leaves the queue: taken first, a look between the two
+            // saw neither, and a caller waiting for the voice to go quiet went on at once.
             val line = try {
-                queue.take()
+                synchronized(lock) {
+                    var next: Line? = null
+                    while (next == null) {
+                        while (queue.isEmpty()) lock.wait()
+                        playing = true
+                        next = queue.poll() // null: a stop emptied it meanwhile
+                        if (next == null) playing = (before?.count ?: 0L) > 0L
+                    }
+                    next
+                }
             } catch (_: InterruptedException) {
                 return
             }
-            // Busy from the moment a line is taken up, through synthesis, until it has been
-            // handed to the output -- so a caller asking `busy` mid-synthesis gets the truth.
-            playing = true
-            synchronized(lock) { current = line.stamp }
+            synchronized(lock) {
+                current = line.stamp
+                taken[line.id] = line.stamp.owner
+            }
             try {
-                speakOne(line)
+                val done = speakOne(line)
+                if (done == null) synchronized(lock) { taken.remove(line.id) }
+                before?.await()
+                before = done
+                // Nothing behind it: busy until it has played, a line that comes meanwhile taken
+                // at once.
+                while (queue.isEmpty() && done != null && done.count > 0L) {
+                    done.await(AHEAD_LOOK_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            } catch (_: InterruptedException) {
+                return
             } finally {
                 synchronized(lock) { current = null }
-                playing = false
+                playing = queue.isNotEmpty() || (before?.count ?: 0L) > 0L
             }
         }
     }
 
-    private fun speakOne(line: Line) {
-        if (!load()) return // degraded to silence
-        val model = kokoro ?: return
+    /**
+     * Make [line] and hand its pieces to the player; its latch, counted down once its last piece
+     * has been written to the output, or null when nothing of it was handed over.
+     */
+    private fun speakOne(line: Line): CountDownLatch? {
+        if (!load()) return null // degraded to silence
+        val model = kokoro ?: return null
         val mine = line.stamp
-        if (staleNow(mine)) return // stopped while it waited its turn
+        if (goneNow(mine, line.id)) return null // stopped, or dropped, while it waited its turn
         val done = CountDownLatch(1)
+        // Said while it is still being made ahead ([prepare]): waited for, never made twice.
+        val making = synchronized(lock) { if (line.voice == null) preparing[line.spoken] else null }
+        making?.await(PREPARE_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        val ready = synchronized(lock) { if (line.voice == null) prepared.remove(line.spoken) else null }
+        if (ready != null) {
+            // Made ahead ([prepare]): its pieces go to the player at once, to play when its turn
+            // comes.
+            for ((i, samples) in ready.withIndex()) {
+                val last = i == ready.size - 1
+                val out = if (last) samples.copyOf(samples.size + (Kokoro.SAMPLE_RATE * TAIL_SILENCE_S).toInt()) else samples
+                val speechMs = if (i == 0) ready.sumOf { it.size } * 1000L / Kokoro.SAMPLE_RATE else 0L
+                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null, speechMs, line.id))
+            }
+            synchronized(lock) {
+                line.startAt = 0
+                lock.notifyAll()
+            }
+            return done
+        }
         var handed = false
         val shared = using.readLock()
         shared.lock()
@@ -340,17 +502,16 @@ class KokoroTts(
         var speech = 0L
         val timings = ArrayList<String>()
         try {
-            if (kokoro == null) return // closed meanwhile
+            if (kokoro == null) return null // closed meanwhile
             val (style, pieces) = model.pieces(line.spoken, line.voice ?: voice, speed, lang)
             // The speech each piece will make, in milliseconds, from its phonemes.
             val expected = pieces.map { (phonemes, pause) ->
                 phonemes.codePointCount(0, phonemes.length) * Kokoro.MS_PER_PHONEME / speed + pause * 1000
             }
-            synchronized(lock) { startAt = Long.MAX_VALUE }
             var made = 0.0
             for ((i, piece) in pieces.withIndex()) {
-                // A stop meanwhile means this line was cancelled.
-                if (staleNow(mine)) return
+                // A stop, or a drop, meanwhile means this line was cancelled.
+                if (goneNow(mine, line.id)) return null
                 val from = SystemClock.elapsedRealtime()
                 val samples = try {
                     runCatching { onSynthesis?.invoke(true) }
@@ -378,22 +539,22 @@ class KokoroTts(
                 }
                 val out = if (last) samples.copyOf(samples.size + (Kokoro.SAMPLE_RATE * TAIL_SILENCE_S).toInt()) else samples
                 val speechMs = if (i == 0) (made + expected.drop(1).sum()).toLong() else 0L
-                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null, speechMs))
+                chunks.put(Chunk(out, mine, if (i == 0) line else null, if (last) done else null, speechMs, line.id))
                 handed = last
                 synchronized(lock) {
-                    startAt = SystemClock.elapsedRealtime() + hold.toLong()
+                    line.startAt = SystemClock.elapsedRealtime() + hold.toLong()
                     lock.notifyAll()
                 }
             }
         } catch (exc: Exception) { // a bad line must not kill the voice
             VoiceLog.warn("Kokoro synthesis failed for ${Py.repr(line.spoken)}: ${VoiceLog.said(exc)}")
-            return
+            return null
         } finally {
             shared.unlock()
             if (!handed) synchronized(lock) {
                 // What was made of a line that failed part-way plays now; a stopped line's
                 // pieces the player drops.
-                startAt = 0
+                line.startAt = 0
                 lock.notifyAll()
             }
         }
@@ -405,12 +566,8 @@ class KokoroTts(
                 "$speech ms of speech, in ${timings.size} piece${if (timings.size == 1) "" else "s"} " +
                 "(ms made in / ms of speech: ${timings.joinToString(" ")})",
         )
-        // The next line waits until this one has been handed to the output, as on the desktop.
-        try {
-            done.await()
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
+        // The worker goes on to the next line while this one plays ([run]).
+        return if (handed) done else null
     }
 
     /**
@@ -430,8 +587,8 @@ class KokoroTts(
                 val line = chunk.first
                 if (line != null) {
                     synchronized(lock) {
-                        while (!stale(chunk.mine)) {
-                            val wait = startAt - SystemClock.elapsedRealtime()
+                        while (!gone(chunk.mine, chunk.lineId)) {
+                            val wait = line.startAt - SystemClock.elapsedRealtime()
                             if (wait <= 0) break
                             lock.wait(wait)
                         }
@@ -441,8 +598,12 @@ class KokoroTts(
                 // checked: a stop landing while the track opened, or during a piece, was ignored
                 // and the line played over a mute or a barge-in (voice finding 13).
                 val out = openOutput()
-                if (staleNow(chunk.mine)) continue
+                if (goneNow(chunk.mine, chunk.lineId)) continue
                 if (line != null) {
+                    synchronized(lock) {
+                        taken.remove(chunk.lineId)
+                        playingLine = chunk.lineId to chunk.mine.owner
+                    }
                     underruns = out.underrunCount
                     Log.i(TAG, "line: first sound ${SystemClock.elapsedRealtime() - line.queuedAt} ms after it was queued")
                     runCatching { onPlay?.invoke(line.given.ifEmpty { line.spoken }) }
@@ -452,7 +613,7 @@ class KokoroTts(
                     chunk.samples,
                     output = { PcmSink(out::write) },
                     reopen = { PcmSink(reopenOutput(out)::write) },
-                    stopped = { staleNow(chunk.mine) },
+                    stopped = { goneNow(chunk.mine, chunk.lineId) },
                 )
                 if (chunk.done != null) Log.i(TAG, "line: played with ${(output ?: out).underrunCount - underruns} gaps")
             } catch (_: InterruptedException) {
@@ -460,7 +621,14 @@ class KokoroTts(
             } catch (exc: Exception) { // audio errors are not fatal
                 VoiceLog.warn("Kokoro playback failed: ${VoiceLog.said(exc)}")
             } finally {
-                chunk.done?.countDown()
+                if (chunk.done != null) {
+                    synchronized(lock) {
+                        if (playingLine?.first == chunk.lineId) playingLine = null
+                        taken.remove(chunk.lineId)
+                        dropped.remove(chunk.lineId)
+                    }
+                    chunk.done.countDown()
+                }
             }
         }
     }
@@ -618,5 +786,15 @@ class KokoroTts(
 
         /** The time a pass takes whatever its length, in milliseconds. */
         private const val PASS_MS = 80.0
+
+        /**
+         * While the last line plays with nothing behind it, how often the worker looks for a line
+         * that has come: one that comes is taken and made at once, while the line plays.
+         */
+        private const val AHEAD_LOOK_MS = 20L
+
+        /** A line said while it is still being made ahead waits this long at most for that
+         * making, rather than being made a second time (`PREPARE_WAIT_S`). */
+        private const val PREPARE_WAIT_MS = 5000L
     }
 }

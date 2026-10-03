@@ -245,7 +245,7 @@ class SpeakerTest {
         val seen = ArrayList<Pair<Trigger, Int?>>()
         val heard = ArrayList<String>()
         val gone = ArrayList<() -> Boolean>()
-        coach.streamSink = { trigger, ply, movedOn ->
+        coach.streamSink = { trigger, ply, movedOn, _ ->
             seen.add(trigger to ply)
             gone.add(movedOn)
             val sink: (String) -> Boolean = { sentence -> heard.add(sentence); true }

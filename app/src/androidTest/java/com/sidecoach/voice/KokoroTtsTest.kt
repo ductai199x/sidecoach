@@ -144,6 +144,135 @@ class KokoroTtsTest {
     }
 
     /**
+     * An output that holds every write until the test opens it ([open]): the line playing stays
+     * playing, and what the voice does meanwhile -- the next line made -- is seen, not timed.
+     */
+    private class GatedOutput : KokoroTts.Output {
+        val open = CountDownLatch(1)
+        override val underrunCount: Int = 0
+
+        override fun write(samples: FloatArray, at: Int, n: Int): Int {
+            open.await(30, TimeUnit.SECONDS)
+            return n
+        }
+
+        override fun cut() = Unit
+
+        override fun release() = Unit
+    }
+
+    /** The voice noting each line made ([made], one count per line: its last piece made) and
+     * each line whose audio started ([played]). */
+    private class Watched(val tts: KokoroTts) {
+        val made = java.util.concurrent.Semaphore(0)
+        val started = java.util.concurrent.Semaphore(0)
+        val played: MutableList<String> = Collections.synchronizedList(ArrayList())
+
+        init {
+            tts.onSynthesis = { on -> if (!on) made.release() }
+            tts.onPlay = { line ->
+                played.add(line)
+                started.release()
+            }
+        }
+    }
+
+    /**
+     * Tai, 2026-10-03: "zero waits between sentences". The output holds the first line: the
+     * second is made meanwhile, before the first has played, and follows it at once
+     * (`test_the_next_line_is_made_while_the_one_before_plays`).
+     */
+    @Test
+    fun theNextLineIsMadeWhileTheOneBeforePlays() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val output = GatedOutput()
+        tts!!.makeOutput = { output }
+        val watched = Watched(tts)
+        tts.say("One.")
+        tts.say("Two.")
+        assertTrue("the first never started", watched.started.tryAcquire(30, TimeUnit.SECONDS))
+        assertTrue("the second was not made while the first plays", watched.made.tryAcquire(2, 30, TimeUnit.SECONDS))
+        assertEquals(listOf("One."), watched.played.toList())
+        assertEquals("the second made, waiting behind the first", 1, tts.waiting)
+        output.open.countDown()
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("One.", "Two."), watched.played.toList())
+    }
+
+    /**
+     * The model writes a reply's next sentence after the first has begun to play: it is made the
+     * moment it comes, not once the first has ended
+     * (`test_a_line_that_comes_while_one_plays_is_made_before_it_ends`).
+     */
+    @Test
+    fun aLineThatComesWhileOnePlaysIsMadeBeforeItEnds() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val output = GatedOutput()
+        tts!!.makeOutput = { output }
+        val watched = Watched(tts)
+        tts.say("One.")
+        assertTrue("the first never started", watched.started.tryAcquire(30, TimeUnit.SECONDS))
+        assertTrue(watched.made.tryAcquire(30, TimeUnit.SECONDS))
+        tts.say("Two.") // comes while "One." plays
+        assertTrue("made while the first plays", watched.made.tryAcquire(30, TimeUnit.SECONDS))
+        assertEquals(listOf("One."), watched.played.toList())
+        output.open.countDown()
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("One.", "Two."), watched.played.toList())
+    }
+
+    /**
+     * The pace plan's [KokoroTts.dropWaiting]: the lines behind the one playing -- the one made
+     * ahead too -- go; the one playing is said to its end
+     * (`test_dropping_what_waits_leaves_the_line_playing`).
+     */
+    @Test
+    fun droppingWhatWaitsLeavesTheLinePlaying() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        val output = GatedOutput()
+        tts!!.makeOutput = { output }
+        val watched = Watched(tts)
+        tts.say("One.")
+        tts.say("Two.")
+        tts.say("Three.")
+        assertTrue("the first never started", watched.started.tryAcquire(30, TimeUnit.SECONDS))
+        assertTrue("the second was not made ahead", watched.made.tryAcquire(2, 30, TimeUnit.SECONDS))
+        tts.dropWaiting()
+        assertEquals("nothing waits", 0, tts.waiting)
+        output.open.countDown()
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("One."), watched.played.toList())
+    }
+
+    /**
+     * A fast line's word, held to the line's end, is made while it waits ([KokoroTts.prepare]):
+     * said -- even while it is still being made -- its pieces go to the player without being made
+     * again
+     * (`test_a_line_prepared_ahead_is_not_made_again`).
+     */
+    @Test
+    fun aLinePreparedAheadIsNotMadeAgain() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        tts!!.makeOutput = { InstantOutput() }
+        val watched = Watched(tts)
+        tts.prepare("Well found.")
+        // Said while it is still being prepared: waited for, never made by the voice's worker.
+        tts.say("Well found.")
+        assertTrue("never said", watched.started.tryAcquire(30, TimeUnit.SECONDS))
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("Well found."), watched.played.toList())
+        assertEquals("made again by the worker", 0, watched.made.availablePermits())
+    }
+
+    /**
      * The voice with its first line held in synthesis until [go] is let go ([synthesising] says
      * it began), and the lines whose audio starts, in order: the lines queued behind it wait
      * their turn.

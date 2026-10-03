@@ -650,7 +650,11 @@ object PanelEngine {
                 val think = event.thinkMs?.let { ", " + format1(it / 1000.0) + "s" } ?: ""
                 synchronized(lock) { fenBefore[event.ply] = event.fenBefore }
                 lastPly = event.ply
-                if (event.byUser) PanelVoice.positionMovedOn("the player moved")
+                if (event.byUser) {
+                    PanelVoice.positionMovedOn("the player moved", ply = event.ply, thinkS = event.thinkMs?.let { it / 1000.0 })
+                } else {
+                    PanelVoice.pace?.opponentMoved(event.ply)
+                }
                 PanelVoice.noteMove(event.ply)
                 // The move list itself comes from the game's moves each tick
                 // (`GameWatcher.refreshState`, as `panel._refresh_state`), so a takeback or an
@@ -676,7 +680,7 @@ object PanelEngine {
                     "takeback ${event.plies} ply",
                     JSONObject().put("fen", event.fen),
                 )
-                PanelVoice.positionMovedOn("a takeback")
+                PanelVoice.positionMovedOn("a takeback", ply = maxOf(0, lastPly - event.plies))
                 // The engine lets go of the withdrawn moves at once, and their badges leave the
                 // move list: a replacement played at the same ply showed the withdrawn move's.
                 lastPly = maxOf(0, lastPly - event.plies)

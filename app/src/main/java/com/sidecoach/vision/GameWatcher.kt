@@ -518,7 +518,13 @@ class GameWatcher(
         PanelVoice.loopTs = ts
         coaching.tick(ts)
         coaching.drain()
-        PanelVoice.sayHeldWord(coaching.coach, ts)
+        val plan = PanelVoice.pace
+        if (plan != null) {
+            plan.tick() // a fast line's word, once the line is done
+            PanelVoice.feed()
+        } else {
+            PanelVoice.sayHeldWord(coaching.coach, ts)
+        }
         if (pipeline == null) return
         refreshState(pipeline)
         val now = SystemClock.elapsedRealtime() / 1000.0

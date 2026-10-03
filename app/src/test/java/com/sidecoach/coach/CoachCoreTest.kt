@@ -1223,7 +1223,7 @@ class CoachCoreTest {
     fun aStuckHintAQuestionCameBehindIsShownFirstAndNotSpoken() {
         val (coach, _) = scripted(listOf("Look at f7.", "Qxf7 is mate."))
         val sinks = HashMap<Trigger, () -> Boolean>()
-        coach.streamSink = { trigger, _, movedOn ->
+        coach.streamSink = { trigger, _, movedOn, _ ->
             sinks[trigger] = movedOn // what the voice will ask when the first sentence comes
             null
         }

@@ -281,6 +281,8 @@ class CoachRunner(
         while (drained < spoken.size) {
             val one = spoken[drained++]
             val message = one.message
+            // The whole message takes the place of the reply shown as it was written.
+            if (one.streamed) PanelEngine.set("coach_draft" to "")
             // Written down in the profile as the conversation (`panel._record_dialogue`).
             if (message.text.isNotEmpty()) PanelEngine.recordDialogue(message)
             val meta = arrayListOf(
@@ -327,6 +329,7 @@ class CoachRunner(
                         message.text,
                         message.ply,
                         movedOn = one.late || one.unvoiced,
+                        unvoiced = one.unvoiced,
                     )
                 }
                 when {

@@ -488,7 +488,7 @@ class Coach(
      * whether the moment the reply was asked for is over ([movedOn]): then the sink takes the
      * sentences as the reply's text and the voice says none of them.
      */
-    var streamSink: ((Trigger, Int?, () -> Boolean) -> ((String) -> Boolean)?)? = null
+    var streamSink: ((Trigger, Int?, () -> Boolean, () -> Boolean) -> ((String) -> Boolean)?)? = null
 
     var summariser: LLMProvider = summariser ?: provider
 
@@ -2655,9 +2655,12 @@ class Coach(
         )
         // Not spoken once its moment is over, nor when a question came behind it while it waited
         // ([Speaker.submit] sets `unvoiced`): read when its first sentence comes.
-        request.streamTo = streamSink?.invoke(trigger, position.ply) {
-            request.unvoiced || movedOn(Moment(momentEpoch, momentGame, momentOwnMoves))
-        }
+        request.streamTo = streamSink?.invoke(
+            trigger,
+            position.ply,
+            { request.unvoiced || movedOn(Moment(momentEpoch, momentGame, momentOwnMoves)) },
+            { request.unvoiced },
+        )
         speaker.submit(request)
     }
 

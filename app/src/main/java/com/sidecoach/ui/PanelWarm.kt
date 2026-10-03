@@ -141,7 +141,7 @@ object PanelWarm {
         if (kept?.coach != null) return kept
         if (!::appContext.isInitialized) return null
         onDemand ?: makeAsking(appContext, SettingsStore(appContext)).also {
-            it.coach?.streamSink = { trigger, ply, movedOn -> PanelVoice.streamSink(trigger, ply, movedOn) }
+            it.coach?.streamSink = { trigger, ply, movedOn, unvoiced -> PanelVoice.streamSink(trigger, ply, movedOn, unvoiced) }
             PanelEngine.emit(
                 "sys",
                 if (it.on) "info" else "warn",
@@ -195,6 +195,7 @@ object PanelWarm {
                 Captions.style(SettingsStore(appContext).captionStyle())
                 Captions.keep(SettingsStore(appContext).captionsKeep())
                 PanelVoice.startMuted(SettingsStore(appContext).muted()) // as the last session left it
+                PanelVoice.setVoicePace(SettingsStore(appContext).voicePace())
                 PanelEngine.set("captions" to SettingsStore(appContext).captionState())
                 PanelListen.build(appContext)
                 stage("pieces", "loading")
@@ -338,7 +339,7 @@ object PanelWarm {
         ).also {
             coaching = it
             // The voice takes a model reply sentence by sentence as it is written.
-            it.coach?.streamSink = { trigger, ply, movedOn -> PanelVoice.streamSink(trigger, ply, movedOn) }
+            it.coach?.streamSink = { trigger, ply, movedOn, unvoiced -> PanelVoice.streamSink(trigger, ply, movedOn, unvoiced) }
             PanelEngine.emit("sys", if (it.on) "info" else "warn", "coach: ${it.detail}")
         }
         PanelVoice.coach = coach.coach
@@ -508,6 +509,7 @@ object PanelWarm {
         attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
         attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
         attempt(listOf("voice.muted")) { PanelVoice.setMuted(store.muted()) }
+        attempt(listOf("voice.pace")) { PanelVoice.setVoicePace(store.voicePace()) }
         attempt(listOf("voice.speed")) { PanelVoice.tts?.speed = store.speed() }
         attempt(listOf("voice.captions")) { Captions.configure(appContext, store.captions(), ask = true) }
         attempt(CAPTION_LOOK) { Captions.style(store.captionStyle()) }

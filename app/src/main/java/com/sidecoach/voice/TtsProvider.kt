@@ -36,4 +36,20 @@ interface TtsProvider {
 
     /** Whether a line is playing or waiting to play. */
     val busy: Boolean
+
+    /**
+     * How many lines wait behind the one playing (the next, made meanwhile, counted); null when
+     * the voice cannot say -- then the pace plan hands it a line only when it is idle. The
+     * desktop's optional `waiting`.
+     */
+    val waiting: Int? get() = null
+
+    /**
+     * Drop [owner]'s lines waiting behind the one playing, the one made ahead too, and leave the
+     * one playing to finish (the pace plan: what waits is no longer the news). `drop_waiting`.
+     */
+    fun dropWaiting(owner: String = COACH) {}
+
+    /** Make [text] now, to play at once when it is said (a fast line's word). `prepare`. */
+    fun prepare(text: String) {}
 }

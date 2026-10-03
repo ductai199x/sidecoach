@@ -281,6 +281,10 @@ open class SettingsStore(private val context: Context) {
     /** The coach's voice silent, as the last session left it. */
     fun muted(): Boolean = section("voice").optBoolean("muted", false)
 
+    /** How the voice keeps up with the player's moves (`voice.pace`): "follow", the default, or
+     * "simple". */
+    fun voicePace(): String = section("voice").optString("pace", "follow")
+
     /**
      * The captions' settings as the page reads them (`panel.caption_settings`): the header's CC
      * and pin follow them, the box turned off from itself included. The phone's box draws its

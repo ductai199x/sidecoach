@@ -6,6 +6,9 @@ import com.sidecoach.analysis.Engine
 import com.sidecoach.coach.Coach
 import com.sidecoach.events.Trigger
 import com.sidecoach.voice.KokoroTts
+import com.sidecoach.voice.Pace
+import com.sidecoach.voice.PacePlan
+import com.sidecoach.voice.Py
 import com.sidecoach.voice.TtsProvider
 import com.sidecoach.voice.Voices
 import org.json.JSONObject
@@ -82,6 +85,16 @@ object PanelVoice {
     /** A word held back for pace (`panel._held_word`): trigger, text, ply, since. */
     private data class Held(val trigger: String, val text: String, val ply: Int?, val since: Double)
     @Volatile private var heldWord: Held? = null
+
+    /**
+     * "Follow my pace" (`voice.pace = "follow"`, the default): the voice's plan -- what is said,
+     * held to a fast line's end, or left to the text ([PacePlan]). Null: the simple policy above
+     * ([voiceAction], [heldWord]). `panel._pace`.
+     */
+    @Volatile var pace: PacePlan? = null
+        private set
+    private val paceKey = java.util.concurrent.atomic.AtomicInteger()
+    private val feedLock = Any()
 
     /**
      * The panel's clock, in seconds (`panel.time.monotonic`): the device's uptime clock. A test
@@ -213,13 +226,46 @@ object PanelVoice {
      * being written goes to the captions and the record, silent ([streamSink]). The text is never
      * cut. The opponent's move alone does not stop it. `panel._position_moved_on`.
      */
-    fun positionMovedOn(why: String) {
+    fun positionMovedOn(why: String, ply: Int? = null, thinkS: Double? = null) {
+        val plan = pace
+        if (plan != null) {
+            // Following the player's pace: the plan decides. The sentence playing finishes unless
+            // it is a hint whose position is gone or a lesson on a move taken back; what waits is
+            // judged again ([ply]: the player's move, or where a takeback went back to).
+            val stop = when {
+                why == "the player moved" && ply != null -> plan.playerMoved(ply, thinkS)
+                why == "a takeback" && ply != null -> plan.takenBack(ply)
+                else -> plan.newPosition() // a new game or puzzle, the board re-read
+            }
+            val speaker = voiceOut()
+            if (stop && speaker != null && speaker.busy) {
+                speaker.stop()
+                plan.stopped()
+                PanelEngine.emit("voice", "debug", "cut off: $why")
+            } else if (plan.waitingStale()) {
+                speaker?.dropWaiting()
+            }
+            feed()
+            return
+        }
         hushed += 1
         val speaker = voiceOut() ?: return
         if (speaker.busy) {
             speaker.stop()
             PanelEngine.emit("voice", "debug", "cut off: $why")
         }
+    }
+
+    /**
+     * How the voice keeps up with the player's moves (`voice.pace`): "follow", the plan of
+     * [PacePlan], or "simple", [voiceAction] (Tai, 2026-10-03: the new policy the default, the
+     * simple one kept as the fallback). A change applies now, from the next word. `set_voice_pace`.
+     */
+    fun setVoicePace(mode: String) {
+        val follow = mode != "simple"
+        if (follow == (pace != null)) return
+        pace = if (follow) PacePlan(clock) else null
+        heldWord = null
     }
 
     /** `set_muted`. */
@@ -230,6 +276,7 @@ object PanelVoice {
         if (on) {
             hushed += 1
             voiceOut()?.stop()
+            pace?.clear()
         }
         PanelEngine.emit("voice", "info", if (on) "muted" else "unmuted")
     }
@@ -293,7 +340,7 @@ object PanelVoice {
     private fun plyNow(): Int = PanelEngine.plyNow()
 
     /** Apply [voiceAction] and speak accordingly; what was done, for the log. `_speak`. */
-    fun speak(trigger: String, text: String, ply: Int?, movedOn: Boolean = false): String {
+    fun speak(trigger: String, text: String, ply: Int?, movedOn: Boolean = false, unvoiced: Boolean = false): String {
         // The captions show every line whatever the voice does with it -- muted, skipped as
         // short, stale, held back for pace (Tai, 2026-10-01). While the push-to-talk key is held
         // the voice says nothing: the player is talking. A reply asked for a moment that is over
@@ -301,6 +348,7 @@ object PanelVoice {
         // place and not spoken (Tai, 2026-10-02).
         if (muted || PanelEngine.pttHeld()) return "muted".also { Captions.show(text) }
         val speaker = voiceOut() ?: return "muted".also { Captions.show(text) }
+        if (pace != null) return paceSpeak(trigger, text, ply, unvoiced)
         if (movedOn) return "stale".also { Captions.show(text) }
         val action = voiceAction(trigger, text, ply, plyNow(), speaker.busy, voicing, coachFast())
         if (action == "supersede") speaker.stop()
@@ -334,11 +382,17 @@ object PanelVoice {
      * and held whole for the pace as a word on the page is ([heldWord]), said once the player
      * slows (Tai, 2026-10-02: a streamed reply is kept, never replaced by the template).
      */
-    fun streamSink(trigger: Trigger, ply: Int?, movedOn: () -> Boolean = { false }): ((String) -> Boolean)? {
-        // No voice yet (the warm-up has not built it): nothing to stream to, as when muted -- the
-        // reply is read whole and shown. A sink that declined here made the coach say its template
-        // in place of every AI reply until the voice was built (the round-3 parity audit).
-        if (muted || voiceOut() == null) return null
+    fun streamSink(
+        trigger: Trigger,
+        ply: Int?,
+        movedOn: () -> Boolean = { false },
+        unvoiced: () -> Boolean = { false },
+    ): ((String) -> Boolean)? {
+        // Muted too, or with no voice yet, a reply is written sentence by sentence: its text
+        // shows the moment each sentence exists, silent (Tai, 2026-10-03: "the message should
+        // stream out as fast as it possibly can"); with no sink the reply came whole, seconds
+        // later. The sink never declines: a declined one made the coach say its template.
+        if (pace != null) return paceSink(trigger, ply, unvoiced)
         val name = trigger.slug
         var started = false
         var silent = false // began while the push-to-talk key was held, or is not to be spoken
@@ -348,6 +402,7 @@ object PanelVoice {
         var held: Held? = null
         return sink@{ sentence ->
             val continues = started
+            draft(sentence, first = !continues)
             val word = held
             if (word != null) {
                 // Held for the pace: the rest joins the held word, shown now. Taken and said
@@ -444,6 +499,113 @@ object PanelVoice {
     }
 
     /**
+     * A reply being written, as the chat shows it while it comes (`coach_draft`): each sentence
+     * the moment it exists, the bubble growing until the whole message replaces it. `_draft`.
+     */
+    private fun draft(sentence: String, first: Boolean) {
+        val text = Py.strip(sentence)
+        if (text.isEmpty()) return
+        synchronized(draftLock) {
+            val before = if (first) "" else draftText
+            draftText = Py.strip("$before $text")
+            PanelEngine.set("coach_draft" to draftText)
+        }
+    }
+
+    private val draftLock = Any()
+    private var draftText = ""
+
+    /**
+     * [streamSink] following the player's pace: each sentence captioned the moment it is written,
+     * and offered to the plan, which says it, holds it for a fast line's end, or leaves it to the
+     * text. A reply asked for a moment that is over is the plan's to judge; a reply a question
+     * came behind ([unvoiced]), a barge-in or the push-to-talk key mid-reply keep it silent.
+     * `_pace_sink`.
+     */
+    private fun paceSink(trigger: Trigger, ply: Int?, unvoiced: () -> Boolean): (String) -> Boolean {
+        val plan = pace!!
+        val name = trigger.slug
+        val key = paceKey.incrementAndGet()
+        var index = 0
+        var hushedAt = hushed
+        var silent = false
+        return sink@{ sentence ->
+            val i = index++
+            Captions.show(sentence, i > 0)
+            draft(sentence, first = i == 0)
+            if (i == 0) {
+                hushedAt = hushed
+                silent = muted || PanelEngine.pttHeld() || unvoiced()
+            }
+            if (silent || muted || hushed != hushedAt || voiceOut() == null) {
+                silent = true
+                return@sink true
+            }
+            when (plan.offer(key, name, ply, i, sentence, streamed = true)) {
+                Pace.SAY -> {
+                    if (i == 0) awaitAudio(name, ply, sentence)
+                    feed()
+                }
+                Pace.HOLD -> {
+                    voiceOut()?.prepare(sentence)
+                    PanelEngine.emit("voice", "debug", "held for the line's end: ${PanelEngine.elide(sentence, 60)}")
+                }
+                else -> if (i == 0) PanelEngine.emit("voice", "debug", "not spoken (pace): ${PanelEngine.elide(sentence, 60)}")
+            }
+            true
+        }
+    }
+
+    /**
+     * [speak] following the player's pace: a whole message captioned now and offered to the plan
+     * as one sentence; what was done in [speak]'s words for the log. `_pace_speak`.
+     */
+    private fun paceSpeak(trigger: String, text: String, ply: Int?, unvoiced: Boolean): String {
+        Captions.show(text)
+        if (unvoiced) return "stale"
+        val plan = pace ?: return "stale"
+        return when (plan.offer(paceKey.incrementAndGet(), trigger, ply, 0, text, streamed = false)) {
+            Pace.SAY -> {
+                awaitAudio(trigger, ply, text)
+                feed()
+                "speak"
+            }
+            Pace.HOLD -> {
+                voiceOut()?.prepare(text)
+                "text"
+            }
+            else -> "stale"
+        }
+    }
+
+    /**
+     * Hand the voice the plan's next line, with the next one ready before the one playing ends: a
+     * line is given while the voice is idle, or while it plays one and has none waiting -- the
+     * voice makes the waiting one meanwhile, so sentences follow each other with no gap (Tai,
+     * 2026-10-03: "zero waits between sentences"). Called when a sentence is offered, when a line
+     * starts to play, at the board's changes, and on the session's tick. `_feed_voice`.
+     */
+    fun feed() {
+        val plan = pace ?: return
+        if (muted || PanelEngine.pttHeld()) return
+        val speaker = voiceOut() ?: return
+        val said = ArrayList<String>()
+        synchronized(feedLock) {
+            repeat(2) { // the line to play, and the one ready behind it
+                val busy = speaker.busy
+                val waiting = speaker.waiting
+                plan.voiceState(busy, waiting)
+                if (busy && (waiting == null || waiting > 0)) return@repeat
+                val line = plan.nextLine() ?: return@repeat
+                if (line.prepared) Captions.again() // captioned when it was held, long faded
+                speaker.say(line.text)
+                said.add(line.text)
+            }
+        }
+        for (text in said) PanelEngine.emit("voice", "debug", "speaking ($voice): ${PanelEngine.elide(text, 60)}")
+    }
+
+    /**
      * A word held back for pace is spoken once the player has been thinking in that position for
      * [PACE_RESUME_S]: the game slowed down. A word about a position the board has left is
      * dropped. [ts] is the loop's clock. `_say_held_word`.
@@ -508,6 +670,8 @@ object PanelVoice {
     /** The voice's thread: a line's audio is playing now. `_on_audio_starts`. */
     internal fun onAudioStarts(line: String) {
         val now = clock()
+        // A line began: the next goes to the voice now, to be made while this one plays.
+        feed()
         synchronized(lock) {
             val moved = awaitingAudio.remove(line) ?: return
             val seconds = now - moved

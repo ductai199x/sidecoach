@@ -59,6 +59,7 @@ class PanelVoicePolicyTest {
     @Before
     fun setUp() {
         PanelVoice.setMuted(false)
+        PanelVoice.setVoicePace("simple") // the simple voice policy, the fallback, under test here
     }
 
     @After
@@ -352,7 +353,7 @@ class PanelVoicePolicyTest {
         PanelVoice.voicing = null
         PanelEngine.set("ply" to 12, "ptt" to false)
         var over = true
-        var sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { over }!!
+        var sink = PanelVoice.streamSink(Trigger.USER_ASK, 12, movedOn = { over })!!
         // Taken, every sentence, so the reply is whole in the record: declined, the coach said a
         // template in its place. Not spoken.
         assertTrue(sink("The knight is loose."))
@@ -360,7 +361,7 @@ class PanelVoicePolicyTest {
         assertEquals(emptyList<String>(), fake.calls.toList())
         // The moment still holds: spoken as ever.
         over = false
-        sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { over }!!
+        sink = PanelVoice.streamSink(Trigger.USER_ASK, 12, movedOn = { over })!!
         assertTrue(sink("Look at f7."))
         assertEquals(listOf("say:Look at f7."), fake.calls.toList())
         // Not streamed: a reply that is late for the voice is said to be stale.
@@ -369,18 +370,21 @@ class PanelVoicePolicyTest {
     }
 
     /**
-     * Before the warm-up has built the voice there is nothing to stream to: no sink, as when
-     * muted, so the reply is read whole. The sink declined instead, and the coach said its
-     * template in place of every AI reply until the voice was there (the round-3 parity audit).
+     * Before the warm-up has built the voice the reply is still written sentence by sentence,
+     * silent: every sentence taken. A declined one made the coach say its template in place of
+     * every AI reply until the voice was there (the round-3 parity audit); with no sink the reply
+     * came whole, seconds later (Tai, 2026-10-03: the text streams as fast as it can).
      */
     @Test
     @com.sidecoach.InProcess(3) // a process whose voice is never built: in the app's own, a class before it built it
-    fun noVoiceYetMeansNoSinkNotADeclinedReply() {
+    fun noVoiceYetTheReplyIsStillWrittenAsItComes() {
         org.junit.Assume.assumeTrue("the voice is built in this process", PanelVoice.tts == null)
         PanelVoice.speaker = null
         PanelVoice.voicing = null
         PanelEngine.set("ply" to 12, "ptt" to false)
-        assertEquals(null, PanelVoice.streamSink(Trigger.USER_ASK, 12) { false })
+        val sink = PanelVoice.streamSink(Trigger.USER_ASK, 12)!!
+        assertTrue(sink("The knight is loose."))
+        assertTrue(sink("What defends it?"))
     }
 
     @Test
@@ -389,7 +393,7 @@ class PanelVoicePolicyTest {
         PanelVoice.speaker = fake
         PanelVoice.voicing = null
         PanelEngine.set("ply" to 12, "ptt" to false)
-        val sink = PanelVoice.streamSink(Trigger.USER_ASK, 12) { false }!!
+        val sink = PanelVoice.streamSink(Trigger.USER_ASK, 12, movedOn = { false })!!
         assertTrue(sink("First, the idea."))
         assertEquals(listOf("say:First, the idea."), fake.calls.toList())
         fake.busy = true
