@@ -329,7 +329,7 @@ class Reconciler:
     kind: str = "game"
     # The placement the resync would adopt, how many frames have shown it, and since when.
     _resync_candidate: tuple[str, int, float] | None = None
-    # The last two distinct placements a resync held for `brief_frames` clean frames: the
+    # The last `brief_kept` distinct placements a resync held for `brief_frames` clean frames: the
     # placement, its highlighted squares, its view key, and when it was last seen. A new
     # puzzle's first board stands for well under a second before the site plays the opening
     # move, too briefly to be adopted; the board after the move was, and the move was lost
@@ -338,7 +338,12 @@ class Reconciler:
     _resync_seen: list[tuple[chess.Board, frozenset[chess.Square], str, float]] = field(
         default_factory=list
     )
-    brief_frames: int = 2
+    # One clean read: the phone, its voice and engine busy, read the next puzzle's first board,
+    # up a third of a second, once (Tai's dump 20261003-171356). What keeps a stray read from
+    # standing in is that exactly one legal move must join it to the board adopted.
+    brief_frames: int = 1
+    # How many distinct boards held that long are kept: the first board, and frames past it.
+    brief_kept: int = 4
     # How long before the adopted board the brief one may have been seen and still be its start.
     brief_recent_s: float = 2.0
     # The squares of a position read from the screen whose pieces have not moved since: their
@@ -1342,7 +1347,7 @@ class Reconciler:
             if self._resync_seen and self._resync_seen[-1][2] == placement:
                 self._resync_seen[-1] = seen
             else:
-                self._resync_seen = [*self._resync_seen[-1:], seen]
+                self._resync_seen = [*self._resync_seen[-(self.brief_kept - 1) :], seen]
         held = frames >= self.resync_hold_frames or (
             len(diff) >= self.resync_jump_cells
             and frames >= self.resync_min_frames
@@ -1397,18 +1402,35 @@ class Reconciler:
         to this one -- a new puzzle's first board and the site's opening move on it -- or
         None. The earlier board must have held `brief_frames` clean frames, ended at most
         `brief_recent_s` before this one began, and be one move away: anything else is a
-        jump no single move explains, and this board stands alone."""
-        prior = next((s for s in reversed(self._resync_seen) if s[2] != placement), None)
-        if prior is None or since - prior[3] > self.brief_recent_s:
-            return None
-        return self._one_move(prior[0], prior[1], after.board_fen())
+        jump no single move explains, and this board stands alone. The newest of the boards
+        kept that one move joins is taken: a frame caught mid-slide, repeated by the phone's
+        still ticks, was held long enough to be kept, and as the only earlier board it stood in
+        for the first one (Tai's dump 20261003-171356)."""
+        for prior in reversed(self._resync_seen):
+            if prior[2] == placement or since - prior[3] > self.brief_recent_s:
+                continue
+            found = self._one_move(prior[0], prior[1], after.board_fen())
+            if found is not None:
+                return found
+        return None
 
     def _one_move(
         self, placed: chess.Board, highlighted: frozenset[chess.Square], target: str
     ) -> tuple[chess.Board, chess.Move] | None:
         """The position `placed` shows and the one legal move from it to the placement
         `target`, when exactly one move by either side gets there."""
-        adopted = self._adopt_placement(placed, prefer=self.bottom.color, highlighted=highlighted)
+        return Reconciler.one_move(placed, highlighted, target, prefer=self.bottom.color)
+
+    @staticmethod
+    def one_move(
+        placed: chess.Board,
+        highlighted: frozenset[chess.Square],
+        target: str,
+        prefer: chess.Color = chess.WHITE,
+    ) -> tuple[chess.Board, chess.Move] | None:
+        """`_one_move` for any caller: the pipeline asks it which of the boards it read before
+        is the one a move joins to the board it adopts."""
+        adopted = Reconciler._adopt_placement(placed, prefer=prefer, highlighted=highlighted)
         if adopted is None:
             return None
         found: list[tuple[chess.Board, chess.Move]] = []

@@ -773,18 +773,20 @@ MIDDLEGAME = "rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6"
 PUZZLE = "6k1/5ppp/8/8/8/8/5PPP/3R2K1 b - - 0 1"
 
 
-def test_a_new_puzzles_opening_move_is_played_from_its_brief_first_board() -> None:
+@pytest.mark.parametrize("reads", [2, 1], ids=["read twice", "read once"])
+def test_a_new_puzzles_opening_move_is_played_from_its_brief_first_board(reads: int) -> None:
     """A new puzzle's first board stands for well under a second before the site plays the
     opening move: too briefly to be adopted, and the board after it was, so the move was lost
     (Tai's puzzles, 2026-10-03: missed "75-80% of the time"). The brief board is the start and
-    the move is played; the solver's reply follows from there."""
+    the move is played; the solver's reply follows from there. Read once is enough: the phone,
+    busy, read it once (his dump 20261003-171356)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
     puzzle = chess.Board(PUZZLE)
     events = []
-    for k in range(2):  # the new puzzle's first board, briefly
+    for k in range(reads):  # the new puzzle's first board, briefly
         events += _feed(model, rec, puzzle, Side.WHITE, ts + 1.0 + 0.1 * k)
     opening = puzzle.push_san("h6")
     for k in range(12):  # the site plays the opening move; the board after it holds

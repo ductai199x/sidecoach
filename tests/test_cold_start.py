@@ -355,12 +355,17 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
     assert rec.turn_unknown and rec.board.turn == chess.BLACK, "the solver's move, meanwhile"
 
 
-def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(tmp_path: Path) -> None:
+@pytest.mark.parametrize("slide", [False, True], ids=["moved", "caught sliding"])
+def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
+    tmp_path: Path, slide: bool
+) -> None:
     """A new puzzle for the other side: its first board stands a third of a second, the site
     plays its opening move, and the board turned round was adopted only after it -- the move
     lost (Tai's puzzles, 2026-10-03: the first move missed whenever the next puzzle was the
     other side's). The first board read on the first look at the labels is its start, and the
-    move is played."""
+    move is played -- also when a look in between catches the move's piece sliding, which read
+    as nothing, or as a board without it, and stood in for the first board (0.1.70, his dump
+    20261003-171151: the queen caught mid-capture)."""
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     live = GamePipeline(cache=cache)
@@ -374,9 +379,20 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(tmp_path:
         )
     puzzle = first.copy()
     opening = puzzle.push_san("Nf3")
+    start = 30.3
+    if slide:
+        sliding = synthetic_board(
+            board=first,
+            bottom=Side.BLACK,
+            coordinates=True,
+            animating=(opening.from_square, opening.to_square, 0.5),
+        )
+        for i in range(3):  # a look at the labels lands on the knight in flight
+            events += _tick(live, sliding, start + 0.1 * i)
+        start += 0.3
     shown = synthetic_board(board=puzzle, bottom=Side.BLACK, coordinates=True, highlight=opening)
     for i in range(12):
-        events += _tick(live, shown, 30.3 + 0.1 * i)
+        events += _tick(live, shown, start + 0.1 * i)
     started = [e for e in events if isinstance(e, GameStarted)]
     assert len(started) == 1 and started[0].start_fen.split()[0] == first.board_fen()
     assert sans_of(events) == ["Nf3"], "the opening move is played"

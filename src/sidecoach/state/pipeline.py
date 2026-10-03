@@ -94,6 +94,8 @@ COLD_START_EXPIRE_S = 3.0
 # How recent a board read just before the adopted one must be to be its start, the site's
 # opening move between them (`Reconciler.start_from`'s `before`).
 COLD_BEFORE_S = 2.0
+# The distinct boards the flip check keeps: the first board, and reads past it mid-slide.
+FLIP_BOARDS_KEPT = 4
 # A board that has gone this long without being read, with no game followed on it, is
 # explained to the person once (`BoardUnread`) rather than left in silence.
 COLD_NOTICE_S = 6.0
@@ -278,10 +280,10 @@ class GamePipeline:
     # with how many times it has read the same and when it last did.
     _cold_tried: float | None = None
     _cold_candidate: tuple[_View, int, float] | None = None
-    # The read behind the candidate, and the read of the board before it with when it was
+    # The read behind the candidate, and the last few boards before it with when each was
     # last seen: the start an opening move may have been played from (`_auto_cold_start`).
     _cold_candidate_read: _ColdRead | None = None
-    _cold_before: tuple[_ColdRead, float] | None = None
+    _cold_boards: list[tuple[_ColdRead, float]] = field(default_factory=list)
     # The last cold read and what it was read from (the lock and the side told), so pixels
     # that have not changed are not read again; since when no cold read has succeeded on
     # this lock, and whether the person has been told.
@@ -293,10 +295,9 @@ class GamePipeline:
     # The other side the labels last said was at the bottom of an unexplained board, and when.
     # The side the labels say, when, and the position then read that way round.
     _flip_seen: tuple[Side, float, _View | None] | None = None
-    # The read the flip check last saw before the one it holds, and when: a new puzzle's brief
-    # first board, the start its opening move is played from (`_flip_if_turned`).
-    _flip_read: _ColdRead | None = None
-    _flip_before: tuple[_ColdRead, float] | None = None
+    # The last few distinct boards the flip check read, and when: among them a new puzzle's
+    # brief first board, the start its opening move is played from (`_flip_if_turned`).
+    _flip_boards: list[tuple[_ColdRead, float]] = field(default_factory=list)
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -692,8 +693,7 @@ class GamePipeline:
         rec = self.reconciler
         if rec is None or self.model is None or rec.unexplained_frames < 1:
             self._flip_seen = None
-            self._flip_read = None
-            self._flip_before = None
+            self._flip_boards = []
             return []
         seen = self._flip_seen
         if seen is not None and ts - seen[1] < FLIP_CHECK_EVERY_S:
@@ -712,34 +712,44 @@ class GamePipeline:
         # two, a piece caught sliding on both read as a board without it.
         read = self._reread(labelled) or self._cold_read(frame, geometry, labelled)
         placed = _view(read) if read is not None else None
+        last = _view(self._flip_boards[-1][0]) if self._flip_boards else None
+        if read is not None and last != placed:
+            # Kept as a board shown: a new puzzle's first board is the start its opening move is
+            # played from. A read of nothing -- a piece caught sliding -- keeps what was read
+            # before it, and the few last boards are kept, so one read mid-slide as a board
+            # without the piece never stands in for the first board (Tai's puzzles,
+            # 2026-10-03: the first move missed whenever the next puzzle was the other side's).
+            self._flip_boards = [*self._flip_boards[-(FLIP_BOARDS_KEPT - 1) :], (read, ts)]
         if seen is None or seen[0] != labelled:
             self._flip_seen = (labelled, ts, None)
-            self._flip_read = read
             return []
         if placed is None or placed != seen[2]:
-            if (
-                placed is not None
-                and self._flip_read is not None
-                and _view(self._flip_read) != placed
-            ):
-                # Another board read a moment ago: a new puzzle's first board, before the site's
-                # opening move. Held one read only, it was never the board turned round, and the
-                # move was lost (Tai's puzzles, 2026-10-03: the first move missed whenever the
-                # next puzzle was the other side's). One legal move must join it to the board
-                # adopted (`Reconciler.start_from`), or it is let go.
-                self._flip_before = (self._flip_read, seen[1])
             self._flip_seen = (labelled, ts, placed)
-            self._flip_read = read
             return []
+        assert read is not None
         self._flip_seen = None
-        self._flip_read = None
-        before = None
-        if self._flip_before is not None and ts - self._flip_before[1] <= COLD_BEFORE_S:
-            prior = self._flip_before[0]
-            if prior[1] == labelled:  # read the same way up
-                before = (prior[3], highlighted_squares(by_square(prior[2], prior[1])))
-        self._flip_before = None
+        before = self._start_among(self._flip_boards, read, ts)
+        self._flip_boards = []
         return self.reorient(frame, geometry, labelled, ts, read=read, before=before)
+
+    @staticmethod
+    def _start_among(
+        boards: list[tuple[_ColdRead, float]], read: _ColdRead, ts: float
+    ) -> tuple[chess.Board, frozenset[chess.Square]] | None:
+        """Of `boards`, read before `read`, the newest that one legal move joins to it, seen
+        at most COLD_BEFORE_S ago the same way up: the start a new puzzle's opening move is
+        played from (`Reconciler.start_from`), or None. The newest, not the last: a frame
+        caught mid-slide, read as a board without the moving piece, came between."""
+        target = read[3].board_fen()
+        for prior, seen_at in reversed(boards):
+            if ts - seen_at > COLD_BEFORE_S or prior[1] != read[1]:
+                continue
+            if prior[3].board_fen() == target:
+                continue
+            highlighted = highlighted_squares(by_square(prior[2], prior[1]))
+            if Reconciler.one_move(prior[3], highlighted, target, prefer=read[1].color):
+                return prior[3], highlighted
+        return None
 
     def _reread(self, bottom: Side) -> _ColdRead | None:
         """The frame's own readings taken with `bottom` at the bottom: the recogniser read
@@ -1211,20 +1221,18 @@ class GamePipeline:
         else:
             if candidate is not None and self._cold_candidate_read is not None:
                 # Another board read moments ago: a new puzzle's first board, perhaps, before
-                # the site's opening move (`Reconciler.start_from`'s `before`).
-                self._cold_before = (self._cold_candidate_read, candidate[2])
+                # the site's opening move (`Reconciler.start_from`'s `before`); the last few
+                # kept (`_start_among`).
+                kept = self._cold_boards[-(FLIP_BOARDS_KEPT - 1) :]
+                self._cold_boards = [*kept, (self._cold_candidate_read, candidate[2])]
             candidate = (view, 1, ts)
         self._cold_candidate = candidate
         self._cold_candidate_read = read
         if candidate[1] < COLD_START_HOLD:
             return []
         self._cold_candidate = None
-        before = None
-        if self._cold_before is not None and ts - self._cold_before[1] <= COLD_BEFORE_S:
-            prior = self._cold_before[0]
-            if prior[1] == read[1]:  # read the same way up
-                before = (prior[3], highlighted_squares(by_square(prior[2], prior[1])))
-        self._cold_before = None
+        before = self._start_among(self._cold_boards, read, ts)
+        self._cold_boards = []
         self._cold_candidate_read = None
         events = self._adopt_cold(*read, ts=ts, before=before)
         if events:
