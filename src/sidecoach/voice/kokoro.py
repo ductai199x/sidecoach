@@ -382,7 +382,8 @@ class KokoroTTS:
     @property
     def busy(self) -> bool:
         """Whether a line is playing or waiting to play."""
-        return self._playing or not self._queue.empty()
+        with self._queue.mutex:  # `_take` marks it busy as the line leaves the queue
+            return self._playing or bool(self._queue.queue)
 
     @property
     def waiting(self) -> int:
@@ -489,7 +490,7 @@ class KokoroTTS:
         ahead: _Ahead | None = None
         while True:
             if ahead is None:
-                item = self._queue.get()
+                item = self._take()
                 if item is None:
                     return
                 made = None
@@ -516,6 +517,19 @@ class KokoroTTS:
                     self._next_taken = ahead is not None
                 # Still busy when the next line was made meanwhile: it plays at once.
                 self._playing = ahead is not None
+
+    def _take(self) -> tuple[str, str, str | None, _Stamp] | None:
+        """The next line, waited for, and the voice marked busy as it leaves the queue, in one
+        step under the queue's lock: taken first and marked after, a look between the two saw
+        neither, and a caller waiting for the voice to go quiet went on at once."""
+        lines = self._queue
+        with lines.not_empty:
+            while not lines.queue:
+                lines.not_empty.wait()
+            item = lines.queue.popleft()
+            if item is not None:
+                self._playing = True
+            return item
 
     def _make(self, text: str, voice: str | None) -> tuple[object, int] | None:
         """A line's samples and their rate: made ahead (`prepare`), or made now. Said while it
