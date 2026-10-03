@@ -429,11 +429,14 @@ private fun verify(
     ClaimKind.SAFE -> checkSafe(position(claim, board), claim)
     ClaimKind.THREATENS -> checkThreatens(Pos(board, board.turn), claim, facts)
     ClaimKind.BEST -> checkBest(board, claim, facts, engine, depth)
+    // Never "what do you expect it to achieve?": a question about what they thought reads as a
+    // challenge (Tai, 2026-10-02). An offer to look instead.
     ClaimKind.PLAN -> ClaimResult.UNCLEAR to
-        ("That is a plan rather than something I can check on the board; what do you " +
-            "expect it to achieve, and which move starts it?")
+        ("That is a plan rather than something I can check on the board -- name the move that " +
+            "starts it and I will look at it.")
     ClaimKind.OTHER -> ClaimResult.UNCLEAR to
-        "I cannot check that against the board; what do you expect to happen, concretely?"
+        ("I cannot check that one against the board -- name a move, a piece or a square and I " +
+            "will look at it.")
 }
 
 /** `claim.target or claim.subject`: an empty target falls through, as in Python. */
@@ -853,7 +856,7 @@ private fun checkThreatens(
         val piece = board.pieceAt(target)
         if (piece == null) {
             if (fallback == null) {
-                fallback = "${squareName(target)} is empty; what do you expect to happen there?"
+                fallback = "${squareName(target)} is empty, so there is nothing on it to take"
             }
             continue
         }

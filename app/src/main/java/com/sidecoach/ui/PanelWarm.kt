@@ -514,8 +514,9 @@ object PanelWarm {
         attempt(listOf("voice.captions_keep")) { Captions.keep(store.captionsKeep()) }
         // The page's CC and pin read them (`restyle_captions`'s `caption_settings`).
         if (changed.any { it.startsWith("voice.captions") }) PanelEngine.set("captions" to store.captionState())
-        // Saved, and seen at once: a sample line in the new look over the settings page.
-        if (changed.any { it == "voice.captions" || it in CAPTION_LOOK }) Captions.preview()
+        // Saved, and seen at once: a sample line in the new look over the settings page. Turned
+        // on, the box itself comes up, touchable, never a sample first (Tai, 2026-10-02).
+        if (changed.any { it in CAPTION_LOOK }) Captions.preview()
         if (changed.any { it in VOICE_RELOAD }) {
             // A new language, folder or device: the old voice is cut off, the new one built
             // and loaded off the caller's thread. `_reload_voice`.

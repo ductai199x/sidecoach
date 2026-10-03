@@ -78,13 +78,13 @@ class CausesReviewTest {
 
         var lines = review(listOf(missed(3, 0.2), missed(9, 0.1), missed(15, 0.3, Causes.POSITIONAL))).lines
         assertEquals(
-            "What you kept missing: what their moves threatened -- 2 of your 3 mistakes. The habit" +
-                " that fixes it: before each move, look at what their last move attacks, and at the" +
-                " captures and checks your move would leave them.",
+            "One thing to work on: spotting what their moves threaten. A habit that helps: before" +
+                " each move, look at what their last move attacks, and at the captures and checks" +
+                " your move would leave them.",
             lines[1],
         )
         // One mistake of each kind is no pattern.
         lines = review(listOf(missed(3, 0.2), missed(15, 0.3, Causes.POSITIONAL))).lines
-        assertTrue(lines.toString(), lines.none { it.startsWith("What you kept missing") })
+        assertTrue(lines.toString(), lines.none { it.startsWith("One thing to work on") })
     }
 }

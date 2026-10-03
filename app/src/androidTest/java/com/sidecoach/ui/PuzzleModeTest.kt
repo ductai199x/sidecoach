@@ -97,7 +97,7 @@ class PuzzleModeTest {
         assertTrue(s.move("d4c2").isEmpty())
         val st = s.state()
         assertTrue(st["wrong"] == "d4c2" && st["your_move"] == false && st["misses"] == 1)
-        assertTrue((st["message"] as String).contains("Not that one"))
+        assertTrue((st["message"] as String).contains("Not quite"))
         assertTrue("nothing moves while the wrong move is shown", s.move("d4e2").isEmpty())
         assertEquals(emptyMap<String, List<String>>(), st["legal"])
         s.retract()

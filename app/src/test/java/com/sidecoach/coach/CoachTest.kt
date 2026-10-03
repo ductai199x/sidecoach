@@ -1568,9 +1568,12 @@ class CoachTest {
         assertEquals(emptyList<String>(), placed(21, Causes.MISSED_THREAT, gameId = "old")) // another game's
         assertEquals("twice is not a pattern yet", emptyList<String>(), placed(25, Causes.MISSED_THREAT))
         val third = placed(31, Causes.MISSED_THREAT)
-        assertTrue(third.toString(), third.size == 1 && "three times" in third[0])
-        assertTrue(third[0], "what their moves threatened" in third[0])
-        assertTrue(third[0], "look at what their last move attacks" in third[0])
+        // Said as a skill to work on, never a count (Tai, 2026-10-02: "That is three times now"
+        // read as scolding).
+        assertTrue(third.toString(), third.size == 1 && third[0].startsWith("Something worth working on:"))
+        assertTrue(third[0], "times" !in third[0] && "again" !in third[0])
+        assertTrue(third[0], "spotting what their moves threaten" in third[0])
+        assertTrue(third[0], "A habit that helps: before each move, look at what their last move attacks" in third[0])
         // Once a session: not again in this game, nor in the next.
         assertEquals(emptyList<String>(), placed(37, Causes.MISSED_THREAT))
         coach.gameId = "g2"
@@ -1588,7 +1591,7 @@ class CoachTest {
             )
         }
         val strong = messages(strongCoach).map { it.text }
-        assertTrue(strong.toString(), strong.size == 1 && "what their moves threatened" in strong[0])
+        assertTrue(strong.toString(), strong.size == 1 && "spotting what their moves threaten" in strong[0])
         assertTrue(strong[0], "look at what" !in strong[0])
     }
 
@@ -1601,8 +1604,8 @@ class CoachTest {
         val (coach, _) = coach(emptyList())
         coach.strongPlayer = true
         start(coach)
-        val pattern = "What you kept missing: endgame technique -- 2 of your 3 mistakes. The habit that fixes " +
-            "it: in the endgame, bring your king to the middle and push your passed pawns."
+        val pattern = "One thing to work on: endgame technique. A habit that helps: in the endgame, bring " +
+            "your king to the middle and push your passed pawns."
         coach.onEvent(
             GameReview(
                 gameId = "g",
@@ -1614,7 +1617,7 @@ class CoachTest {
             1.0,
         )
         val said = messages(coach).joinToString(" ") { it.text }
-        assertTrue(said, "endgame technique -- 2 of your 3 mistakes." in said && "passed pawns" !in said)
+        assertTrue(said, "One thing to work on: endgame technique." in said && "passed pawns" !in said)
         // What the model is shown of the review says it the same way.
         assertTrue("passed pawns" !in coach.conversation.render())
     }
@@ -2161,42 +2164,22 @@ class CoachTest {
     }
 
     /**
-     * Every third mistake ends by asking what the player saw, in the coach's own words, while the
-     * player answers; one that goes unanswered is the last of the game (`test_coach.py`).
+     * "What were you expecting that move to do?" ended every third lesson, for the profile's
+     * record; after a mistake it reads as a challenge (Tai, 2026-10-02: "very rude and super
+     * unwelcoming"). Neither the model's instruction nor the template asks it, however many
+     * mistakes came before (`test_no_lesson_on_a_mistake_asks_what_the_player_expected`).
      */
     @Test
-    fun everyThirdMistakeEndsByAskingWhatThePlayerSaw() {
+    fun noLessonOnAMistakeAsksWhatThePlayerExpected() {
         val (coach, _) = coach(emptyList())
         playToScholar(coach)
         coach.onEvent(mateAnalysis(6), 6.5)
         val position = coach.positions[6]!!
         val played = MovePlayed(gameId = "g", ply = 7, san = "a3", uci = "a2a3", fenBefore = SCHOLAR, fenAfter = SCHOLAR, byUser = true)
         val assessment = MoveAssessment(gameId = "g", ply = 7, uci = "a2a3", expectedLoss = 0.5, severity = Severity.BLUNDER, best = listOf("h5f7"), label = Label.BLUNDER)
-        var (instruction, fallback) = coach.instruction(Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), assessment, played)
-        assertTrue("expected" !in instruction && "expecting" !in fallback)
-        val asked = coach.instruction(Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), assessment, played, elicit = true)
-        instruction = asked.first
-        fallback = asked.second
-        assertTrue(instruction, "what they expected their move to do" in instruction)
-        assertTrue(instruction, "misjudge" !in instruction && "altogether" !in instruction)
-        assertTrue(fallback, fallback.endsWith("What were you expecting that move to do?"))
-        val due = ArrayList<Boolean>()
-        for (n in 1..2 * ELICIT_EVERY) {
-            coach.mistakes = n
-            due.add(coach.elicitDue(10.0 * n))
-            if (due.last()) coach.ask("I thought the queen would have to move", 10.0 * n + ELICIT_ANSWER_S / 2)
-        }
-        assertEquals((1..2 * ELICIT_EVERY).map { it % ELICIT_EVERY == 0 }, due)
-        coach.mistakes = 3 * ELICIT_EVERY
-        assertTrue("answered: asked again", coach.elicitDue(1000.0))
-        coach.mistakes = 4 * ELICIT_EVERY
-        assertFalse("unanswered: not again this game", coach.elicitDue(2000.0))
-        coach.mistakes = 5 * ELICIT_EVERY
-        coach.ask("hint", 2000.0 + ELICIT_ANSWER_S + 1)
-        assertFalse("a minute later is not an answer", coach.elicitDue(3000.0))
-        start(coach)
-        coach.mistakes = ELICIT_EVERY
-        assertTrue("a new game starts afresh", coach.elicitDue(4001.0))
+        val (instruction, fallback) = coach.instruction(Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, null, emptyList(), assessment, played)
+        assertTrue(instruction, "expect" !in instruction && "expect" !in fallback)
+        // The offline coach's lessons: CoachCoreTest.noOfflineLessonAsksWhatThePlayerExpected.
     }
 
     /**
@@ -2571,7 +2554,7 @@ class CoachTest {
                 gameId = "g",
                 motif = "fork",
                 motifWords = "fork",
-                reason = "fork: 3 of 5 chances missed over your games",
+                reason = "fork: found 2 of 5 times over your games",
                 level = 1100,
                 puzzles = listOf(PuzzleRef(id = "fork1", url = "https://lichess.org/training/fork1", rating = 1000)),
             ),
@@ -2580,7 +2563,7 @@ class CoachTest {
         val practice = messages(coach).map { it.text }
         assertEquals(practice.toString(), 1, practice.size)
         assertTrue(practice[0], "1 fork puzzle " in practice[0] && "1100" in practice[0])
-        assertTrue(practice[0], "fork: 3 of 5 chances missed over your games" in practice[0])
+        assertTrue(practice[0], "fork: found 2 of 5 times over your games" in practice[0])
         coach.onEvent(PuzzleOutcome(gameId = "p", puzzleId = "fork1", motif = "fork", solved = true, level = 1125), 2.0)
         assertEquals("a solve: the site says so", emptyList<CoachMessage>(), messages(coach))
         val failed = PuzzleOutcome(gameId = "p", puzzleId = "fork1", motif = "fork", solved = false, level = 1100)

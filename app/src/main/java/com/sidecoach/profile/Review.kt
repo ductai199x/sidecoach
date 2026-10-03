@@ -140,7 +140,7 @@ object Review {
             causes = ordered,
         )
         review.lines = linesFor(review, fullmoves)
-        val pattern = patternLine(counts, causes, judged.count { it.severity in ERRORS })
+        val pattern = patternLine(counts, causes)
         if (pattern != null) {
             // Second, after the result: the offline review says the first four lines.
             review.lines = review.lines.toMutableList().apply { add(1, pattern) }
@@ -149,11 +149,12 @@ object Review {
     }
 
     /**
-     * What the player kept missing, when one cause is behind two or more of the game's
-     * mistakes, and the habit that answers it. The cause is the most frequent, the larger loss
-     * breaking a tie, the first seen among equals (Python's `max`).
+     * The one thing to work on, when one cause is behind two or more of the game's mistakes, and
+     * a habit that helps: said as a skill to practise, not a count of the times it went wrong
+     * (Tai, 2026-10-02). The cause is the most frequent, the larger loss breaking a tie, the
+     * first seen among equals (Python's `max`).
      */
-    fun patternLine(counts: Map<String, Int>, losses: Map<String, Double>, errors: Int): String? {
+    fun patternLine(counts: Map<String, Int>, losses: Map<String, Double>): String? {
         if (counts.isEmpty()) return null
         var cause: String? = null
         var n = 0
@@ -169,8 +170,7 @@ object Review {
         val found = cause ?: return null
         if (n < PATTERN_MIN || !Causes.HABIT.containsKey(found)) return null
         val (words, habit) = Causes.HABIT.getValue(found)
-        return "What you kept missing: $words -- $n of your $errors mistakes. " +
-            "The habit that fixes it: $habit."
+        return "One thing to work on: $words. A habit that helps: $habit."
     }
 
     private val PLURAL = mapOf("inaccuracy" to "inaccuracies", "mistake" to "mistakes", "miss" to "misses", "blunder" to "blunders")

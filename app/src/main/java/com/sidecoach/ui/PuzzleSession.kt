@@ -147,7 +147,7 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         if (move.uci() != expected && !mates(move)) {
             wrong = move.uci()
             misses += 1
-            message = "Not that one. Have another look."
+            message = "Not quite. Take another look."
             return emptyList()
         }
         val events = arrayListOf(play(move, byUser = true))

@@ -521,7 +521,8 @@ class Profiler(
         val worst = Insights.motifRates(store.cells()).maxByOrNull { it.rate }
         if (worst != null) {
             return worst.motif to
-                "${Insights.motifWords(worst.motif)}: ${worst.missed} of ${worst.seen} chances missed over your games"
+                // How often it was found, never a tally of misses (Tai, 2026-10-02).
+                "${Insights.motifWords(worst.motif)}: found ${worst.seen - worst.missed} of ${worst.seen} times over your games"
         }
         for (point in review.turningPoints) {
             if (!point.motif.isNullOrEmpty()) {

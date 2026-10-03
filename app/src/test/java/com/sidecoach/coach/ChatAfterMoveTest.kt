@@ -238,10 +238,10 @@ class ChatAfterMoveTest {
         played(coach, ucis, mistakeAt = 7)
         analysed(coach, ucis, 7, "d7d5", 0.45, 7.5)
         messages(coach)
-        synchronized(coach.lock) { coach.conversation.coachSaid("What were you expecting that move to do?") }
-        assertTrue(coach.answeringOurQuestion("I wanted to attack f7 with the knight."))
+        synchronized(coach.lock) { coach.conversation.coachSaid("Which of your pieces has no defender now?") }
+        assertTrue(coach.answeringOurQuestion("The knight on g5 has nothing guarding it."))
         assertTrue(!coach.answeringOurQuestion("Why is that bad?"))
-        coach.ask("I wanted to attack f7 with the knight.", 8.0)
+        coach.ask("The knight on g5 has nothing guarding it.", 8.0)
         messages(coach)
         val directive = directive(provider)
         // The conversation says it, not a keyword: the coach's last turn ended with a question.

@@ -151,6 +151,12 @@ class SpeakerTest {
                 text = "Just one plain reply. And a second sentence.",
             ),
             Case(
+                "wrapped in quotes: said without them",
+                "[p=0.7] \"Solid block. Qe2 was stronger.\"\n[p=0.3] Fine.",
+                heard = listOf("Solid block.", "Qe2 was stronger."), streamed = true,
+                text = "Solid block. Qe2 was stronger.",
+            ),
+            Case(
                 "no sink", "[p=1.0] Whole reply.", sinkTakes = null,
                 heard = emptyList(), streamed = false, text = "Whole reply.", calls = 0 to 1,
             ),
@@ -300,6 +306,14 @@ class SpeakerTest {
             parseCandidates(cut).map { it.second },
         )
         assertEquals("Think about the e-file. What does it need?", parseCandidates("Think about the e-file. What does it need?\n\n[p=")[0].second)
+        // A reply the model wrapped in quotes is shown and said without them (the tone check of
+        // 2026-10-02); a quoted name opening a longer reply stays.
+        assertEquals(
+            listOf(0.6 to "Solid block, but Qe2 was stronger.", 0.4 to "A fine move."),
+            parseCandidates("[p=0.6] \"Solid block, but Qe2 was stronger.\"\n[p=0.4] “A fine move.”"),
+        )
+        val named = "\"Italian\" setups suit you. Keep playing \"e4.\""
+        assertEquals(listOf(1.0 to named), parseCandidates(named))
         for ((text, whole) in listOf(
             "Your idea is spot-on. Given" to "Your idea is spot-on.",
             "Given" to "",

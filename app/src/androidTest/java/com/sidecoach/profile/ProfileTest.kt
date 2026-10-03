@@ -510,8 +510,8 @@ class ProfileTest {
             said.addAll(lines)
         }
         // The lines the fixture is there for.
-        assertTrue(said.toString(), said.any { it.startsWith("Your biggest cost over 4 games is forks you missed: 5 moves.") })
-        assertTrue(said.toString(), said.any { " costs you most per move." in it })
+        assertTrue(said.toString(), said.any { it.startsWith("The thing to work on most over 4 games: finding forks, which came up in 5 moves.") })
+        assertTrue(said.toString(), said.any { " is the phase to work on most." in it })
         assertTrue(said.toString(), said.none { "expected score" in it || "looks like a" in it })
     }
 
@@ -541,14 +541,14 @@ class ProfileTest {
         assertEquals("opening", first.getString("area"))
         assertEquals("opening", Stats.biggestCost(store)!!.getString("area"))
         assertEquals(
-            listOf("Your biggest cost over 3 games is mistakes in the opening: 3 moves."),
+            listOf("The thing to work on most over 3 games: the opening, which came up in 3 moves."),
             profiler.snapshot().insights,
         )
         for (key in listOf("a", "b", "c")) {
             store.saveStats("deep", game(key), listOf(move(21, "middlegame", "miss", 0.9, chance = "fork")))
         }
         assertEquals(
-            listOf("Your biggest cost over 3 games is forks you missed: 3 moves."),
+            listOf("The thing to work on most over 3 games: finding forks, which came up in 3 moves."),
             profiler.snapshot().insights,
         )
         // Made again at the same strength (rederive, the catch-up of a saved review): the line
@@ -558,7 +558,7 @@ class ProfileTest {
             store.saveStats("deep", game(key), listOf(move(3, "opening", "blunder", 0.9)))
         }
         assertEquals(
-            listOf("Your biggest cost over 3 games is mistakes in the opening: 3 moves."),
+            listOf("The thing to work on most over 3 games: the opening, which came up in 3 moves."),
             profiler.snapshot().insights,
         )
         store.close()
@@ -578,7 +578,7 @@ class ProfileTest {
             CellRow(cause = Causes.MISSED_THREAT, motif = "fork", phase = "middlegame", errors = 1, chances = 0, expectedLoss = 0.2, games = games),
             CellRow(cause = null, motif = "fork", phase = "middlegame", errors = 3, chances = 6, expectedLoss = 0.0, games = games),
         )
-        assertTrue(Insights.insights(rows, 3, null).contains("You missed a fork 3 of the 6 times you had one."))
+        assertTrue(Insights.insights(rows, 3, null).contains("Worth practising: the fork. You found it 3 of the 6 times you had one."))
     }
 
     /**
@@ -616,7 +616,7 @@ class ProfileTest {
         val rows = store.cells()
         val fork = rows.first { it.cause == null && it.motif == "fork" }
         assertEquals(Triple(3, 8, setOf("a", "b", "c")), Triple(fork.errors, fork.chances, fork.games))
-        assertTrue(Insights.insights(rows, 5).contains("You missed a fork 3 of the 8 times you had one."))
+        assertTrue(Insights.insights(rows, 5).contains("Worth practising: the fork. You found it 5 of the 8 times you had one."))
         store.close()
     }
 

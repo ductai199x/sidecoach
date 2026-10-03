@@ -354,33 +354,35 @@ object Stats {
     /**
      * Each area as the player hears it (the Stats page's names, in lower case where a sentence
      * takes them): the coach's "biggest cost" says the area Work on this puts first, in these
-     * words. `AREA_NAMES`.
+     * words. Skills to work on, never a list of failures: "mates you walked into", "pieces you
+     * let be trapped", "you missed" on every row read as a charge sheet (Tai, 2026-10-02).
+     * `AREA_NAMES`.
      */
     val AREA_NAMES = mapOf(
-        "missed.checkmate" to "mates you missed",
-        "missed.fork" to "forks you missed",
-        "missed.pin" to "pins you missed",
-        "missed.discovery" to "discovered attacks you missed",
-        "missed.trapped piece" to "trapped pieces you missed",
-        "missed.removing the defender" to "defenders you could have removed",
-        "missed.free piece" to "free pieces you left on the board",
-        "missed.sacrifice" to "sacrifices you missed",
-        "missed.other" to "other tactics you missed",
-        "allowed.checkmate" to "mates you walked into",
-        "allowed.fork" to "forks you allowed",
-        "allowed.pin" to "pins you walked into",
-        "allowed.discovery" to "discovered attacks you allowed",
-        "allowed.trapped piece" to "pieces you let be trapped",
-        "allowed.removing the defender" to "defenders you let be removed",
-        "allowed.free piece" to "pieces you left hanging",
-        "allowed.sacrifice" to "sacrifices you allowed",
-        "allowed.other" to "other tactics you allowed",
-        "opening" to "mistakes in the opening",
+        "missed.checkmate" to "finding mates",
+        "missed.fork" to "finding forks",
+        "missed.pin" to "finding pins",
+        "missed.discovery" to "finding discovered attacks",
+        "missed.trapped piece" to "trapping pieces",
+        "missed.removing the defender" to "removing the defender",
+        "missed.free piece" to "taking free pieces",
+        "missed.sacrifice" to "finding sacrifices",
+        "missed.other" to "finding other tactics",
+        "allowed.checkmate" to "guarding against mates",
+        "allowed.fork" to "guarding against forks",
+        "allowed.pin" to "guarding against pins",
+        "allowed.discovery" to "guarding against discovered attacks",
+        "allowed.trapped piece" to "keeping your pieces free",
+        "allowed.removing the defender" to "keeping your defenders",
+        "allowed.free piece" to "keeping your pieces protected",
+        "allowed.sacrifice" to "guarding against sacrifices",
+        "allowed.other" to "guarding against other tactics",
+        "opening" to "the opening",
         "endgame.pawn" to "king and pawn endings",
         "endgame.rook" to "rook endings",
         "endgame.queen" to "queen endings",
         "endgame.other" to "other endings",
-        "quiet" to "mistakes in quiet positions",
+        "quiet" to "quiet positions",
     )
 
     /**

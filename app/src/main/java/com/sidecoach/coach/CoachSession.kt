@@ -137,7 +137,7 @@ private val ASK_EVAL = Regex(
 )
 
 /** A review line's habit, left out for a strong player ([Coach.onReview]). */
-private val HABIT_SAID = Regex(" The habit that fixes it: .*$")
+private val HABIT_SAID = Regex(" A habit that helps: .*$")
 
 /** What a move cost, asked in so many words: only then is the figure said. */
 private val ASK_COST = Regex(
@@ -546,13 +546,12 @@ class Coach(
     val spoken = ArrayList<Spoken>()
     private var current: CoachPosition? = null
 
-    /** The held lesson ([lessonWaitS]): when it was held, the position, the verdict, the move, elicit. */
+    /** The held lesson ([lessonWaitS]): when it was held, the position, the verdict, the move. */
     private class HeldLesson(
         val ts: Double,
         val position: CoachPosition,
         val assessment: MoveAssessment,
         val played: MovePlayed,
-        val elicit: Boolean,
     )
 
     private var heldLesson: HeldLesson? = null
@@ -616,13 +615,6 @@ class Coach(
      * panel's log: each one is a bug in how the prompt is built. `Coach.harness_problems`.
      */
     val harnessProblems: MutableList<String> = java.util.Collections.synchronizedList(ArrayList())
-
-    /** The player's mistakes this game, for [ELICIT_EVERY]. */
-    internal var mistakes = 0
-
-    /** When the coach last asked what the player saw, and whether they answered. */
-    private var elicitAsked: Double? = null
-    private var elicitAnswered = false
 
     /**
      * A question asked before the engine had looked at the position on the board: it is
@@ -806,8 +798,6 @@ class Coach(
             askProfile(text, ts, moment)
             return
         }
-        val elicitAt = elicitAsked
-        if (elicitAt != null && ts - elicitAt <= ELICIT_ANSWER_S) elicitAnswered = true
         var position = current
         if (position != null && position.facts == null &&
             (userToMove || waitsForTheBoard(text)) && !finished &&
@@ -1264,12 +1254,9 @@ class Coach(
         movedAt = LinkedHashMap()
         synchronized(lock) { conversation.newGame(event, profile = profileLines()) }
         thinkS.clear()
-        mistakes = 0
         // The review is the game's own: a new game answered "how did I do overall?" with the
         // last game's sentences when the model failed (the parity audit, 2026-09-26).
         reviewLines = emptyList()
-        elicitAsked = null
-        elicitAnswered = false
         // A question held for the engine's look stays: it is answered at this game's first
         // position once read ([answerPending]), as a hint pressed as the next puzzle appears.
         finished = false
@@ -1341,8 +1328,10 @@ class Coach(
         if (unpromptedOff()) return // nothing unasked: it comes the next time the cause does
         patternTold.add(cause)
         val (words, habit) = Causes.HABIT.getValue(cause)
-        var text = "That is three times now: $words."
-        if (!strongPlayer) text += " The habit to build: $habit."
+        // A skill to work on, never a count of the times it went wrong (Tai, 2026-10-02:
+        // "That is three times now" read as scolding; these are hard to see in a game).
+        var text = "Something worth working on: $words."
+        if (!strongPlayer) text += " A habit that helps: $habit."
         if (!ruleOk(null)) return // a rule of thumb just said: the review carries the pattern
         ruleSaid("habit:$cause")
         synchronized(lock) { conversation.note("The pattern, told to the player: $text") }
@@ -1381,7 +1370,7 @@ class Coach(
         }
         queuePlain(
             Trigger.POST_MISTAKE,
-            "Not that one -- have another look before the site shows you.$motif",
+            "Not quite -- take another look before the site shows you.$motif",
             ts,
             recordNow = true,
         )
@@ -1451,7 +1440,6 @@ class Coach(
             ts,
             assessment = held.assessment,
             played = held.played,
-            elicit = held.elicit,
         )
     }
 
@@ -1658,11 +1646,6 @@ class Coach(
             return
         }
         val trigger = policy.onUserMoveAssessed(event) ?: return
-        var elicit = false
-        if (trigger == Trigger.POST_MISTAKE) {
-            mistakes += 1
-            elicit = elicitDue(ts)
-        }
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         val after = positions[event.ply]
         if (kind != "game" && after != null && after.board.isCheckmate()) {
@@ -1735,7 +1718,7 @@ class Coach(
             return
         }
         if (trigger == Trigger.POST_MISTAKE && lessonWaitS > 0 && (after == null || after.analysis == null)) {
-            heldLesson = HeldLesson(ts, before, event, move, elicit)
+            heldLesson = HeldLesson(ts, before, event, move)
             return
         }
         speak(
@@ -1745,21 +1728,7 @@ class Coach(
             ts,
             assessment = event,
             played = move,
-            elicit = elicit,
         )
-    }
-
-    /**
-     * Whether this mistake's lesson ends by asking what the player saw: every
-     * [ELICIT_EVERY]-th mistake, and never again in a game once one such question went
-     * unanswered -- the player is not talking back, and the question is noise.
-     */
-    internal fun elicitDue(ts: Double): Boolean {
-        if (mistakes % ELICIT_EVERY != 0) return false
-        if (elicitAsked != null && !elicitAnswered) return false
-        elicitAsked = ts
-        elicitAnswered = false
-        return true
     }
 
     /**
@@ -2169,16 +2138,17 @@ class Coach(
         val named = strong.filter { (counts[it] ?: 0) > 0 }.ifEmpty { listOf("best", "excellent") }
         val labels = if (named.size == 1) named[0] else "${named.dropLast(1).joinToString(", ")} or ${named.last()}"
         var text = "$good of your ${judged.size} moves were $labels."
-        // What they keep missing, from the session's causes, before the game has a review.
+        // The one thing to work on, from the session's causes, before the game has a review:
+        // a skill to practise, not a tally of the times it went wrong.
         val kept = causesSeen.entries
             .filter { (cause, n) -> n >= 2 && Causes.HABIT.containsKey(cause) }
             .map { (cause, n) -> n to cause }
         if (kept.isNotEmpty()) {
             // Python's max over (n, cause): the count, then the cause's name.
-            val (n, cause) = kept.maxWith(compareBy<Pair<Int, String>>({ it.first }, { it.second }))
+            val (_, cause) = kept.maxWith(compareBy<Pair<Int, String>>({ it.first }, { it.second }))
             val (words, habit) = Causes.HABIT.getValue(cause)
-            text += " What you keep missing: $words, $n times."
-            if (!strongPlayer) text += " The habit that fixes it: $habit."
+            text += " One thing to work on: $words."
+            if (!strongPlayer) text += " A habit that helps: $habit."
         }
         if (lost.isNotEmpty()) {
             // The three that cost the most, told in the order they were played.
@@ -2424,13 +2394,12 @@ class Coach(
         played: MovePlayed? = null,
         candidates: Int? = null,
         routine: Boolean = false,
-        elicit: Boolean = false,
         moment: Moment? = null,
     ) {
         val facts = position.facts!!
         val (momentEpoch, momentGame, momentOwnMoves) = moment ?: currentMoment()
         var (instructionText, fallback) = instruction(
-            trigger, position, level, userText, verdicts, assessment, played, elicit = elicit,
+            trigger, position, level, userText, verdicts, assessment, played,
         )
         takeLeads(position, fallback)
         val mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
@@ -2683,7 +2652,6 @@ class Coach(
             epoch = momentEpoch,
             ownMoves = momentOwnMoves,
             rungByReply = aiAsk,
-            elicit = elicit,
         )
         // Not spoken once its moment is over, nor when a question came behind it while it waited
         // ([Speaker.submit] sets `unvoiced`): read when its first sentence comes.
@@ -2970,8 +2938,7 @@ class Coach(
     }
 
     /**
-     * The turn's instruction to the model, and the template used if it fails. [elicit] ends a
-     * mistake's lesson by asking what the player saw (see [elicitDue]).
+     * The turn's instruction to the model, and the template used if it fails.
      */
     internal fun instruction(
         trigger: Trigger,
@@ -2981,7 +2948,6 @@ class Coach(
         verdicts: List<String>,
         assessment: MoveAssessment?,
         played: MovePlayed?,
-        elicit: Boolean = false,
     ): Pair<String, String> {
         val facts = position.facts!!
 
@@ -2989,9 +2955,9 @@ class Coach(
             return (
                 "The game is over. Sum it up from the review in the record above and the " +
                     "verdicts on the moves above, and from nothing else: the result, what went " +
-                    "well, and the one thing to work on. When the review says what they kept " +
-                    "missing, that is the thing: the pattern in plain words and the habit that " +
-                    "fixes it, as the review gives it, with the moment it cost most. Otherwise the " +
+                    "well, and the one thing to work on. When the review names one thing to work " +
+                    "on, that is the thing: the skill in plain words and the habit that helps, as " +
+                    "the review gives it, with the moment it mattered most. Otherwise the " +
                     "moment the game turned, the better move there, and why it happened, in plain " +
                     "words. Three or four sentences, no question. Do not infer the course of the " +
                     "game from the position on the board."
@@ -3102,24 +3068,9 @@ class Coach(
                             }
                             ) +
                         "$TIE_TO_THE_GAME $NOT_THE_MOVE $NO_FIGURES$data"
-                if (elicit) {
-                    // Sparingly: what they saw at that moment, for the profile's record
-                    // (causes.from_words reads "I thought it would..." as a line misjudged,
-                    // "I didn't see..." as a threat missed). Asked as what they expected, in
-                    // the coach's words: told to ask whether they "missed the idea altogether
-                    // or misjudged the line", the model said exactly that, every time.
-                    fallback += " What were you expecting that move to do?"
-                    instructionText =
-                        "The player just played ${played.san}, which was ${rated(label)}: it cost " +
-                            "${percent(loss)} of the game. The better move was $best " +
-                            "($betterWords). Teach the difference so they spot it next time: why " +
-                            "the better move works, from the sheet of the position they faced -- its " +
-                            "goal, its pattern, the tactic when it names one -- as a pattern to " +
-                            "remember, in three sentences at most, then -- instead of a check " +
-                            "question -- ask, in one short question of your own, what they " +
-                            "expected their move to do. $NOT_THE_MOVE $NO_FIGURES" +
-                            lessonData(position.board, best, played.uci, given)
-                }
+                // No question about what they expected or saw: "What were you expecting that
+                // move to do?" after a mistake read as rude (Tai, 2026-10-02). What they say
+                // unasked still goes to the profile (Causes.fromWords).
                 if (held) instructionText = holdRule(instructionText)
             } else if (isExciting(assessment.label)) {
                 // Rare and worth it: the board's own sentence stands in, the model says what
@@ -3364,8 +3315,8 @@ class Coach(
                     "else: do not infer the course of the game from the position on the board. " +
                     "Two or three sentences: what went well -- how many of their moves were strong, " +
                     "and their slips by kind, in the tally's numbers -- and the one thing to work " +
-                    "on: when the review, or the pattern already told them, says what they keep " +
-                    "missing, that pattern in plain words and the habit that fixes it, as given; " +
+                    "on: when the review, or the pattern already told them, names one thing to " +
+                    "work on, that skill in plain words and the habit that helps, as given; " +
                     "otherwise the move the " +
                     "tally lists first where ground was lost most, the better move there, and why, " +
                     "in plain words. If no move has a verdict yet, say you have not seen enough to " +

@@ -51,11 +51,16 @@ object Insights {
         if (cost != null) {
             val area = cost.getString("area")
             val name = Stats.AREA_NAMES[area] ?: area
-            out.add("Your biggest cost over ${cost.getInt("games")} games is $name: ${cost.getInt("moves")} moves.")
+            // The area as a skill to work on (Tai, 2026-10-02), its moves as how often it came up.
+            out.add(
+                "The thing to work on most over ${cost.getInt("games")} games: $name, which came up in " +
+                    "${cost.getInt("moves")} moves.",
+            )
         }
         // The motif missed most often, as a rate over the occasions it was on the board.
         motifRates(rows).maxByOrNull { it.rate }?.let { (motif, _, missed, seen) ->
-            out.add("You missed a ${motifWords(motif)} $missed of the $seen times you had one.")
+            // A skill to practise, with how often it was found, never a tally of misses.
+            out.add("Worth practising: the ${motifWords(motif)}. You found it ${seen - missed} of the $seen times you had one.")
         }
         // The phase that costs most per move.
         val phaseMoves = LinkedHashMap<String, Int>()
@@ -68,7 +73,7 @@ object Insights {
         val busy = phaseMoves.keys.filter { (phaseMoves[it] ?: 0) >= 10 }
         if (busy.size >= 2) {
             val worst = busy.maxByOrNull { (phaseLoss[it] ?: 0.0) / phaseMoves[it]!! }!!
-            if ((phaseLoss[worst] ?: 0.0) > 0) out.add("The $worst costs you most per move.")
+            if ((phaseLoss[worst] ?: 0.0) > 0) out.add("The $worst is the phase to work on most.")
         }
         return out
     }

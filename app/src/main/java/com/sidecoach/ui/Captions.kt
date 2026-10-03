@@ -367,10 +367,11 @@ object Captions {
     /**
      * A sample line over whatever is in front, Sidecoach's own settings page included: a change
      * to the captions shows the moment it is saved (Tai, 2026-09-23: "applies instantly on
-     * save"). It starts a fresh box, and fades as any line does.
+     * save"). It starts a fresh box, and fades as any line does. A box kept on screen shows the
+     * new look itself: a sample in its place took no touches until it faded (Tai, 2026-10-02).
      */
     fun preview() {
-        if (!on) return
+        if (!on || keep) return
         main.post {
             drop()
             said.setLength(0)

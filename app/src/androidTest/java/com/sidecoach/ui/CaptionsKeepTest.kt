@@ -166,27 +166,31 @@ class CaptionsKeepTest {
     }
 
     /**
-     * The sample line over a box kept on screen fades as any sample does, and the kept box comes
-     * back touchable, without it; a real line after a sample does not run on from it; a line
-     * that comes while the box fades gets a box; a held word said later brings the faded box
-     * back (voice findings 3, 8 and 20).
+     * A box kept on screen is never replaced by the sample line: it comes up touchable the moment
+     * captions are on, and a new look shows on it (Tai, 2026-10-02: the CC button brought up an
+     * untouchable sample that stayed seconds before the real box). Not kept, a real line after a
+     * sample does not run on from it; a line that comes while the box fades gets a box; a held
+     * word said later brings the faded box back (voice findings 3, 8 and 20).
      */
     @Test
-    fun theSampleLineLeavesATouchableBoxAndALineDuringTheFadeIsShown() {
+    fun theSampleLineNeverHidesAKeptBoxAndALineDuringTheFadeIsShown() {
         val clock = fresh()
-        Captions.configure(app, true)
+        Captions.keep(true)
         try {
-            // Kept on screen, a look changed: the sample, then the kept box, touchable, empty of it.
-            Captions.keep(true)
+            // Turned on, kept on screen: the box itself, at once, touchable.
+            Captions.configure(app, true)
+            assertTrue("no kept box", waitFor { box() != null })
+            assertEquals("the kept box takes no touches", true, onMain { Captions.touchable() })
+            Captions.show("Nice move.")
+            assertTrue(waitFor { onMain { Captions.wordsShown() } == "Nice move." })
+            // A look changed: the same box, its words, still touchable; no sample in its place.
             Captions.preview()
-            assertTrue("no sample box", waitFor { box() != null })
-            assertEquals("the sample's box takes touches", false, onMain { Captions.touchable() })
-            readThrough(clock, "the sample")
-            clock.advance(Captions.HIDE_AFTER_MS)
-            assertTrue("the kept box stayed untouchable", waitFor { onMain { Captions.touchable() } == true })
+            settle()
             var words: String? = onMain { Captions.wordsShown() }
-            assertTrue("the sample stayed: $words", words?.contains("This is how captions look") != true)
-            // A real line straight after a sample: the sample is not above it.
+            assertEquals("the sample replaced the kept box's words", "Nice move.", words)
+            assertEquals("the kept box stopped taking touches", true, onMain { Captions.touchable() })
+            // Not kept: a real line straight after a sample, and the sample is not above it.
+            Captions.keep(false)
             Captions.preview()
             Captions.show("Nice move.") // posted after the sample: its order, not a wait
             assertTrue("the line did not show", waitFor {

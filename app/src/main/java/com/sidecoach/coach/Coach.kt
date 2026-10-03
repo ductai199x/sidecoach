@@ -74,21 +74,6 @@ const val PLAIN_BELOW = 1400
 const val STRONG_FROM = 1800
 
 /**
- * After every this-many mistakes the lesson ends by asking what the player saw: a
- * self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that goes
- * unanswered is the last of the game: a player with the mic off heard "did you miss your
- * opponent's idea altogether, or see it and misjudge the line?" seven times in one game
- * (2026-09-19), the model echoing the directive's words each time.
- */
-const val ELICIT_EVERY = 3
-
-/**
- * The player's words within this long of the question count as its answer (the profiler's
- * SELF_REPORT_S, which keeps those words beside the mistake).
- */
-const val ELICIT_ANSWER_S = 60.0
-
-/**
  * The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
  * model -- theory, the engine's own move, and an excellent one (as strong as the best).
  * EXCITING: great and brilliant, the model at its full effort with some delight, since they
@@ -141,14 +126,15 @@ val FINE_TIGHTER = listOf(
     "Playable -- {best} was a little more precise",
 )
 val COST_YOU = listOf(
-    "That one cost you: {best} was better",
-    "That cost you something: {best} was the move",
-    "Not that one -- {best} was better",
+    "There was a stronger move here: {best}",
+    "{best} was the better choice here",
+    "{best} would have kept more",
 )
 
 /**
  * One bag per severity: "that cost you something" undersold a blunder (the facts audit,
- * 2026-10-01). A mistake keeps COST_YOU.
+ * 2026-10-01). A mistake keeps COST_YOU. Said as a coach teaching, never a verdict on the
+ * player: "That one hurts", "Not that one" read as scolding (Tai, 2026-10-02).
  */
 val COST_BY_SEVERITY = mapOf(
     "inaccuracy" to listOf(
@@ -158,9 +144,9 @@ val COST_BY_SEVERITY = mapOf(
     ),
     "mistake" to COST_YOU,
     "blunder" to listOf(
-        "That one costs a lot: {best} was the move",
-        "A serious mistake -- {best} was much better",
-        "That one hurts: {best} was the move",
+        "This was a big moment: {best} was much stronger",
+        "This one gave away a lot -- {best} was the move to find",
+        "A costly one, and a good one to learn from: {best} was the move",
     ),
 )
 
@@ -1095,6 +1081,40 @@ private val LINE_MARK = Regex("^\\s*(?:#{1,6}\\s+|[-*]\\s+(?=\\S))", RegexOption
 /** [text] without markdown: the emphasis marks and the line marks go, the words stay. `coach.plain`. */
 fun plain(text: String): String = LINE_MARK.replace(EMPHASIS.replace(text, ""), "")
 
+private const val QUOTES = "\"“”"
+
+/** A quote closing a sentence: after its stop, before a space or the end. */
+private val CLOSING_QUOTE = Regex("[.!?…]([\"“”])(?=\\s|$)")
+
+/**
+ * A reply the model wrapped in quotation marks, without them: `"Solid block, but Qe2 was
+ * stronger."` was shown and said with its quotes (the tone check of 2026-10-02). Whole, only a
+ * reply that opens on a quote with no other quote in it but the one closing it after its last
+ * stop: a quoted name at the start of a longer reply ("Italian" setups ...) stays. [streaming]:
+ * a reply still being written, which grows by its end, so its opening quote goes whatever comes
+ * after it -- the sentences already given are counted from it -- and so does a closing one left
+ * unmatched after a stop, wherever the stream has got to. `coach.unquoted`.
+ */
+fun unquoted(text: String, streaming: Boolean = false): String {
+    val whole = text.trim()
+    if (whole.isEmpty() || whole[0] !in QUOTES) return whole
+    var inner = whole.substring(1)
+    if (streaming) {
+        if (inner.count { it in QUOTES } % 2 == 1) {
+            val closing = CLOSING_QUOTE.findAll(inner).lastOrNull()
+            if (closing != null) {
+                val at = closing.groups[1]!!.range.first
+                inner = inner.removeRange(at, at + 1)
+            }
+        }
+        return inner.trim()
+    }
+    if (inner.length >= 2 && inner.last() in QUOTES && inner[inner.length - 2] in ".!?…") {
+        inner = inner.dropLast(1)
+    }
+    return if (inner.any { it in QUOTES }) whole else inner.trim()
+}
+
 /**
  * The verbalized replies as (probability, text). A reply with no markers is one candidate.
  *
@@ -1106,7 +1126,7 @@ internal fun parseCandidates(raw: String): List<Pair<Double, String>> {
     var cleaned = plain(THINK_BLOCK.replace(raw, "")).trim()
     val markers = VS_MARKER.findAll(cleaned).toList()
     if (markers.isEmpty()) {
-        cleaned = completeSentences(STRAY_MARKER.replace(cleaned, "").trim())
+        cleaned = unquoted(completeSentences(STRAY_MARKER.replace(cleaned, "").trim()))
         return if (cleaned.isNotEmpty()) listOf(1.0 to cleaned) else emptyList()
     }
     val out = ArrayList<Pair<Double, String>>()
@@ -1115,8 +1135,8 @@ internal fun parseCandidates(raw: String): List<Pair<Double, String>> {
         val end = if (index + 1 < markers.size) markers[index + 1].range.first else cleaned.length
         // A reply cut off by the token budget can end in a half-written next marker
         // ("...move? [p=0.2" with no closing bracket); no fragment may reach the user.
-        val text = completeSentences(
-            STRAY_MARKER.replace(cleaned.substring(start, end), "").trim()
+        val text = unquoted(
+            completeSentences(STRAY_MARKER.replace(cleaned.substring(start, end), "").trim())
         )
         if (text.isEmpty()) continue
         val prob = marker.groupValues[1].toDoubleOrNull() ?: 0.0
@@ -1208,7 +1228,7 @@ class FirstCandidate(
      * model put first) waits for the sentence it introduces.
      */
     private fun offer(text: String, final: Boolean = false): Boolean {
-        val cleaned = STRAY_MARKER.replace(text, "").trim()
+        val cleaned = unquoted(STRAY_MARKER.replace(text, ""), streaming = true)
         var ends = SENTENCE_END.findAll(cleaned)
             .filter { final || it.range.last + 1 < cleaned.length }.toList()
         if (limit != null) {
@@ -1365,11 +1385,6 @@ class Spoken(
      */
     val rung: DisclosureLevel? = null,
     /**
-     * The lesson ends by asking what the player saw ([CoachSession.elicitDue]): when it is dropped
-     * unsaid, the question was never asked.
-     */
-    val elicit: Boolean = false,
-    /**
      * A hint said unasked that a question came behind while it waited ([Speaker.submit]): shown
      * first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
      * `Spoken.unvoiced`.
@@ -1389,7 +1404,7 @@ class Spoken(
         val lighter = Spoken(
             message, level, problems, attempts,
             calls.map { ModelCall(it.raw, it.stats, it.candidates, it.passed, "") },
-            recorded, streamed, verified, repaired, leaks, notes, epoch, ownMoves, rung, elicit,
+            recorded, streamed, verified, repaired, leaks, notes, epoch, ownMoves, rung,
             unvoiced,
         )
         lighter.late = late
@@ -1591,7 +1606,6 @@ class CoachRequest(
      * reply carries, and the marks on the board, follow what it said ([saidLevel]).
      */
     val rungByReply: Boolean = false,
-    val elicit: Boolean = false,
 ) {
     /**
      * Set by [Speaker.submit] on a hint said unasked when a question is queued behind it: its text
@@ -1963,8 +1977,7 @@ class Speaker(
      * waiting: the player is waiting for this one, and they wait for the answer and go after it.
      * Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message should
      * come out in the same correct order"): a remark dropped here was never seen, and a lesson
-     * dropped took the rule it was charged against and the question it was to end with
-     * ([CoachSession.elicitDue]) with it. A hint said unasked keeps its place ahead of the ask
+     * dropped took the rule it was charged against with it. A hint said unasked keeps its place ahead of the ask
      * ([UNASKED_HINTS]), and is not spoken: the voice goes to the answer (Tai, 2026-10-02: "the
      * stuck hint does not need to be voiced but the order should still be preserved").
      */
@@ -2040,7 +2053,6 @@ class Speaker(
                 epoch = request.epoch,
                 ownMoves = request.ownMoves,
                 rung = shaped.rung,
-                elicit = request.elicit,
                 unvoiced = request.unvoiced,
             )
         }
@@ -2118,7 +2130,6 @@ class Speaker(
                 attempts = 0,
                 epoch = request.epoch,
                 ownMoves = request.ownMoves,
-                elicit = request.elicit,
                 unvoiced = request.unvoiced,
             )
         }
@@ -2273,7 +2284,6 @@ class Speaker(
             epoch = request.epoch,
             ownMoves = request.ownMoves,
             rung = shaped.rung,
-            elicit = request.elicit,
             unvoiced = request.unvoiced,
         )
     }

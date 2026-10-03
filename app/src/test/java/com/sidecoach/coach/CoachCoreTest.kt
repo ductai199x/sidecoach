@@ -631,23 +631,26 @@ class CoachCoreTest {
     }
 
     /**
-     * `test_a_late_lesson_that_ends_with_a_question_has_asked_it`: "What did you expect?" is marked
-     * asked when its lesson is queued. The lesson, shown late after a takeback, still asks it: the
-     * player reads it, so it was asked (no reply is dropped, Tai, 2026-10-02).
+     * The offline coach, the same mistake six times over (taken back each time): every lesson is
+     * a lesson, none asks what they expected or saw (Tai, 2026-10-02: "very rude and super
+     * unwelcoming"; `test_no_lesson_on_a_mistake_asks_what_the_player_expected`).
      */
     @Test
-    fun aLateLessonThatEndsWithAQuestionHasAskedIt() {
+    fun noOfflineLessonAsksWhatThePlayerExpected() {
         val coach = offlineCoach()
         playToScholar(coach)
-        coach.onEvent(mateAnalysis(6), 7.0)
+        coach.onEvent(mateAnalysis(6), 6.5)
         messages(coach)
-        coach.mistakes = ELICIT_EVERY - 1
-        mateMissed(coach, 10.0)
-        coach.onEvent(Takeback(gameId = "g", plies = 1, fen = SCHOLAR), 12.0)
-        val shown = messages(coach)
-        assertTrue(shown.isNotEmpty() && shown[0].text.endsWith("?"))
-        coach.mistakes = ELICIT_EVERY
-        assertFalse("the lesson was shown: so was the question", coach.elicitDue(100.0))
+        val lessons = ArrayList<String>()
+        for (n in 0 until 6) {
+            mateMissed(coach, 10.0 + 10 * n)
+            lessons += messages(coach).filter { it.trigger == Trigger.POST_MISTAKE }.map { it.text }
+            coach.onEvent(Takeback(gameId = "g", plies = 1, fen = SCHOLAR), 15.0 + 10 * n)
+            messages(coach)
+        }
+        assertEquals(lessons.toString(), 6, lessons.size)
+        val asking = Regex("expect|what did you|did you see|were you", RegexOption.IGNORE_CASE)
+        for (text in lessons) assertFalse(text, asking.containsMatchIn(text))
     }
 
     // 6. A question does not delete the lesson on a mistake or the review
@@ -762,7 +765,7 @@ class CoachCoreTest {
         evidence(coach)
         coach.onEvent(recommended, 20.0)
         val said = messages(coach).map { it.text }
-        assertTrue(said.toString(), said.size == 2 && "three times" in said[0] && "For practice" in said[1])
+        assertTrue(said.toString(), said.size == 2 && "Something worth working on" in said[0] && "For practice" in said[1])
     }
 
     // 9. Two questions while the position is read: both are answered
