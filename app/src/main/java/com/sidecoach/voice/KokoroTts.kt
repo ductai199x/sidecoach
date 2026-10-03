@@ -528,8 +528,12 @@ class KokoroTts(
                 )
                 val made = AudioTrack.Builder()
                     .setAudioAttributes(
+                        // Media, so the voice follows the one media volume, as music and videos
+                        // do. As USAGE_ASSISTANT it had a volume of its own, which the volume keys
+                        // change only while it speaks: Tai's Pixel had it at 1 of 15 on the
+                        // speaker (-43 dB) and the coach was barely heard (2026-10-02).
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build(),
                     )
