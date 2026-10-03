@@ -338,12 +338,15 @@ def _gerund(phrase: str) -> str:
     return f"{said} {rest}".strip() if said else phrase
 
 
-def line_spoken(board: chess.Board, moves: list[str], *, limit: int = 6) -> str:
+def line_spoken(
+    board: chess.Board, moves: list[str], *, limit: int = 6, player: chess.Color | None = None
+) -> str:
     """A line as the coach says it, each move with what it does, computed: "Qxa7, taking the
     pawn on a7 and attacking the rook on b8; c3, getting the pawn out of attack; Rf2". The
     template's answer to "show me the line": asked to explain a line, the model gave its
     moves to the wrong side or purposes the board denies in a third of its answers (the
-    locked test set, 2026-09-26). `moves` in UCI or SAN."""
+    locked test set, 2026-09-26). `moves` in UCI or SAN. With `player`, each move says whose
+    it is ("their Kd5; your Re5+, ..."): a line from the opponent's move begins with theirs."""
     current = board.copy(stack=False)
     parts: list[str] = []
     for text in moves[:limit]:
@@ -357,6 +360,8 @@ def line_spoken(board: chess.Board, moves: list[str], *, limit: int = 6) -> str:
             except ValueError:
                 break
         san = current.san(move)
+        if player is not None:
+            san = ("your " if current.turn == player else "their ") + san
         effects = describe_effects(current, move, limit=2, hazards=False)
         after = current.copy(stack=False)
         after.push(move)

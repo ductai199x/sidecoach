@@ -278,6 +278,19 @@ def their_move_now(board: chess.Board, facts: PositionFacts) -> str:
     return f"It's their move, and their best is a quiet one, {san}: it takes nothing at once."
 
 
+def their_line_now(board: chess.Board, facts: PositionFacts, player: chess.Color) -> str:
+    """The line asked for on the opponent's move: from their best move on, each move with
+    whose it is and what it does (`line_spoken`). Only their next move was said: Tai, a
+    puzzle solved on his Rb6+ and a mate in two left to see, asked for the line and heard
+    "their best is a quiet one, Kd5" (2026-10-03)."""
+    if not facts.line:
+        return their_move_now(board, facts)
+    spoken = line_spoken(board, list(facts.line), player=player)
+    if not spoken:
+        return their_move_now(board, facts)
+    return f"It's their move, and the line runs {spoken}."
+
+
 def in_check_threat(board: chess.Board) -> str:
     """What the opponent threatens when the player is in check: the check, and what else the
     checking piece can win, read from the board ("their queen on e6 gives check, and it also
@@ -4587,6 +4600,7 @@ class Coach:
             render_level if facing else None,
             past=past,
             theirs=theirs,
+            line_asked=asked_outright(user_text or "") is Unlock.ASK_LINE,
             # The move or the line asked for outright is stated as the level, not as the ladder
             # for the model to read the words against (`asked_outright`).
             ladder=self._ladder_words(now if past and now is not None else position)
@@ -4980,6 +4994,7 @@ class Coach:
         past: bool = False,
         theirs: bool = False,
         ladder: str | None = None,
+        line_asked: bool = False,
     ) -> str:
         """What may be said about the position the player faces, stated on the directive, the
         one place it is stated; with `now_level`, the reply is about a position already moved
@@ -4988,9 +5003,15 @@ class Coach:
         ranks below one that says a little too much (the prompt audit, 2026-09-28). `theirs`:
         the position is the opponent's to move, and told to keep back "the player's move" there
         the model gave the player's hint on the opponent's position (the coach review,
-        2026-10-01)."""
+        2026-10-01). `line_asked`: the line was asked for there, and is the line from their move
+        on (Tai, 2026-10-03: only their next move was said)."""
         if position.board.is_game_over():
             return ""
+        if theirs and line_asked:
+            return (
+                "It is the opponent's move: the line from here may be said -- their best move "
+                "and how it goes on, naming whose each move is.\n\n"
+            )
         if theirs:
             return (
                 "It is the opponent's move: what they threaten -- their best move and what it "
@@ -5568,15 +5589,30 @@ class Coach:
             # above); with that move or its position unknown -- a game joined on their move --
             # they too are answered here, never with the opponent's near-equal moves named as
             # the player's fine ones (the round-3 parity audit).
-            fallback = their_move_now(position.board, facts)
-            asked = "to see the line" if _ASK_LINE.search(said) else "what to play"
-            directive = (
-                f"They asked {asked}, and it is the opponent's move, not theirs: there is no "
-                "move of theirs to play yet. Say so, then what the opponent threatens now -- "
-                "their best move and what it does, from the engine lines (the opponent's "
-                "move) -- and what the player should be ready for once it is played. One or two "
-                f"sentences, no question. {NO_FIGURES}"
-            )
+            if _ASK_LINE.search(said) and facts.line:
+                # The line asked for is the line: from the opponent's best move on, each move
+                # named with whose it is -- not their next move alone (Tai, 2026-10-03: a
+                # solved puzzle's mate in two, answered "their best is a quiet one, Kd5").
+                fallback = their_line_now(position.board, facts, self.user_colour)
+                notes = line_notes(position.board, list(facts.line), player=self.user_colour)
+                directive = (
+                    "They asked to see the line, and it is the opponent's move: give the line "
+                    f"from here -- {' '.join(facts.line)} -- starting with the opponent's move, "
+                    "and say whose each move is"
+                    + (f", from these notes: {notes}" if notes else "")
+                    + ". Then one short sentence on the idea behind it. No question. "
+                    + NO_FIGURES
+                )
+            else:
+                fallback = their_move_now(position.board, facts)
+                asked = "to see the line" if _ASK_LINE.search(said) else "what to play"
+                directive = (
+                    f"They asked {asked}, and it is the opponent's move, not theirs: there is no "
+                    "move of theirs to play yet. Say so, then what the opponent threatens now -- "
+                    "their best move and what it does, from the engine lines (the opponent's "
+                    "move) -- and what the player should be ready for once it is played. One or "
+                    f"two sentences, no question. {NO_FIGURES}"
+                )
         elif level >= DisclosureLevel.LINE and _ASK_LINE.search(said) and facts.line:
             # The line move by move, computed: the only reasons a move of it may be given
             # (4 of the 5 false claims the bench's labellers found were in these answers).

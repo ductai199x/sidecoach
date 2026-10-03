@@ -2143,6 +2143,11 @@ def test_what_to_play_on_their_turn_never_gives_their_move_as_the_players() -> N
             assert "They asked to see the line: give it" not in directive
         texts = [m.text for m in out if getattr(m, "text", None)]
         assert texts and texts[0].startswith("It's their move"), texts  # the empty reply's
+        if said == "show me the line":
+            # The line asked for is the line from their move on, each move named whose it is
+            # (Tai, 2026-10-03: their next move alone was said).
+            assert texts[0] == "It's their move, and the line runs their Qxf7#, checkmate.", texts
+            assert "the line from here may be said" in directive_of(sent(provider, 0))
 
 
 MOVES_INSTEAD = (

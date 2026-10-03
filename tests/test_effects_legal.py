@@ -182,6 +182,12 @@ def test_a_line_said_aloud_gives_each_move_what_it_does() -> None:
     assert line_spoken(mate, ["Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#", "Kg3"]).endswith(
         "Rh4#, checkmate"
     )
+    # With the player's colour, each move says whose it is: a line asked for on the
+    # opponent's move begins with theirs (Tai, 2026-10-03).
+    assert line_spoken(board, ["Qxa7", "c3", "Rf2"], player=chess.BLACK).startswith(
+        "their Qxa7, taking the pawn on a7"
+    )
+    assert "; your c3, getting the pawn" in line_spoken(board, ["Qxa7", "c3"], player=chess.BLACK)
 
 
 def test_the_words_hold_for_the_board_the_move_leaves() -> None:

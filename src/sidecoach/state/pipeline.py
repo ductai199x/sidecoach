@@ -293,6 +293,10 @@ class GamePipeline:
     # The other side the labels last said was at the bottom of an unexplained board, and when.
     # The side the labels say, when, and the position then read that way round.
     _flip_seen: tuple[Side, float, _View | None] | None = None
+    # The read the flip check last saw before the one it holds, and when: a new puzzle's brief
+    # first board, the start its opening move is played from (`_flip_if_turned`).
+    _flip_read: _ColdRead | None = None
+    _flip_before: tuple[_ColdRead, float] | None = None
     # The last screen state emitted, so a ScreenStateChanged fires only on a transition.
     _screen_state: ScreenState = ScreenState.UNKNOWN
     # When a dialog-sized cover first appeared over a live game's board, or None; and
@@ -688,6 +692,8 @@ class GamePipeline:
         rec = self.reconciler
         if rec is None or self.model is None or rec.unexplained_frames < 1:
             self._flip_seen = None
+            self._flip_read = None
+            self._flip_before = None
             return []
         seen = self._flip_seen
         if seen is not None and ts - seen[1] < FLIP_CHECK_EVERY_S:
@@ -696,20 +702,44 @@ class GamePipeline:
         if labelled is None or labelled == self.bottom:
             self._flip_seen = None
             return []
-        if seen is None or seen[0] != labelled:
-            self._flip_seen = (labelled, ts, None)
-            return []
         # The position must read the same twice too: a piece still sliding in reads as two
         # empty squares, and a board adopted then lacks it for good -- the next puzzle's setup
         # move caught mid-slide at the phone's two frames a second, and nothing after it was
-        # recorded (Tai, 2026-09-24: "sometimes there is no move list whatsoever").
+        # recorded (Tai, 2026-09-24: "sometimes there is no move list whatsoever"). Two reads
+        # after the first look at the labels must agree; the board the first look reads is kept
+        # only as what came before: read only at the second look, a new puzzle's first board,
+        # up for a third of a second, was gone before it was ever read, and counted towards the
+        # two, a piece caught sliding on both read as a board without it.
         read = self._reread(labelled) or self._cold_read(frame, geometry, labelled)
         placed = _view(read) if read is not None else None
+        if seen is None or seen[0] != labelled:
+            self._flip_seen = (labelled, ts, None)
+            self._flip_read = read
+            return []
         if placed is None or placed != seen[2]:
+            if (
+                placed is not None
+                and self._flip_read is not None
+                and _view(self._flip_read) != placed
+            ):
+                # Another board read a moment ago: a new puzzle's first board, before the site's
+                # opening move. Held one read only, it was never the board turned round, and the
+                # move was lost (Tai's puzzles, 2026-10-03: the first move missed whenever the
+                # next puzzle was the other side's). One legal move must join it to the board
+                # adopted (`Reconciler.start_from`), or it is let go.
+                self._flip_before = (self._flip_read, seen[1])
             self._flip_seen = (labelled, ts, placed)
+            self._flip_read = read
             return []
         self._flip_seen = None
-        return self.reorient(frame, geometry, labelled, ts, read=read)
+        self._flip_read = None
+        before = None
+        if self._flip_before is not None and ts - self._flip_before[1] <= COLD_BEFORE_S:
+            prior = self._flip_before[0]
+            if prior[1] == labelled:  # read the same way up
+                before = (prior[3], highlighted_squares(by_square(prior[2], prior[1])))
+        self._flip_before = None
+        return self.reorient(frame, geometry, labelled, ts, read=read, before=before)
 
     def _reread(self, bottom: Side) -> _ColdRead | None:
         """The frame's own readings taken with `bottom` at the bottom: the recogniser read
@@ -735,6 +765,7 @@ class GamePipeline:
         end_previous: bool = True,
         read: _ColdRead | None = None,
         told: bool = False,
+        before: tuple[chess.Board, frozenset[chess.Square]] | None = None,
     ) -> list[Event]:
         """Read the board again with `bottom` at the bottom and begin again from what it
         shows: the panel's Flip on a game joined from the middle, or a resync whose labels
@@ -744,13 +775,14 @@ class GamePipeline:
         that way on the next quiet frame. The frame's own readings serve when they can
         (`_reread`); a cold read from the theme cache otherwise. `told`: the person said
         which side is at the bottom (Flip), and the labels learn from them where they did
-        not say it themselves (`_learn_labels`)."""
+        not say it themselves (`_learn_labels`). `before`: a board read moments earlier the same
+        way up, which one legal move joins to this one (`Reconciler.start_from`)."""
         if read is None:
             read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
         if read is None:
             return []
         events = self._end_in_progress("board reoriented") if end_previous else []
-        events += self._adopt_cold(*read, ts=ts)
+        events += self._adopt_cold(*read, ts=ts, before=before)
         if events:
             self._learn_labels(frame, geometry, told=told)
         return events

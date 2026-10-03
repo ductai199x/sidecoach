@@ -28,6 +28,7 @@ from sidecoach.events import GameStarted, Region, Side
 from sidecoach.state.pipeline import COLD_NOTICE_S, GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
+from tests.games import sans_of
 from tests.synth import GEOM, synthetic_board
 
 pytestmark = pytest.mark.vision
@@ -352,6 +353,39 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
     assert live.bottom is Side.BLACK and rec is not None and rec.user_side is Side.BLACK
     assert not _squares_off(rec.board, second)
     assert rec.turn_unknown and rec.board.turn == chess.BLACK, "the solver's move, meanwhile"
+
+
+def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(tmp_path: Path) -> None:
+    """A new puzzle for the other side: its first board stands a third of a second, the site
+    plays its opening move, and the board turned round was adopted only after it -- the move
+    lost (Tai's puzzles, 2026-10-03: the first move missed whenever the next puzzle was the
+    other side's). The first board read on the first look at the labels is its start, and the
+    move is played."""
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
+    live = GamePipeline(cache=cache)
+    _join(live, synthetic_board(board=chess.Board(MIDGAME), coordinates=True))
+    assert live.bottom is Side.WHITE
+    first = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1")
+    events = []
+    for i in range(3):  # the new puzzle's first board, a third of a second
+        events += _tick(
+            live, synthetic_board(board=first, bottom=Side.BLACK, coordinates=True), 30.0 + 0.1 * i
+        )
+    puzzle = first.copy()
+    opening = puzzle.push_san("Nf3")
+    shown = synthetic_board(board=puzzle, bottom=Side.BLACK, coordinates=True, highlight=opening)
+    for i in range(12):
+        events += _tick(live, shown, 30.3 + 0.1 * i)
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert len(started) == 1 and started[0].start_fen.split()[0] == first.board_fen()
+    assert sans_of(events) == ["Nf3"], "the opening move is played"
+    rec = live.reconciler
+    assert (
+        live.bottom is Side.BLACK
+        and rec is not None
+        and rec.board.board_fen() == puzzle.board_fen()
+    )
 
 
 # The puzzle Tai had up on the Pixel (2026-09-23), just after Black's d5xc4.
