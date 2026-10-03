@@ -386,6 +386,7 @@ object PanelWarm {
                     JSONObject().put("device", "cpu"),
                 )
                 stage("voice", "done", detail)
+                tts.keep(PanelVoice.KEPT_PHRASES) // the short praise, ready to play at once
             } else {
                 PanelEngine.emit("sys", "warn", "voice: $detail")
                 stage("voice", "off", detail)

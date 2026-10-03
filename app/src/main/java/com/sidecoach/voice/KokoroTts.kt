@@ -52,7 +52,9 @@ class KokoroTts(
 ) : TtsProvider {
     override val name = "kokoro"
 
-    private val onnxPath: File get() = File(modelDir, ONNX_FILE)
+    /** The graph run: the faster one ([FAST_FILE]) when it is there, else the full-precision one. */
+    private val onnxPath: File
+        get() = File(modelDir, FAST_FILE).takeIf { it.exists() } ?: File(modelDir, ONNX_FILE)
     val voicesPath: File get() = File(modelDir, VOICES_FILE)
 
     @Volatile private var kokoro: Kokoro? = null
@@ -213,6 +215,7 @@ class KokoroTts(
             if (kokoro != null) return true
             if (failed && !filesArrived()) return false
             failed = false
+            adoptFast()
             return try {
                 val began = SystemClock.elapsedRealtime()
                 kokoro = Kokoro.load(context, onnxPath, voicesPath, THREADS)
@@ -224,6 +227,29 @@ class KokoroTts(
                 failedFiles = modelFiles()
                 false
             }
+        }
+    }
+
+    /**
+     * The faster graph ([FAST_FILE]) put in the app's external files (`models/kokoro/`, where adb
+     * may write: `tools\install.ps1 -Voice`) is moved into the model folder: copied, checked, and
+     * only then the original removed, so nothing is lost if the move fails.
+     */
+    private fun adoptFast() {
+        val outside = File(context.getExternalFilesDir(null) ?: return, "models/kokoro/$FAST_FILE")
+        if (!outside.exists()) return
+        val inside = File(modelDir, FAST_FILE)
+        val partial = File(modelDir, "$FAST_FILE.part")
+        runCatching {
+            modelDir.mkdirs()
+            outside.copyTo(partial, overwrite = true)
+            if (partial.length() != outside.length()) error("copied ${partial.length()} of ${outside.length()} bytes")
+            if (!partial.renameTo(inside)) error("could not rename into place")
+            outside.delete()
+            Log.i(TAG, "faster voice adopted: ${inside.length() / 1_000_000} MB")
+        }.onFailure {
+            partial.delete()
+            VoiceLog.warn("the faster voice could not be adopted, the full one runs: ${VoiceLog.said(it)}")
         }
     }
 
@@ -301,6 +327,44 @@ class KokoroTts(
         }
         queue.removeIf { it.stamp.owner == owner }
     }
+
+    /**
+     * Lines said often and word for word -- the short praise of a move ("Spot on.", "Exactly.") --
+     * made once, in the background, and kept as long as the voice: said, they play at once, with
+     * nothing to make (Tai, 2026-10-03: the voice "truly real time"). Kept per voice: another
+     * voice makes them again when [keep] is called for it. The thread making them is returned.
+     */
+    fun keep(texts: List<String>): Thread {
+        val forVoice = voice
+        return Thread({
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            for (text in texts) {
+                if (voice != forVoice) return@Thread // another voice since: its own keep runs
+                val spoken = Py.strip(Notation.speak(text, voice = true))
+                val key = "$forVoice|$spoken"
+                if (spoken.isEmpty() || synchronized(lock) { key in kept }) continue
+                val shared = using.readLock()
+                shared.lock()
+                try {
+                    val model = kokoro ?: return@Thread
+                    val (style, pieces) = model.pieces(spoken, forVoice, speed, lang)
+                    val made = pieces.map { piece -> model.synthesize(piece, style, speed) }
+                    synchronized(lock) { kept[key] = made }
+                } catch (exc: Exception) { // a phrase not kept is made when said
+                    Log.d(TAG, "could not keep ${Py.repr(spoken)}: ${VoiceLog.said(exc)}")
+                } finally {
+                    shared.unlock()
+                }
+            }
+            Log.i(TAG, "kept ${texts.size} phrases for $forVoice")
+        }, "kokoro-keep").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    /** [keep]'s phrases, by "voice|spoken text". Under [lock]. */
+    private val kept = HashMap<String, List<FloatArray>>()
 
     /**
      * Make [text] now, in its pieces, off the voice's threads, to play at once when it is said (a
@@ -479,7 +543,9 @@ class KokoroTts(
         // Said while it is still being made ahead ([prepare]): waited for, never made twice.
         val making = synchronized(lock) { if (line.voice == null) preparing[line.spoken] else null }
         making?.await(PREPARE_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
-        val ready = synchronized(lock) { if (line.voice == null) prepared.remove(line.spoken) else null }
+        val ready = synchronized(lock) {
+            if (line.voice == null) kept["$voice|${line.spoken}"] ?: prepared.remove(line.spoken) else null
+        }
         if (ready != null) {
             // Made ahead ([prepare]): its pieces go to the player at once, to play when its turn
             // comes.
@@ -759,6 +825,14 @@ class KokoroTts(
          * desktop's to the sample.
          */
         const val ONNX_FILE = "kokoro-v1.0.onnx"
+
+        /**
+         * Kokoro with the decoder's convolutions in 8 bits but its last stage's, per-channel and
+         * calibrated on coach lines: 0.42-0.46 of real time on the Pixel where the full-precision
+         * graph ran 0.70-0.76, and no difference Tai could hear in a blind A/B (2026-10-03; its last
+         * stage in 8 bits buzzed, near 11 kHz). Made by `tools/kokoro_fast.py` in the desktop repo.
+         */
+        const val FAST_FILE = "kokoro-v1.0-q8.onnx"
         const val VOICES_FILE = "voices-v1.0.bin"
 
         /**

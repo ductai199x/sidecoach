@@ -163,8 +163,14 @@ object PanelVoice {
     }
 
     /** Change the speaking voice: a style on the loaded model, nothing reloads. `set_voice`. */
+    /** The coach's short words on a move, said word for word ([com.sidecoach.coach.OPENERS] and the
+     * mates): kept made by the voice, to play at once ([KokoroTts.keep]). */
+    val KEPT_PHRASES: List<String> =
+        com.sidecoach.coach.OPENERS.values.flatten().map { "$it." } + com.sidecoach.coach.MATE
+
     fun setVoice(name: String) {
         tts?.voice = name
+        tts?.keep(KEPT_PHRASES) // the short words, for this voice
         voice = name
         val detail = tts?.healthcheck()?.second ?: "voice off"
         PanelEngine.set("voice" to name, "voice_detail" to detail)

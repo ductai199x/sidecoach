@@ -90,7 +90,10 @@ class PacePlan(private val clock: () -> Double) {
     private var ply = 0
     private var count = 0
     private val moveAt = HashMap<Pair<Int, Int>, Pair<Double, Int>>()
-    private val withdrawn = HashSet<Pair<Int, Int>>()
+    /** The player's moves taken back, by their number ([count]), never by their square: a retry
+     * is played at the same ply, and its word was taken for the withdrawn move's and never said
+     * (Tai's Pixel, 2026-10-03: "Just what the position wanted." on a retry). */
+    private val withdrawn = HashSet<Int>()
     private var positionSince = clock()
     private var thinks = ArrayList<Double>()
     private var quick = false
@@ -103,6 +106,9 @@ class PacePlan(private val clock: () -> Double) {
     private val speaking = HashSet<Int>()
     private val dead = HashSet<Int>()
     private var fed = ArrayList<PaceLine>()
+
+    /** A word on a move of this board was given to the voice. */
+    private var boardHeard = false
 
     // ---- the board -------------------------------------------------------------------------
 
@@ -134,7 +140,7 @@ class PacePlan(private val clock: () -> Double) {
      * them is never said again. Whether the voice must stop now. `taken_back`. */
     fun takenBack(toPly: Int): Boolean = synchronized(lock) {
         val now = clock()
-        for ((e, p) in moveAt.keys.toList()) if (e == epoch && p > toPly) withdrawn.add(e to p)
+        for ((at, played) in moveAt) if (at.first == epoch && at.second > toPly) withdrawn.add(played.second)
         ply = toPly
         positionSince = now
         afterChange(now, setOf("hint"), stopWithdrawn = true)
@@ -149,6 +155,7 @@ class PacePlan(private val clock: () -> Double) {
         thinks = ArrayList()
         positionSince = now
         release(now)
+        boardHeard = false
         afterChange(now, setOf("hint"))
     }
 
@@ -157,8 +164,12 @@ class PacePlan(private val clock: () -> Double) {
         val playing = fed.firstOrNull() ?: return false
         val msg = messages[playing.key] ?: return false
         if (msg.kind in stopKinds) return msg.kind != "hint" || !hintFresh(msg)
-        return stopWithdrawn && msg.about in withdrawn
+        return stopWithdrawn && withdrawnWord(msg)
     }
+
+    /** A word on a move the player took back (a hint and a question are on no move). */
+    private fun withdrawnWord(msg: Message): Boolean =
+        msg.about != null && msg.kind != "hint" && msg.kind != "answer" && msg.seq in withdrawn
 
     // ---- the coach's messages ---------------------------------------------------------------
 
@@ -216,7 +227,23 @@ class PacePlan(private val clock: () -> Double) {
             enqueue(PaceLine(key, msg.kind, index, text))
             return Pace.SAY
         }
-        if (msg.model && index == 0 && held.isEmpty()) {
+        val holding = held.firstOrNull()
+        if (index == 0 && msg.model && (holding == null || holding.kind == "short")) {
+            // A fast line, or the player already moved on: the model's word on the line's first
+            // find is held for the end of the line.
+            if (holding != null) dead.add(holding.key)
+            held.clear()
+            held.add(PaceLine(key, msg.kind, 0, text, prepared = true))
+            return Pace.HOLD
+        }
+        if (index == 0 && !msg.model && (holding == null || holding.kind == "short") &&
+            now - msg.askedAt <= Pace.PRAISE_FRESH_S && !boardHeard
+        ) {
+            // With no word of the model's, the latest template word, said when the next puzzle
+            // comes up: every "Spot on." of a quickly solved puzzle went to the text (Tai's Pixel,
+            // 2026-10-03). Never at a pause in a game, never when a word on this board was said.
+            if (holding != null) dead.add(holding.key)
+            held.clear()
             held.add(PaceLine(key, msg.kind, 0, text, prepared = true))
             return Pace.HOLD
         }
@@ -225,6 +252,15 @@ class PacePlan(private val clock: () -> Double) {
     }
 
     private fun enqueue(line: PaceLine) {
+        if (line.kind == "praise" || line.kind == "short" || line.kind == "lesson") {
+            boardHeard = true
+            val holding = held.firstOrNull()
+            if (holding != null && holding.kind == "short") {
+                // A template word held for the next puzzle: this board has its word now.
+                dead.add(holding.key)
+                held.clear()
+            }
+        }
         queue.add(line)
         queue.sortWith(compareBy({ Pace.PRIORITY.getValue(it.kind) }, { it.key }, { it.index }))
     }
@@ -243,10 +279,10 @@ class PacePlan(private val clock: () -> Double) {
             "answer" -> true
             "review" -> age <= Pace.REVIEW_FRESH_S
             "hint" -> hintFresh(msg)
-            "lesson" -> msg.about !in withdrawn && movesSince(msg) <= Pace.LESSON_MOVES && age <= Pace.LESSON_FRESH_S
+            "lesson" -> !withdrawnWord(msg) && movesSince(msg) <= Pace.LESSON_MOVES && age <= Pace.LESSON_FRESH_S
             else -> when {
                 msg.about == null || msg.about.first != epoch -> false
-                msg.about in withdrawn -> false
+                withdrawnWord(msg) -> false
                 msg.key in speaking -> movesSince(msg) == 0
                 else -> movesSince(msg) == 0 && age <= Pace.PRAISE_FRESH_S
             }
@@ -269,7 +305,8 @@ class PacePlan(private val clock: () -> Double) {
     /** The fast line's word is released once the line is done. `tick`. */
     fun tick() = synchronized(lock) {
         val now = clock()
-        if (held.isNotEmpty() && now - lastMoveAt >= Pace.LINE_END_S) release(now)
+        // A template word waits for the next puzzle ([newPosition]), never a pause.
+        if (held.isNotEmpty() && held[0].kind != "short" && now - lastMoveAt >= Pace.LINE_END_S) release(now)
     }
 
     private fun release(now: Double) {

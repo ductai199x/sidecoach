@@ -164,11 +164,53 @@ class PaceTest {
             ply += 2
         }
         clock.advance(0.15)
-        assertEquals(Pace.TEXT, plan.offer(1, "post_move", ply - 3, 0, "Exactly.", streamed = false))
-        clock.advance(2.8)
+        // Held for a next puzzle, never said at a pause in the game.
+        assertEquals(Pace.HOLD, plan.offer(1, "post_move", ply - 3, 0, "Exactly.", streamed = false))
+        clock.advance(Pace.LINE_END_S)
+        plan.tick()
+        assertEquals("a pause in a game says no template word", emptyList<String>(), said(plan))
+        clock.advance(2.8 - Pace.LINE_END_S)
         plan.playerMoved(ply, 2.8)
         clock.advance(0.15)
         assertEquals(Pace.SAY, plan.offer(2, "post_mistake", ply - 1, 0, "Rg8 was stronger.", streamed = false))
+    }
+
+    /** Tai's Pixel, 2026-10-03: the word on a retry after a takeback went to the text -- the ply
+     * was marked withdrawn, not the move (`test_the_word_on_a_retry_after_a_takeback_is_said`). */
+    @Test
+    fun theWordOnARetryAfterATakebackIsSaid() {
+        val (plan, clock) = planAt()
+        clock.advance(16.5)
+        plan.playerMoved(1, 16.5)
+        clock.advance(1.0)
+        assertEquals(Pace.SAY, plan.offer(1, "post_mistake", 0, 0, "Bxd2+ was the move.", streamed = true))
+        assertEquals(listOf("Bxd2+ was the move."), said(plan))
+        clock.advance(8.0)
+        plan.takenBack(0)
+        plan.stopped()
+        clock.advance(4.0)
+        plan.playerMoved(1, 4.0)
+        clock.advance(0.3)
+        assertEquals(Pace.SAY, plan.offer(2, "post_move", 0, 0, "Just what the position wanted.", streamed = false))
+        assertEquals(listOf("Just what the position wanted."), said(plan))
+        assertEquals(Pace.TEXT, plan.offer(1, "post_mistake", 0, 1, "It wins a piece.", streamed = true))
+    }
+
+    /** `test_a_quickly_solved_puzzle_hears_its_word_when_the_next_comes_up`. */
+    @Test
+    fun aQuicklySolvedPuzzleHearsItsWordWhenTheNextComesUp() {
+        val (plan, clock) = planAt()
+        clock.advance(20.0)
+        plan.playerMoved(1, 20.0)
+        for (ply in listOf(3, 5)) {
+            clock.advance(1.2)
+            plan.playerMoved(ply, 1.2)
+        }
+        clock.advance(0.2)
+        assertEquals(Pace.HOLD, plan.offer(1, "post_move", 4, 0, "Spot on.", streamed = false))
+        clock.advance(1.5)
+        plan.newPosition()
+        assertEquals(listOf("Spot on."), said(plan))
     }
 
     @Test

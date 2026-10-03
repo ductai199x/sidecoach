@@ -932,7 +932,9 @@ class CoachCoreTest {
         coach.onEvent(mateAnalysis(6, decisive = false), 7.0)
         messages(coach)
         val position = coach.positions[6]!!
-        coach.ask("what should I play?", 8.0)
+        // A question the model reads -- not the move or the line asked for outright, which open
+        // them exactly ([askedOutright], 2026-10-03) -- climbs the rung its reply said.
+        coach.ask("what's going on here?", 8.0)
         var out = messages(coach)
         assertEquals("the reply gave no move", DisclosureLevel.IDEA, out[0].level)
         assertEquals(DisclosureLevel.IDEA, position.disclosure.level)

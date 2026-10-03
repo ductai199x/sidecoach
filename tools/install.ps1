@@ -11,10 +11,15 @@
 # key, so it installs over a debug install and keeps the app's files and settings
 # (app/build.gradle.kts). The engine's network is pushed by tools\test.ps1 for the tests, and
 # the app fetches its own.
+#
+# -Voice also puts the faster Kokoro (the desktop's tools\kokoro_fast.py makes it, into its
+# data\models\kokoro) in the app's external files, where the voice adopts it at its next load
+# (KokoroTts.adoptFast); skipped when the phone holds that file already.
 
 param(
     [Parameter(Mandatory = $true)][string]$Serial,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Voice
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,3 +58,19 @@ $version = [regex]::Match($package, "versionName=(\S+)").Groups[1].Value
 $updated = [regex]::Match($package, "lastUpdateTime=([^\r\n]+)").Groups[1].Value
 $commit = (& git -C $root log --oneline -1)
 Write-Host "installed com.sidecoach $version on $Serial at $updated ($commit)"
+
+if ($Voice) {
+    $fast = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\data\models\kokoro\kokoro-v1.0-q8.onnx"
+    if (-not (Test-Path $fast)) { throw "no $fast: run the desktop's tools\kokoro_fast.py first" }
+    $dir = "/sdcard/Android/data/com.sidecoach/files/models/kokoro"
+    $size = (Get-Item $fast).Length
+    $there = "$(& $adb -s $Serial shell "stat -c %s $dir/kokoro-v1.0-q8.onnx 2>/dev/null || echo none")".Trim()
+    if ($there -eq "$size") {
+        Write-Host "the faster voice is on $Serial already"
+    } else {
+        Write-Host "pushing the faster voice ($([int]($size / 1MB)) MB): adopted at the voice's next load"
+        & $adb -s $Serial shell "mkdir -p $dir"
+        & $adb -s $Serial push $fast "$dir/kokoro-v1.0-q8.onnx" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "the push of the faster voice failed" }
+    }
+}

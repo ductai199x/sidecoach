@@ -273,6 +273,52 @@ class KokoroTtsTest {
     }
 
     /**
+     * A kept phrase ([KokoroTts.keep]: the short praise, made at the warm-up) plays at once when
+     * said: nothing of it is made again (Tai, 2026-10-03: the voice "truly real time").
+     */
+    @Test
+    fun aKeptPhraseIsNotMadeWhenSaid() {
+        val tts = tts()
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", tts != null)
+        tts!!.makeOutput = { InstantOutput() }
+        tts.keep(listOf("Spot on.")).join()
+        val watched = Watched(tts)
+        tts.say("Spot on.")
+        assertTrue("never said", watched.started.tryAcquire(30, TimeUnit.SECONDS))
+        assertTrue("the voice never went quiet", quiet(tts, 30))
+        tts.close()
+        assertEquals(listOf("Spot on."), watched.played.toList())
+        assertEquals("made again", 0, watched.made.availablePermits())
+    }
+
+    /**
+     * The faster graph put in the app's external files (`tools\install.ps1 -Voice`) is moved into
+     * the model folder at the next load, and runs: copied whole, then the original removed.
+     */
+    @Test
+    fun theFasterGraphPutBesideTheAppIsAdoptedAndRuns() {
+        val models = File(app.filesDir, "models/kokoro")
+        val full = File(models, KokoroTts.ONNX_FILE)
+        assumeTrue("no Kokoro (tools/test.ps1 pushes it)", full.exists())
+        val dir = File(app.cacheDir, "kokoro-adopt-${System.nanoTime()}").apply { mkdirs() }
+        val outside = File(app.getExternalFilesDir(null), "models/kokoro/${KokoroTts.FAST_FILE}")
+        try {
+            File(models, KokoroTts.VOICES_FILE).copyTo(File(dir, KokoroTts.VOICES_FILE))
+            // Any graph stands in for the faster one: what is under test is that it is taken.
+            outside.parentFile!!.mkdirs()
+            full.copyTo(outside, overwrite = true)
+            val tts = KokoroTts(app, dir)
+            assertTrue("the adopted graph did not load", tts.load())
+            assertTrue("not moved into the model folder", File(dir, KokoroTts.FAST_FILE).length() == full.length())
+            assertTrue("the original was left outside", !outside.exists())
+            tts.close()
+        } finally {
+            outside.delete()
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
      * The voice with its first line held in synthesis until [go] is let go ([synthesising] says
      * it began), and the lines whose audio starts, in order: the lines queued behind it wait
      * their turn.

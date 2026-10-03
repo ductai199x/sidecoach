@@ -391,6 +391,19 @@ internal val SIDEWAYS = Regex(
 /** A square named in the player's words: `re.search(r"\b[a-h][1-8]\b", text)` in `Coach.ask`. */
 private val NAMED_SQUARE = Regex("\\b[a-h][1-8]\\b")
 
+/**
+ * The move or the line asked for outright -- the Best move and Line buttons' words, or the same
+ * typed or said -- opened exactly, the AI coach's as the offline one's, as it was before the
+ * model read every question (0.1.57). Read by the model, the Best move button got a hint on a
+ * fresh puzzle: the hint rung it was given beside the words won (Tai's Pixel, 2026-10-03: "Any
+ * direct requests from user must be honored exactly and immediately"). `asked_outright`.
+ */
+fun askedOutright(text: String): Unlock? = when {
+    ASK_LINE.containsMatchIn(text) -> Unlock.ASK_LINE
+    ASK_MOVE.containsMatchIn(text) -> Unlock.ASK_MOVE
+    else -> null
+}
+
 /** The unlock the user's words earn, if any. */
 fun unlockFor(text: String, board: Board, candidates: List<String>): Unlock? {
     if (ASK_LINE.containsMatchIn(text)) return Unlock.ASK_LINE
@@ -834,10 +847,11 @@ class Coach(
             return
         }
         val offline = this.offline
-        // Only the offline coach reads the rung off the words: the keyword rules are its
-        // templates'. With the AI on the model reads what they ask, and the ladder follows what
-        // it said ([climb]; Tai, 2026-10-02).
-        val unlock = if (offline) unlockFor(text, position.board, position.facts!!.candidates) else null
+        // The offline coach reads the rung off the words: the keyword rules are its templates'.
+        // With the AI on the model reads what they ask, and the ladder follows what it said
+        // ([climb]; Tai, 2026-10-02) -- but the move or the line asked for outright is opened
+        // exactly ([askedOutright]; Tai, 2026-10-03).
+        val unlock = if (offline) unlockFor(text, position.board, position.facts!!.candidates) else askedOutright(text)
         if (position === current) {
             // A hint asked for climbs from what the combination has had already -- in the
             // position the player faces only: climbed in the one they had moved from, a hint
@@ -2445,7 +2459,13 @@ class Coach(
             position.board.turn != userColour
         val line = levelLine(
             level, position, if (facing) renderLevel else null, past = past, theirs = theirs,
-            ladder = if (aiAsk && !finished) ladderWords(if (past && now != null) now else position) else null,
+            // The move or the line asked for outright is stated as the level, not as the ladder
+            // for the model to read the words against ([askedOutright]).
+            ladder = if (aiAsk && !finished && askedOutright(userText ?: "") == null) {
+                ladderWords(if (past && now != null) now else position)
+            } else {
+                null
+            },
         )
         // A question is answered as asked: its words head the Task. Found only under "Said here",
         // far above, "whose bishop? ... he will just move away to the right, no?" got the line
@@ -3787,12 +3807,17 @@ class Coach(
     internal fun ladderWords(faced: CoachPosition): String {
         val said = faced.disclosure.level
         val rung = nextRung(said)
-        return "What you have said of the position the player faces, by hints and answers (under " +
-            "'Said here'): ${saidWords(said)}. A hint they ask for is the next rung of the ladder " +
-            "-- the idea, then the target and the piece, then the move -- each said once and none " +
-            "lower than one already said: that is ${rungWords(rung)}. The move, the line, the " +
-            "good moves, a move they name and anything about the moves played are theirs for " +
-            "the asking, a hint or not." +
+        // Their words first, the ladder only for a hint: headed by the rung and its "keep back the
+        // answer", the task read as a ban on the move, and "what should I play" on a fresh puzzle
+        // got a hint (Tai's Pixel, 2026-10-03: "what if I ask a real question?").
+        return "Their words decide what they get. A question is answered fully, nothing kept " +
+            "back: the move ('what should I play', 'the best move', 'which move wins'), the " +
+            "line, which moves are good, a move, square or piece they name, the moves played, " +
+            "the threats, how they stand. Only a hint they ask for ('hint', 'help', 'I'm " +
+            "stuck', 'what should I aim for') keeps the answer back: it is the next rung of " +
+            "the ladder -- the idea, then the target and the piece, then the move -- each said " +
+            "once and none lower than one already said: now ${rungWords(rung)}. Said so far " +
+            "of the position they face, by hints and answers (under 'Said here'): ${saidWords(said)}." +
             if (rung.value >= DisclosureLevel.IDEA.value && rung.value < DisclosureLevel.MOVE.value) {
                 " $SEE_ALL_WORDS"
             } else {
