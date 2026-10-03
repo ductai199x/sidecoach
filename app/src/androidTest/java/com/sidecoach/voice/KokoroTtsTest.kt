@@ -301,7 +301,7 @@ class KokoroTtsTest {
         val full = File(models, KokoroTts.ONNX_FILE)
         assumeTrue("no Kokoro (tools/test.ps1 pushes it)", full.exists())
         val dir = File(app.cacheDir, "kokoro-adopt-${System.nanoTime()}").apply { mkdirs() }
-        val outside = File(app.getExternalFilesDir(null), "models/kokoro/${KokoroTts.FAST_FILE}")
+        val outside = File(app.getExternalFilesDir(null), KokoroTts.FAST_FILE)
         try {
             File(models, KokoroTts.VOICES_FILE).copyTo(File(dir, KokoroTts.VOICES_FILE))
             // Any graph stands in for the faster one: what is under test is that it is taken.

@@ -62,14 +62,20 @@ Write-Host "installed com.sidecoach $version on $Serial at $updated ($commit)"
 if ($Voice) {
     $fast = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\data\models\kokoro\kokoro-v1.0-q8.onnx"
     if (-not (Test-Path $fast)) { throw "no ${fast}: run the desktop's tools\kokoro_fast.py first" }
-    $dir = "/sdcard/Android/data/com.sidecoach/files/models/kokoro"
+    # The app's own folder, at its top: a folder adb's shell makes inside it is the shell's, and
+    # the app cannot read it (the faster voice pushed by 0.1.65's install was never adopted).
+    $dir = "/sdcard/Android/data/com.sidecoach/files"
     $size = (Get-Item $fast).Length
     $there = "$(& $adb -s $Serial shell "stat -c %s $dir/kokoro-v1.0-q8.onnx 2>/dev/null || echo none")".Trim()
+    $folder = "$(& $adb -s $Serial shell "[ -d $dir ] && echo yes || echo no")".Trim()
+    if ($folder -ne "yes") {
+        # Never made by the shell: the app makes its own, at its first start.
+        throw "the app has not made its files folder yet: open it once, then run this again with -Voice"
+    }
     if ($there -eq "$size") {
         Write-Host "the faster voice is on $Serial already"
     } else {
         Write-Host "pushing the faster voice ($([int]($size / 1MB)) MB): adopted at the voice's next load"
-        & $adb -s $Serial shell "mkdir -p $dir"
         & $adb -s $Serial push $fast "$dir/kokoro-v1.0-q8.onnx" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "the push of the faster voice failed" }
     }

@@ -231,12 +231,13 @@ class KokoroTts(
     }
 
     /**
-     * The faster graph ([FAST_FILE]) put in the app's external files (`models/kokoro/`, where adb
+     * The faster graph ([FAST_FILE]) put in the app's external files (at their top, where adb
      * may write: `tools\install.ps1 -Voice`) is moved into the model folder: copied, checked, and
      * only then the original removed, so nothing is lost if the move fails.
      */
     private fun adoptFast() {
-        val outside = File(context.getExternalFilesDir(null) ?: return, "models/kokoro/$FAST_FILE")
+        // At the folder's top: one adb's shell makes inside it is the shell's, closed to the app.
+        val outside = File(context.getExternalFilesDir(null) ?: return, FAST_FILE)
         if (!outside.exists()) return
         val inside = File(modelDir, FAST_FILE)
         val partial = File(modelDir, "$FAST_FILE.part")
