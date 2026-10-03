@@ -1,14 +1,24 @@
-"""The phone's faster Kokoro: the decoder's convolutions in 8 bits, its last stage's kept whole.
+"""The phone's faster Kokoro: the decoder's convolutions in 8 bits, its last stage's in fp16.
 
 On the Pixel 10 Pro XL Kokoro's time is the decoder's convolutions (65% of it, ONNX Runtime's
 profile). In 8 bits -- static QDQ, per-channel weights, activations calibrated on coach lines --
-the graph runs 0.42-0.46 of real time where the shipped full-precision one runs 0.70-0.76
-(2026-10-03, with a stream playing beside it). The last stage of the generator (resblocks 3-5,
-the highest resolution) stays in full precision: in 8 bits it whined near 11 kHz (+13.5 dB over
-fp32 at 10-12 kHz), which Tai heard as a buzz. Kept whole, the bands match fp32 and Tai could not
-tell the two apart in a blind A/B. Nothing else of the graph changes: the source's STFT rewritten
-as a convolution changed its last digits, and the decoder's phase (Atan of near-zero bins) turned
-that into high-pitched noise.
+the graph runs 0.36 of real time where the full-precision one runs 0.70 (2026-10-03). The last
+stage of the generator (resblocks 3-5, the highest resolution) is not in 8 bits: there it whined
+near 11 kHz (+13.5 dB over fp32 at 10-12 kHz), which Tai heard as a buzz; kept whole, Tai could
+not tell the graph from fp32 in a blind A/B. Then, the same arithmetic in fewer passes:
+
+- the 65 instance norms built from small ops (mean, sub, square, mean, +eps, sqrt, div) as one
+  InstanceNormalization each, and the Snake's Pow(x, 2) as x * x;
+- the last stage's convolutions in fp16 (the Pixel's cores do fp16 at twice the rate): 0.31 of
+  real time, its speech measured on the Pixel itself as close to fp32 as the A/B'd graph's
+  (+0.1 dB at 10-12 kHz, log-mel 1.41). This desktop's CPU has no fp16 arithmetic, so the check
+  below does not see the fp16 part: KokoroBench's `-e dump` makes the phone's speech to measure.
+
+Tried and left out, measured on the Pixel: the STFT as a convolution (the decoder's phase, Atan
+of near-zero bins, turned its changed last digits into high-pitched noise), every conv of the
+generator in fp16 (+3.6 dB at 10-12 kHz), the whole last stage in fp16 (slower: fp16 elementwise
+ops are not fast there), the text encoder in 8 bits (the speech's timing changes), 6 or 7
+threads, dynamic scheduling, XNNPACK, NNAPI and WebGPU.
 
     uv run --no-sync python tools/kokoro_fast.py [--out data/models/kokoro/kokoro-v1.0-q8.onnx]
 
@@ -26,6 +36,7 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 from kokoro_onnx import Kokoro
+from onnx import TensorProto, helper, numpy_helper
 from onnxruntime.quantization import (
     CalibrationDataReader,
     CalibrationMethod,
@@ -144,6 +155,126 @@ def check(path: Path, tts: Kokoro) -> tuple[float, float]:
     return float(np.mean(highs)), float(np.mean(mels))
 
 
+def constant(m: onnx.ModelProto, name: str) -> np.ndarray | None:
+    """An initializer's or a Constant node's value, or None."""
+    for t in m.graph.initializer:
+        if t.name == name:
+            return numpy_helper.to_array(t)
+    for n in m.graph.node:
+        if n.op_type == "Constant" and n.output[0] == name:
+            return numpy_helper.to_array(n.attribute[0].t)
+    return None
+
+
+def channel_counts(path: Path, names: list[str], tts: Kokoro) -> dict[str, int]:
+    """Each tensor's channel count, read off one run of the graph at `path`."""
+    probe = onnx.load(str(path))
+    have = {o.name for o in probe.graph.output}
+    probe.graph.output.extend(
+        helper.make_empty_tensor_value_info(n) for n in names if n not in have
+    )
+    s = ort.InferenceSession(probe.SerializeToString(), providers=["CPUExecutionProvider"])
+    got = s.run(None, inputs_for(tts, "Exactly, that is the move."))
+    out = dict(zip([o.name for o in s.get_outputs()], got, strict=True))
+    return {n: int(out[n].shape[1]) for n in names}
+
+
+def fuse_norms(m: onnx.ModelProto, path: Path, tts: Kokoro) -> tuple[int, int]:
+    """The instance norms built from small ops as InstanceNormalization, and Pow(x, 2) as x * x.
+    Returns how many of each."""
+    g = m.graph
+    prod = {o: n for n in g.node for o in n.output}
+    found = []  # (div, x, eps)
+    for div in g.node:
+        if div.op_type != "Div" or len(div.input) != 2:
+            continue
+        sub, sqrt = prod.get(div.input[0]), prod.get(div.input[1])
+        if not sub or not sqrt or sub.op_type != "Sub" or sqrt.op_type != "Sqrt":
+            continue
+        mean1, add = prod.get(sub.input[1]), prod.get(sqrt.input[0])
+        if not mean1 or mean1.op_type != "ReduceMean" or mean1.input[0] != sub.input[0]:
+            continue
+        if not add or add.op_type != "Add":
+            continue
+        mean2, eps = prod.get(add.input[0]), constant(m, add.input[1])
+        if not mean2 or mean2.op_type != "ReduceMean" or eps is None:
+            continue
+        sq = prod.get(mean2.input[0])
+        squared = sq is not None and (
+            (sq.op_type == "Mul" and list(sq.input) == [sub.output[0]] * 2)
+            or (sq.op_type == "Pow" and sq.input[0] == sub.output[0])
+        )
+        axes = [constant(m, n.input[1]) for n in (mean1, mean2)]
+        if not squared or any(a is None or list(np.ravel(a)) != [2] for a in axes):
+            continue
+        found.append((div, sub.input[0], float(np.ravel(eps)[0])))
+    width = channel_counts(path, [x for _, x, _ in found], tts)
+    for k, (div, x, eps) in enumerate(found):
+        scale, bias = f"inorm_{k}_scale", f"inorm_{k}_bias"
+        g.initializer.append(numpy_helper.from_array(np.ones(width[x], np.float32), scale))
+        g.initializer.append(numpy_helper.from_array(np.zeros(width[x], np.float32), bias))
+        inorm = helper.make_node(
+            "InstanceNormalization",
+            [x, scale, bias],
+            [div.output[0]],
+            name=div.name + "_as_inorm",
+            epsilon=eps,
+        )
+        g.node.insert(list(g.node).index(div), inorm)
+        g.node.remove(div)
+    squares = 0
+    for n in list(g.node):
+        e = constant(m, n.input[1]) if n.op_type == "Pow" else None
+        if e is not None and np.ravel(e).size == 1 and float(np.ravel(e)[0]) == 2.0:
+            mul = helper.make_node(
+                "Mul", [n.input[0], n.input[0]], list(n.output), name=n.name + "_as_mul"
+            )
+            g.node.insert(list(g.node).index(n), mul)
+            g.node.remove(n)
+            squares += 1
+    # What only the replaced nodes read goes too.
+    outputs = {o.name for o in g.output}
+    while True:
+        read = {i for n in g.node for i in n.input} | outputs
+        dead = [n for n in g.node if not any(o in read for o in n.output)]
+        if not dead:
+            break
+        for n in dead:
+            g.node.remove(n)
+    return len(found), squares
+
+
+def last_stage_in_fp16(m: onnx.ModelProto) -> int:
+    """The last stage's full-precision convolutions in fp16, a cast on each side."""
+    g = m.graph
+    inits = {t.name: t for t in g.initializer}
+    k = 0
+    for conv in list(g.node):
+        if conv.op_type != "Conv" or not any(s in conv.name for s in KEPT[:3]):
+            continue
+        if conv.input[1] not in inits:
+            continue
+        for j in (1, 2):
+            if j < len(conv.input) and conv.input[j] in inits:
+                t = inits[conv.input[j]]
+                half = numpy_helper.to_array(t).astype(np.float16)
+                g.initializer.append(numpy_helper.from_array(half, t.name + "_fp16"))
+                conv.input[j] = t.name + "_fp16"
+        x16, y16 = f"half_{k}_in", f"half_{k}_out"
+        to16 = helper.make_node(
+            "Cast", [conv.input[0]], [x16], name=f"half_{k}_cast_in", to=TensorProto.FLOAT16
+        )
+        to32 = helper.make_node(
+            "Cast", [y16], [conv.output[0]], name=f"half_{k}_cast_out", to=TensorProto.FLOAT
+        )
+        conv.input[0], conv.output[0] = x16, y16
+        at = list(g.node).index(conv)
+        g.node.insert(at, to16)
+        g.node.insert(at + 2, to32)
+        k += 1
+    return k
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", type=Path, default=MODELS / "kokoro-v1.0-q8.onnx")
@@ -168,9 +299,10 @@ def main() -> None:
         and n.name.startswith("/decoder/")
         and not any(k in n.name for k in KEPT)
     ]
+    quantized = args.out.with_suffix(".quantized.onnx")
     quantize_static(
         str(FP32),
-        str(args.out),
+        str(quantized),
         Reader(),
         quant_format=QuantFormat.QDQ,
         op_types_to_quantize=["Conv"],
@@ -181,10 +313,18 @@ def main() -> None:
         calibrate_method=CalibrationMethod.MinMax,
         extra_options={"CalibMovingAverage": True},
     )
+    graph = onnx.load(str(quantized))
+    norms, squares = fuse_norms(graph, quantized, tts)
+    halves = last_stage_in_fp16(graph)
+    onnx.save(graph, str(args.out))
+    quantized.unlink()
     high, mel = check(args.out, tts)
     ok = high <= MAX_HIGH_DB and mel <= MAX_MEL_DB
     size = args.out.stat().st_size // 1_000_000
-    print(f"{len(convs)} convolutions in 8 bits -> {args.out} ({size} MB)")
+    print(
+        f"{len(convs)} convolutions in 8 bits, {halves} in fp16, {norms} instance norms fused, "
+        f"{squares} squares as products -> {args.out} ({size} MB)"
+    )
     print(
         f"against fp32: 10-12 kHz {high:+.1f} dB (at most {MAX_HIGH_DB}), "
         f"log-mel {mel:.2f} dB (at most {MAX_MEL_DB})"
