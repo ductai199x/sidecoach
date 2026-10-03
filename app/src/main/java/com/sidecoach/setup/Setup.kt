@@ -37,14 +37,16 @@ typealias Progress = (done: Long, total: Long?) -> Unit
 const val USER_AGENT = "sidecoach-setup"
 
 /**
- * The voice's files, name -> (url, bytes): `setup.KOKORO_FILES`, the desktop's own -- the
- * full-precision model, which on the phone's ARM cores is twice the int8 one's speed and the
- * desktop's exact voice (Tai, 2026-09-23).
+ * The voice's files, name -> (url, bytes): the phone's faster Kokoro (the desktop's
+ * `tools/kokoro_fast.py`: 8-bit and fp16 where it does not change the sound, 0.31 of real time on
+ * the Pixel where the full-precision model runs 0.70; Tai could not tell them apart blind,
+ * 2026-10-03), hosted on Tai's Hugging Face, and kokoro-onnx's voices. A phone that has the
+ * full-precision model from before keeps it as the voice's fallback ([KokoroTts.FAST_FILE]).
  */
 val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
-    "kokoro-v1.0.onnx" to (
-        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" to
-            325_532_387L
+    "kokoro-v1.0-q8.onnx" to (
+        "https://huggingface.co/ductai199x/sidecoach-kokoro-fast/resolve/main/kokoro-v1.0-q8.onnx" to
+            200_252_515L
         ),
     "voices-v1.0.bin" to (
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" to
