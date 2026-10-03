@@ -425,7 +425,15 @@ class Reconciler(
 
     private data class Seen(val placed: Board, val highlighted: Set<Int>, val key: String, val ts: Double)
 
-    var briefFrames: Int = 2
+    /**
+     * One clean read: the phone, its voice and engine busy, read the next puzzle's first board,
+     * up a third of a second, once (Tai's dump 20261003-171356). What keeps a stray read from
+     * standing in is that exactly one legal move must join it to the board adopted.
+     */
+    var briefFrames: Int = 1
+
+    /** How many distinct boards held that long are kept: the first board, and frames past it. */
+    var briefKept: Int = 4
 
     /** How long before the adopted board the brief one may have been seen and still be its start. */
     var briefRecentS: Double = 2.0
@@ -1404,7 +1412,7 @@ class Reconciler(
             resyncSeen = if (resyncSeen.isNotEmpty() && resyncSeen.last().key == placement) {
                 resyncSeen.dropLast(1) + seen
             } else {
-                resyncSeen.takeLast(1) + seen
+                resyncSeen.takeLast(briefKept - 1) + seen
             }
         }
         val held = frames >= resyncHoldFrames ||
@@ -1459,31 +1467,44 @@ class Reconciler(
      * before this one began, and be one move away. `_opening_move`.
      */
     private fun openingMove(after: Board, placement: String, since: Double): Pair<Board, Move>? {
-        val prior = resyncSeen.lastOrNull { it.key != placement } ?: return null
-        if (since - prior.ts > briefRecentS) return null
-        return oneMove(prior.placed, prior.highlighted, after.boardFen())
+        // The newest of the boards kept that one move joins: a frame caught mid-slide, repeated by
+        // the still ticks, was kept, and as the only earlier board it stood in for the first one.
+        for (prior in resyncSeen.asReversed()) {
+            if (prior.key == placement || since - prior.ts > briefRecentS) continue
+            oneMove(prior.placed, prior.highlighted, after.boardFen())?.let { return it }
+        }
+        return null
     }
 
     /**
      * The position [placed] shows and the one legal move from it to the placement [target],
      * when exactly one move by either side gets there. `_one_move`.
      */
-    private fun oneMove(placed: Board, highlighted: Set<Int>, target: String): Pair<Board, Move>? {
-        val adopted = adoptPlacement(placed, bottom.color, highlighted) ?: return null
-        val found = mutableListOf<Pair<Board, Move>>()
-        for (turn in listOf(WHITE, BLACK)) {
-            val start = adopted.first.copy(withStack = false)
-            if (!turnValid(start, turn)) continue
-            start.epSquare = null
-            for (move in start.legalMoves()) {
-                start.push(move)
-                val hit = start.boardFen() == target
-                start.pop()
-                if (hit) found.add(start.copy(withStack = false) to move)
+    private fun oneMove(placed: Board, highlighted: Set<Int>, target: String): Pair<Board, Move>? =
+        oneMoveBetween(placed, highlighted, target, bottom.color)
+
+    companion object {
+        /**
+         * [oneMove] for any caller (`Reconciler.one_move`): the pipeline asks it which of the boards
+         * it read before is the one a move joins to the board it adopts.
+         */
+        fun oneMoveBetween(placed: Board, highlighted: Set<Int>, target: String, prefer: Boolean): Pair<Board, Move>? {
+            val adopted = adoptPlacement(placed, prefer, highlighted) ?: return null
+            val found = mutableListOf<Pair<Board, Move>>()
+            for (turn in listOf(WHITE, BLACK)) {
+                val start = adopted.first.copy(withStack = false)
+                if (!turnValid(start, turn)) continue
+                start.epSquare = null
+                for (move in start.legalMoves()) {
+                    start.push(move)
+                    val hit = start.boardFen() == target
+                    start.pop()
+                    if (hit) found.add(start.copy(withStack = false) to move)
+                }
             }
+            // Exactly one move, or the jump is not read as one.
+            return found.singleOrNull()
         }
-        // Exactly one move, or the jump is not read as one.
-        return found.singleOrNull()
     }
 
     /**

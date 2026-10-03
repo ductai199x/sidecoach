@@ -113,6 +113,9 @@ class GamePipeline(
          * site's opening move between them (`COLD_BEFORE_S`). */
         const val COLD_BEFORE_S = 2.0
 
+        /** The distinct boards the flip check keeps: the first board, and reads past it mid-slide. */
+        const val FLIP_BOARDS_KEPT = 4
+
         /**
          * A board that has gone this long without being read, with no game followed on it, is
          * explained to the person once ([BoardUnread]) rather than left in silence.
@@ -195,7 +198,7 @@ class GamePipeline(
          * last seen: the start an opening move may have been played from ([autoColdStart]).
          */
         var coldCandidateRead: ColdRead? = null
-        var coldBefore: Pair<ColdRead, Double>? = null
+        var coldBoards: List<Pair<ColdRead, Double>> = emptyList()
 
         /**
          * The last cold read and what it was read from (the lock and the side told), so pixels
@@ -216,11 +219,10 @@ class GamePipeline(
         var flipSeen: Triple<Side, Double, View?>? = null
 
         /**
-         * The read the flip check last saw before the one it holds, and when: a new puzzle's
+         * The last few distinct boards the flip check read, and when: among them a new puzzle's
          * brief first board, the start its opening move is played from ([flipIfTurned]).
          */
-        var flipRead: ColdRead? = null
-        var flipBefore: Pair<ColdRead, Double>? = null
+        var flipBoards: List<Pair<ColdRead, Double>> = emptyList()
         var screenState: ScreenState = ScreenState.UNKNOWN
         var dialogSince: Double? = null
         var covered = false
@@ -707,8 +709,7 @@ class GamePipeline(
         val current = model
         if (rec == null || current == null || rec.unexplainedFor < 1) {
             game.flipSeen = null
-            game.flipRead = null
-            game.flipBefore = null
+            game.flipBoards = emptyList()
             return mutableListOf()
         }
         val seen = game.flipSeen
@@ -728,34 +729,47 @@ class GamePipeline(
         // first move missed whenever the next puzzle was the other side's).
         val read = reread(labelled) ?: coldRead(frame, geometry, labelled)
         val placed = read?.let { view(it) }
+        val last = game.flipBoards.lastOrNull()?.let { view(it.first) }
+        if (read != null && last != placed) {
+            // Kept as a board shown: a new puzzle's first board is the start its opening move is
+            // played from. A read of nothing -- a piece caught sliding -- keeps what was read before
+            // it, and the few last boards are kept, so one read mid-slide as a board without the
+            // piece never stands in for the first board (0.1.70, Tai's dump 20261003-171151).
+            game.flipBoards = game.flipBoards.takeLast(FLIP_BOARDS_KEPT - 1) + (read to ts)
+        }
         if (seen == null || seen.first != labelled) {
             game.flipSeen = Triple(labelled, ts, null)
-            game.flipRead = read
             return mutableListOf()
         }
         if (placed == null || placed != seen.third) {
-            val earlier = game.flipRead
-            if (placed != null && earlier != null && view(earlier) != placed) {
-                // Another board read a moment ago: a new puzzle's first board, before the site's
-                // opening move. One legal move must join it to the board adopted
-                // ([Reconciler.startFrom]), or it is let go.
-                game.flipBefore = earlier to seen.second
-            }
             game.flipSeen = Triple(labelled, ts, placed)
-            game.flipRead = read
             return mutableListOf()
         }
         game.flipSeen = null
-        game.flipRead = null
-        var before: Pair<Board, Set<Int>>? = null
-        val prior = game.flipBefore
-        if (prior != null && ts - prior.second <= COLD_BEFORE_S && prior.first.bottom == labelled) {
-            before = prior.first.placement to highlightedSquares(bySquare(prior.first.readings, prior.first.bottom))
-        }
-        game.flipBefore = null
-        val events = reorientRead(read!!, ts, before = before)
+        val before = startAmong(game.flipBoards, read!!, ts)
+        game.flipBoards = emptyList()
+        val events = reorientRead(read, ts, before = before)
         if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
         return events
+    }
+
+    /**
+     * Of [boards], read before [read], the newest that one legal move joins to it, seen at most
+     * [COLD_BEFORE_S] ago the same way up: the start a new puzzle's opening move is played from
+     * ([Reconciler.startFrom]), or null. The newest, not the last: a frame caught mid-slide, read
+     * as a board without the moving piece, came between (`_start_among`).
+     */
+    private fun startAmong(boards: List<Pair<ColdRead, Double>>, read: ColdRead, ts: Double): Pair<Board, Set<Int>>? {
+        val target = read.placement.boardFen()
+        for ((prior, seenAt) in boards.asReversed()) {
+            if (ts - seenAt > COLD_BEFORE_S || prior.bottom != read.bottom) continue
+            if (prior.placement.boardFen() == target) continue
+            val highlighted = highlightedSquares(bySquare(prior.readings, prior.bottom))
+            if (Reconciler.oneMoveBetween(prior.placement, highlighted, target, read.bottom.color) != null) {
+                return prior.placement to highlighted
+            }
+        }
+        return null
     }
 
     /**
@@ -1326,20 +1340,17 @@ class GamePipeline(
             val behind = game.coldCandidateRead
             if (candidate != null && behind != null) {
                 // Another board read moments ago: a new puzzle's first board, perhaps, before the
-                // site's opening move ([Reconciler.startFrom]'s `before`).
-                game.coldBefore = behind to candidate.third
+                // site's opening move ([Reconciler.startFrom]'s `before`); the last few kept
+                // ([startAmong]).
+                game.coldBoards = game.coldBoards.takeLast(FLIP_BOARDS_KEPT - 1) + (behind to candidate.third)
             }
             Triple(view, 1, ts)
         }
         game.coldCandidateRead = read
         if (game.coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
         game.coldCandidate = null
-        var before: Pair<Board, Set<Int>>? = null
-        val prior = game.coldBefore
-        if (prior != null && ts - prior.second <= COLD_BEFORE_S && prior.first.bottom == read.bottom) {
-            before = prior.first.placement to highlightedSquares(bySquare(prior.first.readings, prior.first.bottom))
-        }
-        game.coldBefore = null
+        val before = startAmong(game.coldBoards, read, ts)
+        game.coldBoards = emptyList()
         game.coldCandidateRead = null
         val events = adoptCold(read, ts, before)
         if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
