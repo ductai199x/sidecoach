@@ -343,8 +343,14 @@ class PanelEngineTest {
         val root = File(app.cacheDir, "dump-test").apply { deleteRecursively() }
         val held = PanelEngine.frames.size
         val records = PanelEngine.all().size
-        val folder = File(PanelEngine.dump(root))
+        val themes = File(root, "themes-in").apply { mkdirs() }
+        File(themes, "theme-aa-bb.bin").writeBytes(byteArrayOf(1, 2, 3))
+        File(themes, "theme-aa-bb.bin.part").writeBytes(byteArrayOf(9))
+        val folder = File(PanelEngine.dump(root, themes))
         try {
+            // The learned sets travel with the frames; a half-written one does not.
+            assertEquals(listOf("theme-aa-bb.bin"), File(folder, "themes").list()!!.toList())
+            assertEquals(3L, File(folder, "themes/theme-aa-bb.bin").length())
             val jpegs = folder.listFiles { f -> f.name.endsWith(".jpg") }!!.map { it.name }
             assertEquals(held, jpegs.size)
             assertTrue(jpegs.toString(), "0000000012.346.jpg" in jpegs)

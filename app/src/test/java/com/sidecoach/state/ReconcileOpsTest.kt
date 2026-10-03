@@ -122,6 +122,9 @@ class ReconcileOpsTest {
                 Board(op.getString("fen")),
                 if (op.isNull("ts")) null else op.getDouble("ts"),
                 ints(op.getJSONArray("highlighted")).toSet(),
+                op.optJSONObject("before")?.let {
+                    Board(it.getString("fen")) to ints(it.getJSONArray("highlighted")).toSet()
+                },
             )
             "turn_from_clock" -> rec.turnFromClock(op.getBoolean("colour"))
             "end" -> rec.end(op.getString("result"), op.getString("reason"))

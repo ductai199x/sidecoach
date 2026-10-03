@@ -109,7 +109,7 @@ class PanelApi(
 
             // The frames the engine keeps in memory, and its log, written out: the one way
             // anything about a live session reaches the disk in the app.
-            path == "/api/dump" -> ok(JSONObject().put("ok", true).put("path", PanelEngine.dump(dumps)))
+            path == "/api/dump" -> ok(JSONObject().put("ok", true).put("path", PanelEngine.dump(dumps, File(files, "themes"))))
 
             // The panel's own board cannot be on the phone's screen behind the page; the
             // app simply does not read while its own window is in front.

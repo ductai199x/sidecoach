@@ -962,11 +962,22 @@ object PanelEngine {
      * Write the frames held in memory and the log to `<dumps>/<stamp>/`: the only way a
      * session reaches the disk. Returns the folder. `panel.dump`; the phone's folder is in the
      * app's own files on shared storage, where `adb pull` reaches it.
+     *
+     * [themes]: the learned board-and-piece sets, copied in beside the frames. They live in the
+     * app's private files, which nothing outside the app can read, and a board the phone misread
+     * (Tai's puzzles, 2026-10-03: a knight read as a bishop, a puzzle never adopted) could only
+     * be replayed with the desktop's sets, which read it right. The desktop's are in its data
+     * folder already.
      */
-    fun dump(dumps: File): String {
+    fun dump(dumps: File, themes: File? = null): String {
         val folder = File(dumps, SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()))
         folder.mkdirs()
         val n = frames.write(folder)
+        val sets = themes?.listFiles { f -> f.name.startsWith("theme-") && f.name.endsWith(".bin") }.orEmpty()
+        if (sets.isNotEmpty()) {
+            val into = File(folder, "themes").apply { mkdirs() }
+            for (set in sets) set.copyTo(File(into, set.name), overwrite = true)
+        }
         File(folder, "debug.jsonl").bufferedWriter(Charsets.UTF_8).use { out ->
             for (record in all()) out.write(record.json().toString() + "\n")
         }

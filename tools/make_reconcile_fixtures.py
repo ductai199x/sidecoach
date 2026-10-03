@@ -362,6 +362,7 @@ RECORDED: dict[str, list[str] | None] = {
         "test_a_flip_by_mistake_teaches_no_labels",
         "test_the_next_puzzle_from_the_other_side_is_turned_round_at_once",
         "test_a_new_position_on_a_slow_stream_is_taken_after_a_moment_not_ten_frames",
+        "test_a_puzzle_read_cold_keeps_the_opening_move_played_before_it_was_adopted",
     ],
     "tests.test_slides": ["test_a_move_seen_sliding_across_squares_is_one_move"],
     # A few seeds of the stress sweep (`RECORDED_SEEDS`): the reconciler's rules no other
@@ -628,6 +629,9 @@ CALLS = {
             "fen": a["placement"].fen(),
             "ts": a["ts"],
             "highlighted": sorted(a["highlighted"]),
+            "before": None
+            if a["before"] is None
+            else {"fen": a["before"][0].fen(), "highlighted": sorted(a["before"][1])},
         },
         _events,
     ),
@@ -754,6 +758,11 @@ def record_tests() -> dict:
         module = importlib.import_module(module_name)
         if hasattr(module, "Reconciler"):
             module.Reconciler = _Recording
+        if hasattr(module, "_opened") and hasattr(module, "_overlay_opening"):
+            # The overlay cases share one opening by copying its pipeline, and a copied
+            # reconciler was never built where a fixture could see it: each case reads
+            # its own opening here, as the copy is proven to (test_pipeline).
+            module._opened = lambda style, theme, m=module: m._overlay_opening(style, theme)
         short = module_name.split(".")[-1]
         kept = KEPT.get(module_name, {})
         names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))

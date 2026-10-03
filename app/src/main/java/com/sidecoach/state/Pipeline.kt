@@ -109,6 +109,10 @@ class GamePipeline(
         const val COLD_START_HOLD = 3
         const val COLD_START_EXPIRE_S = 3.0
 
+        /** How recent a board read just before the adopted one must be to be its start, the
+         * site's opening move between them (`COLD_BEFORE_S`). */
+        const val COLD_BEFORE_S = 2.0
+
         /**
          * A board that has gone this long without being read, with no game followed on it, is
          * explained to the person once ([BoardUnread]) rather than left in silence.
@@ -179,6 +183,13 @@ class GamePipeline(
         var unreadChange = false
         var coldTried: Double? = null
         var coldCandidate: Triple<View, Int, Double>? = null
+
+        /**
+         * The read behind the candidate, and the read of the board before it with when it was
+         * last seen: the start an opening move may have been played from ([autoColdStart]).
+         */
+        var coldCandidateRead: ColdRead? = null
+        var coldBefore: Pair<ColdRead, Double>? = null
 
         /**
          * The last cold read and what it was read from (the lock and the side told), so pixels
@@ -1244,11 +1255,25 @@ class GamePipeline(
         ) {
             Triple(view, candidate.second + 1, ts)
         } else {
+            val behind = game.coldCandidateRead
+            if (candidate != null && behind != null) {
+                // Another board read moments ago: a new puzzle's first board, perhaps, before the
+                // site's opening move ([Reconciler.startFrom]'s `before`).
+                game.coldBefore = behind to candidate.third
+            }
             Triple(view, 1, ts)
         }
+        game.coldCandidateRead = read
         if (game.coldCandidate!!.second < COLD_START_HOLD) return mutableListOf()
         game.coldCandidate = null
-        val events = adoptCold(read, ts)
+        var before: Pair<Board, Set<Int>>? = null
+        val prior = game.coldBefore
+        if (prior != null && ts - prior.second <= COLD_BEFORE_S && prior.first.bottom == read.bottom) {
+            before = prior.first.placement to highlightedSquares(bySquare(prior.first.readings, prior.first.bottom))
+        }
+        game.coldBefore = null
+        game.coldCandidateRead = null
+        val events = adoptCold(read, ts, before)
         if (events.isNotEmpty()) learnLabels(frame, geometry, told = false)
         return events
     }
@@ -1268,12 +1293,12 @@ class GamePipeline(
     }
 
     /** `internal` for the test that a board turned round forgets the clock. */
-    internal fun adoptCold(read: ColdRead, ts: Double?): MutableList<Event> {
+    internal fun adoptCold(read: ColdRead, ts: Double?, before: Pair<Board, Set<Int>>? = null): MutableList<Event> {
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
         // The site's last-move highlight, for what a cold read cannot know: a pawn that has
         // just advanced two squares, and whose move it is ([lastMoveSeen]).
         val highlighted = highlightedSquares(bySquare(read.readings, read.bottom))
-        val events = reconciler.startFrom(read.placement, ts, highlighted)
+        val events = reconciler.startFrom(read.placement, ts, highlighted, before)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
         if (read.bottom != bottom) {

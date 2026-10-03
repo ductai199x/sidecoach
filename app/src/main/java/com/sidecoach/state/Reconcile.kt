@@ -85,6 +85,9 @@ private data class QueueWay(
 /** What a pending explanation is: the same tuple python keys `_pending` with. */
 private data class PendingKey(val kind: String, val extra: Any?, val moves: List<Move>)
 
+/** `chess.piece_name`, by piece type, for the misread correction's reason. */
+private val MISREAD_NAMES = arrayOf("", "pawn", "knight", "bishop", "rook", "queen", "king")
+
 private val STORY_KEYS = setOf("moves", "moves-cautious")
 
 /** The fields a stale count is keyed by; a changed reading resets it. */
@@ -404,6 +407,34 @@ class Reconciler(
     private var turnUnknownFlag = false
     /** The placement the resync would adopt, how many frames have shown it, and since when. */
     private var resyncCandidate: Triple<String, Int, Double>? = null
+
+    /**
+     * The last two distinct placements a resync held for [briefFrames] clean frames: the
+     * placement, its highlighted squares, its view key, and when it was last seen. A new
+     * puzzle's first board stands for well under a second before the site plays the opening
+     * move, too briefly to be adopted; the board after the move was, and the move was lost
+     * (Tai's puzzles, 2026-10-03: "the coach misses the first move ... 75-80% of the time").
+     * Adopted, the board after is played from the brief one when one legal move joins them.
+     * `_resync_seen`.
+     */
+    private var resyncSeen: List<Seen> = emptyList()
+
+    private data class Seen(val placed: Board, val highlighted: Set<Int>, val key: String, val ts: Double)
+
+    var briefFrames: Int = 2
+
+    /** How long before the adopted board the brief one may have been seen and still be its start. */
+    var briefRecentS: Double = 2.0
+
+    /**
+     * The squares of a position read from the screen whose pieces have not moved since: their
+     * kinds rest on that one read. A knight on a highlighted square read as a bishop made its
+     * first move illegal, and the game's next three moves went unread until a resync (Tai's
+     * puzzle on the Pixel, 2026-10-03); [explainMisread] corrects such a piece by its move.
+     * `_read_squares`.
+     */
+    private var readSquares: Set<Int> = emptySet()
+    var misreadMaxCells: Int = 8
     private var unseen = 0
 
     /**
@@ -557,6 +588,9 @@ class Reconciler(
     private fun setPosition(board: Board) {
         this.board = board
         baseFenValue = board.fen()
+        // The start position is known, not read; any other is the screen's word for it.
+        val read = board.boardFen() != Board().boardFen()
+        readSquares = if (read) board.pieceMap().keys.toSet() else emptySet()
         finishedFlag = false
         resultValue = null
         lastCommitTs = tsValue
@@ -913,6 +947,7 @@ class Reconciler(
             return events
         }
         explainPaths(obs, diff, obs)?.let { events.addAll(it); return events }
+        explainMisread(obs, diff)?.let { events.addAll(it); return events }
 
         val staleCells = if (viewing == null) {
             diff.filter { stale.getValue(it).second > staleAfter }.toSet()
@@ -1357,6 +1392,15 @@ class Reconciler(
             Triple(placement, 1, tsValue)
         }
         val (_, frames, since) = resyncCandidate!!
+        if (frames >= briefFrames) {
+            // Remembered as a board shown: the start a move may have been played from.
+            val seen = Seen(loosePlacement(obs), highlightedSquares(obs), placement, tsValue)
+            resyncSeen = if (resyncSeen.isNotEmpty() && resyncSeen.last().key == placement) {
+                resyncSeen.dropLast(1) + seen
+            } else {
+                resyncSeen.takeLast(1) + seen
+            }
+        }
         val held = frames >= resyncHoldFrames ||
             (diff.size >= resyncJumpCells && frames >= resyncMinFrames && tsValue - since >= resyncHoldS)
         if (!held) return mutableListOf()
@@ -1368,9 +1412,24 @@ class Reconciler(
         }
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
+        val first = openingMove(adoptedBoard, placement, since)
+        resyncSeen = emptyList()
         clearStory()
         viewing = null
         resyncCandidate = null
+        if (first != null) {
+            // The brief board before it is the start, and the move between them is played.
+            val (start, move) = first
+            turnUnknownFlag = false
+            val events: MutableList<Event> = if (finishedFlag) {
+                (mutableListOf<Event>(begin(start, "position")) + positioned()).toMutableList()
+            } else {
+                setPosition(start)
+                resynced("position adopted after ${diff.size} unexplained cells; its first move seen")
+            }
+            events.addAll(commit(move))
+            return events
+        }
         if (finishedFlag) {
             // The finished game is over for good; a position that appears after it is another
             // game, seen from the middle -- or a puzzle, or an analysis board. Its start is all
@@ -1385,6 +1444,40 @@ class Reconciler(
         var reason = "position adopted after ${diff.size} unexplained cells"
         if (turnUnknownFlag) reason += "; side to move pending"
         return resynced(reason)
+    }
+
+    /**
+     * The board shown just before the one being adopted, and the one legal move from it to this
+     * one -- a new puzzle's first board and the site's opening move on it -- or null. The
+     * earlier board must have held [briefFrames] clean frames, ended at most [briefRecentS]
+     * before this one began, and be one move away. `_opening_move`.
+     */
+    private fun openingMove(after: Board, placement: String, since: Double): Pair<Board, Move>? {
+        val prior = resyncSeen.lastOrNull { it.key != placement } ?: return null
+        if (since - prior.ts > briefRecentS) return null
+        return oneMove(prior.placed, prior.highlighted, after.boardFen())
+    }
+
+    /**
+     * The position [placed] shows and the one legal move from it to the placement [target],
+     * when exactly one move by either side gets there. `_one_move`.
+     */
+    private fun oneMove(placed: Board, highlighted: Set<Int>, target: String): Pair<Board, Move>? {
+        val adopted = adoptPlacement(placed, bottom.color, highlighted) ?: return null
+        val found = mutableListOf<Pair<Board, Move>>()
+        for (turn in listOf(WHITE, BLACK)) {
+            val start = adopted.first.copy(withStack = false)
+            if (!turnValid(start, turn)) continue
+            start.epSquare = null
+            for (move in start.legalMoves()) {
+                start.push(move)
+                val hit = start.boardFen() == target
+                start.pop()
+                if (hit) found.add(start.copy(withStack = false) to move)
+            }
+        }
+        // Exactly one move, or the jump is not read as one.
+        return found.singleOrNull()
     }
 
     /**
@@ -1434,14 +1527,30 @@ class Reconciler(
      * Begin a game from an arbitrary observed position -- a puzzle or a mid-game board read
      * cold from the theme cache -- rather than from the start. `ts` is when the position was
      * read, so the first move's think time counts from it.
+     *
+     * [before]: a placement read moments earlier, and its highlighted squares. When exactly one
+     * legal move takes it to this one -- a new puzzle's first board and the site's opening move,
+     * played before the read could confirm the first -- the game begins from it and the move is
+     * played ([oneMove]).
      */
     fun startFrom(
         placement: Board,
         ts: Double? = null,
         highlighted: Set<Int> = emptySet(),
+        before: Pair<Board, Set<Int>>? = null,
     ): MutableList<Event> {
         val adopted = adoptPlacement(placement, bottom.color, highlighted) ?: return mutableListOf()
         if (ts != null) tsValue = ts
+        if (before != null) {
+            val first = oneMove(before.first, before.second, placement.boardFen())
+            if (first != null) {
+                val (start, move) = first
+                turnUnknownFlag = false
+                val events = mutableListOf<Event>(begin(start, "position"))
+                events.addAll(commit(move))
+                return events
+            }
+        }
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
         return mutableListOf(begin(adoptedBoard, "position"))
@@ -1590,6 +1699,57 @@ class Reconciler(
             return settle(key, fullObs, commitMoves(paths[0]))
         }
         return null
+    }
+
+    /**
+     * A move that fits only if one piece of a position read from the screen, never moved since,
+     * is of another kind: the piece has left its square, and the one story found with it of
+     * that kind lands it where the frame reads that kind. The position is adopted again with
+     * the piece corrected, and the story is played from it. Without this the game stood on a
+     * piece that could not make the move it made, and every move after it went unread until
+     * the board was adopted afresh (Tai's puzzle, 2026-10-03: a knight on h4 read as a bishop;
+     * Nxg6, hxg6 and Bf3 lost). `_explain_misread`.
+     */
+    private fun explainMisread(obs: Observation, diff: Set<Int>): MutableList<Event>? {
+        if (finishedFlag || viewing != null || turnUnknownFlag) return null
+        if (diff.size > misreadMaxCells) return null // a new board, not a move or two: the resync's to adopt
+        val found = mutableListOf<Triple<Int, Board, List<Move>>>()
+        for (square in diff.intersect(readSquares)) {
+            val piece = board.pieceAt(square) ?: continue
+            if (piece.pieceType == KING) continue
+            val reading = obs[square] ?: continue
+            if (reading.kind != Kind.EMPTY) continue
+            for (kind in PAWN..QUEEN) {
+                if (kind == piece.pieceType) continue
+                if (kind == PAWN && squareRank(square) in setOf(0, 7)) continue
+                val trial = board.copy(withStack = false)
+                trial.setPieceAt(square, Piece(kind, piece.colour))
+                if (!turnValid(trial, trial.turn)) continue
+                val stories = singleExplanations(trial, obs, diff).ifEmpty { pathExplanations(obs, diff, trial) }
+                for (story in stories) found.add(Triple(square, trial, story))
+            }
+        }
+        if (found.size != 1) return null
+        val (square, trial, story) = found[0]
+        if (story.none { it.from == square }) return null
+        if (!highlightOk(obs, story, trial)) return null
+        val commit: () -> MutableList<Event> = {
+            val was = board.pieceAt(square)!!
+            val now = trial.pieceAt(square)!!
+            val read = readSquares - square
+            val since = lastCommitTs
+            setPosition(trial)
+            // Still the same game: the pieces that had moved stay known, and the move's think
+            // time counts from the last move, not from the correction.
+            readSquares = read
+            lastCommitTs = since
+            val reason = "the ${MISREAD_NAMES[was.pieceType]} read on ${squareName(square)} was a " +
+                MISREAD_NAMES[now.pieceType]
+            val events = resynced(reason)
+            events.addAll(commitMoves(story)())
+            events
+        }
+        return settle(PendingKey("misread", square, story), obs, commit)
     }
 
     /**
@@ -1930,7 +2090,7 @@ class Reconciler(
         pendingAge = 0
         val needed = settleFrames +
             (if (key.moves.size > 1) 1 else 0) +
-            (if (key.kind == "moves-cautious") 1 else 0)
+            (if (key.kind == "moves-cautious" || key.kind == "misread") 1 else 0)
         if (pending!!.second < needed) return mutableListOf()
         val events = commit()
         clearStory()
@@ -2041,6 +2201,7 @@ class Reconciler(
         // `int(round(...))`: Python rounds half to even.
         if (since != null && tsValue > since) thinkMs = pyRound((tsValue - since) * 1000.0)
         lastCommitTs = tsValue
+        readSquares = readSquares - setOf(move.from, move.to)
         board.push(move)
         val ply = board.moveStack.size
         val events = mutableListOf<Event>(
