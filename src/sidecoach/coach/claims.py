@@ -452,13 +452,16 @@ def _verify(
         case ClaimKind.PLAN:
             return (
                 "unclear",
-                "That is a plan rather than something I can check on the board; what do you "
-                "expect it to achieve, and which move starts it?",
+                # Never "what do you expect it to achieve?": a question about what they
+                # thought reads as a challenge (Tai, 2026-10-02). An offer to look instead.
+                "That is a plan rather than something I can check on the board -- name the "
+                "move that starts it and I will look at it.",
             )
         case ClaimKind.OTHER:
             return (
                 "unclear",
-                "I cannot check that against the board; what do you expect to happen, concretely?",
+                "I cannot check that one against the board -- name a move, a piece or a square "
+                "and I will look at it.",
             )
 
 
@@ -852,7 +855,7 @@ def _check_threatens(
         piece = board.piece_at(target)
         if piece is None:
             fallback = fallback or (
-                f"{chess.square_name(target)} is empty; what do you expect to happen there?"
+                f"{chess.square_name(target)} is empty, so there is nothing on it to take"
             )
             continue
         if piece.color == threatener:

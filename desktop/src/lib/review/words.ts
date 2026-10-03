@@ -73,9 +73,10 @@ export function tryWords(t: { san: string; label: string | null; only: boolean }
     return t.only ? `Well found! ${t.san} is the only move that works.` : `Well found! ${t.san} ${IS[label]}.`;
   }
   if (label === "excellent") return `Good find! ${t.san} is excellent, nearly the best.`;
-  if (label === "good") return `${t.san} is good, but there's better. Try again.`;
-  if (BAD.has(label)) return t.only ? `${t.san} ${IS[label]} — only one move worked there. Try again.` : `${t.san} ${IS[label]}. Try again.`;
-  return `${t.san}. Try again.`;
+  // An invitation to look again, never a verdict and an order (Tai, 2026-10-02).
+  if (label === "good") return `${t.san} is good, and there's something better. Have another look.`;
+  if (BAD.has(label)) return t.only ? `${t.san} ${IS[label]} — only one move works here. Have another look.` : `${t.san} ${IS[label]}. Have another look.`;
+  return `${t.san}. Have another look.`;
 }
 
 /** The eval as chess.com writes it, from White's side: +1.24, -0.3, M3, -M2, 1-0. */
@@ -156,7 +157,7 @@ export function verdict(s: GameSummary, result: string | null): string {
     case "smooth": return winner ? `${winner} took the lead and never let go.` : "One side led all the way, and it still ended level.";
     case "balanced": return winner ? `Close throughout, until ${winner} found the way through.` : "A balanced game from start to finish.";
     case "sudden": return winner ? `Level for most of the game, then ${winner} broke it open late.` : "Level for most of the game, and a late scare.";
-    case "giveaway": return winner ? `${loser} was winning and let it slip; ${winner} took it.` : "A winning position was thrown away.";
+    case "giveaway": return winner ? `${loser} was winning, and ${winner} turned it around.` : "A winning position slipped away.";
     case "wild": return "A wild game: the lead changed hands again and again.";
     case "intense": return "An intense game: the lead changed hands, then changed back.";
     case "sharp": return winner ? `A sharp game with big swings, and ${winner} kept the upper hand.` : "A sharp game with big swings.";

@@ -74,7 +74,11 @@ CAPTION_SETTINGS = (
     "captions_opacity",
     "captions_text_size",
 )
-CAPTION_PREVIEWED = frozenset(f"voice.{n}" for n in CAPTION_SETTINGS if n != "captions_keep")
+# Their look: a change to it shows a sample line. Turning them on shows the box itself, at
+# once and touchable (Tai, 2026-10-02: the CC button brought up an untouchable sample first).
+CAPTION_PREVIEWED = frozenset(
+    f"voice.{n}" for n in CAPTION_SETTINGS if n not in ("captions", "captions_keep")
+)
 # The words the captions' window can still catch up on, at a poll every quarter second.
 CAPTIONS_KEPT = 20
 
@@ -82,8 +86,8 @@ CAPTIONS_KEPT = 20
 def caption_settings(settings: Settings, *, preview: int) -> dict[str, Any]:
     """The captions' settings as their window reads them, and `preview`: when their look last
     changed (ms since the epoch; 0, never), when the window shows a sample line (the phone's
-    `preview`: Tai, 2026-09-23, "applies instantly on save"). A time, not a count: the window
-    is built when captions are turned on, after the change that turned them on."""
+    `preview`: Tai, 2026-09-23, "applies instantly on save"). A time, not a count: a window
+    built by the save that turned captions on and changed their look still sees it as new."""
     voice = settings.voice
     return {
         "on": voice.captions,

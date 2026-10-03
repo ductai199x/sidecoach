@@ -1100,10 +1100,12 @@ def checker_rules(text: str, item: dict, provider, reply: str = "") -> tuple[str
 
 
 # The checker's "false" that says it misread the claim rather than found the board against
-# it: a threatened move read as a target square ("h5 is empty; what do you expect to happen
-# there?" for "they threaten ...h5"), and a threat read as the wrong side's ("your rook on c6
+# it: a threatened move read as a target square ("h5 is empty, so there is nothing on it to
+# take" for "they threaten ...h5"), and a threat read as the wrong side's ("your rook on c6
 # is yours, not a target"). Not a contradiction: the vote stands (the pilot, 2026-09-25).
-_MISREAD = re.compile(r"is empty; what do you expect|, not a target\b", re.IGNORECASE)
+_MISREAD = re.compile(
+    r"is empty, so there is nothing on it to take|, not a target\b", re.IGNORECASE
+)
 # The claim kinds the coach's own draft check reads, when the claim says them as it reads
 # them ("the knight on e5 is hanging"): a claim it passes along the request's frames is
 # not faulted here -- the judge is never stricter than the coach on what the coach checks.

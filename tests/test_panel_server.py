@@ -100,7 +100,8 @@ def test_the_captions_switch_from_the_panel_follows_the_box(
     on = {"settings": {"voice": {"captions": True, "captions_keep": True}}, "secrets": {}}
     assert client.put("/api/settings", json=on).json()["ok"]
     first = captions()
-    assert first["on"] is True and first["keep"] is True and first["preview"], "a sample line"
+    # The box itself comes up, never a sample line first (Tai, 2026-10-02).
+    assert first["on"] is True and first["keep"] is True and first["preview"] == 0
     # Dismissed from the box: the captions' window sends the one change.
     off = {"settings": {"voice": {"captions": False}}, "secrets": {}}
     assert client.put("/api/settings", json=off).json()["ok"]

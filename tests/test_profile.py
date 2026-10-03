@@ -439,11 +439,12 @@ def test_a_cause_behind_two_mistakes_is_named_second_with_the_habit_that_fixes_i
 
     lines = review([missed(3, 0.2), missed(9, 0.1), missed(15, 0.3, causes.POSITIONAL)]).lines
     words, habit = causes.HABIT[causes.MISSED_THREAT]
-    assert lines[1].startswith(f"What you kept missing: {words}")
-    assert "2 of your 3 mistakes" in lines[1] and habit in lines[1]
+    # A skill to work on and a habit that helps, never a count of the mistakes (Tai,
+    # 2026-10-02).
+    assert lines[1] == f"One thing to work on: {words}. A habit that helps: {habit}."
     # One mistake of each kind is no pattern.
     lines = review([missed(3, 0.2), missed(15, 0.3, causes.POSITIONAL)]).lines
-    assert not any(line.startswith("What you kept missing") for line in lines)
+    assert not any(line.startswith("One thing to work on") for line in lines)
 
 
 def test_a_clean_game_says_so() -> None:
@@ -501,12 +502,14 @@ def test_insights_say_the_biggest_cost_in_the_areas_of_stats() -> None:
     ]
     cost = {"area": "missed.fork", "cost": 0.3, "games": 4, "moves": 5}
     lines = insights(rows, games=3, cost=cost)
-    assert lines[0] == "Your biggest cost over 4 games is forks you missed: 5 moves."
-    assert "You missed a fork 3 of the 6 times you had one." in lines
-    assert "The middlegame costs you most per move." in lines
+    assert lines[0] == (
+        "The thing to work on most over 4 games: finding forks, which came up in 5 moves."
+    )
+    assert "Worth practising: the fork. You found it 3 of the 6 times you had one." in lines
+    assert "The middlegame is the phase to work on most." in lines
     assert not any("expected score" in x or "looks like a" in x for x in lines)
     assert not any("missed opponent threat" in x for x in insights(rows, games=3, cost=cost))
-    assert not any("biggest cost" in x for x in insights(rows, games=3)), "no area, no line"
+    assert not any("work on most over" in x for x in insights(rows, games=3)), "no area, no line"
 
 
 def test_a_mistake_with_no_cause_is_not_counted_as_a_missed_chance_twice() -> None:
@@ -519,7 +522,9 @@ def test_a_mistake_with_no_cause_is_not_counted_as_a_missed_chance_twice() -> No
         CellRow(causes.MISSED_THREAT, "fork", "middlegame", 1, 0, 0.2, G3),
         CellRow(None, "fork", "middlegame", 3, 6, 0.0, G3),  # six chances, three missed
     ]
-    assert "You missed a fork 3 of the 6 times you had one." in insights(rows, games=3)
+    assert "Worth practising: the fork. You found it 3 of the 6 times you had one." in insights(
+        rows, games=3
+    )
 
 
 def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> None:
@@ -545,7 +550,7 @@ def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> 
     cost = biggest_cost(store)
     assert cost is not None and cost["area"] == first["area"] and cost["cost"] == first["cost"]
     assert profiler.snapshot().insights[0] == (
-        "Your biggest cost over 3 games is mistakes in the opening: 3 moves."
+        "The thing to work on most over 3 games: the opening, which came up in 3 moves."
     )
     # A game's facts change (a stronger review of one, a game more): the line follows.
     for key in "abc":
@@ -555,7 +560,7 @@ def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> 
             [_move(21, "white", chance="fork", found=False, label="miss", loss=0.9)],
         )
     assert profiler.snapshot().insights[0] == (
-        "Your biggest cost over 3 games is forks you missed: 3 moves."
+        "The thing to work on most over 3 games: finding forks, which came up in 3 moves."
     )
     # Made again at the same strength (rederive, the background's catch-up): the line follows
     # too -- keyed on the games and their strengths alone, it kept the stale cost (the audit of
@@ -567,7 +572,7 @@ def test_the_coachs_biggest_cost_is_the_first_of_work_on_this(tmp_path: Any) -> 
             [_move(3, "white", phase="opening", label="blunder", loss=0.9)],
         )
     assert profiler.snapshot().insights[0] == (
-        "Your biggest cost over 3 games is mistakes in the opening: 3 moves."
+        "The thing to work on most over 3 games: the opening, which came up in 3 moves."
     )
     store.close()
 
@@ -634,7 +639,7 @@ def test_a_tactic_walked_into_is_not_a_tactic_missed() -> None:
     fork = next(c for c in rows if c.cause is None and c.motif == "fork")
     assert (fork.errors, fork.chances, fork.games) == (3, 8, frozenset("abc"))
     lines = insights(rows, games=5)
-    assert "You missed a fork 3 of the 8 times you had one." in lines
+    assert "Worth practising: the fork. You found it 5 of the 8 times you had one." in lines
 
 
 # ---- the profiler ----------------------------------------------------------------------

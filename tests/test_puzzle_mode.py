@@ -81,7 +81,7 @@ def test_a_wrong_move_is_shown_and_taken_back_and_counts_as_a_miss() -> None:
     assert s.move("d4c2") == []
     st = s.state()
     assert st["wrong"] == "d4c2" and not st["your_move"] and st["misses"] == 1
-    assert "Not that one" in st["message"]
+    assert st["message"] == "Not quite. Take another look."
     assert s.move("d4e2") == [], "nothing moves while the wrong move is shown"
     assert st["legal"] == {}
     s.retract()

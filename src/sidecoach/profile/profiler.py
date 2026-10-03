@@ -619,7 +619,8 @@ class Profiler:
         if rated:
             motif, _, missed, seen = max(rated, key=lambda t: t[1])
             return motif, (
-                f"{motif_words(motif)}: {missed} of {seen} chances missed over your games"
+                # How often it was found, never a tally of misses (Tai, 2026-10-02).
+                f"{motif_words(motif)}: found {seen - missed} of {seen} times over your games"
             )
         for point in review.turning_points:
             if point.motif:

@@ -88,14 +88,20 @@ def insights(rows: Sequence[CellRow], games: int, cost: dict[str, Any] | None = 
     out: list[str] = []
     if cost is not None:
         name = AREA_NAMES.get(cost["area"], cost["area"])
+        # The area as a skill to work on (Tai, 2026-10-02), its moves as how often it came up.
         out.append(
-            f"Your biggest cost over {cost['games']} games is {name}: {cost['moves']} moves."
+            f"The thing to work on most over {cost['games']} games: {name}, which came up in "
+            f"{cost['moves']} moves."
         )
     # The motif missed most often, as a rate over the occasions it was on the board.
     rated = motif_rates(rows)
     if rated:
         motif, _, missed, seen = max(rated, key=lambda t: t[1])
-        out.append(f"You missed a {motif_words(motif)} {missed} of the {seen} times you had one.")
+        # A skill to practise, with how often it was found, never a tally of misses.
+        out.append(
+            f"Worth practising: the {motif_words(motif)}. You found it {seen - missed} of the "
+            f"{seen} times you had one."
+        )
     # The phase that costs most per move.
     phase_moves: dict[str, int] = defaultdict(int)
     phase_loss: dict[str, float] = defaultdict(float)
@@ -109,5 +115,5 @@ def insights(rows: Sequence[CellRow], games: int, cost: dict[str, Any] | None = 
     if len(busy) >= 2:
         worst = max(busy, key=lambda p: phase_loss[p] / phase_moves[p])
         if phase_loss[worst] > 0:
-            out.append(f"The {worst} costs you most per move.")
+            out.append(f"The {worst} is the phase to work on most.")
     return out

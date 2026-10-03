@@ -45,8 +45,12 @@ from tests.synth import synthetic_board  # noqa: E402
 
 LOCAL_MODEL = "huihui-qwen3.8-27b-abliterated@q5_k_xl"  # Tai's pick for local checks
 # The Blackburne Shilling Gambit, the player White: book moves, then 4.Nxe5? and 5.Nxf7??,
-# so the coach has both its quick words for a sound move and a model's lesson for a mistake.
-GAME = ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nd4", "Nxe5", "Qg5", "Nxf7", "Qxg2", "Rf1", "Qxe4+")
+# so the coach has both its quick words for a sound move and a model's lesson for a mistake;
+# it ends in the mate 7...Nf3#, so the coach also has the game's end to speak to.
+GAME = (
+    *("e4", "e5", "Nf3", "Nc6", "Bc4", "Nd4", "Nxe5", "Qg5", "Nxf7", "Qxg2"),
+    *("Rf1", "Qxe4+", "Be2", "Nf3#"),
+)
 FPS = 10.0
 # The coach's words on the player's move (`Trigger.POST_MOVE`, `POST_MISTAKE`).
 WORDS_ON_A_MOVE = frozenset({"post_move", "post_mistake"})
@@ -75,6 +79,8 @@ class Move:
 class Timeline:
     moves: dict[int, Move] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Every line the page was given, whole and in order (a reply's sentences joined).
+    transcript: list[str] = field(default_factory=list)
 
 
 class SilentStream:
@@ -214,6 +220,19 @@ def instrument(engine: PanelEngine, timeline: Timeline) -> None:
 
     threading.Thread(target=hook_voice, daemon=True).start()
 
+    # Every caption, whole: a reply's later sentences run on from the one before.
+    caption = engine.caption
+
+    def captioned(text: str, *, continues: bool = False) -> None:
+        with timeline.lock:
+            if continues and timeline.transcript:
+                timeline.transcript[-1] += " " + text.strip()
+            elif text.strip():
+                timeline.transcript.append(text.strip())
+        caption(text, continues=continues)
+
+    engine.caption = captioned  # type: ignore[method-assign]
+
 
 def watch_requests(timeline: Timeline) -> None:
     """When the coach sends a model request, and how long its prompt is: given to the last
@@ -293,6 +312,9 @@ def main() -> None:
         choices=("settings", "on", "off"),
         default="settings",
         help="the voice as the settings have it, or on (unmuted) or off (muted)",
+    )
+    parser.add_argument(
+        "--transcript", action="store_true", help="print every caption whole, after the timings"
     )
     args = parser.parse_args()
 
@@ -374,6 +396,10 @@ def main() -> None:
         print(f"-- words by the {kind}")
         for name, values in named.items():
             print(f"   {name:<20} {ms(values)}")
+    if args.transcript:
+        print("-- every caption, in order")
+        for i, line in enumerate(timeline.transcript, 1):
+            print(f"{i:3}. {line}")
 
 
 if __name__ == "__main__":

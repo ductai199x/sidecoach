@@ -271,13 +271,14 @@ VERIFY = [
         ITALIAN, claim("best", move="the knight thing"), "unclear", ["cannot read"], [],
         id="best-unreadable",
     ),
-    # plan and other invite something concrete
+    # plan and other offer to look at something concrete, never asking what they expect
+    # (Tai, 2026-10-02: a question about what they thought reads as a challenge)
     pytest.param(
         ITALIAN, claim("plan", text="the plan is to push the h-pawn"), "unclear",
-        ["which move starts it"], [], id="a-plan",
+        ["the move that starts it"], ["expect"], id="a-plan",
     ),
     pytest.param(
-        ITALIAN, claim("other", text="I feel good here"), "unclear", ["concretely"], [],
+        ITALIAN, claim("other", text="I feel good here"), "unclear", ["name a move"], ["expect"],
         id="other",
     ),
     # The 2026-09-23 audit: attack and defence by legal moves, a threat by who can take back.

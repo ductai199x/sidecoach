@@ -181,7 +181,7 @@ def test_the_weak_motif_is_the_one_missed_most_often_over_the_games(tmp_path: Pa
             TurningPoint(ply=5, san="Qh5", label="mistake", expected_loss=0.3, motif="pin")
         ],
     )
-    assert profiler._weak_motif(review) == ("fork", "fork: 3 of 4 chances missed over your games")
+    assert profiler._weak_motif(review) == ("fork", "fork: found 1 of 4 times over your games")
     # Missed in too few games: the game's turning point still leads.
     rows[1] = CellRow(None, "pin", "middlegame", 3, 9, 0.0, frozenset({"a"}))
     rows[3] = CellRow(None, "fork", "middlegame", 3, 4, 0.0, frozenset({"a", "b"}))
@@ -277,7 +277,7 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
             game_id="g",
             motif="fork",
             motif_words="fork",
-            reason="fork: 3 of 5 chances missed over your games",
+            reason="fork: found 2 of 5 times over your games",
             level=1100,
             puzzles=[PuzzleRef(id="fork1", url="https://lichess.org/training/fork1", rating=1000)],
         ),
@@ -286,7 +286,7 @@ def test_the_coach_says_one_line_on_the_practice_and_a_word_on_a_fail() -> None:
     # One line, naming the count and the motif, the level, and why.
     (text,) = [m.text for m in drain(coach)]
     assert "1 fork puzzle " in text and "1100" in text
-    assert "fork: 3 of 5 chances missed over your games" in text
+    assert "fork: found 2 of 5 times over your games" in text
     solved = PuzzleOutcome(game_id="p", puzzle_id="fork1", motif="fork", solved=True, level=1125)
     coach.on_event(solved, 2.0)
     assert drain(coach) == [], "a solve: the site says so"

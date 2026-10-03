@@ -135,26 +135,24 @@ def build_review(
         causes=ordered,
     )
     review.lines = lines_for(review, fullmoves)
-    pattern = pattern_line(counts, causes, sum(1 for m in judged if m.severity in ERRORS))
+    pattern = pattern_line(counts, causes)
     if pattern:
         # Second, after the result: the offline review says the first four lines.
         review.lines.insert(1, pattern)
     return review
 
 
-def pattern_line(counts: Counter[str], losses: dict[str, float], errors: int) -> str | None:
-    """What the player kept missing, when one cause is behind two or more of the game's
-    mistakes, and the habit that answers it."""
+def pattern_line(counts: Counter[str], losses: dict[str, float]) -> str | None:
+    """The one thing to work on, when one cause is behind two or more of the game's mistakes,
+    and a habit that helps: said as a skill to practise, not a count of the times it went
+    wrong (Tai, 2026-10-02)."""
     if not counts:
         return None
     cause, n = max(counts.items(), key=lambda kv: (kv[1], losses.get(kv[0], 0.0)))
     if n < PATTERN_MIN or cause not in HABIT:
         return None
     words, habit = HABIT[cause]
-    return (
-        f"What you kept missing: {words} -- {n} of your {errors} mistakes. "
-        f"The habit that fixes it: {habit}."
-    )
+    return f"One thing to work on: {words}. A habit that helps: {habit}."
 
 
 # How a game ended, as the review's first sentence says it: the reason where it reads as

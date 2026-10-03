@@ -60,6 +60,20 @@ CUT_MID_MARKER = (
             id="a-stump-dropped",
         ),
         pytest.param("The key was using", [], None, id="only-a-stump"),
+        # A reply the model wrapped in quotes is shown and said without them (the tone check
+        # of 2026-10-02); a quoted name inside a reply, or opening a longer one, stays.
+        pytest.param(
+            '[p=0.6] "Solid block, but Qe2 was stronger."\n[p=0.4] “A fine move.”',
+            ["Solid block, but Qe2 was stronger.", "A fine move."],
+            [0.6, 0.4],
+            id="wrapped-in-quotes",
+        ),
+        pytest.param(
+            '"Italian" setups suit you. Keep playing "e4."',
+            ['"Italian" setups suit you. Keep playing "e4."'],
+            None,
+            id="a-quoted-name-stays",
+        ),
     ],
 )
 def test_a_reply_parses_into_weighted_candidates_and_never_a_fragment(

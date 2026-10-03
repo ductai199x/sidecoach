@@ -151,10 +151,10 @@ def test_an_answer_to_the_coachs_question_closes_it_without_another() -> None:
     _analysed(coach, board, "d7d5", 0.45, 7.5)
     drain(coach)
     with coach._lock:
-        coach.conversation.coach_said("What were you expecting that move to do?")
-    assert coach._answering_our_question("I wanted to attack f7 with the knight.")
+        coach.conversation.coach_said("Which of your pieces has no defender now?")
+    assert coach._answering_our_question("The knight on g5 has nothing guarding it.")
     assert not coach._answering_our_question("Why is that bad?")
-    coach.ask("I wanted to attack f7 with the knight.", 8.0)
+    coach.ask("The knight on g5 has nothing guarding it.", 8.0)
     drain(coach)
     directive = directive_of(sent(provider))
     # The conversation says it, not a keyword: the coach's last turn ended with a question.

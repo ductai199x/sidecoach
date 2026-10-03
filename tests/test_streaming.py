@@ -111,6 +111,12 @@ def test_the_first_candidate_streams_sentence_by_sentence_and_closes_the_stream(
     speaker = Speaker(StreamingProvider("Just one plain reply. And a second sentence."))
     assert speaker.speak_now(_request(lambda s: heard.append(s) or True)).streamed
     assert heard == ["Just one plain reply.", "And a second sentence."]
+    # Wrapped in quotes: said without them, the first sentence and the last alike.
+    heard.clear()
+    speaker = Speaker(StreamingProvider('[p=0.7] "Solid block. Qe2 was stronger."\n[p=0.3] Fine.'))
+    spoken = speaker.speak_now(_request(lambda s: heard.append(s) or True))
+    assert heard == ["Solid block.", "Qe2 was stronger."], heard
+    assert spoken.message.text == "Solid block. Qe2 was stronger."
 
 
 def test_a_sentence_that_fails_the_check_stops_the_stream_with_what_was_said() -> None:

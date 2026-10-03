@@ -120,7 +120,7 @@ class PuzzleSession:
         if move.uci() != expected and not self._mates(move):
             self.wrong = move.uci()
             self.misses += 1
-            self.message = "Not that one. Have another look."
+            self.message = "Not quite. Take another look."
             return []
         events = [self._play(move, by_user=True)]
         self.index += 1

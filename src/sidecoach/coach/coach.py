@@ -101,15 +101,6 @@ MAX_TOKENS = 220
 PLAIN_BELOW = 1400
 # The bottom of the rating band from which the templates add no textbook rule to a lesson.
 STRONG_FROM = 1800
-# After every this-many mistakes the lesson ends by asking what the player saw: a
-# self-report the profile keeps beside the mistake (DESIGN 5.6, "sparingly"). One that
-# goes unanswered is the last of the game: a player with the mic off heard "did you miss
-# your opponent's idea altogether, or see it and misjudge the line?" seven times in one
-# game (2026-09-19), the model echoing the directive's words each time.
-ELICIT_EVERY = 3
-# The player's words within this long of the question count as its answer (the
-# profiler's SELF_REPORT_S, which keeps those words beside the mistake).
-ELICIT_ANSWER_S = 60.0
 # The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
 # model -- theory, the engine's own move, and an excellent one (as strong as the best).
 # EXCITING: great and brilliant, the model at its full effort with some delight, since
@@ -155,12 +146,13 @@ FINE_TIGHTER = [
     "Playable -- {best} was a little more precise",
 ]
 COST_YOU = [
-    "That one cost you: {best} was better",
-    "That cost you something: {best} was the move",
-    "Not that one -- {best} was better",
+    "There was a stronger move here: {best}",
+    "{best} was the better choice here",
+    "{best} would have kept more",
 ]
 # One bag per severity: "that cost you something" undersold a blunder (the facts audit,
-# 2026-10-01). A mistake keeps COST_YOU.
+# 2026-10-01). A mistake keeps COST_YOU. Said as a coach teaching, never a verdict on the
+# player: "That one hurts", "Not that one" read as scolding (Tai, 2026-10-02).
 COST_BY_SEVERITY = {
     "inaccuracy": [
         "A small slip: {best} was a little better",
@@ -169,9 +161,9 @@ COST_BY_SEVERITY = {
     ],
     "mistake": COST_YOU,
     "blunder": [
-        "That one costs a lot: {best} was the move",
-        "A serious mistake -- {best} was much better",
-        "That one hurts: {best} was the move",
+        "This was a big moment: {best} was much stronger",
+        "This one gave away a lot -- {best} was the move to find",
+        "A costly one, and a good one to learn from: {best} was the move",
     ],
 }
 
@@ -1045,6 +1037,37 @@ def plain(text: str) -> str:
     return _LINE_MARK.sub("", _EMPHASIS.sub("", text))
 
 
+_QUOTES = '"“”'
+
+
+def unquoted(text: str, *, streaming: bool = False) -> str:
+    """A reply the model wrapped in quotation marks, without them: `"Solid block, but Qe2 was
+    stronger."` was shown and said with its quotes (the tone check of 2026-10-02). Whole, only
+    a reply that opens on a quote with no other quote in it but the one closing it after its
+    last stop: a quoted name at the start of a longer reply ("Italian" setups ...) stays.
+    `streaming`: a reply still being written, which grows by its end, so its opening quote
+    goes whatever comes after it -- the sentences already given are counted from it -- and so
+    does a closing one left unmatched after a stop, wherever the stream has got to."""
+    text = text.strip()
+    if not text or text[0] not in _QUOTES:
+        return text
+    inner = text[1:]
+    if streaming:
+        if sum(inner.count(q) for q in _QUOTES) % 2:
+            closing = list(_CLOSING_QUOTE.finditer(inner))
+            if closing:
+                at = closing[-1].start(1)
+                inner = inner[:at] + inner[at + 1 :]
+        return inner.strip()
+    if len(inner) >= 2 and inner[-1] in _QUOTES and inner[-2] in ".!?…":
+        inner = inner[:-1]
+    return text if any(q in inner for q in _QUOTES) else inner.strip()
+
+
+# A quote closing a sentence: after its stop, before a space or the end.
+_CLOSING_QUOTE = re.compile(r"[.!?…]([\"“”])(?=\s|$)")
+
+
 def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     """The verbalized replies as (probability, text). A reply with no markers is one candidate.
 
@@ -1055,7 +1078,7 @@ def _parse_candidates(raw: str) -> list[tuple[float, str]]:
     cleaned = plain(_THINK_BLOCK.sub("", raw)).strip()
     markers = list(_VS_MARKER.finditer(cleaned))
     if not markers:
-        cleaned = complete_sentences(_STRAY_MARKER.sub("", cleaned).strip())
+        cleaned = unquoted(complete_sentences(_STRAY_MARKER.sub("", cleaned).strip()))
         return [(1.0, cleaned)] if cleaned else []
     out: list[tuple[float, str]] = []
     for index, marker in enumerate(markers):
@@ -1063,7 +1086,7 @@ def _parse_candidates(raw: str) -> list[tuple[float, str]]:
         end = markers[index + 1].start() if index + 1 < len(markers) else len(cleaned)
         # A reply cut off by the token budget can end in a half-written next marker
         # ("...move? [p=0.2" with no closing bracket); no fragment may reach the user.
-        text = complete_sentences(_STRAY_MARKER.sub("", cleaned[start:end]).strip())
+        text = unquoted(complete_sentences(_STRAY_MARKER.sub("", cleaned[start:end]).strip()))
         if not text:
             continue
         try:
@@ -1145,7 +1168,7 @@ class _FirstCandidate:
         the buffer's end "costing 0." is the start of "costing 0.02", and a cost read
         as 0 failed the check and stopped the stream. A chunk without letters ("6.", a
         move number the model put first) waits for the sentence it introduces."""
-        cleaned = _STRAY_MARKER.sub("", text).strip()
+        cleaned = unquoted(_STRAY_MARKER.sub("", text), streaming=True)
         ends = [m for m in _SENTENCE_END.finditer(cleaned) if final or m.end() < len(cleaned)]
         if self.limit is not None:
             # Cut at the task's length before anything is said, however large the chunk.
@@ -1287,9 +1310,6 @@ class Spoken:
     # The rung of the ladder the reply actually said, from its words (`said_level`), for an AI
     # coach's answer to a question; None for any other message.
     rung: DisclosureLevel | None = None
-    # The lesson ends by asking what the player saw (`Coach._elicit_due`): when it is dropped
-    # unsaid, the question was never asked.
-    elicit: bool = False
     # A hint said unasked that a question came behind while it waited (`Speaker.submit`): shown
     # first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
     unvoiced: bool = False
@@ -1429,7 +1449,6 @@ class _Request:
     # An AI coach's answer to a question: the model decides what the words ask, so the rung
     # the reply carries, and the marks on the board, follow what it said (`said_level`).
     rung_by_reply: bool = False
-    elicit: bool = False
     # Set by `Speaker.submit` on a hint said unasked when a question is queued behind it: its
     # text comes first, as it was said first, and the voice does not say it (`Spoken.unvoiced`).
     unvoiced: bool = False
@@ -1823,11 +1842,10 @@ class Speaker:
         waiting: the player is waiting for this one, and they wait for the answer and go after
         it. Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message
         should come out in the same correct order"): a remark dropped here was never seen, and
-        a lesson dropped took the rule it was charged against and the question it was to end
-        with (`Coach._elicit_due`) with it. A hint said unasked keeps its place ahead of the
-        ask (`_UNASKED_HINTS`), and is not spoken: the voice goes to the answer (Tai,
-        2026-10-02: "the stuck hint does not need to be voiced but the order should still be
-        preserved")."""
+        a lesson dropped took the rule it was charged against with it. A hint said unasked
+        keeps its place ahead of the ask (`_UNASKED_HINTS`), and is not spoken: the voice goes
+        to the answer (Tai, 2026-10-02: "the stuck hint does not need to be voiced but the order
+        should still be preserved")."""
         if request.trigger is not Trigger.USER_ASK:
             self._requests.put(request)
             return
@@ -1901,7 +1919,6 @@ class Speaker:
                 epoch=request.epoch,
                 own_moves=request.own_moves,
                 rung=rung,
-                elicit=request.elicit,
                 unvoiced=request.unvoiced,
             )
 
@@ -1974,7 +1991,6 @@ class Speaker:
                 attempts=0,
                 epoch=request.epoch,
                 own_moves=request.own_moves,
-                elicit=request.elicit,
                 unvoiced=request.unvoiced,
             )
         while attempts < 2 and not (attempts and self._closed.is_set()):
@@ -2117,7 +2133,6 @@ class Speaker:
             epoch=request.epoch,
             own_moves=request.own_moves,
             rung=rung,
-            elicit=request.elicit,
             unvoiced=request.unvoiced,
         )
 
@@ -2751,7 +2766,7 @@ class Coach:
         # The lesson on a mistake, held until the position the move left is analysed (or
         # LESSON_WAIT_S passes, or the game moves on): the app waits, the tests do not.
         self.lesson_wait_s = lesson_wait_s
-        self._held_lesson: tuple[float, _Position, MoveAssessment, MovePlayed, bool] | None = None
+        self._held_lesson: tuple[float, _Position, MoveAssessment, MovePlayed] | None = None
         # One reply instead of a verbalized distribution (see config.CoachSettings).
         self.verbalized_sampling = verbalized_sampling
         # The word on a sound move written from the board (coach/verdicts.py) instead of
@@ -2842,13 +2857,9 @@ class Coach:
         # The prompts that failed their check before going to the model (`harness_problem`),
         # for the panel's log: each one is a bug in how the prompt is built.
         self.harness_problems: list[str] = []
-        self._mistakes = 0  # the player's mistakes this game, for ELICIT_EVERY
-        # When the coach last asked what the player saw, and whether they answered.
-        self._elicit_asked: float | None = None
         # A question asked before the engine had looked at the position on the board: it is
         # answered the moment the analysis lands (see `ask`).
         self._pending_asks: list[tuple[str, float]] = []
-        self._elicit_answered = False
         # The moment of the game: a new game, a takeback and a re-read each start another. A
         # reply asked for in an earlier one and landing in this one is shown in its place (Tai,
         # 2026-10-02: no reply is dropped) but is not a turn of this one: recorded where it
@@ -3008,8 +3019,6 @@ class Coach:
         if self.profile_ask is not None and _ASK_PROFILE.search(text):
             self._ask_profile(text, ts, moment)
             return
-        if self._elicit_asked is not None and ts - self._elicit_asked <= ELICIT_ANSWER_S:
-            self._elicit_answered = True
         position = self._current
         if (
             position is not None
@@ -3439,11 +3448,9 @@ class Coach:
         self._moved_at = {}
         self.conversation.new_game(event, profile=self._profile_lines())
         self._think_s.clear()
-        self._mistakes = 0
         # The review is the game's own: a new game answered "how did I do overall?" with
         # the last game's sentences when the model failed (the parity audit, 2026-09-26).
         self._review_lines = []
-        self._elicit_asked, self._elicit_answered = None, False
         # A question held for the engine's look stays: it is answered at this game's first
         # position once read (`_answer_pending`), as a hint pressed as the next puzzle appears.
         self.finished = False
@@ -3474,7 +3481,7 @@ class Coach:
         if self.strong_player:
             # The pattern and its count, not the textbook habit: a 2000 player was told "bring
             # your King to the middle and push your passed pawns" (the AI's sessions).
-            lines = [re.sub(r" The habit that fixes it: .*$", "", line) for line in lines]
+            lines = [re.sub(r" A habit that helps: .*$", "", line) for line in lines]
         with self._lock:
             self.conversation.review(lines)
         position = self._latest_with_facts()
@@ -3508,9 +3515,11 @@ class Coach:
             return  # nothing unasked: it comes the next time the cause does
         self._pattern_told.add(event.cause)
         words, habit = HABIT[event.cause]
-        text = f"That is three times now: {words}."
+        # A skill to work on, never a count of the times it went wrong (Tai, 2026-10-02:
+        # "That is three times now" read as scolding; these are hard to see in a game).
+        text = f"Something worth working on: {words}."
         if not self.strong_player:
-            text += f" The habit to build: {habit}."
+            text += f" A habit that helps: {habit}."
         if not self._rule_ok(None):
             return  # a rule of thumb just said: the review carries the pattern
         self._rule_said(f"habit:{event.cause}")
@@ -3545,7 +3554,7 @@ class Coach:
         motif = f" That one was a {motif_words(event.motif)} puzzle." if event.motif else ""
         self._queue_plain(
             Trigger.POST_MISTAKE,
-            f"Not that one -- have another look before the site shows you.{motif}",
+            f"Not quite -- take another look before the site shows you.{motif}",
             ts,
             record_now=True,
         )
@@ -3601,7 +3610,7 @@ class Coach:
         held, self._held_lesson = self._held_lesson, None
         if held is None:
             return
-        _, position, assessment, played, elicit = held
+        _, position, assessment, played = held
         self._speak(
             Trigger.POST_MISTAKE,
             position,
@@ -3609,7 +3618,6 @@ class Coach:
             ts,
             assessment=assessment,
             played=played,
-            elicit=elicit,
         )
 
     def _on_move(self, event: MovePlayed, ts: float) -> None:
@@ -3818,10 +3826,6 @@ class Coach:
         trigger = self.policy.on_user_move_assessed(event)
         if trigger is None:
             return
-        elicit = False
-        if trigger is Trigger.POST_MISTAKE:
-            self._mistakes += 1
-            elicit = self._elicit_due(ts)
         before.disclosure.apply(Unlock.MOVE_PLAYED)
         after = self.positions.get(event.ply)
         if self.kind != "game" and after is not None and after.board.is_checkmate():
@@ -3893,28 +3897,9 @@ class Coach:
             and self.lesson_wait_s > 0
             and (after is None or after.analysis is None)
         ):
-            self._held_lesson = (ts, before, event, move, elicit)
+            self._held_lesson = (ts, before, event, move)
             return
-        self._speak(
-            trigger,
-            before,
-            DisclosureLevel.LINE,
-            ts,
-            assessment=event,
-            played=move,
-            elicit=elicit,
-        )
-
-    def _elicit_due(self, ts: float) -> bool:
-        """Whether this mistake's lesson ends by asking what the player saw: every
-        ELICIT_EVERY-th mistake, and never again in a game once one such question went
-        unanswered -- the player is not talking back, and the question is noise."""
-        if self._mistakes % ELICIT_EVERY:
-            return False
-        if self._elicit_asked is not None and not self._elicit_answered:
-            return False
-        self._elicit_asked, self._elicit_answered = ts, False
-        return True
+        self._speak(trigger, before, DisclosureLevel.LINE, ts, assessment=event, played=move)
 
     def _verdict(self, label: str | None) -> str:
         """The word of praise on a fine move, by its label, from the bag the local verdicts
@@ -4340,14 +4325,15 @@ class Coach:
         named = [k for k in strong if counts.get(k)] or ["best", "excellent"]
         said = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} or {named[-1]}"
         text = f"{good} of your {len(judged)} moves were {said}."
-        # What they keep missing, from the session's causes, before the game has a review.
+        # The one thing to work on, from the session's causes, before the game has a review:
+        # a skill to practise, not a tally of the times it went wrong.
         kept = [(n, cause) for cause, n in self._causes_seen.items() if n >= 2 and cause in HABIT]
         if kept:
-            n, cause = max(kept)
+            _, cause = max(kept)
             words, habit = HABIT[cause]
-            text += f" What you keep missing: {words}, {n} times."
+            text += f" One thing to work on: {words}."
             if not self.strong_player:
-                text += f" The habit that fixes it: {habit}."
+                text += f" A habit that helps: {habit}."
         if lost:
             # The three that cost the most, told in the order they were played.
             worst = sorted(sorted(lost, key=lambda t: -t[0])[:3], key=lambda t: t[1])
@@ -4514,13 +4500,12 @@ class Coach:
         played: MovePlayed | None = None,
         candidates: int | None = None,
         routine: bool = False,
-        elicit: bool = False,
         moment: Moment | None = None,
     ) -> None:
         assert position.facts is not None
         epoch, game_id, own_moves = moment if moment is not None else self._moment()
         instruction, fallback = self._instruction(
-            trigger, position, level, user_text, verdicts, assessment, played, elicit=elicit
+            trigger, position, level, user_text, verdicts, assessment, played
         )
         self._take_leads(position, fallback)
         must_name = self._must_name(
@@ -4779,7 +4764,6 @@ class Coach:
             epoch=epoch,
             own_moves=own_moves,
             rung_by_reply=ai_ask,
-            elicit=elicit,
         )
         if self.stream_sink:
             # Not spoken once its moment is over, nor when a question came behind it while it
@@ -5096,11 +5080,8 @@ class Coach:
         verdicts: Sequence[str],
         assessment: MoveAssessment | None,
         played: MovePlayed | None,
-        *,
-        elicit: bool = False,
     ) -> tuple[str, str]:
-        """The turn's instruction to the model, and the template used if it fails. `elicit`
-        ends a mistake's lesson by asking what the player saw (see `_elicit_due`)."""
+        """The turn's instruction to the model, and the template used if it fails."""
         facts = position.facts
         assert facts is not None
 
@@ -5108,9 +5089,9 @@ class Coach:
             return (
                 "The game is over. Sum it up from the review in the record above and the "
                 "verdicts on the moves above, and from nothing else: the result, what went "
-                "well, and the one thing to work on. When the review says what they kept "
-                "missing, that is the thing: the pattern in plain words and the habit that "
-                "fixes it, as the review gives it, with the moment it cost most. Otherwise the "
+                "well, and the one thing to work on. When the review names one thing to work "
+                "on, that is the thing: the skill in plain words and the habit that helps, as "
+                "the review gives it, with the moment it mattered most. Otherwise the "
                 "moment the game turned, the better move there, and why it happened, in plain "
                 "words. Three or four sentences, no question. Do not infer the course of the "
                 "game from the position on the board.",
@@ -5217,25 +5198,9 @@ class Coach:
                     )
                     + f"{TIE_TO_THE_GAME} {NOT_THE_MOVE} {NO_FIGURES}{data}"
                 )
-                if elicit:
-                    # Sparingly: what they saw at that moment, for the profile's record
-                    # (causes.from_words reads "I thought it would..." as a line
-                    # misjudged, "I didn't see..." as a threat missed). Asked as what
-                    # they expected, in the coach's words: told to ask whether they
-                    # "missed the idea altogether or misjudged the line", the model
-                    # said exactly that, every time.
-                    fallback += " What were you expecting that move to do?"
-                    instruction = (
-                        f"The player just played {played.san}, which was {_rated(label)}: it "
-                        f"cost {loss:.0%} of the game. The better move was {best} "
-                        f"({better_words}). Teach the difference so they spot it next time: why "
-                        "the better move works, from the sheet of the position they faced -- its "
-                        "goal, its pattern, the tactic when it names one -- as a pattern to "
-                        "remember, in three sentences at most, then -- instead of a check "
-                        "question -- ask, in one short question of your own, what they "
-                        f"expected their move to do. {NOT_THE_MOVE} {NO_FIGURES}"
-                        + _lesson_data(position.board, best, played.uci, given)
-                    )
+                # No question about what they expected or saw: "What were you expecting that
+                # move to do?" after a mistake read as rude (Tai, 2026-10-02). What they say
+                # unasked still goes to the profile (causes.from_words).
                 if held:
                     instruction = _hold_rule(instruction)
             elif _exciting(assessment.label):
@@ -5462,8 +5427,8 @@ class Coach:
                 "else: do not infer the course of the game from the position on the board. "
                 "Two or three sentences: what went well -- how many of their moves were strong, "
                 "and their slips by kind, in the tally's numbers -- and the one thing to work "
-                "on: when the review, or the pattern already told them, says what they keep "
-                "missing, that pattern in plain words and the habit that fixes it, as given; "
+                "on: when the review, or the pattern already told them, names one thing to "
+                "work on, that skill in plain words and the habit that helps, as given; "
                 "otherwise the move the "
                 "tally lists first where ground was lost most, the better move there, and why, "
                 "in plain words. If no move has a verdict yet, say you have not seen enough to "

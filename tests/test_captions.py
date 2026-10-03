@@ -103,10 +103,12 @@ def test_only_the_last_captions_are_kept_for_the_window_to_catch_up_on(
 def test_a_new_look_is_stamped_for_a_sample_line_and_keeping_them_up_is_not(
     make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A change to the captions shows a sample line the moment it is saved (Tai, 2026-09-23:
-    "applies instantly on save"): the time of the change, which a window built after it --
-    when captions are turned on -- still sees as new. Keeping them on screen shows none. The
-    panel's clock is one the test moves, so the stamp is known to the millisecond."""
+    """A change to the captions' look shows a sample line the moment it is saved (Tai,
+    2026-09-23: "applies instantly on save"): the time of the change, which a window built by
+    the same save -- captions turned on with it -- still sees as new. Keeping them on screen
+    shows none, and neither does turning them on: the CC button brings up the box itself (Tai,
+    2026-10-02). The panel's clock is one the test moves, so the stamp is known to the
+    millisecond."""
     engine = make_panel()
     clock = ManualClock(start=1_759_400_000.0)  # a wall-clock time, in seconds
     monkeypatch.setattr(panel_mod, "time", clock.time_module())
@@ -124,6 +126,11 @@ def test_a_new_look_is_stamped_for_a_sample_line_and_keeping_them_up_is_not(
     engine.apply_settings(new, ["voice.captions_keep"])
     captions = engine.poll()["state"]["captions"]
     assert captions["keep"] is True and captions["preview"] == 0
+    on = Settings.model_validate(new.model_dump())
+    on.voice.captions = True
+    assert engine.apply_settings(on, ["voice.captions"]) == ["voice.captions"]
+    captions = engine.poll()["state"]["captions"]
+    assert captions["on"] is True and captions["preview"] == 0, "turned on: no sample line"
     clock.advance(2.5)  # the look changed later
     before = int(clock.time() * 1000)
     newer = Settings.model_validate(new.model_dump())

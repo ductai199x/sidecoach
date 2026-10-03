@@ -106,7 +106,9 @@
     }
     if (c.preview !== lastPreview) {
       lastPreview = c.preview;
-      preview();
+      // A box kept on screen shows the new look itself; a sample in its place hid the words
+      // and stayed until the coach next spoke (Tai, 2026-10-02).
+      if (!c.keep) preview();
     }
     for (const [n, text, continues] of numbered) {
       if (n > lastN) {

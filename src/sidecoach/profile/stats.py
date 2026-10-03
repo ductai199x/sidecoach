@@ -318,31 +318,33 @@ def work(costs: dict[str, Any]) -> list[dict[str, Any]]:
 
 # Each area as the player hears it (the Stats page's names, in lower case where a sentence
 # takes them): the coach's "biggest cost" says the area Work on this puts first, in these words.
+# Skills to work on, never a list of failures: "mates you walked into", "pieces you let be
+# trapped", "you missed" on every row read as a charge sheet (Tai, 2026-10-02).
 AREA_NAMES = {
-    "missed.checkmate": "mates you missed",
-    "missed.fork": "forks you missed",
-    "missed.pin": "pins you missed",
-    "missed.discovery": "discovered attacks you missed",
-    "missed.trapped piece": "trapped pieces you missed",
-    "missed.removing the defender": "defenders you could have removed",
-    "missed.free piece": "free pieces you left on the board",
-    "missed.sacrifice": "sacrifices you missed",
-    "missed.other": "other tactics you missed",
-    "allowed.checkmate": "mates you walked into",
-    "allowed.fork": "forks you allowed",
-    "allowed.pin": "pins you walked into",
-    "allowed.discovery": "discovered attacks you allowed",
-    "allowed.trapped piece": "pieces you let be trapped",
-    "allowed.removing the defender": "defenders you let be removed",
-    "allowed.free piece": "pieces you left hanging",
-    "allowed.sacrifice": "sacrifices you allowed",
-    "allowed.other": "other tactics you allowed",
-    "opening": "mistakes in the opening",
+    "missed.checkmate": "finding mates",
+    "missed.fork": "finding forks",
+    "missed.pin": "finding pins",
+    "missed.discovery": "finding discovered attacks",
+    "missed.trapped piece": "trapping pieces",
+    "missed.removing the defender": "removing the defender",
+    "missed.free piece": "taking free pieces",
+    "missed.sacrifice": "finding sacrifices",
+    "missed.other": "finding other tactics",
+    "allowed.checkmate": "guarding against mates",
+    "allowed.fork": "guarding against forks",
+    "allowed.pin": "guarding against pins",
+    "allowed.discovery": "guarding against discovered attacks",
+    "allowed.trapped piece": "keeping your pieces free",
+    "allowed.removing the defender": "keeping your defenders",
+    "allowed.free piece": "keeping your pieces protected",
+    "allowed.sacrifice": "guarding against sacrifices",
+    "allowed.other": "guarding against other tactics",
+    "opening": "the opening",
     "endgame.pawn": "king and pawn endings",
     "endgame.rook": "rook endings",
     "endgame.queen": "queen endings",
     "endgame.other": "other endings",
-    "quiet": "mistakes in quiet positions",
+    "quiet": "quiet positions",
 }
 
 

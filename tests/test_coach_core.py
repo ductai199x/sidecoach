@@ -409,25 +409,6 @@ def test_a_lesson_on_a_withdrawn_move_is_shown_in_its_place_not_recorded_not_spo
     assert coach._said_since_move() == [], "no turn of the moment now"
 
 
-def test_a_late_lesson_that_ends_with_a_question_has_asked_it() -> None:
-    """ "What did you expect?" is marked asked when its lesson is queued. The lesson, shown late
-    after a takeback, still asks it: the player reads it, so it was asked (no reply is dropped,
-    Tai, 2026-10-02)."""
-    from sidecoach.coach.coach import ELICIT_EVERY
-
-    coach = offline_coach()
-    play_to_scholar(coach)
-    coach.on_event(mate_analysis(6), 7.0)
-    drain(coach)
-    coach._mistakes = ELICIT_EVERY - 1
-    mate_missed(coach, 10.0)
-    assert coach._elicit_asked is not None, "asked, in the lesson queued"
-    coach.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 12.0)
-    shown = drain(coach)
-    assert shown and shown[0].text.endswith("?")
-    assert coach._elicit_asked is not None, "the lesson was shown: so was the question"
-
-
 # 6. A question does not delete the lesson on a mistake or the review
 
 
@@ -655,7 +636,8 @@ def test_the_pattern_and_the_practice_keep_quiet_in_quiet_mode_and_in_bullet() -
     evidence(coach)
     coach.on_event(recommended, 20.0)
     said = [m.text for m in drain(coach)]
-    assert len(said) == 2 and "three times" in said[0] and "For practice" in said[1]
+    assert len(said) == 2 and "Something worth working on" in said[0]
+    assert "For practice" in said[1]
 
 
 # 9. Two questions while the position is read: both are answered

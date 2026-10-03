@@ -21,6 +21,7 @@ from sidecoach.events import (
     MovePlayed,
     Severity,
     Side,
+    Takeback,
     Trigger,
 )
 from sidecoach.llm.base import ChatMessage
@@ -1477,9 +1478,12 @@ def test_a_cause_that_comes_back_is_named_once_with_the_habit_that_fixes_it() ->
     assert placed(21, causes.MISSED_THREAT, game_id="old") == []  # another game's
     assert placed(25, causes.MISSED_THREAT) == [], "twice is not a pattern yet"
     third = placed(31, causes.MISSED_THREAT)
-    assert len(third) == 1 and "three times" in third[0]
-    assert "what their moves threatened" in third[0]
-    assert "look at what their last move attacks" in third[0]
+    # Said as a skill to work on, never a count (Tai, 2026-10-02: "That is three times now"
+    # read as scolding).
+    assert len(third) == 1 and third[0].startswith("Something worth working on:")
+    assert "times" not in third[0] and "again" not in third[0]
+    assert "spotting what their moves threaten" in third[0]
+    assert "A habit that helps: before each move, look at what their last move attacks" in third[0]
     # Once a session: not again in this game, nor in the next.
     assert placed(37, causes.MISSED_THREAT) == []
     coach.game_id = "g2"
@@ -1499,7 +1503,7 @@ def test_a_cause_that_comes_back_is_named_once_with_the_habit_that_fixes_it() ->
             float(ply),
         )  # fmt: skip
     strong = [m.text for m in drain(strong_coach)]
-    assert len(strong) == 1 and "what their moves threatened" in strong[0]
+    assert len(strong) == 1 and "spotting what their moves threaten" in strong[0]
     assert "look at what" not in strong[0]
 
 
@@ -1512,8 +1516,8 @@ def test_a_strong_players_review_names_the_pattern_without_the_textbook_habit() 
     coach.strong_player = True
     start_game(coach)
     pattern = (
-        "What you kept missing: endgame technique -- 2 of your 3 mistakes. The habit that fixes "
-        "it: in the endgame, bring your king to the middle and push your passed pawns."
+        "One thing to work on: endgame technique. A habit that helps: in the endgame, bring "
+        "your king to the middle and push your passed pawns."
     )
     coach.on_event(
         GameReview(
@@ -1526,7 +1530,7 @@ def test_a_strong_players_review_names_the_pattern_without_the_textbook_habit() 
         1.0,
     )
     said = " ".join(m.text for m in drain(coach))
-    assert "endgame technique -- 2 of your 3 mistakes." in said and "passed pawns" not in said
+    assert "One thing to work on: endgame technique." in said and "passed pawns" not in said
     # What the model is shown of the review says it the same way.
     assert "passed pawns" not in coach.conversation.render()
 
@@ -1648,9 +1652,11 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     assert asked == ["why am I always losing in the middlegame?"]
 
 
-def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
-    from sidecoach.coach.coach import ELICIT_ANSWER_S, ELICIT_EVERY
-
+def test_no_lesson_on_a_mistake_asks_what_the_player_expected() -> None:
+    """ "What were you expecting that move to do?" ended every third lesson, for the profile's
+    record; after a mistake it reads as a challenge (Tai, 2026-10-02: "very rude and super
+    unwelcoming"). Neither the model's instruction nor the template asks it, however many
+    mistakes came before."""
     coach, _ = scripted_coach([])
     play_to_scholar(coach)
     coach.on_event(mate_analysis(6), 6.5)
@@ -1678,43 +1684,23 @@ def test_every_third_mistake_ends_by_asking_what_the_player_saw() -> None:
     instruction, fallback = coach._instruction(
         Trigger.POST_MISTAKE, position, DisclosureLevel.LINE, None, (), assessment, played
     )
-    assert "expected" not in instruction and "expecting" not in fallback
-    instruction, fallback = coach._instruction(
-        Trigger.POST_MISTAKE,
-        position,
-        DisclosureLevel.LINE,
-        None,
-        (),
-        assessment,
-        played,
-        elicit=True,
-    )
-    # What they expected, in the coach's own words: the directive asks for that, and spells
-    # out no question for the model to repeat verbatim (told to ask whether they "missed the
-    # idea altogether or misjudged the line", the model said exactly that; no directive has
-    # said it since, so its absence is not asserted: the parity audit, 2026-09-29).
-    assert "what they expected their move to do" in instruction
-    assert fallback.endswith("What were you expecting that move to do?")
+    assert "expect" not in instruction and "expect" not in fallback
 
-    # Every third mistake -- while the player answers. The first answered within a
-    # minute keeps the cadence; one that goes unanswered is the last of the game.
-    due = []
-    for n in range(1, 2 * ELICIT_EVERY + 1):
-        coach._mistakes = n
-        due.append(coach._elicit_due(10.0 * n))
-        if due[-1]:
-            coach.ask("I thought the queen would have to move", 10.0 * n + ELICIT_ANSWER_S / 2)
-    assert due == [n % ELICIT_EVERY == 0 for n in range(1, 2 * ELICIT_EVERY + 1)]
-    coach._mistakes = 3 * ELICIT_EVERY
-    assert coach._elicit_due(1000.0), "answered: asked again"
-    coach._mistakes = 4 * ELICIT_EVERY
-    assert not coach._elicit_due(2000.0), "unanswered: not again this game"
-    coach._mistakes = 5 * ELICIT_EVERY
-    coach.ask("hint", 2000.0 + ELICIT_ANSWER_S + 1)
-    assert not coach._elicit_due(3000.0), "a minute later is not an answer"
-    start_game(coach)
-    coach._mistakes = ELICIT_EVERY
-    assert coach._elicit_due(4001.0), "a new game starts afresh"
+    # The offline coach, the same mistake six times over (taken back each time): every
+    # lesson is a lesson, none asks what they expected or saw.
+    offline = offline_coach()
+    play_to_scholar(offline)
+    offline.on_event(mate_analysis(6), 6.5)
+    drain(offline)
+    lessons = []
+    for n in range(6):
+        mate_missed(offline, 10.0 + 10 * n)
+        lessons += [m.text for m in drain(offline) if m.trigger is Trigger.POST_MISTAKE]
+        offline.on_event(Takeback(game_id="g", plies=1, fen=SCHOLAR), 15.0 + 10 * n)
+        drain(offline)
+    assert len(lessons) == 6, lessons
+    for text in lessons:
+        assert not re.search(r"expect|what did you|did you see|were you", text, re.I), text
 
 
 def test_the_coach_is_told_a_position_is_not_a_game() -> None:

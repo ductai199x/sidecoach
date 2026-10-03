@@ -180,7 +180,9 @@ SYSTEM = (
     "Prefer aggregates to raw rows, and leave out withdrawn moves. When a grouping comes "
     "back with a group missing (no moves under 30 seconds, no endgame), the record has "
     "none: query the column's range or count once if you must, then answer; do not ask "
-    "the same question again in other words.\n\n"
+    "the same question again in other words. Say it warmly, as a coach on their side: "
+    "a weakness is something to practise, with how often they got it right as well as "
+    "wrong, never a tally of failures or a verdict on them.\n\n"
     "# The record\n{schema}\n"
     "# Worked queries\n{examples}"
 )
