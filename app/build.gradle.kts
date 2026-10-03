@@ -18,8 +18,8 @@ android {
         // foreground-service and projection rules this app is built around do not hold.
         minSdk = 33
         targetSdk = 37
-        versionCode = 164
-        versionName = "0.1.64"
+        versionCode = 165
+        versionName = "0.1.65"
         // AndroidJUnitRunner with the classes in lanes side by side (androidTest Lanes.kt).
         testInstrumentationRunner = "androidx.test.runner.SidecoachRunner"
         ndk {
