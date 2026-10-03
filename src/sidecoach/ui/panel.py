@@ -47,6 +47,7 @@ from sidecoach.voice import STTProvider, TTSProvider, make_recogniser, make_tts
 from sidecoach.voice.correct import correct
 from sidecoach.voice.hotkey import GlobalPushToTalk
 from sidecoach.voice.mic import MODES, Listener, Microphone
+from sidecoach.voice.pace import HOLD, SAY, PacePlan
 from sidecoach.voice.vad import SileroGate
 from sidecoach.voice.voices import english_voices, voice_label
 
@@ -345,6 +346,12 @@ class PanelEngine:
     # The coach's last word held back for pace: (trigger, text, ply, when), spoken once
     # the player slows down in that position.
     _held_word: tuple[str, str, int | None, float] | None = field(default=None, init=False)
+    # "Follow my pace" (voice.pace = "follow", the default): the voice's plan -- what is said,
+    # held to a fast line's end, or left to the text (voice/pace.py). None: the simple
+    # policy above (`voice_action`, `_held_word`).
+    _pace: PacePlan | None = field(default=None, init=False)
+    _pace_key: int = field(default=0, init=False)  # numbers the messages offered to the plan
+    _feed_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _promotion_logged: bool = field(default=False, init=False)
     _loop_ts: float = field(default=0.0, init=False)  # the last frame's time (the loop's clock)
     # The settings page's live test of the microphone and speech recognition: while on, it
@@ -374,6 +381,7 @@ class PanelEngine:
         # graphs load on the device configured (see `_warm_voice`) and are never reloaded.
         self._tts = self._build_tts(self.voice)
         self._hook_voice()
+        self.set_voice_pace(self.settings.voice.pace)
         self._stt = make_recogniser(self.settings, off=not self.voice_models)
         self._mic = Microphone(self.settings.voice.mic_device)
         self._listener = Listener(
@@ -439,6 +447,7 @@ class PanelEngine:
             # the vision follows is on the screen, in pixels (none while it follows none).
             "captions": caption_settings(self.settings, preview=0),
             "caption_lines": [],
+            "coach_draft": "",  # a reply being written, sentence by sentence (`_draft`)
             # Raised when a line captioned earlier is said now (a word held back in a fast
             # game): the box, faded since, comes back for it.
             "caption_again": 0,
@@ -870,6 +879,7 @@ class PanelEngine:
         attempt(["voice.voice"], lambda: self.set_voice(new.voice.voice))
         attempt(["voice.listen"], lambda: self.set_listen(new.voice.listen))
         attempt(["voice.muted"], lambda: self.set_muted(new.voice.muted))
+        attempt(["voice.pace"], lambda: self.set_voice_pace(new.voice.pace))
         if hasattr(self._tts, "speed"):
             attempt(["voice.speed"], lambda: setattr(self._tts, "speed", new.voice.speed))
         if hasattr(self._tts, "set_output_device"):
@@ -1324,7 +1334,20 @@ class PanelEngine:
         if muted:
             self._hushed += 1
             self._tts.stop()
+            if self._pace is not None:
+                self._pace.clear()
         self._emit("voice", "info", "muted" if muted else "unmuted")
+
+    def set_voice_pace(self, mode: str) -> None:
+        """How the voice keeps up with the player's moves (`voice.pace`): "follow", the plan
+        of voice/pace.py, or "simple", `voice_action` (Tai, 2026-10-03: the new policy the
+        default, the simple one kept as the fallback). A change applies now, from the next
+        word; what plays is left to finish."""
+        follow = mode != "simple"
+        if follow == (self._pace is not None):
+            return
+        self._pace = PacePlan() if follow else None
+        self._held_word = None
 
     def poll(self, since: int = 0) -> dict[str, Any]:
         """A snapshot for the page: the current state and every log record after `since`;
@@ -1393,6 +1416,17 @@ class PanelEngine:
             entry = [self._captioned, text, continues]
             lines = [*self._state["caption_lines"], entry][-CAPTIONS_KEPT:]
             self._state["caption_lines"] = lines
+
+    def _draft(self, sentence: str, first: bool) -> None:
+        """A reply being written, as the chat shows it while it comes (`coach_draft`): each
+        sentence the moment it exists, the bubble growing until the whole message replaces
+        it (Tai, 2026-10-03: "the message should stream out as fast as it possibly can")."""
+        sentence = sentence.strip()
+        if not sentence:
+            return
+        with self._lock:
+            before = "" if first else str(self._state.get("coach_draft") or "")
+            self._state["coach_draft"] = f"{before} {sentence}".strip()
 
     # ---- internals ------------------------------------------------------------------------
 
@@ -1570,17 +1604,44 @@ class PanelEngine:
         # A reply still being written says nothing more, even between two sentences, when
         # the voice is briefly idle: the voice never talks over the player.
         self._hushed += 1
+        if self._pace is not None:
+            self._pace.clear()  # the player is talking: nothing waiting is said after
         if self._tts.busy:
             self._tts.stop()
             self._emit("voice", "debug", "barge-in: the coach was cut off")
 
-    def _position_moved_on(self, why: str) -> None:
+    def _position_moved_on(
+        self, why: str, *, ply: int | None = None, think_s: float | None = None
+    ) -> None:
         """The position the coach is speaking about is left -- a new game, a takeback, the
         board re-read, the player's own next move -- so what the voice is saying about it stops
         (Tai, 2026-10-02: "interrupt the tts so it stops its long rant"). The same mechanism as
         the push-to-talk silencing and the barge-in: the voice stops, and the rest of a reply
         still being written goes to the captions and the record, silent (`_stream_sink`). The
-        text is never cut. The opponent's move alone does not stop it."""
+        text is never cut. The opponent's move alone does not stop it.
+
+        Following the player's pace (`_pace`), the plan decides instead: the sentence playing
+        finishes unless it is a hint whose position is gone or a lesson on a move taken back,
+        and what waits is judged again (`ply`: the player's move, or where a takeback went
+        back to; `think_s`: how long the move took)."""
+        plan = self._pace
+        if plan is not None:
+            if why == "the player moved" and ply is not None:
+                stop = plan.player_moved(ply, think_s)
+            elif why == "a takeback" and ply is not None:
+                stop = plan.taken_back(ply)
+            else:  # a new game or puzzle, the board re-read
+                stop = plan.new_position()
+            if stop and self._tts.busy:
+                self._tts.stop()
+                plan.stopped()
+                self._emit("voice", "debug", f"cut off: {why}")
+            elif plan.waiting_stale():
+                drop = getattr(self._tts, "drop_waiting", None)
+                if drop is not None:
+                    drop()
+            self._feed_voice()
+            return
         self._hushed += 1
         if self._tts.busy:
             self._tts.stop()
@@ -1690,7 +1751,11 @@ class PanelEngine:
         return "supersede" if old_stale else "speak"
 
     def _stream_sink(
-        self, trigger: Any, ply: int | None, moved_on: Callable[[], bool] | None = None
+        self,
+        trigger: Any,
+        ply: int | None,
+        moved_on: Callable[[], bool] | None = None,
+        unvoiced: Callable[[], bool] | None = None,
     ) -> Callable[[str], bool] | None:
         """The voice's sink for one coach reply written sentence by sentence (see
         coach.Speaker): the first sentence decides, by `voice_action`, whether the reply
@@ -1709,8 +1774,11 @@ class PanelEngine:
         template in its place. So the sink never declines: muted before the first sentence,
         the reply is shown and silent; held back for a fast game ("text"), the whole reply is
         the word held (`_speak` holds a line the same way) and is shown now."""
-        if self.muted:
-            return None
+        # Muted too, a reply is written sentence by sentence: its text shows the moment each
+        # sentence exists, silent (Tai, 2026-10-03: "the message should stream out as fast as
+        # it possibly can"); with no sink the reply came whole, seconds later.
+        if self._pace is not None:
+            return self._pace_sink(trigger, ply, unvoiced)
         name = getattr(trigger, "value", str(trigger))
         started: list[str] = []
         hushed_at = [self._hushed]
@@ -1720,6 +1788,7 @@ class PanelEngine:
 
         def sink(sentence: str) -> bool:
             continues = bool(started)
+            self._draft(sentence, first=not continues)
             if started and started[0] == "text":
                 # Held for the pace: the rest joins the held word, shown now. Taken and said
                 # already (the game slowed meanwhile), the rest follows it in the voice.
@@ -1813,7 +1882,120 @@ class PanelEngine:
 
         return sink
 
-    def _speak(self, trigger: str, text: str, ply: int | None, moved_on: bool = False) -> str:
+    def _next_pace_key(self) -> int:
+        with self._lock:
+            self._pace_key += 1
+            return self._pace_key
+
+    def _pace_sink(
+        self, trigger: Any, ply: int | None, unvoiced: Callable[[], bool] | None
+    ) -> Callable[[str], bool]:
+        """`_stream_sink` following the player's pace: each sentence is captioned the moment
+        it is written, and offered to the plan (`voice/pace.py`), which says it, holds it for
+        a fast line's end, or leaves it to the text. A reply asked for a moment that is over
+        is the plan's to judge, not silent as such; a reply a question came behind
+        (`unvoiced`), a barge-in or the push-to-talk key mid-reply keep it silent."""
+        plan = self._pace
+        assert plan is not None
+        name = getattr(trigger, "value", str(trigger))
+        key = self._next_pace_key()
+        index = [0]
+        hushed_at = [self._hushed]
+        silent = [False]
+
+        def sink(sentence: str) -> bool:
+            i = index[0]
+            index[0] += 1
+            self.caption(sentence, continues=i > 0)
+            self._draft(sentence, first=i == 0)
+            if i == 0:
+                hushed_at[0] = self._hushed
+                silent[0] = self.muted or self._ptt_held() or (unvoiced is not None and unvoiced())
+            if silent[0] or self.muted or self._hushed != hushed_at[0]:
+                silent[0] = True
+                return True
+            decision = plan.offer(key, name, ply, i, sentence, streamed=True)
+            if decision == SAY:
+                if i == 0:
+                    self._await_audio(name, ply, sentence)
+                self._feed_voice()
+            elif decision == HOLD:
+                self._prepare(sentence)
+                self._emit("voice", "debug", f"held for the line's end: {elide(sentence, 60)}")
+            elif i == 0:
+                self._emit("voice", "debug", f"not spoken (pace): {elide(sentence, 60)}")
+            return True
+
+        return sink
+
+    def _prepare(self, text: str) -> None:
+        """The voice makes `text` now, to say it at once when its turn comes (a fast line's
+        word, held to the line's end); nothing for a voice that cannot."""
+        prepare = getattr(self._tts, "prepare", None)
+        if prepare is not None:
+            with contextlib.suppress(Exception):
+                prepare(text)
+
+    def _feed_voice(self) -> None:
+        """Hand the voice the plan's next line, with the next one ready before the one
+        playing ends: a line is given while the voice is idle, or while it plays one line
+        and has none waiting -- the voice makes the waiting one meanwhile, so sentences follow
+        each other with no gap (Tai, 2026-10-03: "zero waits between sentences"). Called when
+        a sentence is offered, when a line starts to play, at the board's changes, and on the
+        session's tick."""
+        plan = self._pace
+        if plan is None or self.muted or self._ptt_held():
+            return
+        said: list[str] = []
+        with self._feed_lock:
+            for _ in range(2):  # the line to play, and the one ready behind it
+                busy = bool(self._tts.busy)
+                waiting = getattr(self._tts, "waiting", None)
+                plan.voice_state(busy, waiting)
+                if busy and (waiting is None or waiting > 0):
+                    break
+                line = plan.next_line()
+                if line is None:
+                    break
+                if line.prepared:
+                    with self._lock:
+                        # Captioned when it was held, long faded: the box comes back while it
+                        # is said (voice finding 20, 2026-10-01).
+                        again = int(self._state.get("caption_again") or 0) + 1
+                        self._state["caption_again"] = again
+                self._tts.say(line.text)
+                said.append(line.text)
+        for text in said:
+            self._emit("voice", "debug", f"speaking ({self.voice}): {elide(text, 60)}")
+
+    def _pace_speak(self, trigger: str, text: str, ply: int | None, unvoiced: bool) -> str:
+        """`_speak` following the player's pace: a whole message (a template, a model reply
+        read whole) captioned now and offered to the plan as one sentence. Returns what was
+        done, in `_speak`'s words for the log: "speak", "text" (held for a fast line's end),
+        "stale" (shown only)."""
+        self.caption(text)
+        if unvoiced:
+            return "stale"
+        plan = self._pace
+        assert plan is not None
+        decision = plan.offer(self._next_pace_key(), trigger, ply, 0, text, streamed=False)
+        if decision == SAY:
+            self._await_audio(trigger, ply, text)
+            self._feed_voice()
+            return "speak"
+        if decision == HOLD:
+            self._prepare(text)
+            return "text"
+        return "stale"
+
+    def _speak(
+        self,
+        trigger: str,
+        text: str,
+        ply: int | None,
+        moved_on: bool = False,
+        unvoiced: bool = False,
+    ) -> str:
         """Apply `voice_action` and speak accordingly; returns what was done, for the log. The
         captions show every line whatever the voice does with it -- muted, skipped as short,
         stale, held back for pace (Tai, 2026-10-01: "captions show lines regardless of voice
@@ -1824,6 +2006,8 @@ class PanelEngine:
         if self.muted or self._ptt_held():
             self.caption(text)
             return "muted"
+        if self._pace is not None:
+            return self._pace_speak(trigger, text, ply, unvoiced)
         if moved_on:
             self.caption(text)
             return "stale"
@@ -1922,6 +2106,8 @@ class PanelEngine:
     def _on_audio_starts(self, line: str) -> None:
         """The voice's thread: a line's audio is playing now."""
         now = time.monotonic()
+        # A line began: the next goes to the voice now, to be made while this one plays.
+        self._feed_voice()
         with self._lock:
             moved = self._awaiting_audio.pop(line, None)
             if moved is None:
@@ -2291,7 +2477,11 @@ class PanelEngine:
                 with self._coach_out:
                     coaching.drain()
                     self._coach_meta(coaching)
-                self._say_held_word(coaching, ts)
+                if self._pace is not None:
+                    self._pace.tick()  # a fast line's word, once the line is done
+                    self._feed_voice()
+                else:
+                    self._say_held_word(coaching, ts)
                 silence = self._coach_silence(coaching, silence)
                 self._refresh_state(pipe)
 
@@ -2543,7 +2733,10 @@ class PanelEngine:
             self._fen_before[event.ply] = event.fen_before
             self._last_ply = event.ply
             if event.by_user:
-                self._position_moved_on("the player moved")
+                think_s = event.think_ms / 1000 if event.think_ms is not None else None
+                self._position_moved_on("the player moved", ply=event.ply, think_s=think_s)
+            elif self._pace is not None:
+                self._pace.opponent_moved(event.ply)
             self._note_move(event.ply)
             assessing.submit(event)
             self._emit(
@@ -2558,7 +2751,7 @@ class PanelEngine:
             )
         elif isinstance(event, Takeback):
             self._emit("game", "warn", f"takeback {event.plies} ply", fen=event.fen)
-            self._position_moved_on("a takeback")
+            self._position_moved_on("a takeback", ply=max(0, self._last_ply - event.plies))
             # The engine lets go of the withdrawn moves at once, and their badges leave the
             # move list: a replacement played at the same ply showed the withdrawn move's.
             assessing.submit(event)
@@ -2786,6 +2979,10 @@ class PanelEngine:
                 self._emit("coach", "warn", "record: the model wrote no answer; the rows stand in")
         for spoken in self._new_items("spoken", coach.spoken):
             message = spoken.message
+            if spoken.streamed:
+                # The whole message takes the place of the reply shown as it was written.
+                with self._lock:
+                    self._state["coach_draft"] = ""
             if message.text:
                 self._record_dialogue(message)
             meta = [
@@ -2828,6 +3025,7 @@ class PanelEngine:
                         message.text,
                         message.ply,
                         moved_on=spoken.late or spoken.unvoiced,
+                        unvoiced=spoken.unvoiced,
                     )
                 if action == "streamed":
                     meta.append("streamed")

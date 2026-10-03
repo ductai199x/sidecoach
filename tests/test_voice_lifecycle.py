@@ -376,6 +376,97 @@ def test_a_rooms_stop_leaves_the_coachs_playing_line_and_drops_its_queued_card(
     assert played == ["Coach line.", "Card two."]
 
 
+class MadeKokoro(FakeKokoro):
+    """The model, noting each line it makes (`made`) and saying when one is made (`one`)."""
+
+    def __init__(self) -> None:
+        self.made: list[str] = []
+        self.one = threading.Semaphore(0)
+
+    def create(self, text: str, voice: str, speed: float, lang: str) -> tuple[Any, int]:
+        self.made.append(text)
+        self.one.release()
+        return super().create(text, voice, speed, lang)
+
+
+def test_the_next_line_is_made_while_the_one_before_plays(voice: WatchedTTS) -> None:
+    """Tai, 2026-10-03: "zero waits between sentences". The device holds the first line (it
+    asks for no samples yet): the second is made meanwhile, before the first has played, and
+    follows it at once; the voice stays busy from one into the other."""
+    model = MadeKokoro()
+    voice._kokoro = model
+    played = _played(voice)
+    FakeOutputStream.held = True
+    voice.say("One.")
+    voice.say("Two.")
+    assert model.one.acquire(timeout=HANG_S) and model.one.acquire(timeout=HANG_S)
+    assert model.made == ["One.", "Two."], "the second line made while the first waits to play"
+    assert played == ["One."], "the second is not handed over before the first has played"
+    assert voice.waiting == 1 and voice.busy
+    FakeOutputStream.held = False
+    voice.line_done()  # both, one after the other: busy throughout
+    assert played == ["One.", "Two."]
+    assert voice.waiting == 0
+
+
+def test_a_line_that_comes_while_one_plays_is_made_before_it_ends(voice: WatchedTTS) -> None:
+    """The model writes a reply's next sentence after the first has begun to play: it is made
+    the moment it comes, not once the first has ended (the bench, 2026-10-03: looked for once,
+    as the first began, it waited 0.39 s on the GPU, a second on the phone)."""
+    model = MadeKokoro()
+    voice._kokoro = model
+    played: list[str] = []
+    began = threading.Event()
+
+    def on_play(line: str) -> None:
+        played.append(line)
+        began.set()
+
+    voice.on_play = on_play
+    FakeOutputStream.held = True
+    voice.say("One.")
+    assert began.wait(HANG_S), "the first handed to the device: it plays"
+    assert model.one.acquire(timeout=HANG_S)
+    voice.say("Two.")  # comes while "One." plays
+    assert model.one.acquire(timeout=HANG_S), "made while the first plays"
+    assert played == ["One."]
+    FakeOutputStream.held = False
+    voice.line_done()
+    assert played == ["One.", "Two."]
+
+
+def test_dropping_what_waits_leaves_the_line_playing(voice: WatchedTTS) -> None:
+    """The pace plan's `drop_waiting`: the lines behind the one playing -- the one made ahead
+    too -- go; the one playing is said to its end."""
+    model = MadeKokoro()
+    voice._kokoro = model
+    played = _played(voice)
+    FakeOutputStream.held = True
+    voice.say("One.")
+    voice.say("Two.")
+    voice.say("Three.")
+    assert model.one.acquire(timeout=HANG_S) and model.one.acquire(timeout=HANG_S)
+    voice.drop_waiting()
+    assert voice.waiting <= 1  # the one made ahead is dropped when its turn comes
+    FakeOutputStream.held = False
+    voice.line_done()
+    assert played == ["One."]
+    assert not voice.busy
+
+
+def test_a_line_prepared_ahead_is_not_made_again(voice: WatchedTTS) -> None:
+    """A fast line's word, held to the line's end, is made while it waits (`prepare`): said --
+    even while it is still being made -- it plays without being made again."""
+    model = MadeKokoro()
+    voice._kokoro = model
+    played = _played(voice)
+    voice.prepare("Well found.")
+    voice.say("Well found.")
+    voice.line_done()
+    assert played == ["Well found."]
+    assert model.made == ["Well found."], "made once, ahead"
+
+
 def test_a_closed_voice_releases_its_worker_model_and_stream(voice: WatchedTTS) -> None:
     voice.say("A line.")
     voice.line_done()

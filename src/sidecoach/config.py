@@ -619,6 +619,21 @@ class VoiceSettings(_Settings):
         description="Speaking speed; 1 is normal.",
         json_schema_extra=_extra(applies="now", label="Speed", section="The coach's voice"),
     )
+    pace: str = Field(
+        default="follow",
+        description="How the voice keeps up with your moves. Follow my pace: every word when "
+        "you play slowly; quiet through a line you play fast, then a word on the move you "
+        "found; a lesson on a mistake even if you have moved again; your question always "
+        "answered in full. Simple: your move stops the voice, and a word that comes after "
+        "your next move is only shown.",
+        json_schema_extra=_extra(
+            choices=["follow", "simple"],
+            applies="now",
+            label="Keeping up with your moves",
+            choice_labels={"follow": "Follow my pace", "simple": "Simple"},
+            section="The coach's voice",
+        ),
+    )
     lang: str = Field(
         default="en-us",
         description="The voice's accent code: en-us for the American voices, en-gb for the "

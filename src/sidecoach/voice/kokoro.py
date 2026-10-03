@@ -37,6 +37,12 @@ ONNX_FILE = "kokoro-v1.0.onnx"
 # is handed over), what a Bluetooth headset a few hundred milliseconds behind clips
 # instead of the words (Tai, 2026-09-19).
 TAIL_SILENCE_S = 0.35
+# A line said while it is still being made ahead (`prepare`) waits this long at most for that
+# making, rather than being made a second time.
+PREPARE_WAIT_S = 5.0
+# While a line plays, how often the voice looks whether its next line has come, to make it
+# then (a cheap look at a queue; the making is what takes the time).
+PREFETCH_LOOK_S = 0.02
 # The output stream stays open between lines, silence flowing: opened per line, a
 # Bluetooth headset swallowed the first syllables while its link woke and the last while
 # the stream closed under it (Tai, 2026-09-20: "beginnings or ends of sentences cut off").
@@ -55,6 +61,11 @@ class _Stamp(NamedTuple):
     owner: str
     generation: int
     cut: int
+
+
+# The next line, made while the one before plays: the queued item, its samples and rate (None
+# when it could not be made), and the count of `drop_waiting`s when it was taken.
+_Ahead = tuple[tuple[str, str, "str | None", _Stamp], "tuple[object, int] | None", int]
 
 
 class _Stream:
@@ -112,16 +123,25 @@ class _Stream:
             self._chunks.append(block)
             self._idle.clear()
 
-    def wait(self, timeout: float, between: Callable[[], _Stream | None] | None = None) -> bool:
+    def wait(
+        self,
+        timeout: float,
+        between: Callable[[], _Stream | None] | None = None,
+        meanwhile: Callable[[], None] | None = None,
+    ) -> bool:
         """Wait until what is queued has been handed to the device; False, and the stream
         marked dead, when the device stopped asking for samples (it went away) or the
         timeout passed. A dead stream held each line for its length and five seconds,
         silent, and kept the voice `busy` (voice finding 6, 2026-10-01). `between` is asked
         at every look meanwhile: a stream it returns has taken the rest of the line over
-        (the system's output changed), and the wait goes on there."""
+        (the system's output changed), and the wait goes on there. `meanwhile` is called at
+        every look too, every PREFETCH_LOOK_S then: the voice makes its next line there."""
         end = time.monotonic() + timeout
         stream = self
-        while not stream._idle.wait(0.1):
+        look = PREFETCH_LOOK_S if meanwhile is not None else 0.1
+        while not stream._idle.wait(look):
+            if meanwhile is not None:
+                meanwhile()
             if between is not None:
                 moved = between()
                 if moved is not None:
@@ -209,6 +229,14 @@ class KokoroTTS:
         # The output a stream would not open on: not tried again until the output changes.
         self._failed_output: tuple | None = None
         self._follows: tuple[int | str | None, bool] | None = None
+        # The next line, made while the one before plays (`_prefetch`): taken off the queue,
+        # so `waiting` counts it; `_drops` cancels it as `drop_waiting` cancels the queued.
+        self._next_taken = False
+        self._drops = 0
+        # Lines made ahead by `prepare` (a fast line's word, held to the line's end), by the
+        # words to be said: said, they play at once.
+        self._prepared: dict[str, tuple[object, int]] = {}
+        self._preparing: dict[str, threading.Event] = {}  # being made ahead, by its words
 
     @property
     def onnx_path(self) -> Path:
@@ -356,6 +384,52 @@ class KokoroTTS:
         """Whether a line is playing or waiting to play."""
         return self._playing or not self._queue.empty()
 
+    @property
+    def waiting(self) -> int:
+        """How many lines wait behind the one playing (the next, made meanwhile, counted)."""
+        return self._queue.qsize() + (1 if self._next_taken else 0)
+
+    def drop_waiting(self, owner: str = COACH) -> None:
+        """Drop `owner`'s lines waiting behind the one playing -- the one made ahead too --
+        and leave the one playing to finish: what waits is no longer the news (the voice's
+        pace plan, `voice/pace.py`)."""
+        with self._lock:
+            self._drops += 1
+        with self._queue.mutex:
+            kept = [item for item in self._queue.queue if item is None or item[3].owner != owner]
+            self._queue.queue.clear()
+            self._queue.queue.extend(kept)
+
+    def prepare(self, text: str, *, voice: str | None = None) -> None:
+        """Make `text` now, off the voice's thread, to play at once when it is said (a fast
+        line's word, held to the line's end). Nothing when the voice is not loaded."""
+        spoken = speak_notation(text, voice=True).strip()
+        if not spoken or self._kokoro is None:
+            return
+        done = threading.Event()
+        with self._lock:
+            if spoken in self._preparing or spoken in self._prepared:
+                return
+            self._preparing[spoken] = done
+
+        def make() -> None:
+            try:
+                made = self._kokoro.create(  # type: ignore[attr-defined]
+                    spoken, voice=voice or self.voice, speed=self.speed, lang=self.lang
+                )
+                with self._lock:
+                    self._prepared[spoken] = (made[0], int(made[1]))
+                    while len(self._prepared) > 4:
+                        self._prepared.pop(next(iter(self._prepared)))
+            except Exception as exc:  # noqa: BLE001 - only an early start lost
+                log.debug("Kokoro could not prepare %r: %s", spoken, exc)
+            finally:
+                with self._lock:
+                    self._preparing.pop(spoken, None)
+                done.set()
+
+        threading.Thread(target=make, name="kokoro-prepare", daemon=True).start()
+
     def _stale(self, stamp: _Stamp) -> bool:
         """Whether a stop since the line was queued cancelled it. Under `_lock`."""
         return stamp.generation != self._generation or stamp.cut != self._cuts.get(stamp.owner, 0)
@@ -412,10 +486,22 @@ class KokoroTTS:
         self._worker.start()
 
     def _run(self) -> None:
+        ahead: _Ahead | None = None
         while True:
-            item = self._queue.get()
-            if item is None:
-                return
+            if ahead is None:
+                item = self._queue.get()
+                if item is None:
+                    return
+                made = None
+            else:
+                (item, made, drops), ahead = ahead, None
+                with self._lock:
+                    dropped = self._drops != drops  # `drop_waiting` since it was made
+                    if dropped:
+                        self._next_taken = False
+                if dropped:
+                    self._playing = False
+                    continue
             # Busy from the moment a line is taken up, through synthesis, until it has
             # finished playing -- so a caller asking `busy` mid-synthesis gets the truth.
             self._playing = True
@@ -423,33 +509,88 @@ class KokoroTTS:
             with self._lock:
                 self._current = stamp
             try:
-                self._speak_one(spoken, given, voice, stamp)
+                ahead = self._speak_one(spoken, given, voice, stamp, made)
             finally:
                 with self._lock:
                     self._current = None
-                self._playing = False
+                    self._next_taken = ahead is not None
+                # Still busy when the next line was made meanwhile: it plays at once.
+                self._playing = ahead is not None
 
-    def _speak_one(
-        self, text: str, given: str = "", voice: str | None = None, stamp: _Stamp | None = None
-    ) -> None:
-        if not self.load():
-            return  # degraded to silence
+    def _make(self, text: str, voice: str | None) -> tuple[object, int] | None:
+        """A line's samples and their rate: made ahead (`prepare`), or made now. Said while it
+        is still being made ahead, it is waited for, never made twice."""
         with self._lock:
-            if stamp is None:
-                stamp = _Stamp(COACH, self._generation, self._cuts.get(COACH, 0))
-            if self._stale(stamp):
-                return  # stopped while it waited its turn
+            making = self._preparing.get(text) if voice is None else None
+        if making is not None:
+            making.wait(PREPARE_WAIT_S)
+        with self._lock:
+            ready = self._prepared.pop(text, None) if voice is None else None
+        if ready is not None:
+            return ready
         try:
-            samples, sample_rate = self._kokoro.create(  # type: ignore[attr-defined]
+            samples, rate = self._kokoro.create(  # type: ignore[attr-defined]
                 text, voice=voice or self.voice, speed=self.speed, lang=self.lang
             )
         except Exception as exc:  # noqa: BLE001 - a bad line must not kill the voice
             log.warning("Kokoro synthesis failed for %r: %s", text, exc)
-            return
+            return None
+        return samples, int(rate)
+
+    def _prefetch(self) -> _Ahead | None:
+        """The next queued line, taken and made while the one before plays, so it follows
+        with no wait (Tai, 2026-10-03: "zero waits between sentences"). None when nothing
+        waits yet: it is looked for again at each of the playing line's checks (`_Stream.wait`'s
+        `meanwhile`), so a line that comes while it plays -- the model writes a reply's next
+        sentence after the first has begun -- is made the moment it comes; looked for once,
+        as the first began, it was made only after the first ended (the bench, 0.39 s on the
+        desktop's GPU). A stop, or `drop_waiting`, since it was taken cancels it."""
+        try:
+            item = self._queue.get_nowait()
+        except queue.Empty:
+            return None
+        if item is None:
+            self._queue.put(None)  # closing: the worker ends after this line
+            return None
+        with self._lock:
+            self._next_taken = True
+            drops = self._drops
+        spoken, _, voice, stamp = item
+        made = self._make(spoken, voice)
+        with self._lock:
+            if self._stale(stamp) or self._drops != drops:
+                self._next_taken = False
+                return None
+        return item, made, drops
+
+    def _speak_one(
+        self,
+        text: str,
+        given: str = "",
+        voice: str | None = None,
+        stamp: _Stamp | None = None,
+        made: tuple[object, int] | None = None,
+    ) -> _Ahead | None:
+        """Say one line (`made` already, or made now); the next queued line is made while
+        it plays and returned, to be played at once."""
+        if not self.load():
+            return None  # degraded to silence
+        with self._lock:
+            self._next_taken = False
+            if stamp is None:
+                stamp = _Stamp(COACH, self._generation, self._cuts.get(COACH, 0))
+            if self._stale(stamp):
+                return None  # stopped while it waited its turn
+        if made is None:
+            made = self._make(text, voice)
+        if made is None:
+            return None
+        samples, sample_rate = made
         # A stop between synthesis and playback means this line was cancelled.
         with self._lock:
             if self._stale(stamp):
-                return
+                return None
+        ahead = None
         try:
             import numpy as np
 
@@ -462,7 +603,7 @@ class KokoroTTS:
             # or a barge-in (voice finding 13, 2026-10-01).
             with self._lock:
                 if self._stale(stamp):
-                    return
+                    return None
                 if stream is not None:
                     stream.queue(samples)
                 else:
@@ -470,17 +611,26 @@ class KokoroTTS:
             if self.on_play is not None:
                 with contextlib.suppress(Exception):
                     self.on_play(given or text)
+            # While it plays: the next line, made the moment it comes, so it follows at once.
+            ahead = self._prefetch()
             if stream is not None:
                 follow = lambda: self._follow_output(int(sample_rate))  # noqa: E731
-                if not stream.wait(len(samples) / sample_rate + 5.0, follow):
+
+                def meanwhile() -> None:
+                    nonlocal ahead
+                    if ahead is None:
+                        ahead = self._prefetch()
+
+                if not stream.wait(len(samples) / sample_rate + 5.0, follow, meanwhile):
                     current = self._stream
                     if current is not None and current.dead:
                         log.warning("Kokoro output stream stopped; reopening at the next line")
                         self._drop_stream(current)
-                return
+                return ahead
             self._sd.wait()  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - audio errors are not fatal
             log.warning("Kokoro playback failed: %s", exc)
+        return ahead
 
     def _drop_stream(self, stream: _Stream) -> None:
         if self._stream is stream:

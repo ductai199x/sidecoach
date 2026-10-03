@@ -36,6 +36,17 @@
     return item.kind === "you" ? "you" : item.kind === "message" || item.kind === "pending" ? "coach" : "card";
   }
   const tail = (i: number): boolean => side(store.coach[i]) !== side(store.coach[i + 1]);
+  /** The reply being written (the server's `coach_draft`, a sentence at a time), until the
+   *  whole message is in the list: then the message stands in its place. */
+  const draft = $derived.by((): string => {
+    const text = (store.state.coach_draft ?? "").trim();
+    if (!text) return "";
+    for (let i = store.coach.length - 1; i >= 0; i--) {
+      const item = store.coach[i];
+      if (item.kind === "message") return item.full.startsWith(text.slice(0, 40)) ? "" : text;
+    }
+    return text;
+  });
   // A kind of move counted, in words: "2 inaccuracies", "1 blunder", "3 best".
   const PLURAL: Record<string, string> = { inaccuracy: "inaccuracies", mistake: "mistakes", miss: "misses", blunder: "blunders" };
   const kindWords = (k: string, n: number): string => (n === 1 ? k : PLURAL[k] ?? k);
@@ -63,7 +74,9 @@
   {/if}
   {#each store.coach as item, i (item.id)}
     {#if item.kind === "pending"}
-      <div class="msg typing" class:tail={tail(i)} role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>
+      {#if !draft}
+        <div class="msg typing" class:tail={tail(i)} role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>
+      {/if}
     {:else if item.kind === "divider"}
       <div class="coach-divider" role="separator"><span>{item.text}</span></div>
     {:else if item.kind === "you"}
@@ -134,4 +147,8 @@
       </div>
     {/if}
   {/each}
+  {#if draft}
+    <!-- The reply as it is written, sentence by sentence, until the whole message comes. -->
+    <div class="msg tail" role="status" aria-live="polite"><LinkedText text={draft} /></div>
+  {/if}
 </div>

@@ -478,7 +478,12 @@ def test_a_stuck_hint_a_question_came_behind_is_shown_first_and_not_spoken() -> 
     )
     sinks: dict[Trigger, Callable[[], bool]] = {}
 
-    def stream_sink(trigger: Trigger, ply: int | None, moved_on: Callable[[], bool]) -> None:
+    def stream_sink(
+        trigger: Trigger,
+        ply: int | None,
+        moved_on: Callable[[], bool],
+        unvoiced: Callable[[], bool],
+    ) -> None:
         sinks[trigger] = moved_on  # what the voice will ask when the first sentence comes
 
     coach.stream_sink = stream_sink  # type: ignore[assignment]

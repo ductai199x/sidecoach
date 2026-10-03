@@ -622,6 +622,8 @@ export type PanelState = {
   review_accuracy?: Record<string, number>;
   caption_lines?: [number, string, boolean?][];
   caption_again?: number;
+  /** A reply being written, sentence by sentence, until the whole message replaces it. */
+  coach_draft?: string;
   speaking?: boolean;
   board_screen?: [number, number, number, number] | null;
   [key: string]: unknown;

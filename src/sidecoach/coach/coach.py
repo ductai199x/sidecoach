@@ -2781,10 +2781,16 @@ class Coach:
         )
         # The panel's voice, when it wants replies as they are written: a factory giving,
         # for a trigger and a ply, the sink the reply's sentences go to, or None. The third
-        # argument says whether the moment the reply was asked for is over (`moved_on`): then
-        # the sink takes the sentences as the reply's text and the voice says none of them.
+        # argument says whether the moment the reply was asked for is over (`moved_on`, the
+        # simple voice: then it says none of them, the text is kept); the fourth whether a
+        # question came behind the reply while it waited (`unvoiced`: it is not said, whatever
+        # the voice's policy -- the voice goes to the answer).
         self.stream_sink: (
-            Callable[[Trigger, int | None, Callable[[], bool]], Callable[[str], bool] | None] | None
+            Callable[
+                [Trigger, int | None, Callable[[], bool], Callable[[], bool]],
+                Callable[[str], bool] | None,
+            ]
+            | None
         ) = None
         self.claims = claims
         # Dialogue compaction: every `summarise_every` plies the dialogue older than the
@@ -4772,6 +4778,7 @@ class Coach:
                 trigger,
                 position.ply,
                 lambda: request.unvoiced or self.moved_on((epoch, game_id, own_moves)),
+                lambda: request.unvoiced,
             )
         self.speaker.submit(request)
 

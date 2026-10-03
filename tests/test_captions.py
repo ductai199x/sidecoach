@@ -47,6 +47,7 @@ def test_the_words_given_to_the_voice_are_captioned_whole_said_or_not(
 ) -> None:
     engine = make_panel()
     fake = FakeTTS()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     engine._tts = fake  # type: ignore[assignment]
     # The poll says whether the voice is speaking: the box fades a few seconds after it stops.
     assert engine.poll()["state"]["speaking"] is False

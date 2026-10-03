@@ -32,6 +32,7 @@ class FakeTTS:
 
 def _panel(make_panel: Callable[..., PanelEngine]) -> tuple[PanelEngine, FakeTTS]:
     engine = make_panel()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     engine._listener.mode = "ptt"

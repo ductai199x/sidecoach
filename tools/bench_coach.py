@@ -81,6 +81,12 @@ class Timeline:
     lock: threading.Lock = field(default_factory=threading.Lock)
     # Every line the page was given, whole and in order (a reply's sentences joined).
     transcript: list[str] = field(default_factory=list)
+    # Every line's first sound (the voice's `on_play`) and how long its speech is: the gaps
+    # between one sentence's end and the next one's first sound.
+    plays: list[tuple[float, str]] = field(default_factory=list)
+    speech_s: dict[str, float] = field(default_factory=dict)
+    handoffs: list[tuple[str, float]] = field(default_factory=list)  # ("taken"|"queued", when)
+    makes: list[tuple[float, str]] = field(default_factory=list)  # a line made: when it ended
 
 
 class SilentStream:
@@ -94,12 +100,19 @@ class SilentStream:
 
     def start(self) -> None:
         def run() -> None:
+            # Paced by the clock, as a sound card is: the blocks due by now are asked for, so a
+            # line takes its length. Paced by `sleep` alone, Windows' 15.6 ms steps made a 20 ms
+            # period about 31 ms, every line a third longer and the gaps between them inflated.
             block = 480
-            period = block / self.samplerate
+            begun = time.monotonic()
+            asked = 0
             while not self.closed:
-                out = np.zeros((block, 1), dtype=np.float32)
-                self.callback(out, block, None, None)
-                time.sleep(period)
+                due = int((time.monotonic() - begun) * self.samplerate)
+                while asked + block <= due and not self.closed:
+                    out = np.zeros((block, 1), dtype=np.float32)
+                    self.callback(out, block, None, None)
+                    asked += block
+                time.sleep(0.002)
 
         self._thread = threading.Thread(target=run, daemon=True)
         self._thread.start()
@@ -166,19 +179,21 @@ def instrument(engine: PanelEngine, timeline: Timeline) -> None:
     # The board's own words (a template, a verdict written from the board) come whole.
     speak = engine._speak
 
-    def spoken(trigger: str, text: str, ply: int | None, moved_on: bool = False) -> str:
+    def spoken(
+        trigger: str, text: str, ply: int | None, moved_on: bool = False, unvoiced: bool = False
+    ) -> str:
         move = word_on(trigger, ply)
         if move is not None:
             shown(move, text, "board")
-        return speak(trigger, text, ply, moved_on)
+        return speak(trigger, text, ply, moved_on, unvoiced)
 
     engine._speak = spoken  # type: ignore[method-assign]
 
     # The model's words come sentence by sentence: the first one is the first text.
     stream_sink = engine._stream_sink
 
-    def streamed(trigger: Any, ply: int | None, moved_on: Any = None) -> Any:
-        sink = stream_sink(trigger, ply, moved_on)
+    def streamed(trigger: Any, ply: int | None, moved_on: Any = None, unvoiced: Any = None) -> Any:
+        sink = stream_sink(trigger, ply, moved_on, unvoiced)
         move = word_on(trigger, ply)
         if sink is None or move is None:
             return sink
@@ -214,11 +229,50 @@ def instrument(engine: PanelEngine, timeline: Timeline) -> None:
                 move = lines.pop(line, None)
                 if move is not None and move.sound is None:
                     move.sound = time.monotonic()
+                timeline.plays.append((time.monotonic(), line))
             on_play(line)
 
         engine._tts.on_play = played  # type: ignore[attr-defined]
 
     threading.Thread(target=hook_voice, daemon=True).start()
+
+    # How long each line speaks, from what the voice made of it (its samples, the tail's
+    # silence left out: that pause is the sentence's end, not a wait).
+    from sidecoach.voice.kokoro import KokoroTTS, speak_notation
+
+    make = KokoroTTS._make
+
+    def made(self: KokoroTTS, text: str, voice: str | None) -> Any:
+        out = make(self, text, voice)
+        if out is not None:
+            samples, rate = out
+            with timeline.lock:
+                timeline.speech_s[text] = len(samples) / rate  # type: ignore[arg-type]
+                timeline.makes.append((time.monotonic(), text))
+        return out
+
+    KokoroTTS._make = made  # type: ignore[method-assign]
+
+    # The voice's own two moments: a line taken whole by the device, and the next one queued
+    # to it -- the wait the voice and its feeding add, apart from the device's pacing.
+    import sidecoach.voice.kokoro as kk
+
+    stream_queue, stream_wait = kk._Stream.queue, kk._Stream.wait
+
+    def queued(self: Any, samples: Any) -> None:
+        with timeline.lock:
+            timeline.handoffs.append(("queued", time.monotonic()))
+        stream_queue(self, samples)
+
+    def waited(self: Any, timeout: float, between: Any = None, meanwhile: Any = None) -> bool:
+        ok = stream_wait(self, timeout, between, meanwhile)
+        with timeline.lock:
+            timeline.handoffs.append(("taken", time.monotonic()))
+        return ok
+
+    kk._Stream.queue = queued  # type: ignore[method-assign]
+    kk._Stream.wait = waited  # type: ignore[method-assign]
+    timeline.spoken_of = lambda line: speak_notation(line, voice=True).strip()  # type: ignore[attr-defined]
 
     # Every caption, whole: a reply's later sentences run on from the one before.
     caption = engine.caption
@@ -316,6 +370,15 @@ def main() -> None:
     parser.add_argument(
         "--transcript", action="store_true", help="print every caption whole, after the timings"
     )
+    parser.add_argument(
+        "--handoffs", action="store_true", help="print the voice's moments, line by line"
+    )
+    parser.add_argument(
+        "--pace",
+        choices=("follow", "simple"),
+        default="follow",
+        help="the voice's policy: follow the player's pace (the default), or the simple one",
+    )
     args = parser.parse_args()
 
     import sounddevice
@@ -331,6 +394,7 @@ def main() -> None:
     settings.voice.model_dir = str(INSTALLED_DATA / "models" / "kokoro")
     if args.voice != "settings":
         settings.voice.muted = args.voice == "off"
+    settings.voice.pace = args.pace
     settings.llm.provider = "local"
     settings.llm.model = LOCAL_MODEL
     settings.llm.base_url = None
@@ -396,6 +460,36 @@ def main() -> None:
         print(f"-- words by the {kind}")
         for name, values in named.items():
             print(f"   {name:<20} {ms(values)}")
+    # The waits between sentences: a line's first sound after the end of the one before, when
+    # it followed within a few seconds (a reply's next sentence, or a word queued behind).
+    gaps: list[float] = []
+    spoken_of = timeline.spoken_of  # type: ignore[attr-defined]
+    for (t0, a), (t1, _) in zip(timeline.plays, timeline.plays[1:], strict=False):
+        length = timeline.speech_s.get(spoken_of(a))
+        if length is None:
+            continue
+        gap = t1 - (t0 + length)
+        if gap < 3.0:
+            gaps.append(gap)
+            print(f"   gap {gap * 1e3:6.0f} ms after: {a[:60]}")
+    print(f"-- between sentences ({len(gaps)} pairs; a sentence's 0.35 s tail is its pause)")
+    print(f"   end->next sound      {ms(gaps)}")
+    # The voice's part: a line taken by the device, and the next one queued (within 3 s).
+    waits = [
+        b[1] - a[1]
+        for a, b in zip(timeline.handoffs, timeline.handoffs[1:], strict=False)
+        if a[0] == "taken" and b[0] == "queued" and b[1] - a[1] < 3.0
+    ]
+    print(f"   taken->next queued   {ms(waits)}  ({len(waits)} pairs: the voice's own wait)")
+    if args.handoffs:
+        begun = timeline.handoffs[0][1] if timeline.handoffs else 0.0
+        events = (
+            [(t, f"{what}") for what, t in timeline.handoffs]
+            + [(t, f"plays: {line[:50]}") for t, line in timeline.plays]
+            + [(t, f"made: {text[:50]}") for t, text in timeline.makes]
+        )
+        for t, what in sorted(events):
+            print(f"   {(t - begun) * 1e3:9.0f} ms  {what}")
     if args.transcript:
         print("-- every caption, in order")
         for i, line in enumerate(timeline.transcript, 1):

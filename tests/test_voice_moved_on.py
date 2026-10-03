@@ -17,6 +17,7 @@ from tests.test_voice_ptt_quiet import FakeTTS, _captioned
 
 def _panel(make_panel: Callable[..., PanelEngine]) -> tuple[PanelEngine, FakeTTS]:
     engine = make_panel()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     engine._state["ply"] = 12

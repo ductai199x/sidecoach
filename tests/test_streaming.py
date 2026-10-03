@@ -255,7 +255,10 @@ def test_the_coach_hands_its_sink_to_the_request() -> None:
         return True
 
     def factory(
-        trigger: Trigger, ply: int | None, moved_on: Callable[[], bool]
+        trigger: Trigger,
+        ply: int | None,
+        moved_on: Callable[[], bool],
+        unvoiced: Callable[[], bool],
     ) -> Callable[[str], bool] | None:
         seen.append((trigger, ply))
         gone.append(moved_on)
@@ -351,7 +354,7 @@ def test_a_tool_rounds_preamble_is_not_said_and_the_answer_is_read_from_its_star
             heard.append(sentence)
             return True
 
-        coach.stream_sink = lambda trigger, ply, moved_on, sink=sink: sink
+        coach.stream_sink = lambda trigger, ply, moved_on, unvoiced, sink=sink: sink
         play_to_scholar(coach)
         coach.on_event(mate_analysis(6, decisive=False), 7.0)
         drain(coach)

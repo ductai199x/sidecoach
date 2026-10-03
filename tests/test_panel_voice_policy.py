@@ -103,6 +103,7 @@ def test_speak_records_the_action_and_stops_before_cutting_in(
     make_panel: Callable[..., PanelEngine],
 ) -> None:
     engine = make_panel()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     engine._state["ply"] = 12
@@ -144,6 +145,7 @@ def test_a_word_held_in_a_fast_game_is_said_once_the_player_slows(
     play(coach, SCHOLAR_MOVES, think_ms=1000)  # a second a move; Nf6, ply 6, at 6 s
     assert coach.fast_now(7.0)
     engine = make_panel()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     coaching = SimpleNamespace(coach=coach)
@@ -194,6 +196,7 @@ def test_a_streamed_reply_in_a_fast_game_is_kept_and_held_whole_for_the_pace(
     start_game(coach)
     play(coach, SCHOLAR_MOVES, think_ms=1000)  # a second a move: a fast game
     engine = make_panel()
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     fake = FakeTTS()
     engine._tts = fake  # type: ignore[assignment]
     coaching = SimpleNamespace(coach=coach)

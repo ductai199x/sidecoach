@@ -120,6 +120,7 @@ def test_a_reply_held_for_the_pace_is_held_whole(tmp_path: Path) -> None:
     coach's template took its place. The whole reply is the text and the word held; nothing is
     said until the game slows."""
     engine, fake = _engine(tmp_path)
+    engine.set_voice_pace("simple")  # the simple voice policy, the fallback
     engine.voice_action = lambda *_args: "text"  # type: ignore[method-assign]
     reader = _feed_all(engine)
     for chunk in CHUNKS:
