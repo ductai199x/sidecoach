@@ -827,10 +827,11 @@ class KokoroTts(
         const val ONNX_FILE = "kokoro-v1.0.onnx"
 
         /**
-         * Kokoro with the decoder's convolutions in 8 bits but its last stage's, per-channel and
-         * calibrated on coach lines: 0.42-0.46 of real time on the Pixel where the full-precision
-         * graph ran 0.70-0.76, and no difference Tai could hear in a blind A/B (2026-10-03; its last
-         * stage in 8 bits buzzed, near 11 kHz). Made by `tools/kokoro_fast.py` in the desktop repo.
+         * Kokoro with the decoder's convolutions in 8 bits but its last stage's (in fp16: in 8 bits
+         * it buzzed, near 11 kHz), and its instance norms fused: 0.31 of real time on the Pixel
+         * where the full-precision graph runs 0.70, its speech as close to fp32 as the graph Tai
+         * could not tell from fp32 in a blind A/B (2026-10-03). Made by `tools/kokoro_fast.py` in
+         * the desktop repo.
          */
         const val FAST_FILE = "kokoro-v1.0-q8.onnx"
         const val VOICES_FILE = "voices-v1.0.bin"

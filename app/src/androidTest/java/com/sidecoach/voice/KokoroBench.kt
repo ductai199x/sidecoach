@@ -47,6 +47,12 @@ class KokoroBench {
         }
     }
 
+    /** [threads], the work of each op handed out in blocks as threads come free
+     * (`session.dynamic_block_base`): for a phone's fast and slow cores. */
+    private fun dynamic(n: Int, base: Int) = {
+        threads(n, spin = true)().apply { addConfigEntry("session.dynamic_block_base", base.toString()) }
+    }
+
     private fun xnnpack(n: Int) = {
         OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(1)
@@ -107,6 +113,16 @@ class KokoroBench {
             Variant("int8 stage2-fp32", "no-stage2.onnx", threads(5, spin = true)),
             Variant("q stage2-fp32", "kokoro-q-nostage2.onnx", threads(5, spin = true)),
             Variant("q s2convs2-fp32", "kokoro-q-nos2c2.onnx", threads(5, spin = true)),
+            Variant("q8 fused", "kokoro-q8-fused.onnx", threads(5, spin = true)),
+            Variant("q8 fused t6", "kokoro-q8-fused.onnx", threads(6, spin = true)),
+            Variant("q8 fused t7", "kokoro-q8-fused.onnx", threads(7, spin = true)),
+            Variant("q8 half", "kokoro-q8-half.onnx", threads(5, spin = true)),
+            Variant("q8 half2", "kokoro-q8-half2.onnx", threads(5, spin = true)),
+            Variant("q8 s2all", "kokoro-q8-s2all.onnx", threads(5, spin = true)),
+            Variant("q8 ups", "kokoro-q8-ups.onnx", threads(5, spin = true)),
+            Variant("q8 half dyn2", "kokoro-q8-half.onnx", dynamic(5, 2)),
+            Variant("q8 half dyn4", "kokoro-q8-half.onnx", dynamic(5, 4)),
+            Variant("q8 half t7 dyn4", "kokoro-q8-half.onnx", dynamic(7, 4)),
             Variant("fp32 webgpu", "kokoro-v1.0.onnx", webgpu()),
             Variant("fp32 nnapi", "kokoro-v1.0.onnx", nnapi(fp16 = false)),
             Variant("fp32 nnapi fp16", "kokoro-v1.0.onnx", nnapi(fp16 = true)),
@@ -114,6 +130,21 @@ class KokoroBench {
             Variant("fp16 t5 urgent", "kokoro-v1.0.fp16.onnx", threads(5, spin = true), android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY),
             Variant("fp16 t5 audio", "kokoro-v1.0.fp16.onnx", threads(5, spin = true), android.os.Process.THREAD_PRIORITY_AUDIO),
         ).filter { File(dir, it.model).exists() && (only == null || it.name in only) }
+        val dumpModel = InstrumentationRegistry.getArguments().getString("dump")
+        if (dumpModel != null) {
+            // The check lines as this phone makes them with [dumpModel], whole, as raw float32
+            // samples (`dump-<model>-<i>.f32`): measured on the desktop against the phone's fp32.
+            val session = env().createSession(File(dir, dumpModel).path, threads(5, spin = true)())
+            Kokoro(session, voices, KokoroTokenizer(app)).use { model ->
+                for ((i, line) in CHECK.withIndex()) {
+                    val samples = model.create(Py.strip(Notation.speak(line, voice = true)), "bm_george")
+                    val bytes = java.nio.ByteBuffer.allocate(samples.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    bytes.asFloatBuffer().put(samples)
+                    File(dir, "dump-${dumpModel.removeSuffix(".onnx")}-$i.f32").writeBytes(bytes.array())
+                }
+            }
+            return
+        }
         if (InstrumentationRegistry.getArguments().getString("profile") == "1") {
             // Where the time goes on this phone: ONNX Runtime's own profile of the shipped graph
             // over the lines, written beside the models (`kokoro_profile.json`).
@@ -208,5 +239,13 @@ class KokoroBench {
 
     companion object {
         private const val TAG = "sidecoach.bench"
+
+        /** The desktop's `tools/kokoro_fast.py` CHECK lines: what a graph is measured on. */
+        private val CHECK = listOf(
+            "Look at your checks against the king on g6, especially the squares that take away its escape routes.",
+            "Wonderful: this was the only good move, keeping the mating attack alive while their queen is far away.",
+            "Exactly.",
+            "Your bishop on c4 eyes f7, the weakest square in their camp, and their king has not castled.",
+        )
     }
 }
