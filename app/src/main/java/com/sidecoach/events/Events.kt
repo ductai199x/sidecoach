@@ -61,8 +61,11 @@ class Resync(val gameId: String, val fen: String, val reason: String) : Event()
  * note for the log, the game kept as it stands. Not a resync -- the position did not jump and
  * the numbering goes on. Sent as a Resync, it made the coach and the engine restart their
  * numbering while the reconciler kept its own (Tai's game on the Pixel, 2026-09-23).
+ *
+ * [told]: the board has been unexplained so long that the person is told the game is lost
+ * track of (Tai, 2026-10-03); an early note, and a refused commit, are for the log only.
  */
-class Unexplained(val gameId: String, val fen: String, val reason: String) : Event()
+class Unexplained(val gameId: String, val fen: String, val reason: String, val told: Boolean = false) : Event()
 
 /**
  * A board on screen, no game followed on it, and nothing read from it for a while (Tai on

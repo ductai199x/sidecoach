@@ -215,6 +215,7 @@ class ReconcileOpsTest {
             "memory_frames" -> rec.memoryFrames = value as Int
             "memory_gap_ticks" -> rec.memoryGapTicks = value as Int
             "min_readable_cells" -> rec.minReadableCells = value as Int
+            "unexplained_note_frames" -> rec.unexplainedNoteFrames = value as Int
             else -> throw IllegalArgumentException("a field this test cannot set: $name")
         }
     }
@@ -302,7 +303,7 @@ class ReconcileOpsTest {
                 "${if (event.byUser) "user" else "them"} ${event.thinkMs ?: "None"}"
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
-        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"
+        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
         else -> event::class.java.simpleName
     }

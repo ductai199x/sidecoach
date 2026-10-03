@@ -58,6 +58,18 @@ object ThemeCache {
     /** Whether a theme file of [version] is read. */
     fun reads(version: Int): Boolean = version in OLDEST_VERSION..CACHE_VERSION
 
+    /**
+     * The twelve kinds every learned set knows (`theme_cache.KINDS`). A set is learned whole, at
+     * a start position, and nowhere else: one learned from a game's position mid-game knew only
+     * the kinds the position held, and one board gathered several such sets, each disagreeing
+     * (Tai's Pixel, 2026-10-03: five for chess.com's green; a knight read as a bishop, whole
+     * puzzles unread). Such a set is never saved, and one found is removed.
+     */
+    val KINDS: Set<String> = "PNBRQKpnbrqk".map { it.toString() }.toSet()
+
+    /** Whether a learned set knows every kind of piece (`theme_cache.whole`). */
+    fun whole(model: ThemeModel): Boolean = model.exemplarLabels.toSet().containsAll(KINDS)
+
     /** Square colours within this many levels share a fingerprint (tolerates lighting). */
     private const val QUANTUM = 8
 
@@ -191,6 +203,11 @@ class ThemeStore(private val directory: File) {
      * other set on these board colours. The key, or null.
      */
     fun save(model: ThemeModel, key: String? = null): String? {
+        if (!ThemeCache.whole(model)) {
+            val missing = (ThemeCache.KINDS - model.exemplarLabels.toSet()).sorted().joinToString("")
+            Log.e(TAG, "a learned set missing $missing was not saved: a set is learned whole")
+            return null
+        }
         val named = key ?: "${ThemeCache.paletteKey(model.lightBg, model.darkBg)}-${setKey(model)}"
         return store(model, named)
     }
@@ -255,6 +272,14 @@ class ThemeStore(private val directory: File) {
                 palettes[stamp(file)] = null
                 null
             } ?: continue
+            if (model.exemplarLabels.isNotEmpty() && !ThemeCache.whole(model)) {
+                // Learned from a game's position by an older version: never read, and removed.
+                val missing = (ThemeCache.KINDS - model.exemplarLabels.toSet()).sorted().joinToString("")
+                Log.w(TAG, "theme file ${file.name} knew no $missing: removed")
+                palettes.remove(stamp(file))
+                file.delete()
+                continue
+            }
             found.add(file.name.removePrefix("theme-").removeSuffix(".bin") to model)
         }
         return found

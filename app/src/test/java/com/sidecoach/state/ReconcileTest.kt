@@ -196,7 +196,7 @@ class ReconcileTest {
                 "${if (event.byUser) "user" else "them"} ${event.thinkMs ?: "None"}"
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
-        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"
+        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded ->
             "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
         else -> event::class.java.simpleName

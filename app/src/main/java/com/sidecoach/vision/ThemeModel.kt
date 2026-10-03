@@ -780,24 +780,7 @@ class ThemeModel(
             geometry: BoardGeometry,
             whiteAtBottom: Boolean,
             embedder: CellEmbedder,
-        ): ThemeModel? = learn(frame, geometry, whiteAtBottom, embedder, startLabels(whiteAtBottom), checkOccupancy = false)
-
-        /**
-         * The recogniser learned from a frame known to show the position [labels] give (a
-         * piece's symbol or "empty" for each of the 64 cells, row by row as displayed): the
-         * game's own board when the theme or the piece set changed mid-game (round 2, finding
-         * 2; `ThemeModel.from_position`). Nothing else vouches for the frame, so it must show
-         * pieces exactly where the labels put them and none elsewhere, as the new look's own
-         * silhouettes read them, besides the start frame's checks. A kind the position no
-         * longer holds (a queen traded) has no exemplar until the next start position.
-         */
-        fun fromPosition(
-            frame: Mat,
-            geometry: BoardGeometry,
-            whiteAtBottom: Boolean,
-            embedder: CellEmbedder,
-            labels: List<String>,
-        ): ThemeModel? = learn(frame, geometry, whiteAtBottom, embedder, labels, checkOccupancy = true)
+        ): ThemeModel? = learn(frame, geometry, whiteAtBottom, embedder, startLabels(whiteAtBottom))
 
         private fun learn(
             frame: Mat,
@@ -805,7 +788,6 @@ class ThemeModel(
             whiteAtBottom: Boolean,
             embedder: CellEmbedder,
             labels: List<String>,
-            checkOccupancy: Boolean,
         ): ThemeModel? {
             val crops = ArrayList<Mat>(64)
             for (r in 0 until 8) for (c in 0 until 8) crops.add(geometry.crop(frame, r, c, 2 * Squares.CELL))
@@ -825,9 +807,6 @@ class ThemeModel(
                 val darkBgs = ArrayList<DoubleArray>()
                 for (i in 0 until 64) {
                     val sil = SilhouetteReader.of(crops[i], Squares.CELL, colours, palette)
-                    if (checkOccupancy && (sil.fraction >= Pieces.PIECE_MIN_FRACTION) != (labels[i] != "empty")) {
-                        return null  // the frame is not this position
-                    }
                     if (labels[i] == "empty") {
                         (if (Squares.isLight(i / 8, i % 8)) lightBgs else darkBgs).add(sil.background)
                         continue

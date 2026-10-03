@@ -397,6 +397,10 @@ class Reconciler(
     private val stale = HashMap<Int, Pair<StaleKey, Int>>()
     private var unexplainedFrames = 0
 
+    /** Frames a board stays unexplained before the log is told what each square reads as. */
+    var unexplainedNoteFrames: Int = 20
+    private var unexplainedNoted = false
+
     // `internal` for the desktop's tests, which set `_started`, `_finished` and `_base_fen`
     // on a reconciler as they stand (`tools/make_reconcile_fixtures.py`).
     internal var startedFlag = false
@@ -607,6 +611,7 @@ class Reconciler(
         pending = null
         stale.clear()
         unexplainedFrames = 0
+        unexplainedNoted = false
     }
 
     /** The game under way ended, unless it had, and a new one begun from the start (`_restart`). */
@@ -929,6 +934,7 @@ class Reconciler(
             pending = null
             viewing = null
             unexplainedFrames = 0
+            unexplainedNoted = false
             return events
         }
 
@@ -1848,6 +1854,7 @@ class Reconciler(
         pendingAge = 0
         stale.clear()
         unexplainedFrames = 0
+        unexplainedNoted = false
         return events
     }
 
@@ -1952,6 +1959,7 @@ class Reconciler(
         if (rest.isEmpty()) {
             // The queue formed or changed; nothing has happened on the board yet.
             unexplainedFrames = 0
+            unexplainedNoted = false
             return mutableListOf()
         }
         val replies = singleExplanations(board, restObs, rest)
@@ -2148,14 +2156,43 @@ class Reconciler(
     private fun maybeResync(diff: Set<Int>): MutableList<Event> {
         if (diff.isEmpty()) {
             unexplainedFrames = 0
+            unexplainedNoted = false
             return mutableListOf()
         }
         unexplainedFrames += 1
+        if (unexplainedFrames >= unexplainedNoteFrames && !unexplainedNoted) {
+            // Early, for the log: what the reader sees on each square the game cannot explain,
+            // while it is still fresh -- a dump's log said only the squares' names (Tai's puzzle
+            // on the Pixel, 2026-10-03: 34 squares, and why was nowhere).
+            unexplainedNoted = true
+            return mutableListOf(
+                Unexplained(gameId = gameId, fen = board.fen(), reason = "unexplained for now: ${describe(diff.sorted())}"),
+            )
+        }
         val persistent = diff.filter { stale.getValue(it).second > staleAfter }
         if (persistent.size < resyncCells || unexplainedFrames < resyncAfter) return mutableListOf()
         unexplainedFrames = 0
-        val names = persistent.sorted().joinToString(", ") { squareName(it) }
-        return mutableListOf(Unexplained(gameId = gameId, fen = board.fen(), reason = "unexplained: $names"))
+        return mutableListOf(
+            Unexplained(
+                gameId = gameId, fen = board.fen(),
+                reason = "unexplained: ${describe(persistent.sorted())}", told = true,
+            ),
+        )
+    }
+
+    /**
+     * Each square as read against the game: "b1 N off its square, game N", "e4 empty, game P",
+     * "d5 piece of no kind, game -" (`_describe`).
+     */
+    private fun describe(squares: List<Int>): String = squares.joinToString("; ") { sq ->
+        val reading = lastObs[sq]
+        val read = when {
+            reading == null -> "unread"
+            reading.kind == Kind.EMPTY -> "empty"
+            reading.kind != Kind.PIECE -> "unknown"
+            else -> (reading.symbol ?: "piece of no kind") + if (!reading.settled) " off its square" else ""
+        }
+        "${squareName(sq)} $read, game ${board.pieceAt(sq)?.symbol() ?: "-"}"
     }
 
     /**

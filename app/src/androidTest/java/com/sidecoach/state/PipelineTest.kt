@@ -394,7 +394,7 @@ class PipelineTest {
                 (if (event.byUser) "user" else "them")
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
-        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}"
+        is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is BoardUnread -> "BoardUnread ${event.reason}"
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn}"
         is ScreenStateChanged -> "ScreenState ${event.state.name.lowercase()}"

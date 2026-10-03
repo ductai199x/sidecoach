@@ -80,6 +80,13 @@ private val BOARD_UNREAD = mapOf(
         "started with these teaches them to me.",
 )
 
+/**
+ * What the person is told when the game's board has stayed unexplained a long while
+ * ([Unexplained.told]): the reader sees something no move of the game leads to. `panel.LOST_TRACK`.
+ */
+val LOST_TRACK = "I've lost track of this board: what I see doesn't follow from the game. I'll pick it up " +
+    "again as soon as it does, or at the next game or puzzle."
+
 object PanelEngine {
 
     /**
@@ -147,6 +154,9 @@ object PanelEngine {
 
     /** The game's last ply as the moves came, so a takeback knows which plies it withdrew. */
     private var lastPly = 0
+
+    /** Whether the person has been told the board is lost track of, since it was last read. */
+    @Volatile private var lostTold = false
 
     /** Consecutive frames read as degraded (`panel._bad_run`). */
     private var badRun = 0
@@ -615,6 +625,9 @@ object PanelEngine {
      * the game the reconciler holds once the tick's events are out -- the one End game ends.
      */
     fun onGameEvent(event: Event, followed: String? = null) {
+        if (event is GameStarted || event is MovePlayed || event is Resync || event is Takeback) {
+            lostTold = false // the board is read again: a later lapse is told again
+        }
         when (event) {
             is GameStarted -> {
                 PanelVoice.positionMovedOn("a new game")
@@ -711,7 +724,26 @@ object PanelEngine {
 
             // A note: cells the game has not explained for a while. The game is kept as it
             // stands; nothing downstream starts again.
-            is Unexplained -> emit("vision", "warn", "board unexplained (${event.reason}); the game is kept")
+            is Unexplained -> {
+                emit("vision", "warn", "board unexplained (${event.reason}); the game is kept")
+                if (event.told && !lostTold) {
+                    // Said once until the board is read again (a move, a re-read, a new game): a
+                    // board the reader fails on is never left in silence (Tai, 2026-10-03).
+                    lostTold = true
+                    emit(
+                        "coach",
+                        "info",
+                        "board · lost — $LOST_TRACK",
+                        JSONObject().apply {
+                            put("full", LOST_TRACK)
+                            put("trigger", "board")
+                            put("ply", JSONObject.NULL)
+                            put("voice", "text")
+                        },
+                    )
+                    Captions.show(LOST_TRACK)
+                }
+            }
 
             // A board up and nothing read from it: said in the coach's pane, where the person
             // looks, as "Press Start first" is -- and, the phone's own, in the caption box,

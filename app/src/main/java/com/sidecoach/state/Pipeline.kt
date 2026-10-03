@@ -136,6 +136,12 @@ class GamePipeline(
         const val RELEARN_EVERY_S = 0.5
         const val RELEARN_HOLD_S = 0.5
 
+        /**
+         * A game whose look was lost is read on once the readings are whole again: at most this
+         * many cells unreadable (`pipeline.LOOK_BACK_MAX_UNREAD`).
+         */
+        const val LOOK_BACK_MAX_UNREAD = 2
+
         private const val TAG = "sidecoach.pipeline"
     }
 
@@ -379,6 +385,12 @@ class GamePipeline(
         val rec = reconciler
         val currentReadings = game.readingsValue
         if (current == null || rec == null || currentReadings == null) {
+            events.addAll(emitScreenState(boardPresent = true))
+            return stamp(events, ts, frameId)
+        }
+        if (game.lookLost != null) {
+            // The board's look changed and no learned set reads it: the game is not followed on
+            // readings of other pieces ([relearnLook]), only told, until its look is back.
             events.addAll(emitScreenState(boardPresent = true))
             return stamp(events, ts, frameId)
         }
@@ -918,17 +930,22 @@ class GamePipeline(
     }
 
     /**
-     * The recogniser learned again, mid-game, when the board's look changed under it; a
-     * [BoardUnread] ("look") when it cannot be (`pipeline._relearn_look`; round 2, finding 2,
-     * and round 3). A theme or a piece set changed mid-game left the rest of the game unread,
-     * with no event. The game's own position says what is on the board: the record's position,
-     * or one legal move on from it. Tried only when the look stays broken the same way on one
-     * lock for [RELEARN_HOLD_S] (half the board unknown on new square colours, or
-     * [RELEARN_UNEXPLAINED_FRAMES] frames no story explains), with nothing dragged and a re-fit
-     * finding the board exactly under the lock. A set cached on the new colours that reads the
-     * position on every cell is taken whole; otherwise [ThemeModel.fromPosition] learns one,
-     * validated first, and cached as one learned at a start position is ([keepLook]); it lacks
-     * the kinds the position has lost, so it never replaces a set that knows them.
+     * A board whose look changed mid-game: read on with a whole learned set that reads the game's
+     * position, or a [BoardUnread] ("look") when none does (`pipeline._relearn_look`).
+     *
+     * A look is never learned mid-game. A set learned from a game's position knew only the kinds
+     * that position held, and one theme and piece set could be learned partly again and again,
+     * the sets disagreeing: one hard square had a rook endgame learned as the look, and the next
+     * puzzle's knights were read as bishops, or not at all, and whole puzzles went unread, in
+     * silence (Tai's Pixel, 2026-10-03: five such sets for one board). A set is learned whole,
+     * at a start position, and nowhere else (Tai: "bring it up to the user as an error and do
+     * not try to get a partial read").
+     *
+     * A look changed is a new theme, or a new piece set: on a board no story explains, at least
+     * half the pieces of the game's position -- or one legal move on -- not read as their own
+     * kind, landed ([lookChanged]). A square or two read badly is no new look. A cached set that
+     * reads the position, every piece landed, is taken; otherwise the person is told once, after
+     * [COLD_NOTICE_S], and the game goes unread until its look is back or a new game starts.
      */
     private fun relearnLook(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
         val none = mutableListOf<Event>()
@@ -945,14 +962,23 @@ class GamePipeline(
         // (the desktop's geometry sweep, seed 175).
         val newTheme = unknown >= RELEARN_UNKNOWN_CELLS && sampled != null &&
             !ThemeCache.sameTheme(sampled.first, sampled.second, current.lightBg, current.darkBg)
+        if (game.lookLost != null) {
+            // The game is not followed while its look is lost, so its stories say nothing: the
+            // look is back when the readings are whole again.
+            if (newTheme || unlanded(readings) || unreadable(readings) > LOOK_BACK_MAX_UNREAD) {
+                return lookUnread(ts)
+            }
+            Log.i(TAG, "the board's look is back: the game is read on")
+            game.lookLost = null
+            game.relearnSeen = null
+            return none
+        }
         // The game unread: a new theme, or frames no story explains (a new set read as other
-        // pieces). Or not yet unread but about to be: a new set read as the right pieces that
-        // no longer land on their squares ([unlanded]), on a board the reconciler explains only
-        // because an unsettled piece holds no story back -- until a move lands on one (round 3,
-        // the desktop's look-change sweep, cburnett to chess7 and to leipzig).
+        // pieces). Or not yet unread but about to be: a new set read as the right pieces that no
+        // longer land on their squares ([unlanded]; round 3, the desktop's look-change sweep).
         val stalled = newTheme || rec.unexplainedFor >= RELEARN_UNEXPLAINED_FRAMES
-        if (!stalled) game.lookLost = null // the game is read
         if (!stalled && !unlanded(readings)) {
+            game.lookLost = null // the game is read
             game.relearnSeen = null
             return none
         }
@@ -974,19 +1000,14 @@ class GamePipeline(
         if (tried != null && ts - tried < RELEARN_EVERY_S) return none
         game.relearnTried = ts
         val whiteAtBottom = side == Side.WHITE
-        // Learned only on a lock that sits on its board to the pixel (the desktop's geometry
-        // sweep, seed 25: a board mid-nudge read as a new theme).
+        // Read only on a lock that sits on its board to the pixel (the desktop's geometry sweep,
+        // seed 25: a board mid-nudge read as a new theme).
         val lock = board ?: return none
         val gray = lastGray ?: return none
         if (!onItsBoard(gray, lock)) return none
-        // Whether this is the game's board in a new look is the reconciler's to say: none of its
-        // stories explains the frame. A frame the recogniser read within a cell of a position of
-        // the game was once left alone as "not a new look", and a set read with a single piece
-        // wrong was never learned: about one set change in six left the rest of the game unread
-        // (round 3). What guards against another board, a dialog or a piece in flight is that
-        // the frame must show pieces exactly where the game's position, or one legal move on
-        // from it, puts them, as the look-free occupancy reads them -- and then as the new
-        // look's own silhouettes read them ([ThemeModel.fromPosition]).
+        // The frame must show pieces exactly where the game's position, or one legal move on
+        // from it, puts them, as the look-free occupancy reads them: another board, a dialog or a
+        // piece in flight shows none of them, and is no look of this game's.
         val base = rec.board.copy(withStack = false)
         val positions = mutableListOf(base)
         for (move in base.legalMoves()) {
@@ -995,56 +1016,69 @@ class GamePipeline(
         }
         val occupied = ThemeModel.occupancy(frame, geometry).map { it.fraction >= Pieces.PIECE_MIN_FRACTION }
         if (sampled == null) sampled = ThemeCache.samplePalette(frame, geometry)
-        var shown = false // the frame shows one of those positions
-        for (position in positions) {
-            val labels = (0 until 64).map { i ->
-                position.pieceAt(Squares.squareAt(i / 8, i % 8, whiteAtBottom))?.symbol() ?: "empty"
+        val shown = positions.firstOrNull { position ->
+            (0 until 64).none { i ->
+                occupied[i] != (position.pieceAt(Squares.squareAt(i / 8, i % 8, whiteAtBottom)) != null)
             }
-            if ((0 until 64).any { occupied[it] != (labels[it] != "empty") }) continue
-            shown = true
-            // A recogniser is taken only when it reads the position on every cell, every piece
-            // landed on its square ([readsLanded]): the recogniser this game was read with is
-            // among the cached sets, and read with one piece wrong it was taken again, and
-            // nothing changed; and one learned where something drawn spoils a piece would read
-            // it off its square, and is not taken.
-            val palette = sampled
-            val store = cache
-            if (store != null && palette != null) {
-                for ((_, cached) in store.candidates(palette.first, palette.second)) {
-                    val cachedReadings = cached.classifyFrame(frame, geometry, embedder)
-                    if (readsLanded(cachedReadings, position, whiteAtBottom)) {
-                        model = cached
-                        game.readingsValue = cachedReadings
-                        game.lookLost = null
-                        return none
-                    }
+        }
+        if (shown == null) {
+            if (stalled && newTheme) return lookUnread(ts)
+            return none // nothing says the look changed (another board, a dialog, a story)
+        }
+        if (!newTheme && !lookChanged(readings, shown, whiteAtBottom)) {
+            return none // a square or two read badly: the reconciler's to explain, no new look
+        }
+        // A whole set cached for these colours that reads the position, every piece landed: the
+        // look switched to one learned before.
+        val palette = sampled
+        val store = cache
+        if (store != null && palette != null) {
+            for ((_, cached) in store.candidates(palette.first, palette.second)) {
+                val cachedReadings = cached.classifyFrame(frame, geometry, embedder)
+                if (readsLanded(cachedReadings, shown, whiteAtBottom)) {
+                    model = cached
+                    game.readingsValue = cachedReadings
+                    game.lookLost = null
+                    Log.i(TAG, "the look changed mid-game to a learned set; read on with it")
+                    return none
                 }
             }
-            val learned = ThemeModel.fromPosition(frame, geometry, whiteAtBottom, embedder, labels) ?: continue
-            val learnedReadings = learned.classifyFrame(frame, geometry, embedder)
-            if (!readsLanded(learnedReadings, position, whiteAtBottom)) continue
-            learned.rankLabels = Coordinates.learnRankLabels(frame, geometry, side).ifEmpty { current.rankLabels }
-            model = learned
-            game.readingsValue = learnedReadings
-            game.lookLost = null
-            // Kept as a look learned at a game's start is ([rebuildModel]), once it has read its
-            // own frame back as the position, every piece landed: unkept, an app restarted
-            // mid-game read the new look as nothing until a start position, which a puzzle never
-            // shows (round 3 audit, E11; Tai, 2026-10-02).
-            keepLook(learned, frame, geometry, side, position)
-            return none
         }
-        // Nothing says the look changed (another board, a dialog, a story), or the game is
-        // still read.
-        if (!stalled || !(shown || newTheme)) return none
-        // The game's board in a new look that cannot be learned -- pieces the frame shows where
-        // the game has none, a kind its silhouettes do not separate -- or a new theme with moves
-        // played since: the game goes unread, and the person is told once, as of a board unread
-        // at the start (COLD_NOTICE_S), rather than left in silence.
+        return lookUnread(ts)
+    }
+
+    /**
+     * The game's board in a look no learned set reads: the game goes unread, and the person is
+     * told once, as of a board unread at the start ([COLD_NOTICE_S]) (`pipeline._look_unread`).
+     */
+    private fun lookUnread(ts: Double): MutableList<Event> {
         val (lostSince, told) = game.lookLost ?: (ts to false)
         game.lookLost = lostSince to (told || ts - lostSince >= COLD_NOTICE_S)
-        if (told || ts - lostSince < COLD_NOTICE_S) return none
+        if (told || ts - lostSince < COLD_NOTICE_S) return mutableListOf()
+        Log.w(TAG, "the board's look changed mid-game and no learned set reads it")
         return mutableListOf(BoardUnread("look"))
+    }
+
+    /** The cells read as nothing known: unknown, or a piece of no kind or off its square. */
+    private fun unreadable(readings: Readings): Int = readings.count {
+        it.kind == Kind.UNKNOWN || (it.kind == Kind.PIECE && (it.symbol == null || !it.settled))
+    }
+
+    /**
+     * Whether at least half the pieces of [position] are not read as their own kind, landed on
+     * their squares -- or a kind reads all off its squares ([unlanded]): a new piece set. A square
+     * or two read badly is no new look (`pipeline._look_changed`).
+     */
+    private fun lookChanged(readings: Readings, position: Board, whiteAtBottom: Boolean): Boolean {
+        var pieces = 0
+        var wrong = 0
+        for (i in 0 until 64) {
+            val piece = position.pieceAt(Squares.squareAt(i / 8, i % 8, whiteAtBottom)) ?: continue
+            pieces += 1
+            val reading = readings[i]
+            if (!(reading.kind == Kind.PIECE && reading.symbol == piece.symbol() && reading.settled)) wrong += 1
+        }
+        return pieces > 0 && (2 * wrong >= pieces || unlanded(readings))
     }
 
     /**

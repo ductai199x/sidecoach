@@ -249,6 +249,31 @@ class PanelEngineTest {
      * are `thePanelStartsWithTheSettingsVoiceAndItsControlsTakeEffect`'s (and PanelServerTest's
      * over HTTP).
      */
+    /**
+     * A board the reader fails on is never left in silence (Tai, 2026-10-03): the long
+     * [com.sidecoach.events.Unexplained] note is said in the coach's pane, once, and again only
+     * after the board has been read since (a move); the early note stays in the log
+     * (`test_a_board_lost_track_of_is_told_once_until_it_is_read_again`).
+     */
+    @Test
+    fun aBoardLostTrackOfIsToldOnceUntilItIsReadAgain() {
+        fun lost() = PanelEngine.all().count { it.text.startsWith("board · lost") }
+        val before = lost()
+        for (told in listOf(false, true, true)) {
+            PanelEngine.onGameEvent(com.sidecoach.events.Unexplained("g", STARTING_FEN, "unexplained: x", told))
+        }
+        assertEquals(before + 1, lost())
+        PanelEngine.onGameEvent(
+            com.sidecoach.events.MovePlayed(
+                gameId = "g", ply = 1, san = "e4", uci = "e2e4", fenBefore = STARTING_FEN,
+                fenAfter = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", byUser = true,
+            ),
+        )
+        PanelEngine.onGameEvent(com.sidecoach.events.Unexplained("g", STARTING_FEN, "unexplained: x", true))
+        assertEquals(before + 2, lost())
+        assertEquals(LOST_TRACK, PanelEngine.all().last { it.text.startsWith("board · lost") }.text.substringAfter("— "))
+    }
+
     @Test
     fun controlsWithoutASessionWaitForTheNextStart() {
         PanelEngine.commands.clear()

@@ -93,7 +93,7 @@ def event_json(event) -> str:
     if isinstance(event, Resync):
         return f"Resync {event.reason} | {event.fen}"
     if isinstance(event, Unexplained):
-        return f"Unexplained {event.reason} | {event.fen}"
+        return f"Unexplained {event.reason} | {event.fen}" + (" | told" if event.told else "")
     if isinstance(event, BoardUnread):
         return f"BoardUnread {event.reason}"
     if isinstance(event, GameEnded):
@@ -576,51 +576,42 @@ def new_theme_new_game() -> list[dict]:
     return states
 
 
+def _told_and_back(board: chess.Board, before: dict, after: dict) -> list[dict]:
+    """The desktop's `_told_and_back`: the new look held still past COLD_NOTICE_S (unchanged
+    ticks after the first) -- told once, nothing learned -- then the old look back and two
+    more plies, read on."""
+    frames = int((COLD_NOTICE_S + 2.0) * FPS)
+    held = _shown(board, frames, highlight=board.peek(), **after)
+    states = [dict(held, _changed=[True] + [False] * (frames - 1))]
+    for _ in range(2):
+        move = next(iter(board.legal_moves))
+        board.push(move)
+        states.append(_shown(board, 3, highlight=move, **before))
+    return states
+
+
 def look_changed_mid_game(**look) -> list[dict]:
-    """`test_a_look_changed_mid_game_is_learned_from_the_game_s_own_position` (round 2,
-    finding 2): three plies on green with cburnett, then the board's theme or the piece set
-    changed (`look`) and held still for a second, unchanged ticks after the first, and the
-    game played on in the new look: learned again from the game's own position, its moves
-    followed, no new game."""
+    """`test_a_look_changed_mid_game_that_no_learned_set_reads_is_told_never_learned` (Tai,
+    2026-10-03: "bring it up to the user as an error and do not try to get a partial read"):
+    three plies on green with cburnett, then the board's theme or the piece set changed
+    (`look`) and held still: told ("look"), never learned, the game not followed on readings
+    of other pieces; the old look back, the game is read on."""
     board = chess.Board()
     states = [_shown(board, 3), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
-    states.append(dict(_shown(board, 10, highlight=board.peek(), **look), _changed=[True] + [False] * 9))
-    states += _moves(board, ("Nc6", "Bb5"), repeat=3, **look)
-    return states
+    return states + _told_and_back(board, {}, look)
 
 
-def look_kept_for_a_restart() -> list[dict]:
-    """`test_a_look_learned_mid_game_is_kept_as_one_learned_at_a_start` (round 3 audit, E11):
-    the piece set changed mid-game, learned again from the game's position and cached beside
-    the start's; the app restarted (`_session`: a fresh pipeline on the same theme cache) on
-    the game in the new set, held still: read cold from the cache, and its next moves
-    followed."""
-    board = chess.Board()
-    states = [dict(_shown(board, 3), _session=True), *_moves(board, ("e4", "e5", "Nf3"), repeat=3)]
-    states.append(dict(_shown(board, 10, highlight=board.peek(), style="pixel"), _changed=[True] + [False] * 9))
-    states += _moves(board, ("Nc6",), repeat=3, style="pixel")
-    states.append(dict(_shown(board, int(round(8.0 * FPS)), highlight=board.peek(), style="pixel"), _session=True))
-    states += _moves(board, ("Bb5", "a6"), repeat=3, style="pixel")
-    return states
-
-
-def set_read_one_piece_wrong(before: str, after: str, opening: str, rest: str) -> list[dict]:
-    """`test_a_set_read_with_one_piece_wrong_is_learned_again` (round 3): the look-change
-    sweep's set changes the old recogniser read with one piece wrong, which a frame "within a
-    cell of a position of the game" left unlearned: the opening in the old set, the new set
-    held still for a second and a half, unchanged ticks after the first, then four moves in
-    it: learned again while still, every move followed, no new game."""
+def set_read_nearly_right(before: str, after: str, opening: str) -> list[dict]:
+    """`test_a_set_changed_mid_game_read_nearly_right_is_told_never_learned`: the look-change
+    sweep's set changes the old recogniser reads with a piece or two wrong, or every piece off
+    its square: the opening in the old set, then the new set held still: told, never learned,
+    and read on with the old set back."""
     board = chess.Board()
     states = [_shown(board, 3, style=before)]
     for uci in opening.split():
         move = board.push_uci(uci)
         states.append(_shown(board, 3, highlight=move, style=before))
-    held = _shown(board, 15, highlight=board.peek(), style=after)
-    states.append(dict(held, _changed=[True] + [False] * 14))
-    for uci in rest.split():
-        move = board.push_uci(uci)
-        states.append(_shown(board, 3, highlight=move, style=after))
-    return states
+    return states + _told_and_back(board, {"style": before}, {"style": after})
 
 
 def look_unlearnable_told() -> list[dict]:
@@ -1168,27 +1159,24 @@ SCENARIOS = {
         0.04,
     ),
     "new-theme-new-game": new_theme_new_game,
-    # Round 2, finding 2: a theme, then a piece set, changed mid-game.
+    # A theme, then a piece set, changed mid-game: told, never learned (Tai, 2026-10-03).
     "theme-changed-mid-game": lambda: look_changed_mid_game(theme="brown"),
     "set-changed-mid-game": lambda: look_changed_mid_game(style="pixel"),
-    # Round 3 audit, E11: the set learned mid-game cached, and read cold after a restart.
-    "look-kept-for-a-restart": look_kept_for_a_restart,
-    # Round 3: set changes read with one piece wrong, and a look that cannot be learned.
-    "set-one-wrong-maestro-cburnett": lambda: set_read_one_piece_wrong(
-        "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5", "g2g4 f6f5 c2c4 b5a4"
+    # Round 3's set changes the old set reads nearly right: told all the same.
+    "set-one-wrong-maestro-cburnett": lambda: set_read_nearly_right(
+        "maestro", "cburnett", "h2h3 b7b5 b1c3 f7f6 c3a4 h7h5"
     ),
-    "set-one-wrong-maestro-leipzig": lambda: set_read_one_piece_wrong(
-        "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8", "b1c3 g7g5 d2d4 a7a6"
+    "set-one-wrong-maestro-leipzig": lambda: set_read_nearly_right(
+        "maestro", "leipzig", "b2b4 g8f6 a2a3 h7h5 c2c4 h8g8"
     ),
-    "set-unlanded-cburnett-chess7": lambda: set_read_one_piece_wrong(
+    "set-unlanded-cburnett-chess7": lambda: set_read_nearly_right(
         "cburnett",
         "chess7",
         "e2e3 a7a6 d1e2 h7h6 e2d3 g8f6 d3f5 f6g8 f5e4 c7c5 e4c4 h6h5 c4e6 b7b6 g2g3 a6a5 f1d3"
         " d7d6 f2f3 c8d7 g1e2 g8h6 b1c3 a8a6",
-        "e6e7 d8e7 h1f1 f7f5",
     ),
-    "set-unlanded-cburnett-leipzig": lambda: set_read_one_piece_wrong(
-        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4", "g3g4 h7h5 c2c4 f8h6"
+    "set-unlanded-cburnett-leipzig": lambda: set_read_nearly_right(
+        "cburnett", "leipzig", "g2g3 g7g5 a2a3 a7a5 f2f3 a5a4"
     ),
     "look-unlearnable-told": look_unlearnable_told,
     "overlays-held-still": overlays_held_still,
@@ -1265,33 +1253,30 @@ READ_ONCE = {
     "repetition-green",
 }
 
+def _told_never_learned(lines: list[str], data: dict, plies: int) -> bool:
+    """A look changed mid-game: told once ("look"), nothing learned, and every ply read -- the
+    opening's, and the two played with the old look back (`_told_and_back`)."""
+    told = [line for line in lines if line.startswith("BoardUnread")]
+    return told == ["BoardUnread look"] and data["bootstraps"] == 1 and len(_sans(lines)) == plies
+
+
 # What each of those scenarios must show on the desktop, as its test asserts: a fixture that
 # does not is no fixture of the behaviour.
 EXPECT = {
     "repetition-green": lambda lines, data: (
         _sans(lines) == list(REPETITION) and not any(ln.startswith("GameEnded") for ln in lines)
     ),
-    "theme-changed-mid-game": lambda lines, data: (
-        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
-    ),
-    "set-changed-mid-game": lambda lines, data: (
-        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5"] and data["bootstraps"] == 1
-    ),
-    # The start's set and the one learned mid-game, both cached; the restart read cold.
-    "look-kept-for-a-restart": lambda lines, data: (
-        _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"] and data["themes"] == 2
-    ),
-    "set-one-wrong-maestro-cburnett": lambda lines, data: (
-        len(_sans(lines)) == 10 and data["bootstraps"] == 1
-    ),
-    "set-one-wrong-maestro-leipzig": lambda lines, data: (
-        len(_sans(lines)) == 10 and data["bootstraps"] == 1
-    ),
-    "set-unlanded-cburnett-chess7": lambda lines, data: (
-        len(_sans(lines)) == 28 and data["bootstraps"] == 1
-    ),
+    "theme-changed-mid-game": lambda lines, data: _told_never_learned(lines, data, 5),
+    "set-changed-mid-game": lambda lines, data: _told_never_learned(lines, data, 5),
+    "set-one-wrong-maestro-cburnett": lambda lines, data: _told_never_learned(lines, data, 8),
+    "set-one-wrong-maestro-leipzig": lambda lines, data: _told_never_learned(lines, data, 8),
+    "set-unlanded-cburnett-chess7": lambda lines, data: _told_never_learned(lines, data, 26),
+    # At the fixtures' board size the old set reads leipzig well enough to follow it: every
+    # ply read, nothing learned, nothing to tell (a look is told only when it cannot be read).
     "set-unlanded-cburnett-leipzig": lambda lines, data: (
-        len(_sans(lines)) == 10 and data["bootstraps"] == 1
+        len(_sans(lines)) == 8
+        and data["bootstraps"] == 1
+        and not any(line.startswith("BoardUnread") for line in lines)
     ),
     "overlays-held-still": lambda lines, data: (
         _sans(lines) == ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Bc5", "c3", "d6"]

@@ -111,7 +111,7 @@ def event_json(event) -> str:
     if isinstance(event, Resync):
         return f"Resync {event.reason} | {event.fen}"
     if isinstance(event, Unexplained):
-        return f"Unexplained {event.reason} | {event.fen}"
+        return f"Unexplained {event.reason} | {event.fen}" + (" | told" if event.told else "")
     if isinstance(event, GameEnded):
         return f"GameEnded {event.result} {event.reason} | {event.pgn} | {event.final_fen}"
     return type(event).__name__
@@ -463,7 +463,9 @@ TUNABLES = (
     "min_readable_cells",
 )
 # What a test (or the pipeline) sets on a reconciler from outside; anything else stops the run.
-SETTABLE = frozenset(TUNABLES) | {"board", "_base_fen", "_started", "_finished", "bottom", "user_side"}
+SETTABLE = frozenset(TUNABLES) | {
+    "board", "_base_fen", "_started", "_finished", "bottom", "user_side", "unexplained_note_frames"
+}
 
 KINDS = {"empty": "e", "piece": "p", "unknown": "u"}
 TINTS = {None: "-", "yellow": "y", "red": "r", "other": "o"}

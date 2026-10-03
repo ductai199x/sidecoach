@@ -88,6 +88,35 @@ class ThemeStoreTest {
 
             // A file of an older version is not read, so the set is learned again:
             // ThemeMigrationTest#aFileOlderThanTheOldestNewerThanTodayOrCutShortIsRelearned.
+
+            // A set is learned whole (Tai's Pixel, 2026-10-03: sets learned mid-game knew only
+            // their position's kinds, a knight read as a bishop): one lacking a kind is never
+            // saved, and one an older version left on disk is removed on its first read and is
+            // never a candidate (`test_a_set_lacking_a_kind_is_never_saved`,
+            // `..._found_in_the_cache_is_removed_and_never_read`).
+            val partial = ThemeModel(
+                exemplars = model.exemplars.filter { it.symbol != "N" },
+                lightBg = model.lightBg,
+                darkBg = model.darkBg,
+                pieceColours = model.pieceColours,
+                palette = model.palette,
+                exemplarVectors = model.exemplarVectors,
+                exemplarLabels = model.exemplarLabels.map { if (it == "N") "empty" else it },
+                whiteAtBottom = model.whiteAtBottom,
+                landingCrops = model.landingCrops,
+                landingPx = model.landingPx,
+            )
+            assertNull("a set lacking a kind is not saved", store.save(partial))
+            val kept = directory.listFiles()!!.map { it.name }.toSet()
+            // Written as an older version wrote it, past the refusal.
+            val write = ThemeStore::class.java.getDeclaredMethod("store", ThemeModel::class.java, String::class.java)
+            write.isAccessible = true
+            write.invoke(store, partial, "old-partial")
+            assertTrue(File(directory, "theme-old-partial.bin").exists())
+            val found = store.candidates(model.lightBg, model.darkBg).map { it.first }
+            assertEquals("only the whole set is a candidate", 1, found.size)
+            assertTrue("the partial set is removed", !File(directory, "theme-old-partial.bin").exists())
+            assertEquals(kept, directory.listFiles()!!.map { it.name }.toSet())
         }
         directory.deleteRecursively()
     }
