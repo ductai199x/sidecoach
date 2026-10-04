@@ -78,7 +78,9 @@
     }
     if (warm?.done && !finishing) {
       finishing = true;
-      setTimeout(done, 700);
+      // A beat for the last tick to show, no more: it was 0.7 s of every launch (Tai,
+      // 2026-10-03: startup as low as it will go).
+      setTimeout(done, 150);
     }
   }
 
