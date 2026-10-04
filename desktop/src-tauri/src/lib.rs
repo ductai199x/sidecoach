@@ -445,6 +445,21 @@ fn splash_done(app: AppHandle) {
     }
 }
 
+/// The splash is about to fade: the main window comes up behind it, the splash kept in front,
+/// so the card fades away over the app rather than to a blank screen (Tai, 2026-10-03: "smooth
+/// fade out to the app"). `splash_done` then closes the splash and gives the main window focus.
+#[tauri::command]
+fn splash_reveal(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        places::shown(&window);
+    }
+    if let Some(splash) = app.get_webview_window("splash") {
+        let _ = splash.set_focus();
+    }
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -467,7 +482,11 @@ fn open_splash(app: &AppHandle) -> bool {
         .inner_size(720.0, 480.0)
         .resizable(false)
         .decorations(false)
-        .shadow(true) // Windows 11 rounds and shadows a frameless window that asks
+        // Transparent, the card drawing its own rounded corners: it fades away over the main
+        // window shown behind it (`splash_reveal`). A window's own shadow would stay behind
+        // as a dark frame while the card faded, so there is none.
+        .transparent(true)
+        .shadow(false)
         // An ordinary window: never on top of everything, and in the taskbar and Alt+Tab so
         // it can be brought back once something else is in front (Tai, 2026-09-24: "it's
         // basically on top of everything else and I can't bring something else in front").
@@ -749,6 +768,7 @@ pub fn run() {
             sidecar_status,
             restart_sidecar,
             splash_done,
+            splash_reveal,
             sidecar_token,
             data_dir_command,
             shell_settings,

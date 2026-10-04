@@ -21,7 +21,13 @@
   let started = $state(performance.now());
   let seconds = $state(0);
   let finishing = $state(false);
+  let leaving = $state(false);
   let timer: ReturnType<typeof setInterval> | null = null;
+  // Shown three seconds at least, then a fade into the app: the warm-up takes about a second
+  // now, and the card came and went in a blink (Tai, 2026-10-03: "the splash screen shows up for
+  // 3s with the animation and smooth fade out to the app"). The models go on loading meanwhile.
+  const SHOWN_MS = 3000;
+  const FADE_MS = 750;
 
   const stages = $derived(warm?.stages?.length ? warm.stages : PLACEHOLDER);
   // White's first rank, a1 to h1: each stage that finishes puts its piece on its square.
@@ -78,10 +84,16 @@
     }
     if (warm?.done && !finishing) {
       finishing = true;
-      // A beat for the last tick to show, no more: it was 0.7 s of every launch (Tai,
-      // 2026-10-03: startup as low as it will go).
-      setTimeout(done, 150);
+      setTimeout(() => void leave(), Math.max(0, SHOWN_MS - (performance.now() - started)));
     }
+  }
+
+  // The fade: in the shell the main window comes up behind the card first, so the card fades
+  // away over the app; on the phone the page fades to its own ground and the panel follows.
+  async function leave() {
+    if (shell) await invoke("splash_reveal").catch(() => {});
+    leaving = true;
+    setTimeout(done, FADE_MS);
   }
 
   function done() {
@@ -195,11 +207,19 @@
     }
     const targets = ORDER.map((name) => sample(SHAPES[name]));
     const twinkle = Array.from({ length: N }, () => rnd() * Math.PI * 2);
-    const pos: Pt[] = targets[0].map((p) => ({ ...p }));
-    const from: Pt[] = targets[0].map((p) => ({ ...p }));
+    // The first piece gathers out of a cloud of light while the card is up, and holds as it
+    // fades: three seconds, about the time one piece takes to form.
+    const cloud = (): Pt => {
+      const u = rnd() * 2 - 1, phi = rnd() * Math.PI * 2, rr = 0.6 + rnd() * 0.9;
+      const k = Math.sqrt(1 - u * u);
+      return { x: k * Math.cos(phi) * rr, y: 0.5 + u * rr, z: k * Math.sin(phi) * rr };
+    };
+    const start = targets[0].map(() => cloud());
+    const pos: Pt[] = start.map((p) => ({ ...p }));
+    const from: Pt[] = start.map((p) => ({ ...p }));
     const vel: Pt[] = targets[0].map(() => ({ x: 0, y: 0, z: 0 }));
-    const FORM_S = 2.2, HOLD_S = 1.8, SCATTER_S = 0.9; // about five seconds a piece: two in a warm-up
-    const cycle = { shape: 0, phase: "hold" as "form" | "hold" | "scatter", since: 0 };
+    const FORM_S = 2.2, HOLD_S = 1.8, SCATTER_S = 0.9;
+    const cycle = { shape: 0, phase: "form" as "form" | "hold" | "scatter", since: 0 };
     const PIECE = portrait
       ? { cx: W * 0.5, base: H * 0.93, height: Math.min(360, H * 0.38) }
       : { cx: W * 0.76, base: H * 0.9, height: 390 };
@@ -365,7 +385,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="card" class:ready={warm?.done} class:failed={!!error}>
+<div class="card" class:ready={warm?.done} class:failed={!!error} class:leaving class:framed={shell}>
   <div class="scene" aria-hidden="true">
     <canvas bind:this={canvas}></canvas>
   </div>
@@ -412,6 +432,13 @@
     overflow: hidden;
   }
   .card > :not(.scene):not(.veil) { position: relative; z-index: 2; }
+  /* The fade into the app: the card lightly recedes as it goes. */
+  .card { transition: opacity 750ms ease, transform 750ms ease; }
+  .card.leaving { opacity: 0; transform: scale(0.985); }
+  /* In the shell the window is transparent (it fades over the main window): the card draws
+     its own corners, and the page around it is clear. */
+  .card.framed { border-radius: 14px; }
+  :global(html:has(.card.framed)), :global(body:has(.card.framed)) { background: transparent !important; }
   /* The ribbons of light behind everything, edge to edge. */
   .scene { position: absolute; inset: 0; z-index: 0; overflow: hidden; background: radial-gradient(ellipse 90% 80% at 50% 60%, #221f1b 0%, #1c1a18 100%); }
   .scene canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
