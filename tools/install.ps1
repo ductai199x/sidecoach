@@ -25,6 +25,9 @@ param(
 $ErrorActionPreference = "Stop"
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "Session.ps1")
+
+try {
 
 # One version for every platform: a phone build that disagrees with the desktop beside it is
 # refused (Tai, 2026-09-25: synced "even though sometimes we update only 1").
@@ -40,8 +43,7 @@ if (Test-Path $pyproject) {
     Write-Host "no desktop repo beside this one: the versions are not checked"
 }
 
-$state = ((& $adb -s $Serial get-state 2>&1) -join " ").Trim()
-if ($state -ne "device") { throw "$Serial is not connected ($state)" }
+Connect-Device $adb $Serial
 
 $services = (& $adb -s $Serial shell dumpsys activity services com.sidecoach) -join "`n"
 if (-not $Force -and $services -match "CaptureService") {
@@ -79,4 +81,7 @@ if ($Voice) {
         & $adb -s $Serial push $fast "$dir/kokoro-v1.0-q8.onnx" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "the push of the faster voice failed" }
     }
+}
+} finally {
+    Stop-Helpers $root $adb
 }

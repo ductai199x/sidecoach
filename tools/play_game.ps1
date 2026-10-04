@@ -20,6 +20,11 @@ $frames = Join-Path $root "app/src/debug/assets/game"
 
 if (-not (Test-Path $frames)) { throw "no frames in $frames; run tools/make_game.py first" }
 
+# Everything from here on is undone at the end, however it ends (tools\Session.ps1).
+. (Join-Path $PSScriptRoot "Session.ps1")
+try {
+Connect-Device $adb $Serial
+
 if (-not $SkipInstall) {
     Write-Host "installing..."
     & (Join-Path $root "gradlew.bat") -p $root :app:installDebug | Out-Null
@@ -73,3 +78,6 @@ Start-Sleep -Seconds ([int]($Lead / 1000 + ($frameCount + 2) * $Hold / 1000))
 Write-Host ""
 Write-Host "--- what the watcher saw ---"
 & $adb -s $Serial logcat -d "sidecoach.game:I" "sidecoach.capture:I" "sidecoach.debug:I" "*:S"
+} finally {
+    Stop-Helpers $root $adb
+}

@@ -38,6 +38,11 @@ function At { "[{0,6:N1} s]" -f $clock.Elapsed.TotalSeconds }
 $apartCount = [int]([regex]::Match((Get-Content (Join-Path $root "app/build.gradle.kts") -Raw), 'val APART_PROCESSES = (\d+)').Groups[1].Value)
 $aparts = @(1..$apartCount | Where-Object { $_ -gt 0 })
 
+# Everything from here on is undone at the end, however it ends (tools\Session.ps1).
+. (Join-Path $PSScriptRoot "Session.ps1")
+try {
+Connect-Device $adb $Serial
+
 if (-not $SkipBuild) {
     Write-Host "$(At) building..."
     # The APKs and the host tests' classes, on at most eight of the host's workers.
@@ -247,3 +252,6 @@ if (-not ($devicePassed -and $hostPassed)) {
     exit 1
 }
 Write-Host "$(At) PASSED: device and host"
+} finally {
+    Stop-Helpers $root $adb
+}
