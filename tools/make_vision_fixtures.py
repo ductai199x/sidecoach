@@ -580,6 +580,9 @@ def desktop_tracker_frames() -> dict[str, np.ndarray]:
     clean = flatten_around(synthetic_board(x0=300, y0=120, cell=64), [(300, 120, 64)])
     frames["clean-64"] = clean
     frames["dialog-and-page-edge"] = _dialog_and_page_edge(clean)
+    covered = clean.copy()
+    covered[100:700, 250:850] = 128
+    frames["covered-64"] = covered
     for rows, near, name in HALF_COVERS:
         covered = clean.copy()
         covered[120 : 120 + rows * 64, 300 : 300 + 512] = tuple(min(255, c + 4) for c in near)
@@ -596,7 +599,7 @@ def desk_cases() -> dict:
     detections = [
         {"file": files[name], "boards": [candidate_of(b) for b in detect_boards(frames[name])], "fits": []}
         for name in frames
-        if not name.startswith(("refit-", "inverted-", "clean-", "dialog-", "half-"))
+        if not name.startswith(("refit-", "inverted-", "clean-", "dialog-", "half-", "covered-"))
     ]
     return {"detections": detections, "runs": desktop_tracker_runs(frames, files)}
 
@@ -636,6 +639,17 @@ def desktop_tracker_runs(frames: dict, files: dict) -> list[dict]:
     )  # fmt: skip
     if not all(s[3] and abs(s[3][0] - 300) <= 2 for s in run["states"]) or run["states"][-1][2] != 1:
         raise SystemExit(f"dialog and page edge: the desktop's tracker {run['states']}")
+    runs.append(run)
+    # A cover held until the lock is lost, then the board back in place: verified on the first
+    # frame it shows, with no search (`test_tracker_holds_through_brief_occlusion_then_is_back_on_the_first_frame`).
+    run = track(
+        "a cover until the lock is lost, the board back in place: read on its first frame", {},
+        ["clean-64"] + ["covered-64"] * 3 + ["clean-64"], frames, files,
+    )  # fmt: skip
+    states = run["states"]
+    if not (states[3][3] is None and states[4][1] and states[4][3] and abs(states[4][3][0] - 300) <= 2
+            and states[4][2] == states[3][2]):  # fmt: skip
+        raise SystemExit(f"back in place: the desktop's tracker {states}")
     runs.append(run)
     # A cover close to one square colour over half the board: the lock's palette is kept.
     for rows, _near, name in HALF_COVERS:

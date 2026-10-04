@@ -407,7 +407,7 @@ class GamePipeline(
         val wasStarted = rec.started
         if (fresh) game.badgeFrame = badgedKings(frame, geometry)
         events.addAll(resyncReoriented(rec.update(currentReadings, ts), frame, geometry, ts))
-        if (events.none { it is Resync || it is GameStarted }) events.addAll(flipIfTurned(frame, geometry, ts))
+        if (events.none { it is Resync || it is GameStarted }) events.addAll(flipIfTurned(frame, geometry, ts, fresh))
         events.addAll(turnFromClock(ts))
         if (fresh) events.addAll(endOnBadges())
         events.addAll(dialogOverTheBoard(game.readingsValue!!, ts))
@@ -709,7 +709,8 @@ class GamePipeline(
         for ((square, piece) in head.pieceMap()) placed.setPieceAt(63 - square, piece)
         // No highlight: the site's last-move squares on the board on its head say nothing of
         // the turn there, and the one move is looked for with either side to move.
-        Reconciler.oneMoveBetween(placed, emptySet(), read.placement.boardFen(), read.bottom.color) ?: return null
+        val lit = highlightedSquares(bySquare(read.readings, read.bottom))
+        Reconciler.oneMoveBetween(placed, emptySet(), read.placement.boardFen(), read.bottom.color, lit) ?: return null
         return placed to emptySet()
     }
 
@@ -730,7 +731,7 @@ class GamePipeline(
      * on its head, where no move was ever found (Tai, 2026-09-27: "The board white or black
      * should be automatically read ... every time there's a sync or resync").
      */
-    private fun flipIfTurned(frame: Mat, geometry: BoardGeometry, ts: Double): MutableList<Event> {
+    private fun flipIfTurned(frame: Mat, geometry: BoardGeometry, ts: Double, changed: Boolean): MutableList<Event> {
         val rec = reconciler
         val current = model
         if (rec == null || current == null || rec.unexplainedFor < 1) {
@@ -739,7 +740,10 @@ class GamePipeline(
             return mutableListOf()
         }
         val seen = game.flipSeen
-        if (seen != null && ts - seen.second < FLIP_CHECK_EVERY_S) return mutableListOf()
+        // The same pixels, looked at a moment ago. A changed frame is always looked at: the next
+        // puzzle's first board, up for one tick right after a look at the last one, was skipped,
+        // and its opening move with it (the puzzle sweep, 2026-10-03).
+        if (seen != null && !changed && ts - seen.second < FLIP_CHECK_EVERY_S) return mutableListOf()
         val labelled = Coordinates.readBottomSide(frame, geometry, current.rankLabels)
         if (labelled == null || labelled == bottom) {
             game.flipSeen = null
@@ -787,11 +791,12 @@ class GamePipeline(
      */
     private fun startAmong(boards: List<Pair<ColdRead, Double>>, read: ColdRead, ts: Double): Pair<Board, Set<Int>>? {
         val target = read.placement.boardFen()
+        val lit = highlightedSquares(bySquare(read.readings, read.bottom))
         for ((prior, seenAt) in boards.asReversed()) {
             if (ts - seenAt > COLD_BEFORE_S || prior.bottom != read.bottom) continue
             if (prior.placement.boardFen() == target) continue
             val highlighted = highlightedSquares(bySquare(prior.readings, prior.bottom))
-            if (Reconciler.oneMoveBetween(prior.placement, highlighted, target, read.bottom.color) != null) {
+            if (Reconciler.oneMoveBetween(prior.placement, highlighted, target, read.bottom.color, lit) != null) {
                 return prior.placement to highlighted
             }
         }

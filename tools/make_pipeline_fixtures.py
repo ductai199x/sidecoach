@@ -365,17 +365,24 @@ def puzzle_flip(theme: str) -> list[dict]:
 FLIP_FIRST = "r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1"
 
 
-def puzzle_flip_opening(theme: str, slide: bool = False) -> list[dict]:
+def puzzle_flip_opening(theme: str, slide: bool = False, looked: bool = False) -> list[dict]:
     """`test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move` (Tai's puzzles,
     2026-10-03): as `puzzle_flip`, but the puzzle for Black shows its first board a third of a
     second before the site's opening move Nf3 -- `slide`: caught in flight on the frames
-    between -- and the first board is its start, and Nf3 is played."""
+    between -- and the first board is its start, and Nf3 is played. `looked`: a board no move
+    explains, on its head, one frame before a first board up for one frame: the labels looked at
+    on it, the first board is looked at all the same, its frame being a changed one."""
     states = puzzle_flip(theme)[:3]
     first = chess.Board(FLIP_FIRST)
+    if looked:
+        other = chess.Board("r3k2r/pp3ppp/2n5/2bpp3/8/1PN1P3/PBP2PPP/R3KB1R w KQkq - 0 1")
+        states.append(
+            dict(board_kwargs(board=other, theme=theme, style="cburnett", bottom=synth.Side.BLACK))
+        )
     states.append(
         dict(
             board_kwargs(board=first, theme=theme, style="cburnett", bottom=synth.Side.BLACK),
-            _repeat=3,
+            _repeat=1 if looked else 3,
         )
     )
     after = first.copy()
@@ -1179,6 +1186,7 @@ SCENARIOS = {
     "puzzle-flip-green": lambda: puzzle_flip("green"),
     "puzzle-flip-opening-green": lambda: puzzle_flip_opening("green"),
     "puzzle-flip-opening-sliding-green": lambda: puzzle_flip_opening("green", slide=True),
+    "puzzle-flip-opening-looked-green": lambda: puzzle_flip_opening("green", looked=True),
     "fast-reply-green": lambda: fast_reply("green"),
     "flip-slide-green": lambda: flip_slide("green"),
     "setup-lit-green": lambda: setup_lit("green"),
@@ -1263,6 +1271,7 @@ COUNT_READS = {"puzzle-read-once"}
 READ_ONCE = {
     "puzzle-flip-opening-green",
     "puzzle-flip-opening-sliding-green",
+    "puzzle-flip-opening-looked-green",
     "new-theme-new-game",
     "theme-changed-mid-game",
     "set-changed-mid-game",
@@ -1314,6 +1323,10 @@ EXPECT = {
         and any(line.startswith("MovePlayed 1 Nf3 g1f3") for line in lines)
     ),
     "puzzle-flip-opening-green": lambda lines, data: (
+        any(line.startswith("GameStarted position black " + FLIP_FIRST) for line in lines)
+        and any(line.startswith("MovePlayed 1 Nf3 g1f3") for line in lines)
+    ),
+    "puzzle-flip-opening-looked-green": lambda lines, data: (
         any(line.startswith("GameStarted position black " + FLIP_FIRST) for line in lines)
         and any(line.startswith("MovePlayed 1 Nf3 g1f3") for line in lines)
     ),

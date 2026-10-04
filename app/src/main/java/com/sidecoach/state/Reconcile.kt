@@ -199,6 +199,39 @@ fun resultOnBoard(board: Board): Pair<String, String>? = when {
     else -> null
 }
 
+/**
+ * The squares en passant could be open on, with `board.turn` to move: behind each pawn of the
+ * other side on its fourth rank whose two squares behind are empty (it may have just come from
+ * there). `_en_passant_squares`.
+ */
+private fun enPassantSquares(board: Board): List<Int> {
+    val other = !board.turn
+    val rank = if (other == WHITE) 3 else 4 // its fourth rank
+    val step = if (other == WHITE) -8 else 8 // towards where it came from
+    val out = mutableListOf<Int>()
+    for (sq in board.pieces(PAWN, other)) {
+        if (squareRank(sq) != rank) continue
+        val behind = sq + step
+        val start = sq + 2 * step
+        if (board.pieceAt(behind) == null && board.pieceAt(start) == null) out.add(behind)
+    }
+    return out
+}
+
+/**
+ * Whether [move] is the one the two [lit] squares show: its own two squares, or, for a castling,
+ * the king's or the rook's. `_lights`.
+ */
+private fun lights(board: Board, move: Move, lit: Set<Int>): Boolean {
+    if (setOf(move.from, move.to) == lit) return true
+    if (board.isCastling(move)) {
+        val file = if (squareFile(move.to) == 6) 7 else 0
+        val rookFrom = square(file, squareRank(move.from))
+        return move.from in lit && (move.to in lit || rookFrom in lit)
+    }
+    return false
+}
+
 private fun turnValid(board: Board, turn: Boolean): Boolean {
     board.turn = turn
     return board.isValid()
@@ -1426,7 +1459,7 @@ class Reconciler(
         }
         val (adoptedBoard, unknownTurn) = adopted
         turnUnknownFlag = unknownTurn
-        val first = openingMove(adoptedBoard, placement, since)
+        val first = openingMove(adoptedBoard, placement, since, highlightedSquares(obs))
         resyncSeen = emptyList()
         clearStory()
         viewing = null
@@ -1466,12 +1499,12 @@ class Reconciler(
      * earlier board must have held [briefFrames] clean frames, ended at most [briefRecentS]
      * before this one began, and be one move away. `_opening_move`.
      */
-    private fun openingMove(after: Board, placement: String, since: Double): Pair<Board, Move>? {
+    private fun openingMove(after: Board, placement: String, since: Double, lit: Set<Int>): Pair<Board, Move>? {
         // The newest of the boards kept that one move joins: a frame caught mid-slide, repeated by
         // the still ticks, was kept, and as the only earlier board it stood in for the first one.
         for (prior in resyncSeen.asReversed()) {
             if (prior.key == placement || since - prior.ts > briefRecentS) continue
-            oneMove(prior.placed, prior.highlighted, after.boardFen())?.let { return it }
+            oneMove(prior.placed, prior.highlighted, after.boardFen(), lit)?.let { return it }
         }
         return null
     }
@@ -1480,30 +1513,49 @@ class Reconciler(
      * The position [placed] shows and the one legal move from it to the placement [target],
      * when exactly one move by either side gets there. `_one_move`.
      */
-    private fun oneMove(placed: Board, highlighted: Set<Int>, target: String): Pair<Board, Move>? =
-        oneMoveBetween(placed, highlighted, target, bottom.color)
+    private fun oneMove(placed: Board, highlighted: Set<Int>, target: String, lit: Set<Int> = emptySet()): Pair<Board, Move>? =
+        oneMoveBetween(placed, highlighted, target, bottom.color, lit)
 
     companion object {
         /**
          * [oneMove] for any caller (`Reconciler.one_move`): the pipeline asks it which of the boards
-         * it read before is the one a move joins to the board it adopts.
+         * it read before is the one a move joins to the board it adopts. [lit]: the squares the site
+         * lights on the board after the move, its last move's -- when two are lit, the move must be
+         * theirs. Halfway through a pawn's double step the pawn stands centred on the square between,
+         * a board of its own, and e6-e5 joined it to the board after e7-e5 (the puzzle sweep,
+         * 2026-10-03): e7 and e5 lit say it is not the move.
          */
-        fun oneMoveBetween(placed: Board, highlighted: Set<Int>, target: String, prefer: Boolean): Pair<Board, Move>? {
+        fun oneMoveBetween(
+            placed: Board,
+            highlighted: Set<Int>,
+            target: String,
+            prefer: Boolean,
+            lit: Set<Int> = emptySet(),
+        ): Pair<Board, Move>? {
             val adopted = adoptPlacement(placed, prefer, highlighted) ?: return null
-            val found = mutableListOf<Pair<Board, Move>>()
+            val found = LinkedHashMap<Pair<Boolean, Move>, Board>()
             for (turn in listOf(WHITE, BLACK)) {
-                val start = adopted.first.copy(withStack = false)
-                if (!turnValid(start, turn)) continue
-                start.epSquare = null
-                for (move in start.legalMoves()) {
-                    start.push(move)
-                    val hit = start.boardFen() == target
-                    start.pop()
-                    if (hit) found.add(start.copy(withStack = false) to move)
+                val base = adopted.first.copy(withStack = false)
+                if (!turnValid(base, turn)) continue
+                // A board read from the screen cannot say en passant is open; each square it could
+                // be open on is tried as well (d5xe6 e.p. as a puzzle's opening move was no move at
+                // all: the puzzle sweep, 2026-10-03).
+                for (ep in listOf<Int?>(null) + enPassantSquares(base)) {
+                    val start = base.copy(withStack = false)
+                    start.epSquare = ep
+                    for (move in start.legalMoves()) {
+                        if (lit.size == 2 && !lights(start, move, lit)) continue
+                        start.push(move)
+                        val hit = start.boardFen() == target
+                        start.pop()
+                        if (hit) found.getOrPut(turn to move) { start.copy(withStack = false) }
+                    }
                 }
             }
             // Exactly one move, or the jump is not read as one.
-            return found.singleOrNull()
+            if (found.size != 1) return null
+            val (key, start) = found.entries.first()
+            return start to key.second
         }
     }
 
@@ -1569,7 +1621,7 @@ class Reconciler(
         val adopted = adoptPlacement(placement, bottom.color, highlighted) ?: return mutableListOf()
         if (ts != null) tsValue = ts
         if (before != null) {
-            val first = oneMove(before.first, before.second, placement.boardFen())
+            val first = oneMove(before.first, before.second, placement.boardFen(), highlighted)
             if (first != null) {
                 val (start, move) = first
                 turnUnknownFlag = false

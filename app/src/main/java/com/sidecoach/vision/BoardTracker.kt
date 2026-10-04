@@ -117,6 +117,9 @@ class BoardTracker(
         private set
     private var lost: BooleanArray? = null
 
+    /** The lock that was lost, and its colours: a changed frame with no board looks there first ([backInPlace]). */
+    private var last: Pair<BoardCandidate, Colours?>? = null
+
     /** The most cells this lock has read as square colours. */
     private var readable = 0
 
@@ -185,6 +188,7 @@ class BoardTracker(
         if (changed) refitSettled = false
         val held = board
         if (held == null) {
+            if (changed) backInPlace(gray)?.let { return it }
             // Without a board on screen, searching every frame would stall the capture. The
             // search near the last cell size is cheap and runs every few frames, so a window
             // that comes back, or was covered for a moment, re-locks within a few frames; the
@@ -202,6 +206,7 @@ class BoardTracker(
                 board = held.copy(fit = fit, contrast = contrast)
                 return board
             }
+            last = held to colours
             board = null
             colours = null
             seen?.let { (seenGray, seenBoard) ->
@@ -222,6 +227,23 @@ class BoardTracker(
         board = validated
         keepSeen(gray, validated)
         lastCellPx = validated.cellPx
+        return board
+    }
+
+    /**
+     * The lost lock again, when this frame validates where it was: a cover lifted from a board that
+     * never moved. One fit, so it is tried on every changed frame; the searches' back-off kept a
+     * board back from under the dim between two puzzles unread for two ticks, and the next
+     * puzzle's first board, on screen for one, was never seen (the puzzle sweep, 2026-10-03).
+     * `_back_in_place`.
+     */
+    private fun backInPlace(gray: Plane): BoardCandidate? {
+        val (was, wasColours) = last ?: return null
+        val (fit, contrast) = fitScore(gray, was.region, was.cellPx, wasColours)
+        if (!passes(fit, contrast)) return null
+        lock(gray, was.copy(fit = fit, contrast = contrast), wasColours)
+        fullWait.reset()
+        nearWait.reset()
         return board
     }
 
@@ -337,6 +359,7 @@ class BoardTracker(
             lastCellPx = found.cellPx
             keepSeen(gray, found)
             lost = null
+            last = null
         }
         readable = if (found != null && lockColours != null) {
             readableCells(gray, found.region, found.cellPx, lockColours)
