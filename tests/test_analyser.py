@@ -393,6 +393,63 @@ def test_how_a_side_plays_is_learned_from_this_game_and_forgotten_with_it() -> N
     assert analyser._t[True] == T_START and analyser._odds(True, lines)[1] == pytest.approx(before)
 
 
+def test_a_watched_games_review_searches_nothing_the_game_measured(tmp_path: Path) -> None:
+    """A game followed live had every position measured whole -- its own search and its side
+    searches, at the review's standard -- and its review measured them all again (the engine
+    audit, 2026-10-04). Kept as the game ends, they are the review's: it searches none of them."""
+    import io
+
+    import chess.pgn
+
+    from sidecoach.analysis.game_review import measured_from_json, review_game
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.cli import _Assessing
+    from sidecoach.config import Settings
+    from sidecoach.events import GameStarted, MovePlayed, Side
+    from sidecoach.profile.store import Store
+
+    assessing = _Assessing(Settings(data_dir=tmp_path), enabled=False)
+    analyser = Analyser(GameAnnotator(engine=FakeEngine({}), depth=18, multipv=6))
+    assessing.analyser = analyser
+    watch = AnalyserWatch(analyser)
+    analyser.start()
+    assessing.submit(GameStarted(game_id="g", start_fen=START, user_side=Side.WHITE))
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3"], start=1):
+        before = board.fen()
+        move = board.push_san(san)
+        assessing.submit(
+            MovePlayed(
+                game_id="g",
+                ply=ply,
+                san=san,
+                uci=move.uci(),
+                fen_before=before,
+                fen_after=board.fen(),
+                by_user=ply % 2 == 1,
+            )
+        )
+    watch.idle()
+    store = Store(tmp_path / "profile.sqlite")
+    try:
+        assert assessing.keep_for_review(store, "g") == 4, "the four positions, whole"
+        known = {
+            m.fen: m
+            for m in map(measured_from_json, store.progress("watched:g", "standard", 18, 6))
+        }
+    finally:
+        store.close()
+        analyser.close()
+    review_engine = FakeEngine({})
+    game = chess.pgn.read_game(io.StringIO("1. e4 e5 2. Nf3 *"))
+    assert game is not None
+    reviewed = review_game(
+        game, [review_engine], depth=18, multipv=6, thresholds=Thresholds(), known=known
+    )
+    assert len(reviewed.moves) == 3
+    assert review_engine.calls == [], "the review searched what the game had measured"
+
+
 def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> None:
     """The live path hands the analyser each move's board; the book needs the moves that led
     to it. An Italian Game submitted the way the panel submits it -- a takeback in the middle --

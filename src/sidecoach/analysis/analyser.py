@@ -322,6 +322,20 @@ class Analyser:
             self.annotator.reset()
             self._cond.notify_all()
 
+    def measured_path(self, game_id: str) -> list[Measured]:
+        """The game's positions measured whole -- their own search and their side searches --
+        in the order of the game: what its review need not search again (`_Assessing.
+        keep_for_review`). Nothing for a game this is not on."""
+        with self._cond:
+            if game_id != self._game_id:
+                return []
+            out = []
+            for ply in sorted(self._path):
+                node = self._nodes.get(self._path[ply])
+                if node is not None and node.whole is not None:
+                    out.append(node.whole)
+            return out
+
     def forget_measured(self) -> None:
         """The settings a search depends on changed: nothing measured before counts, and a
         search under way is not kept (`GameAnnotator.forget_measured`)."""

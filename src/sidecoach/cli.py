@@ -957,6 +957,34 @@ class _Assessing:
             self._game = chess.Board(event.fen)
             self.analyser.submit_position(event.game_id, chess.Board(event.fen), 0)
 
+    def keep_for_review(self, store: object, game_id: str) -> int:
+        """A watched game ended: every position the engine measured whole kept for its review,
+        as a review keeps what it measured (`Store.add_progress`), so the review searches none
+        of them again -- each was searched to the review's own standard (the depth and the lines
+        of the standard strength). It measured every position whole a second time (the engine
+        audit, 2026-10-04). Returns how many were kept."""
+        from sidecoach.analysis.game_review import STRENGTHS, measured_json
+        from sidecoach.profile.store import WATCHED
+
+        if self.analyser is None:
+            return 0
+        strength = STRENGTHS["standard"]
+        annotator = self.analyser.annotator
+        if (annotator.depth, annotator.multipv) != (strength.depth, strength.multipv):
+            return 0  # searched otherwise than a review searches: not the review's to read
+        kept = 0
+        for measured in self.analyser.measured_path(game_id):
+            store.add_progress(  # type: ignore[attr-defined]
+                f"{WATCHED}{game_id}",
+                strength.name,
+                strength.depth,
+                strength.multipv,
+                measured.fen,
+                measured_json(measured),
+            )
+            kept += 1
+        return kept
+
     def _forget(self, game_id: str, fen: str) -> None:
         """A game begins on `fen`, or its numbering starts again there (a resync): no plies
         stand yet."""

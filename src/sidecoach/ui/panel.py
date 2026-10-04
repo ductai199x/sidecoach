@@ -2230,7 +2230,7 @@ class PanelEngine:
     def _run(self) -> None:
         import chess
 
-        from sidecoach.events import Event, Side
+        from sidecoach.events import Event, GameEnded, Side
         from sidecoach.state.pipeline import CONFIRM_INTERVAL_S, GamePipeline
         from sidecoach.vision.clock import ClockReader
         from sidecoach.vision.squares import BoardGeometry
@@ -2524,6 +2524,12 @@ class PanelEngine:
                 followed = pipe.reconciler.game_id if pipe.reconciler is not None else None
                 for event in events:
                     self._dispatch_game(event, assessing, chess, followed=followed)
+                    if isinstance(event, GameEnded):
+                        # What the engine measured of it is its review's: not searched again.
+                        try:
+                            assessing.keep_for_review(store, event.game_id)
+                        except Exception as exc:  # noqa: BLE001 - a review searches it instead
+                            self._emit("sys", "warn", f"positions not kept for review: {exc!r}")
 
                 # Idle read before the drain: then everything the engine will say about
                 # this game is in what the drain returns, and a finished game can be
