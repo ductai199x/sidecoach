@@ -19,6 +19,7 @@ from sidecoach.events import (
     ClockObservation,
     Event,
     GameStarted,
+    MovePlayed,
     PositionChanged,
     Region,
     Resync,
@@ -136,6 +137,27 @@ def _unlanded(readings: Readings) -> bool:
             if reading.kind == "piece" and reading.symbol is not None:
                 landed.setdefault(reading.symbol, []).append(reading.settled)
     return any(len(kind) >= 2 and not any(kind) for kind in landed.values())
+
+
+def _turned_start(
+    events: list[Event], read: _ColdRead
+) -> tuple[chess.Board, frozenset[chess.Square]] | None:
+    """The first board of a resync adopted on its head, turned the right way round, when one
+    legal move joins it to `read` (the board read the labels' way): the start its opening move
+    is played from (`Reconciler.start_from`), or None."""
+    found = next((e for e in events if isinstance(e, MovePlayed)), None)
+    if found is None:
+        return None
+    turned = chess.Board(found.fen_before).transform(
+        lambda bb: chess.flip_vertical(chess.flip_horizontal(bb))
+    )
+    placed = chess.Board(None)
+    placed.set_piece_map(turned.piece_map())
+    # No highlight: the site's last-move squares on the board on its head say nothing of the
+    # turn there, and the one move is looked for with either side to move.
+    if Reconciler.one_move(placed, frozenset(), read[3].board_fen(), prefer=read[1].color) is None:
+        return None
+    return placed, frozenset()
 
 
 def _unreadable(readings: Readings) -> int:
@@ -667,10 +689,32 @@ class GamePipeline:
         # A resync after a finished game began a new one on its head: that start goes
         # unsaid, and the game to end is the finished one, already ended.
         began = any(isinstance(e, GameStarted) for e in events)
-        reoriented = self.reorient(frame, geometry, labelled, ts, end_previous=not began)
+        read = self._reread(labelled) or self._cold_read(frame, geometry, labelled)
+        if read is None:
+            return events
+        # The opening move the right way up. The resync found it on its head: its first board,
+        # turned round (a board read the wrong way up is the true one rotated, every square s
+        # at 63 - s, the colours right), is the start -- the move it found was the puzzle's
+        # own, lost with the game it was in (Tai's Pixel, 0.1.72). Else the boards the flip
+        # check read meanwhile, the labels' way round (`_start_among`).
+        before = _turned_start(events, read)
+        if before is None:
+            before = self._start_among(self._flip_boards, read, ts)
+        self._flip_boards = []
+        reoriented = self.reorient(
+            frame, geometry, labelled, ts, end_previous=not began, read=read, before=before
+        )
         if not reoriented:
             return events
-        kept = [e for e in events if not isinstance(e, Resync | PositionChanged | GameStarted)]
+        # Everything the resync said goes with it: its start, its position and the move it
+        # found between two boards on their heads -- kept, that move was a "1... Nd5" no one
+        # played (Tai's Pixel, 0.1.72, dump 20261003-213116). What came before it stays.
+        cut = next(
+            i
+            for i, e in enumerate(events)
+            if isinstance(e, Resync) or (isinstance(e, GameStarted) and e.kind == "position")
+        )
+        kept = [e for e in events[:cut] if not isinstance(e, PositionChanged)]
         return kept + reoriented
 
     def _flip_if_turned(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:

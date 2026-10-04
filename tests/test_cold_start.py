@@ -355,9 +355,13 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
     assert rec.turn_unknown and rec.board.turn == chess.BLACK, "the solver's move, meanwhile"
 
 
-@pytest.mark.parametrize("slide", [False, True], ids=["moved", "caught sliding"])
+@pytest.mark.parametrize(
+    ("slide", "seen"),
+    [(False, 3), (True, 3), (False, 1)],
+    ids=["moved", "caught sliding", "seen once"],
+)
 def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
-    tmp_path: Path, slide: bool
+    tmp_path: Path, slide: bool, seen: int
 ) -> None:
     """A new puzzle for the other side: its first board stands a third of a second, the site
     plays its opening move, and the board turned round was adopted only after it -- the move
@@ -365,7 +369,10 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
     other side's). The first board read on the first look at the labels is its start, and the
     move is played -- also when a look in between catches the move's piece sliding, which read
     as nothing, or as a board without it, and stood in for the first board (0.1.70, his dump
-    20261003-171151: the queen caught mid-capture)."""
+    20261003-171151: the queen caught mid-capture); and when the first board is seen once, and a
+    resync adopts the puzzle on its head before the labels turn it round: the move it found
+    there, between two boards on their heads, was kept as the game's (0.1.72, his dump
+    20261003-213116: a "1... Nd5" no one played)."""
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     live = GamePipeline(cache=cache)
@@ -373,7 +380,7 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
     assert live.bottom is Side.WHITE
     first = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1")
     events = []
-    for i in range(3):  # the new puzzle's first board, a third of a second
+    for i in range(seen):  # the new puzzle's first board, a third of a second or one frame
         events += _tick(
             live, synthetic_board(board=first, bottom=Side.BLACK, coordinates=True), 30.0 + 0.1 * i
         )
@@ -402,6 +409,51 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
         and rec is not None
         and rec.board.board_fen() == puzzle.board_fen()
     )
+
+
+def test_a_resync_on_its_head_keeps_the_opening_move_it_found_the_right_way_up(
+    tmp_path: Path,
+) -> None:
+    """A resync adopted the next puzzle on its head, its opening move found between two boards on
+    their heads, before the labels turned it round. Replaced by the board read the right way,
+    its move was kept as it was -- a "1... Nd5" no one played -- and the puzzle's own first move
+    was lost (Tai's Pixel, 0.1.72, dump 20261003-213116: "it's the problem of not seeing the
+    first move"). A board on its head is the true one turned round, square s at 63 - s: the
+    game begins from the first board turned the right way, and its opening move is played."""
+    from sidecoach.events import MovePlayed, PositionChanged, Resync
+    from sidecoach.vision.squares import BoardGeometry
+
+    def turned(board: chess.Board) -> chess.Board:
+        return board.transform(lambda bb: chess.flip_vertical(chess.flip_horizontal(bb)))
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    live = GamePipeline(cache=cache)
+    _join(live, synthetic_board(board=chess.Board(MIDGAME), coordinates=True))
+    first = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1")
+    puzzle = first.copy()
+    opening = puzzle.push_san("Nf3")
+    frame = synthetic_board(board=puzzle, bottom=Side.BLACK, coordinates=True, highlight=opening)
+    live.process(frame, 40.0)  # the frame's readings, as the tick that resynced had them
+    assert live.board is not None
+    geometry = BoardGeometry(live.board.region, live.board.cell_px)
+    # What the resync said: the first board and the move as read on their heads.
+    head_first, head_after = turned(first), turned(puzzle)
+    head_move = chess.Move(63 - opening.from_square, 63 - opening.to_square)
+    phantom = MovePlayed(
+        game_id="head", ply=1, san="Nc6", uci=head_move.uci(), fen_before=head_first.fen(),
+        fen_after=head_after.fen(), by_user=True,
+    )  # fmt: skip
+    resynced = [
+        Resync(game_id="head", fen=head_first.fen(), reason="adopted; its first move seen"),
+        PositionChanged(game_id="head", fen=head_first.fen(), ply=0),
+        phantom,
+        PositionChanged(game_id="head", fen=head_after.fen(), ply=1),
+    ]
+    events = live._resync_reoriented(resynced, frame, geometry, 40.1)
+    assert [e.uci for e in events if isinstance(e, MovePlayed)] == ["g1f3"], events
+    started = [e for e in events if isinstance(e, GameStarted)]
+    assert len(started) == 1 and started[0].start_fen.split()[0] == first.board_fen()
 
 
 # The puzzle Tai had up on the Pixel (2026-09-23), just after Black's d5xc4.
