@@ -137,6 +137,9 @@ class BoardTracker:
         # lost: of the boards found then, the one whose pieces are nearest those is taken.
         self._seen: tuple[np.ndarray, BoardCandidate] | None = None
         self._lost: np.ndarray | None = None
+        # The lock that was lost, and its colours: a changed frame with no board looks there
+        # first (`_back_in_place`).
+        self._last: tuple[BoardCandidate, Colours | None] | None = None
         # The grey image of the last frame read, written over by the next (`GrayBuffer`).
         self._gray = GrayBuffer()
         # Whether a re-fit ran on the pixels of the last changed frame and left the lock
@@ -226,6 +229,8 @@ class BoardTracker:
             gray = self._gray.convert(frame_bgr)
             self._memo.clear()  # a new image: nothing computed on it yet
         if self.board is None:
+            if changed and (back := self._back_in_place(gray)) is not None:
+                return back
             # Without a board on screen, searching every frame would stall capture. The
             # search near the last cell size is cheap and runs every few frames, so a
             # window that comes back, or was covered for a moment, re-locks within a few
@@ -242,6 +247,7 @@ class BoardTracker:
                 # frame's, so a caller can see the lock is in doubt.
                 self.board = replace(self.board, fit=fit, contrast=contrast)
                 return self.board
+            self._last = (self.board, self.colours)
             self.board = None
             self.colours = None
             if self._seen is not None:
@@ -264,6 +270,23 @@ class BoardTracker:
         self.board = replace(candidate, fit=fit, contrast=contrast)
         self._keep_seen(gray, self.board)
         self.last_cell_px = self.board.cell_px
+        return self.board
+
+    def _back_in_place(self, gray: np.ndarray) -> BoardCandidate | None:
+        """The lost lock again, when this frame validates where it was: a cover lifted from a
+        board that never moved. One fit, so it is tried on every changed frame; the searches'
+        back-off kept a board back from under the dim between two puzzles unread for two
+        ticks, and the next puzzle's first board, on screen for one, was never seen (the
+        puzzle sweep, 2026-10-03)."""
+        if self._last is None:
+            return None
+        board, colours = self._last
+        fit, contrast = self._fit(gray, board.region, board.cell_px, colours)
+        if not self._passes(fit, contrast):
+            return None
+        self._lock(gray, replace(board, fit=fit, contrast=contrast), colours)
+        self._full.reset()
+        self._near.reset()
         return self.board
 
     def _keep_seen(self, gray: np.ndarray, board: BoardCandidate) -> None:
@@ -372,6 +395,7 @@ class BoardTracker:
             self.last_cell_px = board.cell_px
             self._keep_seen(gray, board)
             self._lost = None
+            self._last = None
         self._readable = (
             self._readable_cells(gray, board.region, board.cell_px, colours)
             if board is not None and colours is not None

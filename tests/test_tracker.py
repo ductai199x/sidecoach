@@ -185,7 +185,11 @@ def test_tracker_relocks_on_the_game_board_not_the_empty_one() -> None:
     assert tracker.detections == 2
 
 
-def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
+def test_tracker_holds_through_brief_occlusion_then_is_back_on_the_first_frame() -> None:
+    """A cover held through `max_misses` frames drops the lock; the board back where it was
+    is verified on the first frame it shows, with no search: the searches' back-off cost the
+    next puzzle's first board, up for one tick after the dim between two puzzles (the puzzle
+    sweep, 2026-10-03)."""
     tracker = BoardTracker(max_misses=3)
     frame = synthetic_board(x0=300, y0=120, cell=64)
     locked = tracker.update(frame)
@@ -198,13 +202,10 @@ def test_tracker_holds_through_brief_occlusion_then_redetects() -> None:
     assert held.region == locked.region
     assert tracker.update(occluded) is not None  # miss 2
     assert tracker.update(occluded) is None  # miss 3 drops the lock, detection finds nothing
-    board = None
-    for _ in range(tracker._full.most + 1):  # backoff, then a search that succeeds
-        board = tracker.update(frame)
-        if board is not None:
-            break
-    assert board is not None and abs(board.region.x - 300) <= 2
-    assert tracker.detections == 3
+    detections = tracker.detections
+    board = tracker.update(frame)
+    assert board is not None and tracker.verified and abs(board.region.x - 300) <= 2
+    assert tracker.detections == detections, "the lock's own place, not a search"
 
 
 def test_a_board_back_at_another_size_after_a_moment_is_found_soon() -> None:

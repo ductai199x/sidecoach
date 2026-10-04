@@ -826,6 +826,49 @@ def test_a_new_board_more_than_one_move_from_the_brief_one_is_adopted_alone() ->
     assert not sans_of(events)
 
 
+def test_a_double_step_caught_halfway_is_not_the_puzzles_first_board() -> None:
+    """Halfway through a pawn's double step the pawn stands centred on the square between: a
+    board of its own, one move from the board after it (e6-e5), and the newer of the two kept,
+    it was taken for the first board -- the game began with the pawn on e6 (the puzzle sweep,
+    2026-10-03). The site lights the move's own squares, e7 and e5: the move between the boards
+    must be the lit one."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    first = chess.Board("6k1/4pppp/8/8/8/8/5PPP/3R2K1 b - - 0 1")
+    events = []
+    events += _feed(model, rec, first, Side.WHITE, ts + 1.0)
+    halfway = chess.Board("6k1/5ppp/4p3/8/8/8/5PPP/3R2K1 b - - 0 1")
+    for k in range(2):  # the pawn on e6 a moment, as a frame caught mid-slide
+        events += _feed(model, rec, halfway, Side.WHITE, ts + 1.1 + 0.1 * k)
+    puzzle = first.copy()
+    opening = puzzle.push_san("e5")
+    for k in range(12):
+        events += _feed(model, rec, puzzle, Side.WHITE, ts + 1.4 + 0.15 * k, highlight=opening)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert len(resyncs) == 1 and resyncs[0].fen.split()[0] == first.board_fen(), resyncs
+    assert sans_of(events) == ["e5"]
+
+
+def test_an_en_passant_capture_is_a_puzzles_opening_move() -> None:
+    """A board read from the screen cannot say en passant is open: d5xe6 e.p. as a puzzle's
+    opening move joined no two boards, and the move was lost (the puzzle sweep, 2026-10-03)."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    first = chess.Board("6k1/5ppp/8/3Pp3/8/8/5PPP/6K1 w - e6 0 1")
+    events = _feed(model, rec, first, Side.WHITE, ts + 1.0)
+    puzzle = first.copy()
+    opening = puzzle.push_san("dxe6")
+    for k in range(12):
+        events += _feed(model, rec, puzzle, Side.WHITE, ts + 1.3 + 0.15 * k, highlight=opening)
+    resyncs = [e for e in events if isinstance(e, Resync)]
+    assert len(resyncs) == 1 and resyncs[0].fen.split()[0] == first.board_fen(), resyncs
+    assert sans_of(events) == ["dxe6"]
+
+
 # Two moves away from PUZZLE's board (h6, Rd8+): no single move joins them.
 MIDGAME_AFTER = "3R2k1/5pp1/7p/8/8/8/5PPP/6K1 b - - 1 2"
 

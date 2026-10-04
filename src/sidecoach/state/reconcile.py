@@ -259,6 +259,35 @@ def matches(board: chess.Board, obs: Observation, squares: set[chess.Square]) ->
     return all(cell_agrees(obs[sq], board.piece_at(sq)) for sq in squares if sq in obs)
 
 
+def _en_passant_squares(board: chess.Board) -> list[chess.Square]:
+    """The squares en passant could be open on, with `board.turn` to move: behind each pawn of
+    the other side on its fourth rank whose two squares behind are empty (it may have just come
+    from there)."""
+    other = not board.turn
+    rank = 3 if other == chess.WHITE else 4  # its fourth rank
+    step = -8 if other == chess.WHITE else 8  # towards where it came from
+    out = []
+    for sq in board.pieces(chess.PAWN, other):
+        if chess.square_rank(sq) != rank:
+            continue
+        behind, start = sq + step, sq + 2 * step
+        if board.piece_at(behind) is None and board.piece_at(start) is None:
+            out.append(behind)
+    return out
+
+
+def _lights(board: chess.Board, move: chess.Move, lit: frozenset[chess.Square]) -> bool:
+    """Whether `move` is the one the two `lit` squares show: its own two squares, or, for a
+    castling, the king's or the rook's."""
+    if {move.from_square, move.to_square} == lit:
+        return True
+    if board.is_castling(move):
+        file = 7 if chess.square_file(move.to_square) == 6 else 0
+        rook_from = chess.square(file, chess.square_rank(move.from_square))
+        return move.from_square in lit and (move.to_square in lit or rook_from in lit)
+    return False
+
+
 def single_explanations(
     board: chess.Board, obs: Observation, diff: set[chess.Square]
 ) -> list[Explanation]:
@@ -1365,7 +1394,7 @@ class Reconciler:
             self._resync_candidate = None
             return []
         board, self._turn_unknown = adopted
-        first = self._opening_move(board, placement, since)
+        first = self._opening_move(board, placement, since, highlighted_squares(obs))
         self._resync_seen = []
         self._clear_story()
         self.viewing = None
@@ -1396,7 +1425,7 @@ class Reconciler:
         return self._resynced(reason)
 
     def _opening_move(
-        self, after: chess.Board, placement: str, since: float
+        self, after: chess.Board, placement: str, since: float, lit: frozenset[chess.Square]
     ) -> tuple[chess.Board, chess.Move] | None:
         """The board shown just before the one being adopted, and the one legal move from it
         to this one -- a new puzzle's first board and the site's opening move on it -- or
@@ -1409,17 +1438,21 @@ class Reconciler:
         for prior in reversed(self._resync_seen):
             if prior[2] == placement or since - prior[3] > self.brief_recent_s:
                 continue
-            found = self._one_move(prior[0], prior[1], after.board_fen())
+            found = self._one_move(prior[0], prior[1], after.board_fen(), lit)
             if found is not None:
                 return found
         return None
 
     def _one_move(
-        self, placed: chess.Board, highlighted: frozenset[chess.Square], target: str
+        self,
+        placed: chess.Board,
+        highlighted: frozenset[chess.Square],
+        target: str,
+        lit: frozenset[chess.Square] = frozenset(),
     ) -> tuple[chess.Board, chess.Move] | None:
         """The position `placed` shows and the one legal move from it to the placement
         `target`, when exactly one move by either side gets there."""
-        return Reconciler.one_move(placed, highlighted, target, prefer=self.bottom.color)
+        return Reconciler.one_move(placed, highlighted, target, prefer=self.bottom.color, lit=lit)
 
     @staticmethod
     def one_move(
@@ -1427,27 +1460,42 @@ class Reconciler:
         highlighted: frozenset[chess.Square],
         target: str,
         prefer: chess.Color = chess.WHITE,
+        lit: frozenset[chess.Square] = frozenset(),
     ) -> tuple[chess.Board, chess.Move] | None:
         """`_one_move` for any caller: the pipeline asks it which of the boards it read before
-        is the one a move joins to the board it adopts."""
+        is the one a move joins to the board it adopts. `lit`: the squares the site lights on
+        the board after the move, its last move's -- when two are lit, the move must be theirs.
+        Halfway through a pawn's double step the pawn stands centred on the square between, a
+        board of its own, and e6-e5 joined it to the board after e7-e5 (the puzzle sweep,
+        2026-10-03): e7 and e5 lit say it is not the move."""
         adopted = Reconciler._adopt_placement(placed, prefer=prefer, highlighted=highlighted)
         if adopted is None:
             return None
-        found: list[tuple[chess.Board, chess.Move]] = []
+        found: dict[tuple[chess.Color, chess.Move], chess.Board] = {}
         for turn in (chess.WHITE, chess.BLACK):
-            start = adopted[0].copy(stack=False)
-            start.turn = turn
-            if not _turn_valid(start, turn):
+            base = adopted[0].copy(stack=False)
+            base.turn = turn
+            if not _turn_valid(base, turn):
                 continue
-            start.ep_square = None
-            for move in start.legal_moves:
-                start.push(move)
-                hit = start.board_fen() == target
-                start.pop()
-                if hit:
-                    found.append((start.copy(stack=False), move))
+            # A board read from the screen cannot say en passant is open; each square it could
+            # be open on is tried as well (d5xe6 e.p. as a puzzle's opening move was no move at
+            # all: the puzzle sweep, 2026-10-03).
+            for ep in (None, *_en_passant_squares(base)):
+                start = base.copy(stack=False)
+                start.ep_square = ep
+                for move in start.legal_moves:
+                    if len(lit) == 2 and not _lights(start, move, lit):
+                        continue
+                    start.push(move)
+                    hit = start.board_fen() == target
+                    start.pop()
+                    if hit:
+                        found.setdefault((turn, move), start.copy(stack=False))
         # Exactly one move, or the jump is not read as one.
-        return found[0] if len(found) == 1 else None
+        if len(found) != 1:
+            return None
+        (_, move), start = next(iter(found.items()))
+        return start, move
 
     def _resynced(self, reason: str) -> list[Event]:
         """A new position for the game: Resync and PositionChanged, and the end when the
@@ -1556,7 +1604,7 @@ class Reconciler:
         if ts is not None:
             self._ts = ts
         if before is not None:
-            first = self._one_move(before[0], before[1], placement.board_fen())
+            first = self._one_move(before[0], before[1], placement.board_fen(), highlighted)
             if first is not None:
                 start, move = first
                 self._turn_unknown = False

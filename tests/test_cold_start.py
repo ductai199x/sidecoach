@@ -356,12 +356,12 @@ def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("slide", "seen"),
-    [(False, 3), (True, 3), (False, 1)],
-    ids=["moved", "caught sliding", "seen once"],
+    ("slide", "seen", "looked"),
+    [(False, 3, False), (True, 3, False), (False, 1, False), (False, 1, True)],
+    ids=["moved", "caught sliding", "seen once", "seen once right after a look"],
 )
 def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
-    tmp_path: Path, slide: bool, seen: int
+    tmp_path: Path, slide: bool, seen: int, looked: bool
 ) -> None:
     """A new puzzle for the other side: its first board stands a third of a second, the site
     plays its opening move, and the board turned round was adopted only after it -- the move
@@ -372,7 +372,9 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
     20261003-171151: the queen caught mid-capture); and when the first board is seen once, and a
     resync adopts the puzzle on its head before the labels turn it round: the move it found
     there, between two boards on their heads, was kept as the game's (0.1.72, his dump
-    20261003-213116: a "1... Nd5" no one played)."""
+    20261003-213116: a "1... Nd5" no one played); and when the labels were looked at on the
+    board before it a moment earlier, a look the next one waits a quarter of a second for -- on
+    the same pixels, never on a changed frame (the puzzle sweep, 2026-10-03)."""
     cache = ThemeCache(tmp_path)
     _warm(cache, "green", Side.WHITE)  # its digits read the board either way up
     live = GamePipeline(cache=cache)
@@ -380,6 +382,12 @@ def test_the_next_puzzle_shown_the_other_way_up_keeps_its_opening_move(
     assert live.bottom is Side.WHITE
     first = chess.Board("r3k2r/pp3ppp/2n1b3/2bpp3/8/1PN1P3/PBP2PPP/R3KBNR w KQkq - 0 1")
     events = []
+    if looked:  # a board no move explains, the other way up: its labels looked at
+        other = chess.Board("r3k2r/pp3ppp/2n5/2bpp3/8/1PN1P3/PBP2PPP/R3KB1R w KQkq - 0 1")
+        events += _tick(
+            live, synthetic_board(board=other, bottom=Side.BLACK, coordinates=True), 29.95
+        )
+        assert live._flip_seen is not None, "the labels were looked at"
     for i in range(seen):  # the new puzzle's first board, a third of a second or one frame
         events += _tick(
             live, synthetic_board(board=first, bottom=Side.BLACK, coordinates=True), 30.0 + 0.1 * i

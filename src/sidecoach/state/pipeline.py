@@ -155,7 +155,9 @@ def _turned_start(
     placed.set_piece_map(turned.piece_map())
     # No highlight: the site's last-move squares on the board on its head say nothing of the
     # turn there, and the one move is looked for with either side to move.
-    if Reconciler.one_move(placed, frozenset(), read[3].board_fen(), prefer=read[1].color) is None:
+    lit = highlighted_squares(by_square(read[2], read[1]))
+    target = read[3].board_fen()
+    if Reconciler.one_move(placed, frozenset(), target, prefer=read[1].color, lit=lit) is None:
         return None
     return placed, frozenset()
 
@@ -427,7 +429,7 @@ class GamePipeline:
             self.reconciler.update(self._readings, ts), frame, geometry, ts
         )
         if not any(isinstance(e, Resync | GameStarted) for e in events):
-            events += self._flip_if_turned(frame, geometry, ts)
+            events += self._flip_if_turned(frame, geometry, ts, changed=changed)
         events += self._turn_from_clock(ts)
         if changed:
             events += self._end_on_badges()
@@ -717,7 +719,9 @@ class GamePipeline:
         kept = [e for e in events[:cut] if not isinstance(e, PositionChanged)]
         return kept + reoriented
 
-    def _flip_if_turned(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
+    def _flip_if_turned(
+        self, frame: np.ndarray, geometry: BoardGeometry, ts: float, *, changed: bool
+    ) -> list[Event]:
         """A board no move explains whose coordinate labels say the other side is at the
         bottom: the next puzzle, shown from its solver's side. It is read that way at once,
         as a new game, from the readings already taken (`reorient`).
@@ -740,7 +744,10 @@ class GamePipeline:
             self._flip_boards = []
             return []
         seen = self._flip_seen
-        if seen is not None and ts - seen[1] < FLIP_CHECK_EVERY_S:
+        if seen is not None and not changed and ts - seen[1] < FLIP_CHECK_EVERY_S:
+            # The same pixels, looked at a moment ago. A changed frame is always looked at:
+            # the next puzzle's first board, up for one tick right after a look at the last
+            # one, was skipped, and its opening move with it (the puzzle sweep, 2026-10-03).
             return []
         labelled = read_bottom_side(frame, geometry, self.model.rank_labels)
         if labelled is None or labelled == self.bottom:
@@ -785,13 +792,14 @@ class GamePipeline:
         played from (`Reconciler.start_from`), or None. The newest, not the last: a frame
         caught mid-slide, read as a board without the moving piece, came between."""
         target = read[3].board_fen()
+        lit = highlighted_squares(by_square(read[2], read[1]))
         for prior, seen_at in reversed(boards):
             if ts - seen_at > COLD_BEFORE_S or prior[1] != read[1]:
                 continue
             if prior[3].board_fen() == target:
                 continue
             highlighted = highlighted_squares(by_square(prior[2], prior[1]))
-            if Reconciler.one_move(prior[3], highlighted, target, prefer=read[1].color):
+            if Reconciler.one_move(prior[3], highlighted, target, prefer=read[1].color, lit=lit):
                 return prior[3], highlighted
         return None
 
