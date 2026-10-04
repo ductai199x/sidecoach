@@ -52,6 +52,34 @@ VOICES_FILE = "voices-v1.0.bin"
 # A stream whose device has not asked for samples for this long is taken for dead and
 # reopened at the next line.
 STREAM_DEAD_S = 1.5
+# The voice's phonemizer copies espeak's library into a folder of its own under the system's
+# temp directory for each backend it makes, four a process, and on Windows removes them only
+# at a clean exit (`phonemizer.backend.espeak.api`).
+ESPEAK_COPY = "espeak-ng.dll"
+
+
+def sweep_espeak_copies(temp: Path | None = None) -> int:
+    """Remove the copies of espeak's library that processes gone before their clean exit left in
+    `temp` (the system's temp directory): a sidecar killed, an orphan's `os._exit`, a crash, a
+    test worker. Two hundred of them had piled up in Tai's Temp by 2026-10-04. A folder counts
+    only when it is named as Python's temp folders are and holds that one file and nothing else;
+    a copy a live process has loaded cannot be deleted on Windows, and is left to its process.
+    Returns how many were removed."""
+    import tempfile
+
+    removed = 0
+    for folder in Path(temp or tempfile.gettempdir()).glob("tmp*"):
+        try:
+            if not folder.is_dir() or [p.name for p in folder.iterdir()] != [ESPEAK_COPY]:
+                continue
+            (folder / ESPEAK_COPY).unlink()
+            folder.rmdir()
+            removed += 1
+        except OSError:
+            continue  # in use, or gone meanwhile
+    if removed:
+        log.info("removed %d copies of espeak's library left in the temp directory", removed)
+    return removed
 
 
 class _Stamp(NamedTuple):
@@ -323,6 +351,7 @@ class KokoroTTS:
                 from kokoro_onnx import Kokoro  # type: ignore[reportMissingImports]
 
                 begun = time.perf_counter()
+                sweep_espeak_copies()  # what processes before this one left behind
                 sess, where = make_session(self.onnx_path, self.device_wanted)
                 self._kokoro = Kokoro.from_session(sess, str(self.voices_path))
                 self._sd = sounddevice

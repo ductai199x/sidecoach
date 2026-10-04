@@ -65,3 +65,25 @@ def test_a_failed_kokoro_say_is_a_noop_and_starts_no_worker(tmp_path: Path) -> N
     tts._failed = True  # simulate a backend that could not load
     tts.say("Qh5+")
     assert tts._worker is None
+
+
+def test_copies_of_espeak_left_by_dead_processes_are_swept_and_nothing_else(tmp_path: Path) -> None:
+    """The phonemizer's copies of espeak's library, left in Temp by processes that never reached
+    a clean exit (two hundred in Tai's, 2026-10-04): a folder holding that one file goes; a
+    copy still loaded (an open file cannot be deleted on Windows), a folder holding anything
+    else, and a folder not named as Python names them stay."""
+    from sidecoach.voice.kokoro import ESPEAK_COPY, sweep_espeak_copies
+
+    def folder(name: str, *files: str) -> Path:
+        (tmp_path / name).mkdir()
+        for f in files:
+            (tmp_path / name / f).write_bytes(b"x")
+        return tmp_path / name
+
+    stale = [folder("tmpab12cd34", ESPEAK_COPY), folder("tmp_9xyz", ESPEAK_COPY)]
+    busy = folder("tmpbusy0001", ESPEAK_COPY)
+    kept = [folder("tmpmore0002", ESPEAK_COPY, "profile.sqlite"), folder("mine", ESPEAK_COPY)]
+    with (busy / ESPEAK_COPY).open("rb"):
+        assert sweep_espeak_copies(tmp_path) == 2
+    assert not any(p.exists() for p in stale)
+    assert busy.exists() and all((p / ESPEAK_COPY).exists() for p in kept)
