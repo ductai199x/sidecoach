@@ -198,36 +198,21 @@ object PanelWarm {
                 PanelVoice.setVoicePace(SettingsStore(appContext).voicePace())
                 PanelEngine.set("captions" to SettingsStore(appContext).captionState())
                 PanelListen.build(appContext)
-                stage("pieces", "loading")
                 // OpenCV's native library first: the net's prime and the vision's pass both
                 // need it (the desktop has cv2 the moment it imports the vision).
                 GameWatcher.loaded
-                val net = runCatching { CellEmbedder.load(appContext) }
-                    .onFailure { Log.w(TAG, "the piece net did not load: $it") }
-                    .getOrNull()
-                embedder = net
-                if (net != null) {
-                    val primed = net.prime()
-                    PanelEngine.emit(
-                        "sys", "info",
-                        "pieces: embedding net on ${net.deviceDetail}, primed in ${f1(primed)}s",
-                    )
-                    stage("pieces", "done", "on ${net.deviceDetail}")
-                } else {
-                    PanelEngine.emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
-                    stage("pieces", "off", "no embedding net; silhouettes instead")
+                // Side by side: none of the stages needs another, and one after another they
+                // were the sum of their times -- about nine seconds before the splash let go
+                // (Tai, 2026-10-03: "I want to get that down to 4 or 5"). `_warm`.
+                // The voice and the speech recognition load on after the splash, and after the
+                // others: a board is read without them, the coach's first line waits for its
+                // voice if it comes first, and loaded beside the others they slowed them.
+                allOf({ warmPieces() }, { warmVision() }, { warmEngine() })
+                voiceThread = Thread({ warmVoiceAfter() }, "warm-voice").apply {
+                    isDaemon = true
+                    start()
                 }
-                warmVoice()
-                stage("vision", "loading")
-                warmPipeline()
-                stage("vision", "done")
-                stage("engine", "loading")
-                stage("coach", "loading")
-                val (engine, coach) = prepareStages()
-                if (!engine.on) stage("engine", "off", engine.detail)
-                if (!coach.on) stage("coach", "off", coach.detail)
-                warmEngines()
-                if (engine.on) stage("engine", "done", engine.detail)
+                val coach = coaching!!
                 // In the background, as the desktop's (setup finding 18): a local model's
                 // first load took up to a minute and the splash waited on it.
                 Thread({ runCatching { warmModel() } }, "warm-model").apply { isDaemon = true }.start()
@@ -254,6 +239,78 @@ object PanelWarm {
                 }
             }
         }
+    }
+
+    /** The voice models' load, which goes on after the warm-up is done. `_voice_thread`. */
+    @Volatile var voiceThread: Thread? = null
+
+    /** The voice models loaded behind the splash; a failure is said and its stage off. `_warm_voice_after`. */
+    private fun warmVoiceAfter() {
+        try {
+            warmVoice()
+        } catch (exc: Throwable) {
+            PanelEngine.emit("sys", "warn", "voice warm-up: ${PanelEngine.pyRepr(exc)}")
+            synchronized(lock) {
+                for (name in listOf("voice", "stt", "mic")) {
+                    val one = stages[name] ?: continue
+                    val state = one.optString("state")
+                    if (state == "pending" || state == "loading") {
+                        one.put("state", "off")
+                        one.put("detail", PanelEngine.pyRepr(exc))
+                    }
+                }
+            }
+        }
+    }
+
+    /** The embedding net loaded and primed. `_warm_pieces`. */
+    private fun warmPieces() {
+        stage("pieces", "loading")
+        val net = runCatching { CellEmbedder.load(appContext) }
+            .onFailure { Log.w(TAG, "the piece net did not load: $it") }
+            .getOrNull()
+        embedder = net
+        if (net != null) {
+            val primed = net.prime()
+            PanelEngine.emit(
+                "sys", "info",
+                "pieces: embedding net on ${net.deviceDetail}, primed in ${f1(primed)}s",
+            )
+            stage("pieces", "done", "on ${net.deviceDetail}")
+        } else {
+            PanelEngine.emit("sys", "warn", "pieces: silhouette overlap (no embedding net)")
+            stage("pieces", "off", "no embedding net; silhouettes instead")
+        }
+    }
+
+    private fun warmVision() {
+        stage("vision", "loading")
+        warmPipeline()
+        stage("vision", "done")
+    }
+
+    /** Stockfish and the coach built, and Stockfish's first search paid. `_warm_engine`. */
+    private fun warmEngine() {
+        stage("engine", "loading")
+        stage("coach", "loading")
+        val (engine, coach) = prepareStages()
+        if (!engine.on) stage("engine", "off", engine.detail)
+        if (!coach.on) stage("coach", "off", coach.detail)
+        warmEngines()
+        if (engine.on) stage("engine", "done", engine.detail)
+    }
+
+    /** Each step on a thread of its own, all waited for; the first failure thrown after. `_all_of`. */
+    private fun allOf(vararg steps: () -> Unit) {
+        val failures = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+        val threads = steps.map { step ->
+            Thread({ runCatching(step).onFailure { failures.add(it) } }, "warm-part").apply {
+                isDaemon = true
+                start()
+            }
+        }
+        threads.forEach { it.join() }
+        failures.firstOrNull()?.let { throw it }
     }
 
     /** One warm-up stage's state, with the seconds since the warm-up began. `_stage`. */
@@ -369,6 +426,13 @@ object PanelWarm {
     private fun warmVoice() = synchronized(voiceWarmLock) { warmVoiceNow() }
 
     private fun warmVoiceNow() {
+        // The voice and the speech recognition side by side: neither needs the other.
+        allOf({ warmTts() }, { warmStt() })
+        PanelVoice.tts?.let { PanelEngine.set("voice_detail" to it.healthcheck().second) }
+        warmMic()
+    }
+
+    private fun warmTts() {
         val tts = PanelVoice.tts
         if (tts == null) {
             stage("voice", "off", "voice off")
@@ -392,6 +456,9 @@ object PanelWarm {
                 stage("voice", "off", detail)
             }
         }
+    }
+
+    private fun warmStt() {
         val stt = PanelListen.stt
         if (stt == null) {
             stage("stt", "off", "speech recognition off")
@@ -414,7 +481,11 @@ object PanelWarm {
                 stage("stt", "off", detail)
             }
         }
-        PanelVoice.tts?.let { PanelEngine.set("voice_detail" to it.healthcheck().second) }
+    }
+
+    /** The speech recognition's state for the page, and the microphone opened when it is wanted. */
+    private fun warmMic() {
+        val stt = PanelListen.stt
         val (sttReady, sttDetail) = stt?.healthcheck() ?: (false to "speech recognition off")
         PanelEngine.set("stt_detail" to sttDetail, "stt_ready" to sttReady)
         val (ok, detail) = PanelListen.mic?.healthcheck() ?: (false to "no microphone")
@@ -457,7 +528,9 @@ object PanelWarm {
     private fun warmEngines() {
         val analyser = assessing?.analyser ?: return
         val began = System.nanoTime()
-        runCatching { analyser.annotator.engine.analyse(Board(), depth = analyser.annotator.depth) }
+        // Depth 1: the threads, the hash and the network are what a first search pays; the full
+        // depth was a second more of every launch for a position no one asked about.
+        runCatching { analyser.annotator.engine.analyse(Board(), depth = 1) }
         PanelEngine.emit("sys", "info", "engine: primed in ${f1((System.nanoTime() - began) / 1e9)}s")
     }
 
