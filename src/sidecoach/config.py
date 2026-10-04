@@ -112,21 +112,26 @@ class EngineSettings(_Settings):
             applies="now", label="Candidate lines", advanced=True, section="What it looks at"
         ),
     )
-    threads: int = Field(
-        default=4,
+    # Engines of one thread each, not one engine of several threads: at a fixed depth, more
+    # threads widen the search instead of speeding it -- four took 7.7 times the processor
+    # time of one, and twice as long, for an answer no better (the engine audit, 2026-10-04).
+    # One thread also gives the same answer every time. Three: Tai's choice (2026-10-04).
+    workers: int = Field(
+        default=3,
         ge=1,
-        le=64,
-        description="Processor threads Stockfish may use. More is faster to a point; leave a "
-        "few for the game and the browser.",
+        le=16,
+        description="How many positions Stockfish works on at once, one processor core each: "
+        "the game's own, and the moves ahead it gets ready while you think. More looks further "
+        "ahead and uses more of the processor.",
         json_schema_extra=_extra(
-            applies="now", label="CPU threads", section="How hard Stockfish works"
+            applies="next", label="Positions at once", section="How hard Stockfish works"
         ),
     )
     hash_mb: int = Field(
         default=256,
         ge=16,
         le=8192,
-        description="Memory Stockfish keeps for positions it has already seen, in MB. More "
+        description="Memory each of those keeps for positions it has already seen, in MB. More "
         "helps a deep search; 256 is plenty.",
         json_schema_extra=_extra(
             applies="now", label="Memory (MB)", section="How hard Stockfish works"
@@ -165,19 +170,6 @@ class EngineSettings(_Settings):
             },
             advanced=True,
             section="What it looks at",
-        ),
-    )
-    max_seconds: float = Field(
-        default=5.0,
-        ge=0.5,
-        le=60.0,
-        description="The most time one position may take. A think that runs long is cut off "
-        "here so the coach keeps up with the game.",
-        json_schema_extra=_extra(
-            applies="now",
-            label="Time limit per position (s)",
-            advanced=True,
-            section="How hard Stockfish works",
         ),
     )
 

@@ -202,9 +202,19 @@ def test_a_save_reaches_the_running_coach_and_engine(
         multipv=6,
         thresholds=Thresholds(),
         engine=SimpleNamespace(multipv=6),
-        forget_measured=lambda: forgotten.append(1),
     )
-    engine._assessing = SimpleNamespace(analyser=SimpleNamespace(annotator=annotator))
+
+    def reconfigure(**options: object) -> None:  # every worker's engine (one stands for them)
+        for name, value in options.items():
+            setattr(annotator.engine, name, value)
+
+    engine._assessing = SimpleNamespace(
+        analyser=SimpleNamespace(
+            annotator=annotator,
+            reconfigure=reconfigure,
+            forget_measured=lambda: forgotten.append(1),
+        )
+    )
     values = client.get("/api/settings").json()["settings"]
     values["coach"]["persona"] = "playful"
     values["coach"]["stuck_seconds"] = 30

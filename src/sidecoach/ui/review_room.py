@@ -671,7 +671,6 @@ def review_row(
                     multipv=strength.multipv,
                     pv_plies=engine.pv_plies,
                     score_model=engine.score_model,
-                    max_seconds=engine.max_seconds,
                     low_priority=low_priority,
                 )
             )

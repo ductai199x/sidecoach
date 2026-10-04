@@ -76,17 +76,17 @@ class Engine:
     pv_plies: int = DEFAULT_PV_PLIES
     # How a line's score becomes an expected score; see `analysis.score.expected_score`.
     score_model: str = DEFAULT_SCORE_MODEL
-    # No single position may hold up a game. Some positions are pathologically slow to
-    # reach a given depth: a long forced mate with several lines to separate can take
-    # minutes, and one of those in a post-game review stalls the whole run. Whichever
-    # limit comes first wins, and the depth actually reached is reported on every line.
-    max_seconds: float | None = 5.0
+    # A depth asked for is a depth reached: no time cap cuts a search short. A cap of five
+    # seconds answered 63 of 1,642 searches of a session below depth 18, some at depth 11,
+    # and they were read as depth 18 (the engine audit, 2026-10-04; Tai: no lower depths).
     # Work the player is not waiting on (the background review of imported games) yields
     # the processor to everything else: the process runs below normal priority.
     low_priority: bool = False
-    # A search still running this long past its time limit is an engine that stopped
-    # answering without dying: its process is ended and the search made again (`_watched`).
-    watchdog_s: float = 10.0
+    # An engine that says nothing for this long is hung, not thinking: a search reports each
+    # depth it finishes, and every root move it takes up once it has run three seconds. Its
+    # process is ended and the search made again (`_watched`). Silence, not a time limit:
+    # a long search that is still talking is never cut.
+    watchdog_s: float = 30.0
     # How the watchdog waits: until the search is done (True) or the patience has run (False).
     # A test drives it without waiting on the clock.
     watchdog_wait: Callable[[threading.Event, float], bool] = field(
@@ -104,6 +104,9 @@ class Engine:
     _closed: bool = field(default=False, init=False, repr=False)
     # Threads or hash saved while a search ran: set on the process before the next search.
     _options_owed: bool = field(default=False, init=False, repr=False)
+    # How many reports the engine has made: the watchdog reads it to tell a search that is
+    # talking from one that has gone silent.
+    _heard: int = field(default=0, init=False, repr=False)
 
     def __enter__(self) -> Engine:
         self.open()
@@ -216,10 +219,7 @@ class Engine:
             return []
         if depth is None and time_s is None:
             raise ValueError("analyse needs a depth or a time limit")
-        capped = time_s
-        if depth is not None and self.max_seconds is not None:
-            capped = self.max_seconds if time_s is None else min(time_s, self.max_seconds)
-        limit = chess.engine.Limit(depth=depth, time=capped)
+        limit = chess.engine.Limit(depth=depth, time=time_s)
         wanted = multipv if multipv is not None else self.multipv
         wanted = max(1, min(wanted, board.legal_moves.count()))
         plies = pv_plies if pv_plies is not None else self.pv_plies
@@ -240,7 +240,7 @@ class Engine:
         with self._lock:
             if self._options_owed:
                 self._configure()
-            with self._watched(limit):
+            with self._watched():
                 infos = self._analyse_with_restart(board, limit, wanted, depths)
         lines = as_lines(infos, carry_best)
         if carry_best and lines and len(lines[0].moves) < MIN_BEST_PLIES:
@@ -261,7 +261,7 @@ class Engine:
             with self._lock:
                 if self._options_owed:
                     self._configure()
-                with self._watched(limit):
+                with self._watched():
                     infos = self._analyse_with_restart(end, limit, 1)
             more = (infos[0].get("pv") or []) if infos else []
             if not more:
@@ -272,20 +272,20 @@ class Engine:
         return line.model_copy(update={"moves": moves})
 
     @contextlib.contextmanager
-    def _watched(self, limit: chess.engine.Limit) -> Iterator[None]:
-        """A search with a time limit, watched: still running `watchdog_s` past it, the
-        engine has stopped answering without dying -- the search would wait on it for good,
-        and the analyser's thread with it -- so its process is ended, and the search is
-        made again on a new one (`_analyse_with_restart`), watched the same way."""
-        if limit.time is None:
-            yield
-            return
+    def _watched(self) -> Iterator[None]:
+        """A search watched: one that reports nothing for a whole `watchdog_s` is an engine
+        that stopped answering without dying -- the search would wait on it for good, and
+        its worker with it -- so its process is ended, and the search is made again on a new
+        one (`_analyse_with_restart`), watched the same way. A search still reporting, however
+        long it takes, is left to finish: the depth asked for is the depth answered."""
         done = threading.Event()
-        patience = limit.time + self.watchdog_s
 
         def watch() -> None:
-            while not self.watchdog_wait(done, patience):
-                self._end_process()
+            heard = self._heard
+            while not self.watchdog_wait(done, self.watchdog_s):
+                if self._heard == heard:
+                    self._end_process()
+                heard = self._heard
 
         watcher = threading.Thread(target=watch, name="sidecoach-engine-watchdog", daemon=True)
         watcher.start()
@@ -371,6 +371,7 @@ class Engine:
                 done = 0
                 whole: list[chess.engine.InfoDict] | None = None
                 for info in search:
+                    self._heard += 1  # talking: not hung (`_watched`)
                     rank, depth = info.get("multipv", 1), info.get("depth")
                     if depth is None or not info.get("pv"):
                         continue

@@ -55,6 +55,110 @@ class FakeEngine(Engine):
         return
 
 
+class GatedEngine(FakeEngine):
+    """A fake engine whose searches of the positions in `gated` (FENs) wait until the test
+    lets them go (`release`) or the analyser stops them (`interrupt`, raising `Interrupted`, as
+    a real one stops); every other search, and every depth it finishes (`on_depth`, from
+    EARLY_DEPTH to the depth asked for), is answered at once. `entered[fen]` is set when a gated
+    search begins. So a test acts mid-search by the engine's state, never by a clock."""
+
+    def __init__(
+        self,
+        answers: dict[str, list[Line]] | None = None,
+        *,
+        gated: Sequence[str] = (),
+        default: list[Line] = QUIET,
+    ) -> None:
+        super().__init__(answers, default=default)
+        self.gated = set(gated)
+        self.entered = {fen: threading.Event() for fen in gated}
+        self.released: set[str] = set()
+        self.stopped: list[str] = []  # gated searches the analyser stopped
+        self._wake = threading.Event()
+
+    def release(self, fen: str) -> None:
+        self.released.add(fen)
+        self._wake.set()
+
+    def interrupt(self) -> None:
+        super().interrupt()
+        self._wake.set()
+
+    def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
+        from sidecoach.analysis.annotator import EARLY_DEPTH
+        from sidecoach.analysis.engine import Interrupted
+
+        fen = board.fen()
+        depth = int(kwargs.get("depth") or 0)
+        if fen in self.gated:
+            self.entered[fen].set()
+            while fen not in self.released:
+                if self._interruptible and self._stopped.is_set():
+                    self.stopped.append(fen)
+                    raise Interrupted
+                assert self._wake.wait(HANG_S), f"the search of {fen} was never let go"
+                self._wake.clear()
+        lines = super().analyse(board, **kwargs)
+        lines = [line.model_copy(update={"depth": depth}) for line in lines] if depth else lines
+        on_depth = kwargs.get("on_depth")
+        if on_depth is not None and lines:
+            for d in range(EARLY_DEPTH, depth):
+                on_depth([line.model_copy(update={"depth": d}) for line in lines])
+        return lines
+
+
+class _Poking:
+    """The analyser's results queue, poking a watcher at every result put."""
+
+    def __init__(self, inner: Any, poke: Callable[[], None]) -> None:
+        self._inner, self._poke = inner, poke
+
+    def put(self, item: object) -> None:
+        self._inner.put(item)
+        self._poke()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class AnalyserWatch:
+    """An analyser's workers, watched without a clock: every result they put and every change
+    of state they signal (`Analyser._cond.notify_all`) wakes `until`, which returns once its
+    condition holds. HANG_S only bounds a hang; it is never the expected path. Made before the
+    workers start."""
+
+    def __init__(self, analyser: Any) -> None:
+        self.analyser = analyser
+        self._cond = threading.Condition()
+        signal = analyser._cond.notify_all
+
+        def notify_all() -> None:
+            signal()
+            self.poke()
+
+        analyser._cond.notify_all = notify_all
+        analyser._results = _Poking(analyser._results, self.poke)
+
+    def poke(self) -> None:
+        with self._cond:
+            self._cond.notify_all()
+
+    def until(self, condition: Callable[[], bool], what: str = "the condition") -> None:
+        with self._cond:
+            assert self._cond.wait_for(condition, HANG_S), f"never came: {what}"
+
+    def idle(self) -> None:
+        """Everything owed to the game answered. A result is put before the state that says
+        it was told, so none can come after `pending` is 0; what was said stays queued for
+        whoever drains it (the engine glue's `drain`)."""
+        self.until(lambda: self.analyser.pending == 0, "the analyser settled")
+
+    def settled(self) -> list[object]:
+        """Everything owed answered (`idle`), and what the workers said, polled."""
+        self.idle()
+        return list(self.analyser.poll())
+
+
 class ScriptedProvider:
     """A model that answers from a script and then with `then`, or with `fail` raises as a
     server that is down does. It remembers every call: `calls` everything it was asked,

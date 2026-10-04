@@ -13,19 +13,16 @@ lengths would differ by more than most mistakes do.
 
 from __future__ import annotations
 
-import queue
-import threading
-import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import chess
 
 from sidecoach.analysis import motifs
-from sidecoach.analysis.computed import Computed
+from sidecoach.analysis.computed import Computed, line_after
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines
-from sidecoach.analysis.engine import Engine, Interrupted
+from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.score import (
     Previous,
     Thresholds,
@@ -39,26 +36,15 @@ from sidecoach.analysis.score import (
 )
 from sidecoach.analysis.threats import AIM_DEPTH, aim_lines, threat_moves
 from sidecoach.analysis.traps import TRAP_DEPTH, trap_lines
-from sidecoach.events import Analysis, Event, Line, MotifTag, MoveAssessment
+from sidecoach.events import Analysis, Line, MotifTag, MoveAssessment
 
-# Within BEHIND_S of the analyser being behind a fast game, the position the player faces is
-# measured at EARLY_DEPTH after the verdict rather than before it, the side searches with it --
-# a tenth of the full depth's time, where the full depth capped at a second went without them
-# (the live panel, 2026-09-28: a hint asked in a fast stretch waited a third of a second for
-# that second) -- and every depth follows (`Analyser._serve`).
-BEHIND_S = 10.0
-# While no move waits -- the player thinking, or the opponent -- the engine looks ahead:
-# the positions after the LOOK_AHEAD best moves from the position on the board, each then
-# after the best reply to it, measured whole and cached. A game that goes there has its
-# verdict and its facts at once (Tai, 2026-09-27: "cache ... the possible legal moves from
-# both sides"); a move of its own stops the look ahead within the millisecond.
-LOOK_AHEAD = 2
-# The depth a position the player faces is measured to first, the full depth following: its
-# best move is the full depth's in every one of 77 puzzle positions and 81 % of 232 game
-# positions, found in a twentieth of the time (0.05-0.08 s at the phone's two threads, on the
-# desktop), so a hint, the move or the line asked for at once is answered at once (Tai,
-# 2026-09-28: "first usable answer is depth 12 ... the computation continues until max
-# depth of 18").
+# The first depth of a position's search told to its readers, each deeper one following as
+# the search finishes it: its best move is the full depth's in every one of 77 puzzle
+# positions and 81 % of 232 game positions, found in a twentieth of the time, so a hint, the
+# move or the line asked for at once is answered at once (Tai, 2026-09-28: "first usable
+# answer is depth 12 ... the computation continues until max depth of 18"). Depth 12 of the
+# position's own search: a search of its own to depth 12 first cost 27% more than the full
+# depth alone (the engine audit, 2026-10-04).
 EARLY_DEPTH = 12
 
 
@@ -110,7 +96,7 @@ class Measured:
 
     @property
     def depth(self) -> int:
-        """How deep the search actually got, which the time cap can cut short."""
+        """How deep the search got: the depth asked for, or less for a search stopped."""
         return self.lines[0].depth if self.lines else 0
 
 
@@ -267,6 +253,25 @@ class GameAnnotator:
         early: bool = False,
         on_depth: Callable[[list[Line]], None] | None = None,
     ) -> Measured:
+        measured = self.search(board, depth=depth, early=early, on_depth=on_depth)
+        return self.with_side(board, measured, depth=depth)
+
+    def search(
+        self,
+        board: chess.Board,
+        *,
+        engine: Engine | None = None,
+        depth: int | None = None,
+        early: bool = False,
+        on_depth: Callable[[list[Line]], None] | None = None,
+    ) -> Measured:
+        """The position's own search, nothing beside it: its lines at `depth` (the full depth
+        unless told), the decisive-moment and only-move calls read from them. `engine`: the
+        one to search with (a worker's own; the annotator's unless told). Each depth from the
+        first usable one is kept for any reader as the search finishes it (`computed`), and
+        handed to `on_depth`."""
+        engine = engine or self.engine
+        depth = depth or self.depth
         usable = min(EARLY_DEPTH, depth)
         era = self._era
 
@@ -277,7 +282,7 @@ class GameAnnotator:
             if on_depth is not None:
                 on_depth(found)
 
-        lines = self.engine.analyse(
+        lines = engine.analyse(
             board,
             depth=depth,
             multipv=self.multipv,
@@ -288,35 +293,43 @@ class GameAnnotator:
         # Before the side searches: the lines are the news, and a reader has them now.
         if era == self._era:
             self.computed.add(board, lines)
-        searched = self.with_threats
         return Measured(
             fen=board.fen(),
             lines=lines,
             score=position_score(board, lines),
             decisive=is_decisive(board, lines, self.thresholds),
             only_move=is_only_move(board, lines, self.thresholds),
-            threats=threat_moves(self.engine, board, depth=depth) if searched else [],
+            key=cache_key(board),
+        )
+
+    def with_side(
+        self,
+        board: chess.Board,
+        measured: Measured,
+        *,
+        engine: Engine | None = None,
+        depth: int | None = None,
+    ) -> Measured:
+        """`measured` with its side searches: what the coach's words on the position are made
+        of (the threats, the traps, the declined recaptures, what a quiet best move
+        threatens). The position's own lines are what they search from; none of them is a
+        search of the position again. Nothing when the annotator searches no threats."""
+        if not self.with_threats:
+            return measured
+        engine = engine or self.engine
+        depth = depth or self.depth
+        lines = measured.lines
+        return replace(
+            measured,
+            threats=threat_moves(engine, board, depth=depth),
             # The captures that look free and are not, beside the threats: what the first
-            # hint warns of ("the knight on g4 is bait"), searched only when not hurried.
-            traps=(
-                trap_lines(self.engine, board, lines, depth=min(TRAP_DEPTH, depth))
-                if searched
-                else []
-            ),
+            # hint warns of ("the knight on g4 is bait").
+            traps=trap_lines(engine, board, lines, depth=min(TRAP_DEPTH, depth)),
             # And the recaptures the best line declines, with what refutes them: why the
             # obvious defence fails is the lesson ("the pawn on f2 cannot take back").
-            defences=(
-                defence_lines(self.engine, board, lines, depth=min(DEFENCE_DEPTH, depth))
-                if searched
-                else []
-            ),
+            defences=defence_lines(engine, board, lines, depth=min(DEFENCE_DEPTH, depth)),
             # And what a quiet best move threatens: how it wins ("it threatens mate").
-            threatens=(
-                aim_lines(self.engine, board, lines, depth=min(AIM_DEPTH, depth))
-                if searched
-                else []
-            ),
-            key=cache_key(board),
+            threatens=aim_lines(engine, board, lines, depth=min(AIM_DEPTH, depth)),
         )
 
     def analysis_event(
@@ -340,6 +353,20 @@ class GameAnnotator:
             measured = self.measure_for_verdict(board)
         else:
             measured = self.measure(board, on_depth=on_depth)
+        return self.analysis_from(game_id, board, ply, measured, provisional=early)
+
+    def analysis_from(
+        self,
+        game_id: str,
+        board: chess.Board,
+        ply: int,
+        measured: Measured,
+        *,
+        provisional: bool = False,
+    ) -> Analysis:
+        """What `measured` says of `board`, for the side to move: the event the readers get.
+        `provisional`: a depth on the way to the full one, or the full one before its side
+        searches -- what follows replaces it."""
         return Analysis(
             game_id=game_id,
             fen=measured.fen,
@@ -354,7 +381,18 @@ class GameAnnotator:
             tags=self._position_tags(board, measured),
             opening=self._opening(board),
             in_book=self._in_book(board),
-            provisional=early,
+            provisional=provisional,
+        )
+
+    def measured_lines(self, board: chess.Board, lines: list[Line]) -> Measured:
+        """`lines` of `board` as a measurement: the calls they make (a depth on the way)."""
+        return Measured(
+            fen=board.fen(),
+            lines=lines,
+            score=position_score(board, lines),
+            decisive=is_decisive(board, lines, self.thresholds),
+            only_move=is_only_move(board, lines, self.thresholds),
+            key=cache_key(board),
         )
 
     def deepened(self, early: Analysis, board: chess.Board, lines: list[Line]) -> Analysis:
@@ -404,20 +442,66 @@ class GameAnnotator:
     def assess_move(
         self, game_id: str, before: chess.Board, move: chess.Move, ply: int
     ) -> MoveAssessment:
-        """What the move cost its mover -- from the best line of the position it led to,
-        at the full depth but that one line: a sixth of the time of the six the coach's
-        candidates take (0.1 s against 0.7 at depth 18), so the verdict, and the word
-        on the move, come that much sooner. `analysis_event` then measures the position
-        whole; a position already measured whole is not searched again."""
+        """What the move cost its mover (`assess_from`), the positions measured here when
+        they are not measured yet: the position before, and the one after only when the move
+        is not among the lines of the one before."""
         if move not in before.legal_moves:
             raise ValueError(f"{move.uci()} is not legal in {before.fen()}")
         measured_before = self.measure_for_verdict(before)
+        measured_after = None
+        if own_line(measured_before.lines, move) is None:
+            after = before.copy()
+            after.push(move)
+            measured_after = self.measure_for_verdict(after)
+        return self.assess_from(game_id, before, move, ply, measured_before, measured_after)
+
+    def judgeable(self, measured_before: Measured, move: chess.Move) -> bool:
+        """Whether the position before alone judges `move`: the move is among its lines."""
+        return own_line(measured_before.lines, move) is not None
+
+    def assess_from(
+        self,
+        game_id: str,
+        before: chess.Board,
+        move: chess.Move,
+        ply: int,
+        measured_before: Measured,
+        measured_after: Measured | None = None,
+    ) -> MoveAssessment:
+        """What the move cost its mover, from searches already made. A move among the lines
+        of the position before is judged from its own line there: the same search and the
+        same depth as the best move it is set against, and the position after read as the
+        rest of that line -- no search of its own (85% of a session's moves, the same label
+        in 319 of 320: the engine audit, 2026-10-04). Any other move is judged from the
+        position after's own measure (`measured_after`, needed then), as before."""
         # The history comes along: the opening a game is in is a fact about its moves, not
         # about the position, and the position after this move is the next move's history.
         after = before.copy()
         after.push(move)
-        measured_after = self.measure_for_verdict(after)
-        loss = eval_loss(measured_before.lines, move.uci(), measured_after.score)
+        own = own_line(measured_before.lines, move)
+        if own is not None:
+            best_line = measured_before.lines[0]
+            loss = (
+                0.0 if own is best_line else max(0.0, best_line.expected_score - own.expected_score)
+            )
+            rest = line_after(own, 1)
+            # The rest of the line is the position after's line; one that stops at the move
+            # still carries the position's score.
+            after_lines = [rest] if rest.moves else []
+            measured_after = Measured(
+                fen=after.fen(),
+                lines=after_lines,
+                score=position_score(after, [rest]),
+                decisive=False,
+                only_move=False,
+                key=cache_key(after),
+            )
+        else:
+            if measured_after is None:
+                raise ValueError(
+                    f"{move.uci()} is not among the lines: the position after is needed"
+                )
+            loss = eval_loss(measured_before.lines, move.uci(), measured_after.score)
         tags = self._move_tags(before, move, measured_after)
         best = measured_before.lines[0].moves if measured_before.lines else []
         previous = self._assessed.get(ply - 1)
@@ -454,7 +538,11 @@ class GameAnnotator:
             severity=severity(loss, self.thresholds),
             best=best,
             tags=tags,
-            depth=min(measured_before.depth, measured_after.depth or measured_before.depth),
+            depth=(
+                measured_before.depth
+                if own is not None
+                else min(measured_before.depth, measured_after.depth or measured_before.depth)
+            ),
             label=label,
             accuracy=move_accuracy(loss),
         )
@@ -528,6 +616,12 @@ def opening_name(book: Book, moves: Sequence[chess.Move]) -> str | None:
     return f"{eco} {name}" if eco else str(name)
 
 
+def own_line(lines: Sequence[Line], move: chess.Move) -> Line | None:
+    """The line among `lines` that begins with `move`, or None."""
+    uci = move.uci()
+    return next((line for line in lines if line.moves and line.moves[0] == uci), None)
+
+
 def _moves(line: Line) -> list[chess.Move]:
     out: list[chess.Move] = []
     for uci in line.moves:
@@ -553,455 +647,3 @@ def _mate_in(before: chess.Board, move: chess.Move, after_lines: Sequence[Line])
         return None
     mate = after_lines[0].mate
     return -mate if mate > 0 else abs(mate) + 1
-
-
-@dataclass
-class _Request:
-    game_id: str
-    ply: int
-    board: chess.Board
-    move: chess.Move | None
-    # The player's own move: judged first, its word the news; the opponent's is not, and the
-    # position after it, which the player faces, is measured early first.
-    by_user: bool = True
-    # Set when the game takes the move back while it is being measured (`Analyser.withdraw`):
-    # nothing about it is delivered, and the position after it is not measured.
-    withdrawn: bool = field(default=False, compare=False)
-
-
-class Analyser:
-    """A `GameAnnotator` on a worker thread: submit moves, poll events, never block.
-
-    The engine is slow by design and the capture loop runs at ten frames a second, so
-    nothing here waits for a result. Assessments arrive a moment after the move, which is
-    when a coach would speak anyway.
-    """
-
-    def __init__(
-        self, annotator: GameAnnotator, *, max_pending: int = 64, look_ahead: int = 0
-    ) -> None:
-        self.annotator = annotator
-        self.max_pending = max_pending
-        # How many of the best moves from the position on the board are looked ahead at
-        # (LOOK_AHEAD in a live session; none unless asked).
-        self.look_ahead = look_ahead
-        self.dropped = 0
-        self.failures = 0
-        self.skipped = 0  # whole analyses not run for plies the game had already left
-        self.withdrawn = 0  # requests let go because the game took their move back
-        self._behind_until = 0.0  # the whole analysis is hurried until then
-        self.last_error: str | None = None
-        self._requests: queue.Queue[_Request | None] = queue.Queue()
-        self._results: queue.SimpleQueue[Event] = queue.SimpleQueue()
-        self._thread: threading.Thread | None = None
-        # Requests submitted and not yet answered (or dropped): counted, not read off
-        # the queue, so `pending` is never 0 in the instant between a request leaving
-        # the queue and the worker starting on it -- a review taken then would miss
-        # the last verdict.
-        self._outstanding = 0
-        self._count_lock = threading.Lock()
-        # The request the worker is on, so a takeback can let go of it.
-        self._current: _Request | None = None
-        # The positions to look ahead at, with how many moves ahead each is, and whether
-        # the worker is looking ahead now (a request then interrupts it).
-        self._ahead: list[tuple[chess.Board, int]] = []
-        # The game's positions whose full measure gave way to a newer request (`_yielding`),
-        # measured again once the worker is free; changed with the count of work owed, under
-        # `_count_lock`.
-        self._deferred: list[tuple[_Request, chess.Board]] = []
-        # Whether the worker is on a search a request interrupts: a look ahead, or a full
-        # measure of one of the game's positions.
-        self._looking = False
-        self.looked = 0  # positions measured ahead
-
-    def __enter__(self) -> Analyser:
-        self.start()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.close()
-
-    @property
-    def pending(self) -> int:
-        with self._count_lock:
-            return self._outstanding
-
-    def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._run, name="sidecoach-analyser", daemon=True)
-        self._thread.start()
-
-    def close(self, timeout: float = 5.0) -> None:
-        thread, self._thread = self._thread, None
-        if thread is not None:
-            self._requests.put(None)
-            if self._looking:
-                self.annotator.engine.interrupt()
-            thread.join(timeout)
-        self.annotator.engine.close()
-
-    def submit_move(
-        self,
-        game_id: str,
-        before: chess.Board,
-        move: chess.Move,
-        ply: int,
-        *,
-        by_user: bool = True,
-    ) -> None:
-        # With its moves: the book is asked with the moves that led here (`_in_book`,
-        # `_opening`), and a copy without them was in the book on the first move alone.
-        self._submit(_Request(game_id, ply, before.copy(), move, by_user))
-
-    def submit_position(self, game_id: str, board: chess.Board, ply: int) -> None:
-        self._submit(_Request(game_id, ply, board.copy(stack=False), None))
-
-    def reset(self) -> None:
-        """A new game, or the board re-read: drop what is queued and forget the measured
-        positions, since none of it is about the game as it now stands. What the worker is
-        busy with is let go as a takeback lets go of it (`withdraw`): nothing about it is
-        delivered, and it is not put off to be measured later. It used to finish and be
-        delivered -- or, its full measure interrupted by the next request, be put off after
-        the reset and measured again after the new position, its analysis then the last
-        word; on a resync of the same game (the side to move settled by the clock) the
-        profile filed it as the new position's (the state review, 2026-10-01)."""
-        while True:
-            try:
-                self._requests.get_nowait()
-            except queue.Empty:
-                break
-            self._settle()
-        self._ahead = []
-        with self._count_lock:
-            self._outstanding = max(0, self._outstanding - len(self._deferred))
-            self._deferred = []
-            current = self._current
-            if current is not None:
-                current.withdrawn = True
-        if current is not None:
-            self.annotator.engine.interrupt()
-        self.annotator.reset()
-
-    def withdraw(self, game_id: str, ply: int) -> None:
-        """The game's moves after `ply` taken back: what is queued for them is dropped, and one
-        being measured is let go once its search ends -- nothing about it is delivered, and
-        the position after it is not measured. The engine gets to the replacement move at
-        once, where it used to measure every withdrawn move first (Tai, 2026-09-23:
-        "takebacks make the program lag behind by a lot"; seconds on the phone)."""
-        kept: list[_Request | None] = []
-        while True:
-            try:
-                request = self._requests.get_nowait()
-            except queue.Empty:
-                break
-            if request is not None and request.game_id == game_id and request.ply > ply:
-                self.withdrawn += 1
-                self._settle()
-            else:
-                kept.append(request)
-        for request in kept:
-            self._requests.put(request)
-        self._ahead = []  # ahead of moves no longer played
-        with self._count_lock:  # the worker takes them off the list under it
-            for request, _board in self._deferred:
-                if request.game_id == game_id and request.ply > ply:
-                    request.withdrawn = True
-        current = self._current
-        if current is not None and current.game_id == game_id and current.ply > ply:
-            current.withdrawn = True
-            self.withdrawn += 1
-            # Its search under way stops now, and none of its searches starts after it: all
-            # of a request's work runs interruptible (`_run`).
-            self.annotator.engine.interrupt()
-
-    def poll(self) -> list[Event]:
-        out: list[Event] = []
-        while True:
-            try:
-                out.append(self._results.get_nowait())
-            except queue.Empty:
-                break
-        return out
-
-    def _submit(self, request: _Request) -> None:
-        if self._requests.qsize() >= self.max_pending:
-            # The engine is further behind than a game can get; the newest position still
-            # matters more than an old one, so the oldest goes.
-            try:
-                self._requests.get_nowait()
-                self.dropped += 1
-                self._settle()
-            except queue.Empty:
-                pass
-        with self._count_lock:
-            self._outstanding += 1
-        self._requests.put(request)
-        # After the put: a worker that starts looking ahead after this sees the request.
-        if self._looking:
-            self.annotator.engine.interrupt()
-
-    def _settle(self) -> None:
-        with self._count_lock:
-            self._outstanding = max(0, self._outstanding - 1)
-
-    def _run(self) -> None:
-        while True:
-            request = self._next()
-            if request is None:
-                return
-            self._current = request
-            try:
-                # A takeback stops any of the request's searches (`withdraw`), a newer
-                # request only its full measure (`_yielding`, `_looking`).
-                with self.annotator.engine.interruptible():
-                    self._serve(request)
-            except Interrupted:
-                pass  # withdrawn by a takeback: nothing about it is delivered
-            except Exception as exc:  # noqa: BLE001
-                # A failed analysis must never end a session; the game goes on unassessed.
-                self.failures += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"
-            finally:
-                self._current = None
-                self._settle()
-
-    def _serve(self, request: _Request) -> None:
-        """One request: a position measured early and then whole; a move judged, and the
-        position after it measured -- early first when the player faces it."""
-        if request.move is None:
-            early = self._early(request, request.board)
-            if request.withdrawn:
-                return
-            deepening = self._deepening(request, request.board, early)
-            event = self._yielding(request, request.board, deepening)
-            if event is not None and not request.withdrawn:
-                self._results.put(event)
-                self._plan_ahead(request.board, event.lines)
-        else:
-            # The verdict first, from the best line alone; the position whole after
-            # -- unless newer moves are waiting: then this ply is history, its
-            # verdict is all the coach and the review need, and the whole analysis
-            # (candidates, threats, the decisive-moment call) goes to the position
-            # the player is actually looking at. The position after the
-            # opponent's move is the one the player faces: measured early first.
-            after = request.board.copy()
-            after.push(request.move)
-            early = None
-            if not request.by_user and self._requests.empty():
-                early = self._early(request, after)
-            if request.withdrawn:
-                return
-            verdict = self.annotator.assess_move(
-                request.game_id, request.board, request.move, request.ply
-            )
-            if request.withdrawn:
-                return
-            self._results.put(verdict)
-            if not self._requests.empty():
-                self.skipped += 1
-                self._behind_until = time.monotonic() + BEHIND_S
-                event = self.annotator.analysis_event(
-                    request.game_id, after, request.ply, thin=True
-                )
-                if not request.withdrawn:
-                    self._results.put(event)
-                return
-            if early is None and not request.by_user and time.monotonic() < self._behind_until:
-                # Behind a moment ago: the verdict came first, and now the first usable depth
-                # of the position the player faces. It is never the last word: every depth
-                # follows, then the look ahead. Measured at EARLY_DEPTH and kept as the whole,
-                # it was never deepened and nothing was looked ahead at, and the next move's
-                # verdict set depth 12 against depth 18 -- every position of the panel's
-                # puzzle room after the first, its move and reply submitted together (the
-                # state review, 2026-10-01; Tai, 2026-09-28: "first usable answer is depth
-                # 12 ... the computation continues until max depth of 18").
-                early = self._early(request, after, hurried=True)
-                if request.withdrawn:
-                    return
-            event = self._yielding(request, after, self._deepening(request, after, early))
-            if event is None or request.withdrawn:
-                return
-            self._results.put(event)
-            self._plan_ahead(after, event.lines)
-
-    def _early(
-        self, request: _Request, board: chess.Board, *, hurried: bool = False
-    ) -> Analysis | None:
-        """The position measured at EARLY_DEPTH and delivered, provisional, unless it is
-        measured whole already (ahead of the game). Before the verdict only when the game
-        was not behind a moment ago; `hurried`, after it (`_serve`)."""
-        if self.annotator.measured(board) or (
-            not hurried and time.monotonic() < self._behind_until
-        ):
-            return None
-        event = self.annotator.analysis_event(request.game_id, board, request.ply, early=True)
-        if not request.withdrawn:
-            self._results.put(event)
-        return event
-
-    def _deepening(
-        self, request: _Request, board: chess.Board, early: Analysis | None
-    ) -> Callable[[list[Line]], None] | None:
-        """Each depth between the early one and the full delivered as the search finishes
-        it, provisional (`GameAnnotator.deepened`): whoever reads gets the deepest search
-        done so far (Tai, 2026-09-28: "if the consumers read after stockfish reaches depth >
-        12 then they will get whatever lines that is available at the time"). The results
-        queue is the hand-over: each depth goes in whole, the reader takes the newest."""
-        if early is None:
-            return None
-
-        def deliver(lines: list[Line]) -> None:
-            depth = lines[0].depth if lines else 0
-            if request.withdrawn or not EARLY_DEPTH < depth < self.annotator.depth:
-                return
-            self._results.put(self.annotator.deepened(early, board, lines))
-
-        return deliver
-
-    def _next(self) -> _Request | None:
-        """The next request, and while none waits, the positions ahead measured one by one
-        (`_look_ahead`), a request interrupting the one being measured."""
-        while True:
-            try:
-                return self._requests.get_nowait()
-            except queue.Empty:
-                pass
-            with self._count_lock:
-                deferred = self._deferred.pop(0) if self._deferred else None
-            if deferred is not None:
-                self._resume(*deferred)
-                continue
-            ahead = self._ahead
-            if not ahead:
-                return self._requests.get()
-            self._look_ahead(*ahead.pop(0), ahead)
-
-    def _yielding(
-        self,
-        request: _Request,
-        board: chess.Board,
-        on_depth: Callable[[list[Line]], None] | None = None,
-    ) -> Analysis | None:
-        """The game's position measured whole, giving way to any newer request: the game has
-        moved on, and its new position comes first. Interrupted, it waits in `_deferred` for
-        the worker to be free again, still owed (`pending`), and None is returned (Tai's
-        puzzles, 2026-09-28: the site replies 0.6 s after the player's move and a puzzle's
-        setup move comes 0.6 s after it appears, and the position the player then faced
-        waited behind the full measure of the one before it -- up to five seconds to its
-        first answer)."""
-        self._looking = True
-        try:
-            with self.annotator.engine.interruptible():
-                if not self._requests.empty():
-                    raise Interrupted
-                return self.annotator.analysis_event(
-                    request.game_id, board, request.ply, on_depth=on_depth
-                )
-        except Interrupted:
-            with self._count_lock:
-                self._outstanding += 1
-                self._deferred.append((request, board))
-            return None
-        finally:
-            self._looking = False
-
-    def _resume(self, request: _Request, board: chess.Board) -> None:
-        """A position whose full measure gave way, measured again now the worker is free --
-        the request current meanwhile, so a takeback lets go of it as of any other."""
-        self._current = request
-        try:
-            if request.withdrawn:
-                return
-            event = self._yielding(request, board)
-            if event is not None and not request.withdrawn:
-                self._results.put(event)
-        except Exception as exc:  # noqa: BLE001
-            self.failures += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"
-        finally:
-            self._current = None
-            self._settle()
-
-    def _plan_ahead(self, board: chess.Board, lines: list[Line]) -> None:
-        """The positions to look ahead at from `board`, the position the game is at: after
-        each of its `look_ahead` best moves first; after the best reply to each follows as
-        each is measured (`_look_ahead`)."""
-        ahead: list[tuple[chess.Board, int]] = []
-        for line in lines[: self.look_ahead]:
-            move = _moves(line)[:1]
-            if move and move[0] in board.legal_moves:
-                after = board.copy()  # with its moves: the engine reads repetitions in them
-                after.push(move[0])
-                ahead.append((after, 1))
-        self._ahead = ahead
-
-    def _look_ahead(
-        self, board: chess.Board, moves: int, ahead: list[tuple[chess.Board, int]]
-    ) -> None:
-        """One position ahead measured, unless a request is waiting or comes meanwhile; one
-        move ahead, the best reply to it goes next in `ahead`, the plan it came from --
-        unless the game has planned anew meanwhile (a new game, a takeback)."""
-        engine = self.annotator.engine
-        self._looking = True
-        try:
-            # Inside the interruptible searches, so a request put before this is seen here
-            # and one put after it interrupts (`_submit`).
-            with engine.interruptible():
-                if not self._requests.empty():
-                    return
-                measured = self.annotator.look_ahead(board)
-        except Interrupted:
-            return  # the game moved: its own position comes first, and plans anew
-        except Exception as exc:  # noqa: BLE001
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return
-        finally:
-            self._looking = False
-        self.looked += 1
-        reply = _moves(measured.lines[0])[:1] if measured.lines else []
-        if moves == 1 and reply and reply[0] in board.legal_moves and ahead is self._ahead:
-            after = board.copy()
-            after.push(reply[0])
-            ahead.insert(0, (after, 2))
-
-
-def open_analyser(
-    engine_path: object,
-    *,
-    depth: int,
-    multipv: int,
-    threads: int,
-    hash_mb: int,
-    pv_plies: int,
-    thresholds: Thresholds,
-    score_model: str = "human",
-    max_seconds: float | None = 5.0,
-    tagger: Tagger | None = None,
-    book: Book | None = None,
-    make_engine: Callable[..., Engine] = Engine,
-) -> Analyser:
-    """An analyser ready to take moves, with its engine already started."""
-    from pathlib import Path
-
-    engine = make_engine(
-        path=Path(str(engine_path)),
-        threads=threads,
-        hash_mb=hash_mb,
-        multipv=multipv,
-        pv_plies=pv_plies,
-        score_model=score_model,
-        max_seconds=max_seconds,
-    )
-    engine.open()
-    annotator = GameAnnotator(
-        engine=engine,
-        depth=depth,
-        multipv=multipv,
-        thresholds=thresholds,
-        tagger=tagger,
-        book=book,
-    )
-    analyser = Analyser(annotator, look_ahead=LOOK_AHEAD)
-    analyser.start()
-    return analyser

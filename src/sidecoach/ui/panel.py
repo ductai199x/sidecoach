@@ -678,8 +678,9 @@ class PanelEngine:
         with contextlib.suppress(Exception):
             # Depth 1: the threads, the hash and the network are what a first search pays;
             # the full depth was a second or two more of every launch for a position no one
-            # asked about (Tai, 2026-10-03: startup to 4 or 5 seconds).
-            analyser.annotator.engine.analyse(chess.Board(), depth=1)
+            # asked about (Tai, 2026-10-03: startup to 4 or 5 seconds). Every worker's.
+            for engine in analyser.engines:
+                engine.analyse(chess.Board(), depth=1)
         self._emit("sys", "info", f"engine: primed in {time.perf_counter() - begun:.1f}s")
 
     def _warm_model(self) -> None:
@@ -1025,25 +1026,21 @@ class PanelEngine:
                     analyser.annotator, "thresholds", Thresholds.from_settings(new.coach)
                 ),
             )
-            engine = analyser.annotator.engine
             attempt(
                 ["engine.depth"], lambda: setattr(analyser.annotator, "depth", new.engine.depth)
             )
 
             def multipv() -> None:
                 analyser.annotator.multipv = new.engine.multipv
-                engine.multipv = new.engine.multipv
+                analyser.reconfigure(multipv=new.engine.multipv)
 
             attempt(["engine.multipv"], multipv)
-            for name in ("pv_plies", "score_model", "max_seconds"):
+            for name in ("pv_plies", "score_model", "hash_mb"):
                 attempt(
                     [f"engine.{name}"],
-                    lambda name=name: setattr(engine, name, getattr(new.engine, name)),
+                    lambda name=name: analyser.reconfigure(**{name: getattr(new.engine, name)}),
                 )
-            attempt(
-                ["engine.threads", "engine.hash_mb"],
-                lambda: engine.reconfigure(threads=new.engine.threads, hash_mb=new.engine.hash_mb),
-            )
+            # The number of workers is the pool's: it applies at the next launch (`applies`).
             # What was measured before is not set against what is measured now: a loss
             # compares two searches made the same way (the engine review, 2026-10-01).
             remeasure = [
@@ -1051,10 +1048,9 @@ class PanelEngine:
                 "engine.depth",
                 "engine.multipv",
                 "engine.score_model",
-                "engine.max_seconds",
             ]
             if any(c in changed for c in remeasure):
-                analyser.annotator.forget_measured()
+                analyser.forget_measured()
         return sorted(set(applied))
 
     def reprovision(self, names: Sequence[str]) -> bool:

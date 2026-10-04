@@ -178,12 +178,11 @@ class Lines:
         engine = self.settings.engine
         self._engine = (self._make_engine or Engine)(
             path=path,
-            threads=2,
+            threads=1,
             hash_mb=min(engine.hash_mb, 128),
             multipv=LINES,
             pv_plies=engine.pv_plies,
             score_model=engine.score_model,
-            max_seconds=engine.max_seconds,
         )
         self._engine.open()
         return self._engine

@@ -22,7 +22,8 @@ import chess
 import numpy as np
 import pytest
 
-from sidecoach.analysis.annotator import Analyser, GameAnnotator
+from sidecoach.analysis.analyser import Analyser
+from sidecoach.analysis.annotator import GameAnnotator
 from sidecoach.cli import _Assessing
 from sidecoach.config import Settings
 from sidecoach.events import (
@@ -37,9 +38,8 @@ from sidecoach.events import (
 )
 from sidecoach.state.pipeline import GamePipeline
 from tests.coaching import drain, scripted_coach
-from tests.fakes import HANG_S, FakeEngine
+from tests.fakes import HANG_S, AnalyserWatch, FakeEngine
 from tests.synth import synthetic_board
-from tests.test_analysis import AnalyserWatch
 
 pytestmark = pytest.mark.vision
 
@@ -335,7 +335,8 @@ def test_ten_plies_taken_back_quickly(tmp_path: Path, per_position: int, animate
         c.engine.hold()
         c.play("Qb5+", "c6")  # the engine is on these when the takebacks start
         c.engine.wait_at_gate()
-        assert c.assessing.analyser is not None and c.assessing.analyser.pending == 2
+        # Owed: the two positions and the two verdicts.
+        assert c.assessing.analyser is not None and c.assessing.analyser.pending == 4
         withdrawn = c.board.board_fen()
         old_line = _fens(c.board)
         for _step in range(6):  # 22 plies back to 20, then to 10: 2 plies a press

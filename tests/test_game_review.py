@@ -154,6 +154,8 @@ def test_the_clock_and_the_time_each_move_took() -> None:
 
 
 def test_engines_side_by_side_leave_the_machine_a_third() -> None:
+    """One thread an engine (the engine audit, 2026-10-04): two thirds of the cores, at most
+    eight engines."""
     assert workers_for(24) == 8
-    assert workers_for(8) == 2
+    assert workers_for(8) == 5
     assert workers_for(2) == 1

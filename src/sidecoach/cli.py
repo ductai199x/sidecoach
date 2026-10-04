@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 
     import chess
 
-    from sidecoach.analysis.annotator import Analyser, Book, Tagger
+    from sidecoach.analysis.analyser import Analyser
+    from sidecoach.analysis.annotator import Book, Tagger
     from sidecoach.analysis.chesscom import Overview
     from sidecoach.analysis.computed import Computed, ComputedFirst
     from sidecoach.capture.base import CaptureBackend
@@ -86,7 +87,7 @@ def _check_engine(settings: Settings) -> tuple[str, str]:
         started = time.perf_counter()
         with Engine(
             path=path,
-            threads=settings.engine.threads,
+            threads=1,
             hash_mb=settings.engine.hash_mb,
             multipv=settings.engine.multipv,
         ) as engine:
@@ -384,9 +385,7 @@ def replay(
     )
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
-        assessing = _Assessing(
-            settings, assess or coach, depth=depth, keep_every_position=profile is not None
-        )
+        assessing = _Assessing(settings, assess or coach, depth=depth)
         coaching = _Coaching(settings, coach and assessing.on, assessing.computed)
         cache = None
         if themes:
@@ -825,20 +824,19 @@ def _load_book(settings: Settings) -> Book | None:
 
 
 def _make_analyser(settings: Settings, *, depth: int | None = None) -> Analyser | None:
-    """An analyser with its engine running, or None when there is no engine to run."""
+    """An analyser with its workers' engines running, or None when there is no engine to run."""
     path = find_stockfish(settings)
     if path is None:
         return None
-    from sidecoach.analysis.annotator import open_analyser
+    from sidecoach.analysis.analyser import open_analyser
     from sidecoach.analysis.score import Thresholds
 
     return open_analyser(
         path,
         score_model=settings.engine.score_model,
-        max_seconds=settings.engine.max_seconds,
         depth=depth or settings.engine.depth,
         multipv=settings.engine.multipv,
-        threads=settings.engine.threads,
+        workers=settings.engine.workers,
         hash_mb=settings.engine.hash_mb,
         pv_plies=settings.engine.pv_plies,
         thresholds=Thresholds.from_settings(settings.coach),
@@ -863,13 +861,9 @@ class _Assessing:
         enabled: bool,
         *,
         depth: int | None = None,
-        keep_every_position: bool = False,
     ) -> None:
+        # Every move is judged, however far the engine is behind: nothing is dropped.
         self.analyser = _make_analyser(settings, depth=depth) if enabled else None
-        if self.analyser is not None and keep_every_position:
-            # A record built from a recording must judge every move: the replay outruns
-            # the engine, and the analyser's queue would otherwise drop the oldest.
-            self.analyser.max_pending = 1_000_000
         # A few words on the engine's state, for the panel's log: on (with its depth), or why not.
         if not enabled:
             self.detail = "off"
@@ -952,7 +946,9 @@ class _Assessing:
             self._from.clear()
             self._forget(event.game_id, event.start_fen)
             self._game = chess.Board(event.start_fen)
-            self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
+            self.analyser.submit_position(
+                event.game_id, chess.Board(event.start_fen), 0, user=event.user_side.color
+            )
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
@@ -1318,8 +1314,8 @@ def _draft_check() -> DraftCheck | None:
 def _named_engine(settings: Settings, computed: Computed | None) -> ComputedFirst | None:
     """The coach's engine, for the positions a question asks about: what the analyser has
     computed (`computed`) first, and for the rest a second Stockfish, started at its first
-    search -- the annotator's is on its worker thread with the game's own positions. Bounded
-    so a question never waits on a slow position; None when Stockfish is not installed."""
+    search -- the analyser's workers are on the game's own positions. One thread, and the
+    depth asked for reached, as every search; None when Stockfish is not installed."""
     path = find_stockfish(settings)
     if path is None:
         return None
@@ -1328,12 +1324,11 @@ def _named_engine(settings: Settings, computed: Computed | None) -> ComputedFirs
 
     engine = Engine(
         path=path,
-        threads=max(1, settings.engine.threads // 2),
+        threads=1,
         hash_mb=min(128, settings.engine.hash_mb),
         multipv=3,
         pv_plies=settings.engine.pv_plies,
         score_model=settings.engine.score_model,
-        max_seconds=3.0,
     )
     return ComputedFirst(engine, computed)
 
@@ -1636,7 +1631,6 @@ def review(
                     multipv=settings.engine.multipv,
                     pv_plies=settings.engine.pv_plies,
                     score_model=settings.engine.score_model,
-                    max_seconds=settings.engine.max_seconds,
                 )
             )
             for _ in range(workers or workers_for())

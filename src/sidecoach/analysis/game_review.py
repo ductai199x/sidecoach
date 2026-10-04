@@ -45,9 +45,11 @@ STRENGTHS: dict[str, Strength] = {
     for s in (Strength("fast", 14, 3), Strength("standard", 18, 6), Strength("deep", 22, 6))
 }
 
-# Each engine's threads; engines side by side take up to two thirds of the cores between them,
-# the rest left to everything else the machine does (a game, the capture, the page).
-THREADS = 2
+# Each engine's threads: one. At a fixed depth more threads widen the search instead of speeding
+# it -- four took 7.7 times the processor time of one, and twice as long, for an answer no better
+# (the engine audit, 2026-10-04). Engines side by side take up to two thirds of the cores between
+# them, the rest left to everything else the machine does (a game, the capture, the page).
+THREADS = 1
 MAX_WORKERS = 8
 
 
