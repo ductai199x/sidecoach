@@ -240,6 +240,25 @@ LOST_TRACK = (
 )
 
 
+def _all_of(*steps: Callable[[], None]) -> None:
+    """Each step on a thread of its own, all waited for; the first failure raised after."""
+    failures: list[BaseException] = []
+
+    def run(step: Callable[[], None]) -> None:
+        try:
+            step()
+        except BaseException as exc:  # noqa: BLE001 - raised on the caller's thread below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=run, args=(step,), daemon=True) for step in steps]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if failures:
+        raise failures[0]
+
+
 def _new_timer(delay: float, call: Callable[[], None]) -> Any:
     """`threading.Timer`, the module's `threading` read when the timer is made."""
     return threading.Timer(delay, call)
@@ -348,6 +367,8 @@ class PanelEngine:
     _voice_warm_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _provisioning: threading.Lock = field(default_factory=threading.Lock, init=False)
     _warm_done: threading.Event = field(default_factory=threading.Event, init=False)
+    # The voice models' load, which goes on after the warm-up is done (`_warm`).
+    _voice_thread: threading.Thread | None = field(default=None, init=False)
     _warm_stages: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     _warm_begun: float = field(default=0.0, init=False)
     # A settings save that changed what the engine was built from (the Stockfish binary,
@@ -525,37 +546,20 @@ class PanelEngine:
                     for name, label in WARM_STAGES
                 }
             try:
-                from sidecoach.vision.pieces import embedder
-
-                self._stage("pieces", "loading")
-                net = embedder()
-                if net is not None:
-                    primed = net.prime()
-                    self._emit(
-                        "sys",
-                        "info",
-                        f"pieces: embedding net on {net.device.detail}, primed in {primed:.1f}s",
-                    )
-                    self._stage("pieces", "done", f"on {net.device.detail}")
-                else:
-                    self._emit(
-                        "sys", "warn", "pieces: no embedding net (a broken install): no set learned"
-                    )
-                    self._stage("pieces", "off", "no embedding net: no piece set can be learned")
-                self._warm_voice()
-                self._stage("vision", "loading")
-                self._warm_pipeline()
-                self._stage("vision", "done")
-                self._stage("engine", "loading")
-                self._stage("coach", "loading")
-                assessing, coaching = self._prepare_stages()
-                if not assessing.on:
-                    self._stage("engine", "off", assessing.detail)
-                if not coaching.on:
-                    self._stage("coach", "off", coaching.detail)
-                self._warm_engines()
-                if assessing.on:
-                    self._stage("engine", "done", assessing.detail)
+                # Side by side: none of the stages needs another, and one after another they
+                # were the sum of their times -- about eight seconds before the splash let go
+                # (Tai, 2026-10-03: "I want to get that down to 4 or 5"). The voice and the
+                # speech recognition go on loading after the splash: a board is read and
+                # followed without them, the coach's first line waits for its voice if it
+                # comes first (`load` holds it), and push-to-talk for the recogniser. After the
+                # others, not beside them: loading on the GPU at once, they held the piece
+                # net's from 0.2 s to 6.8.
+                _all_of(self._warm_pieces, self._warm_vision, self._warm_engine)
+                self._voice_thread = threading.Thread(
+                    target=self._warm_voice_after, name="warm-voice", daemon=True
+                )
+                self._voice_thread.start()
+                coaching = self._coaching
                 # In the background: a local model's first load took up to a minute, and
                 # the splash waited on it (setup finding 18). The coach is ready to be
                 # asked; its first answer waits for the model, as without a warm-up.
@@ -572,6 +576,55 @@ class PanelEngine:
                             stage["detail"] = f"{exc!r}"
             finally:
                 self._warm_done.set()
+
+    def _warm_pieces(self) -> None:
+        """The embedding net loaded and primed."""
+        from sidecoach.vision.pieces import embedder
+
+        self._stage("pieces", "loading")
+        net = embedder()
+        if net is not None:
+            primed = net.prime()
+            self._emit(
+                "sys",
+                "info",
+                f"pieces: embedding net on {net.device.detail}, primed in {primed:.1f}s",
+            )
+            self._stage("pieces", "done", f"on {net.device.detail}")
+        else:
+            self._emit("sys", "warn", "pieces: no embedding net (a broken install): no set learned")
+            self._stage("pieces", "off", "no embedding net: no piece set can be learned")
+
+    def _warm_voice_after(self) -> None:
+        """The voice models loaded behind the splash; a failure is said and its stage off."""
+        try:
+            self._warm_voice()
+        except Exception as exc:  # noqa: BLE001 - the voice degrades to silence, never the app
+            self._emit("sys", "warn", f"voice warm-up: {exc!r}")
+            with self._lock:
+                for name in ("voice", "stt", "mic"):
+                    stage = self._warm_stages.get(name)
+                    if stage is not None and stage["state"] in ("pending", "loading"):
+                        stage["state"] = "off"
+                        stage["detail"] = f"{exc!r}"
+
+    def _warm_vision(self) -> None:
+        self._stage("vision", "loading")
+        self._warm_pipeline()
+        self._stage("vision", "done")
+
+    def _warm_engine(self) -> None:
+        """Stockfish and the coach built, and Stockfish's first search paid."""
+        self._stage("engine", "loading")
+        self._stage("coach", "loading")
+        assessing, coaching = self._prepare_stages()
+        if not assessing.on:
+            self._stage("engine", "off", assessing.detail)
+        if not coaching.on:
+            self._stage("coach", "off", coaching.detail)
+        self._warm_engines()
+        if assessing.on:
+            self._stage("engine", "done", assessing.detail)
 
     def _stage(self, name: str, state: str, detail: str = "") -> None:
         """One warm-up stage's state, with the seconds since the warm-up began."""
@@ -623,7 +676,10 @@ class PanelEngine:
             return
         begun = time.perf_counter()
         with contextlib.suppress(Exception):
-            analyser.annotator.engine.analyse(chess.Board(), depth=analyser.annotator.depth)
+            # Depth 1: the threads, the hash and the network are what a first search pays;
+            # the full depth was a second or two more of every launch for a position no one
+            # asked about (Tai, 2026-10-03: startup to 4 or 5 seconds).
+            analyser.annotator.engine.analyse(chess.Board(), depth=1)
         self._emit("sys", "info", f"engine: primed in {time.perf_counter() - begun:.1f}s")
 
     def _warm_model(self) -> None:
@@ -1460,33 +1516,11 @@ class PanelEngine:
             self._warm_voice_now()
 
     def _warm_voice_now(self) -> None:
-        for label, provider in (("voice", self._tts), ("speech recognition", self._stt)):
-            load = getattr(provider, "load", None)
-            if load is None:
-                self._stage(STAGE_OF[label], "off", provider.healthcheck()[1])
-                continue
-            self._stage(STAGE_OF[label], "loading")
-            ok = load()
-            device = getattr(provider, "device", None)
-            seconds = getattr(provider, "load_seconds", None)
-            detail = provider.healthcheck()[1]
-            if ok and device is not None:
-                # One inference now, so the first real one is not the slow one.
-                prime = getattr(provider, "prime", None)
-                primed = prime() if prime is not None else None
-                wanted = getattr(provider, "device_wanted", "cuda")
-                fell_back = wanted != "cpu" and device.name == "cpu"
-                self._emit(
-                    "sys",
-                    "warn" if fell_back else "info",
-                    f"{label}: {detail}; loaded once in {seconds or 0:.1f}s"
-                    + (f", primed in {primed:.1f}s" if primed is not None else ""),
-                    device=device.name,
-                )
-                self._stage(STAGE_OF[label], "done", detail)
-            else:
-                self._emit("sys", "warn", f"{label}: {detail}")
-                self._stage(STAGE_OF[label], "off", detail)
+        # The voice and the speech recognition side by side: neither needs the other.
+        _all_of(
+            lambda: self._warm_provider("voice", self._tts),
+            lambda: self._warm_provider("speech recognition", self._stt),
+        )
         with self._lock:
             self._state["voice_detail"] = self._tts.healthcheck()[1]
             stt_ready, stt_detail = self._stt.healthcheck()
@@ -1505,6 +1539,35 @@ class PanelEngine:
             else:
                 self._emit("voice", "warn", "listening: off (speech recognition is not available)")
         self._stage("mic", "done" if ok else "off", detail)
+
+    def _warm_provider(self, label: str, provider: Any) -> None:
+        """One voice model loaded and primed, and where it landed said."""
+        load = getattr(provider, "load", None)
+        if load is None:
+            self._stage(STAGE_OF[label], "off", provider.healthcheck()[1])
+            return
+        self._stage(STAGE_OF[label], "loading")
+        ok = load()
+        device = getattr(provider, "device", None)
+        seconds = getattr(provider, "load_seconds", None)
+        detail = provider.healthcheck()[1]
+        if ok and device is not None:
+            # One inference now, so the first real one is not the slow one.
+            prime = getattr(provider, "prime", None)
+            primed = prime() if prime is not None else None
+            wanted = getattr(provider, "device_wanted", "cuda")
+            fell_back = wanted != "cpu" and device.name == "cpu"
+            self._emit(
+                "sys",
+                "warn" if fell_back else "info",
+                f"{label}: {detail}; loaded once in {seconds or 0:.1f}s"
+                + (f", primed in {primed:.1f}s" if primed is not None else ""),
+                device=device.name,
+            )
+            self._stage(STAGE_OF[label], "done", detail)
+        else:
+            self._emit("sys", "warn", f"{label}: {detail}")
+            self._stage(STAGE_OF[label], "off", detail)
 
     def _board_on_screen(self) -> Any:
         """The board the screen shows, for correcting what was heard, or None."""

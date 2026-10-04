@@ -262,6 +262,10 @@ def test_the_engine_coach_and_listening_outlive_a_session(
     assert engine._assessing is None and engine._coaching is None
     assert engine.warm_status()["done"] is False
     engine.warm(background=False)
+    # The voice models load on after the splash (`_voice_thread`): waited for, not hoped done.
+    assert engine._voice_thread is not None
+    engine._voice_thread.join(timeout=30)
+    assert not engine._voice_thread.is_alive()
     mic = FedMic()
     engine._mic = mic  # type: ignore[assignment]
     engine._listener.mic = mic  # type: ignore[assignment]
@@ -328,6 +332,44 @@ def test_after_a_stop_the_coach_says_nothing_unasked_until_the_board_is_read_aga
     play_to_scholar(coach)  # the board read again
     coach.on_event(mate_analysis(6, decisive=False), 7.0)
     assert [m.trigger for m in stuck(coach)] == [Trigger.STUCK]
+
+
+def test_the_splash_lets_go_before_the_voice_models_are_loaded(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warm-up was every stage one after another, about eight seconds; the voice and the
+    speech recognition, three of them, are needed by no board read (Tai, 2026-10-03: startup
+    to "4 or 5" seconds). The splash lets go once the pieces, the vision and the engine are
+    ready; the voice models load on after it, and their stages say so when they are done."""
+    import threading
+
+    from sidecoach.vision import pieces
+
+    engine = make_panel(record=False)
+    release = threading.Event()
+    real = engine._warm_voice
+
+    def held_voice() -> None:
+        assert release.wait(30), "never released"
+        real()
+
+    monkeypatch.setattr(pieces, "embedder", lambda: None)
+    monkeypatch.setattr(engine, "_warm_voice", held_voice)
+    monkeypatch.setattr(engine, "_warm_engines", lambda: None)
+    try:
+        engine.warm(background=False)
+        status = engine.warm_status()
+        assert status["done"] is True, "the splash waited for the voice"
+        states = {s["name"]: s["state"] for s in status["stages"]}
+        assert states["ready"] == "done" and states["voice"] == "pending", states
+        release.set()
+        assert engine._voice_thread is not None
+        engine._voice_thread.join(timeout=30)
+        states = {s["name"]: s["state"] for s in engine.warm_status()["stages"]}
+        assert states["voice"] in ("done", "off") and states["mic"] in ("done", "off"), states
+    finally:
+        release.set()
+        engine.close()
 
 
 def test_the_session_is_ended_before_the_wait_for_the_coachs_replies(
