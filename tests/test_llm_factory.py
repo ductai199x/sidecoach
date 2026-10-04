@@ -13,7 +13,8 @@ def test_the_default_is_luna_an_effort_provider_and_local_is_a_preset(
     provider = make_provider(LLMSettings())
     assert provider.name == "openai" and provider.model == "gpt-5.6-luna"
     assert provider.base_url == "https://api.openai.com/v1"
-    assert provider.thinking_control == "effort" and provider.reasoning_effort == "medium"
+    # No thinking by default: the wait is what the player feels (Tai, 2026-10-04).
+    assert provider.thinking_control == "effort" and provider.reasoning_effort == "none"
     named = make_provider(LLMSettings(provider="openai"))
 
     def preset(p):  # noqa: ANN001, ANN202
@@ -21,13 +22,13 @@ def test_the_default_is_luna_an_effort_provider_and_local_is_a_preset(
 
     assert preset(named) == preset(provider), "the default is the openai preset"
     # The effort is the provider's: another effort is another provider of the same model.
-    quiet = provider.with_effort("none")
-    assert quiet is not provider and quiet.reasoning_effort == "none"
-    assert quiet.model == provider.model and quiet.base_url == provider.base_url
+    deeper = provider.with_effort("medium")
+    assert deeper is not provider and deeper.reasoning_effort == "medium"
+    assert deeper.model == provider.model and deeper.base_url == provider.base_url
     # OpenAI's reasoning models take tools with an effort only on /v1/responses; every other
     # preset speaks chat completions.
-    assert provider.wire == "responses" and quiet.wire == "responses"
-    assert provider.with_effort("medium") is provider
+    assert provider.wire == "responses" and deeper.wire == "responses"
+    assert provider.with_effort("none") is provider
     local = make_provider(LLMSettings(provider="local"))
     assert local.name == "local"
     assert local.base_url == "http://localhost:1234/v1"

@@ -250,10 +250,12 @@ class LLMSettings(_Settings):
             section="Development",
         ),
     )
+    # None by default: the wait is what the player feels, and thinking is most of it (Tai,
+    # 2026-10-04: "no reasoning should be the default for AI coach since latency is a big issue").
     reasoning_effort: str | None = Field(
-        default=None,
-        description="How long the model may think before it answers. More is slower and costs "
-        "more; medium is what the coach was evaluated at.",
+        default="none",
+        description="How long the model may think before it answers. None answers fastest; more "
+        "is slower and costs more (medium is what the coach was evaluated at).",
         json_schema_extra=_extra(
             group="service",
             choices=["", "none", "low", "medium", "high"],
