@@ -8,6 +8,7 @@ import com.sidecoach.chess.squareDistance
 import com.sidecoach.events.BoardUnread
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameStarted
+import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.ScreenState
@@ -678,13 +679,38 @@ class GamePipeline(
         // A resync after a finished game began a new one on its head: that start goes unsaid,
         // and the game to end is the finished one, already ended.
         val began = events.any { it is GameStarted }
-        val reoriented = reorient(frame, geometry, labelled, ts, endPrevious = !began)
+        val read = reread(labelled) ?: coldRead(frame, geometry, labelled) ?: return events
+        // The opening move the right way up: the resync found it on its head, and its first
+        // board turned round is the start (`_turned_start`); else the boards the flip check read
+        // meanwhile ([startAmong]).
+        val before = turnedStart(events, read) ?: startAmong(game.flipBoards, read, ts)
+        game.flipBoards = emptyList()
+        val reoriented = reorientRead(read, ts, endPrevious = !began, before = before)
         if (reoriented.isEmpty()) return events
-        val kept = events.filterNot {
-            it is Resync || it is PositionChanged || it is GameStarted
-        }.toMutableList()
+        learnLabels(frame, geometry, told = false)
+        // Everything the resync said goes with it: its start, its positions and the move it
+        // found between two boards on their heads -- kept, that move was a "1... Nd5" no one
+        // played (Tai's Pixel, 0.1.72). What came before it stays.
+        val cut = events.indexOfFirst { it is Resync || (it is GameStarted && it.kind == "position") }
+        val kept = events.subList(0, cut).filterNot { it is PositionChanged }.toMutableList()
         kept.addAll(reoriented)
         return kept
+    }
+
+    /**
+     * The first board of a resync adopted on its head, turned the right way round (square s at
+     * 63 - s, the colours right), when one legal move joins it to [read]: the start its opening
+     * move is played from, or null (`_turned_start`).
+     */
+    private fun turnedStart(events: List<Event>, read: ColdRead): Pair<Board, Set<Int>>? {
+        val found = events.firstOrNull { it is MovePlayed } as MovePlayed? ?: return null
+        val head = Board(found.fenBefore)
+        val placed = Board(null)
+        for ((square, piece) in head.pieceMap()) placed.setPieceAt(63 - square, piece)
+        // No highlight: the site's last-move squares on the board on its head say nothing of
+        // the turn there, and the one move is looked for with either side to move.
+        Reconciler.oneMoveBetween(placed, emptySet(), read.placement.boardFen(), read.bottom.color) ?: return null
+        return placed to emptySet()
     }
 
     /**
