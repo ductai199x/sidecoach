@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import chess
 
-from sidecoach.analysis.annotator import EARLY_DEPTH, GameAnnotator
+from sidecoach.analysis.annotator import GameAnnotator
 from sidecoach.analysis.computed import (
     Computed,
     ComputedFirst,
@@ -186,22 +186,58 @@ def test_the_sheets_line_wins_over_a_separate_search_of_the_position_after_it() 
     assert "1... e5 2. Nf3 Nc6" in out and "c5" not in out.split("On the board there")[0]
 
 
-def test_a_reader_gets_the_first_usable_lines_and_then_the_full_depth() -> None:
+def test_a_reader_gets_the_best_line_and_then_the_position_whole() -> None:
     """A reader gets what is there from the first usable answer on (Tai, 2026-09-28: "if the
     consumers read after stockfish reaches depth > 12 then they will get whatever lines that
-    is available at the time"): the best line as its search ends, the hint's lines at
-    EARLY_DEPTH, then the position whole; a verdict's line counts too, and a new game
+    is available at the time"): the best line at the full depth as its search ends, then the
+    position whole -- never the hint's lines at EARLY_DEPTH, which a reader would set against
+    the full depth's (the audit of 2026-10-05); a verdict's line counts too, and a new game
     forgets them."""
     engine = GatedEngine({})  # its lines at the depth asked for
     annotator = GameAnnotator(engine=engine, depth=18, with_threats=False)
     best = annotator.best_line(START)
     assert annotator.computed.lines(START) == best.lines
-    hint = annotator.hint_lines(START)
-    assert annotator.computed.lines(START) == hint and hint[0].depth == EARLY_DEPTH
+    assert annotator.computed.whole(START) == []
+    annotator.hint_lines(START)
+    assert annotator.computed.lines(START) == best.lines, "the hint kept for a reader"
     annotator.measure(START)
-    assert annotator.computed.lines(START)[0].depth == 18
+    whole = annotator.computed.whole(START)
+    assert whole and {line.depth for line in whole} == {18}
     after_e4 = _after("e4")
     annotator.measure_for_verdict(after_e4)
     assert annotator.computed.lines(after_e4)[0].depth == 18
     annotator.reset()
     assert annotator.computed.lines(START) == [] and annotator.computed.lines(after_e4) == []
+
+
+def test_the_coachs_engine_asks_for_a_whole_it_lacks_and_files_only_what_it_found_itself() -> None:
+    """The coach's engine (`ComputedFirst`) answers from a position measured whole; with only
+    a best line known it asks its searcher for the whole. What a searcher that keeps its
+    answers itself returns (the analyser's pool: a whole, or a best line when its wait ran out)
+    is not filed again as the position whole."""
+    best = [Line(moves=["e2e4"], depth=18, expected_score=0.55)]
+    whole = [*best, Line(moves=["d2d4"], depth=18, expected_score=0.5)]
+
+    class Pool:
+        fills_computed = True
+
+        def __init__(self) -> None:
+            self.asked = 0
+
+        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+            self.asked += 1
+            return list(best)  # its wait ran out: the best line alone
+
+        def close(self) -> None:
+            return
+
+    computed = Computed()
+    computed.add(START, best, thin=True)
+    pool = Pool()
+    engine = ComputedFirst(pool, computed)
+    assert engine.analyse(START) == best and pool.asked == 1, "the whole asked for"
+    assert computed.whole(START) == [], "a best line filed as the position whole"
+    computed.add(START, whole)
+    assert engine.analyse(START) == whole and pool.asked == 1, "the whole known: no asking"
+    engine.close()
+    assert engine.analyse(_after("d4")) == [], "closed: nothing searched"

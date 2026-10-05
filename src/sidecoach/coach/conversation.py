@@ -377,9 +377,12 @@ class Conversation:
         record = self._record_at(event.ply)
         if record is None or record.move.fen_after.split(" ")[:3] != same:
             return None
+        shown = record.analysis
         record.analysis = event
         record.facts = facts
-        if not event.provisional:
+        # A note only for what the model has not read: the final word on a position adds its
+        # side searches to lines it may already have seen whole.
+        if not event.provisional and (shown is None or shown.lines != event.lines):
             self._note_if_frozen(record, "analysis")
         return record
 

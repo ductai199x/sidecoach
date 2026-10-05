@@ -1263,3 +1263,40 @@ def test_a_query_answering_infinity_is_shown_not_a_crash() -> None:
     assert _cell(float("inf")) == "inf"
     assert _cell(float("nan")) == "nan"
     assert _cell(2.5) == "2.5"
+
+
+def test_the_engines_words_may_come_in_any_order() -> None:
+    """The analyser tells a past position's final word after later verdicts (the audit of
+    2026-10-05): the game's opening is the latest ply's, whatever lands last, and the tactics
+    a position offered reach the move played from it when its analysis comes after that
+    move's verdict."""
+    from sidecoach.events import Analysis
+
+    f = Feed()
+    f.play("e4", analysis=False)
+    after_e4 = f.board.fen()
+    f.play("e5", analysis=False)  # judged before the position it was played from is told
+    after_e5 = f.board.fen()
+
+    def told(ply: int, fen: str, opening: str, tags: list[MotifTag]) -> None:
+        f.send(
+            Analysis(
+                game_id="g",
+                fen=fen,
+                ply=ply,
+                lines=[],
+                decisive=False,
+                only_move=False,
+                tags=tags,
+                opening=opening,
+            )
+        )
+
+    told(2, after_e5, "C20 King's Pawn Game", [])
+    told(1, after_e4, "B00 King's Pawn", [FORK])  # the earlier ply's, last
+    f.end()
+    moves = f.store.moves("g")
+    assert [m.san for m in moves] == ["e4", "e5"]
+    assert moves[1].available_tags == ["fork"], "the tactic e5 was played past"
+    game = f.store.game("g")
+    assert game is not None and game.opening == "C20 King's Pawn Game"

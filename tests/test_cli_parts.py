@@ -21,7 +21,7 @@ def test_the_coachs_engine_reads_the_analysers_store_and_closes_with_the_coach(
     coaching = cli._Coaching(Settings(llm=LLMSettings(provider="none")), True, computed)
     engine = coaching.coach.engine if coaching.coach is not None else None
     assert isinstance(engine, ComputedFirst) and engine.computed is computed
-    assert engine.engine._engine is None, "no Stockfish started before a search"  # type: ignore[attr-defined]
+    assert engine.engine.engine._engine is None, "no Stockfish started before a search"  # type: ignore[attr-defined]
     coaching.close()
     assert engine._closed
 

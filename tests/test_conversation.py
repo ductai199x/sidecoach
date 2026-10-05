@@ -468,6 +468,30 @@ def test_a_late_engine_note_is_the_records_and_has_its_lines() -> None:
     assert "Engine note" not in now
 
 
+def test_a_final_word_that_changes_no_line_the_model_read_adds_no_note() -> None:
+    """The analyser tells a position whole (provisional), then final once its side searches are
+    in, the lines the same: the model read them whole, and a note repeating them on every move
+    the game has left only grew the prompt (the audit of 2026-10-05)."""
+    from tests.coaching import SCHOLAR, SCHOLAR_MOVES, play, start_game
+
+    coach, provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES)
+    coach.on_event(_analysis(chess.Board(SCHOLAR), 6), 6.5)
+    after_qh5 = chess.Board()
+    for san in SCHOLAR_MOVES[:5]:
+        after_qh5.push_san(san)
+    whole = _analysis(after_qh5, 5)
+    coach.on_event(whole.model_copy(update={"provisional": True}), 7.0)
+    coach.ask("what is my plan?", 8.0)  # the model has seen the record: its lines are frozen
+    drain(coach)
+    coach.on_event(whole, 9.0)  # final: the same lines
+    coach.ask("and what should I watch out for?", 10.0)
+    drain(coach)
+    record = harness_of(sent(provider)).split("# Position now\n", 1)[0]
+    assert "Engine note on the position after 3. Qh5" not in record
+
+
 def test_the_prompt_check_names_what_is_wrong() -> None:
     """The check run before every request: the puzzle start's prompt (no position now), a
     withdrawn position, and the wrong colour are each named; a prompt built right passes."""

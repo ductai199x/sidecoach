@@ -1180,3 +1180,42 @@ def test_the_engine_finds_what_a_quiet_move_threatens(engine) -> None:  # noqa: 
     board = chess.Board(QUIET_MATE)
     aims = aim_lines(engine, board, [Line(moves=["d1g4"], depth=18, expected_score=0.92)], depth=10)
     assert aims and aims[0].moves[0] == "g4g7" and aims[0].mate == 1, aims
+
+
+def test_the_best_line_stays_first_and_mates_are_ordered_by_length() -> None:
+    """A position whole: its best line, its own search, first -- a candidate whose own
+    position's search scores it higher stays behind it, so the engine's move is never charged
+    a loss (the audit of 2026-10-05) -- and among the others a shorter mate ahead of a longer
+    one, every mate scoring alike."""
+    board = chess.Board()
+    annotator = GameAnnotator(engine=FakeEngine({}), depth=18, with_threats=False)
+    best = annotator.measured_lines(board, [Line(moves=["e2e4"], depth=18, expected_score=0.55)])
+
+    def child(score: float, mate: int | None = None) -> object:
+        line = Line(moves=["a7a6"], depth=18, expected_score=score, mate=mate)
+        return annotator.measured_lines(board, [line])
+
+    children = [
+        (chess.Move.from_uci("e2e4"), child(0.45)),
+        (chess.Move.from_uci("d2d4"), child(0.40)),  # 0.60: higher than the best line
+        (chess.Move.from_uci("g1f3"), child(0.0, mate=-5)),  # mates a move after: in 6
+        (chess.Move.from_uci("c2c4"), child(0.0, mate=-1)),  # mates in 2
+    ]
+    whole = annotator.whole(board, best, children)  # type: ignore[arg-type]
+    assert [line.moves[0] for line in whole.lines] == ["e2e4", "c2c4", "g1f3", "d2d4"]
+    assert [line.mate for line in whole.lines[1:3]] == [2, 6]
+    loss = annotator.assess_from("g", board, chess.Move.from_uci("e2e4"), 1, whole)
+    assert loss.expected_loss == 0.0 and loss.label is Label.BEST
+
+
+def test_the_lines_view_never_searches_several_lines_at_the_full_depth() -> None:
+    """`WholeSearcher` (a review's line view, a coach made on demand): a position's lines
+    made the one-line way -- one line to the depth, the hint at EARLY_DEPTH -- never several
+    lines to the depth at once, which explode on decided and forcing positions."""
+    from sidecoach.analysis.annotator import EARLY_DEPTH, WholeSearcher
+
+    engine = FakeEngine({chess.Board().fen(): [Line(moves=["e2e4"], depth=18, expected_score=0.5)]})
+    lines = WholeSearcher(engine, lines=3, depth=18).analyse(chess.Board())
+    assert lines and lines[0].moves[0] == "e2e4"
+    asked = set(zip(engine.multipvs, engine.depths, strict=True))
+    assert asked <= {(1, 18), (3, EARLY_DEPTH)}, asked

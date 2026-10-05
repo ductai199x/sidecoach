@@ -103,6 +103,7 @@ def measure_all(
     stop: threading.Event | None = None,
     known: dict[str, Measured] | None = None,
     on_measured: Callable[[Measured], None] | None = None,
+    failed: list[Engine] | None = None,
 ) -> list[Measured]:
     """Every position measured whole (`annotator`'s docstring), each engine taking the game's
     next position left and finishing it -- its best line, its candidates at EARLY_DEPTH, each
@@ -175,6 +176,9 @@ def measure_all(
             try:
                 measured = measure(annotator, board)
             except Exception:  # noqa: BLE001 - the walk measures what is missing itself
+                if failed is not None:
+                    with cond:
+                        failed.append(engine)  # named: the walk searches on another
                 return
             if on_measured is not None:
                 # Not kept is only a resume the slower.
@@ -182,9 +186,8 @@ def measure_all(
                     on_measured(measured)
             with cond:
                 found.append(measured)
-                done = len(found)
-            if on_progress is not None:
-                on_progress(done, len(boards))
+                if on_progress is not None:
+                    on_progress(len(found), len(boards))  # in order: under the lock
 
     threads = [
         threading.Thread(target=work, args=(engine,), name=f"sidecoach-review-{i}", daemon=True)
@@ -213,11 +216,12 @@ def review_game(
     known: dict[str, Measured] | None = None,
     on_measured: Callable[[Measured], None] | None = None,
 ) -> ReviewedGame:
-    """The game reviewed whole with `engines` (open, at least one; the first also walks the
-    moves). `on_progress(done, total)` counts the positions measured; `known` and
-    `on_measured` carry a review over a stop (`measure_all`)."""
+    """The game reviewed whole with `engines` (open, at least one; the first whose share did
+    not fail also walks the moves). `on_progress(done, total)` counts the positions measured;
+    `known` and `on_measured` carry a review over a stop (`measure_all`)."""
     started = time.perf_counter()
     boards = positions(game)
+    failed: list[Engine] = []
     measured = measure_all(
         boards,
         engines,
@@ -228,9 +232,12 @@ def review_game(
         stop=stop,
         known=known,
         on_measured=on_measured,
+        failed=failed,
     )
+    # The walk measures what is missing on an engine whose share did not end in a failure.
+    walker = next((e for e in engines if not any(e is f for f in failed)), engines[0])
     annotator = GameAnnotator(
-        engine=engines[0],
+        engine=walker,
         depth=depth,
         multipv=multipv,
         thresholds=thresholds,
@@ -238,6 +245,19 @@ def review_game(
         book=book,
     )
     annotator.adopt(measured)
+    if stop is not None and stop.is_set():
+        # Stopped: what is kept is what `on_measured` was handed; nothing more is searched.
+        empty = annotator.analysis_from(
+            game_id, boards[0], 0, annotator.measured_lines(boards[0], [])
+        )
+        return ReviewedGame(
+            headers={k: str(v) for k, v in game.headers.items()},
+            start=empty,
+            moves=[],
+            strength=strength,
+            depth=depth,
+            seconds=round(time.perf_counter() - started, 2),
+        )
     start = annotator.analysis_event(game_id, boards[0], 0)
     times = clocks(game)
     moves: list[ReviewedMove] = []

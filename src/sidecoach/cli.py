@@ -1360,8 +1360,8 @@ def _named_engine(
     """The coach's engine, for the positions a question asks about: what the analyser has
     computed (`computed`) first, and for the rest the analyser's own pool (`PoolSearcher`:
     the position whole, ahead of the game's other positions) -- or, with no analyser (a coach
-    made on demand), a Stockfish of its own, started at its first search, one thread. None
-    when Stockfish is not installed."""
+    made on demand), a Stockfish of its own, started at its first search, one thread, measuring
+    a position whole the one-line way (`WholeSearcher`). None when Stockfish is not installed."""
     from sidecoach.analysis.computed import ComputedFirst
 
     if analyser is not None:
@@ -1371,6 +1371,7 @@ def _named_engine(
     path = find_stockfish(settings)
     if path is None:
         return None
+    from sidecoach.analysis.annotator import WholeSearcher
     from sidecoach.analysis.engine import Engine
 
     engine = Engine(
@@ -1381,7 +1382,7 @@ def _named_engine(
         pv_plies=settings.engine.pv_plies,
         score_model=settings.engine.score_model,
     )
-    return ComputedFirst(engine, computed)
+    return ComputedFirst(WholeSearcher(engine, lines=3, depth=settings.engine.depth), computed)
 
 
 def _routine_provider(settings: Settings, provider: object) -> object:

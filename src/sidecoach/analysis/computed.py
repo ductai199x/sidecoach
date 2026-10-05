@@ -116,12 +116,20 @@ class Computed:
         with self._lock:
             return list(self._whole.get(key) or self._thin.get(key) or [])
 
+    def whole(self, board: chess.Board) -> list[Line]:
+        """`board`'s lines measured whole; none while it is not."""
+        with self._lock:
+            return list(self._whole.get(position_key(board)) or [])
+
 
 class ComputedFirst:
-    """The coach's engine: a position computed read (`Computed`), a search for the rest. The
-    engine starts at its first search (`Engine.analyse` opens it), so a coach whose questions
-    the analyser has answered never starts a second Stockfish; closed, it searches no more --
-    a question still being answered as the coach closes would start a process nobody closes."""
+    """The coach's engine: a position measured whole read (`Computed`), a search for the rest
+    -- through the analyser's pool (`analyser.PoolSearcher`), or a Stockfish of its own started
+    at its first search, so a coach whose questions the analyser has answered never starts one.
+    Closed, it searches no more and answers with what is known, the best line included: a
+    question still being answered as the coach closes would start a process nobody closes. A
+    searcher that keeps what it finds itself (`fills_computed`) is not kept for twice -- nor
+    is what it found once its wait ran out filed as whole."""
 
     def __init__(self, engine: Searcher, computed: Computed | None = None) -> None:
         self.engine = engine
@@ -130,12 +138,15 @@ class ComputedFirst:
         self._closed = False
 
     def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
-        known = self.computed.lines(board)
-        if known or self._closed:
+        known = self.computed.whole(board)
+        if known:
             return known
+        if self._closed:
+            return self.computed.lines(board)
         self.searches += 1
         lines = self.engine.analyse(board, depth=depth)
-        self.computed.add(board, lines)
+        if not getattr(self.engine, "fills_computed", False):
+            self.computed.add(board, lines)
         return lines
 
     def close(self) -> None:

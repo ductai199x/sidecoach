@@ -140,6 +140,46 @@ def test_a_review_stopped_part_way_goes_on_from_where_it_was() -> None:
     assert verdicts(resumed) == verdicts(whole)
 
 
+def test_an_engine_that_fails_leaves_its_share_to_the_others() -> None:
+    """Side by side, one engine dies on its first search -- its best line another engine may
+    be waiting on: the others finish the game, nothing waits for good, and the review's
+    verdicts are a single engine's."""
+    game = _game()
+    answers = _answers(game)
+
+    class Dead(FakeEngine):
+        def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+            raise RuntimeError("engine gone")
+
+    reviewed = review_game(
+        game,
+        [Dead(answers), FakeEngine(answers), FakeEngine(answers)],
+        depth=18,
+        multipv=2,
+        thresholds=Thresholds(),
+    )
+    alone = review_game(game, [FakeEngine(answers)], depth=18, multipv=2, thresholds=Thresholds())
+
+    def verdicts(review: ReviewedGame) -> list[tuple[str, object, float]]:
+        return [
+            (m.assessment.uci, m.assessment.label, m.assessment.expected_loss) for m in review.moves
+        ]
+
+    assert verdicts(reviewed) == verdicts(alone)
+
+
+def test_a_review_stopped_before_it_measured_anything_searches_nothing() -> None:
+    """Stopped before the engines took a position: the walk searches nothing more -- a review
+    the room throws away -- where it used to measure the start position whole."""
+    engine = FakeEngine({})
+    stop = threading.Event()
+    stop.set()
+    reviewed = review_game(
+        _game(), [engine], depth=18, multipv=2, thresholds=Thresholds(), stop=stop
+    )
+    assert engine.calls == [] and reviewed.moves == []
+
+
 def test_the_clock_and_the_time_each_move_took() -> None:
     reviewed = review_game(_game(), [FakeEngine()], depth=18, multipv=2, thresholds=Thresholds())
     clocks = [(m.clock_ms, m.spent_ms) for m in reviewed.moves]

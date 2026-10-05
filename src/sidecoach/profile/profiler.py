@@ -129,6 +129,9 @@ class _Game:
     # The analysis of the position after (segment, ply); ply 0 is the segment's base.
     analyses: dict[tuple[int, int], Analysis] = field(default_factory=dict)
     opening: str | None = None
+    # The ply the opening was named at: a later ply's name stands over an earlier one's, in
+    # whatever order the analyses come.
+    opening_ply: int = -1
     last_fen: str = chess.STARTING_FEN
     time_control: str | None = None
     ended: bool = False
@@ -144,6 +147,11 @@ class _Game:
     reviewed: bool = False
     # The game's phase so far: a phase reached is never left (`phase.game_phases`).
     phase: str = "opening"
+
+
+def _offered(analysis: Analysis) -> list[str]:
+    """The tactics a position offered the side to move, by name."""
+    return sorted({t.name for t in analysis.tags if t.name in causes.TACTICAL})
 
 
 def _reason_words(event: GameEnded) -> str | None:
@@ -394,10 +402,12 @@ class Profiler:
         return score if board.turn == user else 1.0 - score
 
     def _analysis(self, game: _Game, event: Analysis) -> list[Event]:
+        """The final word on a position, in any order: the move that led there and the move
+        played from it (its verdict may be in already) each take what it says."""
         key = (game.segment, event.ply)
         game.analyses[key] = event
-        if event.opening:
-            game.opening = event.opening
+        if event.opening and event.ply >= game.opening_ply:
+            game.opening, game.opening_ply = event.opening, event.ply
         ply = game.plies.get(key)
         if ply is not None and ply.move_id:
             self.store.analyse_move(
@@ -405,6 +415,10 @@ class Profiler:
                 score_after=self._score_for_user(game, event),
                 allowed_tags=[t.name for t in event.tags if t.name in causes.TACTICAL],
             )
+        following = (game.segment, event.ply + 1)
+        played = game.plies.get(following)
+        if played is not None and played.move_id and played.assessment is not None:
+            self.store.available_tags(played.move_id, _offered(event))
         return self._place(game, key)
 
     def _assessment(self, game: _Game, event: MoveAssessment) -> list[Event]:
@@ -415,11 +429,7 @@ class Profiler:
         ply.assessment = event
         before = chess.Board(ply.move.fen_before)
         faced = game.analyses.get((game.segment, event.ply - 1))
-        available = (
-            sorted({t.name for t in faced.tags if t.name in causes.TACTICAL})
-            if faced is not None
-            else []
-        )
+        available = _offered(faced) if faced is not None else []
         best_uci = event.best[0] if event.best else None
         best_san: str | None = None
         if best_uci is not None:
@@ -445,7 +455,8 @@ class Profiler:
 
     def _place(self, game: _Game, key: tuple[int, int]) -> list[Event]:
         """Place a mistake on the two axes once its assessment and the analysis of the
-        position it led to are both in."""
+        position it led to are both in. (The position it was played from is the one its
+        player thought on: its final analysis is in before the move, save after a premove.)"""
         ply = game.plies.get(key)
         if ply is None or ply.placed or ply.assessment is None or not ply.move.by_user:
             return []

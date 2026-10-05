@@ -2154,6 +2154,7 @@ dependencies = [
     { name = "numpy" },
     { name = "onnxruntime-gpu" },
     { name = "opencv-python" },
+    { name = "psutil" },
     { name = "pydantic" },
     { name = "rich" },
     { name = "typer" },
@@ -2174,7 +2175,6 @@ dev = [
 panel = [
     { name = "fastapi" },
     { name = "keyring" },
-    { name = "psutil" },
     { name = "uvicorn" },
     { name = "zstandard" },
 ]
@@ -2200,6 +2200,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "onnxruntime-gpu", specifier = ">=1.27" },
     { name = "opencv-python", specifier = ">=4.10" },
+    { name = "psutil", specifier = ">=6.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "rich", specifier = ">=13.7" },
     { name = "typer", specifier = ">=0.12" },
@@ -2220,7 +2221,6 @@ dev = [
 panel = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "keyring", specifier = ">=25.0" },
-    { name = "psutil", specifier = ">=6.0" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "zstandard", specifier = ">=0.22" },
 ]

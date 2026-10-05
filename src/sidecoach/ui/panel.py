@@ -987,7 +987,9 @@ class PanelEngine:
             self._reload_recogniser()
             applied.extend(c for c in changed if c in STT_RELOAD)
         attempt(["capture.fps"], lambda: None)  # the capture loop reads the rate every frame
-        if any(c in ("engine.stockfish_path", "tools_dir") for c in changed):
+        # Another engine, or another number of workers in the pool: the engine and the coach
+        # built again at the next Start (`applies` "next").
+        if any(c in ("engine.stockfish_path", "tools_dir", "engine.workers") for c in changed):
             self._engine_stale = True
         for name in changed:
             if name.startswith("llm.price_"):
@@ -1043,9 +1045,10 @@ class PanelEngine:
                     [f"engine.{name}"],
                     lambda name=name: analyser.reconfigure(**{name: getattr(new.engine, name)}),
                 )
-            # The number of workers is the pool's: it applies at the next launch (`applies`).
-            # What was measured before is not set against what is measured now: a loss
-            # compares two searches made the same way (the engine review, 2026-10-01).
+            # The number of workers is the pool's: it applies at the next Start (the engine is
+            # built again then, above). What was measured before is not set against what is
+            # measured now: a loss compares two searches made the same way (the engine review,
+            # 2026-10-01).
             remeasure = [
                 *(c for c in changed if c in THRESHOLD_FIELDS),
                 "engine.depth",

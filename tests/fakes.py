@@ -101,9 +101,12 @@ class GatedEngine(FakeEngine):
         *,
         gated: Sequence[str] = (),
         default: list[Line] = QUIET,
+        reports: dict[str, list[Line]] | None = None,
     ) -> None:
         super().__init__(answers, default=default)
         self.gated = set(gated)
+        # The depths a gated position's one-line search reports before it holds (`on_depth`).
+        self.reports = reports or {}
         self.entered = {fen: threading.Event() for fen in gated}
         self.released: set[str] = set()
         self.stopped: list[str] = []  # gated searches the analyser stopped
@@ -126,6 +129,10 @@ class GatedEngine(FakeEngine):
         fen = board.fen()
         depth = int(kwargs.get("depth") or 0)
         if fen in self.gated:
+            on_depth = kwargs.get("on_depth")
+            if on_depth is not None:
+                for line in self.reports.get(fen, []):
+                    on_depth([line])
             self.entered[fen].set()
             if self.poke is not None:
                 self.poke()
@@ -164,10 +171,13 @@ class AnalyserWatch:
     """An analyser's workers, watched without a clock: every result they put and every change
     of state they signal (`Analyser._cond.notify_all`) wakes `until`, which returns once its
     condition holds. HANG_S only bounds a hang; it is never the expected path. Made before the
-    workers start."""
+    workers start. The analyser counts what failed and goes on (a failed search, a verdict that
+    could not be made); settled, nothing may have failed unless the test says so
+    (`failures_ok`): a test whose every verdict silently failed would pass otherwise."""
 
-    def __init__(self, analyser: Any) -> None:
+    def __init__(self, analyser: Any, *, failures_ok: bool = False) -> None:
         self.analyser = analyser
+        self.failures_ok = failures_ok
         self._cond = threading.Condition()
         signal = analyser._cond.notify_all
 
@@ -209,6 +219,19 @@ class AnalyserWatch:
         it was told, so none can come after `pending` is 0; what was said stays queued for
         whoever drains it (the engine glue's `drain`)."""
         self.until(lambda: self.analyser.pending == 0, "the analyser settled")
+        if not self.failures_ok:
+            assert self.analyser.failures == 0, self.analyser.last_error
+
+    def quiet(self) -> None:
+        """Settled (`idle`), and every search done that the analyser still wants made -- the
+        candidates' own, which nothing owed waits on."""
+        self.idle()
+
+        def done() -> bool:
+            with self.analyser._cond:
+                return not self.analyser._claimed and self.analyser._pick() is None
+
+        self.until(done, "the analyser's searches done")
 
     def settled(self) -> list[object]:
         """Everything owed answered (`idle`), and what the workers said, polled."""

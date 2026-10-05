@@ -15,6 +15,9 @@ dependencies = [
     "httpx>=0.27",
     "typer>=0.12",
     "rich>=13.7",
+    # The engine's watchdog reads Stockfish's processor time: a search silent but working is
+    # never ended (analysis/engine.py `_watched`).
+    "psutil>=6.0",
     # The square classifier (vision/classifier.py) runs through onnxruntime on the CPU; the
     # GPU build is the one package that serves both devices (see the voice group below).
     "onnxruntime-gpu>=1.27",
@@ -55,7 +58,6 @@ voice = [
 panel = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
-    "psutil>=6.0",
     # The OS credential store for the API keys the settings window takes (config.secrets_*).
     "keyring>=25.0",
     # The Lichess puzzle file the first-run setup samples is zstd-compressed.

@@ -1,8 +1,9 @@
 """The engine service for a game followed live (`analysis/analyser.py`): every search one line,
-every position searched once, on a pool of workers; a position told as it comes (its best line
-and its hint, then whole); a move judged as soon as what it needs is in, in the order of the
-moves; the coach's questions ahead of the game's other positions. Gated fake engines stage
-every race; nothing waits on a clock."""
+every position searched once, on a pool of workers; a position told as it comes (its first
+answer, then whole, then final); a move judged as soon as what it needs is in, in the order of
+the moves; the coach's questions ahead of the game's other positions; nothing a worker does
+after a search ends it. Gated fake engines stage every race, a manual clock times the decided
+rule; nothing waits on a clock."""
 
 from __future__ import annotations
 
@@ -13,11 +14,20 @@ from pathlib import Path
 import chess
 import pytest
 
-from sidecoach.analysis.analyser import BEST, HINT, Analyser, PoolSearcher, _Job, open_analyser
+from sidecoach.analysis import analyser as analyser_module
+from sidecoach.analysis.analyser import (
+    BEST,
+    DECIDED_AFTER_S,
+    HINT,
+    Analyser,
+    PoolSearcher,
+    _Job,
+    open_analyser,
+)
 from sidecoach.analysis.annotator import EARLY_DEPTH, GameAnnotator, cache_key
 from sidecoach.analysis.engine import Engine
 from sidecoach.events import Analysis, Label, Line, MoveAssessment
-from tests.fakes import AnalyserWatch, FakeEngine, GatedEngine
+from tests.fakes import HANG_S, AnalyserWatch, FakeEngine, GatedEngine, ManualClock
 from tests.test_analysis import SCHOLAR, STOCKFISH, needs_engine
 
 START = chess.Board().fen()
@@ -31,8 +41,8 @@ def _real_engine() -> Iterator[Engine]:
         yield running
 
 
-def _line(*moves: str, score: float = 0.5) -> Line:
-    return Line(moves=list(moves), depth=18, expected_score=score)
+def _line(*moves: str, score: float = 0.5, depth: int = 18) -> Line:
+    return Line(moves=list(moves), depth=depth, expected_score=score)
 
 
 def _board(*sans: str) -> chess.Board:
@@ -46,9 +56,13 @@ def _after(*sans: str) -> str:
     return _board(*sans).fen()
 
 
-def _analyser(engines: Sequence[FakeEngine], *, threats: bool = False) -> Analyser:
+def _analyser(
+    engines: Sequence[FakeEngine], *, threats: bool = False, clock: ManualClock | None = None
+) -> Analyser:
     annotator = GameAnnotator(engine=engines[0], depth=18, multipv=6, with_threats=threats)
-    return Analyser(annotator, engines=engines)
+    if clock is None:
+        return Analyser(annotator, engines=engines)
+    return Analyser(annotator, engines=engines, clock=clock.monotonic, timer=clock.Timer)
 
 
 def _searches(engines: Sequence[FakeEngine]) -> list[tuple[str, int, int | None]]:
@@ -58,6 +72,16 @@ def _searches(engines: Sequence[FakeEngine]) -> list[tuple[str, int, int | None]
         for e in engines
         for fen, lines, depth in zip(e.calls, e.multipvs, e.depths, strict=True)
     ]
+
+
+def _play(analyser: Analyser, sans: Sequence[str], *, game_id: str = "g") -> chess.Board:
+    """The moves submitted one after another from the start, as the glue submits them."""
+    board = chess.Board()
+    for ply, san in enumerate(sans, start=1):
+        move = board.parse_san(san)
+        analyser.submit_move(game_id, board, move, ply)
+        board.push(move)
+    return board
 
 
 def test_every_search_is_one_line_but_the_hint_and_none_is_made_twice() -> None:
@@ -91,13 +115,15 @@ def test_every_search_is_one_line_but_the_hint_and_none_is_made_twice() -> None:
     assert analyser.searches == sum(1 for _, m, _ in searched if m == 1)
 
 
-def test_a_position_is_whole_from_its_candidates_own_searches() -> None:
-    """Each of a position's best moves is searched as its own position, one line to the full
-    depth: the lines are those searches turned to the side to move, best first, the best line
-    keeping its own moves -- where six lines at once to the full depth took up to 47 s."""
+def test_a_position_is_whole_from_its_best_line_and_its_candidates_own_searches() -> None:
+    """The best line is the position's own search, first -- it picks the best move more often
+    than the candidates' searches (231 against 222 of 300 against a depth-24 truth), and the
+    engine's own move is never charged a loss for a candidate scoring higher -- then each
+    other candidate from its own position's one-line search, turned to the side to move, best
+    first."""
     lines = {
-        START: [_line("e2e4", score=0.6), _line("d2d4", score=0.55)],
-        _after("e4"): [_line("e7e5", score=0.40)],
+        START: [_line("e2e4", "e7e5", score=0.55), _line("d2d4", score=0.5)],
+        _after("e4"): [_line("e7e5", score=0.40)],  # higher than the best line says: not taken
         _after("d4"): [_line("d7d5", score=0.48)],
     }
     engine = FakeEngine(lines)
@@ -109,15 +135,16 @@ def test_a_position_is_whole_from_its_candidates_own_searches() -> None:
     whole = told[-1]
     assert not whole.provisional
     assert [(line.moves, line.expected_score) for line in whole.lines] == [
-        (["e2e4"], pytest.approx(0.6)),
+        (["e2e4", "e7e5"], pytest.approx(0.55)),
         (["d2d4", "d7d5"], pytest.approx(0.52)),
     ]
 
 
 def test_a_position_is_told_at_once_and_then_whole() -> None:
-    """The first answer comes at once -- the best line to the full depth, the hint's moves at
-    EARLY_DEPTH -- provisional; then the position whole, the candidates' own searches in;
-    with the side searches, whole once they are in too. Each stage once."""
+    """The first answer comes at once, one search's lines -- the best line while the hint is
+    not in, then the hint's at EARLY_DEPTH, never the two set against each other -- each
+    provisional; then the position whole; with the side searches, whole once they are in too.
+    Each stage once."""
     lines = {START: [_line("e2e4"), _line("d2d4")]}
     for threats in (False, True):
         engine = GatedEngine(lines)  # its lines at the depth asked for
@@ -126,9 +153,8 @@ def test_a_position_is_told_at_once_and_then_whole() -> None:
         with analyser:
             analyser.submit_position("g", chess.Board(), 0)
             told = [e for e in watch.settled() if isinstance(e, Analysis)]
-        first, both = told[0], told[1]
-        assert [line.depth for line in first.lines] == [18], "the best line alone, first"
-        assert [line.depth for line in both.lines] == [18, EARLY_DEPTH], "then the hint's"
+        assert [line.depth for line in told[0].lines] == [18], "the best line alone, first"
+        assert {line.depth for line in told[1].lines} == {EARLY_DEPTH}, "then the hint's"
         assert [e.provisional for e in told] == [True] * (len(told) - 1) + [False]
         assert len(told) == (4 if threats else 3), [e.lines for e in told]
         assert all(line.depth == 18 for line in told[-1].lines)
@@ -136,11 +162,9 @@ def test_a_position_is_told_at_once_and_then_whole() -> None:
 
 def test_a_move_not_among_the_lines_waits_for_the_position_after() -> None:
     """A move none of the candidates is judged from the position after's best line -- the
-    game's next position, searched anyway -- so its verdict waits for that search; one among
-    them is judged from its own candidate's search at once."""
+    game's next position, searched anyway -- so its verdict waits for that search."""
     lines = {
-        START: [_line("e2e4")],
-        _after("e4"): [_line("e7e5", score=0.40)],
+        START: [_line("e2e4", score=0.60)],
         _after("a3"): [_line("e7e5", score=0.55)],
     }
     engine = GatedEngine(lines, gated=[_after("a3")])
@@ -150,7 +174,7 @@ def test_a_move_not_among_the_lines_waits_for_the_position_after() -> None:
         analyser.submit_position("g", chess.Board(), 0)
         watch.idle()
         analyser.submit_move("g", chess.Board(), chess.Move.from_uci("a2a3"), 1)
-        assert engine.entered[_after("a3")].wait(5)
+        assert engine.entered[_after("a3")].wait(HANG_S)
         assert analyser._next_verdict == 1, "judged before the position after was searched"
         engine.release(_after("a3"))
         got = watch.settled()
@@ -159,32 +183,59 @@ def test_a_move_not_among_the_lines_waits_for_the_position_after() -> None:
     assert verdict.label is not Label.BEST
 
 
-def test_a_decided_search_running_long_stands_in_for_the_verdict() -> None:
-    """Tai, 2026-10-05: a best-line search still running after DECIDED_AFTER_S whose deepest
-    finished depth shows the position decided has that depth's score judge the move -- it
-    flips a severity as rarely as two full searches disagree. Undecided, it is waited for."""
-    lines = {START: [_line("e2e4")], _after("e4"): [_line("e7e5", score=0.40)]}
-    engine = GatedEngine(lines, gated=[_after("h3")])
+def test_the_engines_own_move_is_judged_without_waiting_for_the_position_after() -> None:
+    """The best line's move is judged from that line, the position's own search: the search
+    of the position it leads to -- the game's likeliest next, searched all the same -- is not
+    waited for."""
+    engine = GatedEngine({START: [_line("e2e4", score=0.6)]}, gated=[_after("e4")])
     analyser = _analyser([engine])
     watch = AnalyserWatch(analyser)
     with analyser:
         analyser.submit_position("g", chess.Board(), 0)
+        watch.until(lambda: analyser._nodes[cache_key(chess.Board())].whole is not None)
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e4"), 1)
+        # Judged on the move, the position after it still held.
+        verdicts = [e for e in analyser.poll() if isinstance(e, MoveAssessment)]
+        assert [(v.ply, v.expected_loss, v.label) for v in verdicts] == [(1, 0.0, Label.BEST)]
+        engine.release(_after("e4"))
         watch.idle()
-        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("h2h3"), 1)
-        assert engine.entered[_after("h3")].wait(5)
-        with analyser._cond:
-            key = cache_key(_board("h3"))
-            analyser._nodes[key].deepest = _line("e7e5", score=0.5).model_copy(update={"depth": 15})
-        analyser._decide(_Job(BEST, key, analyser._era))
-        assert analyser._next_verdict == 1, "an undecided depth judged the move"
-        with analyser._cond:
-            analyser._nodes[key].deepest = _line("d8h4", score=0.9).model_copy(update={"depth": 15})
-        analyser._decide(_Job(BEST, key, analyser._era))
-        assert analyser._next_verdict == 2, "the decided depth did not judge it"
-        verdict = next(e for e in analyser.poll() if isinstance(e, MoveAssessment))
-        engine.release(_after("h3"))
-        watch.idle()
-    assert verdict.expected_loss == pytest.approx(0.60 - 0.1)
+
+
+def test_a_decided_search_running_long_stands_in_for_the_verdict() -> None:
+    """Tai, 2026-10-05: a best-line search still running DECIDED_AFTER_S in whose deepest
+    finished depth (EARLY_DEPTH at least) the position is decided has that depth's score judge
+    the move, once; the full depth, when it comes, judges nothing again and is what is told.
+    Undecided, or too shallow, the move waits for the full depth."""
+    for reported, stands in (
+        (_line("d8h4", score=0.9, depth=15), True),  # decided: the stand-in judges
+        (_line("e7e5", score=0.5, depth=15), False),  # undecided: waited for
+        (_line("d8h4", score=0.9, depth=EARLY_DEPTH - 1), False),  # too shallow: waited for
+    ):
+        clock = ManualClock()
+        engine = GatedEngine(
+            {START: [_line("e2e4", score=0.6)], _after("h3"): [_line("e7e5", score=0.45)]},
+            gated=[_after("h3")],
+            reports={_after("h3"): [reported]},
+        )
+        analyser = _analyser([engine], clock=clock)
+        watch = AnalyserWatch(analyser)
+        with analyser:
+            analyser.submit_position("g", chess.Board(), 0)
+            watch.idle()
+            analyser.submit_move("g", chess.Board(), chess.Move.from_uci("h2h3"), 1)
+            # Held: its depths reported, the rule's timer started before the search began.
+            assert engine.entered[_after("h3")].wait(HANG_S)
+            clock.advance(DECIDED_AFTER_S)
+            judged = [e for e in analyser.poll() if isinstance(e, MoveAssessment)]
+            assert len(judged) == (1 if stands else 0), reported
+            engine.release(_after("h3"))
+            got = watch.settled()
+        verdicts = judged + [e for e in got if isinstance(e, MoveAssessment)]
+        assert [v.ply for v in verdicts] == [1], "judged once"
+        loss = 0.60 - (1 - (0.9 if stands else 0.45))
+        assert verdicts[0].expected_loss == pytest.approx(loss)
+        told = [e for e in got if isinstance(e, Analysis) and e.ply == 1]
+        assert told[-1].lines[0].expected_score == pytest.approx(0.45), "the full depth told"
 
 
 def test_moves_are_judged_in_the_order_they_were_played() -> None:
@@ -195,10 +246,8 @@ def test_moves_are_judged_in_the_order_they_were_played() -> None:
     analyser = _analyser(engines)
     watch = AnalyserWatch(analyser)
     with analyser:
-        board = chess.Board()
-        analyser.submit_move("g", board, board.parse_san("e4"), 1)
-        board.push_san("e4")
-        analyser.submit_move("g", board, board.parse_san("e5"), 2)
+        board = _play(analyser, ["e4", "e5"])
+        board.pop()
         watch.until(lambda: analyser._nodes[cache_key(board)].whole is not None, "e4 whole")
         assert analyser._next_verdict == 1, "e5 judged before e4"
         for e in engines:
@@ -210,24 +259,22 @@ def test_moves_are_judged_in_the_order_they_were_played() -> None:
 def test_a_takeback_says_nothing_more_of_the_withdrawn_moves() -> None:
     """Tai, 2026-09-23: "takebacks make the program lag behind by a lot". The moves taken back
     get no verdict and no analysis, and nothing is owed for them; a search made only for them
-    stops."""
+    stops; the move kept is judged and its positions told."""
     gated = [_after("e4", "e5")]
     engine = GatedEngine({}, gated=gated)
     analyser = _analyser([engine])
     watch = AnalyserWatch(analyser)
     # The moves in before the worker starts: the first verdict's needs, then the second's,
     # whose position after e5 holds.
-    board = chess.Board()
-    for ply, san in enumerate(["e4", "e5", "Nf3"], start=1):
-        move = board.parse_san(san)
-        analyser.submit_move("g", board, move, ply)
-        board.push(move)
+    _play(analyser, ["e4", "e5", "Nf3"])
     with analyser:
-        assert engine.entered[gated[0]].wait(5), "the position after e5 never searched"
+        assert engine.entered[gated[0]].wait(HANG_S), "the position after e5 never searched"
         analyser.withdraw("g", 1)
         watch.until(lambda: engine.stopped == gated, "the withdrawn move's search stopped")
         got = watch.settled()
     assert [e for e in got if getattr(e, "ply", 0) >= 2] == [], got
+    assert [e.ply for e in got if isinstance(e, MoveAssessment)] == [1]
+    assert {e.ply for e in got if isinstance(e, Analysis) and not e.provisional} == {0, 1}
     assert analyser.withdrawn == 2 and analyser.pending == 0
 
 
@@ -239,25 +286,36 @@ def test_a_position_seen_again_is_not_searched_again() -> None:
     watch = AnalyserWatch(analyser)
     with analyser:
         analyser.submit_position("g", chess.Board(), 0)
-        watch.settled()
+        watch.quiet()
+        analyser.poll()
         searched = len(engine.calls)
         analyser.reset()
         analyser.submit_position("h", chess.Board(), 0)
-        again = watch.settled()
+        watch.quiet()
+        again = analyser.poll()
     assert len(engine.calls) == searched
     assert [e.game_id for e in again if isinstance(e, Analysis)] == ["h"]
+
+
+class _Broken(FakeEngine):
+    """An engine whose searches of the positions in `broken` (FENs; every position when none
+    is given) fail as a dead engine's do."""
+
+    def __init__(self, broken: Sequence[str] = ()) -> None:
+        super().__init__({})
+        self.broken = set(broken)
+
+    def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
+        if not self.broken or board.fen() in self.broken:
+            raise RuntimeError("engine gone")
+        return super().analyse(board, **kwargs)
 
 
 def test_a_failed_search_does_not_end_the_session_nor_hold_the_game() -> None:
     """An engine that fails every search: each failure counted, the moves go unjudged, and
     nothing is owed -- the game is never held waiting on a search that cannot come."""
-
-    class Broken(FakeEngine):
-        def analyse(self, board: chess.Board, **kwargs: object) -> list[Line]:
-            raise RuntimeError("engine gone")
-
-    analyser = Analyser(GameAnnotator(engine=Broken({}), depth=6, with_threats=False))
-    watch = AnalyserWatch(analyser)
+    analyser = Analyser(GameAnnotator(engine=_Broken(), depth=6, with_threats=False))
+    watch = AnalyserWatch(analyser, failures_ok=True)
     with analyser:
         analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e4"), 1)
         got = watch.settled()
@@ -270,25 +328,131 @@ def test_a_failed_search_does_not_end_the_session_nor_hold_the_game() -> None:
     assert analyser.failures == failed + 2, "the next position tried, and failed alike"
 
 
+def test_a_candidate_that_fails_is_left_out_of_the_whole() -> None:
+    """One candidate's own search fails: the position is whole without it, told final, and
+    nothing is owed."""
+    engine = _Broken([_after("d4")])
+    engine.answers = {START: [_line("e2e4", score=0.6), _line("d2d4", score=0.5)]}
+    analyser = _analyser([engine])
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        analyser.submit_position("g", chess.Board(), 0)
+        told = [e for e in watch.settled() if isinstance(e, Analysis)]
+    assert analyser.failures == 1
+    assert not told[-1].provisional and [line.moves[0] for line in told[-1].lines] == ["e2e4"]
+
+
+def test_side_searches_that_fail_leave_the_position_whole_and_final() -> None:
+    """With threats on, the side searches failing: the position is told final with its lines,
+    kept for the review, and nothing is owed."""
+    engine = FakeEngine({START: [_line("e2e4"), _line("d2d4")]})
+    analyser = _analyser([engine], threats=True)
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("side searches gone")
+
+    analyser.annotator.with_side = broken  # type: ignore[method-assign]
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        analyser.submit_position("g", chess.Board(), 0)
+        told = [e for e in watch.settled() if isinstance(e, Analysis)]
+    assert analyser.failures == 1
+    assert not told[-1].provisional and told[-1].lines
+    assert len(analyser.measured_path("g")) == 1
+
+
+def test_a_position_with_one_legal_move_is_never_searched() -> None:
+    """In check with one way out: its best line is that move's, from the position it leads
+    to; the position itself is never searched, and it is told and judged as any other."""
+    one = "k7/p7/8/8/8/8/6q1/7K w - - 0 1"  # the queen gives check; only Kxg2
+    engine = FakeEngine({})
+    analyser = _analyser([engine])
+    watch = AnalyserWatch(analyser)
+    with analyser:
+        analyser.submit_position("g", chess.Board(one), 0)
+        told = [e for e in watch.settled() if isinstance(e, Analysis)]
+    assert one not in engine.calls
+    assert told[-1].lines and told[-1].lines[0].moves[0] == "h1g2" and not told[-1].provisional
+    assert analyser.searches == sum(1 for m in engine.multipvs if m == 1)
+
+
+def test_a_mate_on_the_board_is_judged_told_and_owes_nothing() -> None:
+    """Scholar's mate played through, threats on: the mating move judged, the mated position
+    told final with no lines, nothing owed."""
+    analyser = _analyser([FakeEngine({})], threats=True)
+    watch = AnalyserWatch(analyser)
+    with analyser:
+        board = _play(analyser, ["e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6", "Qxf7#"])
+        got = watch.settled()
+    assert board.is_checkmate()
+    assert [e.ply for e in got if isinstance(e, MoveAssessment)] == list(range(1, 8))
+    mated = [e for e in got if isinstance(e, Analysis) and e.ply == 7]
+    assert mated[-1].lines == [] and not mated[-1].provisional
+
+
+def test_an_illegal_move_is_refused_and_owes_nothing() -> None:
+    analyser = _analyser([FakeEngine({})])
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e5"), 1)
+        got = watch.settled()
+    assert analyser.failures == 1 and got == [] and analyser.pending == 0
+
+
+def test_the_positions_kept_are_trimmed_and_the_workers_go_on() -> None:
+    """Past KEEP_NODES the oldest positions go -- never the game's, its moves', a worker's or
+    their candidates -- and a candidate let go is made again when wanted: no worker ever dies
+    on a position it no longer finds (the audit of 2026-10-05)."""
+    keep = 40
+    analyser = _analyser([FakeEngine({}), FakeEngine({})])
+    watch = AnalyserWatch(analyser)
+    sans = ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(analyser_module, "KEEP_NODES", keep)
+        with analyser:
+            board = chess.Board()
+            for ply, san in enumerate(sans, start=1):
+                move = board.parse_san(san)
+                analyser.submit_move("g", board, move, ply)
+                board.push(move)
+                watch.idle()
+                assert len(analyser._nodes) < 2 * keep
+            board.pop()
+            analyser.withdraw("g", len(sans) - 1)  # a takeback, and a move played again
+            analyser.submit_move("g", board, board.parse_san("Bb6"), len(sans))
+            got = watch.settled()
+            assert all(t.is_alive() for t in analyser._threads)
+    assert [e.ply for e in got if isinstance(e, MoveAssessment)][-1] == len(sans)
+    assert analyser.pending == 0
+
+
 def test_the_workers_take_the_verdicts_then_the_coach_then_the_game() -> None:
     """Who waits on a search, first to last: the next verdict (the word on the move just
     played), the coach's question (the player waiting on it), the position the game is on,
     the game's other positions."""
     analyser = _analyser([FakeEngine({START: [_line("e2e4")]})])
-    analyser.submit_position("g", chess.Board(), 0)
     asked = _board("d4")
-    threading.Thread(target=analyser.request, args=(asked,), daemon=True).start()
-    with analyser._cond:
-        while not analyser._requests:
-            analyser._cond.wait()
-        assert analyser._pick() == _Job(BEST, cache_key(asked), 0), "the coach's not first"
-    analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e4"), 1)
-    with analyser._cond:
-        assert analyser._pick() == _Job(BEST, cache_key(chess.Board()), 0)
-        jobs = analyser._agenda()
-    asked_job, game_job = _Job(BEST, cache_key(asked), 0), _Job(HINT, cache_key(_board("e4")), 0)
-    assert jobs.index(asked_job) < jobs.index(game_job), "the game's position before the coach"
-    analyser.close()
+    asking = threading.Thread(target=analyser.request, args=(asked,), daemon=True)
+    try:
+        analyser.submit_position("g", chess.Board(), 0)
+        asking.start()
+        with analyser._cond:
+            while not analyser._requests:
+                assert analyser._cond.wait(HANG_S), "the coach never asked"
+            assert analyser._pick() == _Job(BEST, cache_key(asked), 0), "the coach's first"
+        analyser.submit_move("g", chess.Board(), chess.Move.from_uci("e2e4"), 1)
+        with analyser._cond:
+            assert analyser._pick() == _Job(BEST, cache_key(chess.Board()), 0)
+            jobs = analyser._agenda()
+        coach_job, game_job = (
+            _Job(BEST, cache_key(asked), 0),
+            _Job(HINT, cache_key(_board("e4")), 0),
+        )
+        assert jobs.index(coach_job) < jobs.index(game_job), "the coach's after the game's"
+    finally:
+        analyser.close()
+        asking.join(HANG_S)
+    assert not asking.is_alive()
 
 
 def test_the_coach_is_answered_from_the_pool_and_never_searches_twice() -> None:
@@ -309,18 +473,37 @@ def test_the_coach_is_answered_from_the_pool_and_never_searches_twice() -> None:
     assert analyser._requests == []
 
 
-def test_a_question_given_up_or_asked_of_a_closed_analyser_never_hangs() -> None:
-    """The coach's wait is bounded: a question past its time gets what is known (here
-    nothing) and is dropped; closed, the analyser answers at once with what it has."""
+def test_a_question_is_never_left_hanging() -> None:
+    """The coach's wait is bounded however the search goes: past its time it gets what is
+    known (here nothing) and its question is dropped; a question whose search fails is
+    answered at once; one waiting when the analyser closes is let go; one asked of a closed
+    analyser is answered at once."""
     gated = _after("c4")
     engine = GatedEngine({}, gated=[gated])
     analyser = _analyser([engine])
     analyser.start()
-    assert analyser.request(_board("c4"), timeout=0) is None
-    assert analyser._requests == []
-    engine.release(gated)
-    analyser.close()
+    try:
+        assert analyser.request(_board("c4"), timeout=0) is None
+        assert analyser._requests == []
+        answers: list[object] = []
+        waiting = threading.Thread(
+            target=lambda: answers.append(analyser.request(_board("c4"))), daemon=True
+        )
+        waiting.start()
+        with analyser._cond:
+            while not analyser._requests:
+                assert analyser._cond.wait(HANG_S), "the coach never asked"
+    finally:
+        engine.release(gated)
+        analyser.close()
+    waiting.join(HANG_S)
+    assert not waiting.is_alive() and len(answers) == 1, "let go at the close"
     assert analyser.request(_board("e4"), timeout=None) is None
+
+    broken = Analyser(GameAnnotator(engine=_Broken(), depth=6, with_threats=False))
+    with broken:
+        assert broken.request(_board("d4"), timeout=None) is None
+    assert broken.failures == 2
 
 
 def test_the_workers_engines_search_on_one_thread_each() -> None:
@@ -351,20 +534,30 @@ def test_the_workers_engines_search_on_one_thread_each() -> None:
 
 
 def test_settings_changed_mid_search_keep_nothing_measured_the_old_way() -> None:
-    """The depth or the lines saved while a search runs: what it finds is not kept, and the
-    game's position is measured again and told again."""
-    engine = GatedEngine({START: [_line("e2e4")]}, gated=[START])
+    """The depth or the lines saved while a search runs: what it finds is not kept -- even a
+    search that runs on to its end -- and the game's position is measured again and told
+    from the new search."""
+
+    class Stubborn(GatedEngine):
+        """A search no stop reaches: it runs to its end, the old way."""
+
+        def interrupt(self) -> None:
+            self._wake.set()
+
+    engine = Stubborn({START: [_line("e2e4", score=0.3)]}, gated=[START])
     analyser = _analyser([engine])
     watch = AnalyserWatch(analyser)
     with analyser:
         analyser.submit_position("g", chess.Board(), 0)
-        assert engine.entered[START].wait(5)
+        assert engine.entered[START].wait(HANG_S)
         analyser.forget_measured()
-        watch.until(lambda: engine.stopped == [START], "the search under way let go")
+        engine.answers[START] = [_line("e2e4", score=0.7)]  # the new settings' answer
         engine.release(START)
         told = [e for e in watch.settled() if isinstance(e, Analysis)]
+    assert sum(1 for fen, m, _ in _searches([engine]) if fen == START and m == 1) == 2
     assert told and not told[-1].provisional
-    assert analyser.searches >= 1 and analyser._era == 1
+    assert told[-1].lines[0].expected_score == pytest.approx(0.7), "the old search kept"
+    assert analyser.searches == sum(1 for m in engine.multipvs if m == 1) - 1
 
 
 def test_a_watched_games_review_searches_nothing_the_game_measured(tmp_path: Path) -> None:
@@ -422,6 +615,13 @@ def test_a_watched_games_review_searches_nothing_the_game_measured(tmp_path: Pat
     )
     assert len(reviewed.moves) == 3
     assert review_engine.calls == [], "the review searched what the game had measured"
+    fresh = review_game(game, [FakeEngine({})], depth=18, multipv=6, thresholds=Thresholds())
+
+    def verdicts(review: object) -> list[tuple[str, object, float]]:
+        moves = review.moves  # type: ignore[attr-defined]
+        return [(m.assessment.uci, m.assessment.label, m.assessment.expected_loss) for m in moves]
+
+    assert verdicts(reviewed) == verdicts(fresh), "the kept positions are the review's own"
 
 
 def test_a_live_game_stays_in_the_book_past_its_first_move(tmp_path: Path) -> None:
@@ -553,6 +753,7 @@ def test_a_position_re_read_mid_search_gets_no_word_on_the_old_reading(tmp_path:
         assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
         watch.until(lambda: engine.stopped == [white], "the reset let go of the search")
         watch.idle()
+        assert engine.calls.count(white) == 0, "the old reading searched to an answer"
         told = [e.fen for e in assessing.drain() if isinstance(e, Analysis)]
         assert told and set(told) == {black}, told
         word = {"ply": 0, "lines": [], "decisive": False, "only_move": False}
@@ -579,9 +780,8 @@ def test_a_real_position_is_told_at_once_and_then_whole(
         analyser.submit_position("g", board, 0)
         got = [e for e in watch.settled() if isinstance(e, Analysis)]
     assert [e.provisional for e in got] == [True, True, False]
-    assert got[0].lines[0].depth == 16 and {line.depth for line in got[1].lines[1:]} == {
-        EARLY_DEPTH
-    }
+    assert [line.depth for line in got[0].lines] == [16], "the best line, first"
+    assert {line.depth for line in got[1].lines} == {EARLY_DEPTH}, "then the hint's lines"
     whole = got[-1].lines
     scores = [line.expected_score for line in whole]
     assert scores == sorted(scores, reverse=True) and len(whole) <= 3

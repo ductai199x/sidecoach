@@ -20,10 +20,12 @@ from typing import Any
 import chess
 import chess.pgn
 
+from sidecoach.analysis.annotator import WholeSearcher
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import Strength
 from sidecoach.analysis.score import position_score
 from sidecoach.config import Settings, find_stockfish
+from sidecoach.events import Line
 from sidecoach.profile import library
 from sidecoach.profile.store import LibraryRow
 
@@ -127,7 +129,9 @@ def white_eval(board: chess.Board, line: Any) -> dict[str, int | None]:
 
 class Lines:
     """The engine's best lines for the positions the analysis board shows: one engine, made on
-    the first position asked of it and closed with the room; one search at a time."""
+    the first position asked of it and closed with the room; one position at a time, measured
+    whole the one-line way (`WholeSearcher`) -- three lines to the review's depth at once
+    exploded on decided and forcing positions, a minute and more for one position."""
 
     def __init__(
         self,
@@ -138,15 +142,23 @@ class Lines:
         self.settings = settings
         self.strength = strength
         self._make_engine = make_engine
-        self._engine: Engine | None = None
+        self._searcher: WholeSearcher | None = None
         self._lock = threading.Lock()
 
     def lines(self, fen: str) -> dict[str, Any]:
         """The best LINES lines from `fen` at the review's depth, each from White's side and
         played out LINE_PLIES moves; none in a finished position."""
         board = chess.Board(fen)
+        return self.render(board, self.search(board))
+
+    def search(self, board: chess.Board) -> list[Line]:
+        """`board`'s best LINES lines at the review's depth."""
         with self._lock:
-            found = self._ready().analyse(board, depth=self.strength.depth, multipv=LINES)
+            return self._ready().analyse(board)
+
+    @staticmethod
+    def render(board: chess.Board, found: list[Line]) -> dict[str, Any]:
+        """`found` as the board draws them: each from White's side, played out LINE_PLIES."""
         lines = [
             {"eval": white_eval(board, line), "steps": steps(board, line.moves[:LINE_PLIES])}
             for line in found
@@ -165,18 +177,18 @@ class Lines:
 
     def close(self) -> None:
         with self._lock:
-            if self._engine is not None:
-                self._engine.close()
-            self._engine = None
+            if self._searcher is not None:
+                self._searcher.close()
+            self._searcher = None
 
-    def _ready(self) -> Engine:
-        if self._engine is not None:
-            return self._engine
+    def _ready(self) -> WholeSearcher:
+        if self._searcher is not None:
+            return self._searcher
         path = find_stockfish(self.settings)
         if path is None:
             raise RuntimeError("no Stockfish to analyse with")
         engine = self.settings.engine
-        self._engine = (self._make_engine or Engine)(
+        made = (self._make_engine or Engine)(
             path=path,
             threads=1,
             hash_mb=min(engine.hash_mb, 128),
@@ -184,8 +196,9 @@ class Lines:
             pv_plies=engine.pv_plies,
             score_model=engine.score_model,
         )
-        self._engine.open()
-        return self._engine
+        made.open()
+        self._searcher = WholeSearcher(made, lines=LINES, depth=self.strength.depth)
+        return self._searcher
 
 
 # ---- the explorer: the player's own games ----

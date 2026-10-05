@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -283,17 +284,25 @@ class Engine:
         search would wait on it for good, and its worker with it -- so its process is ended,
         and the search is made again on a new one (`_analyse_with_restart`), watched the same
         way. A search still reporting or still working, however long it takes, is left to
-        finish: the depth asked for is the depth answered."""
+        finish: the depth asked for is the depth answered. A window it cannot judge is never
+        an engine's end: the processor time unreadable, the window's start a process since
+        replaced (its baseline another's), or a window the machine slept through."""
         done = threading.Event()
         # Working: at least a tenth of the patience spent searching.
         busy = self.watchdog_s / 10
 
         def watch() -> None:
-            heard, spent = self._heard, self._cpu()
-            while not self.watchdog_wait(done, self.watchdog_s):
-                now = self._cpu()
-                working = spent is not None and now is not None and now - spent >= busy
-                if self._heard == heard and not working:
+            heard, spent = self._heard, self._cpu_mark()
+            while True:
+                began = time.monotonic()
+                if self.watchdog_wait(done, self.watchdog_s):
+                    return
+                now = self._cpu_mark()
+                slept = time.monotonic() - began > 2 * self.watchdog_s
+                working = True  # unless judged idle below
+                if spent is not None and now is not None and spent[0] == now[0]:
+                    working = now[1] - spent[1] >= busy
+                if self._heard == heard and not working and not slept:
                     self._end_process()
                 heard, spent = self._heard, now
 
@@ -303,6 +312,24 @@ class Engine:
             yield
         finally:
             done.set()
+
+    def _cpu_mark(self) -> tuple[object, float] | None:
+        """The engine's process and its processor time so far: a window's baseline, judged
+        only against the same process's."""
+        engine = self._engine
+        cpu = self._cpu()
+        if cpu is None:
+            return None
+        return (id(engine) if self.cpu_seconds is not None else self._pid(), cpu)
+
+    def _pid(self) -> int | None:
+        engine = self._engine
+        if engine is None:
+            return None
+        try:
+            return engine.transport.get_pid()
+        except Exception:  # noqa: BLE001 - gone
+            return None
 
     def _cpu(self) -> float | None:
         """The engine process's processor time so far (`cpu_seconds`), or None."""

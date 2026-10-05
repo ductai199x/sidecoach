@@ -677,6 +677,16 @@ class Store:
             )
             self._db.commit()
 
+    def available_tags(self, move_id: int, tags: Sequence[str]) -> None:
+        """The tactics the position a move was played from offered, once its final analysis is
+        in -- it can come after the move's verdict (`Profiler._analysis`)."""
+        with self._lock:
+            self._db.execute(
+                "UPDATE moves SET available_tags = ? WHERE move_id = ?",
+                (json.dumps(list(tags)), move_id),
+            )
+            self._db.commit()
+
     def withdraw_moves(self, game_id: str, segment: int, from_ply: int) -> None:
         """A takeback: the moves from `from_ply` on are out of the game, kept for the record."""
         with self._lock:
