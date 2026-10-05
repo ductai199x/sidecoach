@@ -915,7 +915,7 @@ class _Assessing:
         if isinstance(event, MovePlayed):
             before = self._history_to(event.fen_before)
             move = chess.Move.from_uci(event.uci)
-            self.analyser.submit_move(event.game_id, before, move, event.ply, by_user=event.by_user)
+            self.analyser.submit_move(event.game_id, before, move, event.ply)
             self._from[event.ply] = event.fen_before
             before.push(move)
             self._game = before

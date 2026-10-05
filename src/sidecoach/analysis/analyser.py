@@ -103,7 +103,6 @@ class _Move:
     before: str
     after: str
     move: chess.Move
-    by_user: bool
 
 
 @dataclass(frozen=True)
@@ -225,15 +224,7 @@ class Analyser:
             self._tell(ply)
             self._cond.notify_all()
 
-    def submit_move(
-        self,
-        game_id: str,
-        before: chess.Board,
-        move: chess.Move,
-        ply: int,
-        *,
-        by_user: bool = True,
-    ) -> None:
+    def submit_move(self, game_id: str, before: chess.Board, move: chess.Move, ply: int) -> None:
         with self._cond:
             self._game_id = game_id
             if move not in before.legal_moves:
@@ -248,7 +239,7 @@ class Analyser:
             after.push(move)
             target = self._node(after)
             self._set_path(ply, target.key)
-            self._moves[ply] = _Move(ply, source.key, target.key, move, by_user)
+            self._moves[ply] = _Move(ply, source.key, target.key, move)
             if self._next_verdict is None or ply < self._next_verdict:
                 self._next_verdict = ply
             self._current = ply
