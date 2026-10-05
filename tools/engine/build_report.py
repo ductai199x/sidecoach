@@ -189,6 +189,38 @@ def coach_rows() -> str:
     return "".join(out)
 
 
+def glue_rows(main: str, branch: str, depth: int) -> str:
+    """The built apps end to end (bench_glue.py, GlueBench): each answer's wait from the move,
+    the depth it reached, the engines' CPU -- main (as installed) against this branch."""
+
+    def load(name: str) -> list[dict]:
+        data = json.loads((C / name).read_text(encoding="utf-8"))
+        return data["rows"] if isinstance(data, dict) else data
+
+    out = [
+        "<tr><th></th><th>verdict p50 / p90 / worst</th><th>first answer p50 / p90 / worst</th>"
+        "<th>whole p50 / p90 / worst</th><th>CPU, 120 moves</th><th>below depth</th></tr>"
+    ]
+    for label, name, strong in (("Before (main, 0.1.76)", main, False), ("After", branch, True)):
+        rows = load(name)
+
+        def cell(key: str, rows: list[dict] = rows) -> str:
+            v = [r[key] for r in rows if key in r]
+            return f"{q(v, 0.5):.2f} / {q(v, 0.9):.2f} / {max(v):.2f} s"
+
+        below = sum(r.get("verdict_depth", depth) < depth for r in rows) + sum(
+            r.get("whole_depth", depth) < depth for r in rows
+        )
+        low = min([r[k] for r in rows for k in ("verdict_depth", "whole_depth") if k in r])
+        cls = ' class="after"' if strong else ""
+        out.append(
+            f"<tr{cls}><th>{label}</th><td>{cell('verdict')}</td><td>{cell('first')}</td>"
+            f"<td>{cell('whole')}</td><td>{sum(r['cpu'] for r in rows):.0f} s</td>"
+            f"<td>{below} answers{f' (as low as {low})' if below else ''}</td></tr>"
+        )
+    return "".join(out)
+
+
 def fmt(x: float) -> str:
     return f"{x:.2f}"
 
@@ -235,6 +267,8 @@ def build(out: Path) -> None:
         puz_rows=puz_rows or "<tr><td colspan=4>still running</td></tr>",
         n_puz=n_puz,
         game_rows=game_rows,
+        glue_desk=glue_rows("bench_glue-main.json", "bench_glue-branch.json", 18),
+        glue_phone=glue_rows("phone-glue-main.json", "phone-glue-branch.json", 14),
     )
     out.write_text(page, encoding="utf-8")
 
@@ -267,6 +301,13 @@ code {{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:13px; }}
 <p>Every position was searched with <b>six lines to depth 18</b>. Asking Stockfish for the exact depth-18 value of several moves at once makes the search <b>explode</b> on decided or forcing positions: one in-check position took 53 s on two lines, against 0.18 s on one line. Over {n_desk} positions from real sessions, 84 six-line searches took over 5 s (worst 47 s). One line to depth 18 does not explode.</p>
 <p>Two more findings: extra threads never pay at a fixed depth (one thread is fastest per answer and per watt), and the silence watchdog killed searches that were still working (one root move searched 48 s without a word) — now fixed on both platforms.</p>
 
+<h2>The built apps, end to end</h2>
+<p>The app's own engine glue, with its default settings, fed three of your 10-minute games (40 plies each), every move from idle: how long after the move its verdict, the first word on the new position and the position whole came, the depth each answer really reached, and Stockfish's CPU. The same benchmark ran against <code>main</code> (0.1.76, as installed) and the rebuilt engine work. <code>main</code> caps every search's time (5 seconds on the desktop) and cuts the depth short to keep to it; the rebuild never cuts a depth.</p>
+<p><b>Desktop</b> (depth 18; before: one engine of four threads; after: three single-thread workers):</p>
+<div class="wrap"><table>{glue_desk}</table></div>
+<p><b>Phone</b> (Pixel 10 Pro XL, depth 14; before: one engine of two threads; after: two single-thread workers):</p>
+<div class="wrap"><table>{glue_phone}</table></div>
+
 <h2>Desktop: before and after <span class="lede">(cold, one thread, {n_desk} positions)</span></h2>
 <div class="wrap"><table>{desk_rows}</table></div>
 <p>CPU for those searches: <span class="key">{desk_cpu}</span>.</p>
@@ -282,7 +323,7 @@ code {{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:13px; }}
 
 <h2>Accuracy: puzzles</h2>
 <p>{n_puz} Lichess puzzles; solved at a depth when every solver move is the move that depth chose (any mate on the last move).</p>
-<p>Depth 18 does <b>not</b> reach 99.99%. Of its 34 misses, a depth-24 check found only 2 where the engine's move also wins; <span class="warn">32 are real misses</span> (rated 1,800–2,900): the engine plays a drawing move where the puzzle wins. Puzzles need more than depth 18 — and a puzzle gives time to get it: the search can go on deepening while you think, at no cost to the first answer. At which depth those 32 are found is being measured.</p>
+<p>Depth 18 solves 99.83%. Of its 34 misses, a depth-24 check found 2 where the engine's move also wins; 32 are real misses (rated 1,800–2,900), where the engine plays a drawing move and the puzzle wins. 99.83% is accepted (your call): puzzles are measured at depth 18 like every other position.</p>
 <div class="wrap"><table><tr><th></th><th>solved</th><th>rate</th><th>failed</th></tr>{puz_rows}</table></div>
 
 <h2>Accuracy: game verdicts</h2>
@@ -295,21 +336,20 @@ code {{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:13px; }}
 <p>With searches this cheap, look-ahead buys a few hundredths of a second and throws away a third of its work: computing on demand is the front.</p>
 <p><b>Deep candidates</b> (each of the six best moves' own one-line search, for the coach's lessons and the review) are not in this table: the simulation lacked measurements for too many of those positions to be trusted. Measured directly instead, on 1,000 real positions, three workers side by side: <span class="key">p50 0.42 s, p90 0.77 s, p99 1.86 s</span>, worst 10.6 s (a decided position); 6% less CPU than one six-line search, which took p50 1.12 s, p99 5.8 s, worst 47 s on the same positions.</p>
 
-<h2>The AI coach's own requests <span class="lede">(desktop, four workers, simulated)</span></h2>
+<h2>The AI coach's own requests <span class="lede">(desktop, simulated)</span></h2>
 <p>What the model's prompt needs, on both turns, through the same pool and never a second Stockfish: after each of your moves, the lesson's prompt (the position you moved from, whole; the position after, its best line and threats); on the opponent's turn, a question asked the moment it begins (their position, whole); and a move you or the model ask about (that move's own one-line search). Verdicts go first; a request about a moment the game has moved past is let go — before that rule, bursts piled requests up to 14 s and pushed verdicts back with them.</p>
 <div class="wrap"><table>{coach}</table></div>
 
-<h2>Recommendation</h2>
+<h2>What was built <span class="lede">(both platforms, branch <code>stockfish-restructure</code>)</span></h2>
 <ul>
-<li><b>Verdicts and the best move</b>: one line to depth 18 on both platforms (the phone included: 0.78 s median, against 1.15 s for its old six lines at depth 14). Decided positions over 1 s take the decided score (your call; no larger error than depth 18's own noise).</li>
-<li><b>Hints</b>: six lines to depth 12, at once (desktop never over 1.9 s, phone p90 0.72 s).</li>
-<li><b>The coach's candidates, lessons and the review</b>: each candidate move's own one-line depth-18 search, in parallel — never a multi-line search at depth 18 (the review has the same explosion today).</li>
-<li><b>The AI coach</b>: every engine question it asks (and every move you ask about) goes through the same pool as one-line searches, with priority after the verdicts; the second Stockfish it uses today (three lines at depth 14) goes. Requests the game has moved past are let go.</li>
-<li><b>Workers</b>: 3 to 4 single-thread on the desktop, 2 on the phone; no look-ahead beyond the candidates.</li>
-<li><b>Fixed already</b>: the watchdog (silence <i>and</i> idle CPU), a guard against Git Bash path mangling.</li>
+<li><b>Every search is one line</b> to the full depth: the best line (the verdict, the best move); the hint, six lines to depth 12 at once; each candidate move searched as its own position, one line, in parallel — never a multi-line search at the full depth. A position with one legal move is read from its child, never searched.</li>
+<li><b>One order of work</b>: the next verdict's searches first, then the coach's questions, then the position on the board, then the rest of the game (whose review then searches nothing). Each position is told at once, then whole, then with its threats.</li>
+<li><b>Decided positions</b>: a best-line search still running after 1 s whose deepest depth shows the position decided judges the move with that score (your call; no larger error than depth 18's own noise).</li>
+<li><b>The AI coach</b> asks the same pool for every position it or you ask about; its second Stockfish (three lines, which explode as six do) is gone. The offline coach, game review, retries, puzzles and the profile read the same searches.</li>
+<li><b>Workers</b>: 3 single-thread on the desktop — they answer as fast as four or six (<code>tools/engine/workers_compare.py</code>; four only finish a whole position 0.1 s sooner) — and 2 on the phone. No look-ahead beyond the candidates. The phone's depth stays a setting (14 by default).</li>
+<li><b>Game review</b>: each engine finishes one position at a time, so a review stopped part way keeps every position it finished.</li>
+<li><b>Fixed along the way</b>: the watchdog (silence <i>and</i> idle CPU), a guard against Git Bash path mangling, a retried move searching positions its review had measured, the hint kept when the settings changed under it.</li>
 </ul>
-<h2>Not done yet</h2>
-<p>This is the measured design, not yet built into the apps. Building it (the analyser, the coach's on-demand request, the review's search, both platforms, their tests) and then a real end-to-end before/after of the built apps are the next steps.</p>
 </main>
 """
 
