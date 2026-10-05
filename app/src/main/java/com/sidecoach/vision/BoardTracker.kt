@@ -128,6 +128,15 @@ class BoardTracker(
     /** Whether the last frame validated the lock; false while the lock is only held. */
     val verified: Boolean get() = board != null && misses == 0
 
+    /**
+     * The lock re-fitted on the next tick, changed or not: a caller found the board off the lock
+     * (`pipeline._lock_off_board`) and waits on it. `refit_next`.
+     */
+    fun refitNext() {
+        framesSinceRefine = refineEvery
+        refitSettled = false
+    }
+
     private fun passes(fit: Double, contrast: Double) = fit >= minFit && contrast >= minContrast
 
     // A still screen hands the tracker the same grey image tick after tick. Everything it

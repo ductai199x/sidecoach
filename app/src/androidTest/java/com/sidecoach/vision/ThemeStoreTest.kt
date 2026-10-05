@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.InProcess
 import com.sidecoach.Lane
 import com.sidecoach.TestNets
+import com.sidecoach.state.GamePipeline
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -29,6 +30,92 @@ import java.io.File
 @InProcess(2)
 @RunWith(AndroidJUnit4::class)
 class ThemeStoreTest {
+
+    /**
+     * `test_a_start_position_drawn_otherwise_never_replaces_the_set_learned`: Tai's desktop,
+     * 2026-10-05: chess.com's puzzles page shows small start positions whose pieces sit larger
+     * and lower in their squares. His set read them as the start, so the set learned from them
+     * was saved over his -- and on every real board after, each piece read as one in flight: no
+     * puzzle adopted, through five restarts. A look drawn otherwise is kept beside the set
+     * learned, never over it; the board's own start shown again saves nothing; and the puzzle
+     * that follows is read cold with the set that reads it.
+     */
+    @Test
+    fun aStartPositionDrawnOtherwiseNeverReplacesTheSetLearned() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val fixtures = Fixtures.all().associateBy { it.name }
+        val start = fixtures.getValue("start-green")
+        val landing = fixtures.getValue("start-landing-green")
+        val puzzle = fixtures.getValue("midgame-flipped-green")
+        val geometry = BoardGeometry(Region(puzzle.x, puzzle.y, puzzle.side, puzzle.side), puzzle.cell.toDouble())
+        val directory = File(context.cacheDir, "themes-landing-test").apply { deleteRecursively(); mkdirs() }
+        fun files() = directory.listFiles()!!.filter { it.name.startsWith("theme-") }.associate { it.name to it.readBytes().toList() }
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
+            val store = ThemeStore(directory)
+            fun shown(fixture: Fixture): GamePipeline {
+                val pipe = GamePipeline(embedder, store)
+                val frame = Fixtures.mat(fixture)
+                for (i in 0 until 3) pipe.process(frame, 0.1 * i)
+                frame.release()
+                return pipe
+            }
+            assertNotNull("the start not learned", shown(start).model)
+            val learned = files()
+            assertEquals(1, learned.size)
+            assertNotNull(shown(start).model)
+            assertEquals("the same look saved again", learned, files())
+            assertNotNull("the page's start position not learned", shown(landing).model)
+            val kept = files()
+            assertEquals("the set learned was replaced", learned, kept.filterKeys { it in learned })
+            assertEquals("the page's look not kept beside", learned.size + 1, kept.size)
+            val cold = GamePipeline(embedder, store)
+            val frame = Fixtures.mat(puzzle)
+            val events = cold.coldStart(frame, geometry)
+            frame.release()
+            assertTrue("the puzzle unread", events.any { it is com.sidecoach.events.GameStarted })
+            assertEquals(com.sidecoach.chess.Board(puzzle.fen).boardFen(), cold.reconciler!!.board.boardFen())
+        }
+        directory.deleteRecursively()
+    }
+
+    /**
+     * `test_a_start_shown_on_a_board_that_just_moved_is_learned_where_the_board_is`: Tai's
+     * desktop, 2026-10-05: chess.com's puzzles page slid its board 10 px as it finished its
+     * layout, the lock (re-fitted only every few ticks) stayed where the board had been, and the
+     * start position on it was learned there: every piece of every later board read a tenth of a
+     * cell off its learned place, in flight, and no puzzle was adopted. The start is learned once
+     * the lock sits on the board, a tick later.
+     */
+    @Test
+    fun aStartShownOnABoardThatJustMovedIsLearnedWhereTheBoardIs() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val fixtures = Fixtures.all().associateBy { it.name }
+        val before = fixtures.getValue("italian-green")
+        val moved = fixtures.getValue("start-moved-green")
+        val start = fixtures.getValue("start-green")
+        val directory = File(context.cacheDir, "themes-moved-test").apply { deleteRecursively(); mkdirs() }
+        CellEmbedder.load(context, threads = TestNets.THREADS).use { embedder ->
+            val pipe = GamePipeline(embedder, ThemeStore(directory))
+            val first = Fixtures.mat(before)
+            for (i in 0 until 3) pipe.process(first, 0.1 * i)
+            first.release()
+            assertNotNull("never locked", pipe.board)
+            val frame = Fixtures.mat(moved)
+            for (i in 3 until 7) pipe.process(frame, 0.1 * i)
+            frame.release()
+            val model = pipe.model
+            assertNotNull("the start never learned", model)
+            assertEquals("the lock never moved onto the board", moved.y, pipe.board!!.region.y)
+            val aligned = Fixtures.mat(start)
+            val readings = model!!.classifyFrame(
+                aligned, BoardGeometry(Region(start.x, start.y, start.side, start.side), start.cell.toDouble()), embedder,
+            )
+            aligned.release()
+            val flying = readings.count { it.kind == Pieces.Kind.PIECE && !it.settled }
+            assertEquals("pieces read off their learned places", 0, flying)
+        }
+        directory.deleteRecursively()
+    }
 
     @Test
     fun aLearnedSetReadsBackAsItWasAndAnOlderFileIsRelearned() {

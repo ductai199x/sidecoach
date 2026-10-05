@@ -486,9 +486,11 @@ class LlmTest {
     fun theOpenAIPresetSpeaksResponsesAndEveryOtherChat() {
         val keys = KeyStore { name -> if (name == "OPENAI_API_KEY") "sk-openai" else null }
         val provider = makeProvider(LLMSettings(provider = "openai"), keys = keys) as OpenAICompatProvider
-        val quiet = provider.withEffort("none")
-        assertTrue(quiet !== provider)
-        assertEquals(Wire.RESPONSES to Wire.RESPONSES, provider.wire to quiet.wire)
+        // The default effort is none (Tai, 2026-10-04): a deeper one is the copy, as the
+        // desktop's twin asks for medium.
+        val deeper = provider.withEffort("medium")
+        assertTrue(deeper !== provider)
+        assertEquals(Wire.RESPONSES to Wire.RESPONSES, provider.wire to deeper.wire)
         val local = makeProvider(LLMSettings(provider = "local"), keys = keys) as OpenAICompatProvider
         assertEquals(ThinkingControl.PREFILL to Wire.CHAT, local.thinkingControl to local.wire)
     }

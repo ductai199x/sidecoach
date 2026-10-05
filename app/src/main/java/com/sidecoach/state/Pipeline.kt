@@ -957,6 +957,17 @@ class GamePipeline(
      * forgets the clock.
      */
     internal fun rebuildModel(frame: Mat, geometry: BoardGeometry): Boolean {
+        val lock = board
+        val gray = lastGray
+        if (lock != null && gray != null && lockOffBoard(gray, lock)) {
+            // The board moved under the lock -- a page finishing its layout slid it 10 px on
+            // Tai's desktop (2026-10-05) -- and the lock is re-fitted only every few ticks: a set
+            // learned now is learned on squares cut beside the board, every piece of every later
+            // board a tenth of a cell off its learned place, read as one in flight. The lock is
+            // re-fitted on the next tick, and the start learned once it sits on the board.
+            tracker.refitNext()
+            return false
+        }
         val whiteAtBottom = ThemeModel.orientationFromStart(ThemeModel.occupancy(frame, geometry))
         val built = ThemeModel.fromStartPosition(frame, geometry, whiteAtBottom, embedder)
         game.startSeen = 0
@@ -974,29 +985,58 @@ class GamePipeline(
             it.userSide = side
         }
         bootstraps += 1
-        keepLook(built, frame, geometry, side, Board())
+        model = keepLook(built, frame, geometry, side, Board())
         return true
     }
 
     /**
-     * A look just learned from [frame] showing [position], cached: replacing the set it is
-     * learned again ([learnedSet]), else beside the others. Last, and never in the way: an
-     * exception here -- a damaged set among the cached ones -- left the rebuild half done
-     * (round 2, finding 9); the theme simply goes unkept. `pipeline._keep_look`.
+     * A look just learned from [frame] showing [position]: the set to read with. A cached set
+     * that reads the frame as [position], every piece at rest, is this look already
+     * ([learnedSet]): it is read with, and nothing is saved. Any other look is saved beside the
+     * cached sets -- never over one. Replacing the set that read the board left Tai with none
+     * (2026-10-05): chess.com's puzzles page shows small start positions whose pieces sit lower
+     * and larger in their squares; his set read them, so the set learned from them was saved
+     * over it, and on every real board after it each piece read as one in flight -- no puzzle
+     * adopted, through five restarts. Last, and never in the way: an exception here -- a damaged
+     * set among the cached ones -- left the rebuild half done (round 2, finding 9); the theme
+     * simply goes unkept. `pipeline._keep_look`.
      */
-    private fun keepLook(learned: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side, position: Board) {
-        val store = cache ?: return
+    private fun keepLook(learned: ThemeModel, frame: Mat, geometry: BoardGeometry, side: Side, position: Board): ThemeModel {
+        val store = cache ?: return learned
         try {
-            store.save(learned, learnedSet(store, learned, frame, geometry, side, position))
+            val cached = learnedSet(store, learned, frame, geometry, side, position)
+            if (cached != null) {
+                if (cached.rankLabels.isEmpty()) cached.rankLabels = learned.rankLabels
+                return cached
+            }
+            store.save(learned)
         } catch (e: Exception) {
             Log.w(TAG, "the learned theme was not cached", e) // as the desktop logs it
         }
+        return learned
     }
 
     /**
      * Whether a re-fit of the lock finds the board where the lock is, to within the tracker's
      * deadband, with the fit the tracker asks of a lock (`pipeline._on_its_board`).
      */
+    /**
+     * Whether a re-fit on this frame finds the board, validating, more than the tracker's
+     * deadband from the lock: a lock that trails a board just moved. A re-fit that does not
+     * validate says nothing against the lock (a badge, a cover): it stands.
+     * `pipeline._lock_off_board`.
+     */
+    private fun lockOffBoard(gray: com.sidecoach.vision.Plane, lock: BoardCandidate): Boolean {
+        val refit = BoardRefine.refine(gray, lock).board
+        val shift = maxOf(
+            kotlin.math.abs(refit.region.x - lock.region.x),
+            kotlin.math.abs(refit.region.y - lock.region.y),
+            kotlin.math.abs(refit.region.x + refit.region.w - lock.region.x - lock.region.w),
+            kotlin.math.abs(refit.region.y + refit.region.h - lock.region.y - lock.region.h),
+        )
+        return refit.fit >= tracker.minFit && shift > tracker.refitDeadbandPx
+    }
+
     private fun onItsBoard(gray: com.sidecoach.vision.Plane, lock: BoardCandidate): Boolean {
         val refit = BoardRefine.refine(gray, lock).board
         val shift = maxOf(
@@ -1194,12 +1234,12 @@ class GamePipeline(
     }
 
     /**
-     * The cached set this frame shows again -- the same pieces on the same board, learned
-     * before -- or null for a set not seen yet. Each set cached on these board colours reads the
-     * frame; one that reads it as [position] (the start position by default) is this set, and
-     * the new model replaces it rather than standing beside it -- unless it knows a kind the new
-     * one does not: a look learned mid-game lacks the kinds its position has lost, and replacing
-     * the whole set with it left a puzzle with a queen unread (round 3 audit, E11).
+     * The cached set this frame shows again -- the same pieces drawn the same way on the same
+     * board, learned before -- or null for a look not seen yet. Each set cached on these board
+     * colours reads the frame; one that reads it as [position] (the start position by default)
+     * quiet and whole, every piece of its kind and at rest where that set's pieces rest, is this
+     * look. Pieces drawn otherwise -- the same set larger, or lower in their squares -- read as
+     * their kinds but off their resting places: another look, kept beside ([keepLook]).
      * `pipeline._learned_set`.
      */
     private fun learnedSet(
@@ -1209,11 +1249,11 @@ class GamePipeline(
         geometry: BoardGeometry,
         side: Side,
         position: Board? = null,
-    ): String? {
-        val kinds = model.exemplarLabels.toSet()
-        for ((key, cached) in store.candidates(model.lightBg, model.darkBg)) {
-            if (!kinds.containsAll(cached.exemplarLabels)) continue
-            if (readsAs(cached.classifyFrame(frame, geometry, embedder), position, side)) return key
+    ): ThemeModel? {
+        val start = position ?: Board()
+        for ((_, cached) in store.candidates(model.lightBg, model.darkBg)) {
+            val placement = placementFromReadings(cached.classifyFrame(frame, geometry, embedder), side)
+            if (placement != null && placement.boardFen() == start.boardFen()) return cached
         }
         return null
     }
