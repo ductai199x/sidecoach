@@ -74,6 +74,8 @@ class GatedEngine(FakeEngine):
         self.entered = {fen: threading.Event() for fen in gated}
         self.released: set[str] = set()
         self.stopped: list[str] = []  # gated searches the analyser stopped
+        # Told when a gated search begins or is stopped: a test's watch woken for it.
+        self.poke: Callable[[], None] | None = None
         self._wake = threading.Event()
 
     def release(self, fen: str) -> None:
@@ -92,9 +94,13 @@ class GatedEngine(FakeEngine):
         depth = int(kwargs.get("depth") or 0)
         if fen in self.gated:
             self.entered[fen].set()
+            if self.poke is not None:
+                self.poke()
             while fen not in self.released:
                 if self._interruptible and self._stopped.is_set():
                     self.stopped.append(fen)
+                    if self.poke is not None:
+                        self.poke()
                     raise Interrupted
                 assert self._wake.wait(HANG_S), f"the search of {fen} was never let go"
                 self._wake.clear()
@@ -138,14 +144,32 @@ class AnalyserWatch:
 
         analyser._cond.notify_all = notify_all
         analyser._results = _Poking(analyser._results, self.poke)
+        self._pokes = 0
+        # A gated fake's search beginning or stopped wakes the watch too: a test waits on it.
+        for engine in getattr(analyser, "engines", []):
+            if isinstance(engine, GatedEngine):
+                engine.poke = self.poke
 
     def poke(self) -> None:
         with self._cond:
+            self._pokes += 1
             self._cond.notify_all()
 
     def until(self, condition: Callable[[], bool], what: str = "the condition") -> None:
-        with self._cond:
-            assert self._cond.wait_for(condition, HANG_S), f"never came: {what}"
+        """Until `condition` holds, woken by the workers' own steps. The condition is read
+        outside the watch's lock: it takes the analyser's, under which the workers poke the
+        watch -- read inside, the two locks were taken in both orders."""
+        deadline = _time.monotonic() + HANG_S
+        while True:
+            with self._cond:
+                seen = self._pokes
+            if condition():
+                return
+            with self._cond:
+                while self._pokes == seen:
+                    left = deadline - _time.monotonic()
+                    assert left > 0, f"never came: {what}"
+                    self._cond.wait(left)
 
     def idle(self) -> None:
         """Everything owed to the game answered. A result is put before the state that says

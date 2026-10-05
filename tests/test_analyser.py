@@ -5,6 +5,7 @@ are there. Gated fake engines stage every race; nothing waits on a clock."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import chess
@@ -15,9 +16,17 @@ from sidecoach.analysis.annotator import EARLY_DEPTH, GameAnnotator
 from sidecoach.analysis.engine import Engine
 from sidecoach.events import Analysis, Label, Line, MoveAssessment
 from tests.fakes import AnalyserWatch, FakeEngine, GatedEngine
-from tests.test_analysis import SCHOLAR, needs_engine
+from tests.test_analysis import SCHOLAR, STOCKFISH, needs_engine
 
 START = chess.Board().fen()
+
+
+@pytest.fixture(scope="module", name="engine")
+def _real_engine() -> Iterator[Engine]:
+    """The real Stockfish, one thread as every search (`needs_engine`'s tests)."""
+    assert STOCKFISH is not None
+    with Engine(path=STOCKFISH, threads=1, hash_mb=64, multipv=4) as running:
+        yield running
 
 
 def _line(*moves: str, score: float = 0.5) -> Line:
@@ -38,7 +47,9 @@ def _board(*sans: str) -> chess.Board:
     return board
 
 
-def _analyser(engines: list[FakeEngine], *, look_ahead: int = 2, threats: bool = False) -> Analyser:
+def _analyser(
+    engines: Sequence[FakeEngine], *, look_ahead: int = 2, threats: bool = False
+) -> Analyser:
     annotator = GameAnnotator(engine=engines[0], depth=18, with_threats=threats)
     return Analyser(annotator, engines=engines, look_ahead=look_ahead)
 
@@ -239,8 +250,8 @@ def test_moves_are_judged_in_the_order_they_were_played() -> None:
         START: [_line("e2e4", score=0.55)],
         _after("e4"): [_line("e7e5", score=0.5)],
     }
-    engine = GatedEngine(lines, gated=[START])
-    analyser = _analyser([engine, GatedEngine(lines, gated=[START])], look_ahead=0)
+    engines = [GatedEngine(lines, gated=[START]) for _ in range(2)]
+    analyser = _analyser(engines, look_ahead=0)
     watch = AnalyserWatch(analyser)
     with analyser:
         board = chess.Board()
@@ -249,7 +260,7 @@ def test_moves_are_judged_in_the_order_they_were_played() -> None:
         analyser.submit_move("g", board, board.parse_san("e5"), 2)
         watch.until(lambda: analyser._nodes[analyser._path[1]].measured is not None, "e4 known")
         assert analyser._next_verdict == 1, "e5 judged before e4"
-        for e in analyser.engines:
+        for e in engines:
             e.release(START)
         got = watch.settled()
     assert [e.ply for e in got if isinstance(e, MoveAssessment)] == [1, 2]
@@ -263,12 +274,13 @@ def test_a_takeback_says_nothing_more_of_the_withdrawn_moves() -> None:
     engine = GatedEngine({}, gated=gated)
     analyser = _analyser([engine], look_ahead=0)
     watch = AnalyserWatch(analyser)
+    # The moves in before the worker starts: it takes the newest first, and holds there.
+    board = chess.Board()
+    for ply, san in enumerate(["e4", "e5", "Nf3"], start=1):
+        move = board.parse_san(san)
+        analyser.submit_move("g", board, move, ply)
+        board.push(move)
     with analyser:
-        board = chess.Board()
-        for ply, san in enumerate(["e4", "e5", "Nf3"], start=1):
-            move = board.parse_san(san)
-            analyser.submit_move("g", board, move, ply)
-            board.push(move)
         assert engine.entered[gated[0]].wait(5), "the position after Nf3 never searched"
         analyser.withdraw("g", 1)
         watch.until(lambda: engine.stopped == gated, "the withdrawn move's search stopped")

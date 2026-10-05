@@ -256,8 +256,8 @@ class Analyser:
             if self._game_id != game_id:
                 self._new_game(game_id)
             if move not in before.legal_moves:
-                self.failures += 1
                 self.last_error = f"{move.uci()} is not legal in {before.fen()}"
+                self.failures += 1
                 return
             # Whose move it was says the player's colour, every move.
             self._user = before.turn if by_user else not before.turn
@@ -534,8 +534,8 @@ class Analyser:
                 found = None
             except Exception as exc:  # noqa: BLE001 - a failed search must never end a session
                 with self._cond:
-                    self.failures += 1
                     self.last_error = f"{type(exc).__name__}: {exc}"
+                    self.failures += 1
                     node = self._nodes.get(job.key)
                     if node is not None:
                         node.failed = True
@@ -699,8 +699,8 @@ class Analyser:
                     after.measured,
                 )
             except Exception as exc:  # noqa: BLE001 - a move that cannot be judged is skipped
-                self.failures += 1
                 self.last_error = f"{type(exc).__name__}: {exc}"
+                self.failures += 1
             else:
                 self._put(verdict)
                 self._learn(move, before.measured.lines)
