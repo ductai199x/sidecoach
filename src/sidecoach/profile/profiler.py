@@ -66,6 +66,20 @@ REVIEW_GRACE_S = 90.0
 # is still a game (Tai, 2026-09-22: a 133-ply bot game joined at move 3 got no review
 # because it was "a position"). Abandoned or ended sooner, its rows are removed.
 PROVISIONAL_PLIES = 16
+# A game replaced before this many half-moves, its result never seen, was no game (Tai,
+# 2026-10-05): chess.com's puzzles page shows a start position, the board was followed as a
+# game, and the puzzle that replaced it a few seconds later ended "a game" of one move,
+# reviewed. Nothing is kept of it, and its end is not announced. A short game whose result
+# was read -- a fool's mate, an early resignation -- is a game.
+GAME_MIN_PLIES = 6
+
+
+def a_game(plies: int, result: str) -> bool:
+    """Whether a game that ended after `plies` half-moves with `result` ("*": not seen) was a
+    game at all."""
+    return plies >= GAME_MIN_PLIES or result != "*"
+
+
 # The player's first words within this long after the coach's lesson on a mistake are
 # about that mistake: kept beside it as their self-report.
 SELF_REPORT_S = 60.0
@@ -537,6 +551,11 @@ class Profiler:
     def _end(self, game: _Game, event: GameEnded, ts: float) -> list[Event]:
         if game.provisional:
             self._drop_if_provisional()  # over before it could be a game: a puzzle
+            return []
+        if not a_game(len(game.plies), event.result):
+            # Replaced before GAME_MIN_PLIES, no result seen: no game, so no record, no review.
+            self.store.delete_game(game.game_id)
+            self._game = None
             return []
         game.ended = True
         game.end = event

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from sidecoach.config import Settings
+from sidecoach.profile.profiler import a_game
 from sidecoach.ui.log import DebugLog, elide
 from sidecoach.voice import STTProvider, TTSProvider, make_recogniser, make_tts
 from sidecoach.voice.correct import correct
@@ -316,6 +317,9 @@ class PanelEngine:
     _labels: dict[int, str] = field(default_factory=dict, init=False)
     # The game's last ply as the moves came, so a takeback knows which plies it withdrew.
     _last_ply: int = field(default=0, init=False)
+    # The half-moves the game under way has had, over every re-read: whether its end is a
+    # game's (`profiler.a_game`).
+    _game_plies: int = field(default=0, init=False)
     _bad_run: int = field(default=0, init=False)  # consecutive frames read as degraded
     # What the voice was last given: the trigger and the ply of that message, so the
     # next one knows whether what is playing is about a position the board has left.
@@ -2530,7 +2534,7 @@ class PanelEngine:
                 followed = pipe.reconciler.game_id if pipe.reconciler is not None else None
                 for event in events:
                     self._dispatch_game(event, assessing, chess, followed=followed)
-                    if isinstance(event, GameEnded):
+                    if isinstance(event, GameEnded) and a_game(self._game_plies, event.result):
                         # What the engine measured of it is its review's: not searched again.
                         try:
                             assessing.keep_for_review(store, event.game_id)
@@ -2789,6 +2793,7 @@ class PanelEngine:
             self._fen_before.clear()
             self._labels.clear()
             self._last_ply = 0
+            self._game_plies = 0
             self._promotion_logged = False
             what = (
                 "new game"
@@ -2815,6 +2820,7 @@ class PanelEngine:
             think = f", {event.think_ms / 1000:.1f}s" if event.think_ms is not None else ""
             self._fen_before[event.ply] = event.fen_before
             self._last_ply = event.ply
+            self._game_plies += 1
             if event.by_user:
                 think_s = event.think_ms / 1000 if event.think_ms is not None else None
                 self._position_moved_on("the player moved", ply=event.ply, think_s=think_s)
@@ -2839,6 +2845,7 @@ class PanelEngine:
             # move list: a replacement played at the same ply showed the withdrawn move's.
             assessing.submit(event)
             self._last_ply = max(0, self._last_ply - event.plies)
+            self._game_plies = max(0, self._game_plies - event.plies)
             for gone in [p for p in self._labels if p > self._last_ply]:
                 del self._labels[gone]
             for gone in [p for p in self._fen_before if p > self._last_ply]:
@@ -2887,6 +2894,15 @@ class PanelEngine:
             )
             self.caption(text)
         elif isinstance(event, GameEnded):
+            if not a_game(self._game_plies, event.result):
+                # Not a game (profiler.GAME_MIN_PLIES): a start board the puzzles page showed
+                # before its puzzle, replaced. Its end is not news.
+                self._emit(
+                    "game",
+                    "debug",
+                    f"no game: replaced after {self._game_plies} plies ({event.reason})",
+                )
+                return
             text = f"game over {event.result} ({event.reason})"
             if event.result == "*":
                 text = f"game over ({event.reason}); the result was not read"

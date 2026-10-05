@@ -1331,6 +1331,33 @@ def test_a_record_from_before_the_one_line_engine_drops_only_its_reviews_under_w
         store.close()
 
 
+def test_a_board_replaced_after_a_few_moves_was_no_game() -> None:
+    """Tai, 2026-10-05: chess.com's puzzles page showed a start position, the board was
+    followed as a game, and the puzzle that replaced it ended "a game" of one move -- reviewed,
+    "You played white for 1 moves". Replaced before GAME_MIN_PLIES with no result seen, it was
+    no game: no record, no review. A short game whose result was read (a fool's mate) and one
+    that reached GAME_MIN_PLIES are games."""
+    from sidecoach.events import GameReview
+    from sidecoach.profile.profiler import GAME_MIN_PLIES
+
+    f = Feed()
+    f.play("e4")
+    f.end("*", "board reoriented")
+    assert f.store.game("g") is None and not [e for e in f.out if isinstance(e, GameReview)]
+
+    f.next_game("fools")
+    for san in ("f3", "e5", "g4", "Qh4#"):
+        f.play(san)
+    f.end("0-1", "checkmate")
+    assert f.store.game("fools") is not None, "a mate read is a game, however short"
+
+    f.next_game("six")
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")[:GAME_MIN_PLIES]:
+        f.play(san)
+    f.end("*", "new game started")
+    assert f.store.game("six") is not None, "GAME_MIN_PLIES half-moves is a game"
+
+
 def test_a_takeback_takes_the_withdrawn_lines_opening_with_it() -> None:
     """The opening is the latest position's name -- of the moves that stand: a line taken back
     and played otherwise is not named by the moves withdrawn (the audit of 2026-10-05,

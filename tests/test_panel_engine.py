@@ -954,15 +954,15 @@ def test_a_game_ended_by_the_next_one_is_not_offered_to_end_game(
         return list(rec.update(model.classify_frame(frame, GEOM), ts))
 
     board = chess.Board()
-    feed(board)
-    for san in ("e4", "e5", "Nf3"):
+    events = feed(board)
+    # A game: GAME_MIN_PLIES half-moves (fewer, replaced unread, is no game at all).
+    for san in ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"):
         move = board.push_san(san)
-        feed(board, move)
-        feed(board, move)
+        events += feed(board, move) + feed(board, move)
     first = rec.game_id
     # The start position back, and a first move played from it: the next game.
     board = chess.Board()
-    events = feed(board) + feed(board)
+    events += feed(board) + feed(board)
     move = board.push_san("d4")
     events += feed(board, move) + feed(board, move)
     assert rec.game_id != first
@@ -979,7 +979,19 @@ def test_a_game_ended_by_the_next_one_is_not_offered_to_end_game(
         engine._dispatch_game(event, Glue(), chess, followed=rec.game_id)
     over = [ln["text"] for ln in engine.poll(0)["lines"] if ln["text"].startswith("game over")]
     assert over == ["game over (new game started); the result was not read"], over
+    # The next game, one move in, replaced unread: no game, and nothing said of its end
+    # (Tai, 2026-10-05: the puzzles page's start board, ended "a game" of one move).
+    replaced = GameEnded(
+        game_id=rec.game_id, result="*", reason="board reoriented", pgn="1. d4", final_fen=None
+    )
+    engine._dispatch_game(replaced, Glue(), chess, followed=None)
+    assert not [
+        ln
+        for ln in engine.poll(0)["lines"]
+        if "board reoriented" in ln["text"] and ln["text"].startswith("game over")
+    ]
     # A game ended with its result unknown that is still the one followed can be set.
+    engine._game_plies = 40  # a game followed to its middle
     kept = GameEnded(game_id="k", result="*", reason="abandoned", pgn=None, final_fen=None)
     engine._dispatch_game(kept, Glue(), chess, followed="k")
     assert engine.poll(0)["lines"][-1]["text"].endswith("End game… can set it")
