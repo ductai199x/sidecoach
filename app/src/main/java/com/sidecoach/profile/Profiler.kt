@@ -457,6 +457,12 @@ class Profiler(
             dropIfProvisional()  // over before it could be a game: a puzzle
             return emptyList()
         }
+        if (!aGame(game.plies.size, event.result)) {
+            // Replaced before GAME_MIN_PLIES, no result seen: no game, so no record, no review.
+            store.deleteGame(game.gameId)
+            this.game = null
+            return emptyList()
+        }
         game.ended = true
         game.end = event
         game.endedAt = ts
@@ -759,6 +765,19 @@ class Profiler(
          * once this many plies have been played on it: no puzzle runs that long.
          */
         const val PROVISIONAL_PLIES = 16
+
+        /**
+         * A game replaced before this many half-moves, its result never seen, was no game
+         * (Tai, 2026-10-05): chess.com's puzzles page shows a start position, the board was
+         * followed as a game, and the puzzle that replaced it a few seconds later ended "a
+         * game" of one move, reviewed. Nothing is kept of it, and its end is not announced.
+         * A short game whose result was read -- a fool's mate, an early resignation -- is a
+         * game. `profiler.GAME_MIN_PLIES`.
+         */
+        const val GAME_MIN_PLIES = 6
+
+        /** Whether a game that ended after [plies] half-moves with [result] ("*": not seen) was a game at all. `a_game`. */
+        fun aGame(plies: Int, result: String): Boolean = plies >= GAME_MIN_PLIES || result != "*"
 
         /** The player's first words within this long after a lesson are about that mistake. */
         const val SELF_REPORT_S = 60.0

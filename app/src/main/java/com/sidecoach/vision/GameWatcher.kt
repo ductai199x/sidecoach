@@ -337,7 +337,9 @@ class GameWatcher(
             note(event)
             PanelEngine.onGameEvent(event, followed)
             assessing.submit(event)
-            if (event is com.sidecoach.events.GameEnded) {
+            if (event is com.sidecoach.events.GameEnded &&
+                com.sidecoach.profile.Profiler.aGame(PanelEngine.gamePlies, event.result)
+            ) {
                 // What the engine measured of it is its review's: not searched again.
                 try {
                     assessing.keepForReview(profileStore, event.gameId)

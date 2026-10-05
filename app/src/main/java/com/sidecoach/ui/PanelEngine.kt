@@ -155,6 +155,9 @@ object PanelEngine {
     /** The game's last ply as the moves came, so a takeback knows which plies it withdrew. */
     private var lastPly = 0
 
+    /** The half-moves the game under way has had, over every re-read: whether its end is a game's ([Profiler.aGame]). */
+    @Volatile internal var gamePlies = 0
+
     /** Whether the person has been told the board is lost track of, since it was last read. */
     @Volatile private var lostTold = false
 
@@ -636,6 +639,7 @@ object PanelEngine {
                     labels.clear()
                 }
                 lastPly = 0
+                gamePlies = 0
                 val what = when (event.kind) {
                     "game" -> "new game"
                     "puzzle" -> "puzzle on the panel's board"
@@ -663,6 +667,7 @@ object PanelEngine {
                 val think = event.thinkMs?.let { ", " + format1(it / 1000.0) + "s" } ?: ""
                 synchronized(lock) { fenBefore[event.ply] = event.fenBefore }
                 lastPly = event.ply
+                gamePlies += 1
                 if (event.byUser) {
                     PanelVoice.positionMovedOn("the player moved", ply = event.ply, thinkS = event.thinkMs?.let { it / 1000.0 })
                 } else {
@@ -697,6 +702,7 @@ object PanelEngine {
                 // The engine lets go of the withdrawn moves at once, and their badges leave the
                 // move list: a replacement played at the same ply showed the withdrawn move's.
                 lastPly = maxOf(0, lastPly - event.plies)
+                gamePlies = maxOf(0, gamePlies - event.plies)
                 synchronized(lock) {
                     for (gone in labels.keys.filter { it > lastPly }) labels.remove(gone)
                     for (gone in fenBefore.keys.filter { it > lastPly }) fenBefore.remove(gone)
@@ -765,6 +771,12 @@ object PanelEngine {
             }
 
             is GameEnded -> {
+                if (!com.sidecoach.profile.Profiler.aGame(gamePlies, event.result)) {
+                    // Not a game (Profiler.GAME_MIN_PLIES): a start board the puzzles page
+                    // showed before its puzzle, replaced. Its end is not news.
+                    emit("game", "debug", "no game: replaced after $gamePlies plies (${event.reason})")
+                    return
+                }
                 val text = if (event.result == "*") {
                     // End game ends the game the reconciler holds. A game ended because the
                     // next one began is not that game: told it could set the result, the player

@@ -213,15 +213,16 @@ class PanelEngineTest {
         val rec = com.sidecoach.state.Reconciler(bottom = Pieces.Side.WHITE, userSide = Pieces.Side.WHITE)
         var ts = 0.0
         val board = com.sidecoach.chess.Board()
-        rec.update(clean(board), ts)
-        for (san in listOf("e4", "e5", "Nf3")) {
+        val events = ArrayList<com.sidecoach.events.Event>()
+        events += rec.update(clean(board), ts)
+        // A game: GAME_MIN_PLIES half-moves (fewer, replaced unread, is no game at all).
+        for (san in listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5")) {
             board.push(board.parseSan(san)!!)
-            repeat(2) { ts += 0.1; rec.update(clean(board), ts) }
+            repeat(2) { ts += 0.1; events += rec.update(clean(board), ts) }
         }
         val first = rec.gameId
         // The start position back, and a first move played from it: the next game.
         val next = com.sidecoach.chess.Board()
-        val events = ArrayList<com.sidecoach.events.Event>()
         repeat(2) { ts += 0.1; events += rec.update(clean(next), ts) }
         next.push(next.parseSan("d4")!!)
         repeat(2) { ts += 0.1; events += rec.update(clean(next), ts) }
@@ -235,7 +236,14 @@ class PanelEngineTest {
         val over = (0 until lines.length()).map { lines.getJSONObject(it).getString("text") }
             .filter { it.startsWith("game over") }
         assertEquals(listOf("game over (new game started); the result was not read"), over)
+        // The next game, one move in, replaced unread: no game, and nothing said of its end
+        // (Tai, 2026-10-05: the puzzles page's start board, ended "a game" of one move).
+        val quiet = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
+        PanelEngine.onGameEvent(com.sidecoach.events.GameEnded(gameId = rec.gameId!!, result = "*", reason = "board reoriented"), null)
+        val after = PanelEngine.poll(quiet).getJSONArray("lines")
+        assertTrue((0 until after.length()).none { after.getJSONObject(it).getString("text").startsWith("game over") })
         // A game ended with its result unknown that is still the one followed can be set.
+        PanelEngine.gamePlies = 40 // a game followed to its middle
         val kept = PanelEngine.poll(Int.MAX_VALUE).getInt("cursor")
         PanelEngine.onGameEvent(com.sidecoach.events.GameEnded(gameId = "k", result = "*", reason = "abandoned"), "k")
         val said = PanelEngine.poll(kept).getJSONArray("lines")

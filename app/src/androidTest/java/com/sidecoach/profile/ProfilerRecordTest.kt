@@ -275,6 +275,33 @@ class ProfilerRecordTest {
         }
     }
 
+    /**
+     * `test_a_board_replaced_after_a_few_moves_was_no_game`: Tai, 2026-10-05: chess.com's
+     * puzzles page showed a start position, the board was followed as a game, and the puzzle that
+     * replaced it ended "a game" of one move -- reviewed. Replaced before GAME_MIN_PLIES with no
+     * result seen, it was no game: no record, no review. A short game whose result was read (a
+     * fool's mate) and one that reached GAME_MIN_PLIES are games.
+     */
+    @Test
+    fun aBoardReplacedAfterAFewMovesWasNoGame() {
+        val f = Feed()
+        val out = ArrayList<Event>()
+        out += f.play("e4")
+        out += f.send(GameEnded(f.gameId, "*", "board reoriented", "1. e4", f.board.fen()))
+        assertNull(f.store.game("g"))
+        assertTrue(out.none { it is com.sidecoach.events.GameReview })
+
+        f.nextGame("fools")
+        for (san in listOf("f3", "e5", "g4", "Qh4#")) f.play(san)
+        f.send(GameEnded(f.gameId, "0-1", "checkmate", "1. f3 e5 2. g4 Qh4#", f.board.fen()))
+        assertTrue("a mate read is a game, however short", f.store.game("fools") != null)
+
+        f.nextGame("six")
+        for (san in listOf("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5").take(Profiler.GAME_MIN_PLIES)) f.play(san)
+        f.send(GameEnded(f.gameId, "*", "new game started", "", f.board.fen()))
+        assertTrue("GAME_MIN_PLIES half-moves is a game", f.store.game("six") != null)
+    }
+
     private companion object {
         val FORK = MotifTag("fork", listOf("e5", "c6", "g6"))
     }
