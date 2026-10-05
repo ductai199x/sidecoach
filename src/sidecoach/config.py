@@ -115,11 +115,11 @@ class EngineSettings(_Settings):
     # Engines of one thread each, not one engine of several threads: at a fixed depth, more
     # threads widen the search instead of speeding it -- four took 7.7 times the processor
     # time of one, and twice as long, for an answer no better (the engine audit, 2026-10-04).
-    # One thread also gives the same answer every time. Four: the scheduling sweep's front
-    # (2026-10-05) -- a burst of moves classified, and the coach's questions answered, within
-    # half a second at the 90th percentile; three left the coach's questions waiting behind it.
+    # One thread also gives the same answer every time. Three (Tai, 2026-10-04): verdicts,
+    # hints and the coach's answers are as quick as with four or six, and only a position's
+    # whole analysis comes 0.1 s later than with four (tools/engine/workers_compare.py).
     workers: int = Field(
-        default=4,
+        default=3,
         ge=1,
         le=16,
         description="How many positions Stockfish works on at once, one processor core each: "

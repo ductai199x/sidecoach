@@ -46,9 +46,9 @@ from sidecoach.events import Event, Line
 
 log = logging.getLogger(__name__)
 
-# How many workers search side by side, one thread each (the scheduling sweep: three and four
-# make the front; four keep bursts of moves under half a second).
-WORKERS = 4
+# How many workers search side by side, one thread each: three answer as fast as four or six
+# (tools/engine/workers_compare.py; `config.EngineSettings.workers`).
+WORKERS = 3
 # A search still running this long whose deepest finished depth shows the position decided
 # (an expected score at most DECIDED[0] or at least DECIDED[1]) has that depth's score stand in
 # for the full depth's in a verdict (the module's docstring).
