@@ -386,7 +386,9 @@ def replay(
     if moves or pgn is not None:
         truth = pgn if pgn is not None else recording / "truth.pgn"
         assessing = _Assessing(settings, assess or coach, depth=depth)
-        coaching = _Coaching(settings, coach and assessing.on, assessing.computed)
+        coaching = _Coaching(
+            settings, coach and assessing.on, assessing.computed, analyser=assessing.analyser
+        )
         cache = None
         if themes:
             from sidecoach.vision.theme_cache import ThemeCache
@@ -946,9 +948,7 @@ class _Assessing:
             self._from.clear()
             self._forget(event.game_id, event.start_fen)
             self._game = chess.Board(event.start_fen)
-            self.analyser.submit_position(
-                event.game_id, chess.Board(event.start_fen), 0, user=event.user_side.color
-            )
+            self.analyser.submit_position(event.game_id, chess.Board(event.start_fen), 0)
         elif isinstance(event, Resync):
             self.analyser.reset()
             self._from.clear()
@@ -1100,9 +1100,17 @@ class _Coaching:
     thread; messages are printed on the tick that finds them.
     """
 
-    def __init__(self, settings: Settings, enabled: bool, computed: Computed | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        enabled: bool,
+        computed: Computed | None = None,
+        *,
+        analyser: Analyser | None = None,
+    ) -> None:
         self.coach: Coach | None = None
-        # The coach's own engine, over what the analyser computed (`computed`).
+        # The coach's engine, over what the analyser computed (`computed`), searching on
+        # the analyser's pool (`analyser`) when there is one.
         self._engine: ComputedFirst | None = None
         self.log: TextIO | None = None
         # An optional sink for coach messages: when set (the panel), each message goes to it
@@ -1146,7 +1154,7 @@ class _Coaching:
         # One routine provider for the replies and the claims: one connection, closed with
         # the coach.
         routine = _routine_provider(settings, provider)
-        self._engine = _named_engine(settings, computed)
+        self._engine = _named_engine(settings, computed, analyser)
         self.coach = Coach(
             provider,
             policy=policy,
@@ -1346,15 +1354,23 @@ def _draft_check() -> DraftCheck | None:
     return check
 
 
-def _named_engine(settings: Settings, computed: Computed | None) -> ComputedFirst | None:
+def _named_engine(
+    settings: Settings, computed: Computed | None, analyser: Analyser | None = None
+) -> ComputedFirst | None:
     """The coach's engine, for the positions a question asks about: what the analyser has
-    computed (`computed`) first, and for the rest a second Stockfish, started at its first
-    search -- the analyser's workers are on the game's own positions. One thread, and the
-    depth asked for reached, as every search; None when Stockfish is not installed."""
+    computed (`computed`) first, and for the rest the analyser's own pool (`PoolSearcher`:
+    the position whole, ahead of the game's other positions) -- or, with no analyser (a coach
+    made on demand), a Stockfish of its own, started at its first search, one thread. None
+    when Stockfish is not installed."""
+    from sidecoach.analysis.computed import ComputedFirst
+
+    if analyser is not None:
+        from sidecoach.analysis.analyser import PoolSearcher
+
+        return ComputedFirst(PoolSearcher(analyser), computed)
     path = find_stockfish(settings)
     if path is None:
         return None
-    from sidecoach.analysis.computed import ComputedFirst
     from sidecoach.analysis.engine import Engine
 
     engine = Engine(
@@ -1990,7 +2006,9 @@ def watch(
     console.print("start a new game on the board; keys: r resign, d draw, n new game, q quit\n")
 
     assessing = _Assessing(settings, analysis)
-    coaching = _Coaching(settings, coach and assessing.on, assessing.computed)
+    coaching = _Coaching(
+        settings, coach and assessing.on, assessing.computed, analyser=assessing.analyser
+    )
     coaching.log = log
     profiling = _Profiling(settings, live=True)
     profiling.attach(coaching)

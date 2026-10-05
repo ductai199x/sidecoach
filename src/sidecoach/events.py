@@ -206,9 +206,10 @@ class Analysis(Event):
     # position it reached in its first 40 plies, as Lichess names it, and stays after the game
     # leaves the book).
     in_book: bool = False
-    # The position measured early (`annotator.EARLY_DEPTH`), the full depth to follow: what
-    # the player asks is answered from it at once; the coach's own words, a verdict and the
-    # record wait for the full depth.
+    # The position not measured whole yet -- its first answer (its best line, its hint's moves
+    # at `annotator.EARLY_DEPTH`), or whole but for its side searches -- the whole to follow:
+    # what the player asks is answered from it at once; the coach's own words, a verdict and
+    # the record wait for the whole.
     provisional: bool = False
 
 

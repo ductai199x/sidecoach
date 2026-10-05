@@ -1,17 +1,17 @@
 """What the engine has computed this game, for whoever reads it.
 
-The analyser is the producer: it measures every position of the game, the one the player
-faces early and then deeper, and the positions ahead of the game while it would otherwise
-idle. Each depth it finishes goes in here, and a reader takes the newest word on a position
-at any time (Tai, 2026-09-28: "stockfish is a reactive producer ... everything else just
+The analyser is the producer: it measures every position of the game and the candidates in
+each, the one the player faces first. Each answer it has goes in here -- a best line, the
+hint's lines at the early depth, the position whole -- and a reader takes the newest word on
+a position at any time (Tai, 2026-09-28: "stockfish is a reactive producer ... everything else just
 consumes it"). The coach's engine is such a reader (`ComputedFirst`): it searches only a
 position that is not here, and puts what it found here too (Tai, 2026-09-29: "our harness
 must first look at what was already computed, then if that's not computed only then invoke
 a call to stockfish to ask for analysis over that specific line").
 
 A move on a line the model was shown is read from that line, before any position is looked
-up (`rest_of_line`, the coach's own step): a separate search of the position after it -- the
-look-ahead's, deeper or not -- can answer differently, and a second search after 64. Bd2
+up (`rest_of_line`, the coach's own step): a separate search of the position after it --
+deeper or not -- can answer differently, and a second search after 64. Bd2
 answered it with Kh6 where the lines had Rxh3, and the model, shown both, said Bd2 avoided
 Rxh3 (the dev audit, 2026-09-26). Only positions measured are kept here: the lines passing
 through a position went stale as the search deepened, a move refuted at depth 18 still read

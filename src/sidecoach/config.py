@@ -115,14 +115,16 @@ class EngineSettings(_Settings):
     # Engines of one thread each, not one engine of several threads: at a fixed depth, more
     # threads widen the search instead of speeding it -- four took 7.7 times the processor
     # time of one, and twice as long, for an answer no better (the engine audit, 2026-10-04).
-    # One thread also gives the same answer every time. Three: Tai's choice (2026-10-04).
+    # One thread also gives the same answer every time. Four: the scheduling sweep's front
+    # (2026-10-05) -- a burst of moves classified, and the coach's questions answered, within
+    # half a second at the 90th percentile; three left the coach's questions waiting behind it.
     workers: int = Field(
-        default=3,
+        default=4,
         ge=1,
         le=16,
         description="How many positions Stockfish works on at once, one processor core each: "
-        "the game's own, and the moves ahead it gets ready while you think. More looks further "
-        "ahead and uses more of the processor.",
+        "the position you face, the best moves in it, and the coach's questions. More answers "
+        "sooner and uses more of the processor.",
         json_schema_extra=_extra(
             applies="next", label="Positions at once", section="How hard Stockfish works"
         ),

@@ -1,14 +1,25 @@
 """From moves to assessments: what a move cost, what the position holds, what is threatened.
 
 `GameAnnotator` does the work for one game and is synchronous, which is what a post-game
-review wants. `Analyser` wraps it in a worker thread, which is what a live session needs:
-the engine takes about a third of a second per position and the capture loop must not wait
-for it.
+review wants. `Analyser` (analyser.py) runs the same searches on a pool of workers, which is
+what a live session needs: the capture loop must not wait.
 
-Every position of a game is measured once, to the same depth, and cached, so the position
-after one move is the position before the next and a game costs one analysis per ply. The
-matching depth is what makes the loss of a move meaningful: two searches of different
-lengths would differ by more than most mistakes do.
+Every search is one line to the full depth (the engine audit, 2026-10-04/05). Asking Stockfish
+for the exact value of several moves at once -- a search of several lines -- explodes on
+decided and forcing positions: two lines of one real position took 53 s, one line 0.18 s; 84 of
+8,886 positions of real sessions took over 5 s with six lines at depth 18, the worst 47 s. So a
+position is measured whole as:
+
+- its best line: one line to the full depth (the verdict, the best move);
+- its candidates: the best moves of a six-line search to EARLY_DEPTH (never over 1.9 s), each
+  then searched as its own position, one line to the full depth -- the position's lines at the
+  full depth, built from those, and exactly the positions the game may go to next;
+- its side searches (threats, traps, declined recaptures, what a quiet best move threatens).
+
+Every position is measured once, to the same depth, and cached, so the position after one move
+is the position before the next, and a candidate searched is the next position measured. The
+matching depth is what makes the loss of a move meaningful: every value a verdict compares is
+one position's own one-line search to the full depth.
 """
 
 from __future__ import annotations
@@ -32,19 +43,18 @@ from sidecoach.analysis.score import (
     move_accuracy,
     position_score,
     severity,
+    terminal_expected_score,
     verdict,
 )
 from sidecoach.analysis.threats import AIM_DEPTH, aim_lines, threat_moves
 from sidecoach.analysis.traps import TRAP_DEPTH, trap_lines
 from sidecoach.events import Analysis, Line, MotifTag, MoveAssessment
 
-# The first depth of a position's search told to its readers, each deeper one following as
-# the search finishes it: its best move is the full depth's in every one of 77 puzzle
-# positions and 81 % of 232 game positions, found in a twentieth of the time, so a hint, the
-# move or the line asked for at once is answered at once (Tai, 2026-09-28: "first usable
-# answer is depth 12 ... the computation continues until max depth of 18"). Depth 12 of the
-# position's own search: a search of its own to depth 12 first cost 27% more than the full
-# depth alone (the engine audit, 2026-10-04).
+# The depth of a position's first answer: its six candidates at once, the full depth to follow.
+# Its best move is the full depth's in every one of 77 puzzle positions and 81 % of 232 game
+# positions (Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues
+# until max depth of 18"), and six lines to it never took more than 1.9 s on any of 8,886
+# positions of real sessions (p99 0.29 s; the engine audit, 2026-10-05).
 EARLY_DEPTH = 12
 
 
@@ -125,9 +135,9 @@ class GameAnnotator:
     book: Book | None = None
     with_threats: bool = True
     _cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
-    # Positions measured for a verdict only: the best line at the full depth, no
-    # candidates, no threats. Kept apart from `_cache`, so a later whole measurement of
-    # the same position is not answered with the thin one.
+    # Each position's best line alone (`best_line`): what a verdict reads of the position a
+    # move led to, and a candidate's value for the position before it. Kept apart from
+    # `_cache`, so a later whole measurement of the same position is not answered with it.
     _verdict_cache: dict[str, Measured] = field(default_factory=dict, init=False, repr=False)
     # Each move assessed, by its ply: the game, the position it led to, its loss, where it
     # landed and whether it captured, so the move after it knows whether the opponent just
@@ -138,10 +148,6 @@ class GameAnnotator:
     _assessed: dict[int, tuple[str, str, float, chess.Square, bool]] = field(
         default_factory=dict, init=False, repr=False
     )
-    # Positions measured ahead of the game (`look_ahead`) and not yet reached, and how many
-    # the game has reached: what looking ahead saved.
-    _ahead: set[str] = field(default_factory=set, init=False, repr=False)
-    ahead_hits: int = field(default=0, init=False)
     # Every search's lines as it finishes each usable depth, for any reader at any time (the
     # coach's engine reads it before it searches).
     computed: Computed = field(default_factory=Computed, init=False, repr=False)
@@ -153,62 +159,60 @@ class GameAnnotator:
         """Forget the cache; a new game shares no positions with the last one."""
         self._cache.clear()
         self._verdict_cache.clear()
-        self._ahead.clear()
         self.computed.clear()
         self._assessed.clear()
 
     def forget_measured(self) -> None:
         """Forget the positions measured, keeping the game's moves: the depth, the lines, the
-        time cap, the curve or the thresholds changed, and a loss compares two positions
-        measured the same way, so none measured before is set against one measured after.
-        Called from another thread (the settings' save): a search under way now finishes,
-        and is handed to its caller, but is not kept."""
+        curve or the thresholds changed, and a loss compares two positions measured the same
+        way, so none measured before is set against one measured after. Called from another
+        thread (the settings' save): a search under way now finishes, and is handed to its
+        caller, but is not kept."""
         self._era += 1
         self._cache.clear()
         self._verdict_cache.clear()
-        self._ahead.clear()
         self.computed.clear()
 
-    def look_ahead(self, board: chess.Board) -> Measured:
-        """A position the game may reach, measured whole before it does, as the game's own
-        positions are, and cached with them. Inside `Engine.interruptible` a search stopped
-        raises `Interrupted`, and nothing is cached."""
-        cached = self._cache.get(cache_key(board))
-        if cached is not None:
-            return cached
-        measured = self.measure(board)
-        if measured.key in self._cache:
-            self._ahead.add(measured.key)
-        return measured
+    @property
+    def era(self) -> int:
+        """How many times what was measured has been forgotten (`forget_measured`)."""
+        return self._era
 
-    def _cached(self, board: chess.Board) -> Measured | None:
-        """The position measured whole, counting a position measured ahead reached. A
-        position adopted without a key (`adopt`) is found by its FEN."""
-        key = cache_key(board)
-        measured = self._cache.get(key)
-        if measured is None:
-            measured = self._cache.get(board.fen())
-        if measured is not None and key in self._ahead:
-            self._ahead.discard(key)
-            self.ahead_hits += 1
-        return measured
+    # ---- the searches ---------------------------------------------------------------------
 
-    def measure_for_verdict(self, board: chess.Board) -> Measured:
-        """The position measured for a verdict: whole if it already is, else its best
-        line alone at the full depth -- what `eval_loss` needs, at a fraction of the
-        cost. When the engine is behind a fast game, this is all a stale ply gets
-        (2026-09-22: a queen ending played at two seconds a move ran the analyser forty
-        plies behind, and every word on a move came after the board had moved on)."""
-        key = cache_key(board)
-        whole = self._cached(board)
+    def best_line(
+        self,
+        board: chess.Board,
+        *,
+        engine: Engine | None = None,
+        on_depth: Callable[[list[Line]], None] | None = None,
+    ) -> Measured:
+        """The position's best line: one line to the full depth, carried on to its point (the
+        coach reads the line for it). What a verdict reads of a position, and a candidate's
+        value for the position before it. A finished position has no line; a position with one
+        legal move has that move's line, from its own position's search -- the move needs no
+        search to be chosen (the slowest one-line search of 8,886 was such a position: 10.6 s).
+        Cached; `on_depth` is handed each depth the search finishes on its way."""
+        whole = self._cached_quietly(board)
         if whole is not None:
             return whole
-        thin = self._verdict_cache.get(key)
-        if thin is not None:
-            return thin
+        key = cache_key(board)
+        known = self._verdict_cache.get(key)
+        if known is not None:
+            return known
         era = self._era
-        lines = self.engine.analyse(board, depth=self.depth, multipv=1)
-        thin = Measured(
+        legal = list(board.legal_moves)
+        if terminal_expected_score(board) is not None or not legal:
+            lines: list[Line] = []
+        elif len(legal) == 1:
+            child = board.copy()
+            child.push(legal[0])
+            lines = [self.candidate_line(board, legal[0], self.best_line(child, engine=engine))]
+        else:
+            lines = (engine or self.engine).analyse(
+                board, depth=self.depth, multipv=1, carry_best=True, on_depth=on_depth
+            )
+        measured = Measured(
             fen=board.fen(),
             lines=lines,
             score=position_score(board, lines),
@@ -218,81 +222,82 @@ class GameAnnotator:
         )
         if era == self._era:  # not searched the old way (`forget_measured`)
             self.computed.add(board, lines, thin=True)
-            self._verdict_cache[key] = thin
-        return thin
-
-    def measure(
-        self,
-        board: chess.Board,
-        *,
-        on_depth: Callable[[list[Line]], None] | None = None,
-    ) -> Measured:
-        """The position whole, at the full depth: the candidates, the threats, the
-        decisive-moment and only-move calls. `on_depth`: handed the candidates of each
-        depth the search finishes on its way. A position the player is not to wait for is
-        measured early first (`measure_early`), never in place of this."""
-        cached = self._cached(board)
-        if cached is not None:
-            return cached
-        era = self._era
-        measured = self._measured(board, self.depth, on_depth=on_depth)
-        if era == self._era:  # not searched the old way (`forget_measured`)
-            self._cache[measured.key] = measured
+            self._verdict_cache[key] = measured
         return measured
 
-    def measure_early(self, board: chess.Board) -> Measured:
-        """The position whole at EARLY_DEPTH, its side searches no deeper: what the player
-        can be told while the full depth is searched. Not cached: the full depth follows."""
-        return self._measured(board, min(EARLY_DEPTH, self.depth), early=True)
+    def measure_for_verdict(self, board: chess.Board) -> Measured:
+        """What a verdict reads of a position: whole if it already is, else its best line."""
+        return self.best_line(board)
 
-    def _measured(
-        self,
-        board: chess.Board,
-        depth: int,
-        *,
-        early: bool = False,
-        on_depth: Callable[[list[Line]], None] | None = None,
-    ) -> Measured:
-        measured = self.search(board, depth=depth, early=early, on_depth=on_depth)
-        return self.with_side(board, measured, depth=depth)
-
-    def search(
-        self,
-        board: chess.Board,
-        *,
-        engine: Engine | None = None,
-        depth: int | None = None,
-        early: bool = False,
-        on_depth: Callable[[list[Line]], None] | None = None,
-    ) -> Measured:
-        """The position's own search, nothing beside it: its lines at `depth` (the full depth
-        unless told), the decisive-moment and only-move calls read from them. `engine`: the
-        one to search with (a worker's own; the annotator's unless told). Each depth from the
-        first usable one is kept for any reader as the search finishes it (`computed`), and
-        handed to `on_depth`."""
-        engine = engine or self.engine
-        depth = depth or self.depth
-        usable = min(EARLY_DEPTH, depth)
+    def hint_lines(self, board: chess.Board, *, engine: Engine | None = None) -> list[Line]:
+        """The position's candidates at EARLY_DEPTH: `multipv` lines, the first answer to a
+        hint and the moves whose positions the full depth then searches (`candidates`). None
+        for a position with one legal move or none: its best line says all there is."""
+        if terminal_expected_score(board) is not None or board.legal_moves.count() < 2:
+            return []
         era = self._era
-
-        def finished(found: list[Line]) -> None:
-            """A depth done: kept from the first usable one, and handed on."""
-            if found and found[0].depth >= usable and era == self._era:
-                self.computed.add(board, found)
-            if on_depth is not None:
-                on_depth(found)
-
-        lines = engine.analyse(
-            board,
-            depth=depth,
-            multipv=self.multipv,
-            # The best line carried on to its point costs seconds; the full depth does it.
-            carry_best=not early,
-            on_depth=finished,
+        lines = (engine or self.engine).analyse(
+            board, depth=min(EARLY_DEPTH, self.depth), multipv=self.multipv
         )
-        # Before the side searches: the lines are the news, and a reader has them now.
-        if era == self._era:
+        if era == self._era:  # not searched the old way (`forget_measured`)
             self.computed.add(board, lines)
+        return lines
+
+    def candidates(
+        self, board: chess.Board, best: Measured, hint: Sequence[Line]
+    ) -> list[chess.Move]:
+        """The moves the position is measured whole by: its best line's move first, then the
+        hint's in its order, `multipv` at most, each legal and once."""
+        out: list[chess.Move] = []
+        for line in [*best.lines[:1], *hint]:
+            move = _first_move(line)
+            if move is not None and move in board.legal_moves and move not in out:
+                out.append(move)
+            if len(out) == self.multipv:
+                break
+        return out
+
+    def candidate_line(self, board: chess.Board, move: chess.Move, child: Measured) -> Line:
+        """`move`'s line for the side to move in `board`, from its own position's search
+        (`child`, measured for the side to move there): the move, then the child's best line;
+        every score turned to this side -- the expected score and the win-draw-loss mirrored,
+        the centipawns negated, a mate the child's side gives a mate this side takes, and the
+        reverse a move longer. A finished child is scored as it stands."""
+        after = board.copy()
+        after.push(move)
+        finished = terminal_expected_score(after)
+        line = child.lines[0] if child.lines else None
+        if finished is not None or line is None:
+            score = 1.0 - (finished if finished is not None else child.score)
+            mate = 1 if after.is_checkmate() else None
+            return Line(moves=[move.uci()], depth=self.depth, expected_score=score, mate=mate)
+        mate = None
+        if line.mate is not None:
+            mate = -line.mate if line.mate > 0 else abs(line.mate) + 1
+        return Line(
+            moves=[move.uci(), *line.moves],
+            depth=line.depth,
+            expected_score=1.0 - line.expected_score,
+            score_cp=-line.score_cp if line.score_cp is not None else None,
+            mate=mate,
+            wdl=(line.wdl[2], line.wdl[1], line.wdl[0]) if line.wdl is not None else None,
+        )
+
+    def whole(
+        self,
+        board: chess.Board,
+        best: Measured,
+        children: Sequence[tuple[chess.Move, Measured]],
+    ) -> Measured:
+        """The position whole from its candidates' own searches: their lines best first (the
+        best line's own moves kept for the move they share, carried on to its point), the
+        decisive-moment and only-move calls read from them. No side searches (`with_side`)."""
+        lines = [self.candidate_line(board, move, child) for move, child in children]
+        lines.sort(key=lambda line: -line.expected_score)  # stable: the hint's order on ties
+        if lines and best.lines and best.lines[0].moves[:1] == lines[0].moves[:1]:
+            lines[0] = lines[0].model_copy(update={"moves": best.lines[0].moves})
+        if not lines:
+            lines = list(best.lines)
         return Measured(
             fen=board.fen(),
             lines=lines,
@@ -302,22 +307,42 @@ class GameAnnotator:
             key=cache_key(board),
         )
 
+    def measure(self, board: chess.Board) -> Measured:
+        """The position whole, at the full depth: its best line, its candidates' own searches
+        and its side searches (the module's docstring). Cached, as every search under it."""
+        cached = self._cached_quietly(board)
+        if cached is not None:
+            return cached
+        key = cache_key(board)
+        era = self._era
+        best = self.best_line(board)
+        hint = self.hint_lines(board)
+        children = []
+        for move in self.candidates(board, best, hint):
+            child = board.copy()
+            child.push(move)
+            children.append((move, self.best_line(child)))
+        measured = self.with_side(board, self.whole(board, best, children))
+        if era == self._era:  # not searched the old way (`forget_measured`)
+            self.computed.add(board, measured.lines)
+            self._cache[key] = measured
+        return measured
+
     def with_side(
         self,
         board: chess.Board,
         measured: Measured,
         *,
         engine: Engine | None = None,
-        depth: int | None = None,
     ) -> Measured:
         """`measured` with its side searches: what the coach's words on the position are made
         of (the threats, the traps, the declined recaptures, what a quiet best move
         threatens). The position's own lines are what they search from; none of them is a
         search of the position again. Nothing when the annotator searches no threats."""
-        if not self.with_threats:
+        if not self.with_threats or terminal_expected_score(board) is not None:
             return measured
         engine = engine or self.engine
-        depth = depth or self.depth
+        depth = self.depth
         lines = measured.lines
         return replace(
             measured,
@@ -332,28 +357,15 @@ class GameAnnotator:
             threatens=aim_lines(engine, board, lines, depth=min(AIM_DEPTH, depth)),
         )
 
+    # ---- what the readers get ---------------------------------------------------------------
+
     def analysis_event(
-        self,
-        game_id: str,
-        board: chess.Board,
-        ply: int,
-        *,
-        thin: bool = False,
-        early: bool = False,
-        on_depth: Callable[[list[Line]], None] | None = None,
+        self, game_id: str, board: chess.Board, ply: int, *, thin: bool = False
     ) -> Analysis:
-        """What the position holds, for the side to move. `thin`: only what the verdict
-        already measured (the best line; no threats, no decisive call) -- the analysis
-        of a position the game has left, so the coach still has the facts of the
-        position each move was played from and the review has its score. `early`: at
-        EARLY_DEPTH (`measure_early`), a provisional analysis the full depth follows."""
-        if early:
-            measured = self.measure_early(board)
-        elif thin:
-            measured = self.measure_for_verdict(board)
-        else:
-            measured = self.measure(board, on_depth=on_depth)
-        return self.analysis_from(game_id, board, ply, measured, provisional=early)
+        """What the position holds, for the side to move. `thin`: only its best line (no
+        candidates, no threats, no decisive call) -- what a verdict measured."""
+        measured = self.measure_for_verdict(board) if thin else self.measure(board)
+        return self.analysis_from(game_id, board, ply, measured)
 
     def analysis_from(
         self,
@@ -365,8 +377,8 @@ class GameAnnotator:
         provisional: bool = False,
     ) -> Analysis:
         """What `measured` says of `board`, for the side to move: the event the readers get.
-        `provisional`: a depth on the way to the full one, or the full one before its side
-        searches -- what follows replaces it."""
+        `provisional`: the first answer (the best line, the candidates at EARLY_DEPTH), the
+        whole to follow and replace it."""
         return Analysis(
             game_id=game_id,
             fen=measured.fen,
@@ -384,8 +396,16 @@ class GameAnnotator:
             provisional=provisional,
         )
 
-    def measured_lines(self, board: chess.Board, lines: list[Line]) -> Measured:
-        """`lines` of `board` as a measurement: the calls they make (a depth on the way)."""
+    def first_answer(
+        self, board: chess.Board, best: Measured | None, hint: Sequence[Line]
+    ) -> Measured:
+        """The position's first answer, before its candidates are searched: the best line to
+        the full depth when it is in, ahead of the hint's other moves at EARLY_DEPTH (each
+        line carries its depth); the calls read from them."""
+        lines = list(best.lines[:1]) if best is not None else []
+        shown = {line.moves[0] for line in lines if line.moves}
+        lines += [line for line in hint if line.moves and line.moves[0] not in shown]
+        lines = lines[: self.multipv]
         return Measured(
             fen=board.fen(),
             lines=lines,
@@ -395,28 +415,19 @@ class GameAnnotator:
             key=cache_key(board),
         )
 
-    def deepened(self, early: Analysis, board: chess.Board, lines: list[Line]) -> Analysis:
-        """The early analysis of `board` with the lines of a deeper depth: its candidates,
-        the decisive-moment and only-move calls and the pattern read from them again; its
-        threats, traps and defences the early depth's, until the full depth brings its own."""
-        measured = Measured(
-            fen=early.fen,
+    def measured_lines(self, board: chess.Board, lines: list[Line]) -> Measured:
+        """`lines` of `board` as a measurement: the calls they make."""
+        return Measured(
+            fen=board.fen(),
             lines=lines,
             score=position_score(board, lines),
             decisive=is_decisive(board, lines, self.thresholds),
             only_move=is_only_move(board, lines, self.thresholds),
-        )
-        return early.model_copy(
-            update={
-                "lines": lines,
-                "decisive": measured.decisive,
-                "only_move": measured.only_move,
-                "tags": self._position_tags(board, measured),
-            }
+            key=cache_key(board),
         )
 
     def measured(self, board: chess.Board) -> bool:
-        """Whether the position is measured whole already (the game's own, or ahead of it)."""
+        """Whether the position is measured whole already."""
         return self._cached_quietly(board) is not None
 
     def adopt(self, measured: Iterable[Measured]) -> None:
@@ -427,7 +438,7 @@ class GameAnnotator:
             self._cache[m.key or m.fen] = m
 
     def _cached_quietly(self, board: chess.Board) -> Measured | None:
-        """`_cached` without counting a position measured ahead as reached."""
+        """The position measured whole, by its key or (adopted without one) its FEN."""
         return self._cache.get(cache_key(board)) or self._cache.get(board.fen())
 
     def assess(
@@ -620,6 +631,12 @@ def own_line(lines: Sequence[Line], move: chess.Move) -> Line | None:
     """The line among `lines` that begins with `move`, or None."""
     uci = move.uci()
     return next((line for line in lines if line.moves and line.moves[0] == uci), None)
+
+
+def _first_move(line: Line) -> chess.Move | None:
+    """A line's first move, or None for a line with none or one that does not parse."""
+    moves = _moves(line)
+    return moves[0] if moves else None
 
 
 def _moves(line: Line) -> list[chess.Move]:

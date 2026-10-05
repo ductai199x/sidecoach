@@ -18,14 +18,16 @@ from sidecoach.analysis.score import game_over
 from sidecoach.events import Line
 from sidecoach.llm.base import ChatMessage, Completion
 
-# What a quiet position gets from the fake engine when the test gave it nothing to say.
+# What a quiet position gets from the fake engine when the test gave it nothing to say: a
+# level line, its move the position's first legal one (`FakeEngine.analyse`).
 QUIET = [Line(moves=["a2a3"], depth=1, expected_score=0.5)]
 
 
 class FakeEngine(Engine):
-    """An engine that answers from a script: the lines for a position's FEN, else `default`,
-    and nothing for a finished game. It remembers every position it was asked about, with
-    the depth and the number of lines asked for, and never starts a process."""
+    """An engine that answers from a script: the lines for a position's FEN, else `default`
+    (QUIET: the position's first legal move, level), as many as asked for, and nothing for a
+    finished game. It remembers every position it was asked about, with the depth and the
+    number of lines asked for, and never starts a process."""
 
     def __init__(
         self, answers: dict[str, list[Line]] | None = None, *, default: list[Line] = QUIET
@@ -46,13 +48,44 @@ class FakeEngine(Engine):
         self.multipvs.append(int(kwargs.get("multipv") or 1))
         if game_over(board):
             return []
-        return self.answers.get(board.fen(), self.default)
+        lines = self.answers.get(board.fen(), self.default)
+        if lines is QUIET:
+            # A line the position can play: a search of the position after its move (a
+            # candidate's own) reads on from it.
+            first = min(board.legal_moves, key=lambda move: move.uci())
+            lines = [QUIET[0].model_copy(update={"moves": [first.uci()]})]
+        multipv = kwargs.get("multipv")
+        return lines[:multipv] if multipv else lines
 
     def open(self) -> None:  # never starts a process
         return
 
     def close(self) -> None:
         return
+
+
+def scripted(board: chess.Board, lines: Sequence[Line]) -> dict[str, list[Line]]:
+    """A fake engine's answers that measure `board` whole as `lines`: the position's own (its
+    best line and its hint) and each line's first move's position's, the rest of the line from
+    there -- the search a candidate's own position gets (`GameAnnotator.candidate_line`, read
+    backwards)."""
+    out = {board.fen(): list(lines)}
+    for line in lines:
+        child = board.copy()
+        child.push_uci(line.moves[0])
+        mate = None
+        if line.mate is not None:
+            mate = -(line.mate - 1) if line.mate > 0 else -line.mate
+        out[child.fen()] = [
+            Line(
+                moves=line.moves[1:],
+                depth=line.depth,
+                expected_score=1.0 - line.expected_score,
+                score_cp=-line.score_cp if line.score_cp is not None else None,
+                mate=mate or None,
+            )
+        ]
+    return out
 
 
 class GatedEngine(FakeEngine):

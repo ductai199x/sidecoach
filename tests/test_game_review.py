@@ -20,7 +20,7 @@ from sidecoach.analysis.game_review import (
 )
 from sidecoach.analysis.score import Thresholds
 from sidecoach.events import Line, ReviewedGame, Side
-from tests.fakes import FakeEngine
+from tests.fakes import FakeEngine, scripted
 
 PGN = """[Event "Live Chess"]
 [TimeControl "600+5"]
@@ -43,10 +43,11 @@ def _answers(game: chess.pgn.Game) -> dict[str, list[Line]]:
     for i, board in enumerate(positions(game)):
         legal = sorted(m.uci() for m in board.legal_moves)
         if legal:
-            out[board.fen()] = [
+            lines = [
                 Line(moves=[legal[0]], depth=18, expected_score=0.5 + 0.01 * (i % 3)),
                 Line(moves=[legal[-1]], depth=18, expected_score=0.45),
             ]
+            out |= scripted(board, lines)
     return out
 
 

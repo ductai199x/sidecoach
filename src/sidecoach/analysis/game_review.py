@@ -25,7 +25,14 @@ import chess
 import chess.pgn
 from pydantic import TypeAdapter
 
-from sidecoach.analysis.annotator import Book, GameAnnotator, Measured, Tagger, opening_name
+from sidecoach.analysis.annotator import (
+    Book,
+    GameAnnotator,
+    Measured,
+    Tagger,
+    cache_key,
+    opening_name,
+)
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.score import Previous, Thresholds, position_score, verdict
 from sidecoach.events import ReviewedGame, ReviewedMove, Side
@@ -97,12 +104,16 @@ def measure_all(
     known: dict[str, Measured] | None = None,
     on_measured: Callable[[Measured], None] | None = None,
 ) -> list[Measured]:
-    """Every position measured whole, each engine taking the next position left, in the
-    game's order so a caller's progress reads from the first move. A search that fails ends
-    its engine's share; the others finish the rest, and the walk searches whatever is left.
-    `known`: positions measured before (by FEN; a review that was stopped part way), not
-    searched again and counted as done from the start; `on_measured` is handed each position
-    as it is measured, to keep it."""
+    """Every position measured whole (`annotator`'s docstring), each engine taking the game's
+    next position left and finishing it -- its best line, its candidates at EARLY_DEPTH, each
+    candidate's own position, its side searches -- in the game's order, so a caller's progress
+    reads from the first move and a review stopped part way keeps every position it finished.
+    A best line is searched once for the review: the game's next position is mostly a candidate
+    of the one before, and an engine wanting one another is searching waits for it. A search
+    that fails ends its engine's share; the others finish the rest, and the walk searches
+    whatever is left. `known`: positions measured whole before (by FEN: a review stopped part
+    way, or the live game's own), searched no more and counted done; `on_measured` is handed
+    each position as it is measured whole, to keep it."""
     known = known or {}
     todo: queue.SimpleQueue[chess.Board] = queue.SimpleQueue()
     found: list[Measured] = []
@@ -113,7 +124,44 @@ def measure_all(
             todo.put(board)
     if found and on_progress is not None:
         on_progress(len(found), len(boards))
-    lock = threading.Lock()
+    cond = threading.Condition()
+    best: dict[str, Measured] = {}
+    searching: set[str] = set()  # the best lines an engine is on
+
+    def best_of(annotator: GameAnnotator, board: chess.Board) -> Measured:
+        """`board`'s best line: known, found, waited for, or searched here."""
+        whole = known.get(board.fen())
+        if whole is not None:
+            return whole
+        key = cache_key(board)
+        with cond:
+            while key in searching:
+                cond.wait()
+            if key in best:
+                return best[key]
+            searching.add(key)
+        try:
+            line = annotator.best_line(board)
+        except BaseException:
+            with cond:  # a waiter searches it itself
+                searching.discard(key)
+                cond.notify_all()
+            raise
+        with cond:
+            best[key] = line
+            searching.discard(key)
+            cond.notify_all()
+        return line
+
+    def measure(annotator: GameAnnotator, board: chess.Board) -> Measured:
+        first = best_of(annotator, board)
+        hint = annotator.hint_lines(board)
+        children = []
+        for move in annotator.candidates(board, first, hint):
+            child = board.copy()
+            child.push(move)
+            children.append((move, best_of(annotator, child)))
+        return annotator.with_side(board, annotator.whole(board, first, children))
 
     def work(engine: Engine) -> None:
         annotator = GameAnnotator(
@@ -125,14 +173,14 @@ def measure_all(
             except queue.Empty:
                 return
             try:
-                measured = annotator.measure(board)
+                measured = measure(annotator, board)
             except Exception:  # noqa: BLE001 - the walk measures what is missing itself
                 return
             if on_measured is not None:
                 # Not kept is only a resume the slower.
                 with contextlib.suppress(Exception):
                     on_measured(measured)
-            with lock:
+            with cond:
                 found.append(measured)
                 done = len(found)
             if on_progress is not None:

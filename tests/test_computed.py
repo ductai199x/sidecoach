@@ -8,8 +8,6 @@ line the model was shown is read from that line.
 
 from __future__ import annotations
 
-from typing import Any
-
 import chess
 
 from sidecoach.analysis.annotator import EARLY_DEPTH, GameAnnotator
@@ -22,7 +20,7 @@ from sidecoach.analysis.computed import (
 )
 from sidecoach.coach.engine_tools import EngineTools
 from sidecoach.events import Line
-from tests.fakes import FakeEngine
+from tests.fakes import FakeEngine, GatedEngine
 
 START = chess.Board()
 LINES = [
@@ -188,37 +186,19 @@ def test_the_sheets_line_wins_over_a_separate_search_of_the_position_after_it() 
     assert "1... e5 2. Nf3 Nc6" in out and "c5" not in out.split("On the board there")[0]
 
 
-class _Streaming(FakeEngine):
-    """An engine that hands each depth on as it finishes it, and notes what a reader had
-    of the position at each."""
-
-    def __init__(self, annotator_of: list[GameAnnotator]) -> None:
-        super().__init__({})
-        self.annotator_of = annotator_of
-        self.read: list[int] = []
-
-    def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
-        super().analyse(board, **kwargs)
-        computed = self.annotator_of[0].computed
-        on_depth = kwargs.get("on_depth")
-        for depth in (EARLY_DEPTH - 2, EARLY_DEPTH, EARLY_DEPTH + 2):
-            if on_depth is not None:
-                on_depth([Line(moves=["e2e4"], depth=depth, expected_score=0.5)])
-            known = computed.lines(board)
-            self.read.append(known[0].depth if known else 0)
-        return [Line(moves=["e2e4"], depth=18, expected_score=0.5)]
-
-
-def test_the_analyser_puts_in_each_usable_depth_as_it_finishes_it() -> None:
-    """A reader gets the newest depth from the first usable one (Tai, 2026-09-28: "if the
+def test_a_reader_gets_the_first_usable_lines_and_then_the_full_depth() -> None:
+    """A reader gets what is there from the first usable answer on (Tai, 2026-09-28: "if the
     consumers read after stockfish reaches depth > 12 then they will get whatever lines that
-    is available at the time"); a verdict's line counts too, and a new game forgets them."""
-    holder: list[GameAnnotator] = []
-    engine = _Streaming(holder)
+    is available at the time"): the best line as its search ends, the hint's lines at
+    EARLY_DEPTH, then the position whole; a verdict's line counts too, and a new game
+    forgets them."""
+    engine = GatedEngine({})  # its lines at the depth asked for
     annotator = GameAnnotator(engine=engine, depth=18, with_threats=False)
-    holder.append(annotator)
+    best = annotator.best_line(START)
+    assert annotator.computed.lines(START) == best.lines
+    hint = annotator.hint_lines(START)
+    assert annotator.computed.lines(START) == hint and hint[0].depth == EARLY_DEPTH
     annotator.measure(START)
-    assert engine.read == [0, EARLY_DEPTH, EARLY_DEPTH + 2]
     assert annotator.computed.lines(START)[0].depth == 18
     after_e4 = _after("e4")
     annotator.measure_for_verdict(after_e4)

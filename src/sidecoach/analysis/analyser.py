@@ -1,107 +1,100 @@
-"""The engine service for a game followed live: every position searched once, on a pool of
-single-thread Stockfish workers, and nothing searched that will not be read.
+"""The engine service for a game followed live: every position measured once, on a pool of
+single-thread Stockfish workers, by one-line searches only (`annotator`'s docstring).
 
-The engine audit of 2026-10-04 (a replay of a 38-minute session) found the one-engine analyser
-searching 258 of 624 positions two to six times, throwing away 211 s of searching by
-interrupting it, and searching again from depth 1 the very positions its look-ahead had been
-searching when the game reached them; and four threads costing 7.7 times the processor time of
-one for the same depth-18 answer (Tai, 2026-10-04: "a lot of work is duplicated, interrupted,
-and some are just discarded ... the code is not very smart about all of it").
+What the measurements decided (tools/engine/, the engine audit of 2026-10-04/05):
+- one thread a search: more threads never answered a fixed depth sooner, at up to 17 times
+  the processor time;
+- one line a search: several lines to depth 18 explode on decided and forcing positions (up
+  to 53 s), one line does not (p50 0.19 s, p99 1.1 s);
+- no look-ahead beyond a position's candidates: with searches this cheap, searching further
+  ahead bought hundredths of a second and threw away a third of its work. The candidates --
+  each of the position's best moves searched as its own position -- are the positions the
+  game goes to next.
 
-So, here:
+A game position is measured in stages, each told to the readers as it comes, the next
+replacing it: its best line and its candidates at EARLY_DEPTH (the first answer, at once);
+its candidates at the full depth (the whole position, provisional); its side searches (final).
 
-- A position is a node, by its cache key (the FEN and the moves a repetition could reach back
-  over). Its search is the canonical one -- the full depth, every line, one thread -- made
-  once; every depth it finishes is a reader's at once (the first usable one is depth 12 of that
-  same search, not a search of its own).
-- The game's positions are its path. While the player thinks, the workers search ahead: the
-  best moves from the position on the board, the best reply to each, and so on to
-  `look_ahead` plies (Tai, 2026-09-27; 2026-10-04: "we absolutely need look-ahead").
-- A position searched ahead that the game reaches is promoted: its search, done or under way,
-  becomes the game's, never begun again. A search is stopped only when its position is on no
-  path any more: off the game and out of the look-ahead, nothing will read it.
-- One worker is kept for the game's own positions, so a position the game reaches never waits
-  behind the look-ahead and never stops it.
-- A move is judged from the position before's lines when it is among them (85% of moves), from
-  the position after's search otherwise -- which is the game's next position, searched anyway.
-- The side searches (threats, traps, declined recaptures, what a quiet move threatens) are
-  made for the game's positions, once their own search is done; a position searched ahead gets
-  them when the game reaches it.
+The workers take, first to last: what the next verdict needs (the position a move was played
+from, whole; the position it led to, its best line); what the coach asks for (`request`); the
+position the game is on; the game's other positions (their review is then a search of none of
+them). A move is judged once the position it was played from is whole -- its candidates were
+searched while its mover thought -- and the position it led to has its best line, or for a
+search running past DECIDED_AFTER_S, a decided score at the deepest depth it finished (Tai,
+2026-10-05: the severities this flips are as few as two depth-18 searches' own disagreement).
+Verdicts go out in move order.
 
-Events go out as they did: an `Analysis` for each depth of a game position (provisional until
-the full depth and its side searches are in), and a `MoveAssessment` for each move, in the
-order of the moves.
+A search fails alone: what it held back is judged or told without it, never waited on.
 """
 
 from __future__ import annotations
 
-import heapq
 import logging
-import math
 import queue
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import chess
 
-from sidecoach.analysis.annotator import (
-    EARLY_DEPTH,
-    GameAnnotator,
-    Measured,
-    cache_key,
-)
+from sidecoach.analysis.annotator import GameAnnotator, Measured, cache_key, own_line
 from sidecoach.analysis.engine import Engine, Interrupted
+from sidecoach.analysis.score import position_score
 from sidecoach.events import Event, Line
 
 log = logging.getLogger(__name__)
 
-# The look-ahead searches the positions the game is likely to reach, likeliest first, while it
-# waits (Tai, 2026-10-04: "an adaptive, dynamic system that is able to maximize both comp eff and
-# the chance of catching the opponent's move"). A position's chance is the product of the chances
-# of the moves leading there. A move's chance comes from the position's own lines: a line that
-# loses `loss` of expected score against the best is played with a chance in proportion to
-# exp(-loss / T) -- a forced position puts nearly all of it on the one move, a quiet one spreads
-# it -- and T, how closely a side's moves follow the engine, is learned from this game's own moves,
-# each side's, as they are played. Nothing is trained and nothing is kept between games (Tai,
-# 2026-10-04: "move accuracy needs to be dependent on the game ... a static model ... is going to
-# drift"). A fixed width searched what was unlikely and missed what was likely: the player played
-# the engine's best 93% of the time in his puzzles and 46% in his games, and more than half the
-# look-ahead's time went to positions never reached (tools/engine/move_odds.py, simulate.py).
-#
-# Where T starts in a game, and how many moves' worth that start counts for: a little, so the
-# game's own moves decide it within a few.
-T_START = 0.05
-T_START_WEIGHT = 2.0
-T_GRID = tuple(0.005 * 1.35**i for i in range(20))  # 0.005 .. ~1.5, the values T is fitted over
-# The share of moves played outside the lines searched, at the start of a game (learned too).
-OUTSIDE_START = 0.15
-# A position is searched ahead while its chance of being reached is at least REACH, at most
-# LOOK_AHEAD plies from the board (tuned by simulation, tools/engine/simulate.py).
-REACH = 0.15
-LOOK_AHEAD = 4
-# How many workers search side by side, one thread each (Tai, 2026-10-04: three).
-WORKERS = 3
-# The positions kept, searched, for the game and for any game after it (a puzzle tried again
-# is answered at once); the oldest go past this.
+# How many workers search side by side, one thread each (the scheduling sweep: three and four
+# make the front; four keep bursts of moves under half a second).
+WORKERS = 4
+# A search still running this long whose deepest finished depth shows the position decided
+# (an expected score at most DECIDED[0] or at least DECIDED[1]) has that depth's score stand in
+# for the full depth's in a verdict (the module's docstring).
+DECIDED_AFTER_S = 1.0
+DECIDED = (0.15, 0.85)
+# The positions kept, searched, for the game and any game after it (a puzzle tried again is
+# answered at once); the oldest go past this.
 KEEP_NODES = 20000
 
-MAIN = "main"
-SIDE = "side"
+BEST = "best"  # one line to the full depth
+HINT = "hint"  # the candidates at EARLY_DEPTH
+SIDE = "side"  # the side searches of a whole position
+
+# What a ply has been told, in order; a stage told is not told again for that position.
+FIRST, FIRST_BOTH, WHOLE, FINAL = 1, 2, 3, 4
 
 
-@dataclass
+@dataclass(eq=False)
 class _Node:
     """One position: its board (with the moves that led there, which the engine reads for
     repetitions), and what has been found of it."""
 
     key: str
     board: chess.Board
-    measured: Measured | None = None  # its own search, at the full depth
-    whole: Measured | None = None  # with its side searches
-    partial: list[Line] | None = None  # the deepest depth so far, while its search runs
-    failed: bool = False
+    best: Measured | None = None
+    hint: list[Line] | None = None
+    # Its candidates, once its best line and its hint are in, and their positions' keys.
+    candidates: list[tuple[chess.Move, str]] | None = None
+    parents: set[str] = field(default_factory=set)  # the positions it is a candidate of
+    whole: Measured | None = None  # its candidates' searches, no side searches
+    final: Measured | None = None  # with its side searches
+    stand_in: Measured | None = None  # a decided score while its best line is searched
+    deepest: Line | None = None  # its best line's search: the deepest depth finished so far
+    failed: set[str] = field(default_factory=set)
+
+    @property
+    def value(self) -> Measured | None:
+        """What a verdict may read of it: its best line, or the decided stand-in."""
+        return self.best or self.stand_in
+
+    @property
+    def first_done(self) -> bool:
+        """Its best line and its hint are in (a failed one counts as in, with nothing)."""
+        return (self.best is not None or BEST in self.failed) and (
+            self.hint is not None or HINT in self.failed
+        )
 
 
 @dataclass
@@ -113,30 +106,32 @@ class _Move:
     by_user: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Job:
-    kind: str  # MAIN or SIDE
+    kind: str  # BEST, HINT or SIDE
     key: str
     era: int
 
 
+@dataclass(eq=False)
+class _Request:
+    """A position the coach asked for (`request`), and the caller waiting on it."""
+
+    key: str
+    whole: bool  # its candidates too, or its best line alone
+    done: threading.Event = field(default_factory=threading.Event)
+
+
 class Analyser:
     """A game's positions measured on a pool of workers: submit positions and moves, poll
-    events, never block. `engines`: one per worker (open or not), the first kept for the game's
-    own positions when there are several; the annotator's own engine alone when not given.
-    `look_ahead`: plies searched ahead of the game; none unless asked (a live session asks for
-    LOOK_AHEAD, `open_analyser`)."""
+    events, never block (`request` alone waits, for the coach's questions). `engines`: one per
+    worker (open or not); the annotator's own engine alone when not given."""
 
     def __init__(
-        self,
-        annotator: GameAnnotator,
-        *,
-        engines: Sequence[Engine] | None = None,
-        look_ahead: int = 0,
+        self, annotator: GameAnnotator, *, engines: Sequence[Engine] | None = None
     ) -> None:
         self.annotator = annotator
         self.engines: list[Engine] = list(engines) if engines else [annotator.engine]
-        self.look_ahead = look_ahead
         self._cond = threading.Condition()
         self._nodes: dict[str, _Node] = {}
         self._game_id: str | None = None
@@ -145,27 +140,18 @@ class Analyser:
         self._moves: dict[int, _Move] = {}
         self._current = 0
         self._next_verdict: int | None = None
-        # What each game ply has been told: its position, the deepest depth, whether whole.
-        self._told: dict[int, tuple[str, int, bool]] = {}
-        self._ahead: dict[str, tuple[float, int]] = {}  # key -> (-chance, plies on)
-        self._user: chess.Color | None = None  # the player's colour, once the game says it
-        # This game's moves, each side's (True: the player's), as what the look-ahead's chances
-        # learn from: the losses of the lines each was played among, and which it was (None: a
-        # move outside them); each side's T fitted to them (`_fit`).
-        self._played: dict[bool, list[tuple[tuple[float, ...], int | None]]] = {True: [], False: []}
-        self._t: dict[bool, float] = {True: T_START, False: T_START}
-        self.reach = REACH
+        self._told: dict[int, tuple[str, int]] = {}  # ply -> (position, stage told)
+        self._requests: list[_Request] = []
         self._running: dict[int, _Job] = {}  # by worker: the job a stop can reach
         self._claimed: dict[int, _Job] = {}  # by worker: the job it took, running or about to
         self._era = 0
         self._results: queue.SimpleQueue[Event] = queue.SimpleQueue()
         self._threads: list[threading.Thread] = []
         self._closed = False
-        # What it did, for the logs and the replay's measure.
-        self.searches = 0  # positions searched to the full depth
+        # What it did, for the logs and the measures.
+        self.searches = 0  # one-line searches to the full depth
+        self.hints = 0
         self.side_searches = 0
-        self.looked = 0  # positions searched ahead of the game
-        self.ahead_hits = 0  # of them, reached by the game
         self.stopped = 0  # searches let go because nothing would read them
         self.withdrawn = 0
         self.failures = 0
@@ -198,6 +184,9 @@ class Analyser:
             self._closed = True
             for index in list(self._running):
                 self.engines[index].interrupt()
+            for request in self._requests:
+                request.done.set()  # the coach waits no more: it has what is known
+            self._requests.clear()
             self._cond.notify_all()
         for thread in self._threads:
             thread.join(timeout)
@@ -207,10 +196,10 @@ class Analyser:
 
     @property
     def pending(self) -> int:
-        """What is still owed to the game: its positions not measured whole, and its moves not
-        judged. The look-ahead owes nothing."""
+        """What is still owed to the game: its positions not told all they will be, and its
+        moves not judged."""
         with self._cond:
-            owed = sum(1 for key in self._path.values() if not self._whole_told(key))
+            owed = sum(1 for ply, key in self._path.items() if not self._settled(ply, key))
             if self._next_verdict is not None:
                 owed += sum(1 for ply in self._moves if ply >= self._next_verdict)
             return owed
@@ -223,24 +212,17 @@ class Analyser:
             except queue.Empty:
                 return out
 
-    def submit_position(
-        self, game_id: str, board: chess.Board, ply: int, *, user: chess.Color | None = None
-    ) -> None:
-        """A position the game stands on with no move to it: its start, or a resync. `user`:
-        the player's colour, when the game says it (the look-ahead's widths follow it)."""
+    def submit_position(self, game_id: str, board: chess.Board, ply: int) -> None:
+        """A position the game stands on with no move to it: its start, or a resync."""
         with self._cond:
-            if self._game_id != game_id:
-                self._new_game(game_id)
-            if user is not None:
-                self._user = user
+            self._game_id = game_id
             key = self._node(board).key
             self._set_path(ply, key)
             self._current = ply
             # Told again: a position submitted is one the player faces anew (a takeback to the
             # start, a re-read), whatever was told of it before.
             self._told.pop(ply, None)
-            self._reached(key, ply)
-            self._reframe()
+            self._tell(ply)
             self._cond.notify_all()
 
     def submit_move(
@@ -253,24 +235,18 @@ class Analyser:
         by_user: bool = True,
     ) -> None:
         with self._cond:
-            if self._game_id != game_id:
-                self._new_game(game_id)
+            self._game_id = game_id
             if move not in before.legal_moves:
-                self.last_error = f"{move.uci()} is not legal in {before.fen()}"
                 self.failures += 1
+                self.last_error = f"{move.uci()} is not legal in {before.fen()}"
                 return
-            # Whose move it was says the player's colour, every move.
-            self._user = before.turn if by_user else not before.turn
             source = self._node(before.copy())
             if self._path.get(ply - 1) != source.key:
                 self._set_path(ply - 1, source.key)
-                self._reached(source.key, ply - 1)
+                self._tell(ply - 1)
             after = before.copy()
             after.push(move)
             target = self._node(after)
-            if target.key in self._ahead:
-                self.ahead_hits += 1
-                self.annotator.ahead_hits += 1
             self._set_path(ply, target.key)
             self._moves[ply] = _Move(ply, source.key, target.key, move, by_user)
             if self._next_verdict is None or ply < self._next_verdict:
@@ -278,14 +254,13 @@ class Analyser:
             self._current = ply
             # The verdict first: the word on the move is the news, the position after it next.
             self._judge()
-            self._reached(target.key, ply)
-            self._reframe()
+            self._tell(ply)
+            self._stop_unwanted()
             self._cond.notify_all()
 
     def withdraw(self, game_id: str, ply: int) -> None:
         """The game's moves after `ply` taken back: nothing more is said of them, and a search
-        made only for them stops -- unless the look-ahead from the position taken back to
-        wants it, which it often does (the move taken back was a likely one)."""
+        made only for them stops."""
         with self._cond:
             if game_id != self._game_id:
                 return
@@ -303,37 +278,63 @@ class Analyser:
             if not self._moves:
                 self._next_verdict = None
             self._current = ply
-            self._reframe()
+            self._stop_unwanted()
             self._cond.notify_all()
 
     def reset(self) -> None:
-        """A new game, or the board re-read: the game's path and look-ahead let go, and what
-        is under way stops; what was measured is kept, for a position seen again."""
+        """A new game, or the board re-read: the game's path let go, and what is under way for
+        it stops; what was measured is kept, for a position seen again."""
         with self._cond:
             self._game_id = None
             self._path.clear()
             self._ply_of.clear()
             self._moves.clear()
             self._told.clear()
-            self._ahead.clear()
             self._next_verdict = None
             self._current = 0
+            for node in self._nodes.values():
+                node.failed.clear()  # a search that failed is tried again for a new game
             self._stop_unwanted()
             self.annotator.reset()
             self._cond.notify_all()
 
+    def request(
+        self, board: chess.Board, *, whole: bool = True, timeout: float | None = None
+    ) -> Measured | None:
+        """The coach's question on a position (a move it or the player asks about, a position
+        its words are about): the position whole -- its candidates at the full depth -- or its
+        best line alone, waited for. Taken after the verdicts and before the game's own work.
+        What is known by `timeout`, or when the analyser closes, is the answer then (None for
+        nothing); asked again, what is in comes at once."""
+        with self._cond:
+            key = cache_key(board)
+            if self._closed:
+                return self._answer(key, whole)
+            node = self._node(board)
+            if self._answered(node, whole):
+                return self._answer(key, whole)
+            request = _Request(key, whole)
+            self._requests.append(request)
+            self._cond.notify_all()
+        request.done.wait(timeout)
+        with self._cond:
+            if request in self._requests:
+                self._requests.remove(request)  # given up: nothing more is searched for it
+                self._stop_unwanted()
+            return self._answer(key, whole)
+
     def measured_path(self, game_id: str) -> list[Measured]:
-        """The game's positions measured whole -- their own search and their side searches --
-        in the order of the game: what its review need not search again (`_Assessing.
-        keep_for_review`). Nothing for a game this is not on."""
+        """The game's positions measured whole with their side searches, in the order of the
+        game: what its review need not search again (`_Assessing.keep_for_review`). Nothing
+        for a game this is not on."""
         with self._cond:
             if game_id != self._game_id:
                 return []
             out = []
             for ply in sorted(self._path):
                 node = self._nodes.get(self._path[ply])
-                if node is not None and node.whole is not None:
-                    out.append(node.whole)
+                if node is not None and node.final is not None:
+                    out.append(node.final)
             return out
 
     def forget_measured(self) -> None:
@@ -341,34 +342,25 @@ class Analyser:
         search under way is not kept (`GameAnnotator.forget_measured`)."""
         with self._cond:
             self._era += 1
-            self._nodes = {
-                k: _Node(k, n.board) for k, n in self._nodes.items() if k in self._ply_of
-            }
-            self._told = {p: (k, 0, False) for p, (k, _, _) in self._told.items()}
+            # The game's positions and the coach's are kept, unmeasured; the rest go.
+            kept = set(self._ply_of) | {r.key for r in self._requests}
+            self._nodes = {k: _Node(k, n.board) for k, n in self._nodes.items() if k in kept}
+            self._told = {}
             for index in list(self._running):
                 self.engines[index].interrupt()
             self.annotator.forget_measured()
             self._cond.notify_all()
 
-    # ---- the graph ----------------------------------------------------------------------
+    def reconfigure(self, **options: Any) -> None:
+        """Hash, the lines' length or the scoring saved mid-session: on every worker's engine."""
+        for engine in self._unique_engines():
+            for name, value in options.items():
+                if name == "hash_mb":
+                    engine.reconfigure(hash_mb=value)
+                else:
+                    setattr(engine, name, value)
 
-    def _new_game(self, game_id: str) -> None:
-        """Another game: what the look-ahead learned of how its sides play starts over."""
-        self._game_id = game_id
-        self._played = {True: [], False: []}
-        self._t = {True: T_START, False: T_START}
-
-    def _set_path(self, ply: int, key: str) -> None:
-        """The game's position at `ply` is `key`: the one it held before, if another, is no
-        longer the game's -- nothing more is told of it at this ply, and its search stops unless
-        the look-ahead wants it."""
-        old = self._path.get(ply)
-        if old is not None and old != key:
-            if self._ply_of.get(old) == ply:
-                del self._ply_of[old]
-            self._told.pop(ply, None)
-        self._path[ply] = key
-        self._ply_of[key] = ply
+    # ---- the positions --------------------------------------------------------------------
 
     def _node(self, board: chess.Board) -> _Node:
         key = cache_key(board)
@@ -380,145 +372,115 @@ class Analyser:
         return node
 
     def _forget_oldest(self) -> None:
-        keep = set(self._path.values()) | set(self._ahead) | {j.key for j in self._claimed.values()}
+        """The oldest tenth of the positions let go, but for the game's, the coach's, those
+        a worker is on, and their candidates (read as they are: choosing them makes nodes)."""
+        roots = [
+            *self._path.values(),
+            *(r.key for r in self._requests),
+            *(j.key for j in self._claimed.values()),
+        ]
+        keep = set(roots)
+        for key in roots:
+            node = self._nodes.get(key)
+            if node is not None:
+                keep.update(child for _, child in node.candidates or [])
         for key in list(self._nodes)[: KEEP_NODES // 10]:
             if key not in keep:
-                del self._nodes[key]
+                node = self._nodes.pop(key)
+                for _, child in node.candidates or []:
+                    if child in self._nodes:
+                        self._nodes[child].parents.discard(key)
 
-    def _alive(self, key: str) -> bool:
-        return key in self._ply_of or key in self._ahead
+    def _set_path(self, ply: int, key: str) -> None:
+        """The game's position at `ply` is `key`: the one it held before, if another, is no
+        longer the game's -- nothing more is told of it at this ply."""
+        old = self._path.get(ply)
+        if old is not None and old != key:
+            if self._ply_of.get(old) == ply:
+                del self._ply_of[old]
+            self._told.pop(ply, None)
+        self._path[ply] = key
+        self._ply_of[key] = ply
 
-    def _reframe(self) -> None:
-        """The look-ahead from the position the game is on: the positions whose chance of being
-        reached is at least `reach`, at most `look_ahead` plies on, each with its chance --
-        grown from searched positions only; a search for a position on no path stops."""
-        ahead: dict[str, tuple[float, int]] = {}
-        root = self._path.get(self._current)
-        frontier: list[tuple[float, int, str]] = [(-1.0, 0, root)] if root else []
-        while frontier:
-            negative, distance, key = heapq.heappop(frontier)
-            node = self._nodes.get(key)
-            if node is None or node.measured is None or distance >= self.look_ahead:
-                continue
-            mover = self._is_player(node.board, distance)
-            odds = self._odds(mover, node.measured.lines)
-            for line, odd in zip(node.measured.lines, odds, strict=True):
-                chance = -negative * odd
-                if chance < self.reach:
-                    continue
-                try:
-                    move = chess.Move.from_uci(line.moves[0])
-                except (ValueError, IndexError):
-                    continue
-                if move not in node.board.legal_moves:
-                    continue
+    def _candidates_of(self, node: _Node) -> list[tuple[chess.Move, str]]:
+        """The position's candidates and their positions' keys: chosen once, when its best
+        line and its hint are in, each candidate's position made a node that knows it."""
+        if node.candidates is None and node.first_done:
+            best = node.best or self._empty(node)
+            chosen = []
+            for move in self.annotator.candidates(node.board, best, node.hint or []):
                 child = node.board.copy()
                 child.push(move)
-                if child.is_game_over():
-                    continue
                 child_node = self._node(child)
-                if child_node.key in ahead or child_node.key in self._ply_of:
-                    continue
-                ahead[child_node.key] = (-chance, distance + 1)
-                heapq.heappush(frontier, (-chance, distance + 1, child_node.key))
-        self._ahead = ahead
-        self._stop_unwanted()
-
-    def _is_player(self, board: chess.Board, distance: int) -> bool:
-        """Whether the player is to move in `board`; while their colour is unknown, the side to
-        move on the board is taken for theirs."""
-        if self._user is None:
-            return distance % 2 == 0
-        return board.turn == self._user
-
-    def _odds(self, player: bool, lines: Sequence[Line]) -> list[float]:
-        """The chance that each of `lines` is the move played, by the player or the opponent:
-        in proportion to exp(-loss / T) of the line's loss against the best, T this game's for
-        that side; the share of moves this game played outside the lines left out."""
-        if not lines:
-            return []
-        best = lines[0].expected_score
-        weights = [math.exp(-max(0.0, best - ln.expected_score) / self._t[player]) for ln in lines]
-        total = sum(weights)
-        played = self._played[player]
-        outside = (OUTSIDE_START * T_START_WEIGHT + sum(1 for _, i in played if i is None)) / (
-            T_START_WEIGHT + len(played)
-        )
-        return [(1.0 - outside) * w / total for w in weights]
-
-    def _learn(self, move: _Move, lines: list[Line]) -> None:
-        """A move played: which of the lines of the position it came from it was, kept for the
-        side that played it, and that side's T fitted again."""
-        if not lines:
-            return
-        uci = move.move.uci()
-        best = lines[0].expected_score
-        losses = tuple(max(0.0, best - ln.expected_score) for ln in lines)
-        index = next((i for i, ln in enumerate(lines) if ln.moves and ln.moves[0] == uci), None)
-        self._played[move.by_user].append((losses, index))
-        self._t[move.by_user] = self._fit(self._played[move.by_user])
+                child_node.parents.add(node.key)
+                chosen.append((move, child_node.key))
+            node.candidates = chosen
+        return node.candidates or []
 
     @staticmethod
-    def _fit(played: list[tuple[tuple[float, ...], int | None]]) -> float:
-        """The T that makes this game's moves likeliest (each the line it was among its lines,
-        chance in proportion to exp(-loss / T)), the start counting as T_START_WEIGHT moves
-        played at the start's T; over T_GRID. Moves outside the lines say nothing of it."""
-        chosen = [(losses, i) for losses, i in played if i is not None]
+    def _empty(node: _Node) -> Measured:
+        return Measured(node.board.fen(), [], 0.5, False, False, key=node.key)
 
-        def likelihood(t: float) -> float:
-            total = 0.0
-            for losses, i in chosen:
-                logs = [-loss / t for loss in losses]
-                top = max(logs)
-                total += logs[i] - top - math.log(sum(math.exp(x - top) for x in logs))
-            # The start: as if T_START_WEIGHT moves had shown it, a penalty for straying from it.
-            return total - T_START_WEIGHT * (math.log(t / T_START)) ** 2
-
-        return max(T_GRID, key=likelihood)
-
-    def _stop_unwanted(self) -> None:
-        for index, job in list(self._running.items()):
-            wanted = self._alive(job.key) if job.kind == MAIN else job.key in self._ply_of
-            if not wanted:
-                self.stopped += 1
-                self.engines[index].interrupt()
-
-    # ---- the workers --------------------------------------------------------------------
-
-    def _pick(self, index: int) -> _Job | None:
-        """The next job for worker `index`: the game's newest position not searched, then the
-        side searches of the game's positions, then -- unless this is the game's own worker --
-        the look-ahead, likeliest first."""
-        busy = {(j.kind, j.key) for j in self._claimed.values()}
-        for ply in sorted(self._path, reverse=True):
-            node = self._nodes[self._path[ply]]
-            if node.measured is None and not node.failed and (MAIN, node.key) not in busy:
-                return _Job(MAIN, node.key, self._era)
-        if self.annotator.with_threats:
-            for ply in sorted(self._path, reverse=True):
-                node = self._nodes[self._path[ply]]
-                if (
-                    node.measured is not None
-                    and node.whole is None
-                    and not node.failed
-                    and (SIDE, node.key) not in busy
-                ):
-                    return _Job(SIDE, node.key, self._era)
-        if index == 0 and len(self.engines) > 1:
-            return None  # the game's own worker
-        for key, _ in sorted(self._ahead.items(), key=lambda kv: kv[1]):
+    def _wanted(self) -> set[str]:
+        """Every position a search is wanted for: the game's, what the coach asked for, and
+        their candidates."""
+        out: set[str] = set()
+        for key in [*self._path.values(), *(r.key for r in self._requests)]:
             node = self._nodes.get(key)
-            wanted = node is not None and node.measured is None and not node.failed
-            if wanted and (MAIN, key) not in busy:
-                return _Job(MAIN, key, self._era)
-        return None
+            if node is None:
+                continue
+            out.add(key)
+            out.update(child for _, child in self._candidates_of(node))
+        return out
+
+    # ---- what the workers take ---------------------------------------------------------------
+
+    def _jobs_for(self, node: _Node, *, whole: bool, side: bool) -> list[_Job]:
+        """The searches `node` still needs, in order: its best line; for `whole`, its hint and
+        its candidates' best lines; for `side`, its side searches once it is whole."""
+        jobs = []
+        if node.best is None and BEST not in node.failed:
+            jobs.append(_Job(BEST, node.key, self._era))
+        if not whole:
+            return jobs
+        if node.hint is None and HINT not in node.failed:
+            jobs.append(_Job(HINT, node.key, self._era))
+        for _, key in self._candidates_of(node):
+            child = self._nodes[key]
+            if child.best is None and BEST not in child.failed:
+                jobs.append(_Job(BEST, key, self._era))
+        if side and node.whole is not None and node.final is None and SIDE not in node.failed:
+            jobs.append(_Job(SIDE, node.key, self._era))
+        return jobs
+
+    def _agenda(self) -> list[_Job]:
+        """Every search wanted, first to last (the module's docstring): the verdicts' needs,
+        the coach's requests, the position the game is on, the game's other positions."""
+        out: list[_Job] = []
+        if self._next_verdict is not None:
+            for ply in sorted(p for p in self._moves if p >= self._next_verdict):
+                move = self._moves[ply]
+                out += self._jobs_for(self._nodes[move.before], whole=True, side=False)
+                out += self._jobs_for(self._nodes[move.after], whole=False, side=False)
+        for request in self._requests:
+            out += self._jobs_for(self._nodes[request.key], whole=request.whole, side=False)
+        current = self._path.get(self._current)
+        if current is not None:
+            out += self._jobs_for(self._nodes[current], whole=True, side=True)
+        for ply in sorted(self._path, reverse=True):
+            out += self._jobs_for(self._nodes[self._path[ply]], whole=True, side=True)
+        return out
+
+    def _pick(self) -> _Job | None:
+        busy = {(j.kind, j.key) for j in self._claimed.values()}
+        return next((job for job in self._agenda() if (job.kind, job.key) not in busy), None)
 
     def _work(self, index: int, engine: Engine) -> None:
         while True:
             with self._cond:
                 job = None
                 while not self._closed:
-                    job = self._pick(index)
+                    job = self._pick()
                     if job is not None:
                         break
                     self._cond.wait()
@@ -526,28 +488,28 @@ class Analyser:
                     return
                 # Taken the moment it is picked: no other worker picks it meanwhile.
                 self._claimed[index] = job
-                board = self._nodes[job.key].board.copy()
-                measured = self._nodes[job.key].measured
+                node = self._nodes[job.key]
+                board = node.board.copy()
+                whole = node.whole
             try:
-                found = self._run(index, engine, job, board, measured)
+                found = self._run(index, engine, job, board, whole)
             except Interrupted:
                 found = None
             except Exception as exc:  # noqa: BLE001 - a failed search must never end a session
+                log.warning("%s search of %s failed: %r", job.kind, board.fen(), exc)
                 with self._cond:
-                    self.last_error = f"{type(exc).__name__}: {exc}"
                     self.failures += 1
-                    node = self._nodes.get(job.key)
-                    if node is not None:
-                        node.failed = True
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                    failed = self._nodes.get(job.key)
+                    if failed is not None and job.era == self._era:
+                        failed.failed.add(job.kind)
+                        self._advance(failed)
                 found = None
             with self._cond:
                 self._running.pop(index, None)
                 self._claimed.pop(index, None)
                 if found is not None and job.era == self._era and job.key in self._nodes:
-                    if job.kind == MAIN:
-                        self._searched(job.key, found)
-                    else:
-                        self._sided(job.key, found)
+                    self._found(job, found)
                 self._cond.notify_all()
 
     def _run(
@@ -556,158 +518,219 @@ class Analyser:
         engine: Engine,
         job: _Job,
         board: chess.Board,
-        measured: Measured | None,
-    ) -> Measured | None:
+        whole: Measured | None,
+    ) -> Measured | list[Line] | None:
         """One job's search, stoppable from the moment it is running (`_stop_unwanted`);
         None when it was no longer wanted by then."""
         with engine.interruptible():
             with self._cond:
-                if self._closed or job.era != self._era or not self._wanted(job):
+                if self._closed or job.era != self._era or not self._still_wanted(job):
                     return None
                 self._running[index] = job  # inside the stoppable block: a stop reaches it
-            if job.kind == MAIN:
-                return self.annotator.search(
+            if job.kind == HINT:
+                return self.annotator.hint_lines(board, engine=engine)
+            if job.kind == SIDE:
+                assert whole is not None
+                return self.annotator.with_side(board, whole, engine=engine)
+            timer = threading.Timer(DECIDED_AFTER_S, self._decide, args=(job,))
+            timer.daemon = True
+            timer.start()
+            try:
+                return self.annotator.best_line(
                     board,
                     engine=engine,
-                    on_depth=lambda lines, key=job.key, era=job.era: self._depth(key, era, lines),
+                    on_depth=lambda lines, job=job: self._deepened(job, lines),
                 )
-            assert measured is not None
-            return self.annotator.with_side(board, measured, engine=engine)
+            finally:
+                timer.cancel()
 
-    def _wanted(self, job: _Job) -> bool:
+    def _still_wanted(self, job: _Job) -> bool:
         node = self._nodes.get(job.key)
         if node is None:
             return False
-        if job.kind == MAIN:
-            return node.measured is None and self._alive(job.key)
-        return node.whole is None and job.key in self._ply_of
+        done = {BEST: node.best, HINT: node.hint, SIDE: node.final}[job.kind]
+        return done is None and job.key in self._wanted()
+
+    def _stop_unwanted(self) -> None:
+        wanted = self._wanted()
+        for index, job in list(self._running.items()):
+            if job.key not in wanted:
+                self.stopped += 1
+                self.engines[index].interrupt()
 
     # ---- what comes back ----------------------------------------------------------------
 
-    def _depth(self, key: str, era: int, lines: list[Line]) -> None:
-        """A depth of a search finished, the search going on."""
+    def _deepened(self, job: _Job, lines: list[Line]) -> None:
+        """A depth of a best line's search finished, the search going on."""
         with self._cond:
-            node = self._nodes.get(key)
-            if node is None or era != self._era or not lines:
+            node = self._nodes.get(job.key)
+            if node is not None and job.era == self._era and lines:
+                node.deepest = lines[0]
+
+    def _decide(self, job: _Job) -> None:
+        """DECIDED_AFTER_S into a best line's search: a decided score at its deepest finished
+        depth stands in for the full depth's in a verdict (the module's docstring)."""
+        with self._cond:
+            node = self._nodes.get(job.key)
+            if node is None or job.era != self._era or node.best is not None:
                 return
-            node.partial = lines
-            ply = self._ply_of.get(key)
-            if ply is not None:
-                self._tell_partial(ply, node)
+            line = node.deepest
+            if line is None or DECIDED[0] < line.expected_score < DECIDED[1]:
+                return
+            node.stand_in = Measured(
+                fen=node.board.fen(),
+                lines=[line],
+                score=position_score(node.board, [line]),
+                decisive=False,
+                only_move=False,
+                key=node.key,
+            )
+            self._judge()
+            self._cond.notify_all()
 
-    def _searched(self, key: str, measured: Measured) -> None:
-        node = self._nodes[key]
-        node.measured = measured
-        node.partial = None
-        self.searches += 1
-        if key in self._ahead and key not in self._ply_of:
-            self.looked += 1
+    def _found(self, job: _Job, found: Measured | list[Line]) -> None:
+        node = self._nodes[job.key]
+        if job.kind == BEST:
+            assert isinstance(found, Measured)
+            node.best = found
+            self.searches += 1
+        elif job.kind == HINT:
+            assert isinstance(found, list)
+            node.hint = found
+            self.hints += 1
+        else:
+            assert isinstance(found, Measured)
+            node.final = found
+            self.side_searches += 1
+        self._advance(node)
+
+    def _advance(self, node: _Node) -> None:
+        """A search of `node` done (or failed): it and every position it is a candidate of
+        made whole if they can be, and what waited on them judged, answered and told."""
+        for key in [node.key, *node.parents]:
+            whole = self._nodes.get(key)
+            if whole is not None and whole.whole is None:
+                self._complete(whole)
+        if SIDE in node.failed and node.whole is not None and node.final is None:
+            node.final = node.whole
+        self._judge()
+        self._answer_requests()
+        for ply in list(self._path):
+            self._tell(ply)
+
+    def _complete(self, node: _Node) -> None:
+        """`node` made whole once its candidates are all in (a failed one left out)."""
+        candidates = self._candidates_of(node)
+        if not node.first_done or (BEST in node.failed and HINT in node.failed):
+            return
+        children = [(move, self._nodes[key]) for move, key in candidates]
+        if any(c.best is None and BEST not in c.failed for _, c in children):
+            return
+        node.whole = self.annotator.whole(
+            node.board,
+            node.best or self._empty(node),
+            [(move, c.best) for move, c in children if c.best is not None],
+        )
+        self.annotator.computed.add(node.board, node.whole.lines)
         if not self.annotator.with_threats:
-            node.whole = measured
-        self._judge()  # the verdict first: the word on the move, then the position after it
-        ply = self._ply_of.get(key)
-        if ply is not None:
-            self._tell(ply, node)
-        self._reframe()
-
-    def _sided(self, key: str, whole: Measured) -> None:
-        node = self._nodes[key]
-        node.whole = whole
-        self.side_searches += 1
-        ply = self._ply_of.get(key)
-        if ply is not None:
-            self._tell(ply, node)
-
-    def _reached(self, key: str, ply: int) -> None:
-        """The game is on this position at `ply`: what is known of it is told at once."""
-        node = self._nodes[key]
-        told = self._told.get(ply)
-        if told is not None and told[0] != key:
-            del self._told[ply]
-        if node.measured is not None:
-            self._tell(ply, node)
-        elif node.partial is not None:
-            self._tell_partial(ply, node)
-
-    def _whole_told(self, key: str) -> bool:
-        ply = self._ply_of.get(key)
-        told = self._told.get(ply) if ply is not None else None
-        return told is not None and told[0] == key and told[2]
-
-    def _tell_partial(self, ply: int, node: _Node) -> None:
-        lines = node.partial or []
-        depth = lines[0].depth if lines else 0
-        if not EARLY_DEPTH <= depth < self.annotator.depth:
-            return
-        told = self._told.get(ply)
-        if told is not None and told[0] == node.key and told[1] >= depth:
-            return
-        self._told[ply] = (node.key, depth, False)
-        measured = self.annotator.measured_lines(node.board, lines)
-        self._put(
-            self.annotator.analysis_from(
-                self._game_id or "", node.board, ply, measured, provisional=True
-            )
-        )
-
-    def _tell(self, ply: int, node: _Node) -> None:
-        """The full depth told: whole once its side searches are in, provisional before."""
-        found = node.whole or node.measured
-        if found is None or self._game_id is None:
-            return
-        whole = node.whole is not None
-        told = self._told.get(ply)
-        if (
-            told is not None
-            and told[0] == node.key
-            and (told[2] or (not whole and told[1] >= found.depth))
-        ):
-            return
-        self._told[ply] = (node.key, found.depth, whole)
-        self._put(
-            self.annotator.analysis_from(
-                self._game_id, node.board, ply, found, provisional=not whole
-            )
-        )
+            node.final = node.whole
 
     def _judge(self) -> None:
         """Each move judged as soon as it can be, in the order of the moves: the move before
         is what a verdict reads ("the opponent just erred", "a recapture")."""
         while self._next_verdict is not None and self._next_verdict in self._moves:
             move = self._moves[self._next_verdict]
-            before = self._nodes[move.before]
-            after = self._nodes[move.after]
-            own = before.measured is not None and self.annotator.judgeable(
-                before.measured, move.move
-            )
-            if before.failed or (not own and after.failed):
-                # A search that failed judges nothing: this move goes without a verdict, and
-                # the moves after it are judged all the same -- it held them all back.
-                self._next_verdict += 1
-                continue
-            if before.measured is None:
+            before, after = self._nodes[move.before], self._nodes[move.after]
+            if before.whole is None:
+                if BEST in before.failed and HINT in before.failed:
+                    self._next_verdict += 1  # nothing to judge it from: it goes without
+                    continue
                 return
-            if not own and after.measured is None:
-                return  # not among the lines: the position after is needed
+            own = own_line(before.whole.lines, move.move) is not None
+            if not own and after.value is None:
+                if BEST in after.failed:
+                    self._next_verdict += 1
+                    continue
+                return
             try:
                 verdict = self.annotator.assess_from(
                     self._game_id or "",
                     before.board,
                     move.move,
                     move.ply,
-                    before.measured,
-                    after.measured,
+                    before.whole,
+                    None if own else after.value,
                 )
             except Exception as exc:  # noqa: BLE001 - a move that cannot be judged is skipped
-                self.last_error = f"{type(exc).__name__}: {exc}"
                 self.failures += 1
+                self.last_error = f"{type(exc).__name__}: {exc}"
             else:
-                self._put(verdict)
-                self._learn(move, before.measured.lines)
+                self._results.put(verdict)
             self._next_verdict += 1
 
-    def _put(self, event: Event) -> None:
-        self._results.put(event)
+    def _answered(self, node: _Node, whole: bool) -> bool:
+        if whole:
+            return node.whole is not None or (BEST in node.failed and HINT in node.failed)
+        return node.best is not None or BEST in node.failed
+
+    def _answer(self, key: str, whole: bool) -> Measured | None:
+        node = self._nodes.get(key)
+        if node is None:
+            return None
+        if whole and node.whole is not None:
+            return node.final or node.whole
+        return node.best
+
+    def _answer_requests(self) -> None:
+        left = []
+        for request in self._requests:
+            if self._answered(self._nodes[request.key], request.whole):
+                request.done.set()
+            else:
+                left.append(request)
+        self._requests = left
+
+    def _settled(self, ply: int, key: str) -> bool:
+        """Whether the game's position at `ply` has been told all it will be."""
+        told = self._told.get(ply)
+        return told is not None and told[0] == key and told[1] == FINAL
+
+    def _tell(self, ply: int) -> None:
+        """The game's position at `ply` told as far as it has come (the module's docstring),
+        each stage once."""
+        key = self._path.get(ply)
+        if key is None or self._game_id is None:
+            return
+        node = self._nodes[key]
+        stage = self._stage(node)
+        told = self._told.get(ply)
+        if stage == 0 or (told is not None and told[0] == key and told[1] >= stage):
+            return
+        self._told[ply] = (key, stage)
+        if stage == FINAL:
+            measured = node.final
+        elif stage == WHOLE:
+            measured = node.whole
+        else:
+            measured = self.annotator.first_answer(node.board, node.best, node.hint or [])
+        if measured is not None:
+            self._results.put(
+                self.annotator.analysis_from(
+                    self._game_id, node.board, ply, measured, provisional=stage < FINAL
+                )
+            )
+
+    @staticmethod
+    def _stage(node: _Node) -> int:
+        """How far `node` has come (a position whose searches all failed is settled, with
+        nothing to tell)."""
+        if node.final is not None or (BEST in node.failed and HINT in node.failed):
+            return FINAL
+        if node.whole is not None:
+            return WHOLE
+        if node.best is not None and node.hint is not None:
+            return FIRST_BOTH
+        return FIRST if node.best is not None or node.hint is not None else 0
 
     def _unique_engines(self) -> list[Engine]:
         seen: list[Engine] = []
@@ -716,14 +739,24 @@ class Analyser:
                 seen.append(engine)
         return seen
 
-    def reconfigure(self, **options: Any) -> None:
-        """Hash, the lines' length or the scoring saved mid-session: on every worker's engine."""
-        for engine in self._unique_engines():
-            for name, value in options.items():
-                if name == "hash_mb":
-                    engine.reconfigure(hash_mb=value)
-                else:
-                    setattr(engine, name, value)
+
+class PoolSearcher:
+    """The coach's engine (`computed.ComputedFirst`): its questions answered by the analyser's
+    pool -- the position whole, its candidates at the full depth -- never by a Stockfish of
+    its own (the engine audit, 2026-10-05: the coach's second engine searched three lines,
+    which explode as six do). The depth is the analyser's; the wait is bounded by `timeout`."""
+
+    def __init__(self, analyser: Analyser, *, timeout: float = 30.0) -> None:
+        self.analyser = analyser
+        self.timeout = timeout
+
+    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+        """`board`'s lines, whole; `depth` is the analyser's own, whatever is asked."""
+        measured = self.analyser.request(board, whole=True, timeout=self.timeout)
+        return list(measured.lines) if measured is not None else []
+
+    def close(self) -> None:
+        """The pool is the analyser's, and closes with it."""
 
 
 def open_analyser(
@@ -736,14 +769,11 @@ def open_analyser(
     pv_plies: int,
     thresholds: Any,
     score_model: str = "human",
-    look_ahead: int = LOOK_AHEAD,
     tagger: Any = None,
     book: Any = None,
     make_engine: Callable[..., Engine] = Engine,
 ) -> Analyser:
     """An analyser ready to take moves, its workers' engines started, one thread each."""
-    from pathlib import Path
-
     engines = [
         make_engine(
             path=Path(str(engine_path)),
@@ -765,9 +795,9 @@ def open_analyser(
         tagger=tagger,
         book=book,
     )
-    analyser = Analyser(annotator, engines=engines, look_ahead=look_ahead)
+    analyser = Analyser(annotator, engines=engines)
     analyser.start()
     return analyser
 
 
-__all__ = ["LOOK_AHEAD", "WORKERS", "Analyser", "open_analyser"]
+__all__ = ["DECIDED_AFTER_S", "WORKERS", "Analyser", "PoolSearcher", "open_analyser"]

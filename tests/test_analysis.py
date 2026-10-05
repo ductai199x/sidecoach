@@ -33,7 +33,7 @@ from sidecoach.analysis.score import (
 from sidecoach.config import CoachSettings, find_stockfish, load_settings
 from sidecoach.events import Analysis, Label, Line, MotifTag, MoveAssessment, Severity
 from tests.coaching import SCHOLAR
-from tests.fakes import HANG_S, FakeEngine
+from tests.fakes import HANG_S, FakeEngine, scripted
 
 STOCKFISH = find_stockfish(load_settings())
 
@@ -452,7 +452,7 @@ def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
 
         def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
             lines = super().analyse(board, **kwargs)
-            if self.annotator is not None and len(self.calls) == 1:
+            if self.annotator is not None:
                 self.annotator.forget_measured()  # the save, while this search ran
             return lines
 
@@ -461,14 +461,16 @@ def test_a_search_under_way_when_the_settings_change_is_not_kept() -> None:
         annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
         fake.annotator = annotator
         board = chess.Board()
-        first = getattr(annotator, measure)(board)
+        first = getattr(annotator, measure)(board)  # every search of it changed under it
+        fake.annotator = None
+        searched = fake.calls.count(board.fen())
         assert first.lines, "the caller still gets what it asked for"
         assert not annotator.measured(board), measure
         assert annotator.computed.lines(board) == [], measure
         getattr(annotator, measure)(board)
-        assert len(fake.calls) == 2, f"{measure}: searched again the new way"
+        assert fake.calls.count(board.fen()) == 2 * searched, f"{measure}: searched again"
         getattr(annotator, measure)(board)
-        assert len(fake.calls) == 2, f"{measure}: and that one is kept"
+        assert fake.calls.count(board.fen()) == 2 * searched, f"{measure}: and that one is kept"
 
 
 def test_the_best_move_of_a_mating_line_is_never_a_mate_let_go() -> None:
@@ -649,9 +651,11 @@ def test_the_mate_distance_counts_the_move_being_judged() -> None:
     assert _mate_in(before, quiet, [Line(moves=[], depth=9, expected_score=0.5)]) is None
 
 
-def test_each_position_is_measured_once() -> None:
-    """Measured whole once each; the verdict on a move searches the position it led to
-    for its best line alone first (a call of its own, one line), then the whole."""
+def test_each_position_is_searched_once_each_way() -> None:
+    """A verdict reads the position a move led to by its best line alone (one line, the full
+    depth); measured whole after, that search is its best line there, not made again -- each
+    position searched at most once for its best line and once for its hint. A new game
+    searches again."""
     board = chess.Board()
     fake = FakeEngine({})
     annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
@@ -660,22 +664,14 @@ def test_each_position_is_measured_once() -> None:
     after = board.copy(stack=False)
     after.push(e2e4)
     assert assessment.uci == "e2e4"
-    # The verdict from one line of the position after the move, before it is measured whole.
-    assert list(zip(fake.calls, fake.multipvs, strict=True)) == [
-        (board.fen(), 1),
-        (after.fen(), 1),
-        (after.fen(), 6),
-    ]
+    searched = list(zip(fake.calls, fake.multipvs, strict=True))
+    assert searched[:3] == [(board.fen(), 1), (after.fen(), 1), (after.fen(), 6)]
     annotator.assess("g", after, chess.Move.from_uci("e7e5"), 2)
-    whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
-    assert len(whole) == 2, "after e4, after e5: each measured whole once"
-    # The start is measured for the verdict alone (its whole analysis is the pipeline's
-    # own position submit); each position after a move once thin, then whole.
-    assert fake.multipvs.count(1) == 3, "one verdict search per position"
+    searched = list(zip(fake.calls, fake.multipvs, strict=True))
+    assert len(searched) == len(set(searched)), searched
     annotator.reset()
     annotator.assess("g", board, e2e4, 1)
-    whole = [fen for fen, multipv in zip(fake.calls, fake.multipvs, strict=True) if multipv != 1]
-    assert len(whole) == 3, "a new game measures again"
+    assert fake.calls.count(board.fen()) == 2, "a new game measures again"
 
 
 def test_assessment_carries_the_loss_the_best_line_the_tags_and_the_depth() -> None:
@@ -684,16 +680,20 @@ def test_assessment_carries_the_loss_the_best_line_the_tags_and_the_depth() -> N
     after.push(chess.Move.from_uci("a2a3"))
     # The position after the move hit the engine's time cap: measured shallower than asked.
     fake = FakeEngine(
-        {
-            board.fen(): [
+        scripted(
+            board,
+            [
                 Line(moves=["e2e4", "e7e5"], depth=6, expected_score=0.60),
                 Line(moves=["d2d4"], depth=6, expected_score=0.45),
             ],
-            after.fen(): [
+        )
+        | scripted(
+            after,
+            [
                 Line(moves=["e7e5"], depth=4, expected_score=0.55, mate=-3),
                 Line(moves=["d7d5"], depth=4, expected_score=0.20),
             ],
-        }
+        )
     )
     tagger = RecordingTagger()
     annotator = GameAnnotator(engine=fake, depth=6, tagger=tagger, with_threats=False)
@@ -718,12 +718,13 @@ def test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab() -> None:
     def label(fen: str) -> Label | None:
         board = chess.Board(fen)
         fake = FakeEngine(
-            {
-                board.fen(): [
+            scripted(
+                board,
+                [
                     Line(moves=["f6e4"], depth=6, expected_score=0.80),
                     Line(moves=["e8d7"], depth=6, expected_score=0.40),
-                ]
-            }
+                ],
+            )
         )
         annotator = GameAnnotator(engine=fake, depth=6, with_threats=False)
         annotator.measure(board)  # measured whole, so the only-move call is made
@@ -1050,13 +1051,14 @@ def test_one_position_reached_by_two_histories_is_measured_for_each() -> None:
     annotator.measure(one)
     annotator.measure(two)
     annotator.measure(two.copy())
-    assert fake.calls.count(one.fen()) == 2, "each history searched once"
+    # Each history's best line and its hint, once.
+    assert fake.calls.count(one.fen()) == 2 * 2, "each history searched once"
     # After a capture or a pawn move nothing before can repeat: one search serves both.
     for board in (one, two):
         board.push_san("e4")
     annotator.measure(one)
     annotator.measure(two)
-    assert fake.calls.count(one.fen()) == 1
+    assert fake.calls.count(one.fen()) == 2
 
 
 def test_the_engine_stops_a_search_it_is_interrupted_in() -> None:
