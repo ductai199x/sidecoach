@@ -484,6 +484,114 @@ class EngineReviewTest {
         }
     }
 
+    /**
+     * An engine that answers a search with one report and then says nothing until it is told
+     * to stop, on a clock and a processor time the test moves: what the watchdog sees of a search
+     * working in silence (the processor time moving) and of a hung engine (standing still).
+     */
+    private class QuietWorker : Engine(File("/system/bin/sh"), null, threads = 1, hashMb = 16, multipv = 1) {
+        @Volatile var clock = 1_000_000L
+        @Volatile var cpu = 0L
+        val launches = java.util.concurrent.LinkedBlockingQueue<Int>()
+        private var launched = 0
+        private val read = Object()
+        private var readings = 0
+        private var heardLines = 0
+
+        override fun now(): Long {
+            if (Thread.currentThread().name == "engine-clock") synchronized(read) {
+                readings += 1
+                read.notifyAll()
+            }
+            return clock
+        }
+
+        override fun cpuMs(): Long = cpu
+
+        override fun heard() {
+            super.heard()
+            synchronized(read) {
+                heardLines += 1
+                read.notifyAll()
+            }
+        }
+
+        override fun launch(): Process {
+            launched += 1
+            launches.put(launched)
+            val script = "while read l; do case \"\$l\" in " +
+                "uci) echo 'id name quiet'; echo uciok;; isready) echo readyok;; " +
+                "go*) echo 'info depth 1 multipv 1 score cp 10 nodes 1 pv e2e4';; " +
+                "stop) echo 'bestmove e2e4';; quit) exit 0;; esac; done"
+            return ProcessBuilder("sh", "-c", script).redirectErrorStream(true).start()
+        }
+
+        fun until(what: String, condition: () -> Boolean) = synchronized(read) {
+            val deadline = System.nanoTime() + HANG_MS * 1_000_000
+            while (!condition()) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                assertTrue("never came: $what", left > 0)
+                read.wait(left)
+            }
+        }
+
+        /** The time keeper woken, and back to waiting once it has looked twice (a whole look). */
+        fun look() {
+            repeat(2) {
+                val seen = synchronized(read) { readings }
+                pause()
+                resume()
+                until("the time keeper looked") { readings > seen }
+            }
+        }
+
+        val heard: Int get() = synchronized(read) { heardLines }
+    }
+
+    /**
+     * The desktop's `test_a_search_working_in_silence_is_never_cut_and_an_idle_silent_one_is`:
+     * a real position (three moves, in check) went 48 s at depth 18 without a word, one root
+     * move searched all that time, and the 30 s silence watchdog killed it (the engine audit,
+     * 2026-10-04). A whole patience of silence with the processor working: never cut; with the
+     * processor idle: the engine is ended and the search made again on a new one. Driven:
+     * the clock and the processor time move only when the test moves them.
+     */
+    @Test
+    @com.sidecoach.InProcess(1)
+    fun aSearchWorkingInSilenceIsNeverCutAndAnIdleSilentOneIs() {
+        val sf = QuietWorker()
+        sf.open()
+        assertEquals(1, sf.launches.take())
+        val failed = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+        val search = kotlin.concurrent.thread {
+            try {
+                sf.interruptible { sf.analyse(Board(), depth = 30) }
+            } catch (exc: Interrupted) {
+                // the test's own stop, at the end
+            } catch (exc: Throwable) {
+                failed.add(exc)
+            }
+        }
+        try {
+            sf.until("the search's report") { sf.heard >= 1 }
+            // A whole patience silent, the processor working all through it.
+            sf.clock += (sf.watchdogS * 1000).toLong() + 1
+            sf.cpu += (sf.watchdogS * 1000).toLong()
+            sf.look()
+            assertTrue("a search working in silence was ended", sf.launches.isEmpty())
+            // And a whole patience more, the processor idle: hung.
+            sf.clock += (sf.watchdogS * 1000).toLong() + 1
+            sf.look()
+            assertEquals("an idle silent engine was not replaced", 2, sf.launches.poll(HANG_MS, java.util.concurrent.TimeUnit.MILLISECONDS))
+        } finally {
+            sf.interrupt()
+            search.join(HANG_MS)
+            sf.close()
+        }
+        assertTrue("the search never ended", !search.isAlive)
+        assertEquals(emptyList<Throwable>(), failed.toList())
+    }
+
     @Test
     fun anEngineThatStopsAnsweringIsReplaced() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

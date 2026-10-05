@@ -109,7 +109,7 @@ open class Engine(
      * separate process, so the app's /proc/self/stat does not count it and a profile that
      * reads only that one sees the vision and none of the search.
      */
-    fun cpuMs(): Long {
+    open fun cpuMs(): Long {
         val pid = enginePid ?: return 0
         return try {
             val stat = File("/proc/$pid/stat").readText()
@@ -266,6 +266,9 @@ open class Engine(
     /** The search's running time when the engine last said something ([heard]). */
     private var heardMs = 0L
 
+    /** The engine's processor time when the watchdog last looked ([watch]). */
+    private var cpuAtCheck = 0L
+
     /** The time the watched search has run, its pauses not counted. Under [clock]. */
     private fun ranNow(): Long = ranMs + if (runningSince != 0L) now() - runningSince else 0L
 
@@ -321,6 +324,7 @@ open class Engine(
             budgetMs = ms ?: 0
             ranMs = 0
             heardMs = 0
+            cpuAtCheck = cpuMs()
             runningSince = if (paused) 0 else now()
             ++searchNumber
         }
@@ -362,6 +366,15 @@ open class Engine(
                 val ran = ranNow()
                 val silent = heardMs + (watchdogS * 1000).toLong() - ran
                 if (silent <= 0) {
+                    // Silent a whole patience: hung only if idle too. One root move can take
+                    // most of a search without a word (a real position went 48 s at depth 18
+                    // on the desktop, still searching: the engine audit, 2026-10-04).
+                    val spent = cpuMs()
+                    if (spent - cpuAtCheck >= (watchdogS * 1000 / 10).toLong()) {
+                        cpuAtCheck = spent
+                        heardMs = ran // working in silence: watched afresh from here
+                        continue
+                    }
                     runCatching { target?.destroyForcibly() }
                     watching = false
                     return
