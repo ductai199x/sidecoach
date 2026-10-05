@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "engine"))
 
-from atoms import ME, OUT as ALONE, cpu, make  # noqa: E402
+from atoms import ME, cpu, make  # noqa: E402
+from atoms import OUT as ALONE  # noqa: E402
 
 from sidecoach.analysis.defences import DEFENCE_DEPTH, defence_lines  # noqa: E402
 from sidecoach.analysis.threats import AIM_DEPTH, aim_lines, threat_moves  # noqa: E402
@@ -41,9 +42,9 @@ def main() -> None:
     assert engine._engine is not None
     rows: list[dict[str, Any]] = []
 
-    def timed(fn: Any) -> tuple[Any, dict[str, float]]:
+    def timed(fn: Any, *args: Any, **kwargs: Any) -> tuple[Any, dict[str, float]]:
         c0, t0 = cpu(process), time.perf_counter()
-        out = fn()
+        out = fn(*args, **kwargs)
         return out, {"wall": time.perf_counter() - t0, "cpu": cpu(process) - c0}
 
     try:
@@ -51,19 +52,16 @@ def main() -> None:
             board = chess.Board(fen)
             row: dict[str, Any] = {"fen": fen}
             engine._engine.configure({"Clear Hash": None})
-            _, row["2"] = timed(lambda: engine.analyse(board, depth=18, multipv=2))
-            six, row["6_after_2"] = timed(lambda: engine.analyse(board, depth=18, multipv=6))
-            for name, fn in (
-                ("threats", lambda: threat_moves(engine, board, depth=18)),
-                ("traps", lambda: trap_lines(engine, board, six, depth=min(TRAP_DEPTH, 18))),
-                (
-                    "defences",
-                    lambda: defence_lines(engine, board, six, depth=min(DEFENCE_DEPTH, 18)),
-                ),
-                ("aims", lambda: aim_lines(engine, board, six, depth=min(AIM_DEPTH, 18))),
+            _, row["2"] = timed(engine.analyse, board, depth=18, multipv=2)
+            six, row["6_after_2"] = timed(engine.analyse, board, depth=18, multipv=6)
+            for name, fn, args, depth in (
+                ("threats", threat_moves, (engine, board), 18),
+                ("traps", trap_lines, (engine, board, six), min(TRAP_DEPTH, 18)),
+                ("defences", defence_lines, (engine, board, six), min(DEFENCE_DEPTH, 18)),
+                ("aims", aim_lines, (engine, board, six), min(AIM_DEPTH, 18)),
             ):
                 engine._engine.configure({"Clear Hash": None})
-                _, row[name] = timed(fn)
+                _, row[name] = timed(fn, *args, depth=depth)
             rows.append(row)
     finally:
         engine.close()
@@ -82,16 +80,17 @@ def main() -> None:
     six_cold = [base[r["fen"]]["6x1"]["wall"] for r in rows]
     after = [r["6_after_2"]["wall"] for r in rows]
     print(
-        f"  6 lines cold p50 {q(six_cold, 0.5):.3f}; right after its 2-line search p50 {q(after, 0.5):.3f}; "
+        f"  6 lines cold p50 {q(six_cold, 0.5):.3f}; "
+        f"right after its 2-line search p50 {q(after, 0.5):.3f}; "
         f"sum ratio {sum(after) / sum(six_cold):.2f}"
     )
-    print(
-        f"  2 lines then 6, together over 6 cold: {sum(r['2']['wall'] + r['6_after_2']['wall'] for r in rows) / sum(six_cold):.2f}"
-    )
+    both = sum(r["2"]["wall"] + r["6_after_2"]["wall"] for r in rows)
+    print(f"  2 lines then 6, together over 6 cold: {both / sum(six_cold):.2f}")
     for name in ("threats", "traps", "defences", "aims"):
         w = [r[name]["wall"] for r in rows]
         print(
-            f"  {name}: p50 {q(w, 0.5):.3f} p90 {q(w, 0.9):.3f} sum over 6 cold {sum(w) / sum(six_cold):.3f}"
+            f"  {name}: p50 {q(w, 0.5):.3f} p90 {q(w, 0.9):.3f} "
+            f"sum over 6 cold {sum(w) / sum(six_cold):.3f}"
         )
 
 

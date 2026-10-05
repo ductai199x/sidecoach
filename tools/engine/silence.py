@@ -38,8 +38,13 @@ def main() -> None:
                 if text.startswith("bestmove"):
                     return
 
-        for cmd in ("uci", "setoption name Threads value 1", "setoption name Hash value 256",
-                    f"setoption name MultiPV value {lines}", "isready"):
+        for cmd in (
+            "uci",
+            "setoption name Threads value 1",
+            "setoption name Hash value 256",
+            f"setoption name MultiPV value {lines}",
+            "isready",
+        ):
             proc.stdin.write(cmd + "\n")
         proc.stdin.write(f"position startpos moves {MOVES}\n")
         reader = threading.Thread(target=read)
@@ -50,11 +55,16 @@ def main() -> None:
         proc.stdin.write("quit\n")
         proc.wait()
         searched = [(t, s) for t, s in times if t >= t0]
-        gaps = [(b[0] - a[0], a[1][:70], b[1][:70]) for a, b in zip(searched, searched[1:])]
+        gaps = [
+            (b[0] - a[0], a[1][:70], b[1][:70])
+            for a, b in zip(searched, searched[1:], strict=False)
+        ]
         worst = max(gaps)
         currmove = sum(1 for _, s in searched if " currmove " in s)
-        print(f"{lines} lines: {searched[-1][0] - t0:.1f}s, {len(searched)} lines printed "
-              f"({currmove} currmove); longest silence {worst[0]:.1f}s")
+        print(
+            f"{lines} lines: {searched[-1][0] - t0:.1f}s, {len(searched)} lines printed "
+            f"({currmove} currmove); longest silence {worst[0]:.1f}s"
+        )
         print(f"   after: {worst[1]}\n   then:  {worst[2]}")
 
 

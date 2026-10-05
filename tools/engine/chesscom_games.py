@@ -1,5 +1,5 @@
 """The player's chess.com games, with their clocks, fetched from the public archive into
-data/engine-cache/chesscom-<user>.json, for the engine simulator (tools/engine/simulate.py).
+data/engine-cache/chesscom-<user>.json, for the engine's workloads (tools/engine/sessions.py).
 
     uv run python tools/engine/chesscom_games.py [user]"""
 

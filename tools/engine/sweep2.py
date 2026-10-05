@@ -75,9 +75,7 @@ class Atom:
 def load() -> dict[str, Atom]:
     from tools.engine.decided import _taken
 
-    single = {
-        r["key"]: r for r in json.loads((CACHE / "single.json").read_text(encoding="utf-8"))
-    }
+    single = {r["key"]: r for r in json.loads((CACHE / "single.json").read_text(encoding="utf-8"))}
     decided = {
         r["fen"]: r for r in json.loads((CACHE / "decided.json").read_text(encoding="utf-8"))
     }
@@ -95,7 +93,9 @@ def load() -> dict[str, Atom]:
         m12 = next((t for d, t in f["6"]["depths"] if d >= 12), f["6"]["wall"]) / SIX_AT_ONCE
         fen = " ".join(key.split(" ")[:6])
         rule = None
-        marks = f["1"].get("marks") if "1" in f else (decided[fen]["marks"] if fen in decided else None)
+        marks = (
+            f["1"].get("marks") if "1" in f else (decided[fen]["marks"] if fen in decided else None)
+        )
         if marks:
             # Measured six at once: the times over one search alone, as everything else here.
             alone = [(d, t / SIX_AT_ONCE, s) for d, t, s in marks] if "1" in f else marks
@@ -464,10 +464,9 @@ class Run:
         seen: set[tuple[str, str]] = set()
 
         def add(key: str, ahead: bool, verdict_only: bool = False) -> None:
-            if key not in self.atoms:
-                if ahead:
-                    self.missing[key] = self.pos[key].board.copy()
-                    return
+            if key not in self.atoms and ahead:
+                self.missing[key] = self.pos[key].board.copy()
+                return
             p = self.pos[key]
             for kind in self.wants(key, verdict_only):
                 if kind in p.done or (key, kind) in busy or (key, kind) in seen:
@@ -521,12 +520,17 @@ class Run:
         for key, kind, ahead in self.todo():
             if not free:
                 break
-            if ahead and sum(1 for j in self.jobs.values() if j.ahead) >= self.p.workers - self.p.reserve:
+            if (
+                ahead
+                and sum(1 for j in self.jobs.values() if j.ahead) >= self.p.workers - self.p.reserve
+            ):
                 continue
             a = self.atom(key)
             dur = {"1": a.one, "m12": a.m12, "threats": a.threats}[kind]
             w = free.pop(0)
-            self.jobs[w] = Job(key, kind, self.now, self.now + dur * BESIDE[self.p.workers], w, ahead)
+            self.jobs[w] = Job(
+                key, kind, self.now, self.now + dur * BESIDE[self.p.workers], w, ahead
+            )
 
     def finish(self, job: Job) -> None:
         del self.jobs[job.worker]
@@ -622,7 +626,12 @@ def grid(small: bool = False) -> list[Policy]:
     return [
         Policy(w, r, c, look, reach, order)
         for w, r, c, look, reach, order in itertools.product(
-            workers, [0, 1], cands, [0, 1, 2, 3], reaches, ["newest", "verdicts"],
+            workers,
+            [0, 1],
+            cands,
+            [0, 1, 2, 3],
+            reaches,
+            ["newest", "verdicts"],
         )
         if r < w and not (look == 0 and reach != 0.15)
     ]
@@ -654,7 +663,7 @@ def main() -> None:
     from tqdm import tqdm
 
     from tools.engine.measure import measure, workloads
-    from tools.engine.sweep import bursts
+    from tools.engine.sessions import bursts
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--missing", action="store_true")
@@ -669,7 +678,13 @@ def main() -> None:
         results, lacking = [], {}
         with ProcessPoolExecutor(args.procs, initializer=_init) as pool:
             futures = [pool.submit(_one, (p, sessions)) for p in policies]
-            for fut in tqdm(as_completed(futures), total=len(futures), desc="policies", file=sys.stdout, mininterval=2):
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="policies",
+                file=sys.stdout,
+                mininterval=2,
+            ):
                 policy, out, missing = fut.result()
                 results.append((policy, out))
                 lacking.update(missing)

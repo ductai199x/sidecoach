@@ -27,13 +27,18 @@ ORDER = ["none", "inaccuracy", "mistake", "blunder"]
 
 
 def name(loss: float, th: Thresholds) -> str:
-    return str(severity(loss, th).value if hasattr(severity(loss, th), "value") else severity(loss, th)).lower()
+    return str(
+        severity(loss, th).value if hasattr(severity(loss, th), "value") else severity(loss, th)
+    ).lower()
 
 
 def table(flips: Counter, total: int, title: str) -> None:
     n = sum(flips.values())
     two = sum(c for (a, b), c in flips.items() if abs(ORDER.index(a) - ORDER.index(b)) >= 2)
-    print(f"{title}: {n}/{total} severities differ ({n / max(1, total):.1%}); by two levels or more: {two}")
+    print(
+        f"{title}: {n}/{total} severities differ ({n / max(1, total):.1%}); "
+        f"by two levels or more: {two}"
+    )
     for (a, b), c in flips.most_common():
         print(f"    {a:>10} -> {b:<10} {c}")
 
@@ -59,7 +64,10 @@ def main() -> None:
         table(flips, total, f"rule at {budget}s (depth 18 -> the rule's)")
         if moved:
             moved.sort()
-            print(f"    the position's score moved, in those flips: median {moved[len(moved) // 2]:.3f} max {moved[-1]:.3f}")
+            print(
+                f"    the position's score moved, in those flips: "
+                f"median {moved[len(moved) // 2]:.3f} max {moved[-1]:.3f}"
+            )
     # The baseline: no rule, two depth-18 searches of the same position.
     found = json.loads((CACHE / "single.json").read_text(encoding="utf-8"))
     db = sqlite3.connect(CACHE / "clean.sqlite")

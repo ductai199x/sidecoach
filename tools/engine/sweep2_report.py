@@ -32,7 +32,13 @@ def pooled(runs: list[dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for a in ANSWERS:
         v = [x for r in runs for x in r[a]]
-        out[a] = {"p50": q(v, 0.5), "p90": q(v, 0.9), "p99": q(v, 0.99), "max": max(v) if v else None, "n": len(v)}
+        out[a] = {
+            "p50": q(v, 0.5),
+            "p90": q(v, 0.9),
+            "p99": q(v, 0.99),
+            "max": max(v) if v else None,
+            "n": len(v),
+        }
     cpu = sum(r["cpu"] for r in runs)
     wall = sum(r["wall"] for r in runs)
     out["cores"] = cpu / wall if wall else 0.0
@@ -50,12 +56,14 @@ def summarise(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for name, run in r["sessions"].items():
             by.setdefault(kind(name), []).append(run)
         every = [run for runs in by.values() for run in runs]
-        rows.append({
-            "name": r["name"],
-            "policy": r["policy"],
-            "all": pooled(every),
-            "kinds": {k: pooled(v) for k, v in by.items()},
-        })
+        rows.append(
+            {
+                "name": r["name"],
+                "policy": r["policy"],
+                "all": pooled(every),
+                "kinds": {k: pooled(v) for k, v in by.items()},
+            }
+        )
     return rows
 
 
@@ -70,7 +78,8 @@ def front(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keep = []
     for i, mi in enumerate(m):
         beaten = any(
-            all(x <= y for x, y in zip(mj, mi, strict=True)) and any(x < y for x, y in zip(mj, mi, strict=True))
+            all(x <= y for x, y in zip(mj, mi, strict=True))
+            and any(x < y for x, y in zip(mj, mi, strict=True))
             for j, mj in enumerate(m)
             if j != i
         )
@@ -91,13 +100,17 @@ def main() -> None:
     rows = summarise(results)
     (CACHE / "sweep2_summary.json").write_text(json.dumps(rows), encoding="utf-8")
     best = front(rows)
-    print(f"{len(rows)} policies; {len(best)} on the front (cores; p90 of verdict you/them, hint, deep; left)")
+    print(
+        f"{len(rows)} policies; {len(best)} on the front "
+        "(cores; p90 of verdict you/them, hint, deep; left)"
+    )
     for r in best[: args.top]:
         a = r["all"]
         print(
             f"  {r['name']:42s} cores {a['cores']:.2f} | verdict {fmt(a['verdict_user']['p90'])} "
             f"{fmt(a['verdict_opp']['p90'])} | hint {fmt(a['hint']['p90'])} | deep "
-            f"{fmt(a['deep']['p90'])} | left {a['left_hint']}/{a['left_deep']} | waste {a['wasted']:.0%}"
+            f"{fmt(a['deep']['p90'])} | left {a['left_hint']}/{a['left_deep']} "
+            f"| waste {a['wasted']:.0%}"
         )
 
 

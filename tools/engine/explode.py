@@ -46,7 +46,9 @@ def run(lines: int, hash_mb: int, position: str) -> None:
     for text in proc.stdout:
         if text.startswith("bestmove"):
             break
-        m = re.search(r"depth (\d+) seldepth (\d+) multipv 1 .*?nodes (\d+) nps (\d+).*? time (\d+)", text)
+        m = re.search(
+            r"depth (\d+) seldepth (\d+) multipv 1 .*?nodes (\d+) nps (\d+).*? time (\d+)", text
+        )
         if not m:
             m2 = re.search(r"depth (\d+) seldepth (\d+) multipv 1 .*?nodes (\d+) nps (\d+)", text)
             t = re.search(r" time (\d+)", text)

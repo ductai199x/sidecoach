@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from tools.engine.measure import CORES, _W, _worker_init  # noqa: E402
+from tools.engine.measure import _W, CORES, _worker_init  # noqa: E402
 
 CACHE = ROOT / "data" / "engine-cache"
 OUT = CACHE / "single_tail.json"
@@ -65,13 +65,21 @@ def main() -> None:
         v = sorted(v)
         return v[min(len(v) - 1, int(p * len(v)))]
 
-    print(f"the 300 slowest one-line searches of 8,886: time to each depth (s)")
+    print("the 300 slowest one-line searches of 8,886: time to each depth (s)")
     for d in range(10, 19):
         at = [r["depths"].get(d, r["depths"].get(str(d), r["total"])) for r in out]
-        print(f"  d{d}: max {max(at):5.2f}  p99-of-300 {q(at, .99):.2f}  over 1s {sum(x > 1 for x in at)}")
+        print(
+            f"  d{d}: max {max(at):5.2f}  p99-of-300 {q(at, 0.99):.2f}  "
+            f"over 1s {sum(x > 1 for x in at)}"
+        )
     worst = max(out, key=lambda r: r["total"])
     print(f"slowest: {worst['total']:.1f}s {worst['fen']}")
-    print("   depths: " + " ".join(f"{d}:{t:.2f}" for d, t in sorted(worst["depths"].items(), key=lambda x: int(x[0]))))
+    print(
+        "   depths: "
+        + " ".join(
+            f"{d}:{t:.2f}" for d, t in sorted(worst["depths"].items(), key=lambda x: int(x[0]))
+        )
+    )
 
 
 if __name__ == "__main__":

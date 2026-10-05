@@ -49,9 +49,9 @@ def main() -> None:
         f"{statistics.mean(side):.3f}; over the 6-line search p50 {q(side_ratio, 0.5):.2f}"
     )
     one_over_six = [r["1x1"]["wall"] / r["6x1"]["wall"] for r in rows]
+    ones = sum(r["1x1"]["wall"] for r in rows) / sum(r["6x1"]["wall"] for r in rows)
     print(
-        f"  1 line over 6 lines (1 thread): p50 {q(one_over_six, 0.5):.2f} "
-        f"mean of sums {sum(r['1x1']['wall'] for r in rows) / sum(r['6x1']['wall'] for r in rows):.2f}"
+        f"  1 line over 6 lines (1 thread): p50 {q(one_over_six, 0.5):.2f} mean of sums {ones:.2f}"
     )
     noise = [abs(r["6x1"]["wall"] - base[r["fen"]]) / base[r["fen"]] for r in repeats]
     print(f"  noise, one thread searched again: p50 {q(noise, 0.5):.1%} max {max(noise):.1%}")
@@ -61,7 +61,8 @@ def main() -> None:
         by_k.setdefault(r["k"], []).append(r["wall"] / base[r["fen"]])
     for k, ratios in sorted(by_k.items()):
         print(
-            f"  k={k:2d}: slower than alone p50 x{q(ratios, 0.5):.2f} mean x{statistics.mean(ratios):.2f}"
+            f"  k={k:2d}: slower than alone p50 x{q(ratios, 0.5):.2f} "
+            f"mean x{statistics.mean(ratios):.2f}"
         )
 
 

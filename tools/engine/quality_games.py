@@ -95,7 +95,13 @@ def main() -> None:
     pool = ProcessPoolExecutor(12, initializer=_init, initargs=(cores,))
     try:
         futures = {pool.submit(_scores, t): k for k, t in enumerate(tasks)}
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="positions", file=sys.stdout, mininterval=2):
+        for fut in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="positions",
+            file=sys.stdout,
+            mininterval=2,
+        ):
             scores[futures[fut]] = fut.result()[1]
     finally:
         processes = list(pool._processes.values()) if pool._processes else []
@@ -138,7 +144,10 @@ def report(rows: list[dict[str, Any]], truth: int) -> None:
             same += st == sx
             order = ["none", "inaccuracy", "mistake", "blunder"]
             two += abs(order.index(str(st.value)) - order.index(str(sx.value))) >= 2
-        print(f"  depth {d}: severity as the truth's {same}/{n} ({same / max(1, n):.2%}); off by two levels or more: {two}")
+        print(
+            f"  depth {d}: severity as the truth's {same}/{n} ({same / max(1, n):.2%}); "
+            f"off by two levels or more: {two}"
+        )
 
 
 if __name__ == "__main__":

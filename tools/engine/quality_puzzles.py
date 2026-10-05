@@ -9,7 +9,7 @@ Twelve processes on the first die's cores (the second die is the timing measurem
 correctness, not time, is what this measures.
 
     uv run --no-sync python tools/engine/quality_puzzles.py --n 30000
-    Get-Content "D:\\chess-coaching-companion\\data\\engine-cache\\quality_puzzles.log" -Wait -Tail 2
+    Get-Content data\\engine-cache\\quality_puzzles.log -Wait -Tail 2
 """
 
 from __future__ import annotations
@@ -114,7 +114,13 @@ def main() -> None:
     try:
         futures = [pool.submit(_puzzle, t) for t in tasks]
         for n, fut in enumerate(
-            tqdm(as_completed(futures), total=len(futures), desc="puzzles", file=sys.stdout, mininterval=2),
+            tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="puzzles",
+                file=sys.stdout,
+                mininterval=2,
+            ),
             start=1,
         ):
             out.append(fut.result())
@@ -133,7 +139,11 @@ def report(out: list[dict[str, Any]], depth: int) -> None:
     n = len(out)
     print(f"{n} puzzles, {sum(len(r['steps']) for r in out)} solver moves")
     for d in range(10, depth + 1):
-        solved = sum(1 for r in out if all(s["right"].get(str(d), s["right"].get(d, False)) for s in r["steps"]))
+        solved = sum(
+            1
+            for r in out
+            if all(s["right"].get(str(d), s["right"].get(d, False)) for s in r["steps"])
+        )
         print(f"  depth {d}: solved {solved}/{n} ({solved / n:.4%}); failed {n - solved}")
 
 

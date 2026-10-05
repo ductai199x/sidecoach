@@ -146,8 +146,23 @@ DEVICE_PATH = re.compile(
 )
 # Windows programs whose switches start with a slash: Git Bash turns a switch into a path.
 SLASH_SWITCHED = {
-    "cmd", "taskkill", "tasklist", "robocopy", "xcopy", "schtasks", "reg", "sc", "net", "wmic",
-    "icacls", "findstr", "where", "shutdown", "attrib", "msiexec", "certutil",
+    "cmd",
+    "taskkill",
+    "tasklist",
+    "robocopy",
+    "xcopy",
+    "schtasks",
+    "reg",
+    "sc",
+    "net",
+    "wmic",
+    "icacls",
+    "findstr",
+    "where",
+    "shutdown",
+    "attrib",
+    "msiexec",
+    "certutil",
 }
 MANGLED = (
     "Git Bash would rewrite {what} as a Windows path before the program sees it (MSYS path "

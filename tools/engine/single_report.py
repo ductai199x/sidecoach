@@ -29,8 +29,8 @@ def q(v: list[float], p: float) -> float:
 
 def tail(name: str, v: list[float]) -> None:
     print(
-        f"  {name:24s} p50 {q(v, .5):.2f} p90 {q(v, .9):.2f} p99 {q(v, .99):.2f} "
-        f"p99.9 {q(v, .999):.2f} max {max(v):5.1f} | over 2s {sum(x > 2 for x in v):4d} "
+        f"  {name:24s} p50 {q(v, 0.5):.2f} p90 {q(v, 0.9):.2f} p99 {q(v, 0.99):.2f} "
+        f"p99.9 {q(v, 0.999):.2f} max {max(v):5.1f} | over 2s {sum(x > 2 for x in v):4d} "
         f"over 5s {sum(x > 5 for x in v):3d}"
     )
 
@@ -58,7 +58,9 @@ def main() -> None:
     tail("two lines", [clean[r["key"]]["2"]["wall"] / SIX_AT_ONCE for r in found])
     tail("six lines", [clean[r["key"]]["6"]["wall"] / SIX_AT_ONCE for r in found])
     sample = [r for r in found if r.get("children")]
-    print(f"\n{len(sample)} positions: the six candidates as their own positions' one-line searches")
+    print(
+        f"\n{len(sample)} positions: the six candidates as their own positions' one-line searches"
+    )
     total = [r["one"] + sum(c["s"] for c in r["children"]) for r in sample]
     wall3 = [makespan([r["one"]] + [c["s"] for c in r["children"]], 3) for r in sample]
     worst_child = [max([c["s"] for c in r["children"]] or [0]) for r in sample]
@@ -91,7 +93,9 @@ def main() -> None:
             if m not in six_of:
                 continue
             moves += 1
-            agree += severity(max(0.0, best_k - v), th) == severity(max(0.0, best_6 - six_of[m]), th)
+            agree += severity(max(0.0, best_k - v), th) == severity(
+                max(0.0, best_6 - six_of[m]), th
+            )
     n = len(sample)
     print(
         f"  best move the same: {same_best}/{n}; the whole order the same: {same_order}/{n}; "

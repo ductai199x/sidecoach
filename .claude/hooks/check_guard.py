@@ -53,7 +53,9 @@ def main() -> None:
         if reason is not None:
             wrong += 1
             print(f"REFUSED, should let through: [{tool}] {command!r}: {reason[:80]}")
-    print(f"{len(REFUSED) + len(ALLOWED) - wrong} of {len(REFUSED) + len(ALLOWED)} as they should be")
+    print(
+        f"{len(REFUSED) + len(ALLOWED) - wrong} of {len(REFUSED) + len(ALLOWED)} as they should be"
+    )
     sys.exit(1 if wrong else 0)
 
 

@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from sidecoach.analysis.score import Thresholds, severity  # noqa: E402
-from tools.engine.measure import CORES, _W, _worker_init  # noqa: E402
+from tools.engine.measure import _W, CORES, _worker_init  # noqa: E402
 
 CACHE = ROOT / "data" / "engine-cache"
 OUT = CACHE / "decided.json"
@@ -50,7 +50,9 @@ def _search(board: chess.Board, depth: int) -> list[tuple[int, float, float]]:
 
     lines = engine.analyse(board, depth=depth, multipv=1, on_depth=on_depth)
     if lines and (not marks or marks[-1][0] < lines[0].depth):
-        marks.append((lines[0].depth, (time.perf_counter() - t0) / SIX_AT_ONCE, lines[0].expected_score))
+        marks.append(
+            (lines[0].depth, (time.perf_counter() - t0) / SIX_AT_ONCE, lines[0].expected_score)
+        )
     return marks
 
 
@@ -125,13 +127,15 @@ def main() -> None:
             worst = max(worst, abs(taken[1] - final))
             for value in r["children"].values():
                 judged += 1
-                if severity(max(0.0, final - value), th) != severity(max(0.0, taken[1] - value), th):
+                if severity(max(0.0, final - value), th) != severity(
+                    max(0.0, taken[1] - value), th
+                ):
                     changed += 1
         waits.sort()
         print(
             f"budget {budget}s: fires on {fired}/300; score moved at most {worst:.3f}; "
             f"severities changed {changed}/{judged}; wait over these 300 then max "
-            f"{waits[-1]:.1f}s p99 {waits[int(.99 * len(waits))]:.1f}s"
+            f"{waits[-1]:.1f}s p99 {waits[int(0.99 * len(waits))]:.1f}s"
         )
 
 

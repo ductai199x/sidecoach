@@ -135,7 +135,9 @@ def alone(fens: list[str], repeat: int, bar: Any) -> list[dict[str, Any]]:
                 row[f"{lines}x{threads}"] = search(engine, process, board, lines)
                 bar.update(1)
             if not row["repeat"]:
-                measured = annotator.search(board)
+                # The six lines the side searches read, searched before their clock starts.
+                lines = side_engine.analyse(board, depth=DEPTH, multipv=6)
+                measured = annotator.measured_lines(board, lines)
                 c0, t0 = cpu(side_process), time.perf_counter()
                 annotator.with_side(board, measured)
                 row["side"] = {"wall": time.perf_counter() - t0, "cpu": cpu(side_process) - c0}
@@ -146,6 +148,20 @@ def alone(fens: list[str], repeat: int, bar: Any) -> list[dict[str, Any]]:
             engine.close()
         side_engine.close()
     return rows
+
+
+def _one_of(
+    start: threading.Barrier,
+    made: tuple[Engine, Any],
+    results: list[dict[str, Any]],
+    j: int,
+    fen: str,
+    k: int,
+) -> None:
+    """One of `k` searches started together: its result in `results[j]`."""
+    start.wait()
+    engine, process = made
+    results[j] = {"fen": fen, "k": k, **search(engine, process, chess.Board(fen), 6)}
 
 
 def side_by_side(fens: list[str], bar: Any) -> list[dict[str, Any]]:
@@ -160,16 +176,10 @@ def side_by_side(fens: list[str], bar: Any) -> list[dict[str, Any]]:
                 results: list[dict[str, Any]] = [{} for _ in batch]
                 start = threading.Barrier(len(batch))
 
-                def run(j: int, fen: str) -> None:
-                    start.wait()
-                    engine, process = engines[j]
-                    results[j] = {
-                        "fen": fen,
-                        "k": k,
-                        **search(engine, process, chess.Board(fen), 6),
-                    }
-
-                workers = [threading.Thread(target=run, args=(j, f)) for j, f in enumerate(batch)]
+                workers = [
+                    threading.Thread(target=_one_of, args=(start, engines[j], results, j, fen, k))
+                    for j, fen in enumerate(batch)
+                ]
                 for w in workers:
                     w.start()
                 for w in workers:

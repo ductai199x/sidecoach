@@ -25,8 +25,13 @@ def q(v: list[float], p: float) -> float:
 
 def stats(v: list[float]) -> dict[str, float]:
     return {
-        "p50": q(v, 0.5), "p90": q(v, 0.9), "p99": q(v, 0.99), "max": max(v),
-        "over5": sum(x > 5 for x in v), "n": len(v), "sum": sum(v),
+        "p50": q(v, 0.5),
+        "p90": q(v, 0.9),
+        "p99": q(v, 0.99),
+        "max": max(v),
+        "over5": sum(x > 5 for x in v),
+        "n": len(v),
+        "sum": sum(v),
     }
 
 
@@ -63,7 +68,10 @@ def phone() -> dict[str, dict[str, float]]:
         "cpu_before": sum(r["six"]["cpu"] for r in rows),
         "cpu_one": sum(r["one"]["cpu"] for r in rows),
         "one18_rnd": stats(
-            [r["one"]["wall"] for r in json.loads((C / "phone-one-18.json").read_text(encoding="utf-8"))["rows"]]
+            [
+                r["one"]["wall"]
+                for r in json.loads((C / "phone-one-18.json").read_text(encoding="utf-8"))["rows"]
+            ]
         ),
     }
 
@@ -90,7 +98,16 @@ def front_rows() -> str:
         if r is None:
             continue
         out.append(f'<tr class="group"><th colspan=6>{html.escape(label)}</th></tr>')
-        for kind in ("puzzles", "600", "900+10", "180+2", "blitz x3", "burst 0.5s", "burst 0.2s", "browsing"):
+        for kind in (
+            "puzzles",
+            "600",
+            "900+10",
+            "180+2",
+            "blitz x3",
+            "burst 0.5s",
+            "burst 0.2s",
+            "browsing",
+        ):
             a = r["kinds"].get(kind)
             if a is None:
                 continue
@@ -153,10 +170,17 @@ def coach_rows() -> str:
     text = path.read_text(encoding="utf-8").split("== workers 4", 1)[-1]
     rows: dict[str, dict[str, str]] = {}
     for line in text.splitlines():
-        m = re.match(r"(\S+(?: \S+)?)\s+(lesson|question|their_turn|verdict)\s+n\s+\d+\s+p50 ([\d.]+) p90 ([\d.]+) max\s+([\d.]+)", line)
+        m = re.match(
+            r"(\S+(?: \S+)?)\s+(lesson|question|their_turn|verdict)\s+n\s+\d+\s+p50 ([\d.]+) p90 ([\d.]+) max\s+([\d.]+)",
+            line,
+        )
         if m:
-            rows.setdefault(m.group(1), {})[m.group(2)] = f"{m.group(4)} s <span class=\"lede\">(max {m.group(5)})</span>"
-    out = ["<tr><th>workload</th><th>verdict p90</th><th>lesson prompt p90</th><th>question, their turn p90</th><th>move asked about p90</th></tr>"]
+            rows.setdefault(m.group(1), {})[m.group(2)] = (
+                f'{m.group(4)} s <span class="lede">(max {m.group(5)})</span>'
+            )
+    out = [
+        "<tr><th>workload</th><th>verdict p90</th><th>lesson prompt p90</th><th>question, their turn p90</th><th>move asked about p90</th></tr>"
+    ]
     for kind, r in rows.items():
         out.append(
             f"<tr><th>{html.escape(kind)}</th><td>{r.get('verdict', '–')}</td><td>{r.get('lesson', '–')}</td>"
@@ -187,16 +211,21 @@ def build(out: Path) -> None:
     )
     game_rows = "".join(f"<tr><th>depth {dd}</th><td>{a:.1%}</td></tr>" for dd, a in g)
     page = TEMPLATE.format(
-        desk_rows=head + row("Before: six lines, depth 18, + threats", d["before"])
+        desk_rows=head
+        + row("Before: six lines, depth 18, + threats", d["before"])
         + row("After: one line, depth 18 (verdict, best move)", d["one"], True)
         + row("After: six lines, depth 12 (the hint)", d["hint"], True),
-        phone_rows=head + row("Before: six lines, depth 14, + threats", p["before"])
+        phone_rows=head
+        + row("Before: six lines, depth 14, + threats", p["before"])
         + row("After: one line, depth 14", p["one"], True)
         + row("After: six lines, depth 12 (the hint)", p["hint"], True),
-        phone_rnd=head + row("Before", p["before_rnd"]) + row("After: one line", p["one_rnd"], True)
+        phone_rnd=head
+        + row("Before", p["before_rnd"])
+        + row("After: one line", p["one_rnd"], True)
         + row("After: the hint", p["hint_rnd"], True),
         phone_cpu=f"{p['cpu_before']:.0f} s → {p['cpu_one']:.0f} s",
-        phone18=head + row("Before: six lines, depth 14, + threats", p["before_rnd"])
+        phone18=head
+        + row("Before: six lines, depth 14, + threats", p["before_rnd"])
         + row("After: one line, depth 14", p["one_rnd"], True)
         + row("After: one line, depth 18", p["one18_rnd"], True),
         front=front_rows(),

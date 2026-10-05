@@ -46,9 +46,8 @@ _W: dict[str, Any] = {}
 
 def _worker_init(cores: list[int]) -> None:
     """Each process takes the next core of the list, it and its engine pinned there."""
-    import multiprocessing
-
     import atexit
+    import multiprocessing
 
     import psutil
 
@@ -154,7 +153,7 @@ def workloads() -> dict[str, list[Any]]:
     """The sessions the design is measured on: the puzzle session, six games of each long time
     control and every blitz game at their clocks, the blitz again at three times its speed, and
     a game browsed."""
-    from tools.engine.simulate import browse_session, chesscom_sessions, session
+    from tools.engine.sessions import browse_session, chesscom_sessions, session
 
     dump = Path(os.environ["LOCALAPPDATA"]) / "Sidecoach" / "data" / "dumps" / "20261004-150208"
     out: dict[str, list[Any]] = {"puzzles #0": session(dump)}
@@ -174,7 +173,7 @@ def workloads() -> dict[str, list[Any]]:
 
 
 def positions(sessions: dict[str, list[Any]]) -> dict[str, chess.Board]:
-    from tools.engine.simulate import game_boards
+    from tools.engine.sessions import game_boards
 
     out: dict[str, chess.Board] = {}
     for steps in sessions.values():
@@ -241,7 +240,8 @@ def check() -> None:
     ratios.sort()
     n = len(ratios)
     print(
-        f"six at once over alone, {n} positions: p10 {ratios[n // 10]:.2f} p50 {ratios[n // 2]:.2f} "
+        f"six at once over alone, {n} positions: "
+        f"p10 {ratios[n // 10]:.2f} p50 {ratios[n // 2]:.2f} "
         f"p90 {ratios[9 * n // 10]:.2f} max {ratios[-1]:.2f}; sum {sum(ratios) / n:.2f}"
     )
 

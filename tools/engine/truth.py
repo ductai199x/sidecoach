@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from tools.engine.measure import CORES, _W, _worker_init  # noqa: E402
+from tools.engine.measure import _W, CORES, _worker_init  # noqa: E402
 
 CACHE = ROOT / "data" / "engine-cache"
 OUT = CACHE / "truth.json"
@@ -61,7 +61,9 @@ def main() -> None:
     for r in sample:
         fen = " ".join(r["key"].split(" ")[:6])
         six = [ln["moves"][0] for ln in clean[r["key"]]["6"]["lines"] if ln["moves"]]
-        kids = {c["move"]: (1.0 - c["lines"][0]["expected_score"]) for c in r["children"] if c["lines"]}
+        kids = {
+            c["move"]: (1.0 - c["lines"][0]["expected_score"]) for c in r["children"] if c["lines"]
+        }
         if not six or not kids:
             continue
         tasks.append((fen, six))
@@ -96,10 +98,14 @@ def main() -> None:
 
     print(f"{n} positions, the truth each candidate searched to depth {DEEP + 1}:")
     print(f"  the two methods' best moves differ in {differ}")
-    print(f"  six lines' best is the true best in {six_right}; loses over 0.02 in {big(six_loss)}; "
-          f"mean loss {sum(six_loss) / n:.4f}")
-    print(f"  candidates' own searches' best is the true best in {kids_right}; loses over 0.02 in "
-          f"{big(kids_loss)}; mean loss {sum(kids_loss) / n:.4f}")
+    print(
+        f"  six lines' best is the true best in {six_right}; loses over 0.02 in {big(six_loss)}; "
+        f"mean loss {sum(six_loss) / n:.4f}"
+    )
+    print(
+        f"  candidates' own searches' best is the true best in {kids_right}; loses over 0.02 in "
+        f"{big(kids_loss)}; mean loss {sum(kids_loss) / n:.4f}"
+    )
 
 
 if __name__ == "__main__":

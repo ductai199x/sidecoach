@@ -20,10 +20,32 @@ sys.path.insert(0, str(ROOT))
 
 from tools.engine.measure import STOCKFISH  # noqa: E402
 
-MOVES = (
-    "e2e4 c7c5 g1f3 b8c6 f1b5 e7e5 c2c3 g8f6 b5c6 b7c6 d2d3 c8a6 f3e5 f8d6 e5c4 a6c4 d3c4 f6e4 "
-    "e1g1 e8g8 f1e1 f8e8 f2f3 d6h2"
-).split()
+MOVES = [
+    "e2e4",
+    "c7c5",
+    "g1f3",
+    "b8c6",
+    "f1b5",
+    "e7e5",
+    "c2c3",
+    "g8f6",
+    "b5c6",
+    "b7c6",
+    "d2d3",
+    "c8a6",
+    "f3e5",
+    "f8d6",
+    "e5c4",
+    "a6c4",
+    "d3c4",
+    "f6e4",
+    "e1g1",
+    "e8g8",
+    "f1e1",
+    "f8e8",
+    "f2f3",
+    "d6h2",
+]
 SECOND = "r1bk3r/ppp2Qp1/2np3q/2bB2p1/3pP3/8/PPPN1PPP/R1B2RK1 w - - 0 1"
 
 

@@ -58,8 +58,11 @@ def main() -> None:
                     sol, eng = values[moves[i]], values[mine]
                     wins = eng >= 0.85 or eng >= sol - 0.02
                     kinds["engine's move wins too" if wins else "real miss"] += 1
-                    print(f"{pid} rating {row['Rating']}: solution {moves[i]} {sol:.2f}, engine {mine} {eng:.2f} "
-                          f"-> {'wins too' if wins else 'REAL MISS'}")
+                    print(
+                        f"{pid} rating {row['Rating']}: solution {moves[i]} {sol:.2f}, "
+                        f"engine {mine} {eng:.2f} "
+                        f"-> {'wins too' if wins else 'REAL MISS'}"
+                    )
                     break
                 board.push_uci(moves[i])
                 if i + 1 < len(moves):

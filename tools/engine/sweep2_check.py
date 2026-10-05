@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from sidecoach.analysis.annotator import cache_key  # noqa: E402
-from tools.engine.simulate import Step  # noqa: E402
+from tools.engine.sessions import Step  # noqa: E402
 from tools.engine.sweep2 import Atom, Policy, Run  # noqa: E402
 
 
@@ -39,7 +39,9 @@ def check(title: str, run: dict, want: dict) -> bool:
     for key, value in want.items():
         got = run[key]
         if isinstance(value, list):
-            same = len(got) == len(value) and all(abs(a - b) < 1e-9 for a, b in zip(got, value, strict=True))
+            same = len(got) == len(value) and all(
+                abs(a - b) < 1e-9 for a, b in zip(got, value, strict=True)
+            )
         else:
             same = abs(got - value) < 1e-9
         print(f"  {key}: {got} (by hand {value}) {'ok' if same else 'WRONG'}")
@@ -61,7 +63,14 @@ def main() -> None:
         return {
             cache_key(start): Atom(0.2, line("e2e4"), None, 0.1, [line("e2e4")], 0.2),
             cache_key(e4): Atom(0.2, line("e7e5"), None, 0.1, [line("e7e5")], 0.2),
-            cache_key(a3): Atom(5.0 if slow_a3 else 0.3, line("e7e5"), 1.0 if slow_a3 else None, 0.1, [line("e7e5")], 0.2),
+            cache_key(a3): Atom(
+                5.0 if slow_a3 else 0.3,
+                line("e7e5"),
+                1.0 if slow_a3 else None,
+                0.1,
+                [line("e7e5")],
+                0.2,
+            ),
             cache_key(e4e5): Atom(0.2, line("g1f3"), None, 0.1, [line("g1f3")], 0.2),
             cache_key(a3e5): Atom(0.2, line("g1f3"), None, 0.1, [line("g1f3")], 0.2),
         }
@@ -69,14 +78,38 @@ def main() -> None:
     def game(first: chess.Board, move: str) -> list:
         return [
             Step(0.0, "start", start.copy(), game_id="g", user=chess.WHITE),
-            Step(10.0, "move", start.copy(), chess.Move.from_uci(move), 1, True, game_id="g", user=chess.WHITE),
-            Step(11.0, "move", first.copy(), chess.Move.from_uci("e7e5"), 2, False, game_id="g", user=chess.WHITE),
+            Step(
+                10.0,
+                "move",
+                start.copy(),
+                chess.Move.from_uci(move),
+                1,
+                True,
+                game_id="g",
+                user=chess.WHITE,
+            ),
+            Step(
+                11.0,
+                "move",
+                first.copy(),
+                chess.Move.from_uci("e7e5"),
+                2,
+                False,
+                game_id="g",
+                user=chess.WHITE,
+            ),
         ]
 
     ok = check(
         "A, the best moves:",
         Run(policy, atoms(), game(e4, "e2e4")).run(),
-        {"verdict_user": [0.0], "verdict_opp": [0.0], "hint": [0.3, 0.3], "deep": [0.5, 0.5], "cpu": 1.2},
+        {
+            "verdict_user": [0.0],
+            "verdict_opp": [0.0],
+            "hint": [0.3, 0.3],
+            "deep": [0.5, 0.5],
+            "cpu": 1.2,
+        },
     )
     ok &= check(
         "B, 1.a3, not the best:",

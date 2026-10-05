@@ -100,7 +100,10 @@ def main() -> None:
         print(f"  by depth {d}: {n}")
     times = sorted(t for _, d, t in results if t)
     if times:
-        print(f"  the time those took, alone: median {times[len(times) // 2]:.1f}s max {times[-1]:.1f}s")
+        print(
+            f"  the time those took, alone: "
+            f"median {times[len(times) // 2]:.1f}s max {times[-1]:.1f}s"
+        )
 
 
 if __name__ == "__main__":

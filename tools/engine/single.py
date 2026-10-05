@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from tools.engine.measure import CORES, DB, _board, _W, _worker_init  # noqa: E402
+from tools.engine.measure import _W, CORES, DB, _board, _worker_init  # noqa: E402
 
 OUT = ROOT / "data" / "engine-cache" / "single.json"
 SIX_AT_ONCE = 1.13
@@ -83,7 +83,13 @@ def main() -> None:
     pool = ProcessPoolExecutor(len(CORES), initializer=_worker_init, initargs=(CORES,))
     try:
         futures = [pool.submit(_one, t) for t in tasks]
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="positions", file=sys.stdout, mininterval=2):
+        for fut in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="positions",
+            file=sys.stdout,
+            mininterval=2,
+        ):
             out.append(fut.result())
     finally:
         processes = list(pool._processes.values()) if pool._processes else []
