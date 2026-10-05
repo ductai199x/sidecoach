@@ -30,7 +30,7 @@ class TrapCostTest {
 
     /** The engine, counting its searches. */
     private class Counting(binary: File, net: File) :
-        Engine(binary, net, threads = 2, hashMb = 64, multipv = 6, pvPlies = 12, maxSeconds = 5.0) {
+        Engine(binary, net, threads = 1, hashMb = 64, multipv = 6, pvPlies = 12) {
         var calls = 0
 
         override fun analyse(

@@ -31,13 +31,8 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class AnnotatorTest {
 
-    /** Stockfish, every search asked of it counted. */
-    /**
-     * Searches run to the depth they are asked for, with no cap of seconds: beside the other lanes'
-     * classes a depth-14 search ran past the engine's 5 s cap, came back shallower, and the blunder
-     * was labelled a miss (2026-10-02, once in a full run) -- a verdict on how busy the device was.
-     */
-    private class Counted(binary: File, net: File) : Engine(binary, net, threads = 2, hashMb = 64, multipv = 4, maxSeconds = null) {
+    /** Stockfish, one thread as every search, every search asked of it counted. */
+    private class Counted(binary: File, net: File) : Engine(binary, net, threads = 1, hashMb = 64, multipv = 4) {
         @Volatile var searches = 0
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<com.sidecoach.events.Line>) -> Unit)?): List<com.sidecoach.events.Line> {

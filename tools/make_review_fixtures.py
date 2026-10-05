@@ -142,7 +142,7 @@ def main() -> None:
     book = OpeningBook.load(DESKTOP / "data" / "openings")
     if book is None:
         raise SystemExit("no opening tables under data/openings")
-    engines = [Engine(path=path, threads=2, hash_mb=64, multipv=6) for _ in range(ENGINES)]
+    engines = [Engine(path=path, threads=1, hash_mb=64, multipv=6) for _ in range(ENGINES)]
     games = []
     try:
         for e in engines:

@@ -62,8 +62,8 @@ class Assessing(
      */
     @Volatile var sink: ((String) -> Unit)? = null
 
-    /** The engine process's CPU time in milliseconds; 0 when there is no engine. */
-    fun engineCpuMs(): Long = analyser?.annotator?.engine?.cpuMs() ?: 0
+    /** The engine processes' CPU time in milliseconds, every worker's; 0 when there is no engine. */
+    fun engineCpuMs(): Long = analyser?.engines?.sumOf { it.cpuMs() } ?: 0
 
     fun submit(event: Event) {
         val worker = analyser ?: return
@@ -109,7 +109,7 @@ class Assessing(
                 from.clear()
                 forget(event.gameId, event.startFen)
                 game = Board(event.startFen)
-                worker.submitPosition(event.gameId, Board(event.startFen), 0)
+                worker.submitPosition(event.gameId, Board(event.startFen), 0, user = event.userSide.color)
             }
             is Resync -> {
                 worker.reset()
@@ -121,6 +121,35 @@ class Assessing(
             }
             else -> Unit
         }
+    }
+
+    /**
+     * A watched game ended: every position the engine measured whole kept for its review, as a
+     * review keeps what it measured ([Store.addProgress]), so the review searches none of them
+     * again -- each was searched to a review strength's own standard (its depth and its lines).
+     * It measured every position whole a second time (the engine audit, 2026-10-04). Returns how
+     * many were kept. `_Assessing.keep_for_review`.
+     */
+    fun keepForReview(store: com.sidecoach.profile.Store, gameId: String): Int {
+        val worker = analyser ?: return 0
+        val annotator = worker.annotator
+        // Searched otherwise than a review searches: not the review's to read.
+        val strength = GameReview.STRENGTHS.values.firstOrNull {
+            it.depth == annotator.depth && it.multipv == annotator.multipv
+        } ?: return 0
+        var kept = 0
+        for (measured in worker.measuredPath(gameId)) {
+            store.addProgress(
+                "${com.sidecoach.profile.Store.WATCHED}$gameId",
+                strength.name,
+                strength.depth,
+                strength.multipv,
+                measured.fen,
+                com.sidecoach.events.ReviewJson.measured(measured).toString(),
+            )
+            kept += 1
+        }
+        return kept
     }
 
     /** A game begins on [fen], or its numbering starts again there (a resync): no plies stand yet. */
@@ -266,8 +295,8 @@ class Assessing(
         /**
          * A second Stockfish for the coach, as `cli._named_engine` builds it: for the moves
          * the player names and the model's own questions to the engine (`EngineTools`), the
-         * analyser's being on the game's positions. Half the threads, at most 128 MB, three
-         * lines, three seconds a position. Built, not started: asked only what the analyser has
+         * analyser's workers being on the game's positions. One thread, at most 128 MB, three
+         * lines, and the depth asked for reached, as every search. Built, not started: asked only what the analyser has
          * not computed ([ComputedFirst]), it starts at its first such search, so a session whose
          * questions the analyser answered pays nothing for it. Null when
          * there is no network yet.
@@ -280,12 +309,11 @@ class Assessing(
             return Engine(
                 binary,
                 net,
-                threads = maxOf(1, config.threads / 2),
+                threads = 1,
                 hashMb = minOf(128, config.hashMb),
                 multipv = 3,
                 pvPlies = config.pvPlies,
                 scoreModel = config.scoreModel,
-                maxSeconds = 3.0,
             )
         }
 
@@ -298,32 +326,26 @@ class Assessing(
             }
             val config = settings.engine()
             val analyser = try {
-                val engine = Engine(
-                    binary,
-                    net,
-                    threads = config.threads,
-                    hashMb = config.hashMb,
+                openAnalyser(
+                    depth = config.depth,
                     multipv = config.multipv,
-                    pvPlies = config.pvPlies,
-                    scoreModel = config.scoreModel,
-                    maxSeconds = config.maxSeconds,
-                )
-                // `open_analyser`: the engine started when the analyser is built, so an engine
-                // that will not start is said here rather than failing every search after.
-                engine.open()
-                Analyser(
-                    GameAnnotator(
-                        engine,
-                        depth = config.depth,
+                    workers = config.workers,
+                    thresholds = settings.thresholds(),
+                    // `_load_tagger` and `_load_book`: the motifs always, the book when Setup
+                    // has fetched its tables.
+                    tagger = Motifs,
+                    book = OpeningBook.load(File(context.filesDir, "openings")),
+                ) { threads ->
+                    Engine(
+                        binary,
+                        net,
+                        threads = threads,
+                        hashMb = config.hashMb,
                         multipv = config.multipv,
-                        thresholds = settings.thresholds(),
-                        // `_load_tagger` and `_load_book`: the motifs always, the book when
-                        // Setup has fetched its tables.
-                        tagger = Motifs,
-                        book = OpeningBook.load(File(context.filesDir, "openings")),
-                    ),
-                    lookAhead = LOOK_AHEAD,
-                ).also { it.start() }
+                        pvPlies = config.pvPlies,
+                        scoreModel = config.scoreModel,
+                    )
+                }
             } catch (exc: Exception) {
                 Log.w(TAG, "the engine did not start: $exc")
                 return Assessing(null, "Stockfish did not start: ${exc.message}")

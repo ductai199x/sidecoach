@@ -603,7 +603,7 @@ def main() -> None:
         book = OpeningBook.load(settings.data_dir / "openings")
     except Exception as exc:  # noqa: BLE001
         print(f"no opening book ({exc})")
-    engine = Engine(path=path, threads=4, hash_mb=256, multipv=6, pv_plies=8, max_seconds=5.0)
+    engine = Engine(path=path, threads=1, hash_mb=256, multipv=6, pv_plies=8)
     engine.open()
     try:
         runs = []

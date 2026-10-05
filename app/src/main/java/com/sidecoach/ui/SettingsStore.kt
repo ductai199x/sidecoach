@@ -24,17 +24,17 @@ import java.io.IOException
  */
 /**
  * `config.EngineSettings`, the fields the phone's engine is built from. The defaults are the
- * phone's own (tools/sync_settings.py writes them into the defaults asset): two threads and
- * 64 MB where the desktop has four and 256, for the cores and the heat a phone can spare.
+ * phone's own (tools/sync_settings.py writes them into the defaults asset): two workers of one
+ * thread each and 64 MB where the desktop has three and 256, for the cores and the heat a phone
+ * can spare.
  */
 data class EngineSettings(
     val multipv: Int = 6,
-    val threads: Int = 2,
+    val workers: Int = com.sidecoach.analysis.PHONE_WORKERS,
     val hashMb: Int = 64,
     val depth: Int = 14,
     val pvPlies: Int = 12,
     val scoreModel: String = "human",
-    val maxSeconds: Double? = 5.0,
 )
 
 open class SettingsStore(private val context: Context) {
@@ -238,16 +238,11 @@ open class SettingsStore(private val context: Context) {
         val base = EngineSettings()
         return EngineSettings(
             multipv = o.optInt("multipv", base.multipv),
-            threads = o.optInt("threads", base.threads),
+            workers = o.optInt("workers", base.workers),
             hashMb = o.optInt("hash_mb", base.hashMb),
             depth = o.optInt("depth", base.depth),
             pvPlies = o.optInt("pv_plies", base.pvPlies),
             scoreModel = o.optString("score_model", base.scoreModel),
-            maxSeconds = if (o.has("max_seconds") && o.isNull("max_seconds")) {
-                null
-            } else {
-                number(o, "max_seconds") ?: base.maxSeconds
-            },
         )
     }
 

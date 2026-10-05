@@ -36,9 +36,11 @@ object GameReview {
         "deep" to Strength("deep", 22, 6),
     )
 
-    // Each engine's threads; engines side by side take up to two thirds of the cores between
-    // them, the rest left to everything else the device does.
-    const val THREADS = 2
+    // Each engine's threads: one. At a fixed depth more threads widen the search instead of
+    // speeding it -- four took 7.7 times the processor time of one, and twice as long, for an
+    // answer no better (the engine audit, 2026-10-04). Engines side by side take up to two
+    // thirds of the cores between them, the rest left to everything else the device does.
+    const val THREADS = 1
     const val MAX_WORKERS = 8
 
     /** How many engines measure side by side on a device with [cores] cores. `workers_for`. */

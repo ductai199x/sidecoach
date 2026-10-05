@@ -47,11 +47,10 @@ open class Engine(
     var pvPlies: Int = DEFAULT_PV_PLIES,
     /** How a line's score becomes an expected score; see [expectedScore]. */
     var scoreModel: String = DEFAULT_SCORE_MODEL,
-    /**
-     * No single position may hold up a game. Some positions are pathologically slow to reach
-     * a given depth, and one of those in a post-game review stalls the whole run.
-     */
-    var maxSeconds: Double? = 5.0,
+    // A depth asked for is a depth reached: no time cap cuts a search short. A cap of five
+    // seconds answered 63 of 1,642 searches of a session below the depth asked, some at depth
+    // 11, and they were read as the full depth (the engine audit, 2026-10-04; Tai: no lower
+    // depths). A hung engine is the watchdog's ([watch]).
 ) : AutoCloseable {
 
     /**
@@ -135,7 +134,7 @@ open class Engine(
     @Volatile
     private var closedByOwner = false
 
-    fun open() {
+    open fun open() {
         closedByOwner = false
         start()
     }
@@ -229,7 +228,7 @@ open class Engine(
         synchronized(clock) {
             if (paused) signal(SIGCONT)
             enginePid = null
-            budgetMs = 0
+            watching = false
             clock.notifyAll()
         }
         process = null
@@ -251,15 +250,29 @@ open class Engine(
     private val clock = Object()
     private var paused = false
 
-    /** The running search's time limit in milliseconds, 0 when none is kept. */
+    /** Whether a search is watched ([arm]): its time limit kept, if it has one, and its silence. */
+    private var watching = false
+
+    /** The running search's time limit in milliseconds, 0 when it has none. */
     private var budgetMs = 0L
 
     /** The time the search has run, up to [runningSince]. */
     private var ranMs = 0L
 
-    /** When the search last ran on, 0 while it is paused or none is timed. */
+    /** When the search last ran on, 0 while it is paused or none is watched. */
     private var runningSince = 0L
     private var searchNumber = 0
+
+    /** The search's running time when the engine last said something ([heard]). */
+    private var heardMs = 0L
+
+    /** The time the watched search has run, its pauses not counted. Under [clock]. */
+    private fun ranNow(): Long = ranMs + if (runningSince != 0L) now() - runningSince else 0L
+
+    /** The engine said something: talking, not hung ([watch]). `_heard`; a test counts them. */
+    protected open fun heard() {
+        synchronized(clock) { heardMs = ranNow() }
+    }
 
     /**
      * Hold the engine still while the voice synthesises (Tai, 2026-09-23: Kokoro or Stockfish
@@ -288,7 +301,7 @@ open class Engine(
             if (!paused) return
             paused = false
             signal(SIGCONT)
-            if (budgetMs != 0L) runningSince = now()
+            if (watching) runningSince = now()
             clock.notifyAll()
         }
     }
@@ -298,11 +311,16 @@ open class Engine(
         runCatching { android.os.Process.sendSignal(pid, which) }
     }
 
-    /** Keep a search's time limit of [ms] from now: [watch] stops it when the time has run. */
-    private fun arm(ms: Long) {
+    /**
+     * Watch the search begun now ([watch]): its time limit of [ms], when it has one (null: its
+     * depth alone), and its silence.
+     */
+    private fun arm(ms: Long?) {
         val number = synchronized(clock) {
-            budgetMs = ms
+            watching = true
+            budgetMs = ms ?: 0
             ranMs = 0
+            heardMs = 0
             runningSince = if (paused) 0 else now()
             ++searchNumber
         }
@@ -315,6 +333,7 @@ open class Engine(
 
     private fun disarm() {
         synchronized(clock) {
+            watching = false
             budgetMs = 0
             runningSince = 0
             clock.notifyAll()
@@ -322,35 +341,42 @@ open class Engine(
     }
 
     /**
-     * The time limit of search [number]: `stop` once it has run its time, the pauses not
-     * counted. The engine's own `movetime` would count them, and cut a search short the moment
-     * it resumed; `stop` ends the search as `movetime` does, with its best move. Still running
-     * [watchdogS] of its own time after that, the engine has stopped answering without dying
-     * -- the search would wait on it for good, and the analyser's thread with it -- so its
-     * process is ended, the way a crash ends it, and the search is made again on a new one
-     * ([analyseWithRestart]). `_watched`.
+     * Search [number], watched. Its time limit, when it has one: `stop` once it has run its
+     * time, the pauses not counted -- the engine's own `movetime` would count them, and cut a
+     * search short the moment it resumed; `stop` ends the search as `movetime` does, with its
+     * best move. And its silence: a search reports each depth it finishes, and every root move
+     * it takes up once it has run three seconds, so one that says nothing for a whole
+     * [watchdogS] of its own running time is an engine that stopped answering without dying --
+     * the search would wait on it for good, and its worker with it -- so its process is ended,
+     * the way a crash ends it, and the search is made again on a new one ([analyseWithRestart]).
+     * A search still talking, however long it takes, is left to finish. `_watched`.
      */
     private fun watch(number: Int, target: Process?) {
         synchronized(clock) {
             var stopSent = false
-            while (searchNumber == number && budgetMs != 0L) {
+            while (searchNumber == number && watching) {
                 if (paused) {
                     clock.wait()
                     continue
                 }
-                val left = budgetMs - ranMs - (now() - runningSince)
-                if (left <= 0) {
-                    if (stopSent) {
-                        runCatching { target?.destroyForcibly() }
-                        budgetMs = 0
-                        return
-                    }
-                    runCatching { send("stop") }
-                    stopSent = true
-                    budgetMs += (watchdogS * 1000).toLong()
-                    continue
+                val ran = ranNow()
+                val silent = heardMs + (watchdogS * 1000).toLong() - ran
+                if (silent <= 0) {
+                    runCatching { target?.destroyForcibly() }
+                    watching = false
+                    return
                 }
-                clock.wait(left)
+                var wait = silent
+                if (budgetMs != 0L && !stopSent) {
+                    val left = budgetMs - ran
+                    if (left <= 0) {
+                        runCatching { send("stop") }
+                        stopSent = true
+                        continue
+                    }
+                    wait = minOf(wait, left)
+                }
+                clock.wait(maxOf(1L, wait))
             }
         }
     }
@@ -358,8 +384,8 @@ open class Engine(
     /** The clock a search's time is kept on ([arm], [watch], [pause]); a test drives its own. */
     protected open fun now(): Long = SystemClock.elapsedRealtime()
 
-    /** How long past its time a search may run before its engine is taken for hung ([watch]). */
-    @Volatile var watchdogS: Double = 10.0
+    /** How long a search may say nothing before its engine is taken for hung ([watch]). */
+    @Volatile var watchdogS: Double = 30.0
 
     /**
      * The best lines for `board`, best first, from the side to move's point of view. A
@@ -382,9 +408,6 @@ open class Engine(
         // claim is played on.
         if (gameOver(board)) return emptyList()
         if (depth == null && timeS == null) throw IllegalArgumentException("analyse needs a depth or a time limit")
-        var capped = timeS
-        val cap = maxSeconds
-        if (depth != null && cap != null) capped = if (timeS == null) cap else minOf(timeS, cap)
         var wanted = multipv ?: this.multipv
         wanted = maxOf(1, minOf(wanted, board.legalMoves().size))
         val plies = pvPlies ?: this.pvPlies
@@ -397,7 +420,7 @@ open class Engine(
         val depths: ((List<Info>) -> Unit)? = if (onDepth == null) null else { infos -> onDepth(asLines(infos, false)) }
         val infos = lock.withLock {
             if (optionsOwed) configureNow()
-            analyseWithRestart(board, depth, capped, wanted, depths)
+            analyseWithRestart(board, depth, timeS, wanted, depths)
         }
         val lines = asLines(infos, carryBest)
         if (carryBest && lines.isNotEmpty() && lines[0].moves.size < MIN_BEST_PLIES) {
@@ -452,7 +475,7 @@ open class Engine(
      * any thread, and while the engine is [pause]d: the `stop` waits in the pipe and ends the
      * search the moment the engine runs on.
      */
-    fun interrupt() {
+    open fun interrupt() {
         synchronized(stopping) {
             stopped = true
             if (searching) runCatching { send("stop") }  // it may have ended just now
@@ -530,9 +553,9 @@ open class Engine(
         val go = StringBuilder("go")
         if (depth != null) go.append(" depth ").append(depth)
         // The time limit is the desktop's `movetime`, kept here ([watch]) so that a pause
-        // does not count against it.
+        // does not count against it; every search is watched for silence.
         send(go.toString())
-        if (timeS != null) arm((timeS * 1000).toLong())
+        arm(timeS?.let { (it * 1000).toLong() })
         if (stoppable) {
             synchronized(stopping) {
                 searching = true
@@ -550,6 +573,7 @@ open class Engine(
         var whole: List<Info>? = null
         try {
             readUntil("bestmove") { line ->
+                heard()  // talking: not hung ([watch])
                 val words = words(line)
                 if (words.firstOrNull() == "info") {
                     val info = parseInfo(words, root)
@@ -569,7 +593,7 @@ open class Engine(
             }
         } finally {
             if (stoppable) synchronized(stopping) { searching = false }
-            if (timeS != null) disarm()
+            disarm()
         }
         if (stoppable && stopped) throw Interrupted()
         val cut = whole

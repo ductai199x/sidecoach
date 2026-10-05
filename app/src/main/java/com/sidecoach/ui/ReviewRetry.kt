@@ -137,7 +137,7 @@ class Retries(
     /** The annotator, with an engine and the game's own measurements (held under the lock). `_ready`. */
     private fun ready(): GameAnnotator {
         annotator?.let { return it }
-        val made = makeEngine.make(threads = 2, multipv = 1)
+        val made = makeEngine.make(threads = 1, multipv = 1)
         made.open()
         engine = made
         val annotator = GameAnnotator(

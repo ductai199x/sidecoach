@@ -363,7 +363,6 @@ class TakebackTest {
         try {
             assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = white, kind = "position"))
             assertTrue("the full measure never began", engine.holding.await(HANG_MS, TimeUnit.MILLISECONDS))
-            assertTrue("the whole measure, under way", analyser.looking)
             val before = assessing.drain()
             assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
             engine.wake() // the reset interrupted it before `submit` returned
@@ -603,7 +602,7 @@ class TakebackTest {
         Log.i(
             "sidecoach.state",
             "$name: takebacks $takebacks, $notes unexplained, ${game.size} plies agreed, " +
-                "${drained.size} drained, ${analyser.withdrawn} withdrawn, ${analyser.skipped} skipped, " +
+                "${drained.size} drained, ${analyser.withdrawn} withdrawn, " +
                 "${synchronized(log) { log.count { it.first == "search" } }} searches",
         )
         return failures

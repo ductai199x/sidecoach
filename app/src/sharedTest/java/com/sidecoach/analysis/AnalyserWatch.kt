@@ -10,14 +10,17 @@ import org.junit.Assert.assertTrue
 internal const val HANG_MS = 30_000L
 
 /**
- * An analyser's worker, watched without a clock (the desktop's `AnalyserWatch`, tests/
- * test_analysis.py): every word it says, every request it settles, every step it looks ahead,
- * every takeback it is told of and its stop put in by `close` wakes [until], which returns once its condition holds. [HANG_MS]
- * only bounds a hang; it is never the expected path. Made before the worker starts. [also] is
- * told the same, first (a test's own log of what the worker did, in order).
+ * An analyser's workers, watched without a clock (the desktop's `AnalyserWatch`, tests/fakes.py):
+ * every word they put and every change of state they wake each other for wakes [until], which
+ * returns once its condition holds. [HANG_MS] only bounds a hang; it is never the expected path.
+ * Made before the workers start. [also] is told the same, first.
+ *
+ * The condition is read outside the watch's own lock: it takes the analyser's, under which the
+ * workers tell the watch -- read inside, the two locks were taken in both orders.
  */
 internal class AnalyserWatch(val analyser: Analyser, private val also: Analyser.Watch? = null) {
     private val lock = Object()
+    private var pokes = 0L
 
     init {
         analyser.watch = object : Analyser.Watch {
@@ -26,13 +29,8 @@ internal class AnalyserWatch(val analyser: Analyser, private val also: Analyser.
                 poke()
             }
 
-            override fun settled() {
-                also?.settled()
-                poke()
-            }
-
-            override fun lookedAhead() {
-                also?.lookedAhead()
+            override fun changed() {
+                also?.changed()
                 poke()
             }
 
@@ -40,37 +38,42 @@ internal class AnalyserWatch(val analyser: Analyser, private val also: Analyser.
                 also?.withdrew(gameId, ply)
                 poke()
             }
-
-            override fun closing() {
-                also?.closing()
-                poke()
-            }
         }
+        // A gated fake's search beginning or stopped wakes the watch too: a test waits on it.
+        for (engine in analyser.engines) (engine as? GatedEngine)?.poke = ::poke
     }
 
     fun poke() {
-        synchronized(lock) { lock.notifyAll() }
+        synchronized(lock) {
+            pokes += 1
+            lock.notifyAll()
+        }
     }
 
-    /** Until [condition] holds, woken by the worker's own steps. */
+    /** Until [condition] holds, woken by the workers' own steps. */
     fun until(what: String = "the condition", condition: () -> Boolean) {
         val deadline = System.nanoTime() + HANG_MS * 1_000_000
-        synchronized(lock) {
-            while (!condition()) {
-                val left = (deadline - System.nanoTime()) / 1_000_000
-                assertTrue("never came: $what", left > 0)
-                lock.wait(left)
+        while (true) {
+            val seen = synchronized(lock) { pokes }
+            if (condition()) return
+            synchronized(lock) {
+                while (pokes == seen) {
+                    val left = (deadline - System.nanoTime()) / 1_000_000
+                    assertTrue("never came: $what", left > 0)
+                    lock.wait(left)
+                }
             }
         }
     }
 
     /**
-     * Every request answered. A word is put before its request settles, so none can come after
-     * `pending` is 0; what was said stays queued for whoever drains it (the glue's `drain`).
+     * Everything owed to the game answered. A word is put before the state that says it was told,
+     * so none can come after `pending` is 0; what was said stays queued for whoever drains it (the
+     * glue's `drain`).
      */
     fun idle() = until("the analyser settled") { analyser.pending == 0 }
 
-    /** Every request answered ([idle]), and what the worker said, polled. */
+    /** Everything owed answered ([idle]), and what the workers said, polled. */
     fun settled(): List<Event> {
         idle()
         return analyser.poll()

@@ -38,10 +38,12 @@ def main() -> None:
     # The phone keeps its own folders; the page shows them read-only.
     defaults["data_dir"] = ""
     defaults["tools_dir"] = ""
-    # The engine a phone starts with: two threads and 64 MB where the desktop has four and
-    # 256, for the cores and the heat a phone can spare. The engine is built from these, as
-    # the desktop's `_make_analyser` builds it, so they are the phone's defaults to change.
-    defaults["engine"]["threads"] = 2
+    # The engine a phone starts with: two workers of one thread each and 64 MB where the
+    # desktop has three and 256, for the cores and the heat a phone can spare -- the two cores
+    # its one engine of two threads took before (the engine audit, 2026-10-04: one thread a
+    # search, never several). The engine is built from these, as the desktop's
+    # `_make_analyser` builds it, so they are the phone's defaults to change.
+    defaults["engine"]["workers"] = 2
     defaults["engine"]["hash_mb"] = 64
     # And depth 14 where the desktop has 18: on Tai's Pixel (2026-09-28) Stockfish 19 does a
     # tenth of the desktop's nodes a second on two threads, depth 18 came after ten seconds
@@ -102,10 +104,11 @@ def main() -> None:
     # the engine's phone-sized defaults, a model on the person's own computer rather than
     # "this" one, and the talk button where the desktop has a key held from any window.
     engine = schema["$defs"][refs["engine"]]["properties"]
-    engine["threads"]["default"] = 2
-    engine["threads"]["description"] = (
-        "Processor threads Stockfish may use. More is faster to a point, and warms the phone; "
-        "leave some for the game."
+    engine["workers"]["default"] = 2
+    engine["workers"]["description"] = (
+        "How many positions Stockfish works on at once, one processor core each: the game's "
+        "own, and the moves ahead it gets ready while you think. More looks further ahead, and "
+        "warms the phone."
     )
     engine["depth"]["default"] = 14
     engine["depth"]["description"] = (
@@ -114,7 +117,7 @@ def main() -> None:
     )
     engine["hash_mb"]["default"] = 64
     engine["hash_mb"]["description"] = (
-        "Memory Stockfish keeps for positions it has already seen, in MB. More helps a deep "
+        "Memory each of those keeps for positions it has already seen, in MB. More helps a deep "
         "search; 64 is plenty on a phone."
     )
     llm = schema["$defs"][refs["llm"]]["properties"]

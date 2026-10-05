@@ -144,7 +144,7 @@ object ReviewAnalysis {
 
         private fun ready(): Engine {
             engine?.let { return it }
-            return makeEngine.make(threads = 2, multipv = LINES).also {
+            return makeEngine.make(threads = 1, multipv = LINES).also {
                 it.open()
                 engine = it
             }

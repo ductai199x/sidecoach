@@ -25,8 +25,12 @@ data class LLMSettings(
     val apiKeyEnv: String? = null,
     /** How a preset switches reasoning on the wire; null uses the preset's own. */
     val thinkingControl: String? = null,
-    /** How long the model may think before it answers. */
-    val reasoningEffort: String? = null,
+    /**
+     * How long the model may think before it answers. None by default: the wait is what the
+     * player feels, and thinking is most of it (Tai, 2026-10-04: "no reasoning should be the
+     * default for AI coach since latency is a big issue").
+     */
+    val reasoningEffort: String? = "none",
     /** A word on a fine move needs no deep thought; lessons and answers keep the effort above. */
     val routineEffort: String? = "none",
     val pricePromptPerM: Double? = null,

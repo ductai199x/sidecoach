@@ -185,24 +185,6 @@ class EngineReviewTest {
     }
 
     @Test
-    fun aPositionLookedAtAheadCarriesTheMovesThatLeadThere() {
-        val board = played("Nf3", "Nf6", "Ng1")
-        val fake = FakeEngine(mapOf(board.fen() to listOf(Line(moves = listOf("f6g8"), depth = 6, expectedScore = 0.5))))
-        val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
-        // Driven a step at a time on this thread, as the worker drives it.
-        val analyser = Analyser(annotator, lookAhead = 1)
-        analyser.planAhead(board, listOf(Line(moves = listOf("f6g8"), depth = 6, expectedScore = 0.5)))
-        while (analyser.ahead.isNotEmpty()) {
-            val (next, moves) = analyser.ahead.removeAt(0)
-            analyser.lookAhead(next, moves, analyser.ahead)
-        }
-        assertEquals(2, analyser.looked)
-        val target = played("Nf3", "Nf6", "Ng1", "Ng8").fen()
-        val ahead = fake.calls.indices.filter { fake.calls[it] == target }.map { fake.histories[it] }
-        assertEquals(listOf(listOf("g1f3", "g8f6", "f3g1", "f6g8")), ahead)
-    }
-
-    @Test
     fun aChangedSettingForgetsWhatWasMeasured() {
         val fake = FakeEngine()
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
@@ -509,7 +491,7 @@ class EngineReviewTest {
         val net = context.filesDir.listFiles { f: File -> f.name.endsWith(".nnue") }?.firstOrNull()
         assumeTrue("the engine or its network is missing", binary.exists() && net != null)
         FirstSilent(binary, net!!).use { sf ->
-            sf.maxSeconds = 5.0
+            sf.watchdogS = 1.0
             val lines = sf.analyse(Board(), depth = 6)
             assertTrue("searched again on a new engine", lines.isNotEmpty())
             assertEquals("the silent engine was replaced", 2, sf.launched)

@@ -143,22 +143,22 @@ object PanelVoice {
         )
     }
 
-    /** The engine held paused while a piece of a line is made, to let go of after. */
-    @Volatile private var pausedEngine: Engine? = null
+    /** The engines held paused while a piece of a line is made, to let go of after. */
+    @Volatile private var pausedEngines: List<Engine> = emptyList()
 
     /**
      * The phone's own (Tai, 2026-09-23): Kokoro or Stockfish at work, not both. They share the
-     * phone's big cores, and with both at work each runs at half speed, so the game's engine
-     * is paused (never ended: its hash is kept) while a piece is made, and runs on after.
+     * phone's big cores, and with both at work each runs at half speed, so the game's engines
+     * are paused (never ended: their hash is kept) while a piece is made, and run on after.
      */
     private fun juggle(synthesising: Boolean) {
         if (synthesising) {
-            val engine = PanelWarm.assessing?.analyser?.annotator?.engine ?: return
-            pausedEngine = engine
-            engine.pause()
+            val engines = PanelWarm.assessing?.analyser?.engines ?: return
+            pausedEngines = engines
+            for (engine in engines) engine.pause()
         } else {
-            pausedEngine?.resume()
-            pausedEngine = null
+            for (engine in pausedEngines) engine.resume()
+            pausedEngines = emptyList()
         }
     }
 

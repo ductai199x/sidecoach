@@ -530,7 +530,8 @@ object PanelWarm {
         val began = System.nanoTime()
         // Depth 1: the threads, the hash and the network are what a first search pays; the full
         // depth was a second more of every launch for a position no one asked about.
-        runCatching { analyser.annotator.engine.analyse(Board(), depth = 1) }
+        // Every worker's.
+        for (engine in analyser.engines) runCatching { engine.analyse(Board(), depth = 1) }
         PanelEngine.emit("sys", "info", "engine: primed in ${f1((System.nanoTime() - began) / 1e9)}s")
     }
 
@@ -631,27 +632,24 @@ object PanelWarm {
         val analyser = assessing?.analyser
         if (analyser != null) {
             val config = store.engine()
-            val engine = analyser.annotator.engine
             attempt(changed.filter { it in THRESHOLD_FIELDS }) {
                 analyser.annotator.thresholds = store.thresholds()
             }
             attempt(listOf("engine.depth")) { analyser.annotator.depth = config.depth }
             attempt(listOf("engine.multipv")) {
                 analyser.annotator.multipv = config.multipv
-                engine.multipv = config.multipv
+                analyser.reconfigure(multipv = config.multipv)
             }
-            attempt(listOf("engine.pv_plies")) { engine.pvPlies = config.pvPlies }
-            attempt(listOf("engine.score_model")) { engine.scoreModel = config.scoreModel }
-            attempt(listOf("engine.max_seconds")) { engine.maxSeconds = config.maxSeconds }
-            attempt(listOf("engine.threads", "engine.hash_mb")) {
-                engine.reconfigure(threads = config.threads, hashMb = config.hashMb)
-            }
+            attempt(listOf("engine.pv_plies")) { analyser.reconfigure(pvPlies = config.pvPlies) }
+            attempt(listOf("engine.score_model")) { analyser.reconfigure(scoreModel = config.scoreModel) }
+            attempt(listOf("engine.hash_mb")) { analyser.reconfigure(hashMb = config.hashMb) }
+            // The number of workers is the pool's: it applies at the next session (`applies`).
             // What was measured before is not set against what is measured now: a loss compares
             // two searches made the same way (the engine review, 2026-10-01).
             val remeasure = changed.filter { it in THRESHOLD_FIELDS } +
-                listOf("engine.depth", "engine.multipv", "engine.score_model", "engine.max_seconds")
+                listOf("engine.depth", "engine.multipv", "engine.score_model")
             if (changed.any { it in remeasure }) {
-                analyser.annotator.forgetMeasured()
+                analyser.forgetMeasured()
             }
         }
         return applied.toSortedSet().toList()

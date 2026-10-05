@@ -988,7 +988,6 @@ class ReviewRoom(
                 multipv = multipv,
                 pvPlies = config.pvPlies,
                 scoreModel = config.scoreModel,
-                maxSeconds = config.maxSeconds,
             )
         }
     }

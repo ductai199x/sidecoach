@@ -237,7 +237,7 @@ def record(persona: str, folder: Path) -> dict:
 
     chess.engine.SimpleEngine.popen_uci = popen  # type: ignore[method-assign]
     try:
-        engine = Engine(path=Path("scripted"), threads=2, hash_mb=64, multipv=3, pv_plies=12, max_seconds=5.0)
+        engine = Engine(path=Path("scripted"), threads=2, hash_mb=64, multipv=3, pv_plies=12)
         results = []
         for name, fen, moves, stack, multipv, depth, *carry in SCENARIOS:
             board = board_of(fen, moves, stack)

@@ -39,7 +39,7 @@ class EngineParityTest {
 
     /** The Engine the app builds, started as the shell running [script] instead of Stockfish. */
     private class Scripted(private val script: File) :
-        Engine(File("/system/bin/sh"), null, threads = 2, hashMb = 64, multipv = 3, pvPlies = 12, maxSeconds = 5.0) {
+        Engine(File("/system/bin/sh"), null, threads = 2, hashMb = 64, multipv = 3, pvPlies = 12) {
         override fun launch(): Process =
             ProcessBuilder("/system/bin/sh", script.absolutePath).redirectErrorStream(true).start()
     }

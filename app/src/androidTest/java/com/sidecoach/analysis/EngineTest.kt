@@ -63,6 +63,28 @@ class EngineTest {
             return time
         }
 
+        /** How many lines of a search the engine has heard ([heard]), under [read]. */
+        var heardLines = 0
+            private set
+
+        override fun heard() {
+            super.heard()
+            synchronized(read) {
+                heardLines += 1
+                read.notifyAll()
+            }
+        }
+
+        /** Until the engine has heard more than [count] lines of its search. */
+        fun untilHeard(count: Int) = synchronized(read) {
+            val deadline = System.nanoTime() + HANG_MS * 1_000_000
+            while (heardLines <= count) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                assertTrue("the search never reported", left > 0)
+                read.wait(left)
+            }
+        }
+
         fun mark(what: String) = log.add("! $what")
 
         /** Until the time keeper has read the clock more than [count] times. */
@@ -241,57 +263,61 @@ class EngineTest {
     }
 
     /**
-     * `test_no_single_position_may_hold_up_a_game`: a search that would take minutes is cut at
-     * the cap. Counted, not timed (it was: under five seconds by the stopwatch): on a clock the
-     * test moves, no `stop` goes to the engine before the cap has run, and one does when it has,
-     * which ends the search short of the depth asked for.
+     * `test_a_depth_asked_for_is_never_cut_by_a_time_limit` and
+     * `test_a_long_search_that_keeps_reporting_is_never_cut`: a five-second cap answered 63 of
+     * 1,642 searches of a session below depth 18, some at depth 11, read as depth 18 (the engine
+     * audit, 2026-10-04; Tai: no lower depths). A search asked for a depth goes to it, however
+     * long it runs, as long as it keeps reporting; the watchdog ends only an engine gone silent.
+     * Counted, not timed: on a clock the test moves -- well past the old cap, and past the
+     * watchdog's patience twice over, each step taken only once the engine has reported since
+     * the last -- no `stop` goes to the engine and its process is never ended; the test's own
+     * interrupt ends the search.
      */
     @Test
-    fun noSinglePositionMayHoldUpAGame() {
+    fun aDepthAskedForIsNeverCutWhileTheSearchKeepsReporting() {
         val engine = shared()
         assumeTrue("the engine or its network is missing", engine != null)
         engine!!.let { sf ->
-            // A knight endgame that takes minutes to reach depth 14 with four lines.
+            // A knight endgame that takes minutes to reach depth 40 with four lines.
             val slow = Board("8/k7/2p3NP/8/1P1K2P1/2P5/3n4/8 b - - 2 50")
-            val cap = sf.maxSeconds
-            sf.maxSeconds = 0.5
             sf.manual = 1_000_000L
             val stops = sf.count("> stop")
+            val launched = sf.started.size
             try {
-                var lines: List<com.sidecoach.events.Line> = emptyList()
                 val searching = CountDownLatch(1)
                 val failed = java.util.Collections.synchronizedList(ArrayList<Throwable>())
                 val search = kotlin.concurrent.thread {
                     // Caught: a throw on a thread of its own would end the test process.
                     try {
-                        lines = sf.analyse(slow, depth = 40, multipv = 4, onDepth = { searching.countDown() })
+                        sf.interruptible { sf.analyse(slow, depth = 40, multipv = 4, onDepth = { searching.countDown() }) }
+                    } catch (exc: Interrupted) {
+                        // the test's own stop, below
                     } catch (exc: Throwable) {
                         failed.add(exc)
                     }
                 }
                 assertTrue("the search never began", searching.await(HANG_MS, TimeUnit.MILLISECONDS))
-                // The time keeper has read the clock and let go of it (the pause waits for it):
-                // the cap has not run, and nothing was stopped.
-                val reads = sf.readings
-                sf.pause()
-                sf.resume()
-                sf.untilRead(reads)
-                sf.pause()
-                sf.resume()
-                assertEquals("stopped before the cap had run", stops, sf.count("> stop"))
-                sf.manual = sf.manual!! + 500
-                sf.mark("the cap run")
-                sf.pause()
-                sf.resume() // wakes the time keeper
+                val step = (sf.watchdogS * 1000 * 2 / 3).toLong()
+                repeat(3) {
+                    // The engine reports, then the clock moves two thirds of the patience on:
+                    // always within it of the last report, and past the old cap from the first.
+                    val reports = synchronized(sf) { sf.heardLines }
+                    sf.untilHeard(reports)
+                    sf.manual = sf.manual!! + step
+                    val reads = sf.readings
+                    sf.pause()
+                    sf.resume() // wakes the time keeper
+                    sf.untilRead(reads)
+                }
+                assertTrue("the search ended by itself", search.isAlive)
+                assertEquals("a stop was sent", stops, sf.count("> stop"))
+                assertEquals("the engine was taken for hung", launched, sf.started.size)
+                sf.interrupt()
                 search.join(HANG_MS)
-                assertTrue("the cap did not hold", !search.isAlive)
+                assertTrue("the search never ended", !search.isAlive)
                 assertEquals("the search failed", emptyList<Throwable>(), failed)
-                assertEquals("one stop, the cap's", stops + 1, sf.count("> stop"))
-                assertTrue("no lines", lines.isNotEmpty())
-                assertTrue("the depth asked for was reached: ${lines[0].depth}", lines[0].depth < 40)
             } finally {
                 sf.manual = null
-                sf.maxSeconds = cap
             }
         }
     }
@@ -479,7 +505,6 @@ class EngineTest {
     private fun searchToDepth60(sf: Watched): Pair<Thread, List<Throwable>> {
         val raised = java.util.Collections.synchronizedList(ArrayList<Throwable>())
         val searching = CountDownLatch(1)
-        sf.maxSeconds = null // no cap to end it: only a `stop` does
         val worker = kotlin.concurrent.thread {
             try {
                 sf.interruptible { sf.analyse(Board(), depth = 60, multipv = 1, onDepth = { searching.countDown() }) }
@@ -505,13 +530,11 @@ class EngineTest {
             // By depth alone, every search: what the line comes to is the engine's at those
             // depths, not the emulator's speed that moment -- the carry's half-second cap stopped
             // it at 14 plies of 16 on a busy emulator (2026-10-02).
-            val (cap, extend) = sf.maxSeconds to sf.extendSeconds
-            sf.maxSeconds = null
+            val extend = sf.extendSeconds
             sf.extendSeconds = null
             val (carried, plain) = try {
                 sf.analyse(board, depth = 10, pvPlies = 4, carryBest = true) to sf.analyse(board, depth = 10, pvPlies = 4)
             } finally {
-                sf.maxSeconds = cap
                 sf.extendSeconds = extend
             }
             assertTrue("no lines", carried.isNotEmpty() && plain.isNotEmpty())

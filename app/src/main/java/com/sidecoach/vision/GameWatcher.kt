@@ -337,6 +337,14 @@ class GameWatcher(
             note(event)
             PanelEngine.onGameEvent(event, followed)
             assessing.submit(event)
+            if (event is com.sidecoach.events.GameEnded) {
+                // What the engine measured of it is its review's: not searched again.
+                try {
+                    assessing.keepForReview(profileStore, event.gameId)
+                } catch (exc: Exception) { // a review searches it instead
+                    PanelEngine.emit("sys", "warn", "positions not kept for review: ${PanelEngine.pyRepr(exc)}")
+                }
+            }
         }
         // Idle read before the drain: then everything the engine will say about this game is
         // in what the drain returns, and a finished game can be reviewed now -- a failed
