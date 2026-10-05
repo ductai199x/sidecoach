@@ -2,7 +2,9 @@ package com.sidecoach.coach
 
 import android.util.Log
 import com.sidecoach.analysis.Computed
+import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.ComputedFirst
+import com.sidecoach.analysis.PoolSearcher
 import com.sidecoach.analysis.Engine
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
@@ -30,22 +32,30 @@ import com.sidecoach.ui.SettingsStore
  * there is nothing that would call one -- no claim extraction from the player's words, no
  * verifier -- and the templates and the board carry the coach.
  *
- * The coach has its own engine, as the desktop's: for the moves the player names, and for
- * the model's questions to the engine while it answers (`EngineTools`) -- without one the
- * phone's model could ask the engine nothing, and "ok and after that?" past a line's end
- * had no engine's word to go on (the parity audit, 2026-09-29). [engine] is built by the
- * caller (`Assessing.coachEngine`) and asked only what the analyser has not computed
- * ([computed], `cli._named_engine`): a second process only once a question needs a position
- * nothing has computed.
+ * The coach has an engine, as the desktop's: for the moves the player names, and for the
+ * model's questions to the engine while it answers (`EngineTools`) -- without one the phone's
+ * model could ask the engine nothing, and "ok and after that?" past a line's end had no
+ * engine's word to go on (the parity audit, 2026-09-29). It reads what the analyser has
+ * computed first ([computed]) and asks the analyser's own pool for the rest ([analyser],
+ * [PoolSearcher]); a coach made with no analyser (on demand) has [engine], a Stockfish of its
+ * own built by the caller (`Assessing.coachEngine`), started at its first search.
+ * `cli._named_engine`.
  */
 class CoachRunner(
     settings: SettingsStore,
     enabled: Boolean = true,
     engine: Engine? = null,
     computed: Computed? = null,
+    analyser: Analyser? = null,
 ) {
 
-    internal val coachEngine: ComputedFirst? = engine?.let { ComputedFirst(it, computed ?: Computed()) }
+    internal val coachEngine: ComputedFirst? = when {
+        analyser != null -> PoolSearcher(analyser).let { pool ->
+            ComputedFirst({ board, _ -> pool.analyse(board) }, computed ?: Computed())
+        }
+        engine != null -> ComputedFirst(engine, computed ?: Computed())
+        else -> null
+    }
 
     val coach: Coach?
     var detail: String = "off"

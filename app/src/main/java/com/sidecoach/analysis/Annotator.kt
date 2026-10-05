@@ -13,13 +13,25 @@ import com.sidecoach.events.MoveAssessment
  * A port of `sidecoach/analysis/annotator.py`.
  *
  * [GameAnnotator] does the work for one game and is synchronous, which is what a post-game
- * review wants. [Analyser] (Analyser.kt) runs its searches on a pool of workers, which is what
- * a live session needs: the capture loop must not wait.
+ * review wants. [Analyser] (Analyser.kt) runs the same searches on a pool of workers, which is
+ * what a live session needs: the capture loop must not wait.
  *
- * Every position of a game is measured once, to the same depth, and cached, so the position
- * after one move is the position before the next and a game costs one analysis per ply. The
- * matching depth is what makes the loss of a move meaningful: two searches of different
- * lengths would differ by more than most mistakes do.
+ * Every search is one line to the full depth (the engine audit, 2026-10-04/05). Asking
+ * Stockfish for the exact value of several moves at once -- a search of several lines --
+ * explodes on decided and forcing positions: two lines of one real position took 53 s, one line
+ * 0.18 s; 84 of 8,886 positions of real sessions took over 5 s with six lines at depth 18, the
+ * worst 47 s. So a position is measured whole as:
+ *
+ * - its best line: one line to the full depth (the verdict, the best move);
+ * - its candidates: the best moves of a six-line search to [EARLY_DEPTH] (never over 1.9 s),
+ *   each then searched as its own position, one line to the full depth -- the position's lines
+ *   at the full depth, built from those, and exactly the positions the game may go to next;
+ * - its side searches (threats, traps, declined recaptures, what a quiet best move threatens).
+ *
+ * Every position is measured once, to the same depth, and cached, so the position after one
+ * move is the position before the next, and a candidate searched is the next position measured.
+ * The matching depth is what makes the loss of a move meaningful: every value a verdict compares
+ * is one position's own one-line search to the full depth.
  *
  * Its collaborators are the desktop's: the motif tagger (what a move did, what a position
  * holds -- a sacrifice is what makes a move brilliant) and the opening book (whether a move is
@@ -34,13 +46,11 @@ interface Tagger {
 }
 
 /**
- * The first depth of a position's search told to its readers, each deeper one following as the
- * search finishes it: its best move is the full depth's in every one of 77 puzzle positions and
- * 81 % of 232 game positions, found in a twentieth of the time, so a hint, the move or the line
- * asked for at once is answered at once (Tai, 2026-09-28: "first usable answer is depth 12 ...
- * the computation continues until max depth of 18"). Depth 12 of the position's own search: a
- * search of its own to depth 12 first cost 27% more than the full depth alone (the engine
- * audit, 2026-10-04).
+ * The depth of a position's first answer: its six candidates at once, the full depth to follow.
+ * Its best move is the full depth's in every one of 77 puzzle positions and 81 % of 232 game
+ * positions (Tai, 2026-09-28: "first usable answer is depth 12 ... the computation continues
+ * until max depth of 18"), and six lines to it never took more than 1.9 s on any of 8,886
+ * positions of real sessions (p99 0.29 s; the engine audit, 2026-10-05).
  */
 const val EARLY_DEPTH = 12
 
@@ -93,17 +103,16 @@ class GameAnnotator(
 ) {
 
     /**
-     * The positions measured whole. Concurrent, as the maps below: the worker writes them while
+     * The positions measured whole. Concurrent, as the maps below: the workers write them while
      * [reset] clears them from the capture thread -- a Python dict's operations are atomic
-     * under the GIL, a HashMap's are not, and with the look ahead the worker is at them far
-     * more often.
+     * under the GIL, a HashMap's are not.
      */
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Measured>()
 
     /**
-     * Positions measured for a verdict only: the best line at the full depth, no candidates,
-     * no threats. Kept apart from [cache], so a later whole measurement of the same position
-     * is not answered with the thin one.
+     * Each position's best line alone ([bestLine]): what a verdict reads of the position a move
+     * led to, and a candidate's value for the position before it. Kept apart from [cache], so a
+     * later whole measurement of the same position is not answered with it.
      */
     private val verdictCache = java.util.concurrent.ConcurrentHashMap<String, Measured>()
 
@@ -131,16 +140,8 @@ class GameAnnotator(
     }
 
     /**
-     * Positions measured ahead of the game ([lookAhead]) and not yet reached, and how many the
-     * game has reached: what looking ahead saved.
-     */
-    private val ahead: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
-    @Volatile var aheadHits = 0
-        internal set
-
-    /**
-     * Every search's lines as it finishes each usable depth, for any reader at any time (the
-     * coach's engine reads it before it searches).
+     * Every search's lines as it finishes, for any reader at any time (the coach's engine reads
+     * it before it searches).
      */
     val computed = Computed()
 
@@ -148,70 +149,57 @@ class GameAnnotator(
      * How many times [forgetMeasured] has run: a search that began before it (another thread
      * changed the settings mid-search) was made the old way, and is not kept. `_era`.
      */
-    @Volatile private var era = 0
+    @Volatile var era = 0
+        private set
 
     /** Forget the cache; a new game shares no positions with the last one. */
     fun reset() {
         cache.clear()
         verdictCache.clear()
-        ahead.clear()
         computed.clear()
         assessed.clear()
     }
 
     /**
-     * Forget the positions measured, keeping the game's moves: the depth, the lines, the time
-     * cap, the curve or the thresholds changed, and a loss compares two positions measured the
-     * same way, so none measured before is set against one measured after. Called from another
-     * thread (the settings' save): a search under way now finishes, and is handed to its
-     * caller, but is not kept.
+     * Forget the positions measured, keeping the game's moves: the depth, the lines, the curve
+     * or the thresholds changed, and a loss compares two positions measured the same way, so
+     * none measured before is set against one measured after. Called from another thread (the
+     * settings' save): a search under way now finishes, and is handed to its caller, but is not
+     * kept.
      */
     fun forgetMeasured() {
         era += 1
         cache.clear()
         verdictCache.clear()
-        ahead.clear()
         computed.clear()
     }
 
-    /**
-     * A position the game may reach, measured whole before it does, as the game's own positions
-     * are, and cached with them. Inside [Engine.interruptible] a search stopped throws
-     * [Interrupted], and nothing is cached.
-     */
-    fun lookAhead(board: Board): Measured {
-        cache[cacheKey(board)]?.let { return it }
-        val measured = measure(board)
-        if (cache.containsKey(measured.key)) ahead.add(measured.key)
-        return measured
-    }
+    // ---- the searches ----------------------------------------------------------------------
 
     /**
-     * The position measured whole, counting a position measured ahead reached. A position
-     * adopted without a key ([adopt]) is found by its FEN.
+     * The position's best line: one line to the full depth, carried on to its point (the coach
+     * reads the line for it). What a verdict reads of a position, and a candidate's value for
+     * the position before it. A finished position has no line; a position with one legal move
+     * has that move's line, from its own position's search -- the move needs no search to be
+     * chosen (the slowest one-line search of 8,886 was such a position: 10.6 s). Cached;
+     * [onDepth] is handed each depth the search finishes on its way.
      */
-    private fun cached(board: Board): Measured? {
-        val key = cacheKey(board)
-        val measured = cache[key] ?: cache[board.fen()]
-        if (measured != null && key in ahead) {
-            ahead.remove(key)
-            aheadHits += 1
-        }
-        return measured
-    }
-
-    /**
-     * The position measured for a verdict: whole if it already is, else its best line alone
-     * at the full depth -- what [evalLoss] needs, at a fraction of the cost. When the engine
-     * is behind a fast game, this is all a stale ply gets.
-     */
-    fun measureForVerdict(board: Board): Measured {
-        val key = cacheKey(board)
+    fun bestLine(board: Board, engine: Engine = this.engine, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         cached(board)?.let { return it }
+        val key = cacheKey(board)
         verdictCache[key]?.let { return it }
         val began = era
-        val lines = engine.analyse(board, depth = depth, multipv = 1)
-        val thin = Measured(
+        val legal = board.legalMoves()
+        val lines = when {
+            terminalExpectedScore(board) != null || legal.isEmpty() -> emptyList()
+            legal.size == 1 -> {
+                val child = board.copy()
+                child.push(legal[0])
+                listOf(candidateLine(board, legal[0], bestLine(child, engine)))
+            }
+            else -> engine.analyse(board, depth = depth, multipv = 1, carryBest = true, onDepth = onDepth)
+        }
+        val measured = Measured(
             fen = board.fen(),
             lines = lines,
             score = positionScore(board, lines),
@@ -221,73 +209,111 @@ class GameAnnotator(
         )
         if (began == era) {  // not searched the old way ([forgetMeasured])
             computed.add(board, lines, thin = true)
-            verdictCache[key] = thin
+            verdictCache[key] = measured
         }
-        return thin
-    }
-
-    /**
-     * The position whole, at the full depth: the candidates, the threats, the decisive-moment
-     * and only-move calls. `onDepth`: handed the candidates of each depth the search finishes
-     * on its way. A position the player is not to wait for is measured early first
-     * ([measureEarly]), never in place of this.
-     */
-    fun measure(board: Board, onDepth: ((List<Line>) -> Unit)? = null): Measured {
-        cached(board)?.let { return it }
-        val began = era
-        val measured = measuredAt(board, depth, onDepth = onDepth)
-        if (began == era) cache[measured.key] = measured  // not searched the old way
         return measured
     }
 
-    /**
-     * The position whole at [EARLY_DEPTH], its side searches no deeper: what the player can be
-     * told while the full depth is searched. Not cached: the full depth follows.
-     */
-    fun measureEarly(board: Board): Measured = measuredAt(board, minOf(EARLY_DEPTH, depth), early = true)
+    /** What a verdict reads of a position: whole if it already is, else its best line. */
+    fun measureForVerdict(board: Board): Measured = bestLine(board)
 
-    /** `_measured`: the position whole at [depth], its side searches no deeper than it. */
-    private fun measuredAt(
-        board: Board,
-        depth: Int,
-        early: Boolean = false,
-        onDepth: ((List<Line>) -> Unit)? = null,
-    ): Measured {
-        val measured = search(board, depth = depth, early = early, onDepth = onDepth)
-        return withSide(board, measured, depth = depth)
+    /**
+     * The position's candidates at [EARLY_DEPTH]: [multipv] lines, the first answer to a hint
+     * and the moves whose positions the full depth then searches ([candidates]). None for a
+     * position with one legal move or none: its best line says all there is.
+     */
+    fun hintLines(board: Board, engine: Engine = this.engine): List<Line> {
+        if (terminalExpectedScore(board) != null || board.legalMoves().size < 2) return emptyList()
+        val began = era
+        val lines = engine.analyse(board, depth = minOf(EARLY_DEPTH, depth), multipv = multipv)
+        if (began == era) computed.add(board, lines)  // not searched the old way
+        return lines
     }
 
     /**
-     * The position's own search, nothing beside it: its lines at [depth] (the full depth unless
-     * told), the decisive-moment and only-move calls read from them. [engine]: the one to search
-     * with (a worker's own; the annotator's unless told). Each depth from the first usable one is
-     * kept for any reader as the search finishes it ([computed]), and handed to [onDepth].
+     * The moves the position is measured whole by: its best line's move first, then the hint's
+     * in its order, [multipv] at most, each legal and once.
      */
-    fun search(
-        board: Board,
-        engine: Engine = this.engine,
-        depth: Int = this.depth,
-        early: Boolean = false,
-        onDepth: ((List<Line>) -> Unit)? = null,
-    ): Measured {
-        val usable = minOf(EARLY_DEPTH, depth)
-        val began = era
-        // A depth done: kept from the first usable one, and handed on.
-        val finished: (List<Line>) -> Unit = { found ->
-            if (found.isNotEmpty() && found[0].depth >= usable && began == era) computed.add(board, found)
-            onDepth?.invoke(found)
+    fun candidates(board: Board, best: Measured, hint: List<Line>): List<Move> {
+        val out = ArrayList<Move>()
+        for (line in best.lines.take(1) + hint) {
+            val move = firstMove(line)
+            if (move != null && board.isLegal(move) && move !in out) out.add(move)
+            if (out.size == multipv) break
         }
-        val lines = engine.analyse(
-            board,
-            depth = depth,
-            multipv = multipv,
-            // The best line carried on to its point costs seconds; the full depth does it.
-            carryBest = !early,
-            onDepth = finished,
+        return out
+    }
+
+    /**
+     * [move]'s line for the side to move in [board], from its own position's search ([child],
+     * measured for the side to move there): the move, then the child's best line; every score
+     * turned to this side -- the expected score and the win-draw-loss mirrored, the centipawns
+     * negated, a mate the child's side gives a mate this side takes, and the reverse a move
+     * longer. A finished child is scored as it stands.
+     */
+    fun candidateLine(board: Board, move: Move, child: Measured): Line {
+        val after = board.copy()
+        after.push(move)
+        val finished = terminalExpectedScore(after)
+        val line = child.lines.firstOrNull()
+        if (finished != null || line == null) {
+            val score = 1.0 - (finished ?: child.score)
+            return Line(
+                moves = listOf(move.uci()),
+                depth = depth,
+                expectedScore = score,
+                mate = if (after.isCheckmate()) 1 else null,
+            )
+        }
+        val mate = line.mate?.let { if (it > 0) -it else Math.abs(it) + 1 }
+        return Line(
+            moves = listOf(move.uci()) + line.moves,
+            depth = line.depth,
+            expectedScore = 1.0 - line.expectedScore,
+            scoreCp = line.scoreCp?.let { -it },
+            mate = mate,
+            wdl = line.wdl?.let { Triple(it.third, it.second, it.first) },
         )
-        // Before the side searches: the lines are the news, and a reader has them now.
-        if (began == era) computed.add(board, lines)
-        return measuredLines(board, lines)
+    }
+
+    /**
+     * The position whole from its candidates' own searches: their lines best first (the best
+     * line's own moves kept for the move they share, carried on to its point), the
+     * decisive-moment and only-move calls read from them. No side searches ([withSide]).
+     */
+    fun whole(board: Board, best: Measured, children: List<Pair<Move, Measured>>): Measured {
+        // Stable: the hint's order on ties.
+        val lines = children.map { (move, child) -> candidateLine(board, move, child) }
+            .sortedByDescending { it.expectedScore }
+            .toMutableList()
+        val bestLine = best.lines.firstOrNull()
+        if (lines.isNotEmpty() && bestLine != null && bestLine.moves.take(1) == lines[0].moves.take(1)) {
+            lines[0] = lines[0].copy(moves = bestLine.moves)
+        }
+        val out = if (lines.isEmpty()) best.lines else lines
+        return measuredLines(board, out)
+    }
+
+    /**
+     * The position whole, at the full depth: its best line, its candidates' own searches and its
+     * side searches (the file's docstring). Cached, as every search under it.
+     */
+    fun measure(board: Board): Measured {
+        cached(board)?.let { return it }
+        val began = era
+        val best = bestLine(board)
+        val hint = hintLines(board)
+        val children = candidates(board, best, hint).map { move ->
+            val child = board.copy()
+            child.push(move)
+            move to bestLine(child)
+        }
+        val measured = withSide(board, whole(board, best, children))
+        if (began == era) {  // not searched the old way ([forgetMeasured])
+            computed.add(board, measured.lines)
+            cache[measured.key] = measured
+        }
+        return measured
     }
 
     /**
@@ -296,8 +322,8 @@ class GameAnnotator(
      * position's own lines are what they search from; none of them is a search of the position
      * again. Nothing when the annotator searches no threats.
      */
-    fun withSide(board: Board, measured: Measured, engine: Engine = this.engine, depth: Int = this.depth): Measured {
-        if (!withThreats) return measured
+    fun withSide(board: Board, measured: Measured, engine: Engine = this.engine): Measured {
+        if (!withThreats || terminalExpectedScore(board) != null) return measured
         val lines = measured.lines
         return Measured(
             fen = measured.fen,
@@ -318,42 +344,21 @@ class GameAnnotator(
         )
     }
 
-    /** [lines] of [board] as a measurement: the calls they make (a depth on the way). */
-    fun measuredLines(board: Board, lines: List<Line>): Measured = Measured(
-        fen = board.fen(),
-        lines = lines,
-        score = positionScore(board, lines),
-        decisive = isDecisive(board, lines, thresholds),
-        onlyMove = isOnlyMove(board, lines, thresholds),
-        key = cacheKey(board),
-    )
+    // ---- what the readers get --------------------------------------------------------------
 
     /**
-     * What the position holds, for the side to move. `thin`: only what the verdict already
-     * measured -- the analysis of a position the game has left, so the coach still has the
-     * facts of the position each move was played from and the review has its score. `early`:
-     * at [EARLY_DEPTH] ([measureEarly]), a provisional analysis the full depth follows.
+     * What the position holds, for the side to move. `thin`: only its best line (no candidates,
+     * no threats, no decisive call) -- what a verdict measured.
      */
-    fun analysisEvent(
-        gameId: String,
-        board: Board,
-        ply: Int,
-        thin: Boolean = false,
-        early: Boolean = false,
-        onDepth: ((List<Line>) -> Unit)? = null,
-    ): Analysis {
-        val measured = when {
-            early -> measureEarly(board)
-            thin -> measureForVerdict(board)
-            else -> measure(board, onDepth)
-        }
-        return analysisFrom(gameId, board, ply, measured, provisional = early)
+    fun analysisEvent(gameId: String, board: Board, ply: Int, thin: Boolean = false): Analysis {
+        val measured = if (thin) measureForVerdict(board) else measure(board)
+        return analysisFrom(gameId, board, ply, measured)
     }
 
     /**
      * What [measured] says of [board], for the side to move: the event the readers get.
-     * [provisional]: a depth on the way to the full one, or the full one before its side
-     * searches -- what follows replaces it.
+     * [provisional]: the position not whole yet (its first answer, or whole but for its side
+     * searches), what follows replacing it.
      */
     fun analysisFrom(gameId: String, board: Board, ply: Int, measured: Measured, provisional: Boolean = false): Analysis {
         return Analysis(
@@ -375,41 +380,31 @@ class GameAnnotator(
     }
 
     /**
-     * The early analysis of [board] with the lines of a deeper depth: its candidates, the
-     * decisive-moment and only-move calls and the pattern read from them again; its threats,
-     * traps and defences the early depth's, until the full depth brings its own.
+     * The position's first answer, before its candidates are searched: the best line to the
+     * full depth when it is in, ahead of the hint's other moves at [EARLY_DEPTH] (each line
+     * carries its depth); the calls read from them.
      */
-    fun deepened(early: Analysis, board: Board, lines: List<Line>): Analysis {
-        val measured = Measured(
-            fen = early.fen,
-            lines = lines,
-            score = positionScore(board, lines),
-            decisive = isDecisive(board, lines, thresholds),
-            onlyMove = isOnlyMove(board, lines, thresholds),
-        )
-        // `early.model_copy(update=...)`: every other field the early analysis's.
-        return Analysis(
-            gameId = early.gameId,
-            fen = early.fen,
-            ply = early.ply,
-            lines = lines,
-            decisive = measured.decisive,
-            onlyMove = measured.onlyMove,
-            threats = early.threats,
-            traps = early.traps,
-            defences = early.defences,
-            threatens = early.threatens,
-            tags = positionTags(board, measured),
-            opening = early.opening,
-            inBook = early.inBook,
-            provisional = early.provisional,
-        ).also {
-            it.ts = early.ts
-            it.sourceFrameId = early.sourceFrameId
-        }
+    fun firstAnswer(board: Board, best: Measured?, hint: List<Line>): Measured {
+        val lines = ArrayList(best?.lines?.take(1) ?: emptyList())
+        val shown = lines.mapNotNull { it.moves.firstOrNull() }.toSet()
+        lines += hint.filter { it.moves.isNotEmpty() && it.moves[0] !in shown }
+        return measuredLines(board, lines.take(multipv))
     }
 
-    /** Whether the position is measured whole already (the game's own, or ahead of it). */
+    /** [lines] of [board] as a measurement: the calls they make. */
+    fun measuredLines(board: Board, lines: List<Line>): Measured = Measured(
+        fen = board.fen(),
+        lines = lines,
+        score = positionScore(board, lines),
+        decisive = isDecisive(board, lines, thresholds),
+        onlyMove = isOnlyMove(board, lines, thresholds),
+        key = cacheKey(board),
+    )
+
+    /** The position measured whole, by its key or (adopted without one) its FEN. */
+    private fun cached(board: Board): Measured? = cache[cacheKey(board)] ?: cache[board.fen()]
+
+    /** Whether the position is measured whole already. */
     fun measured(board: Board): Boolean =
         cache.containsKey(cacheKey(board)) || cache.containsKey(board.fen())
 
@@ -593,6 +588,9 @@ fun openingName(book: Book, moves: List<Move>): String? {
     val found = book.identify(ArrayList(moves)) ?: return null
     return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
 }
+
+/** A line's first move, or null for a line with none or one that does not parse. */
+private fun firstMove(line: Line): Move? = line.moves.firstOrNull()?.let { Move.fromUciOrNull(it) }
 
 /** A line's moves as moves, up to the first that does not parse: `annotator._moves`. */
 private fun lineMoves(line: Line): List<Move> {

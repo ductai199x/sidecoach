@@ -71,7 +71,7 @@ class Assessing(
             is MovePlayed -> {
                 val before = historyTo(event.fenBefore)
                 val move = Move.fromUci(event.uci)
-                worker.submitMove(event.gameId, before, move, event.ply, byUser = event.byUser)
+                worker.submitMove(event.gameId, before, move, event.ply)
                 from[event.ply] = event.fenBefore
                 before.push(move)
                 game = before
@@ -109,7 +109,7 @@ class Assessing(
                 from.clear()
                 forget(event.gameId, event.startFen)
                 game = Board(event.startFen)
-                worker.submitPosition(event.gameId, Board(event.startFen), 0, user = event.userSide.color)
+                worker.submitPosition(event.gameId, Board(event.startFen), 0)
             }
             is Resync -> {
                 worker.reset()
@@ -293,12 +293,11 @@ class Assessing(
          * what can be missing is the network, and Setup is where it comes from.
          */
         /**
-         * A second Stockfish for the coach, as `cli._named_engine` builds it: for the moves
-         * the player names and the model's own questions to the engine (`EngineTools`), the
-         * analyser's workers being on the game's positions. One thread, at most 128 MB, three
-         * lines, and the depth asked for reached, as every search. Built, not started: asked only what the analyser has
-         * not computed ([ComputedFirst]), it starts at its first such search, so a session whose
-         * questions the analyser answered pays nothing for it. Null when
+         * A Stockfish of its own for a coach made with no analyser (on demand, before the
+         * engine is up), as `cli._named_engine` builds it: for the moves the player names and
+         * the model's own questions to the engine (`EngineTools`). One thread, at most 128 MB,
+         * three lines, and the depth asked for reached. Built, not started: asked only what
+         * nothing has computed ([ComputedFirst]), it starts at its first such search. Null when
          * there is no network yet.
          */
         fun coachEngine(context: Context, settings: SettingsStore): Engine? {

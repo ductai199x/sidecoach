@@ -3,6 +3,7 @@ package com.sidecoach.analysis
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Analysis
+import com.sidecoach.events.Event
 import com.sidecoach.events.Label
 import com.sidecoach.events.Line
 import com.sidecoach.events.MoveAssessment
@@ -14,11 +15,11 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The engine service for a game followed live ([Analyser], `tests/test_analyser.py`): every
- * position searched once, on a pool of workers; the look-ahead's searches promoted when the game
- * reaches them, never begun again; a search stopped only when nothing will read it; a move judged
- * from the lines that are there. Gated fake engines stage every race; nothing waits on a clock.
- * The tests that go through the engine glue (`Assessing`) are the device's (LiveBookTest,
- * TakebackTest, WatchedReviewTest).
+ * search one line, every position searched once, on a pool of workers; a position told as it
+ * comes (its best line and its hint, then whole); a move judged as soon as what it needs is in,
+ * in the order of the moves; the coach's questions ahead of the game's other positions. Gated
+ * fake engines stage every race; nothing waits on a clock. The tests that go through the engine
+ * glue (`Assessing`) are the device's (LiveBookTest, TakebackTest, WatchedReviewTest).
  */
 class AnalyserTest {
 
@@ -32,30 +33,30 @@ class AnalyserTest {
 
     private fun after(vararg sans: String): String = board(*sans).fen()
 
-    private fun analyser(engines: List<ScriptEngine>, lookAhead: Int = 2, threats: Boolean = false): Analyser {
-        val annotator = GameAnnotator(engines[0], depth = 18, withThreats = threats)
-        return Analyser(annotator, engines = engines, lookAhead = lookAhead)
+    private fun analyser(engines: List<ScriptEngine>, threats: Boolean = false): Analyser {
+        val annotator = GameAnnotator(engines[0], depth = 18, multipv = 6, withThreats = threats)
+        return Analyser(annotator, engines = engines)
     }
 
     private fun entered(engine: GatedEngine, fen: String) =
         engine.entered.getValue(fen).await(HANG_MS, TimeUnit.MILLISECONDS)
 
-    /** The searches of a position (several lines: its own search, never a side search). */
-    private fun searches(engines: List<ScriptEngine>): List<String> =
-        engines.flatMap { e -> e.asked().filter { it.second > 1 }.map { it.first } }
+    /** Every search the engines made: the position, the lines asked for and the depth. */
+    private fun searches(engines: List<ScriptEngine>): List<Triple<String, Int, Int?>> =
+        engines.flatMap { e -> synchronized(e.calls) { e.calls.indices.map { Triple(e.calls[it], e.multipvs[it], e.depths[it]) } } }
 
     /**
-     * `test_every_position_of_a_game_is_searched_once`: the engine audit (2026-10-04): 258 of 624
-     * positions of a session were searched two to six times. A game played, its moves both looked
-     * at ahead and not, one taken back and played again: each position, with the moves that led
-     * to it, searched exactly once.
+     * `test_every_search_is_one_line_but_the_hint_and_none_is_made_twice`: the engine audit
+     * (2026-10-05): several lines to the full depth explode on decided and forcing positions, one
+     * line does not. A game played, a move taken back and played again: every search to the full
+     * depth is one line, the hint's alone several at EARLY_DEPTH, and no position is searched
+     * twice either way.
      */
     @Test
-    fun everyPositionOfAGameIsSearchedOnce() {
+    fun everySearchIsOneLineButTheHintAndNoneIsMadeTwice() {
         val lines = mapOf(
             START to listOf(line("e2e4"), line("d2d4")),
             after("e4") to listOf(line("e7e5"), line("c7c5")),
-            after("d4") to listOf(line("d7d5")),
             after("e4", "e5") to listOf(line("g1f3"), line("b1c3")),
         )
         val engines = listOf(ScriptEngine(lines), ScriptEngine(lines))
@@ -75,63 +76,96 @@ class AnalyserTest {
             analyser.withdraw("g", 2)
             analyser.submitMove("g", board, board.parseSan("Nf3")!!, 3)
             watch.idle()
-            watch.until("the look-ahead done") { synchronized(analyser.lock) { analyser.claimed.isEmpty() } }
         } finally {
             analyser.close()
         }
-        val searched = engines.flatMap { e ->
-            synchronized(e.calls) { e.calls.indices.filter { e.multipvs[it] > 1 }.map { e.calls[it] to e.histories[it] } }
-        }
+        val searched = searches(engines)
         assertEquals(searched.sortedBy { it.toString() }.toString(), searched.toSet().size, searched.size)
-        assertEquals(searched.size, analyser.searches)
+        assertEquals(setOf(1 to 18, 6 to EARLY_DEPTH), searched.map { it.second to it.third }.toSet())
+        assertEquals(searched.count { it.second == 1 }, analyser.searches)
     }
 
     /**
-     * `test_a_move_among_the_lines_is_judged_without_a_search_of_its_own`: 85% of a session's
-     * moves are among the lines of the position they were played from: judged from their own line
-     * there, at the same depth as the best move (the same label in 319 of 320), and at once -- the
-     * search of the position after them, held here, is not waited for.
+     * `test_a_position_is_whole_from_its_candidates_own_searches`: each of a position's best moves
+     * is searched as its own position, one line to the full depth: the lines are those searches
+     * turned to the side to move, best first, the best line keeping its own moves -- where six
+     * lines at once to the full depth took up to 47 s.
      */
     @Test
-    fun aMoveAmongTheLinesIsJudgedWithoutASearchOfItsOwn() {
-        val engine = GatedEngine(mapOf(START to listOf(line("e2e4", score = 0.60), line("d2d4", score = 0.55))), gated = listOf(after("d4")))
-        val analyser = analyser(listOf(engine), lookAhead = 0)
+    fun aPositionIsWholeFromItsCandidatesOwnSearches() {
+        val engine = ScriptEngine(
+            mapOf(
+                START to listOf(line("e2e4", score = 0.6), line("d2d4", score = 0.55)),
+                after("e4") to listOf(line("e7e5", score = 0.40)),
+                after("d4") to listOf(line("d7d5", score = 0.48)),
+            ),
+        )
+        val analyser = analyser(listOf(engine))
         val watch = AnalyserWatch(analyser)
         analyser.start()
-        val verdict: MoveAssessment
+        val told: List<Analysis>
         try {
             analyser.submitPosition("g", Board(), 0)
-            watch.idle()
-            analyser.poll()
-            analyser.submitMove("g", Board(), Move.fromUci("d2d4"), 1)
-            assertTrue("the position after d4 never searched", entered(engine, after("d4")))
-            watch.until("d4 judged") { synchronized(analyser.lock) { analyser.nextVerdict == 2 } }
-            verdict = analyser.poll().filterIsInstance<MoveAssessment>().first()
-            engine.release(after("d4"))
-            watch.idle()
+            told = watch.settled().filterIsInstance<Analysis>()
         } finally {
             analyser.close()
         }
-        assertEquals("d2d4", verdict.uci)
-        assertEquals(0.05, verdict.expectedLoss, 1e-9)
-        assertTrue("${verdict.label}", verdict.label != Label.BEST)
+        val whole = told.last()
+        assertTrue(!whole.provisional)
+        assertEquals(listOf(listOf("e2e4"), listOf("d2d4", "d7d5")), whole.lines.map { it.moves })
+        assertEquals(0.6, whole.lines[0].expectedScore, 1e-9)
+        assertEquals(0.52, whole.lines[1].expectedScore, 1e-9)
     }
 
     /**
-     * `test_a_move_not_among_the_lines_waits_for_the_position_after`: a move none of the lines
-     * begins with is judged from the position after's search -- the game's next position,
-     * searched anyway -- so its verdict waits for that search.
+     * `test_a_position_is_told_at_once_and_then_whole`: the first answer comes at once -- the
+     * best line to the full depth, the hint's moves at EARLY_DEPTH -- provisional; then the
+     * position whole, the candidates' own searches in; with the side searches, whole once they
+     * are in too. Each stage once.
+     */
+    @Test
+    fun aPositionIsToldAtOnceAndThenWhole() {
+        val lines = mapOf(START to listOf(line("e2e4"), line("d2d4")))
+        for (threats in listOf(false, true)) {
+            val engine = GatedEngine(lines) // its lines at the depth asked for
+            val analyser = analyser(listOf(engine), threats = threats)
+            val watch = AnalyserWatch(analyser)
+            analyser.start()
+            val told: List<Analysis>
+            try {
+                analyser.submitPosition("g", Board(), 0)
+                told = watch.settled().filterIsInstance<Analysis>()
+            } finally {
+                analyser.close()
+            }
+            assertEquals("the best line alone, first", listOf(18), told[0].lines.map { it.depth })
+            assertEquals("then the hint's", listOf(18, EARLY_DEPTH), told[1].lines.map { it.depth })
+            assertEquals(List(told.size - 1) { true } + false, told.map { it.provisional })
+            assertEquals("${told.map { it.lines }}", if (threats) 4 else 3, told.size)
+            assertTrue(told.last().lines.all { it.depth == 18 })
+        }
+    }
+
+    /**
+     * `test_a_move_not_among_the_lines_waits_for_the_position_after`: a move none of the
+     * candidates is judged from the position after's best line -- the game's next position,
+     * searched anyway -- so its verdict waits for that search; one among them is judged from its
+     * own candidate's search at once.
      */
     @Test
     fun aMoveNotAmongTheLinesWaitsForThePositionAfter() {
         val engine = GatedEngine(
-            mapOf(START to listOf(line("e2e4", score = 0.60)), after("a3") to listOf(line("e7e5", score = 0.55))),
+            mapOf(
+                START to listOf(line("e2e4")),
+                after("e4") to listOf(line("e7e5", score = 0.40)),
+                after("a3") to listOf(line("e7e5", score = 0.55)),
+            ),
             gated = listOf(after("a3")),
         )
-        val analyser = analyser(listOf(engine), lookAhead = 0)
+        val analyser = analyser(listOf(engine))
         val watch = AnalyserWatch(analyser)
         analyser.start()
-        val got: List<com.sidecoach.events.Event>
+        val got: List<Event>
         try {
             analyser.submitPosition("g", Board(), 0)
             watch.idle()
@@ -145,171 +179,66 @@ class AnalyserTest {
         }
         val verdict = got.filterIsInstance<MoveAssessment>().first()
         assertEquals(0.60 - (1 - 0.55), verdict.expectedLoss, 1e-9)
+        assertTrue("${verdict.label}", verdict.label != Label.BEST)
     }
 
     /**
-     * `test_a_position_searched_ahead_is_promoted_when_the_game_reaches_it`: the game reaches a
-     * position its look-ahead is still searching: that search becomes the game's -- told as the
-     * game's position when it ends -- and is never begun again. It was stopped and searched again
-     * from depth 1 (the engine audit: "look-ahead -> look-ahead -> early -> verdict -> full" on one
-     * position).
+     * `test_a_decided_search_running_long_stands_in_for_the_verdict`: Tai, 2026-10-05: a
+     * best-line search still running after DECIDED_AFTER_MS whose deepest finished depth shows the
+     * position decided has that depth's score judge the move -- it flips a severity as rarely as
+     * two full searches disagree. Undecided, it is waited for.
      */
     @Test
-    fun aPositionSearchedAheadIsPromotedWhenTheGameReachesIt() {
-        val lines = mapOf(START to listOf(line("e2e4"), line("d2d4")))
-        val gated = listOf(after("e4"))
-        val engines = listOf(GatedEngine(lines, gated), GatedEngine(lines, gated))
-        val analyser = analyser(engines, lookAhead = 1)
+    fun aDecidedSearchRunningLongStandsInForTheVerdict() {
+        val engine = GatedEngine(
+            mapOf(START to listOf(line("e2e4")), after("e4") to listOf(line("e7e5", score = 0.40))),
+            gated = listOf(after("h3")),
+        )
+        val analyser = analyser(listOf(engine))
         val watch = AnalyserWatch(analyser)
         analyser.start()
-        val got: List<com.sidecoach.events.Event>
+        val verdict: MoveAssessment
         try {
             analyser.submitPosition("g", Board(), 0)
-            assertTrue("e4 never looked at ahead", entered(engines[1], after("e4")))
-            analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
-            assertEquals(1, analyser.aheadHits)
-            engines[1].release(after("e4"))
-            got = watch.settled()
-        } finally {
-            analyser.close()
-        }
-        assertEquals("searched again", 1, searches(engines).count { it == after("e4") })
-        assertTrue("the promoted search was stopped", engines.all { it.halted.isEmpty() })
-        val told = got.filterIsInstance<Analysis>().filter { it.ply == 1 }
-        assertTrue("$told", told.isNotEmpty() && told.last().fen == after("e4") && !told.last().provisional)
-    }
-
-    /**
-     * `test_a_search_ahead_off_every_path_stops_and_one_still_on_a_path_goes_on`: a move played:
-     * the look-ahead's search of a position now on no path is stopped -- its answer would never be
-     * read -- and the one the game went to goes on, now the game's.
-     */
-    @Test
-    fun aSearchAheadOffEveryPathStopsAndOneStillOnAPathGoesOn() {
-        val lines = mapOf(START to listOf(line("e2e4"), line("d2d4")))
-        val gated = listOf(after("e4"), after("d4"))
-        val engines = List(3) { GatedEngine(lines, gated) }
-        val analyser = analyser(engines, lookAhead = 1)
-        val watch = AnalyserWatch(analyser)
-        analyser.start()
-        try {
-            analyser.submitPosition("g", Board(), 0)
-            for (fen in gated) watch.until("$fen ahead") { engines.any { it.entered.getValue(fen).count == 0L } }
-            analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
-            watch.until("the search after d4 stopped") { engines.any { it.halted.isNotEmpty() } }
-            for (engine in engines) engine.release(after("e4"))
+            watch.idle()
+            analyser.submitMove("g", Board(), Move.fromUci("h2h3"), 1)
+            assertTrue(entered(engine, after("h3")))
+            val key = cacheKey(board("h3"))
+            synchronized(analyser.lock) { analyser.nodes.getValue(key).deepest = line("e7e5", score = 0.5).copy(depth = 15) }
+            analyser.decide(Analyser.Job(Analyser.BEST, key, analyser.era))
+            assertEquals("an undecided depth judged the move", 1, synchronized(analyser.lock) { analyser.nextVerdict })
+            synchronized(analyser.lock) { analyser.nodes.getValue(key).deepest = line("d8h4", score = 0.9).copy(depth = 15) }
+            analyser.decide(Analyser.Job(Analyser.BEST, key, analyser.era))
+            assertEquals("the decided depth did not judge it", 2, synchronized(analyser.lock) { analyser.nextVerdict })
+            verdict = analyser.poll().filterIsInstance<MoveAssessment>().first()
+            engine.release(after("h3"))
             watch.idle()
         } finally {
             analyser.close()
         }
-        assertEquals(listOf(after("d4")), engines.flatMap { it.halted })
-        assertEquals(1, analyser.stopped)
-    }
-
-    /**
-     * `test_the_game_has_a_worker_of_its_own`: the first worker takes only the game's own
-     * positions: a position the game reaches never waits behind the look-ahead. Asked while the
-     * look-ahead has work waiting and its worker is held, the game's worker turns it down, the
-     * other takes it; and a position of the game's is the game's worker's at once.
-     */
-    @Test
-    fun theGameHasAWorkerOfItsOwn() {
-        val lines = mapOf(START to listOf(line("e2e4"), line("d2d4")))
-        val gated = listOf(after("e4"), after("d4"))
-        val engines = List(2) { GatedEngine(lines, gated) }
-        val analyser = analyser(engines, lookAhead = 1)
-        val watch = AnalyserWatch(analyser)
-        analyser.start()
-        try {
-            analyser.submitPosition("g", Board(), 0)
-            watch.until("e4 looked at ahead") { engines[1].entered.getValue(after("e4")).count == 0L }
-            watch.idle()
-            synchronized(analyser.lock) {
-                assertNull("the game's worker took the look-ahead", analyser.pick(0))
-                val ahead = analyser.pick(1)
-                assertTrue("$ahead", ahead != null && ahead.key == board("d4").fen())
-                val nf3 = board("Nf3")
-                analyser.path[1] = analyser.node(nf3).key
-                val game = analyser.pick(0)
-                assertTrue("the game's position waited", game != null && game.key == analyser.path[1])
-                analyser.path.remove(1)
-            }
-            engines[1].release(after("e4"))
-            engines[1].release(after("d4"))
-        } finally {
-            analyser.close()
-        }
-        assertTrue(gated.none { it in engines[0].calls })
-    }
-
-    /**
-     * `test_a_position_is_told_at_each_depth_of_its_own_search_and_whole_last`: Tai, 2026-09-28:
-     * "first usable answer is depth 12 ... the computation continues until max depth of 18".
-     * Depth 12 is the position's own search's: one search, every depth from 12 told as it
-     * finishes, provisional, then whole -- a search of its own to depth 12 first cost 27% more
-     * than the full depth alone (the engine audit, 2026-10-04).
-     */
-    @Test
-    fun aPositionIsToldAtEachDepthOfItsOwnSearchAndWholeLast() {
-        val engine = GatedEngine(mapOf(START to listOf(line("e2e4"))))
-        val analyser = analyser(listOf(engine), lookAhead = 0)
-        val watch = AnalyserWatch(analyser)
-        analyser.start()
-        val got: List<Analysis>
-        try {
-            analyser.submitPosition("g", Board(), 0)
-            got = watch.settled().filterIsInstance<Analysis>()
-        } finally {
-            analyser.close()
-        }
-        assertEquals("one search", listOf(START), engine.calls.toList())
-        assertEquals((EARLY_DEPTH..18).toList(), got.map { it.lines[0].depth })
-        assertEquals(List(got.size - 1) { true } + false, got.map { it.provisional })
-    }
-
-    /**
-     * `test_the_full_depth_is_whole_once_its_side_searches_are_in`: the coach's lessons wait for
-     * the whole analysis (threats, traps): the full depth is told provisional when its own search
-     * ends, and whole when its side searches are in -- those searching from the position's lines,
-     * never the position again.
-     */
-    @Test
-    fun theFullDepthIsWholeOnceItsSideSearchesAreIn() {
-        val engine = GatedEngine(mapOf(START to listOf(line("e2e4"))))
-        val analyser = analyser(listOf(engine), lookAhead = 0, threats = true)
-        val watch = AnalyserWatch(analyser)
-        analyser.start()
-        val got: List<Analysis>
-        try {
-            analyser.submitPosition("g", Board(), 0)
-            got = watch.settled().filterIsInstance<Analysis>().filter { it.lines[0].depth == 18 }
-        } finally {
-            analyser.close()
-        }
-        assertEquals(listOf(true, false), got.map { it.provisional })
-        assertEquals("the position searched again for its side searches", 1, engine.calls.count { it == START })
-        assertEquals(1, analyser.sideSearches)
+        assertEquals(0.60 - 0.1, verdict.expectedLoss, 1e-9)
     }
 
     /**
      * `test_moves_are_judged_in_the_order_they_were_played`: a verdict reads the move before it
      * ("the opponent just erred", "a recapture"): the second move's is held until the first's is
-     * out, though its own lines came first.
+     * out, though its own searches were done first.
      */
     @Test
     fun movesAreJudgedInTheOrderTheyWerePlayed() {
         val lines = mapOf(START to listOf(line("e2e4", score = 0.55)), after("e4") to listOf(line("e7e5", score = 0.5)))
-        val engines = listOf(GatedEngine(lines, listOf(START)), GatedEngine(lines, listOf(START)))
-        val analyser = analyser(engines, lookAhead = 0)
+        val engines = List(3) { GatedEngine(lines, listOf(START)) }
+        val analyser = analyser(engines)
         val watch = AnalyserWatch(analyser)
         analyser.start()
-        val got: List<com.sidecoach.events.Event>
+        val got: List<Event>
         try {
             val board = Board()
             analyser.submitMove("g", board, board.parseSan("e4")!!, 1)
             board.push(board.parseSan("e4")!!)
             analyser.submitMove("g", board, board.parseSan("e5")!!, 2)
-            watch.until("e4 known") { synchronized(analyser.lock) { analyser.nodes[analyser.path[1]]?.measured != null } }
+            val key = cacheKey(board)
+            watch.until("e4 whole") { synchronized(analyser.lock) { analyser.nodes[key]?.whole != null } }
             assertEquals("e5 judged before e4", 1, synchronized(analyser.lock) { analyser.nextVerdict })
             for (engine in engines) engine.release(START)
             got = watch.settled()
@@ -326,13 +255,14 @@ class AnalyserTest {
      */
     @Test
     fun aTakebackSaysNothingMoreOfTheWithdrawnMoves() {
-        val gated = listOf(after("e4", "e5", "Nf3"))
+        val gated = listOf(after("e4", "e5"))
         val engine = GatedEngine(gated = gated)
-        val analyser = analyser(listOf(engine), lookAhead = 0)
+        val analyser = analyser(listOf(engine))
         val watch = AnalyserWatch(analyser)
-        val got: List<com.sidecoach.events.Event>
+        val got: List<Event>
         try {
-            // The moves in before the worker starts: it takes the newest first, and holds there.
+            // The moves in before the worker starts: the first verdict's needs, then the
+            // second's, whose position after e5 holds.
             val board = Board()
             for ((i, san) in listOf("e4", "e5", "Nf3").withIndex()) {
                 val move = board.parseSan(san)!!
@@ -340,7 +270,7 @@ class AnalyserTest {
                 board.push(move)
             }
             analyser.start()
-            assertTrue("the position after Nf3 never searched", entered(engine, gated[0]))
+            assertTrue("the position after e5 never searched", entered(engine, gated[0]))
             analyser.withdraw("g", 1)
             watch.until("the withdrawn move's search stopped") { engine.halted.toList() == gated }
             got = watch.settled()
@@ -359,27 +289,33 @@ class AnalyserTest {
      */
     @Test
     fun aPositionSeenAgainIsNotSearchedAgain() {
-        val engine = GatedEngine(mapOf(START to listOf(line("e2e4"))))
-        val analyser = analyser(listOf(engine), lookAhead = 0)
+        val engine = ScriptEngine(mapOf(START to listOf(line("e2e4"))))
+        val analyser = analyser(listOf(engine))
         val watch = AnalyserWatch(analyser)
         analyser.start()
-        val again: List<com.sidecoach.events.Event>
+        val searched: Int
+        val again: List<Event>
         try {
             analyser.submitPosition("g", Board(), 0)
             watch.settled()
+            searched = engine.calls.size
             analyser.reset()
             analyser.submitPosition("h", Board(), 0)
             again = watch.settled()
         } finally {
             analyser.close()
         }
-        assertEquals(listOf(START), engine.calls.toList())
+        assertEquals(searched, engine.calls.size)
         assertEquals(listOf("h"), again.filterIsInstance<Analysis>().map { it.gameId }.distinct())
     }
 
-    /** `test_a_failed_search_does_not_end_the_session`. */
+    /**
+     * `test_a_failed_search_does_not_end_the_session_nor_hold_the_game`: an engine that fails
+     * every search: each failure counted, the moves go unjudged, and nothing is owed -- the game
+     * is never held waiting on a search that cannot come.
+     */
     @Test
-    fun aFailedSearchDoesNotEndTheSession() {
+    fun aFailedSearchDoesNotEndTheSessionNorHoldTheGame() {
         val broken = object : ScriptEngine() {
             override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> =
                 throw RuntimeException("engine gone")
@@ -387,15 +323,90 @@ class AnalyserTest {
         val analyser = Analyser(GameAnnotator(broken, depth = 6, withThreats = false))
         val watch = AnalyserWatch(analyser)
         analyser.start()
+        val failed: Int
         try {
             analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
-            watch.until("the failure counted") { analyser.failures >= 1 }
+            val got = watch.settled()
+            failed = analyser.failures
+            assertEquals("each position's best line and hint, of both positions", 4, failed)
             assertTrue("${analyser.lastError}", analyser.lastError?.contains("engine gone") == true)
+            assertTrue(got.none { it is MoveAssessment })
             analyser.submitPosition("h", board("d4"), 0)
-            watch.until("the next search tried, and failed alike") { analyser.failures >= 2 }
+            watch.idle()
         } finally {
             analyser.close()
         }
+        assertEquals("the next position tried, and failed alike", failed + 2, analyser.failures)
+    }
+
+    /**
+     * `test_the_workers_take_the_verdicts_then_the_coach_then_the_game`: who waits on a search,
+     * first to last: the next verdict (the word on the move just played), the coach's question
+     * (the player waiting on it), the position the game is on, the game's other positions.
+     */
+    @Test
+    fun theWorkersTakeTheVerdictsThenTheCoachThenTheGame() {
+        val analyser = analyser(listOf(ScriptEngine(mapOf(START to listOf(line("e2e4"))))))
+        val watch = AnalyserWatch(analyser)
+        analyser.submitPosition("g", Board(), 0)
+        val asked = board("d4")
+        Thread({ analyser.request(asked) }, "the coach").apply { isDaemon = true }.start()
+        watch.until("the coach asked") { synchronized(analyser.lock) { analyser.pick()?.key == cacheKey(asked) } }
+        synchronized(analyser.lock) {
+            assertEquals("the coach's not first", Analyser.Job(Analyser.BEST, cacheKey(asked), 0), analyser.pick())
+        }
+        analyser.submitMove("g", Board(), Move.fromUci("e2e4"), 1)
+        val jobs = synchronized(analyser.lock) {
+            assertEquals(Analyser.Job(Analyser.BEST, cacheKey(Board()), 0), analyser.pick())
+            analyser.agenda()
+        }
+        val askedJob = Analyser.Job(Analyser.BEST, cacheKey(asked), 0)
+        val gameJob = Analyser.Job(Analyser.HINT, cacheKey(board("e4")), 0)
+        assertTrue("the game's position before the coach", jobs.indexOf(askedJob) < jobs.indexOf(gameJob))
+        analyser.close()
+    }
+
+    /**
+     * `test_the_coach_is_answered_from_the_pool_and_never_searches_twice`: the coach's engine
+     * ([PoolSearcher]): a question on a position gets it whole, from the analyser's workers -- no
+     * Stockfish of its own -- and asked again, at once.
+     */
+    @Test
+    fun theCoachIsAnsweredFromThePoolAndNeverSearchesTwice() {
+        val engine = ScriptEngine(mapOf(after("d4") to listOf(line("d7d5", score = 0.5), line("g8f6", score = 0.45))))
+        val analyser = analyser(listOf(engine))
+        val searcher = PoolSearcher(analyser)
+        analyser.start()
+        val first: List<Line>
+        val again: List<Line>
+        val searched: Int
+        try {
+            first = searcher.analyse(board("d4"))
+            searched = engine.calls.size
+            again = searcher.analyse(board("d4"))
+        } finally {
+            analyser.close()
+        }
+        assertEquals(first, again)
+        assertEquals(listOf("d7d5", "g8f6"), first.map { it.moves[0] })
+        assertEquals(searched, engine.calls.size)
+    }
+
+    /**
+     * `test_a_question_given_up_or_asked_of_a_closed_analyser_never_hangs`: the coach's wait is
+     * bounded: a question past its time gets what is known (here nothing) and is dropped;
+     * closed, the analyser answers at once with what it has.
+     */
+    @Test
+    fun aQuestionGivenUpOrAskedOfAClosedAnalyserNeverHangs() {
+        val gated = after("c4")
+        val engine = GatedEngine(gated = listOf(gated))
+        val analyser = analyser(listOf(engine))
+        analyser.start()
+        assertNull(analyser.request(board("c4"), timeoutMs = 0))
+        engine.release(gated)
+        analyser.close()
+        assertNull(analyser.request(board("e4")))
     }
 
     /**
@@ -407,76 +418,39 @@ class AnalyserTest {
     @Test
     fun theWorkersEnginesSearchOnOneThreadEach() {
         val made = ArrayList<Int>()
-        val analyser = openAnalyser(depth = 18, multipv = 6, workers = 3) { threads ->
+        val analyser = openAnalyser(depth = 18, multipv = 6, workers = 4) { threads ->
             made.add(threads)
             ScriptEngine()
         }
         analyser.close()
-        assertEquals(listOf(1, 1, 1), made)
-        assertEquals(3, analyser.engines.size)
+        assertEquals(listOf(1, 1, 1, 1), made)
+        assertEquals(4, analyser.engines.size)
     }
 
     /**
-     * `test_the_look_ahead_goes_where_the_game_is_likely_to_go`: Tai, 2026-10-04: "an adaptive,
-     * dynamic system that is able to maximize both comp eff and the chance of catching the
-     * opponent's move". A forced line -- one move far better than the rest -- is followed deep and
-     * its alternatives left alone; a quiet position, its moves about equal, has each searched one
-     * ply on and nothing behind them (each too unlikely by then).
+     * `test_settings_changed_mid_search_keep_nothing_measured_the_old_way`: the depth or the
+     * lines saved while a search runs: what it finds is not kept, and the game's position is
+     * measured again and told again.
      */
     @Test
-    fun theLookAheadGoesWhereTheGameIsLikelyToGo() {
-        val forced = mapOf(
-            START to listOf(line("e2e4", score = 0.9), line("d2d4", score = 0.3)),
-            after("e4") to listOf(line("e7e5", score = 0.9), line("c7c5", score = 0.2)),
-            after("e4", "e5") to listOf(line("g1f3", score = 0.9), line("b1c3", score = 0.2)),
-        )
-        val quietMoves = listOf("e2e4", "d2d4", "c2c4", "g1f3")
-        val quiet = mapOf(
-            START to quietMoves.map { line(it) },
-            after("e4") to listOf(line("e7e5"), line("c7c5")),
-        )
-
-        fun lookedAt(lines: Map<String, List<Line>>): Set<String> {
-            val analyser = analyser(listOf(ScriptEngine(lines)), lookAhead = 4)
-            val watch = AnalyserWatch(analyser)
-            analyser.start()
-            try {
-                analyser.submitPosition("g", Board(), 0)
-                watch.idle()
-                watch.until("the look-ahead done") {
-                    synchronized(analyser.lock) {
-                        analyser.claimed.isEmpty() && analyser.ahead.keys.all { analyser.nodes[it]?.measured != null }
-                    }
-                }
-                return synchronized(analyser.lock) { analyser.ahead.keys.map { analyser.nodes.getValue(it).board.fen() }.toSet() }
-            } finally {
-                analyser.close()
-            }
+    fun settingsChangedMidSearchKeepNothingMeasuredTheOldWay() {
+        val engine = GatedEngine(mapOf(START to listOf(line("e2e4"))), gated = listOf(START))
+        val analyser = analyser(listOf(engine))
+        val watch = AnalyserWatch(analyser)
+        analyser.start()
+        val told: List<Analysis>
+        try {
+            analyser.submitPosition("g", Board(), 0)
+            assertTrue(entered(engine, START))
+            analyser.forgetMeasured()
+            watch.until("the search under way let go") { engine.halted.toList() == listOf(START) }
+            engine.release(START)
+            told = watch.settled().filterIsInstance<Analysis>()
+        } finally {
+            analyser.close()
         }
-
-        assertEquals(setOf(after("e4"), after("e4", "e5"), after("e4", "e5", "Nf3")), lookedAt(forced))
-        assertEquals(quietMoves.map { after(Board().san(Move.fromUci(it))) }.toSet(), lookedAt(quiet))
-    }
-
-    /**
-     * `test_how_a_side_plays_is_learned_from_this_game_and_forgotten_with_it`: move accuracy
-     * depends on the game (Tai, 2026-10-04): nothing trained, nothing kept between games. A player
-     * who keeps playing the second line has it made likelier for them as the game goes -- the
-     * first moves decide it, the start counting for little -- and the next game starts over.
-     */
-    @Test
-    fun howASidePlaysIsLearnedFromThisGameAndForgottenWithIt() {
-        val analyser = analyser(listOf(ScriptEngine()))
-        analyser.submitPosition("g", Board(), 0)
-        val lines = listOf(line("e2e4", score = 0.60), line("d2d4", score = 0.52))
-        val before = analyser.odds(true, lines)[1]
-        repeat(4) { analyser.learn(Analyser.Played(1, "a", "b", Move.fromUci("d2d4"), true), lines) }
-        val later = analyser.odds(true, lines)[1]
-        assertTrue("$before $later", analyser.t.getValue(true) > T_START && later > 2 * before)
-        assertEquals("the opponent's is their own", T_START, analyser.t.getValue(false), 0.0)
-        analyser.submitPosition("h", Board(), 0) // the next game
-        assertEquals(T_START, analyser.t.getValue(true), 0.0)
-        assertEquals(before, analyser.odds(true, lines)[1], 1e-12)
+        assertTrue(told.isNotEmpty() && !told.last().provisional)
+        assertEquals(1, analyser.era)
     }
 
     private companion object {

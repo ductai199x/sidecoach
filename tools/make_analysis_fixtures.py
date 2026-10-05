@@ -172,7 +172,9 @@ def main() -> None:
         engine = FakeEngine(answers, default=[])
         made = review_analysis.Lines(Settings(), strength, make_engine=lambda _e=engine, **_: _e)
         for fen in list(answers)[:20]:
-            lines.append({"fen": fen, "found": [l.model_dump(mode="json") for l in answers[fen]], "out": made.lines(fen)})
+            # `found`: what the engine gave `Lines` -- as many lines as it asked for.
+            found = answers[fen][: review_analysis.LINES]
+            lines.append({"fen": fen, "found": [l.model_dump(mode="json") for l in found], "out": made.lines(fen)})
 
     explore = []
     for f in fens[:80] + [chess.STARTING_FEN, "8/8/8/4k3/8/8/8/4K3 w - - 0 1"]:

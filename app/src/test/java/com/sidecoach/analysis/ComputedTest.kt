@@ -11,7 +11,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
 /**
  * What the engine has computed, read before a search: `tests/test_computed.py`.
@@ -44,16 +43,6 @@ class ComputedTest {
             val move = board.legalMoves().minBy { it.uci() }
             return listOf(Line(moves = listOf(move.uci()), depth = depth ?: 14, expectedScore = 0.5))
         }
-    }
-
-    /** `FakeEngine`: the lines for a position's FEN, else a quiet line. */
-    private open class FakeEngine(private val answers: Map<String, List<Line>> = emptyMap()) : Engine(File("fake"), null) {
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            if (com.sidecoach.analysis.gameOver(board)) return emptyList()
-            return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
-        }
-
-        override fun close() = Unit
     }
 
     @Test
@@ -173,7 +162,7 @@ class ComputedTest {
      */
     @Test
     fun theToolsReadTheSheetsLinesAndSearchOnlyAPositionNothingHas() {
-        val annotator = GameAnnotator(FakeEngine(mapOf(start.fen() to lines)), depth = 18, withThreats = false)
+        val annotator = GameAnnotator(ScriptEngine(mapOf(start.fen() to lines)), depth = 18, withThreats = false)
         annotator.measure(start)
         val searcher = Recording()
         val engine = ComputedFirst(searcher::analyse, annotator.computed)
@@ -215,34 +204,22 @@ class ComputedTest {
     }
 
     /**
-     * `_Streaming`: an engine that hands each depth on as it finishes it, and notes what a reader
-     * had of the position at each.
-     */
-    private class Streaming : FakeEngine() {
-        lateinit var annotator: GameAnnotator
-        val read = ArrayList<Int>()
-
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            for (d in listOf(EARLY_DEPTH - 2, EARLY_DEPTH, EARLY_DEPTH + 2)) {
-                onDepth?.invoke(listOf(Line(moves = listOf("e2e4"), depth = d, expectedScore = 0.5)))
-                read.add(annotator.computed.lines(board).firstOrNull()?.depth ?: 0)
-            }
-            return listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.5))
-        }
-    }
-
-    /**
-     * A reader gets the newest depth from the first usable one (Tai, 2026-09-28: "if the consumers
-     * read after stockfish reaches depth > 12 then they will get whatever lines that is available
-     * at the time"); a verdict's line counts too, and a new game forgets them.
+     * `test_a_reader_gets_the_first_usable_lines_and_then_the_full_depth`: a reader gets what is
+     * there from the first usable answer on (Tai, 2026-09-28: "if the consumers read after
+     * stockfish reaches depth > 12 then they will get whatever lines that is available at the
+     * time"): the best line as its search ends, the hint's lines at EARLY_DEPTH, then the position
+     * whole; a verdict's line counts too, and a new game forgets them.
      */
     @Test
-    fun theAnalyserPutsInEachUsableDepthAsItFinishesIt() {
-        val engine = Streaming()
+    fun aReaderGetsTheFirstUsableLinesAndThenTheFullDepth() {
+        val engine = GatedEngine() // its lines at the depth asked for
         val annotator = GameAnnotator(engine, depth = 18, withThreats = false)
-        engine.annotator = annotator
+        val best = annotator.bestLine(start)
+        assertEquals(best.lines, annotator.computed.lines(start))
+        val hint = annotator.hintLines(start)
+        assertEquals(hint, annotator.computed.lines(start))
+        assertEquals(EARLY_DEPTH, hint[0].depth)
         annotator.measure(start)
-        assertEquals(listOf(0, EARLY_DEPTH, EARLY_DEPTH + 2), engine.read)
         assertEquals(18, annotator.computed.lines(start)[0].depth)
         val afterE4 = after("e4")
         annotator.measureForVerdict(afterE4)

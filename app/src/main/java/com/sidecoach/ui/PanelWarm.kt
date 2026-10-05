@@ -391,8 +391,8 @@ object PanelWarm {
         val coach = coaching ?: CoachRunner(
             store,
             enabled = engine.on,
-            engine = if (engine.on) Assessing.coachEngine(appContext, store) else null,
             computed = engine.computed,
+            analyser = engine.analyser,
         ).also {
             coaching = it
             // The voice takes a model reply sentence by sentence as it is written.

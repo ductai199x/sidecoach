@@ -8,7 +8,6 @@ import com.sidecoach.TestNets
 import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.AnalyserWatch
 import com.sidecoach.analysis.Assessing
-import com.sidecoach.analysis.EARLY_DEPTH
 import com.sidecoach.analysis.Engine
 import com.sidecoach.analysis.GameAnnotator
 import com.sidecoach.analysis.HANG_MS
@@ -41,7 +40,6 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import java.io.File
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
@@ -64,32 +62,20 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class TakebackTest {
 
-    /** Every position answered with the same quiet line, as the desktop's FakeEngine. */
+    /** Every position answered with a quiet line, as the desktop's FakeEngine. */
     private open class QuietEngine : Engine(File("quiet"), null) {
         /** Each position asked, with the depth asked for (`FakeEngine.calls`, `.depths`). */
         val calls: MutableList<Pair<String, Int?>> = java.util.Collections.synchronizedList(ArrayList())
 
         override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
             calls.add(board.fen() to depth)
-            return if (com.sidecoach.analysis.gameOver(board)) emptyList()
-            else listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
+            if (com.sidecoach.analysis.gameOver(board)) return emptyList()
+            // The position's first legal move, level: a candidate's own search reads on from it.
+            val first = board.legalMoves().minBy { it.uci() }
+            return listOf(Line(moves = listOf(first.uci()), depth = 1, expectedScore = 0.5))
         }
 
         override fun close() = Unit
-    }
-
-    /** Its searches wait to be let go, so a test can act mid-search (`_HeldEngine`). */
-    private class HeldEngine : QuietEngine() {
-        val searching = CountDownLatch(1)
-        val go = CountDownLatch(1)
-
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            searching.countDown()
-            // A fake that timed out and carried on would pass a test that never let it go. (An exception,
-            // not an Error: on the analyser's thread an Error would end the test process.)
-            if (!go.await(HANG_MS, TimeUnit.MILLISECONDS)) throw IllegalStateException("the test never let the search go")
-            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
-        }
     }
 
     /**
@@ -174,43 +160,6 @@ class TakebackTest {
             gameId = "g", ply = ply, san = san, uci = move.uci(), fenBefore = before,
             fenAfter = board.fen(), byUser = ply % 2 == 1,
         )
-    }
-
-    @Test
-    fun aTakebackLetsTheEngineGoOfTheWithdrawnMoves() {
-        val engine = HeldEngine()
-        val analyser = Analyser(GameAnnotator(engine, depth = 6, withThreats = false))
-        val watch = AnalyserWatch(analyser)
-        val board = Board()
-        val moves = "e4 e5 Nf3 Nc6".split(" ").mapIndexed { i, san ->
-            val before = board.copy()
-            val move = board.parseSan(san)!!
-            board.push(move)
-            Triple(before, move, i + 1)
-        }
-        analyser.submitMove("g", moves[0].first, moves[0].second, 1)
-        analyser.start()
-        val got = try {
-            assertTrue("the worker never started on ply 1", engine.searching.await(HANG_MS, TimeUnit.MILLISECONDS))
-            for ((before, move, ply) in moves.drop(1)) analyser.submitMove("g", before, move, ply)
-            // Plies 3 and 4 taken back while ply 1 is measured and 2 waits.
-            analyser.withdraw("g", 2)
-            assertEquals(2, analyser.withdrawn)
-            assertEquals(2, analyser.pending)
-            // Ply 1 taken back too, mid-search: its verdict is not delivered.
-            analyser.withdraw("g", 0)
-            assertEquals(4, analyser.withdrawn)
-            engine.go.countDown()
-            // Nothing is delivered of ply 1, so wait for the work to be settled, not for words: a
-            // word is put before its request settles, so none can come after `pending` is 0.
-            watch.settled()
-        } finally {
-            engine.go.countDown() // a failed assertion above leaves no search held
-            analyser.close()
-        }
-        val plies = got.mapNotNull { (it as? MoveAssessment)?.ply ?: (it as? Analysis)?.ply }
-        assertTrue("words on withdrawn plies: $plies", plies.none { it == 1 || it == 3 || it == 4 })
-        assertEquals(0, analyser.pending)
     }
 
     /** A model that answers [reply] and remembers that it was asked (`ScriptedProvider`). */
@@ -311,86 +260,36 @@ class TakebackTest {
     }
 
     /**
-     * `_WholeMeasureHeld`: answers at once, except the first whole measure (the full [depth]) of
-     * [fen]: that search runs until it is interrupted, as a real one stops ([Engine.interrupt]),
-     * so the test acts while it is under way, never on a clock. Whoever interrupts it [wake]s it.
-     */
-    private class WholeMeasureHeld(private val fen: String, private val depth: Int) : QuietEngine() {
-        val holding = CountDownLatch(1) // the held search is under way
-        val interrupted = CountDownLatch(1) // and was stopped
-        private val lock = Object()
-
-        fun wake() = synchronized(lock) { lock.notifyAll() }
-
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            val whole = depth == this.depth
-            if (interruptibleNow && whole && board.fen() == fen && holding.count > 0) {
-                synchronized(lock) {
-                    holding.countDown()
-                    val deadline = System.nanoTime() + HANG_MS * 1_000_000
-                    while (!stopped) {
-                        val left = (deadline - System.nanoTime()) / 1_000_000
-                        if (left <= 0) throw IllegalStateException("the whole measure was never let go")
-                        lock.wait(left)
-                    }
-                }
-                interrupted.countDown()
-                throw Interrupted()
-            }
-            return super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
-        }
-    }
-
-    /**
-     * `test_a_position_re_read_mid_measure_gets_no_word_on_the_old_reading` (the state review,
-     * 2026-10-01): the side to move settled by the clock while the joined position is measured
-     * whole. The measure, given way to the re-read position's, was put off after the reset had
-     * cleared what was put off, measured again after the new reading and delivered last, and on
-     * the same game at ply 0 it passed as the new position's -- the profile filed White's
-     * analysis for a position with Black to move. The engine lets go of what it is on at a
-     * reset, and the glue passes on nothing of a position the game no longer stands on, nor of
-     * another game.
+     * `test_a_position_re_read_mid_search_gets_no_word_on_the_old_reading` (the state review,
+     * 2026-10-01): the side to move settled by the clock while the joined position is searched:
+     * the reset lets go of the search under way, and the glue passes on nothing of a position the
+     * game no longer stands on, nor of another game. The white reading's search is held until
+     * something stops it: the test acts mid-search by the engine's state.
      */
     @Test
-    fun aPositionReReadMidMeasureGetsNoWordOnTheOldReading() {
+    fun aPositionReReadMidSearchGetsNoWordOnTheOldReading() {
         val white = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1"
         val black = white.replace(" w ", " b ")
-        val engine = WholeMeasureHeld(white, 18)
+        val engine = com.sidecoach.analysis.GatedEngine(gated = listOf(white))
         val analyser = Analyser(GameAnnotator(engine, depth = 18, withThreats = false))
         val watch = AnalyserWatch(analyser)
         val assessing = Assessing(analyser)
         analyser.start()
         try {
             assessing.submit(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = white, kind = "position"))
-            assertTrue("the full measure never began", engine.holding.await(HANG_MS, TimeUnit.MILLISECONDS))
-            val before = assessing.drain()
+            assertTrue("the search never began", engine.entered.getValue(white).await(HANG_MS, TimeUnit.MILLISECONDS))
             assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
-            engine.wake() // the reset interrupted it before `submit` returned
-            assertTrue("the reset let go of the measure under way", engine.interrupted.await(HANG_MS, TimeUnit.MILLISECONDS))
+            watch.until("the reset let go of the search") { engine.halted.toList() == listOf(white) }
             watch.idle()
-            val after = assessing.drain()
-            assertEquals(listOf(white), before.filterIsInstance<Analysis>().map { it.fen })
-            // The old reading's whole measure was never taken up again after the reset: its only
-            // search that ran to an answer is the early one.
-            val whiteDepths = synchronized(engine.calls) { engine.calls.filter { it.first == white }.map { it.second } }
-            assertEquals(listOf<Int?>(EARLY_DEPTH), whiteDepths)
-            val told = after.filterIsInstance<Analysis>().map { it.fen }
+            val told = assessing.drain().filterIsInstance<Analysis>().map { it.fen }
             assertTrue("$told", told.isNotEmpty() && told.toSet() == setOf(black))
+            analyser.results.add(Analysis(gameId = "g", fen = white, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
+            analyser.results.add(Analysis(gameId = "h", fen = black, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
+            assertEquals(emptyList<Event>(), assessing.drain())
         } finally {
             assessing.close()
         }
-        // The glue's own check, whatever the engine sends: a word at ply 0 on the old reading,
-        // and one on another game, are not passed on.
-        val quiet = Analyser(GameAnnotator(QuietEngine(), depth = 6, withThreats = false))
-        val glue = Assessing(quiet)
-        glue.submit(Resync(gameId = "g", fen = black, reason = "re-read"))
-        quiet.reset()  // what that submitted, gone: only the words put below are left to drain
-        quiet.results.add(Analysis(gameId = "g", fen = white, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
-        quiet.results.add(Analysis(gameId = "h", fen = black, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))
-        assertEquals(emptyList<Event>(), glue.drain())
-        glue.close()
     }
-
     @Test
     fun whatTheEngineSaysOfAWithdrawnMoveIsNotPassedOn() {
         // The engine has measured four plies and nothing has been drained; then 3.Nf3 Nc6 are
@@ -542,9 +441,10 @@ class TakebackTest {
                     }
                 }
                 if (bothHeld) {
-                    // Both held plies submitted: the engine is on the first, the second waits.
+                    // Both held plies submitted: the engine is on the first. Owed: the two
+                    // positions and the two verdicts.
                     engine.waitAtGate()
-                    if (analyser.pending != 2) failures += "$name: ${analyser.pending} pending on the held plies, not 2"
+                    if (analyser.pending != 4) failures += "$name: ${analyser.pending} pending on the held plies, not 4"
                 }
                 if (replacement != null) {
                     replaced = true

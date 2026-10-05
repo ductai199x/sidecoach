@@ -62,12 +62,16 @@ object GameReview {
     }
 
     /**
-     * Every position measured whole, each engine taking the next position left, in the game's
-     * order so a caller's progress reads from the first move. A search that fails ends its
-     * engine's share; the others finish the rest, and the walk searches whatever is left.
-     * [known]: positions measured before (by FEN; a review that was stopped part way), not
-     * searched again and counted as done from the start; [onMeasured] is handed each position as
-     * it is measured, to keep it. `measure_all`.
+     * Every position measured whole (Annotator.kt's docstring), each engine taking the game's
+     * next position left and finishing it -- its best line, its candidates at [EARLY_DEPTH],
+     * each candidate's own position, its side searches -- in the game's order, so a caller's
+     * progress reads from the first move and a review stopped part way keeps every position it
+     * finished. A best line is searched once for the review: the game's next position is mostly a
+     * candidate of the one before, and an engine wanting one another is searching waits for it.
+     * A search that fails ends its engine's share; the others finish the rest, and the walk
+     * searches whatever is left. [known]: positions measured whole before (by FEN: a review
+     * stopped part way, or the live game's own), searched no more and counted done; [onMeasured]
+     * is handed each position as it is measured whole, to keep it. `measure_all`.
      */
     fun measureAll(
         boards: List<Board>,
@@ -88,14 +92,53 @@ object GameReview {
             if (was != null) found.add(was) else todo.add(board)
         }
         if (found.isNotEmpty()) onProgress?.invoke(found.size, boards.size)
-        val lock = Any()
+        val lock = Object()
+        val best = HashMap<String, Measured>()
+        val searching = HashSet<String>()  // the best lines an engine is on
+
+        /** [board]'s best line: known, found, waited for, or searched here. */
+        fun bestOf(annotator: GameAnnotator, board: Board): Measured {
+            known[board.fen()]?.let { return it }
+            val key = cacheKey(board)
+            synchronized(lock) {
+                while (key in searching) lock.wait()
+                best[key]?.let { return it }
+                searching.add(key)
+            }
+            val line = try {
+                annotator.bestLine(board)
+            } catch (exc: Throwable) {
+                synchronized(lock) {  // a waiter searches it itself
+                    searching.remove(key)
+                    lock.notifyAll()
+                }
+                throw exc
+            }
+            synchronized(lock) {
+                best[key] = line
+                searching.remove(key)
+                lock.notifyAll()
+            }
+            return line
+        }
+
+        fun measure(annotator: GameAnnotator, board: Board): Measured {
+            val first = bestOf(annotator, board)
+            val hint = annotator.hintLines(board)
+            val children = annotator.candidates(board, first, hint).map { move ->
+                val child = board.copy()
+                child.push(move)
+                move to bestOf(annotator, child)
+            }
+            return annotator.withSide(board, annotator.whole(board, first, children))
+        }
 
         fun work(engine: Engine) {
             val annotator = GameAnnotator(engine, depth = depth, multipv = multipv, thresholds = thresholds)
             while (stop == null || !stop.get()) {
                 val board = todo.poll() ?: return
                 val measured = try {
-                    annotator.measure(board)
+                    measure(annotator, board)
                 } catch (_: Exception) { // the walk measures what is missing itself
                     return
                 }

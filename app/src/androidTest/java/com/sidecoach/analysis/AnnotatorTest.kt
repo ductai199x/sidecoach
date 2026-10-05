@@ -155,14 +155,12 @@ class AnnotatorTest {
     }
 
     /**
-     * `test_each_depth_is_delivered_as_the_search_finishes_it` (desktop 316026b). Tai,
-     * 2026-09-28: "if the consumers read after stockfish reaches depth > 12 then they will get
-     * whatever lines that is available at the time". The position the player faces is delivered
-     * at the early depth, then at every depth the full search finishes on its way, provisional,
-     * then whole at the full depth -- the same position, deeper each time.
+     * `test_a_real_position_is_told_at_once_and_then_whole`: the real engine: the best line to
+     * the full depth first, the hint's moves at EARLY_DEPTH beside it, then the position whole --
+     * every line to the full depth, best first, the hint's best move among them.
      */
     @Test
-    fun eachDepthIsDeliveredAsTheSearchFinishesIt() {
+    fun aRealPositionIsToldAtOnceAndThenWhole() {
         val engine = engine()
         assumeTrue("the engine or its network is missing", engine != null)
         val board = Board(SCHOLAR)
@@ -176,11 +174,14 @@ class AnnotatorTest {
         } finally {
             analyser.close()
         }
-        val depths = got.map { it.lines[0].depth }
-        Log.i(TAG, "the depths delivered: $depths, provisional ${got.map { it.provisional }}")
-        assertEquals(List(got.size - 1) { true } + false, got.map { it.provisional })
-        assertTrue("$depths", depths.first() == EARLY_DEPTH && depths.last() == 16)
-        assertTrue("$depths", depths == depths.sorted() && depths.toSet().size == depths.size)
+        Log.i(TAG, "told: ${got.map { a -> a.lines.map { it.depth } }}, provisional ${got.map { it.provisional }}")
+        assertEquals(listOf(true, true, false), got.map { it.provisional })
+        assertEquals(16, got[0].lines[0].depth)
+        assertEquals(setOf(EARLY_DEPTH), got[1].lines.drop(1).map { it.depth }.toSet())
+        val whole = got.last().lines
+        val scores = whole.map { it.expectedScore }
+        assertTrue("$scores", scores == scores.sortedDescending() && whole.size <= 3)
+        assertTrue(whole[0].moves[0] in got[1].lines.map { it.moves[0] })
         assertEquals(setOf(board.fen()), got.map { it.fen }.toSet())
     }
 

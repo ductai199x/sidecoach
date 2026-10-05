@@ -145,21 +145,6 @@ class EngineReviewTest {
 
     // ---- the caches ------------------------------------------------------------------------
 
-    /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else, the calls kept. */
-    private open class FakeEngine(private val answers: Map<String, List<Line>> = emptyMap()) : Engine(File("fake"), null) {
-        val calls = java.util.Collections.synchronizedList(ArrayList<String>())
-        val histories = java.util.Collections.synchronizedList(ArrayList<List<String>>())
-
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            calls.add(board.fen())
-            histories.add(board.moveStack.map { it.uci() })
-            if (gameOver(board)) return emptyList()
-            return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
-        }
-
-        override fun close() = Unit
-    }
-
     private fun played(vararg sans: String): Board {
         val board = Board()
         for (san in sans) board.push(board.parseSan(san)!!)
@@ -171,22 +156,23 @@ class EngineReviewTest {
         val one = played("Nf3", "Nc6", "Nc3", "Nf6")
         val two = played("Nc3", "Nf6", "Nf3", "Nc6")
         assertEquals(one.fen(), two.fen())
-        val fake = FakeEngine()
+        val fake = ScriptEngine()
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         annotator.measure(one)
         annotator.measure(two)
         annotator.measure(two.copy())
-        assertEquals("each history searched once", 2, fake.calls.count { it == one.fen() })
+        // Each history's best line and its hint, once.
+        assertEquals("each history searched once", 2 * 2, fake.calls.count { it == one.fen() })
         one.push(one.parseSan("e4")!!)
         two.push(two.parseSan("e4")!!)
         annotator.measure(one)
         annotator.measure(two)
-        assertEquals(1, fake.calls.count { it == one.fen() })
+        assertEquals(2, fake.calls.count { it == one.fen() })
     }
 
     @Test
     fun aChangedSettingForgetsWhatWasMeasured() {
-        val fake = FakeEngine()
+        val fake = ScriptEngine()
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val board = Board()
         annotator.measure(board)
@@ -198,12 +184,12 @@ class EngineReviewTest {
     /** The desktop's test_a_search_under_way_when_the_settings_change_is_not_kept. */
     @Test
     fun aSearchUnderWayWhenTheSettingsChangeIsNotKept() {
-        class ChangedMidSearch : FakeEngine() {
+        class ChangedMidSearch : ScriptEngine() {
             var annotator: GameAnnotator? = null
 
             override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
                 val lines = super.analyse(board, depth, timeS, multipv, pvPlies, carryBest, onDepth)
-                if (calls.size == 1) annotator?.forgetMeasured()  // the save, while this search ran
+                annotator?.forgetMeasured()  // the save, while this search ran
                 return lines
             }
         }
@@ -213,20 +199,23 @@ class EngineReviewTest {
             fake.annotator = annotator
             val board = Board()
             val measure = { if (verdict) annotator.measureForVerdict(board) else annotator.measure(board) }
+            // Every search of it changed under it.
             assertTrue("the caller still gets what it asked for", measure().lines.isNotEmpty())
+            fake.annotator = null
+            val searched = fake.calls.count { it == board.fen() }
             assertFalse("verdict=$verdict", annotator.measured(board))
             assertTrue("verdict=$verdict", annotator.computed.lines(board).isEmpty())
             measure()
-            assertEquals("verdict=$verdict: searched again the new way", 2, fake.calls.size)
+            assertEquals("verdict=$verdict: searched again", 2 * searched, fake.calls.count { it == board.fen() })
             measure()
-            assertEquals("verdict=$verdict: and that one is kept", 2, fake.calls.size)
+            assertEquals("verdict=$verdict: and that one is kept", 2 * searched, fake.calls.count { it == board.fen() })
         }
     }
 
     private fun judged(before: Board, move: String, beforeLine: Line, afterLine: Line): MoveAssessment {
         val after = before.copy()
         after.push(Move.fromUci(move))
-        val fake = FakeEngine(mapOf(before.fen() to listOf(beforeLine), after.fen() to listOf(afterLine)))
+        val fake = ScriptEngine(mapOf(before.fen() to listOf(beforeLine), after.fen() to listOf(afterLine)))
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         return annotator.assessMove("g", before, Move.fromUci(move), 1)
     }
@@ -241,7 +230,7 @@ class EngineReviewTest {
         second.push(Move.fromUci(theirs))
         val third = second.copy()
         third.push(Move.fromUci(mine))
-        val fake = FakeEngine(listOf(first, second, third).map { it.fen() }.zip(scores.map { listOf(it) }).toMap())
+        val fake = ScriptEngine(listOf(first, second, third).map { it.fen() }.zip(scores.map { listOf(it) }).toMap())
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         annotator.assessMove("g", first, Move.fromUci(theirs), 1)
         return annotator.assessMove("g", second, Move.fromUci(mine), 2)
@@ -311,7 +300,7 @@ class EngineReviewTest {
         // search after it alone sees a mate a move longer. h3 kept the mate: no miss.
         val after = board.copy()
         after.push(Move.fromUci("h2h3"))
-        val fake = FakeEngine(
+        val fake = ScriptEngine(
             mapOf(
                 board.fen() to listOf(inThree, Line(moves = listOf("h2h3", "g8f8"), depth = 6, expectedScore = 1.0, mate = 3)),
                 after.fen() to listOf(Line(moves = listOf("g8f8"), depth = 6, expectedScore = 0.0, mate = -3)),

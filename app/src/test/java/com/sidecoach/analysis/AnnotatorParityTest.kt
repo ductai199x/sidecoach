@@ -167,48 +167,54 @@ class AnnotatorParityTest {
         )
     }
 
-    /** The desktop test's `FakeEngine`: scripted lines, a quiet move for anything else, the calls kept. */
-    private open class FakeEngine(private val answers: Map<String, List<Line>> = emptyMap()) : Engine(File("fake"), null) {
-        val calls = java.util.Collections.synchronizedList(ArrayList<String>())
-        val multipvs = java.util.Collections.synchronizedList(ArrayList<Int>())
-
-        override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
-            calls.add(board.fen())
-            multipvs.add(multipv ?: 1)
-            if (com.sidecoach.analysis.gameOver(board)) return emptyList()
-            return answers[board.fen()] ?: listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
+    /**
+     * The answers that measure [board] whole as [lines]: the position's own (its best line and its
+     * hint) and each line's first move's position's, the rest of the line from there -- the search
+     * a candidate's own position gets ([GameAnnotator.candidateLine], read backwards; the
+     * desktop's `scripted`).
+     */
+    private fun scripted(board: Board, lines: List<Line>): Map<String, List<Line>> {
+        val out = linkedMapOf(board.fen() to lines)
+        for (line in lines) {
+            val child = board.copy()
+            child.push(Move.fromUci(line.moves[0]))
+            val mate = line.mate?.let { if (it > 0) -(it - 1) else -it }?.takeIf { it != 0 }
+            out[child.fen()] = listOf(
+                Line(
+                    moves = line.moves.drop(1),
+                    depth = line.depth,
+                    expectedScore = 1.0 - line.expectedScore,
+                    scoreCp = line.scoreCp?.let { -it },
+                    mate = mate,
+                ),
+            )
         }
-
-        override fun close() = Unit
+        return out
     }
 
     /**
-     * `test_each_position_is_measured_once`: whole once each; the verdict on a move searches the
-     * position it led to for its best line alone first (a call of its own, one line), then the
-     * whole; a new game measures again. The order of the first move's calls is new here (the
-     * parity audit, 2026-09-29): the counts alone held with the whole search first.
+     * `test_each_position_is_searched_once_each_way`: a verdict reads the position a move led to
+     * by its best line alone (one line, the full depth); measured whole after, that search is its
+     * best line there, not made again -- each position searched at most once for its best line and
+     * once for its hint. A new game searches again.
      */
     @Test
-    fun eachPositionIsMeasuredOnce() {
+    fun eachPositionIsSearchedOnceEachWay() {
         val board = Board()
-        val fake = FakeEngine()
+        val fake = ScriptEngine()
         val annotator = GameAnnotator(fake, depth = 6, withThreats = false)
         val e2e4 = Move.fromUci("e2e4")
         val (assessment, _) = annotator.assess("g", board, e2e4, 1)
         val after = board.copy(withStack = false)
         after.push(e2e4)
         assertEquals("e2e4", assessment.uci)
-        assertEquals(
-            "the verdict from one line of the position after the move, before it is measured whole",
-            listOf(board.fen() to 1, after.fen() to 1, after.fen() to 6),
-            calls(fake).zip(synchronized(fake.multipvs) { fake.multipvs.toList() }),
-        )
+        assertEquals(listOf(board.fen() to 1, after.fen() to 1, after.fen() to 6), fake.asked().take(3))
         annotator.assess("g", after, Move.fromUci("e7e5"), 2)
-        assertEquals("after e4, after e5: each measured whole once", 2, fake.multipvs.count { it != 1 })
-        assertEquals("one verdict search per position", 3, fake.multipvs.count { it == 1 })
+        val searched = fake.asked()
+        assertEquals("$searched", searched.toSet().size, searched.size)
         annotator.reset()
         annotator.assess("g", board, e2e4, 1)
-        assertEquals("a new game measures again", 3, fake.multipvs.count { it != 1 })
+        assertEquals("a new game measures again", 2, fake.asked().count { it.first == board.fen() })
     }
 
     /**
@@ -225,7 +231,7 @@ class AnnotatorParityTest {
         assertEquals(-2, mateIn(before, quiet, listOf(Line(moves = emptyList(), depth = 9, expectedScore = 1.0, mate = 2))))
         assertEquals(null, mateIn(before, quiet, listOf(Line(moves = emptyList(), depth = 9, expectedScore = 0.5))))
         val refused = runCatching {
-            GameAnnotator(FakeEngine(), depth = 6, withThreats = false).assess("g", Board(), Move.fromUci("e2e5"), 1)
+            GameAnnotator(ScriptEngine(), depth = 6, withThreats = false).assess("g", Board(), Move.fromUci("e2e5"), 1)
         }.exceptionOrNull()
         assertTrue("$refused", refused is IllegalArgumentException && "not legal" in refused.message!!)
     }
@@ -240,8 +246,6 @@ class AnnotatorParityTest {
         return board.fen()
     }
 
-    private fun calls(fake: FakeEngine): List<String> = synchronized(fake.calls) { fake.calls.toList() }
-
     /**
      * `test_a_capture_guarded_only_by_a_pinned_piece_is_a_free_grab`: a capture nobody can take
      * back is obvious, never great, and taking back is read by the rules -- the c3 knight
@@ -252,9 +256,10 @@ class AnnotatorParityTest {
     fun aCaptureGuardedOnlyByAPinnedPieceIsAFreeGrab() {
         fun label(fen: String): Label? {
             val board = Board(fen)
-            val fake = FakeEngine(
-                mapOf(
-                    board.fen() to listOf(
+            val fake = ScriptEngine(
+                scripted(
+                    board,
+                    listOf(
                         Line(moves = listOf("f6e4"), depth = 6, expectedScore = 0.80),
                         Line(moves = listOf("e8d7"), depth = 6, expectedScore = 0.40),
                     ),
@@ -278,7 +283,7 @@ class AnnotatorParityTest {
      */
     @Test
     fun theMoveThatReplacesAWithdrawnOneKnowsTheMoveBeforeIt() {
-        val fake = FakeEngine(
+        val fake = ScriptEngine(
             mapOf(
                 Board().fen() to listOf(Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.55)),
                 after("e4") to listOf(Line(moves = listOf("e7e5"), depth = 6, expectedScore = 0.90)),
@@ -329,13 +334,16 @@ class AnnotatorParityTest {
         val board = Board()
         val after = board.copy(withStack = false)
         after.push(Move.fromUci("a2a3"))
-        val fake = FakeEngine(
-            mapOf(
-                board.fen() to listOf(
+        val fake = ScriptEngine(
+            scripted(
+                board,
+                listOf(
                     Line(moves = listOf("e2e4", "e7e5"), depth = 6, expectedScore = 0.60),
                     Line(moves = listOf("d2d4"), depth = 6, expectedScore = 0.45),
                 ),
-                after.fen() to listOf(
+            ) + scripted(
+                after,
+                listOf(
                     Line(moves = listOf("e7e5"), depth = 4, expectedScore = 0.55, mate = -3),
                     Line(moves = listOf("d7d5"), depth = 4, expectedScore = 0.20),
                 ),

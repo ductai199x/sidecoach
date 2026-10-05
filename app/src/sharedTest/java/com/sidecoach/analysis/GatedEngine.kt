@@ -6,14 +6,17 @@ import java.io.File
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 
-/** What a quiet position gets from a fake engine given nothing to say for it (the desktop's `QUIET`). */
+/**
+ * What a quiet position gets from a fake engine given nothing to say for it: a level line, its
+ * move the position's first legal one ([ScriptEngine.analyse]; the desktop's `QUIET`).
+ */
 internal val QUIET = listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScore = 0.5))
 
 /**
  * An engine that answers from a script (the desktop's `FakeEngine`, tests/fakes.py): the lines
- * for a position's FEN, else [default], and nothing for a finished game. It remembers every
- * position it was asked about, with the moves that led there, the depth and the number of lines
- * asked for, and never starts a process.
+ * for a position's FEN, else [default], as many as asked for, and nothing for a finished game.
+ * It remembers every position it was asked about, with the moves that led there, the depth and
+ * the number of lines asked for, and never starts a process.
  */
 internal open class ScriptEngine(
     private val answers: Map<String, List<Line>> = emptyMap(),
@@ -32,7 +35,14 @@ internal open class ScriptEngine(
             multipvs.add(multipv ?: 1)
         }
         if (gameOver(board)) return emptyList()
-        return answers[board.fen()] ?: default
+        var lines = answers[board.fen()] ?: default
+        if (lines === QUIET) {
+            // A line the position can play: a search of the position after its move (a
+            // candidate's own) reads on from it.
+            val first = board.legalMoves().minBy { it.uci() }
+            lines = listOf(QUIET[0].copy(moves = listOf(first.uci())))
+        }
+        return if (multipv != null) lines.take(multipv) else lines
     }
 
     /** The searches asked of it, with how many lines each: (FEN, lines), in order. */

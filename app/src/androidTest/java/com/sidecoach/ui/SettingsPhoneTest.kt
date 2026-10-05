@@ -81,7 +81,7 @@ class SettingsPhoneTest {
         assertTrue(listen.getString("description").startsWith("How the coach hears you"))
         assertTrue(listen.getJSONObject("choice_labels").getString("ptt").startsWith("While I hold"))
         val engine = defs.getJSONObject("EngineSettings").getJSONObject("properties")
-        assertEquals(2 to 64, engine.getJSONObject("threads").getInt("default") to engine.getJSONObject("hash_mb").getInt("default"))
+        assertEquals(2 to 64, engine.getJSONObject("workers").getInt("default") to engine.getJSONObject("hash_mb").getInt("default"))
         val llm = defs.getJSONObject("LLMSettings").getJSONObject("properties")
         val words = listOf(listen, engine.getJSONObject("hash_mb"), llm.getJSONObject("provider"), llm.getJSONObject("base_url")).joinToString(" ")
         for (desktop in listOf("from any window", "push-to-talk key", "this computer", "256 is plenty")) {

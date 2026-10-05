@@ -106,8 +106,8 @@ def main() -> None:
     engine = schema["$defs"][refs["engine"]]["properties"]
     engine["workers"]["default"] = 2
     engine["workers"]["description"] = (
-        "How many positions Stockfish works on at once, one processor core each: the game's "
-        "own, and the moves ahead it gets ready while you think. More looks further ahead, and "
+        "How many positions Stockfish works on at once, one processor core each: the position "
+        "you face, the best moves in it, and the coach's questions. More answers sooner, and "
         "warms the phone."
     )
     engine["depth"]["default"] = 14
