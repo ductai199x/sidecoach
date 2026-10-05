@@ -173,6 +173,13 @@ class _Site:
             self.queue.append(move)
             self.show(self.rng.choice(FRAMES))
 
+    def cancel(self) -> None:
+        """The user cancels the queue (a right-click on chess.com clears every premove): the
+        board looks as it normally does again, every queued piece back on its square (Tai,
+        2026-10-05: "I can premove but sometimes I can also cancel said premove")."""
+        self.queue = []
+        self.show(self.rng.choice(FRAMES))
+
     def opponent_moves(self) -> None:
         """The opponent's move and, the same instant, the first queued move -- or the queue
         cleared when that move has become illegal."""
@@ -211,6 +218,10 @@ def test_premove_queues_are_followed(seed: int) -> None:
             continue
         if not site.queue and rng.random() < 0.8:
             site.queue_up()
+            if site.queue and rng.random() < 0.3:
+                site.cancel()  # thought better of it
+                if rng.random() < 0.5:
+                    site.queue_up()  # and queued something else
         site.opponent_moves()
     # The queue resolved (or given up) and the board still for two seconds.
     site.queue = []
@@ -218,11 +229,16 @@ def test_premove_queues_are_followed(seed: int) -> None:
     rec, board = site.game.rec, site.board
     where = (seed, fen, bottom, site.played, sans_of(site.game.events))
     assert rec.board.board_fen() == board.board_fen(), where
-    assert rec.board.turn == board.turn and not rec._turn_unknown, where
-    # And it follows on: the next move is told.
-    if not board.is_game_over():
-        move = next(m for m in board.legal_moves if not site._repeats(m))
-        san = board.san(move)
-        site._push(move)
-        told = site.game.show(frames=3, highlight=move)
-        assert sans_of(told) == [san], (*where, san)
+    assert not rec._turn_unknown, where
+    if board.is_game_over():
+        assert rec.board.turn == board.turn, where
+        return
+    # The side to move can be the one thing the pictures do not settle: a queued step drawn
+    # only on frames nobody read leaves the same pieces a ply apart either way (seed 52).
+    # The next move settles it, as it does on the site: a side never moves twice.
+    move = next(m for m in board.legal_moves if not site._repeats(m))
+    san = board.san(move)
+    site._push(move)
+    told = site.game.show(frames=4, highlight=move)
+    assert sans_of(told) == [san], (*where, san)
+    assert rec.board.fen().split(" ")[:2] == board.fen().split(" ")[:2], (*where, san)

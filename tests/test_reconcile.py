@@ -1171,6 +1171,35 @@ def test_the_clock_settles_the_side_to_move_before_a_takeback_can_mislead() -> N
     assert rec.turn_from_clock(chess.WHITE) == [], "settled once; a later clock is not asked"
 
 
+def test_a_move_by_the_side_not_to_move_corrects_the_side_to_move() -> None:
+    """Tai's game of 2026-10-05: a premove's step went unseen, the shortest story was a ply
+    short, and the game stood on the right pieces with the wrong side to move -- the
+    coach answered for Black through White's own move. A side never moves twice: the
+    next board, one move by the side the game said was not to move and nothing else,
+    corrects the turn, on any site and with no clock. A frame alone is no move."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    # The game told a ply short: the same pieces, White to move.
+    wrong = board.copy(stack=False)
+    wrong.turn = chess.WHITE
+    rec.board = wrong
+    rec._base_fen = wrong.fen()
+    move = board.push_san("Nc6")
+    first = _feed(model, rec, board, Side.WHITE, ts + 0.1, highlight=move)
+    assert sans_of(first) == [] and rec.board.turn == chess.WHITE, "one frame is no move"
+    events = first
+    for i in range(2, 4):
+        events += _feed(model, rec, board, Side.WHITE, ts + 0.1 * i, highlight=move)
+    assert [type(e).__name__ for e in events][:2] == ["Resync", "PositionChanged"]
+    assert sans_of(events) == ["Nc6"]
+    assert rec.board.fen() == board.fen()
+    # The game goes on from the corrected turn.
+    _play(model, rec, board, ["Bb5", "a6"], ts=ts + 1.0)
+    assert rec.board.fen() == board.fen()
+
+
 def test_no_move_is_told_through_wildcards_alone() -> None:
     """A board slid on after its lock was taken, the lock 0.28 of a cell off it, below the
     third of a cell validation sees: every piece reads unsettled, and the cells above two

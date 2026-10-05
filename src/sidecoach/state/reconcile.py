@@ -175,6 +175,9 @@ class _QueueWay:
     route: tuple[chess.Square, ...]
     symbol: str
     passes_over: bool = False
+    # The square the piece stood on in the position read against, when the queue's first
+    # step has executed since and the origin is one move on from it.
+    came_from: chess.Square | None = None
 
     @property
     def visited(self) -> frozenset[chess.Square]:
@@ -885,6 +888,10 @@ class Reconciler:
         else:
             self._red_since = None
         obs = self._unqueue(seen)  # premove ghosts put back
+        # The picture as drawn is a position: nothing of a queue on it, nothing put back.
+        plain = obs is seen and not any(
+            r.tint == "red" and r.kind == "empty" for r in seen.values()
+        )
         if len(obs) < self.min_readable_cells:
             self._hold_pending(True)
             return events
@@ -932,6 +939,12 @@ class Reconciler:
         explained = self._explain_paths(obs, diff, obs)
         if explained is not None:
             return events + explained
+        if plain and not ghosts:
+            # Only on a whole picture: no cell taken as an arrow, no queue drawn, whose
+            # pieces stand where no position has them.
+            reversed_turn = self._explain_turn_reversed(obs, diff, obs)
+            if reversed_turn is not None:
+                return events + reversed_turn
         corrected = self._explain_misread(obs, diff)
         if corrected is not None:
             return events + corrected
@@ -1133,10 +1146,15 @@ class Reconciler:
         route with its executed steps gone from the front, or new ones added at the end, or
         both. With no queue seen, every way does. A king queued g2-f3-f2-e3-f4 whose first
         step had executed read as well from f2 by f3 and e3 as from f3 by f2 and e3; the
-        frames it was built on said which (the premove sweep, 2026-09-28)."""
+        frames it was built on said which (the premove sweep, 2026-09-28). A way whose first
+        step executed since is that step and then the rest: a king queued e7-e8-d7-c8-d8,
+        read one step on, on d8 by e8, d7 and c8, took the seen queue's end d8 for where it
+        went on from, though the queue never stepped e7-d8, and tied with the true way from
+        e8, so nothing was undone (the premove sweep, 2026-10-05, seed 698)."""
         if not self._routes:
             return True
-        route = (way.origin, *way.route, target)
+        start = () if way.came_from is None else (way.came_from,)
+        route = (*start, way.origin, *way.route, target)
         for seen in self._routes:
             for i in range(len(seen)):
                 rest = seen[i:]
@@ -1165,6 +1183,19 @@ class Reconciler:
         out: list[_QueueWay] = []
         scratch = anchor.copy(stack=False)
         scratch.turn = piece.color
+        # The step from the anchor, and from the anchor without the pieces the picture shows
+        # gone: an opponent's piece that stood in the way may have moved off since (a rook on
+        # f4, then gone to a4, and the queued f5-f4 played: the premove sweep, 2026-10-05).
+        cleared = scratch.copy(stack=False)
+        for sq, reading in obs.items():
+            if reading.kind == "empty":
+                cleared.remove_piece_at(sq)
+        # A queued step executes on the user's turn only: the anchor has the user to move, or
+        # the opponent has moved since. A side never moves twice: with the anchor ending on
+        # the user's own move and no opponent move after it, "Ra4 f5, then the queued f5-f4"
+        # was taken for the real Rf4 f5 Ra4 f4, and the game left a ply behind (the premove
+        # sweep, 2026-10-05, seed 726).
+        stepped = anchor.turn == piece.color or self._opponent_moved(anchor, obs, red)
         for walker in walkers:
             for stand, here in anchor.piece_map().items():
                 if here != walker:
@@ -1175,9 +1206,17 @@ class Reconciler:
                 if stand in red:
                     out.extend(self._queue_ways(walker, stand, target, red, obs, piece))
                     continue
+                if not stepped:
+                    continue
                 # The first queued step has executed: the piece is one move on, on a tinted,
                 # empty square the queue continues from -- promoted, if that step promoted.
-                for move in scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]):
+                cleared.set_piece_at(stand, walker)
+                steps = {
+                    *scratch.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]),
+                    *cleared.generate_pseudo_legal_moves(chess.BB_SQUARES[stand]),
+                }
+                cleared.remove_piece_at(stand)
+                for move in sorted(steps, key=lambda m: (m.to_square, m.promotion or 0)):
                     to = move.to_square
                     if to == target or move.promotion not in (None, piece.piece_type):
                         continue
@@ -1185,8 +1224,34 @@ class Reconciler:
                     if landed is None or landed.kind != "empty" or landed.tint is None:
                         continue
                     moved = piece if move.promotion else walker
-                    out.extend(self._queue_ways(moved, to, target, red, obs, piece))
+                    out.extend(
+                        replace(way, came_from=stand)
+                        for way in self._queue_ways(moved, to, target, red, obs, piece)
+                    )
         return out
+
+    def _opponent_moved(
+        self, anchor: chess.Board, obs: Observation, red: frozenset[chess.Square]
+    ) -> bool:
+        """Whether the picture shows the opponent's pieces otherwise than `anchor` has them,
+        off the queue's red squares (where a victim stands under a ghost): a piece gone from
+        its square, or one come onto another."""
+        opponent = not self.user_side.color
+        for sq, reading in obs.items():
+            if sq in red:
+                continue
+            here = anchor.piece_at(sq)
+            theirs = here is not None and here.color == opponent
+            if reading.kind == "empty":
+                if theirs:
+                    return True
+            elif reading.kind == "piece" and reading.colour is not None:
+                shown = reading.colour.color == opponent
+                if shown and (here is None or here.symbol() != reading.symbol):
+                    return True
+                if theirs and not shown:
+                    return True
+        return False
 
     def _queue_ways(
         self,
@@ -1739,6 +1804,38 @@ class Reconciler:
             return self._explain_paths(obs, diff, full_obs, cautious=cautious, wild=wild)
         return None
 
+    def _explain_turn_reversed(
+        self, obs: Observation, diff: set[chess.Square], full_obs: Observation
+    ) -> list[Event] | None:
+        """The board moved for the side the game says is not to move: one clean move by it, and
+        nothing from the game's own side to move explains the board -- not a move, not the move
+        list browsed, not a takeback, not a short path of missed moves. A side never moves
+        twice, so the game's side to move is what is wrong: a story told with a ply too few or
+        too many -- the shortest story where a picture was missed (a premove's step seen too
+        late, a ghost, a winding queue), right pieces, the turn reversed (Tai, 2026-10-05: the
+        coach answered his questions as Black's for 80 s of his own move). The pieces alone
+        say it, on any site, with no clock and no highlight: the position is re-read where it
+        stands with the other side to move, and the move committed."""
+        if self._turn_unknown or self._finished or self.viewing is not None:
+            return None
+        reversed_turn = self.board.copy(stack=False)
+        reversed_turn.turn = not reversed_turn.turn
+        reversed_turn.ep_square = None
+        if not reversed_turn.is_valid():
+            return None
+        singles = single_explanations(reversed_turn, obs, diff)
+        if len(singles) != 1 or not self._highlight_ok(full_obs, singles[0], reversed_turn):
+            return None
+        story = singles[0]
+
+        def commit() -> list[Event]:
+            self._set_position(reversed_turn.copy(stack=False))
+            colour = Side.of(reversed_turn.turn).value
+            events = self._resynced(f"side to move corrected: {colour} moved")
+            return events + self._commit_moves(story)()
+
+        return self._settle(("turn-reversed", story), full_obs, commit)
+
     def _explain_paths(
         self,
         obs: Observation,
@@ -2185,7 +2282,7 @@ class Reconciler:
         needed = (
             self.settle_frames
             + (1 if len(moves) > 1 else 0)
-            + (1 if key[0] in ("moves-cautious", "misread") else 0)
+            + (1 if key[0] in ("moves-cautious", "misread", "turn-reversed") else 0)
         )
         if self._pending[1] < needed:
             return []
