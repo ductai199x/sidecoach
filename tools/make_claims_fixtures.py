@@ -273,7 +273,9 @@ class RecordedEngine:
     def __init__(self) -> None:
         self.seen: dict[str, list[dict]] = {}
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         fen = board.fen()
         legal = list(board.legal_moves)
         if not legal:
@@ -525,7 +527,7 @@ def desktop_tests() -> dict:
         if engine is not None:
 
             class Recording:
-                def analyse(self, b, *, depth=None):  # noqa: ANN001, ANN202
+                def analyse(self, b, *, depth=None, best_only=False):  # noqa: ANN001, ANN202
                     lines = engine.analyse(b, depth=depth)
                     seen[b.fen()] = [line_json(one) for one in lines]
                     return lines

@@ -41,7 +41,13 @@ object GameReview {
     // answer no better (the engine audit, 2026-10-04). Engines side by side take up to two
     // thirds of the cores between them, the rest left to everything else the device does.
     const val THREADS = 1
-    const val MAX_WORKERS = 8
+    // Each engine loads its own copy of the 98 MB network: on a phone, beside the game's own
+    // workers, more than three side by side is low-memory-killer territory (the audit of
+    // 2026-10-05; the desktop's eight).
+    const val MAX_WORKERS = 3
+
+    /** How often a review running with a stop looks at it: the searches under way are cut at most this long after the stop. */
+    const val STOP_LOOK_MS = 200L
 
     /** How many engines measure side by side on a device with [cores] cores. `workers_for`. */
     fun workersFor(cores: Int = Runtime.getRuntime().availableProcessors()): Int =
@@ -83,6 +89,7 @@ object GameReview {
         stop: AtomicBoolean? = null,
         known: Map<String, Measured> = emptyMap(),
         onMeasured: ((Measured) -> Unit)? = null,
+        failed: MutableList<Engine>? = null,
     ): List<Measured> {
         val todo = ConcurrentLinkedQueue<Board>()
         val found = ArrayList<Measured>()
@@ -138,17 +145,19 @@ object GameReview {
             while (stop == null || !stop.get()) {
                 val board = todo.poll() ?: return
                 val measured = try {
-                    measure(annotator, board)
+                    engine.interruptible { measure(annotator, board) } // a stop reaches the search under way
+                } catch (_: Interrupted) {
+                    return // stopped: the position is not done, and nothing failed
                 } catch (_: Exception) { // the walk measures what is missing itself
+                    if (failed != null) synchronized(lock) { failed.add(engine) } // named: the walk searches on another
                     return
                 }
                 // Not kept is only a resume the slower.
                 if (onMeasured != null) runCatching { onMeasured(measured) }
-                val done = synchronized(lock) {
+                synchronized(lock) {
                     found.add(measured)
-                    found.size
+                    onProgress?.invoke(found.size, boards.size) // in order: under the lock
                 }
-                onProgress?.invoke(done, boards.size)
             }
         }
 
@@ -156,13 +165,23 @@ object GameReview {
             Thread({ work(engine) }, "sidecoach-review-$i").apply { isDaemon = true }
         }
         threads.forEach { it.start() }
+        if (stop != null) {
+            // A stop (the room's Pause) cuts the searches under way, not only the positions after
+            // them: each engine's position whole is its best line, its hint, up to six candidates
+            // and its side searches. Told again while any runs: a stop landing between two
+            // positions is cleared as the next search begins ([Engine.interruptible]).
+            while (threads.any { it.isAlive }) {
+                if (stop.get()) for (engine in engines) engine.interrupt()
+                threads.firstOrNull { it.isAlive }?.join(STOP_LOOK_MS)
+            }
+        }
         threads.forEach { it.join() }
         return synchronized(lock) { ArrayList(found) }
     }
 
     /**
-     * The game reviewed whole with [engines] (open, at least one; the first also walks the
-     * moves). [onProgress] (done, total) counts the positions measured; [known] and [onMeasured]
+     * The game reviewed whole with [engines] (open, at least one; the first whose share did not
+     * fail also walks the moves). [onProgress] (done, total) counts the positions measured; [known] and [onMeasured]
      * carry a review over a stop ([measureAll]). `review_game`.
      */
     fun reviewGame(
@@ -182,9 +201,12 @@ object GameReview {
     ): ReviewedGame {
         val started = System.nanoTime()
         val boards = positions(game)
-        val measured = measureAll(boards, engines, depth, multipv, thresholds, onProgress, stop, known, onMeasured)
+        val failed = ArrayList<Engine>()
+        val measured = measureAll(boards, engines, depth, multipv, thresholds, onProgress, stop, known, onMeasured, failed)
+        // The walk measures what is missing on an engine whose share did not end in a failure.
+        val walker = engines.firstOrNull { e -> failed.none { it === e } } ?: engines[0]
         val annotator = GameAnnotator(
-            engines[0],
+            walker,
             depth = depth,
             multipv = multipv,
             thresholds = thresholds,
@@ -192,6 +214,17 @@ object GameReview {
             book = book,
         )
         annotator.adopt(measured)
+        if (stop != null && stop.get()) {
+            // Stopped: what is kept is what [onMeasured] was handed; nothing more is searched.
+            return ReviewedGame(
+                headers = game.headers.items().toMap(LinkedHashMap()),
+                start = annotator.analysisFrom(gameId, boards[0], 0, annotator.measuredLines(boards[0], emptyList())),
+                moves = emptyList(),
+                strength = strength,
+                depth = depth,
+                seconds = Math.round((System.nanoTime() - started) / 1e9 * 100) / 100.0,
+            )
+        }
         val start = annotator.analysisEvent(gameId, boards[0], 0)
         val clocks = clocks(game)
         val moves = ArrayList<ReviewedMove>()

@@ -119,22 +119,30 @@ class Computed {
             return (whole[key]?.takeIf { it.isNotEmpty() } ?: thin[key] ?: emptyList()).toList()
         }
     }
+
+    /** [board]'s lines measured whole; none while it is not. */
+    fun whole(board: Board): List<Line> = synchronized(lock) { (whole[positionKey(board)] ?: emptyList()).toList() }
 }
 
 /**
- * The coach's engine: a position computed read ([Computed]), a search for the rest. The engine
- * starts at its first search ([Engine.analyse] opens it), so a coach whose questions the analyser
- * has answered never starts a second Stockfish; closed, it searches no more -- a question still
- * being answered as the coach closes would start a process nobody closes. [search] is the
- * engine's search (the desktop's `Searcher`), and [onClose] its close.
+ * The coach's engine: a position measured whole read ([Computed]), a search for the rest --
+ * through the analyser's pool ([PoolSearcher]), or a Stockfish of its own started at its first
+ * search, so a coach whose questions the analyser has answered never starts one. Closed, it
+ * searches no more and answers with what is known, the best line included: a question still
+ * being answered as the coach closes would start a process nobody closes. A searcher that keeps
+ * what it finds itself ([fillsComputed]: the pool) is not kept for twice -- nor is what it found
+ * once its wait ran out filed as whole. [search] is the searcher's search (the desktop's
+ * `Searcher`), and [onClose] its close.
  */
 class ComputedFirst(
-    private val search: (Board, Int?) -> List<Line>,
+    /** A position whole, or with its last argument (best only) its best line alone. */
+    private val search: (Board, Int?, Boolean) -> List<Line>,
     val computed: Computed = Computed(),
     private val onClose: () -> Unit = {},
+    private val fillsComputed: Boolean = false,
 ) : AutoCloseable {
-    constructor(engine: Engine, computed: Computed = Computed()) :
-        this({ board, depth -> engine.analyse(board, depth = depth) }, computed, engine::close)
+    constructor(searcher: WholeSearcher, computed: Computed = Computed()) :
+        this({ board, depth, bestOnly -> searcher.analyse(board, depth, bestOnly) }, computed, searcher::close)
 
     /** Positions searched, not found computed. */
     var searches = 0
@@ -144,12 +152,20 @@ class ComputedFirst(
     var closed = false
         private set
 
-    fun analyse(board: Board, depth: Int?): List<Line> {
-        val known = computed.lines(board)
-        if (known.isNotEmpty() || closed) return known
+    /**
+     * [board]'s lines whole; with [bestOnly] (a caller that reads the first line alone) whatever
+     * is known, its best line at least -- searched for alone, never the whole position waited for.
+     */
+    fun analyse(board: Board, depth: Int?, bestOnly: Boolean = false): List<Line> {
+        val whole = computed.whole(board)
+        if (whole.isNotEmpty()) return whole
+        if (closed || bestOnly) {
+            val known = computed.lines(board)
+            if (known.isNotEmpty() || closed) return known
+        }
         searches += 1
-        val lines = search(board, depth)
-        computed.add(board, lines)
+        val lines = search(board, depth, bestOnly)
+        if (!fillsComputed) computed.add(board, lines, thin = bestOnly)
         return lines
     }
 

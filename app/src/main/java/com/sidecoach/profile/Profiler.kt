@@ -85,6 +85,11 @@ class Profiler(
         /** The analysis of the position after (segment, ply); ply 0 is the segment's base. */
         val analyses = HashMap<Key, Analysis>()
         var opening: String? = null
+        /**
+         * Where the opening was named, (segment, ply): a later position's name stands over an
+         * earlier one's, in whatever order the analyses come.
+         */
+        var openingAt = Key(-1, -1)
         var lastFen: String = STARTING_FEN
         var timeControl: String? = null
         var ended = false
@@ -305,10 +310,17 @@ class Profiler(
         return if (board.turn == user) score else 1.0 - score
     }
 
+    /**
+     * The final word on a position, in any order: the move that led there and the move played
+     * from it (its verdict may be in already) each take what it says.
+     */
     private fun analysis(game: Game, event: Analysis): List<Event> {
         val key = Key(game.segment, event.ply)
         game.analyses[key] = event
-        if (!event.opening.isNullOrEmpty()) game.opening = event.opening
+        if (!event.opening.isNullOrEmpty() && key >= game.openingAt) {
+            game.opening = event.opening
+            game.openingAt = key
+        }
         val ply = game.plies[key]
         if (ply != null && ply.moveId != 0L) {
             store.analyseMove(
@@ -317,8 +329,16 @@ class Profiler(
                 allowedTags = event.tags.map { it.name }.filter { it in Causes.TACTICAL },
             )
         }
+        val played = game.plies[Key(game.segment, event.ply + 1)]
+        if (played != null && played.moveId != 0L && played.assessment != null) {
+            store.availableTags(played.moveId, offered(event))
+        }
         return place(game, key)
     }
+
+    /** The tactics a position offered the side to move, by name. */
+    private fun offered(analysis: Analysis): List<String> =
+        analysis.tags.map { it.name }.filter { it in Causes.TACTICAL }.toSortedSet().toList()
 
     private fun assessment(game: Game, event: MoveAssessment): List<Event> {
         val key = Key(game.segment, event.ply)
@@ -326,7 +346,7 @@ class Profiler(
         ply.assessment = event
         val before = Board(ply.move.fenBefore)
         val faced = game.analyses[Key(game.segment, event.ply - 1)]
-        val available = faced?.tags?.map { it.name }?.filter { it in Causes.TACTICAL }?.toSortedSet()?.toList() ?: emptyList()
+        val available = if (faced != null) offered(faced) else emptyList()
         val bestUci = event.best.firstOrNull()
         var bestSan: String? = null
         if (bestUci != null) {
@@ -350,7 +370,11 @@ class Profiler(
         return place(game, key)
     }
 
-    /** Place a mistake on the two axes once its assessment and the analysis after it are in. */
+    /**
+     * Place a mistake on the two axes once its assessment and the analysis after it are in.
+     * (The position it was played from is the one its player thought on: its final analysis is
+     * in before the move, save after a premove.)
+     */
     private fun place(game: Game, key: Key): List<Event> {
         val ply = game.plies[key] ?: return emptyList()
         val assessment = ply.assessment ?: return emptyList()
@@ -419,6 +443,10 @@ class Profiler(
             game.plies.remove(key)
             game.analyses.remove(key)
         }
+        // The opening the moves left name: a withdrawn line's name goes with it.
+        val named = game.analyses.entries.filter { !it.value.opening.isNullOrEmpty() }.maxByOrNull { it.key }
+        game.openingAt = named?.key ?: Key(-1, -1)
+        game.opening = named?.value?.opening
         store.withdrawMoves(game.gameId, game.segment, fromPly)
         game.lastFen = event.fen
         return emptyList()

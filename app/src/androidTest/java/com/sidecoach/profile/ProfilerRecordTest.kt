@@ -19,6 +19,7 @@ import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.Severity
+import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
 import com.sidecoach.vision.Pieces
 import org.junit.Assert.assertEquals
@@ -190,6 +191,88 @@ class ProfilerRecordTest {
         f.nextGame("j", kind = "position", fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
         f.send(ClockObservation(271_000, 244_000, Pieces.Side.WHITE))
         assertNull(f.store.game("j")!!.timeControl)
+    }
+
+    /**
+     * The analyser tells a past position's final word after later verdicts (the audit of
+     * 2026-10-05): the game's opening is the latest ply's, whatever lands last, and the tactics a
+     * position offered reach the move played from it when its analysis comes after that move's
+     * verdict. `test_the_engines_words_may_come_in_any_order`.
+     */
+    @Test
+    fun theEnginesWordsMayComeInAnyOrder() {
+        val f = Feed()
+        fun verdict(san: String): String {
+            f.unjudged(san)
+            val uci = f.board.moveStack.last().uci()
+            f.send(MoveAssessment(f.gameId, f.ply, uci, 0.0, Severity.NONE, best = listOf(uci), depth = 14, label = Label.GOOD, accuracy = 100.0))
+            return f.board.fen()
+        }
+        fun told(ply: Int, fen: String, opening: String, tags: List<MotifTag>) {
+            f.send(Analysis(f.gameId, fen, ply, lines = emptyList(), decisive = false, onlyMove = false, tags = tags, opening = opening))
+        }
+        val afterE4 = verdict("e4")
+        val afterE5 = verdict("e5") // judged before the position it was played from is told
+        told(2, afterE5, "C20 King's Pawn Game", emptyList())
+        told(1, afterE4, "B00 King's Pawn", listOf(FORK)) // the earlier ply's, last
+        f.end()
+        val moves = f.store.moves("g")
+        assertEquals(listOf("e4", "e5"), moves.map { it.san })
+        assertEquals("the tactic e5 was played past", listOf("fork"), moves[1].availableTags)
+        assertEquals("C20 King's Pawn Game", f.store.game("g")!!.opening)
+    }
+
+    /**
+     * The opening is the latest position's name -- of the moves that stand: a line taken back and
+     * played otherwise is not named by the moves withdrawn (the audit of 2026-10-05, round 2: the
+     * withdrawn line's later name stood over the new line's).
+     * `test_a_takeback_takes_the_withdrawn_lines_opening_with_it`.
+     */
+    @Test
+    fun aTakebackTakesTheWithdrawnLinesOpeningWithIt() {
+        val f = Feed()
+        fun told(opening: String) {
+            f.send(Analysis(f.gameId, f.board.fen(), f.board.moveStack.size, lines = emptyList(), decisive = false, onlyMove = false, opening = opening))
+        }
+        f.unjudged("e4")
+        told("B00 King's Pawn")
+        f.unjudged("e5")
+        told("C20 King's Pawn Game")
+        f.unjudged("Nf3")
+        told("C40 King's Knight Opening")
+        f.board.pop()
+        f.send(Takeback(f.gameId, 1, f.board.fen()))
+        f.end()
+        assertEquals("C20 King's Pawn Game", f.store.game("g")!!.opening)
+    }
+
+    /**
+     * A record kept by an older build (`user_version` 0): its reviews under way measured their
+     * positions the old way, and go -- a review goes on from nothing rather than mix the two --
+     * and nothing else does; opened again, what this build keeps stays.
+     * `test_a_record_from_before_the_one_line_engine_drops_only_its_reviews_under_way`.
+     */
+    @Test
+    fun aRecordFromBeforeTheOneLineEngineDropsOnlyItsReviewsUnderWay() {
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        val file = java.io.File(context.cacheDir, "upgrade-test.sqlite").apply { delete() }
+        try {
+            var store = Store(file)
+            store.startGame("g", 1.0, "white", STARTING_FEN)
+            store.addProgress("k", "standard", 18, 6, STARTING_FEN, "{}")
+            store.close()
+            android.database.sqlite.SQLiteDatabase.openDatabase(file.path, null, 0).use { it.version = 0 }
+            store = Store(file)
+            assertEquals(emptyList<String>(), store.progress("k", "standard", 18, 6))
+            assertTrue(store.game("g") != null)
+            store.addProgress("k", "standard", 18, 6, STARTING_FEN, "{}")
+            store.close()
+            store = Store(file)
+            assertEquals(listOf("{}"), store.progress("k", "standard", 18, 6))
+            store.close()
+        } finally {
+            file.delete()
+        }
     }
 
     private companion object {

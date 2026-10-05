@@ -5,7 +5,9 @@ import com.sidecoach.analysis.Computed
 import com.sidecoach.analysis.Analyser
 import com.sidecoach.analysis.ComputedFirst
 import com.sidecoach.analysis.PoolSearcher
+import com.sidecoach.analysis.WholeSearcher
 import com.sidecoach.analysis.Engine
+import com.sidecoach.chess.Board
 import com.sidecoach.events.CoachMessage
 import com.sidecoach.events.Event
 import com.sidecoach.llm.KeyStore
@@ -51,9 +53,10 @@ class CoachRunner(
 
     internal val coachEngine: ComputedFirst? = when {
         analyser != null -> PoolSearcher(analyser).let { pool ->
-            ComputedFirst({ board, _ -> pool.analyse(board) }, computed ?: Computed())
+            ComputedFirst({ board, _, bestOnly -> pool.analyse(board, bestOnly) }, computed ?: Computed(), fillsComputed = true)
         }
-        engine != null -> ComputedFirst(engine, computed ?: Computed())
+        // Measured whole the one-line way: three lines at the full depth at once explode.
+        engine != null -> ComputedFirst(WholeSearcher(engine, lines = 3, depth = settings.engine().depth), computed ?: Computed())
         else -> null
     }
 
@@ -87,7 +90,13 @@ class CoachRunner(
                 // a claim waited on a second full model call first (the runtime audit, 2026-09-25).
                 claims = if (offline) null else claimsCheck(routine),
                 verifier = if (offline) null else verifier(settings, model),
-                engine = coachEngine?.let { EngineLike(it::analyse) },
+                engine = coachEngine?.let { computed ->
+                    object : EngineLike {
+                        override fun analyse(board: Board, depth: Int?) = computed.analyse(board, depth)
+
+                        override fun best(board: Board, depth: Int?) = computed.analyse(board, depth, bestOnly = true)
+                    }
+                },
                 summariseEvery = settings.summariseEvery(),
                 summariser = model,
                 compactRecord = settings.compactRecord(),

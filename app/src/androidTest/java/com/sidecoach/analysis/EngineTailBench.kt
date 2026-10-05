@@ -46,12 +46,12 @@ class EngineTailBench {
 
         fun timed(board: Board, d: Int, lines: Int): JSONObject {
             send.invoke(engine, "setoption name Clear Hash")
-            val c0 = engine.cpuMs()
+            val c0 = (engine.cpuMs() ?: 0)
             val t0 = System.nanoTime()
             val found = engine.analyse(board, depth = d, multipv = lines)
             return JSONObject()
                 .put("wall", (System.nanoTime() - t0) / 1e9)
-                .put("cpu", (engine.cpuMs() - c0) / 1000.0)
+                .put("cpu", ((engine.cpuMs() ?: 0) - c0) / 1000.0)
                 .put("depth", found.firstOrNull()?.depth ?: 0)
         }
 

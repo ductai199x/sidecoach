@@ -56,14 +56,14 @@ class EngineAtomsBench {
         fun search(engine: Engine, board: Board, lines: Int): JSONObject {
             cold(engine)
             var at12 = -1.0
-            val c0 = engine.cpuMs()
+            val c0 = (engine.cpuMs() ?: 0)
             val t0 = System.nanoTime()
             val found = engine.analyse(board, depth = depth, multipv = lines, onDepth = { got ->
                 if (at12 < 0 && got.isNotEmpty() && got[0].depth >= 12) at12 = (System.nanoTime() - t0) / 1e9
             })
             val wall = (System.nanoTime() - t0) / 1e9
             check(found.isNotEmpty() && found[0].depth == depth) { "searched to ${found.firstOrNull()?.depth}" }
-            return JSONObject().put("wall", wall).put("cpu", (engine.cpuMs() - c0) / 1000.0).put("at12", at12)
+            return JSONObject().put("wall", wall).put("cpu", ((engine.cpuMs() ?: 0) - c0) / 1000.0).put("at12", at12)
         }
 
         // A: each variant on an engine of its own.

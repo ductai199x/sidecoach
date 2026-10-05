@@ -1,6 +1,7 @@
 package com.sidecoach.analysis
 
 import com.sidecoach.events.Event
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 
 /**
@@ -13,12 +14,19 @@ internal const val HANG_MS = 30_000L
  * An analyser's workers, watched without a clock (the desktop's `AnalyserWatch`, tests/fakes.py):
  * every word they put and every change of state they wake each other for wakes [until], which
  * returns once its condition holds. [HANG_MS] only bounds a hang; it is never the expected path.
- * Made before the workers start. [also] is told the same, first.
+ * Made before the workers start. [also] is told the same, first. The analyser counts what failed
+ * and goes on (a failed search, a verdict that could not be made); settled, nothing may have
+ * failed unless the test says so ([failuresOk]): a test whose every verdict silently failed would
+ * pass otherwise.
  *
  * The condition is read outside the watch's own lock: it takes the analyser's, under which the
  * workers tell the watch -- read inside, the two locks were taken in both orders.
  */
-internal class AnalyserWatch(val analyser: Analyser, private val also: Analyser.Watch? = null) {
+internal class AnalyserWatch(
+    val analyser: Analyser,
+    private val also: Analyser.Watch? = null,
+    private val failuresOk: Boolean = false,
+) {
     private val lock = Object()
     private var pokes = 0L
 
@@ -71,7 +79,21 @@ internal class AnalyserWatch(val analyser: Analyser, private val also: Analyser.
      * so none can come after `pending` is 0; what was said stays queued for whoever drains it (the
      * glue's `drain`).
      */
-    fun idle() = until("the analyser settled") { analyser.pending == 0 }
+    fun idle() {
+        until("the analyser settled") { analyser.pending == 0 }
+        if (!failuresOk) assertEquals("${analyser.lastError}", 0, analyser.failures)
+    }
+
+    /**
+     * Settled ([idle]), and every search done that the analyser still wants made -- the
+     * candidates' own, which nothing owed waits on.
+     */
+    fun quiet() {
+        idle()
+        until("the analyser's searches done") {
+            synchronized(analyser.lock) { analyser.claimed.isEmpty() && analyser.pick() == null }
+        }
+    }
 
     /** Everything owed answered ([idle]), and what the workers said, polled. */
     fun settled(): List<Event> {

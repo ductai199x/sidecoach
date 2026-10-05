@@ -139,7 +139,7 @@ class ComputedTest {
         val computed = Computed()
         computed.add(start, lines)
         val searcher = Recording()
-        val engine = ComputedFirst(searcher::analyse, computed)
+        val engine = ComputedFirst({ b, d, _ -> searcher.analyse(b, d) }, computed)
         assertEquals(lines, engine.analyse(start, 14))
         assertEquals(emptyList<String>(), searcher.seen)
         assertEquals(0, engine.searches)
@@ -165,7 +165,7 @@ class ComputedTest {
         val annotator = GameAnnotator(ScriptEngine(mapOf(start.fen() to lines)), depth = 18, withThreats = false)
         annotator.measure(start)
         val searcher = Recording()
-        val engine = ComputedFirst(searcher::analyse, annotator.computed)
+        val engine = ComputedFirst({ b, d, _ -> searcher.analyse(b, d) }, annotator.computed)
         val tools = EngineTools(start, null, EngineLike(engine::analyse), WHITE, knownNow = lines)
         fun analyse(vararg moves: String) = tools.run("analyse", JSONObject().put("moves", JSONArray(moves.toList())))
         val here = analyse()
@@ -197,35 +197,87 @@ class ComputedTest {
         val computed = Computed()
         computed.add(start, lines)
         computed.add(after("e4"), listOf(Line(moves = listOf("c7c5", "g1f3"), depth = 18, expectedScore = 0.44)))
-        val engine = ComputedFirst(Recording()::analyse, computed)
+        val recording = Recording()
+        val engine = ComputedFirst({ b, d, _ -> recording.analyse(b, d) }, computed)
         val tools = EngineTools(start, null, EngineLike(engine::analyse), WHITE, knownNow = lines)
         val out = tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("e4"))))
         assertTrue(out, "1... e5 2. Nf3 Nc6" in out && "c5" !in out.substringBefore("On the board there"))
     }
 
     /**
-     * `test_a_reader_gets_the_first_usable_lines_and_then_the_full_depth`: a reader gets what is
+     * `test_a_reader_gets_the_best_line_and_then_the_position_whole`: a reader gets what is
      * there from the first usable answer on (Tai, 2026-09-28: "if the consumers read after
      * stockfish reaches depth > 12 then they will get whatever lines that is available at the
-     * time"): the best line as its search ends, the hint's lines at EARLY_DEPTH, then the position
-     * whole; a verdict's line counts too, and a new game forgets them.
+     * time"): the best line at the full depth as its search ends, then the position whole --
+     * never the hint's lines at EARLY_DEPTH, which a reader would set against the full depth's
+     * (the audit of 2026-10-05); a verdict's line counts too, and a new game forgets them.
      */
     @Test
-    fun aReaderGetsTheFirstUsableLinesAndThenTheFullDepth() {
+    fun aReaderGetsTheBestLineAndThenThePositionWhole() {
         val engine = GatedEngine() // its lines at the depth asked for
         val annotator = GameAnnotator(engine, depth = 18, withThreats = false)
         val best = annotator.bestLine(start)
         assertEquals(best.lines, annotator.computed.lines(start))
-        val hint = annotator.hintLines(start)
-        assertEquals(hint, annotator.computed.lines(start))
-        assertEquals(EARLY_DEPTH, hint[0].depth)
+        assertEquals(emptyList<Line>(), annotator.computed.whole(start))
+        annotator.hintLines(start)
+        assertEquals("the hint kept for a reader", best.lines, annotator.computed.lines(start))
         annotator.measure(start)
-        assertEquals(18, annotator.computed.lines(start)[0].depth)
+        val whole = annotator.computed.whole(start)
+        assertTrue(whole.isNotEmpty() && whole.map { it.depth }.toSet() == setOf(18))
         val afterE4 = after("e4")
         annotator.measureForVerdict(afterE4)
         assertEquals(18, annotator.computed.lines(afterE4)[0].depth)
         annotator.reset()
         assertEquals(emptyList<Line>(), annotator.computed.lines(start))
         assertEquals(emptyList<Line>(), annotator.computed.lines(afterE4))
+    }
+
+    /**
+     * `test_the_coachs_engine_asks_for_a_whole_it_lacks_and_files_only_what_it_found_itself`:
+     * the coach's engine ([ComputedFirst]) answers from a position measured whole; with only a
+     * best line known it asks its searcher for the whole. What a searcher that keeps its answers
+     * itself returns (the analyser's pool: a whole, or a best line when its wait ran out) is not
+     * filed again as the position whole.
+     */
+    @Test
+    fun theCoachsEngineAsksForAWholeItLacksAndFilesOnlyWhatItFoundItself() {
+        val best = listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55))
+        val whole = best + Line(moves = listOf("d2d4"), depth = 18, expectedScore = 0.5)
+        var asked = 0
+        val computed = Computed()
+        computed.add(start, best, thin = true)
+        // The pool: its wait ran out, the best line alone.
+        val engine = ComputedFirst({ _, _, _ -> asked += 1; best }, computed, fillsComputed = true)
+        assertEquals(best, engine.analyse(start, null))
+        assertEquals("the whole asked for", 1, asked)
+        assertEquals("a best line filed as the position whole", emptyList<Line>(), computed.whole(start))
+        computed.add(start, whole)
+        assertEquals(whole, engine.analyse(start, null))
+        assertEquals("the whole known: no asking", 1, asked)
+        engine.close()
+        assertEquals("closed: nothing searched", emptyList<Line>(), engine.analyse(after("d4"), null))
+    }
+
+    /**
+     * `test_a_caller_reading_one_line_takes_the_best_line_known_or_asks_for_it_alone`: best only
+     * (a move examined, a reply rated: the first line is all that is read): a best line known
+     * answers at once, and an unknown position is asked for its best line alone -- never the whole
+     * position waited for (the audit of 2026-10-05, round 2) -- and filed as a best line, not
+     * whole.
+     */
+    @Test
+    fun aCallerReadingOneLineTakesTheBestLineKnownOrAsksForItAlone() {
+        val best = listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55))
+        val asked = ArrayList<Boolean>()
+        val computed = Computed()
+        computed.add(start, best, thin = true)
+        val engine = ComputedFirst({ _, _, bestOnly -> asked.add(bestOnly); best }, computed)
+        assertEquals(best, engine.analyse(start, null, bestOnly = true))
+        assertEquals("known: no asking", emptyList<Boolean>(), asked)
+        val afterD4 = after("d4")
+        assertEquals(best, engine.analyse(afterD4, null, bestOnly = true))
+        assertEquals(listOf(true), asked)
+        assertEquals(emptyList<Line>(), computed.whole(afterD4))
+        assertEquals(best, computed.lines(afterD4))
     }
 }

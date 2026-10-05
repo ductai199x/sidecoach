@@ -535,6 +535,50 @@ class EngineReviewTest {
         }
 
         val heard: Int get() = synchronized(read) { heardLines }
+
+        /** A report from the search, as a line read from it is. */
+        fun report() = heard()
+    }
+
+    /**
+     * The desktop's `test_a_long_search_that_keeps_reporting_is_never_cut`: a search reporting
+     * between two of the watchdog's looks is left to reach its depth, even with its processor read
+     * as idle -- the reports alone keep it (the audit of 2026-10-05, round 2: with the processor
+     * working, nothing showed the reports counted). Driven: a report, then two thirds of a
+     * patience on the clock, then a look -- three times, twice the patience in all, the processor
+     * idle throughout.
+     */
+    @Test
+    @com.sidecoach.InProcess(1)
+    fun aSearchThatKeepsReportingIsNeverCutWithItsProcessorIdle() {
+        val sf = QuietWorker()
+        sf.open()
+        assertEquals(1, sf.launches.take())
+        val failed = java.util.Collections.synchronizedList(ArrayList<Throwable>())
+        val search = kotlin.concurrent.thread {
+            try {
+                sf.interruptible { sf.analyse(Board(), depth = 30) }
+            } catch (exc: Interrupted) {
+                // the test's own stop, at the end
+            } catch (exc: Throwable) {
+                failed.add(exc)
+            }
+        }
+        try {
+            sf.until("the search's report") { sf.heard >= 1 }
+            repeat(3) {
+                sf.report()
+                sf.clock += (sf.watchdogS * 1000 * 2 / 3).toLong()
+                sf.look()
+                assertTrue("a search still reporting was taken for a hung engine", sf.launches.isEmpty())
+            }
+        } finally {
+            sf.interrupt()
+            search.join(HANG_MS)
+            sf.close()
+        }
+        assertTrue("the search never ended", !search.isAlive)
+        assertEquals(emptyList<Throwable>(), failed.toList())
     }
 
     /**

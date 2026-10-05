@@ -134,7 +134,7 @@ class HarnessTruthTest {
         pushSan(after, "Bd2")
         val computed = Computed()
         computed.add(after, listOf(Line(moves = listOf("h7h6", "d2e3"), depth = 18, expectedScore = 0.48)))
-        val engine = ComputedFirst(noSearch::analyse, computed)
+        val engine = ComputedFirst({ b, d, _ -> noSearch.analyse(b, d) }, computed)
         val text = examine(
             parseProbe("your Bd2", listOf("Bd2"), board),
             board,

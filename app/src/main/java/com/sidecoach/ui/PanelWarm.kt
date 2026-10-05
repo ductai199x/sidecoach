@@ -580,7 +580,9 @@ object PanelWarm {
             }
             applied.addAll(hit)
         }
-        if (changed.any { it == "engine.stockfish_path" || it == "tools_dir" }) engineStale = true
+        // Another engine, or another number of workers in the pool: the engine and the coach
+        // built again at the next Start (`applies` "next").
+        if (changed.any { it == "engine.stockfish_path" || it == "tools_dir" || it == "engine.workers" }) engineStale = true
         attempt(listOf("voice.voice")) { PanelVoice.setVoice(store.voice()) }
         attempt(listOf("voice.listen")) { PanelListen.setListen(store.listen()) }
         attempt(listOf("voice.muted")) { PanelVoice.setMuted(store.muted()) }

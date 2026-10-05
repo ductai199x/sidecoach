@@ -364,6 +364,51 @@ class AnnotatorParityTest {
         assertTrue("the replies differ by 0.35", analysis.decisive && analysis.onlyMove)
     }
 
+    /**
+     * `test_the_best_line_stays_first_and_mates_are_ordered_by_length`: a position whole: its
+     * best line, its own search, first -- a candidate whose own position's search scores it higher
+     * stays behind it, so the engine's move is never charged a loss (the audit of 2026-10-05) --
+     * and among the others a shorter mate ahead of a longer one, every mate scoring alike.
+     */
+    @Test
+    fun theBestLineStaysFirstAndMatesAreOrderedByLength() {
+        val board = Board()
+        val annotator = GameAnnotator(ScriptEngine(), depth = 18, withThreats = false)
+        val best = annotator.measuredLines(board, listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.55)))
+
+        fun child(score: Double, mate: Int? = null) =
+            annotator.measuredLines(board, listOf(Line(moves = listOf("a7a6"), depth = 18, expectedScore = score, mate = mate)))
+
+        val children = listOf(
+            Move.fromUci("e2e4") to child(0.45),
+            Move.fromUci("d2d4") to child(0.40), // 0.60: higher than the best line
+            Move.fromUci("g1f3") to child(0.0, mate = -5), // mates a move after: in 6
+            Move.fromUci("c2c4") to child(0.0, mate = -1), // mates in 2
+        )
+        val whole = annotator.whole(board, best, children)
+        assertEquals(listOf("e2e4", "c2c4", "g1f3", "d2d4"), whole.lines.map { it.moves[0] })
+        assertEquals(listOf(2, 6), whole.lines.subList(1, 3).map { it.mate })
+        val loss = annotator.assessFrom("g", board, Move.fromUci("e2e4"), 1, whole)
+        assertEquals(0.0, loss.expectedLoss, 0.0)
+        assertEquals(Label.BEST, loss.label)
+    }
+
+    /**
+     * `test_the_lines_view_never_searches_several_lines_at_the_full_depth`: [WholeSearcher] (a
+     * review's line view, a coach made on demand): a position's lines made the one-line way --
+     * one line to the depth, the hint at EARLY_DEPTH -- never several lines to the depth at once,
+     * which explode on decided and forcing positions.
+     */
+    @Test
+    fun theLinesViewNeverSearchesSeveralLinesAtTheFullDepth() {
+        val engine = ScriptEngine(mapOf(Board().fen() to listOf(Line(moves = listOf("e2e4"), depth = 18, expectedScore = 0.5))))
+        val lines = WholeSearcher(engine, lines = 3, depth = 18).analyse(Board())
+        assertTrue(lines.isNotEmpty())
+        assertEquals("e2e4", lines[0].moves[0])
+        val asked = engine.multipvs.zip(engine.depths).toSet()
+        assertTrue("$asked", (asked - setOf(1 to 18, 3 to EARLY_DEPTH)).isEmpty())
+    }
+
     private companion object {
         /** 1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6??, where 4. Qxf7# is mate (the desktop's `SCHOLAR`). */
         const val SCHOLAR = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"

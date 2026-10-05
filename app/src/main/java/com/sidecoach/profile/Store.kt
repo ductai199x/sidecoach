@@ -52,7 +52,21 @@ class Store(val path: File?) {
         db = if (path != null) SQLiteDatabase.openOrCreateDatabase(path, null) else SQLiteDatabase.create(null)
         lock.withLock {
             for (statement in SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }) db.execSQL(statement)
+            upgrade()
         }
+    }
+
+    /**
+     * What a record kept by an older build needs to be read by this one, by SQLite's
+     * `user_version`. 1: every position measured the one-line way (the engine's redesign,
+     * 2026-10-05) -- a review under way measured before it goes on from nothing, never from
+     * positions measured the old way beside ones measured the new (its positions only: a review
+     * saved whole is kept, with its words). `Store._upgrade`.
+     */
+    private fun upgrade() {
+        val version = db.version
+        if (version < 1) db.execSQL("DELETE FROM review_progress")
+        if (version < STORE_VERSION) db.version = STORE_VERSION
     }
 
     fun close() {
@@ -244,6 +258,16 @@ class Store(val path: File?) {
     fun analyseMove(moveId: Long, scoreAfter: Double?, allowedTags: List<String>) {
         lock.withLock {
             exec("UPDATE moves SET score_after = ?, allowed_tags = ? WHERE move_id = ?", scoreAfter, jsonList(allowedTags), moveId)
+        }
+    }
+
+    /**
+     * The tactics the position a move was played from offered, once its final analysis is in --
+     * it can come after the move's verdict (`Profiler.analysis`).
+     */
+    fun availableTags(moveId: Long, tags: List<String>) {
+        lock.withLock {
+            exec("UPDATE moves SET available_tags = ? WHERE move_id = ?", jsonList(tags), moveId)
         }
     }
 
@@ -1029,6 +1053,9 @@ class Store(val path: File?) {
         // game id (its library key is WATCHED + the id).
         const val WATCHED = "watched:"
         val LIBRARY_TABLES = listOf("library", "reviews", "review_progress", "stat_games", "stat_moves")
+
+        /** The record's format ([upgrade]): raised with each change a record kept before needs. */
+        const val STORE_VERSION = 1
         val WATCHED_TABLES = listOf("evidence", "dialogue", "recommendations", "moves", "games")
         val RESTORABLE = (LIBRARY_TABLES + WATCHED_TABLES + "twins").toSet()
 

@@ -295,7 +295,11 @@ class EngineTools(
      * rated by that line's score, as the model was shown it; another by a search after it.
      */
     private fun rating(start: Board, first: Move, origin: String, known: List<Line>): String {
-        val best = known.toList().ifEmpty { engine.analyse(start, depth) }
+        // The lines shown, when they are the full depth's: the first answer (the hint's, at
+        // EARLY_DEPTH) set against a reply searched to the full depth reads a move as good as
+        // the best as worse by what the depths differ by (the audit of 2026-10-05, round 2).
+        val full = known.isNotEmpty() && known.minOf { it.depth } >= depth
+        val best = if (full) known.toList() else engine.analyse(start, depth)
         if (best.isEmpty()) return ""
         val after = start.copy()
         after.push(first)
@@ -308,7 +312,7 @@ class EngineTools(
         } else {
             // At the best line's depth: set against a shallower search, a move as good as the
             // best read as worse by what the depths differ by.
-            val reply = engine.analyse(after, best[0].depth.takeIf { it != 0 } ?: depth)
+            val reply = engine.best(after, best[0].depth.takeIf { it != 0 } ?: depth)
             if (reply.isEmpty()) return ""
             1.0 - reply[0].expectedScore
         }

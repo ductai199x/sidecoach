@@ -4,6 +4,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.events.Line
 import java.io.File
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -19,9 +20,11 @@ internal val QUIET = listOf(Line(moves = listOf("a2a3"), depth = 1, expectedScor
  * the number of lines asked for, and never starts a process.
  */
 internal open class ScriptEngine(
-    private val answers: Map<String, List<Line>> = emptyMap(),
+    answers: Map<String, List<Line>> = emptyMap(),
     private val default: List<Line> = QUIET,
 ) : Engine(File("fake"), null) {
+    /** The script, which a test may change mid-run (new settings' answers). */
+    val answers: MutableMap<String, List<Line>> = ConcurrentHashMap(answers)
     val calls: MutableList<String> = Collections.synchronizedList(ArrayList())
     val histories: MutableList<List<String>> = Collections.synchronizedList(ArrayList())
     val depths: MutableList<Int?> = Collections.synchronizedList(ArrayList())
@@ -58,13 +61,15 @@ internal open class ScriptEngine(
  * A fake engine whose searches of the positions in [gated] (FENs) wait until the test lets them
  * go ([release]) or the analyser stops them ([interrupt], throwing [Interrupted], as a real one
  * stops); every other search, and every depth it finishes (onDepth, from [EARLY_DEPTH] to the
- * depth asked for), is answered at once. [entered] counts down when a gated search begins. So a
- * test acts mid-search by the engine's state, never by a clock (the desktop's `GatedEngine`).
+ * depth asked for), is answered at once. [entered] counts down when a gated search begins, after
+ * the depths [reports] holds for it are told (onDepth). So a test acts mid-search by the engine's
+ * state, never by a clock (the desktop's `GatedEngine`).
  */
-internal class GatedEngine(
+internal open class GatedEngine(
     answers: Map<String, List<Line>> = emptyMap(),
     gated: Collection<String> = emptyList(),
     default: List<Line> = QUIET,
+    private val reports: Map<String, List<Line>> = emptyMap(),
 ) : ScriptEngine(answers, default) {
     private val gated = gated.toSet()
     val entered: Map<String, CountDownLatch> = gated.associateWith { CountDownLatch(1) }
@@ -92,6 +97,7 @@ internal class GatedEngine(
     override fun analyse(board: Board, depth: Int?, timeS: Double?, multipv: Int?, pvPlies: Int?, carryBest: Boolean, onDepth: ((List<Line>) -> Unit)?): List<Line> {
         val fen = board.fen()
         if (fen in gated) {
+            if (onDepth != null) for (line in reports[fen] ?: emptyList()) onDepth(listOf(line))
             entered.getValue(fen).countDown()
             poke?.invoke()
             synchronized(gate) {

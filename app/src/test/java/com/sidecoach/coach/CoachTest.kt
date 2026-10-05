@@ -2990,6 +2990,65 @@ class CoachTest {
         assertFalse(now, "Engine note" in now)
     }
 
+    /**
+     * The position's message frozen before its analysis came: the whole (provisional) and then
+     * the final word with the same lines -- the model read neither, so the final word gets its
+     * note, and a second final word with those lines none (the audit of 2026-10-05, round 2:
+     * the rule compared against the record's last analysis, not what the model read, and the
+     * model kept "not in yet" for the rest of the game).
+     * `test_conversation.py::test_lines_the_model_never_read_get_their_note_once`.
+     */
+    @Test
+    fun linesTheModelNeverReadGetTheirNoteOnce() {
+        val (coach, provider) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(twoLines(Board(SCHOLAR), 6), 6.5)
+        coach.ask("what is my plan?", 7.0) // 3. Qh5's message frozen with no analysis
+        messages(coach)
+        val afterQh5 = Board()
+        for (san in listOf("e4", "e5", "Bc4", "Nc6", "Qh5")) afterQh5.push(afterQh5.parseSan(san)!!)
+        val whole = twoLines(afterQh5, 5)
+        val provisional = Analysis(
+            gameId = whole.gameId, fen = whole.fen, ply = whole.ply, lines = whole.lines,
+            decisive = false, onlyMove = false, provisional = true,
+        )
+        coach.onEvent(provisional, 8.0)
+        coach.onEvent(whole, 9.0)
+        coach.onEvent(whole, 9.5)
+        coach.ask("and what should I watch out for?", 10.0)
+        messages(coach)
+        val record = harness(given(provider)).substringBefore("# Position now\n")
+        assertEquals(record, 1, Regex("Engine note on the position after 3\\. Qh5").findAll(record).count())
+    }
+
+    /**
+     * The analyser tells a position whole (provisional), then final once its side searches are
+     * in, the lines the same: the model read them whole, and a note repeating them on every move
+     * the game has left only grew the prompt (the audit of 2026-10-05).
+     * `test_conversation.py::test_a_final_word_that_changes_no_line_the_model_read_adds_no_note`.
+     */
+    @Test
+    fun aFinalWordThatChangesNoLineTheModelReadAddsNoNote() {
+        val (coach, provider) = coach(emptyList())
+        playToScholar(coach)
+        coach.onEvent(twoLines(Board(SCHOLAR), 6), 6.5)
+        val afterQh5 = Board()
+        for (san in listOf("e4", "e5", "Bc4", "Nc6", "Qh5")) afterQh5.push(afterQh5.parseSan(san)!!)
+        val whole = twoLines(afterQh5, 5)
+        val provisional = Analysis(
+            gameId = whole.gameId, fen = whole.fen, ply = whole.ply, lines = whole.lines,
+            decisive = false, onlyMove = false, provisional = true,
+        )
+        coach.onEvent(provisional, 7.0)
+        coach.ask("what is my plan?", 8.0) // the model has seen the record: its lines are frozen
+        messages(coach)
+        coach.onEvent(whole, 9.0) // final: the same lines
+        coach.ask("and what should I watch out for?", 10.0)
+        messages(coach)
+        val record = harness(given(provider)).substringBefore("# Position now\n")
+        assertFalse(record, "Engine note on the position after 3. Qh5" in record)
+    }
+
     // --- the deep prompt review (desktop, 2026-10-01): one test a finding, as the desktop's ---
 
     /** The scholar's board with the player Black: the opponent to move, Qxf7# on the board. */

@@ -281,6 +281,7 @@ class TakebackTest {
             assessing.submit(Resync(gameId = "g", fen = black, reason = "side to move settled by the clock"))
             watch.until("the reset let go of the search") { engine.halted.toList() == listOf(white) }
             watch.idle()
+            assertEquals("the old reading searched to an answer", 0, engine.calls.count { it == white })
             val told = assessing.drain().filterIsInstance<Analysis>().map { it.fen }
             assertTrue("$told", told.isNotEmpty() && told.toSet() == setOf(black))
             analyser.results.add(Analysis(gameId = "g", fen = white, ply = 0, lines = emptyList(), decisive = false, onlyMove = false))

@@ -86,10 +86,16 @@ class EngineToolsTest {
     private class Asked : EngineLike {
         val histories = ArrayList<List<String>>()
         val depths = ArrayList<Int?>()
+        val bestOnly = ArrayList<Boolean>()
 
-        override fun analyse(board: Board, depth: Int?): List<Line> {
+        override fun analyse(board: Board, depth: Int?): List<Line> = answer(board, depth, false)
+
+        override fun best(board: Board, depth: Int?): List<Line> = answer(board, depth, true)
+
+        private fun answer(board: Board, depth: Int?, best: Boolean): List<Line> {
             histories.add(board.moveStack.map { it.uci() })
             depths.add(depth)
+            bestOnly.add(best)
             val move = board.legalMoves().minByOrNull { it.uci() }!!
             return listOf(Line(moves = listOf(move.uci()), depth = depth ?: 0, expectedScore = 0.55))
         }
@@ -117,6 +123,23 @@ class EngineToolsTest {
         val tools = EngineTools(Board(), null, engine, WHITE, knownNow = known)
         tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("a3"))))
         assertEquals(listOf<Int?>(14, 18), engine.depths)
+        assertEquals("the reply read for its first line alone", listOf(false, true), engine.bestOnly)
+    }
+
+    /**
+     * `test_a_first_answer_shown_is_not_set_against_the_full_depth`: the first answer shown (the
+     * hint's lines, at EARLY_DEPTH) is not what a move off it is rated against: the reply is
+     * searched to the full depth, so the best comes from the full depth too -- else a move as
+     * good as the best reads as worse by what the depths differ by (the audit of 2026-10-05,
+     * round 2).
+     */
+    @Test
+    fun aFirstAnswerShownIsNotSetAgainstTheFullDepth() {
+        val engine = Asked()
+        val known = listOf(Line(moves = listOf("e2e4"), depth = 12, expectedScore = 0.6))
+        val tools = EngineTools(Board(), null, engine, WHITE, knownNow = known, depth = 18)
+        tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("a3"))))
+        assertEquals("${engine.depths}", listOf<Int?>(18, 18), engine.depths.takeLast(2))
     }
 
     private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->

@@ -93,13 +93,15 @@ fun cacheKey(board: Board): String {
 /** Assessments for the moves of one game. Not thread-safe; [Analyser] owns one. */
 class GameAnnotator(
     val engine: Engine,
-    var depth: Int = 18,
-    var multipv: Int = 6,
-    var thresholds: Thresholds = Thresholds(),
-    var tagger: Tagger? = null,
+    // Saved from the settings' thread, read by the analyser's workers: volatile, as the desktop's
+    // are under the GIL.
+    @Volatile var depth: Int = 18,
+    @Volatile var multipv: Int = 6,
+    @Volatile var thresholds: Thresholds = Thresholds(),
+    @Volatile var tagger: Tagger? = null,
     /** Set late when the tables arrive after the engine was built, read by the worker. */
     @Volatile var book: Book? = null,
-    var withThreats: Boolean = true,
+    @Volatile var withThreats: Boolean = true,
 ) {
 
     /**
@@ -152,12 +154,30 @@ class GameAnnotator(
     @Volatile var era = 0
         private set
 
+    /** What the caches are written under, the era checked there ([keep]). */
+    private val lock = Object()
+
     /** Forget the cache; a new game shares no positions with the last one. */
     fun reset() {
-        cache.clear()
-        verdictCache.clear()
-        computed.clear()
-        assessed.clear()
+        synchronized(lock) {
+            cache.clear()
+            verdictCache.clear()
+            computed.clear()
+            assessed.clear()
+        }
+    }
+
+    /**
+     * [measured] kept for readers and for the next asking -- unless the settings changed since its
+     * search began ([began]): checked and written under the lock, so a change in between cannot
+     * let an old search's answer in. `_keep`.
+     */
+    private fun keep(began: Int, board: Board, measured: Measured, whole: Boolean) {
+        synchronized(lock) {
+            if (began != era) return
+            computed.add(board, measured.lines, thin = !whole)
+            (if (whole) cache else verdictCache)[measured.key.ifEmpty { cacheKey(board) }] = measured
+        }
     }
 
     /**
@@ -168,10 +188,12 @@ class GameAnnotator(
      * kept.
      */
     fun forgetMeasured() {
-        era += 1
-        cache.clear()
-        verdictCache.clear()
-        computed.clear()
+        synchronized(lock) {
+            era += 1
+            cache.clear()
+            verdictCache.clear()
+            computed.clear()
+        }
     }
 
     // ---- the searches ----------------------------------------------------------------------
@@ -181,38 +203,43 @@ class GameAnnotator(
      * reads the line for it). What a verdict reads of a position, and a candidate's value for
      * the position before it. A finished position has no line; a position with one legal move
      * has that move's line, from its own position's search -- the move needs no search to be
-     * chosen (the slowest one-line search of 8,886 was such a position: 10.6 s). Cached;
-     * [onDepth] is handed each depth the search finishes on its way.
+     * chosen (the slowest one-line search of 8,886 was such a position: 10.6 s). A position
+     * measured whole answers with its whole, whose first line is this one. Cached; [onDepth] is
+     * handed each depth the search finishes on its way.
      */
     fun bestLine(board: Board, engine: Engine = this.engine, onDepth: ((List<Line>) -> Unit)? = null): Measured {
         cached(board)?.let { return it }
-        val key = cacheKey(board)
-        verdictCache[key]?.let { return it }
+        verdictCache[cacheKey(board)]?.let { return it }
         val began = era
         val legal = board.legalMoves()
-        val lines = when {
-            terminalExpectedScore(board) != null || legal.isEmpty() -> emptyList()
+        val measured = when {
+            terminalExpectedScore(board) != null || legal.isEmpty() -> oneLine(board, emptyList())
             legal.size == 1 -> {
                 val child = board.copy()
                 child.push(legal[0])
-                listOf(candidateLine(board, legal[0], bestLine(child, engine)))
+                fromOnlyMove(board, legal[0], bestLine(child, engine, onDepth))
             }
-            else -> engine.analyse(board, depth = depth, multipv = 1, carryBest = true, onDepth = onDepth)
+            else -> oneLine(board, engine.analyse(board, depth = depth, multipv = 1, carryBest = true, onDepth = onDepth))
         }
-        val measured = Measured(
-            fen = board.fen(),
-            lines = lines,
-            score = positionScore(board, lines),
-            decisive = false,
-            onlyMove = false,
-            key = key,
-        )
-        if (began == era) {  // not searched the old way ([forgetMeasured])
-            computed.add(board, lines, thin = true)
-            verdictCache[key] = measured
-        }
+        keep(began, board, measured, whole = false)
         return measured
     }
+
+    /**
+     * The best line of a position whose one legal move is [move]: that move's, from the position
+     * it leads to ([child], its best line). `from_only_move`.
+     */
+    fun fromOnlyMove(board: Board, move: Move, child: Measured): Measured =
+        oneLine(board, listOf(candidateLine(board, move, child)))
+
+    private fun oneLine(board: Board, lines: List<Line>): Measured = Measured(
+        fen = board.fen(),
+        lines = lines,
+        score = positionScore(board, lines),
+        decisive = false,
+        onlyMove = false,
+        key = cacheKey(board),
+    )
 
     /** What a verdict reads of a position: whole if it already is, else its best line. */
     fun measureForVerdict(board: Board): Measured = bestLine(board)
@@ -220,14 +247,12 @@ class GameAnnotator(
     /**
      * The position's candidates at [EARLY_DEPTH]: [multipv] lines, the first answer to a hint
      * and the moves whose positions the full depth then searches ([candidates]). None for a
-     * position with one legal move or none: its best line says all there is.
+     * position with one legal move or none: its best line says all there is. Not kept for readers
+     * ([computed]): a reader takes the position whole, or its best line.
      */
     fun hintLines(board: Board, engine: Engine = this.engine): List<Line> {
         if (terminalExpectedScore(board) != null || board.legalMoves().size < 2) return emptyList()
-        val began = era
-        val lines = engine.analyse(board, depth = minOf(EARLY_DEPTH, depth), multipv = multipv)
-        if (began == era) computed.add(board, lines)  // not searched the old way
-        return lines
+        return engine.analyse(board, depth = minOf(EARLY_DEPTH, depth), multipv = multipv)
     }
 
     /**
@@ -277,21 +302,21 @@ class GameAnnotator(
     }
 
     /**
-     * The position whole from its candidates' own searches: their lines best first (the best
-     * line's own moves kept for the move they share, carried on to its point), the
-     * decisive-moment and only-move calls read from them. No side searches ([withSide]).
+     * The position whole: its best line first -- its own search, which picks the best move more
+     * often than its candidates' searches do (231 against 222 of 300 positions against a depth-24
+     * truth, the engine audit 2026-10-05), so the engine's own move is never charged a loss --
+     * then its other candidates from their own positions' searches, best first, a shorter mate
+     * ahead of a longer one; the decisive-moment and only-move calls read from them. No side
+     * searches ([withSide]).
      */
     fun whole(board: Board, best: Measured, children: List<Pair<Move, Measured>>): Measured {
+        val first = best.lines.take(1)
+        val shown = first.mapNotNull { it.moves.firstOrNull() }.toSet()
         // Stable: the hint's order on ties.
-        val lines = children.map { (move, child) -> candidateLine(board, move, child) }
-            .sortedByDescending { it.expectedScore }
-            .toMutableList()
-        val bestLine = best.lines.firstOrNull()
-        if (lines.isNotEmpty() && bestLine != null && bestLine.moves.take(1) == lines[0].moves.take(1)) {
-            lines[0] = lines[0].copy(moves = bestLine.moves)
-        }
-        val out = if (lines.isEmpty()) best.lines else lines
-        return measuredLines(board, out)
+        val rest = children.filter { (move, _) -> move.uci() !in shown }
+            .map { (move, child) -> candidateLine(board, move, child) }
+            .sortedWith(LINE_ORDER)
+        return measuredLines(board, first + rest)
     }
 
     /**
@@ -309,10 +334,7 @@ class GameAnnotator(
             move to bestLine(child)
         }
         val measured = withSide(board, whole(board, best, children))
-        if (began == era) {  // not searched the old way ([forgetMeasured])
-            computed.add(board, measured.lines)
-            cache[measured.key] = measured
-        }
+        keep(began, board, measured, whole = true)
         return measured
     }
 
@@ -380,16 +402,13 @@ class GameAnnotator(
     }
 
     /**
-     * The position's first answer, before its candidates are searched: the best line to the
-     * full depth when it is in, ahead of the hint's other moves at [EARLY_DEPTH] (each line
-     * carries its depth); the calls read from them.
+     * The position's first answer, before its candidates are searched: the hint's lines at
+     * [EARLY_DEPTH] when they are in, else the best line -- one search's lines, never two
+     * searches' set against each other (the calls, a probe's distance from the best, the lines
+     * best first all compare them); the calls read from them.
      */
-    fun firstAnswer(board: Board, best: Measured?, hint: List<Line>): Measured {
-        val lines = ArrayList(best?.lines?.take(1) ?: emptyList())
-        val shown = lines.mapNotNull { it.moves.firstOrNull() }.toSet()
-        lines += hint.filter { it.moves.isNotEmpty() && it.moves[0] !in shown }
-        return measuredLines(board, lines.take(multipv))
-    }
+    fun firstAnswer(board: Board, best: Measured?, hint: List<Line>): Measured =
+        measuredLines(board, hint.ifEmpty { best?.lines ?: emptyList() })
 
     /** [lines] of [board] as a measurement: the calls they make. */
     fun measuredLines(board: Board, lines: List<Line>): Measured = Measured(
@@ -587,6 +606,42 @@ class GameAnnotator(
 fun openingName(book: Book, moves: List<Move>): String? {
     val found = book.identify(ArrayList(moves)) ?: return null
     return if (found.eco.isNotEmpty()) "${found.eco} ${found.name}" else found.name
+}
+
+/**
+ * A line's place among a position's lines: the better first; of equal score, a mate given sooner,
+ * then no mate, then a mate taken later (every mate scores alike). `_rank`.
+ */
+private val LINE_ORDER: Comparator<Line> = compareBy<Line>({ -it.expectedScore }, { line ->
+    val mate = line.mate
+    when {
+        mate == null -> 1_000_000
+        mate > 0 -> mate
+        else -> 2_000_000 + mate
+    }
+})
+
+/**
+ * [lines] best lines of a position on one engine of its own, measured whole the one-line way
+ * ([GameAnnotator.measure], no side searches) -- never several lines to the full depth at once,
+ * which explode on decided and forcing positions. For what searches with no analyser beside it: a
+ * review's line view, a coach made on demand. Each depth asked for keeps its own measurements.
+ * `annotator.WholeSearcher`.
+ */
+class WholeSearcher(val engine: Engine, private val lines: Int, private val depth: Int) {
+    private val annotators = HashMap<Int, GameAnnotator>()
+
+    /** [board]'s lines whole; with [bestOnly], its best line alone (or its whole, if measured). */
+    fun analyse(board: Board, depth: Int? = null, bestOnly: Boolean = false): List<Line> {
+        val at = depth ?: this.depth
+        val annotator = synchronized(annotators) {
+            annotators.getOrPut(at) { GameAnnotator(engine, depth = at, multipv = lines, withThreats = false) }
+        }
+        if (bestOnly) return annotator.bestLine(board).lines
+        return annotator.measure(board).lines
+    }
+
+    fun close() = engine.close()
 }
 
 /** A line's first move, or null for a line with none or one that does not parse. */

@@ -105,6 +105,10 @@ def main() -> None:
     # "this" one, and the talk button where the desktop has a key held from any window.
     engine = schema["$defs"][refs["engine"]]["properties"]
     engine["workers"]["default"] = 2
+    # Each worker loads its own 98 MB network and hash beside the vision and the voice: past
+    # four of them, or 512 MB of hash each, a phone's low-memory killer ends the app.
+    engine["workers"]["maximum"] = 4
+    engine["hash_mb"]["maximum"] = 512
     engine["workers"]["description"] = (
         "How many positions Stockfish works on at once, one processor core each: the position "
         "you face, the best moves in it, and the coach's questions. More answers sooner, and "

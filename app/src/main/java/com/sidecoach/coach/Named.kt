@@ -48,9 +48,14 @@ private val PIECE_ON = Regex(
 )
 private val SQUARE_ASKED = Regex("(?i)\\b(?:square|on|about|at)\\s+(?<square>[a-h][1-8])\\b")
 
-/** What one examination needs of an engine: the lines for a position. */
+/**
+ * What one examination needs of an engine: the lines for a position, whole -- or ([best]) its
+ * best line alone, for a caller that reads only the first line (the desktop's `best_only`).
+ */
 fun interface EngineLike {
     fun analyse(board: Board, depth: Int?): List<Line>
+
+    fun best(board: Board, depth: Int?): List<Line> = analyse(board, depth)
 }
 
 /**
@@ -332,7 +337,9 @@ fun examine(
 ): String {
     val head = "Engine on ${probe.label}, which the player asked about:"
     if (probe.parsed.isEmpty()) return "$head ${probe.illegal} is not a legal move here."
-    val after = board.copy(withStack = false)
+    // The moves that led here come along: the analyser keys a position by them, so the game's
+    // own candidate positions are found measured.
+    val after = board.copy()
     for (move in probe.parsed) after.push(move)
     val played = playedText(probe, board)
     val parts = arrayListOf(head)
@@ -342,7 +349,8 @@ fun examine(
         return parts.joinToString(" ")
     }
     val own = if (probe.parsed.all { !it.isNull }) restOfLine(known, probe.parsed.map { it.uci() }) else null
-    val lines = if (own != null) listOf(own) else engine.analyse(after, depth)
+    // The first line is all that is read: its best line, never the whole position waited for.
+    val lines = if (own != null) listOf(own) else engine.best(after, depth)
     if (lines.isEmpty()) {
         return "$head the engine has nothing to say about the position after $played."
     }
@@ -552,7 +560,10 @@ fun analyseNamed(
     val out = ArrayList<String>()
     var best: Line? = null
     if (engine != null && probes.any { it.square == null }) {
-        val before = known.toList().ifEmpty { engine.analyse(board, depth) }
+        // The lines shown when they are the full depth's ([EngineTools.rating]); else the best
+        // line alone, the only one read.
+        val full = known.isNotEmpty() && known.minOf { it.depth } >= depth
+        val before = if (full) known.toList() else engine.best(board, depth)
         best = before.firstOrNull()
     }
     for (p in probes) {

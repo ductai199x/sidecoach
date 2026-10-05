@@ -28,7 +28,9 @@ class FirstLegal:
     """Plays the first legal moves by UCI, four plies, the mover a little ahead or behind by
     how many legal moves it has: the same on both sides."""
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         replay = board.copy(stack=False)
         moves: list[str] = []
         for _ in range(4):

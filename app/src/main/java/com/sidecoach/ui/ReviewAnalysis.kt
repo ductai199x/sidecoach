@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.WholeSearcher
 import com.sidecoach.analysis.Strength
 import com.sidecoach.analysis.positionScore
 import com.sidecoach.chess.Board
@@ -122,32 +123,33 @@ object ReviewAnalysis {
 
     /**
      * The engine's best lines for the positions the analysis board shows: one engine, made on
-     * the first position asked of it and closed with the room; one search at a time. `Lines`.
+     * the first position asked of it and closed with the room; one position at a time, measured
+     * whole the one-line way ([WholeSearcher]) -- three lines to the review's depth at once
+     * exploded on decided and forcing positions, a minute and more for one position. `Lines`.
      */
     class Lines(private val strength: Strength, private val makeEngine: EngineMaker) {
-        private var engine: Engine? = null
+        private var searcher: WholeSearcher? = null
         private val lock = Any()
 
         /** The best LINES lines from [fen] at the review's depth, each from White's side and played out. */
         fun lines(fen: String): JSONObject {
             val board = Board(fen)
-            val found = synchronized(lock) { ready().analyse(board, depth = strength.depth, multipv = LINES) }
+            val found = synchronized(lock) { ready().analyse(board) }
             return linesJson(board, found)
         }
 
         fun close() {
             synchronized(lock) {
-                engine?.close()
-                engine = null
+                searcher?.close()
+                searcher = null
             }
         }
 
-        private fun ready(): Engine {
-            engine?.let { return it }
-            return makeEngine.make(threads = 1, multipv = LINES).also {
-                it.open()
-                engine = it
-            }
+        private fun ready(): WholeSearcher {
+            searcher?.let { return it }
+            val engine = makeEngine.make(threads = 1, multipv = LINES)
+            engine.open()
+            return WholeSearcher(engine, lines = LINES, depth = strength.depth).also { searcher = it }
         }
     }
 

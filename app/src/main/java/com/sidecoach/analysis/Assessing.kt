@@ -63,7 +63,7 @@ class Assessing(
     @Volatile var sink: ((String) -> Unit)? = null
 
     /** The engine processes' CPU time in milliseconds, every worker's; 0 when there is no engine. */
-    fun engineCpuMs(): Long = analyser?.engines?.sumOf { it.cpuMs() } ?: 0
+    fun engineCpuMs(): Long = analyser?.engines?.sumOf { it.cpuMs() ?: 0 } ?: 0
 
     fun submit(event: Event) {
         val worker = analyser ?: return

@@ -229,6 +229,12 @@ class Entry(
 ) {
     var frozen: String? = null
 
+    /**
+     * The engine's lines on the ply's position the model has read: those its frozen text was
+     * written from, then a late note's.
+     */
+    var readLines: List<Line>? = null
+
     /** Dialogue folded into the summary: no longer written out. */
     var folded: Boolean = false
 }
@@ -475,7 +481,10 @@ class Conversation {
             if (entry.kind == "ply") {
                 val record = entry.record!!
                 if (i == reached) continue // the position now, in full below
-                if (entry.frozen == null) entry.frozen = renderPly(record, full = false)
+                if (entry.frozen == null) {
+                    entry.frozen = renderPly(record, full = false)
+                    entry.readLines = record.analysis?.lines
+                }
                 sink.add(entry.frozen!!)
             } else if (entry.kind == "ask") {
                 sink.add("    PLAYER said: ${entry.text}")
@@ -1314,13 +1323,20 @@ class Conversation {
      * position a move left went under "Said here" of the position the player faces now, its
      * standing beside the one now's, and its lines were dropped: their title had grown a tail
      * ("Engine lines (the opponent's move; ...)", the coach review, 2026-10-01). The position now
-     * needs none: it is shown in full. `Conversation._note_if_frozen`.
+     * needs none: it is shown in full. An analysis whose lines the model has read already gets
+     * none: the final word on a position adds its side searches to lines it may have read whole,
+     * in the frozen text or a note before (the audits of 2026-10-05). `Conversation._note_if_frozen`.
      */
     private fun noteIfFrozen(record: PlyRecord, what: String) {
         val active = activeRecords()
         if (active.isNotEmpty() && active.last() === record) return
         for (entry in entries) {
             if (entry.record === record && entry.frozen != null) {
+                if (what == "analysis") {
+                    val lines = record.analysis?.lines
+                    if (lines == entry.readLines) return
+                    entry.readLines = lines
+                }
                 val boardBefore = Board(record.move.fenBefore)
                 val colour = userColour
                 val name = numbered(record.move)

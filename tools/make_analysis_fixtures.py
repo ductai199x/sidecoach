@@ -172,9 +172,12 @@ def main() -> None:
         engine = FakeEngine(answers, default=[])
         made = review_analysis.Lines(Settings(), strength, make_engine=lambda _e=engine, **_: _e)
         for fen in list(answers)[:20]:
-            # `found`: what the engine gave `Lines` -- as many lines as it asked for.
-            found = answers[fen][: review_analysis.LINES]
-            lines.append({"fen": fen, "found": [l.model_dump(mode="json") for l in found], "out": made.lines(fen)})
+            # `found`: what `Lines` measured of the position (its `WholeSearcher`), drawn by
+            # `render` -- the drawing is what the phone is held to.
+            board = chess.Board(fen)
+            found = made.search(board)
+            out = review_analysis.Lines.render(board, found)
+            lines.append({"fen": fen, "found": [l.model_dump(mode="json") for l in found], "out": out})
 
     explore = []
     for f in fens[:80] + [chess.STARTING_FEN, "8/8/8/4k3/8/8/8/4K3 w - - 0 1"]:

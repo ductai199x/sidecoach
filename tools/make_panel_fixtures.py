@@ -37,9 +37,11 @@ sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402
 from fastapi.encoders import jsonable_encoder  # noqa: E402
-from pydantic import ValidationError  # noqa: E402
+from pydantic import Field, ValidationError  # noqa: E402
 
+from sidecoach.config import EngineSettings as DesktopEngine  # noqa: E402
 from sidecoach.config import Settings, VoiceSettings  # noqa: E402
+from sidecoach.config import Settings as DesktopSettings  # noqa: E402
 from sidecoach.events import (  # noqa: E402
     Analysis,
     BoardUnread,
@@ -500,11 +502,30 @@ def outcome_fixture() -> dict[str, Any]:
     return {"table": table, "refused": refused}
 
 
+def _phone_settings(schema: dict[str, Any]) -> type[Settings]:
+    """The desktop's settings with the phone's own caps on the engine (`sync_settings.py`: more
+    workers, or more hash each, than a phone holds), so a save is refused as the phone's schema
+    refuses it."""
+    engine = schema["$defs"][schema["properties"]["engine"]["$ref"].rsplit("/", 1)[-1]]["properties"]
+    pool, memory = engine["workers"], engine["hash_mb"]
+
+    # Named as the desktop's: pydantic says a class's name in what it refuses.
+    class EngineSettings(DesktopEngine):
+        workers: int = Field(default=pool["default"], ge=pool["minimum"], le=pool["maximum"])
+        hash_mb: int = Field(default=memory["default"], ge=memory["minimum"], le=memory["maximum"])
+
+    class Settings(DesktopSettings):
+        engine: EngineSettings = Field(default_factory=EngineSettings)
+
+    return Settings
+
+
 def settings_fixture() -> list[dict[str, Any]]:
     """What a save that does not fit is told, field by field; and what one that fits is saved
     as. Only fields the phone's page shows are changed: the phone checks against its schema."""
     base = json.loads(PHONE_DEFAULTS.read_text(encoding="utf-8"))
     schema = json.loads(PHONE_SCHEMA.read_text(encoding="utf-8"))
+    phone = _phone_settings(schema)
     shown = {
         section: set(schema["$defs"][prop["$ref"].rsplit("/", 1)[-1]]["properties"])
         for section, prop in schema["properties"].items()
@@ -540,6 +561,8 @@ def settings_fixture() -> list[dict[str, Any]]:
         ("workers true", {"engine.workers": True}),
         ("workers hex", {"engine.workers": "0x1"}),
         ("workers padded", {"engine.workers": " 2 "}),
+        ("workers over the phone's", {"engine.workers": 5}),
+        ("hash over the phone's", {"engine.hash_mb": 1024}),
         ("quiet yes", {"coach.quiet": "yes"}),
         ("quiet OFF", {"coach.quiet": "OFF"}),
         ("quiet maybe", {"coach.quiet": "maybe"}),
@@ -595,7 +618,7 @@ def settings_fixture() -> list[dict[str, Any]]:
             else:
                 body[dotted] = value
         try:
-            new = Settings.model_validate(body)
+            new = phone.model_validate(body)
         except ValidationError as exc:
             out.append(
                 {

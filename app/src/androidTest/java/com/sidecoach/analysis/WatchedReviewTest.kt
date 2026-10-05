@@ -7,6 +7,7 @@ import com.sidecoach.chess.PgnReader
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ReviewJson
+import com.sidecoach.events.ReviewedGame
 import com.sidecoach.profile.Store
 import com.sidecoach.vision.Pieces
 import org.json.JSONObject
@@ -58,5 +59,9 @@ class WatchedReviewTest {
         val reviewed = GameReview.reviewGame(game!!, listOf(reviewEngine), depth = 18, multipv = 6, thresholds = Thresholds(), known = known)
         assertEquals(3, reviewed.moves.size)
         assertEquals("the review searched what the game had measured", emptyList<String>(), reviewEngine.calls.toList())
+        val fresh = GameReview.reviewGame(game!!, listOf(ScriptEngine()), depth = 18, multipv = 6, thresholds = Thresholds())
+        fun verdicts(review: ReviewedGame) =
+            review.moves.map { Triple(it.assessment.uci, it.assessment.label, it.assessment.expectedLoss) }
+        assertEquals("the kept positions are the review's own", verdicts(fresh), verdicts(reviewed))
     }
 }

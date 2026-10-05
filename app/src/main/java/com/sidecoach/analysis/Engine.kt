@@ -12,6 +12,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
 import java.io.Writer
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -43,10 +44,10 @@ open class Engine(
     private val net: File?,
     var threads: Int = 2,
     var hashMb: Int = 64,
-    var multipv: Int = 6,
-    var pvPlies: Int = DEFAULT_PV_PLIES,
+    @Volatile var multipv: Int = 6,
+    @Volatile var pvPlies: Int = DEFAULT_PV_PLIES,
     /** How a line's score becomes an expected score; see [expectedScore]. */
-    var scoreModel: String = DEFAULT_SCORE_MODEL,
+    @Volatile var scoreModel: String = DEFAULT_SCORE_MODEL,
     // A depth asked for is a depth reached: no time cap cuts a search short. A cap of five
     // seconds answered 63 of 1,642 searches of a session below the depth asked, some at depth
     // 11, and they were read as the full depth (the engine audit, 2026-10-04; Tai: no lower
@@ -109,14 +110,14 @@ open class Engine(
      * separate process, so the app's /proc/self/stat does not count it and a profile that
      * reads only that one sees the vision and none of the search.
      */
-    open fun cpuMs(): Long {
-        val pid = enginePid ?: return 0
+    open fun cpuMs(): Long? {
+        val pid = enginePid ?: return null
         return try {
             val stat = File("/proc/$pid/stat").readText()
             val after = stat.substring(stat.lastIndexOf(')') + 2).split(" ")
             (after[11].toLong() + after[12].toLong()) * 10
         } catch (exc: Exception) {
-            0
+            null // not readable: the watchdog takes the search as working (`Engine._cpu`)
         }
     }
 
@@ -134,8 +135,15 @@ open class Engine(
     @Volatile
     private var closedByOwner = false
 
+    /**
+     * Taken to set [process] or [closedByOwner], never across a search or a process's start: a
+     * process started as the engine closes is ended, not kept by a closed engine for good.
+     * `Engine._life`.
+     */
+    private val life = Any()
+
     open fun open() {
-        closedByOwner = false
+        synchronized(life) { closedByOwner = false }
         start()
     }
 
@@ -148,38 +156,64 @@ open class Engine(
         } catch (exc: IOException) {
             throw EngineUnavailable("cannot start $binary: $exc")
         }
-        process = started
         enginePid = processId(started)
         writer = started.outputStream.bufferedWriter()
         reader = BufferedReader(InputStreamReader(started.inputStream))
         options.clear()
         config.clear()
         firstGame = true
-        send("uci")
-        readUntil("uciok") { line ->
-            if (line.startsWith("option name ")) {
-                val option = parseOption(line)
-                options.add(option.first)
-                option.second?.let { config[option.first] = it }
-            } else if (line.startsWith("id name ")) {
-                name = line.removePrefix("id name ").trim()
+        try {
+            send("uci")
+            readUntil("uciok") { line ->
+                if (line.startsWith("option name ")) {
+                    val option = parseOption(line)
+                    options.add(option.first)
+                    option.second?.let { config[option.first] = it }
+                } else if (line.startsWith("id name ")) {
+                    name = line.removePrefix("id name ").trim()
+                }
             }
+            // The network first: without it the engine answers `isready` and then dies on the
+            // first search.
+            if (net != null && "EvalFile" in options) {
+                setOption("EvalFile", net.absolutePath)
+            }
+            if ("Threads" in options) configure("Threads", threads.toString())
+            if ("Hash" in options) configure("Hash", hashMb.toString())
+            // Real win-draw-loss numbers beat a model fitted to centipawns; ask for them when the
+            // engine has them, and fall back to python-chess's model when it does not ([line]).
+            if ("UCI_ShowWDL" in options) configure("UCI_ShowWDL", "true")
+            send("isready")
+            readUntil("readyok") {}
+        } catch (exc: Throwable) {
+            unstarted(started) // a handshake that failed leaves no process behind
+            throw exc
         }
-        // The network first: without it the engine answers `isready` and then dies on the
-        // first search.
-        if (net != null && "EvalFile" in options) {
-            setOption("EvalFile", net.absolutePath)
+        // Published once ready, as python-chess's `popen_uci` hands back an engine: a close
+        // during the handshake finds nothing to close and returns at once.
+        val closed = synchronized(life) {
+            if (!closedByOwner) process = started
+            closedByOwner
         }
-        if ("Threads" in options) configure("Threads", threads.toString())
-        if ("Hash" in options) configure("Hash", hashMb.toString())
-        // Real win-draw-loss numbers beat a model fitted to centipawns; ask for them when the
-        // engine has them, and fall back to python-chess's model when it does not ([line]).
-        if ("UCI_ShowWDL" in options) configure("UCI_ShowWDL", "true")
-        send("isready")
-        readUntil("readyok") {}
+        if (closed) {
+            // Closed while it started (the room let go as a crashed engine restarted): no one
+            // would ever end it.
+            unstarted(started)
+            throw EngineUnavailable("the engine was closed")
+        }
         Log.i(TAG, "$name ready: ${threads} threads, ${hashMb} MB, net ${net?.name ?: "embedded"}")
         // An engine started while the voice holds the old one paused (a restart) waits too.
         synchronized(clock) { if (paused) signal(SIGSTOP) }
+    }
+
+    /** A process [start] began and will not keep: ended, and what it set of it let go. */
+    private fun unstarted(started: Process) {
+        runCatching { started.destroyForcibly() }
+        synchronized(clock) { enginePid = null }
+        runCatching { writer?.close() }
+        runCatching { reader?.close() }
+        writer = null
+        reader = null
     }
 
     /** Threads or hash saved while a search ran: set on the process before the next search. */
@@ -217,13 +251,17 @@ open class Engine(
     }
 
     override fun close() {
-        closedByOwner = true
+        synchronized(life) { closedByOwner = true }
         drop()
     }
 
-    /** The process gone (a crash's restart starts another; [close] does not). */
+    /**
+     * The process gone (a crash's restart starts another; [close] does not): asked to quit, and
+     * killed if it has not within [QUIT_WAIT_MS] -- a process wedged without reading its input
+     * would otherwise hold its closer for good, and outlive the app.
+     */
     private fun drop() {
-        val current = process ?: return
+        val current = synchronized(life) { process.also { process = null } } ?: return
         // A stopped process reads nothing, `quit` included: it is let go on first.
         synchronized(clock) {
             if (paused) signal(SIGCONT)
@@ -231,9 +269,9 @@ open class Engine(
             watching = false
             clock.notifyAll()
         }
-        process = null
         runCatching { send("quit") }  // a dead engine needs no goodbye
-        runCatching { current.waitFor() }
+        val quit = runCatching { current.waitFor(QUIT_WAIT_MS, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+        if (!quit) runCatching { current.destroyForcibly() }
         runCatching { writer?.close() }
         runCatching { reader?.close() }
         runCatching { current.destroy() }
@@ -249,6 +287,16 @@ open class Engine(
      */
     private val clock = Object()
     private var paused = false
+
+    /** How long the voice has held the engine paused, all told, and since when it is now. */
+    private var pausedTotal = 0L
+    private var pausedSince = 0L
+
+    /**
+     * How long the voice has held the engine paused since it was made, the pause under way
+     * counted: a wait on its searches leaves it out ([Analyser.request]).
+     */
+    fun pausedMs(): Long = synchronized(clock) { pausedTotal + if (paused) now() - pausedSince else 0L }
 
     /** Whether a search is watched ([arm]): its time limit kept, if it has one, and its silence. */
     private var watching = false
@@ -272,9 +320,24 @@ open class Engine(
     /** The time the watched search has run, its pauses not counted. Under [clock]. */
     private fun ranNow(): Long = ranMs + if (runningSince != 0L) now() - runningSince else 0L
 
-    /** The engine said something: talking, not hung ([watch]). `_heard`; a test counts them. */
+    /**
+     * How long the search under way has run, the voice's pauses not counted (0 with none): the
+     * analyser's decided rule is timed on it ([Analyser], `DECIDED_AFTER_MS`).
+     */
+    open fun searchRanMs(): Long = synchronized(clock) { if (watching) ranNow() else 0L }
+
+    /**
+     * The engine said something: talking, not hung ([watch]). `_heard`; a test counts them. The
+     * processor time is read again at most once a second of talk: a silence is judged by the
+     * work done since the engine last spoke, not since its search began (judged from the start,
+     * a hung engine was ended a whole patience late).
+     */
     protected open fun heard() {
-        synchronized(clock) { heardMs = ranNow() }
+        synchronized(clock) {
+            val ran = ranNow()
+            if (ran - heardMs >= 1000) cpuAtCheck = cpuMs() ?: cpuAtCheck
+            heardMs = ran
+        }
     }
 
     /**
@@ -289,6 +352,7 @@ open class Engine(
         synchronized(clock) {
             if (paused) return
             paused = true
+            pausedSince = now()
             if (runningSince != 0L) {
                 ranMs += now() - runningSince
                 runningSince = 0
@@ -303,6 +367,7 @@ open class Engine(
         synchronized(clock) {
             if (!paused) return
             paused = false
+            pausedTotal += now() - pausedSince
             signal(SIGCONT)
             if (watching) runningSince = now()
             clock.notifyAll()
@@ -324,7 +389,7 @@ open class Engine(
             budgetMs = ms ?: 0
             ranMs = 0
             heardMs = 0
-            cpuAtCheck = cpuMs()
+            cpuAtCheck = cpuMs() ?: cpuAtCheck
             runningSince = if (paused) 0 else now()
             ++searchNumber
         }
@@ -370,8 +435,9 @@ open class Engine(
                     // most of a search without a word (a real position went 48 s at depth 18
                     // on the desktop, still searching: the engine audit, 2026-10-04).
                     val spent = cpuMs()
-                    if (spent - cpuAtCheck >= (watchdogS * 1000 / 10).toLong()) {
-                        cpuAtCheck = spent
+                    // Unreadable, the processor time counts as work: never an end on a guess.
+                    if (spent == null || spent - cpuAtCheck >= (watchdogS * 1000 / 10).toLong()) {
+                        if (spent != null) cpuAtCheck = spent
                         heardMs = ran // working in silence: watched afresh from here
                         continue
                     }
@@ -389,7 +455,14 @@ open class Engine(
                     }
                     wait = minOf(wait, left)
                 }
+                val waited = now()
                 clock.wait(maxOf(1L, wait))
+                if (now() - waited > wait + (watchdogS * 1000).toLong()) {
+                    // Woken a whole patience late: the app was frozen or the phone asleep, the
+                    // engine with it. That silence is no hang: watched afresh from here.
+                    heardMs = ranNow()
+                    cpuAtCheck = cpuMs() ?: cpuAtCheck
+                }
             }
         }
     }
@@ -753,6 +826,9 @@ open class Engine(
 
     companion object {
         private const val TAG = "sidecoach.engine"
+
+        /** How long a quitting engine is waited for before it is killed: python-chess's own wait on `quit`. */
+        const val QUIT_WAIT_MS = 10_000L
 
         /** A principal variation can run thirty plies; nobody reads that far. */
         const val DEFAULT_PV_PLIES = 12
