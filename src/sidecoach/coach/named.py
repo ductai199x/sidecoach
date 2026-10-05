@@ -25,6 +25,7 @@ from typing import Protocol
 import chess
 
 from sidecoach.analysis import exchange
+from sidecoach.analysis.annotator import at_full_depth
 from sidecoach.analysis.computed import rest_of_line
 from sidecoach.analysis.engine import san_line
 from sidecoach.coach.effects import effects_text
@@ -548,11 +549,12 @@ def analyse_named(
         return []
     out: list[str] = []
     best: Line | None = None
+    # The lines shown are read -- for the best, and for a move one of them begins -- only when
+    # they are the full depth's: the first answer's hint set against a full-depth best or reply
+    # reads a move as better or worse by what the depths differ by (`at_full_depth`).
+    known = known if at_full_depth(known) else ()
     if engine is not None and any(p.square is None for p in probes):
-        # The lines shown when they are the full depth's (`EngineTools._rating`); else the
-        # best line alone, the only one read.
-        full = bool(known) and min(line.depth for line in known) >= depth
-        before = list(known) if full else engine.analyse(board, depth=depth, best_only=True)
+        before = list(known) or engine.analyse(board, depth=depth, best_only=True)
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:

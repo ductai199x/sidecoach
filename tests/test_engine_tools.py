@@ -11,7 +11,7 @@ import chess
 
 from sidecoach.coach.coach import Coach
 from sidecoach.coach.engine_tools import TOOL_ROUNDS, TOOL_WORDS, EngineTools
-from sidecoach.events import Line
+from sidecoach.events import DisclosureLevel, Line
 from sidecoach.llm.base import ChatMessage, Completion, ToolCall
 from tests.coaching import _policy, drain, mate_analysis, play_to_scholar
 
@@ -148,6 +148,30 @@ def test_a_first_answer_shown_is_not_set_against_the_full_depth() -> None:
     tools = EngineTools(chess.Board(), None, engine, chess.WHITE, known_now=known, depth=18)
     tools.run("analyse", {"moves": ["a3"]})
     assert engine.depths[-2:] == [18, 18], engine.depths
+
+
+def test_a_move_on_the_first_answers_lines_is_not_read_from_them_against_the_full_depth() -> None:
+    """The sheet still on the first answer (the hint's lines at EARLY_DEPTH): a move one of them
+    begins is searched, not read from that line, and set against the full depth's best -- read
+    from the line, it was "0.54, better than the engine's first line" for a move the full depth
+    puts behind (the audit of 2026-10-05, round 3)."""
+    from sidecoach.coach.named import analyse_named
+
+    engine = _Asked()
+    known = [
+        Line(moves=["e2e4"], depth=12, expected_score=0.55),
+        Line(moves=["d2d4"], depth=12, expected_score=0.54),
+    ]
+    out = analyse_named(
+        "what if I play 1. d4 instead?",
+        chess.Board(),
+        engine,
+        user_colour=chess.WHITE,
+        level=DisclosureLevel.LINE,
+        known=known,
+    )
+    assert out and "better than the engine's first line" not in out[0], out
+    assert engine.best_only == [True, True], "the best and the move's reply, each one line"
 
 
 class ToolModel:

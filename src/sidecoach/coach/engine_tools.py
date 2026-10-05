@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 import chess
 
+from sidecoach.analysis.annotator import at_full_depth
 from sidecoach.analysis.computed import rest_of_line
 from sidecoach.analysis.engine import san_line
 from sidecoach.analysis.score import game_over
@@ -309,8 +310,7 @@ class EngineTools:
         # The lines shown, when they are the full depth's: the first answer (the hint's, at
         # EARLY_DEPTH) set against a reply searched to the full depth reads a move as good as
         # the best as worse by what the depths differ by (the audit of 2026-10-05, round 2).
-        full = bool(known) and min(line.depth for line in known) >= self.depth
-        best = list(known) if full else self.engine.analyse(start, depth=self.depth)
+        best = list(known) if at_full_depth(known) else self.engine.analyse(start, depth=self.depth)
         if not best:
             return ""
         after = start.copy()

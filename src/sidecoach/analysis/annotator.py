@@ -59,6 +59,13 @@ from sidecoach.events import Analysis, Line, MotifTag, MoveAssessment
 EARLY_DEPTH = 12
 
 
+def at_full_depth(lines: Sequence[Line]) -> bool:
+    """Lines a reader may set against a full-depth search: none of them the first answer's
+    hint, at EARLY_DEPTH (the audits of 2026-10-05: the hint's 12 set against a reply searched
+    to 18 read a move as good as the best as worse, or better, by what the depths differ by)."""
+    return bool(lines) and min(line.depth for line in lines) > EARLY_DEPTH
+
+
 class Tagger(Protocol):
     """What `sidecoach.analysis.motifs` provides; a module satisfies this."""
 
