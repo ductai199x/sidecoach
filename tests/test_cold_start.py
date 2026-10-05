@@ -29,7 +29,7 @@ from sidecoach.state.pipeline import COLD_NOTICE_S, GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
 from tests.games import sans_of
-from tests.synth import GEOM, synthetic_board
+from tests.synth import GEOM, PieceStyle, synthetic_board
 
 pytestmark = pytest.mark.vision
 
@@ -104,6 +104,59 @@ def test_cold_start_reads_a_rendered_mid_game_board(tmp_path: Path, bottom: Side
     assert board.is_valid()
     # Every one of the 64 squares: a single misread piece would poison the analysis.
     assert not _squares_off(board, truth), f"cold read off on {_squares_off(board, truth)}"
+
+
+def test_a_start_position_drawn_otherwise_never_replaces_the_set_learned(tmp_path: Path) -> None:
+    """Tai's desktop, 2026-10-05: chess.com's puzzles page shows small start positions whose
+    pieces sit larger and lower in their squares. His set read them as the start, so the set
+    learned from them was saved over his -- and on every real board after, each piece read
+    as one in flight: no puzzle adopted, through five restarts. A look drawn otherwise is kept
+    beside the set learned, never over it; the board's own start shown again saves nothing;
+    and the puzzle that follows is read cold with the set that reads it."""
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    learned = _theme_files(cache)
+    again = GamePipeline(cache=cache)
+    for i in range(3):
+        again.process(synthetic_board(theme="green", coordinates=True), 0.1 * i)
+    assert again.model is not None and _theme_files(cache) == learned, "the same look saved again"
+    landing = PieceStyle(scale=1.12, drop=0.08)
+    page = GamePipeline(cache=cache)
+    for i in range(3):
+        page.process(synthetic_board(theme="green", coordinates=True, style=landing), 0.1 * i)
+    assert page.model is not None, "the page's start position not learned"
+    kept = _theme_files(cache)
+    assert {name: kept[name] for name in learned} == learned, "the set learned was replaced"
+    assert len(kept) == len(learned) + 1, "the page's look not kept beside"
+    truth = chess.Board(MIDGAME)
+    puzzle = synthetic_board(board=truth, theme="green", bottom=Side.BLACK, coordinates=True)
+    cold = GamePipeline(cache=cache)
+    assert any(isinstance(e, GameStarted) for e in cold.cold_start(puzzle, GEOM)), "unread"
+    assert cold.reconciler is not None and not _squares_off(cold.reconciler.board, truth)
+
+
+@pytest.mark.parametrize("shift", [4, 10])
+def test_a_start_shown_on_a_board_that_just_moved_is_learned_where_the_board_is(
+    tmp_path: Path, shift: int
+) -> None:
+    """Tai's desktop, 2026-10-05: chess.com's puzzles page slid its board 10 px as it finished
+    its layout, the lock (re-fitted only every few ticks) stayed where the board had been, and
+    the start position on it was learned there: every piece of every later board read a tenth
+    of a cell off its learned place, in flight, and no puzzle was adopted. The start is
+    learned once the lock sits on the board, a tick later."""
+    puzzle = chess.Board(MIDGAME)
+    pipe = GamePipeline(cache=ThemeCache(tmp_path))
+    for i in range(3):
+        pipe.process(synthetic_board(board=puzzle, theme="green", coordinates=True), 0.1 * i)
+    assert pipe.board is not None and pipe.bootstraps == 0, "locked, nothing learned yet"
+    moved = synthetic_board(theme="green", coordinates=True, x0=GEOM.region.x - shift)
+    for i in range(3, 7):
+        pipe.process(moved, 0.1 * i)
+    assert pipe.model is not None, "the start never learned"
+    assert pipe.board is not None and pipe.board.region.x == GEOM.region.x - shift
+    readings = pipe.model.classify_frame(synthetic_board(theme="green", coordinates=True), GEOM)
+    flying = [c for row in readings for c in row if c.kind == "piece" and not c.settled]
+    assert not flying, f"{len(flying)} pieces read off their learned places"
 
 
 @pytest.mark.parametrize("theme", ["green", "brown"])

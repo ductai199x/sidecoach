@@ -193,6 +193,12 @@ class BoardTracker:
         """Whether the last frame validated the lock; False while the lock is only held."""
         return self.board is not None and self.misses == 0
 
+    def refit_next(self) -> None:
+        """The lock re-fitted on the next tick, changed or not: a caller found the board off
+        the lock (`pipeline._lock_off_board`) and waits on it."""
+        self._frames_since_refine = self.refine_every
+        self._refit_settled = False
+
     def _passes(self, fit: float, contrast: float) -> bool:
         return fit >= self.min_fit and contrast >= self.min_contrast
 

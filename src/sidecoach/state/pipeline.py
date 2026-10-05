@@ -220,6 +220,21 @@ def _on_its_board(frame: np.ndarray, board: BoardCandidate, tracker: BoardTracke
     return refit.fit >= tracker.min_fit and shift <= tracker.refit_deadband_px
 
 
+def _lock_off_board(frame: np.ndarray, board: BoardCandidate, tracker: BoardTracker) -> bool:
+    """Whether a re-fit on this frame finds the board, validating, more than the tracker's
+    deadband from the lock: a lock that trails a board just moved. A re-fit that does not
+    validate says nothing against the lock (a badge, a cover): it stands."""
+    gray = tracker.gray
+    refit = refine(to_gray(frame) if gray is None else gray, board).board
+    shift = max(
+        abs(refit.region.x - board.region.x),
+        abs(refit.region.y - board.region.y),
+        abs(refit.region.x + refit.region.w - board.region.x - board.region.w),
+        abs(refit.region.y + refit.region.h - board.region.y - board.region.h),
+    )
+    return refit.fit >= tracker.min_fit and shift > tracker.refit_deadband_px
+
+
 def _plausible_ms(ms: int | None) -> int | None:
     return ms if ms is not None and 0 <= ms <= CLOCK_MAX_MS else None
 
@@ -984,6 +999,15 @@ class GamePipeline:
         return self._start_on_screen and 0 < self._start_seen < self.start_frames_needed
 
     def _rebuild_model(self, frame: np.ndarray, geometry: BoardGeometry) -> bool:
+        if self.board is not None and _lock_off_board(frame, self.board, self.tracker):
+            # The board moved under the lock -- a page finishing its layout slid it 10 px on
+            # Tai's desktop (2026-10-05) -- and the lock is re-fitted only every few ticks: a
+            # set learned now is learned on squares cut beside the board, every piece of every
+            # later board a tenth of a cell off its learned place, read as one in flight. The
+            # lock is re-fitted on the next tick, and the start learned once it sits on the
+            # board.
+            self.tracker.refit_next()
+            return False
         bottom = orientation_from_start(frame, geometry)
         model = ThemeModel.from_start_position(frame, geometry, bottom)
         self._start_seen = 0
@@ -1000,7 +1024,7 @@ class GamePipeline:
             self.reconciler.bottom = bottom
             self.reconciler.user_side = bottom
         self.bootstraps += 1
-        self._keep_look(model, frame, geometry, bottom, chess.Board())
+        self.model = self._keep_look(model, frame, geometry, bottom, chess.Board())
         return True
 
     def _keep_look(
@@ -1010,18 +1034,29 @@ class GamePipeline:
         geometry: BoardGeometry,
         bottom: Side,
         position: chess.Board,
-    ) -> None:
-        """A look just learned from `frame` showing `position`, cached: replacing the set it
-        is learned again (`_learned_set`), else beside the others. Last, and never in the way:
-        an exception here -- a damaged set among the cached ones, a full disk -- left the
-        rebuild half done (round 2, finding 9)."""
+    ) -> ThemeModel:
+        """A look just learned from `frame` showing `position`: the set to read with. A cached
+        set that reads the frame as `position`, every piece at rest, is this look already
+        (`_learned_set`): it is read with, and nothing is saved. Any other look is saved
+        beside the cached sets -- never over one. Replacing the set that read the board left
+        Tai with none (2026-10-05): chess.com's puzzles page shows small start positions whose
+        pieces sit lower and larger in their squares; his set read them, so the set learned
+        from them was saved over it, and on every real board after it each piece read as one
+        in flight -- no puzzle adopted, through five restarts. Last, and never in the way: an
+        exception here -- a damaged set among the cached ones, a full disk -- left the rebuild
+        half done (round 2, finding 9)."""
         if self.cache is None:
-            return
+            return model
         try:
-            key = self._learned_set(model, frame, geometry, bottom, position)
-            self.cache.save(model, key=key)
+            cached = self._learned_set(model, frame, geometry, bottom, position)
+            if cached is not None:
+                if not cached.rank_labels:
+                    cached.rank_labels = model.rank_labels
+                return cached
+            self.cache.save(model)
         except Exception:  # noqa: BLE001 - the theme simply goes unkept
             log.warning("the learned theme was not cached", exc_info=True)
+        return model
 
     def _relearn_look(self, frame: np.ndarray, geometry: BoardGeometry, ts: float) -> list[Event]:
         """A board whose look changed mid-game: read on with a whole learned set that reads
@@ -1168,23 +1203,24 @@ class GamePipeline:
         geometry: BoardGeometry,
         bottom: Side,
         position: chess.Board | None = None,
-    ) -> str | None:
-        """The cached set this frame shows again -- the same pieces on the same board,
-        learned before -- or None for a set not seen yet. Each set cached on these board
-        colours reads the frame; one that reads it as `position` (the start position by
-        default) is this set, and the new model replaces it rather than standing beside it
-        -- unless it knows a kind the new one does not: a look learned mid-game lacks the
-        kinds its position has lost, and replacing the whole set with it left a puzzle with
-        a queen unread (round 3 audit, E11)."""
+    ) -> ThemeModel | None:
+        """The cached set this frame shows again -- the same pieces drawn the same way on the
+        same board, learned before -- or None for a look not seen yet. Each set cached on
+        these board colours reads the frame; one that reads it as `position` (the start
+        position by default) quiet and whole, every piece of its kind and at rest where that
+        set's pieces rest, is this look. Pieces drawn otherwise -- the same set larger, or
+        lower in their squares -- read as their kinds but off their resting places: another
+        look, kept beside (`_keep_look`)."""
         assert self.cache is not None
         if model.light_bg is None or model.dark_bg is None:
             return None
-        kinds = set(model.exemplar_labels)
-        for key, cached in self.cache.candidates(model.light_bg, model.dark_bg):
-            if not set(cached.exemplar_labels) <= kinds:
-                continue
-            if self._reads_as(cached.classify_frame(frame, geometry), position, bottom):
-                return key
+        start = chess.Board() if position is None else position
+        for _key, cached in self.cache.candidates(model.light_bg, model.dark_bg):
+            placement = self._placement_from_readings(
+                cached.classify_frame(frame, geometry), bottom
+            )
+            if placement is not None and placement.board_fen() == start.board_fen():
+                return cached
         return None
 
     def _cold_read(

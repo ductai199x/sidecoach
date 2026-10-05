@@ -76,6 +76,9 @@ class PieceStyle:
     real: bool = False
     colouring: tuple[tuple[str, str], ...] = ()
     sheet: str = ""  # a set from tests/fixtures/pieces, drawn instead of the vectors
+    # How far below the square's centre the pieces rest, as a share of the cell: chess.com's
+    # puzzles page draws its small start positions' pieces larger and lower than its boards.
+    drop: float = 0.0
 
 
 PIECE_STYLES: dict[str, PieceStyle] = {
@@ -176,6 +179,7 @@ def draw_piece(
     symbol: str,
     style: PieceStyle = PIECE_STYLES["classic"],
 ) -> None:
+    cy += int(round(cell * style.drop))
     if style.real:
         size = max(1, int(round(cell * style.scale)))
         draw_sprite(
@@ -986,7 +990,7 @@ def synthetic_board(
     arrows: tuple[chess.Move, ...] = (),
     badge: tuple[chess.Square, str] | None = None,
     coordinates: bool = False,
-    style: str = "classic",
+    style: str | PieceStyle = "classic",
     highlight_colour: str = "yellow",
     arrow_colour: str = "orange",
     arrow_width: float = 0.2,
@@ -1020,7 +1024,7 @@ def synthetic_board(
         "arrows": arrows,
         "badge": badge,
         "coordinates": coordinates,
-        "style": PIECE_STYLES[style],
+        "style": PIECE_STYLES[style] if isinstance(style, str) else style,
         "highlight_colour": HIGHLIGHTS[highlight_colour],
         "arrow_colour": ARROWS[arrow_colour],
         "arrow_width": arrow_width,
