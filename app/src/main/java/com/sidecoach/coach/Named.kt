@@ -1,6 +1,7 @@
 package com.sidecoach.coach
 
 import com.sidecoach.analysis.Exchange
+import com.sidecoach.analysis.atFullDepth
 import com.sidecoach.analysis.restOfLine
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BB_EMPTY
@@ -559,11 +560,12 @@ fun analyseNamed(
     if (probes.isEmpty()) return emptyList()
     val out = ArrayList<String>()
     var best: Line? = null
+    // The lines shown are read -- for the best, and for a move one of them begins -- only when
+    // they are the full depth's: the first answer's hint set against a full-depth best or reply
+    // reads a move as better or worse by what the depths differ by ([atFullDepth]).
+    val shown = if (atFullDepth(known)) known else emptyList()
     if (engine != null && probes.any { it.square == null }) {
-        // The lines shown when they are the full depth's ([EngineTools.rating]); else the best
-        // line alone, the only one read.
-        val full = known.isNotEmpty() && known.minOf { it.depth } >= depth
-        val before = if (full) known.toList() else engine.best(board, depth)
+        val before = shown.toList().ifEmpty { engine.best(board, depth) }
         best = before.firstOrNull()
     }
     for (p in probes) {
@@ -573,7 +575,7 @@ fun analyseNamed(
             // the player's bishop on b5 (the students' round 6).
             p.square != null -> out.add(examinePiece(p, piecesBoard ?: board, userColour))
             engine == null -> out.add(examineStatic(p, board))
-            else -> out.add(examine(p, board, engine, best, userColour, level, depth, known = known))
+            else -> out.add(examine(p, board, engine, best, userColour, level, depth, known = shown))
         }
     }
     return out

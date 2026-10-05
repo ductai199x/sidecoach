@@ -2,6 +2,7 @@ package com.sidecoach.coach
 
 import com.sidecoach.analysis.PIECE_NAMES
 import com.sidecoach.analysis.gameOver
+import com.sidecoach.analysis.atFullDepth
 import com.sidecoach.analysis.restOfLine
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.chess.BB_EMPTY
@@ -298,8 +299,7 @@ class EngineTools(
         // The lines shown, when they are the full depth's: the first answer (the hint's, at
         // EARLY_DEPTH) set against a reply searched to the full depth reads a move as good as
         // the best as worse by what the depths differ by (the audit of 2026-10-05, round 2).
-        val full = known.isNotEmpty() && known.minOf { it.depth } >= depth
-        val best = if (full) known.toList() else engine.analyse(start, depth)
+        val best = if (atFullDepth(known)) known.toList() else engine.analyse(start, depth)
         if (best.isEmpty()) return ""
         val after = start.copy()
         after.push(first)

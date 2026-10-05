@@ -2,6 +2,7 @@ package com.sidecoach.coach
 
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.WHITE
+import com.sidecoach.events.DisclosureLevel
 import com.sidecoach.events.Line
 import org.json.JSONArray
 import org.json.JSONObject
@@ -140,6 +141,24 @@ class EngineToolsTest {
         val tools = EngineTools(Board(), null, engine, WHITE, knownNow = known, depth = 18)
         tools.run("analyse", JSONObject().put("moves", JSONArray(listOf("a3"))))
         assertEquals("${engine.depths}", listOf<Int?>(18, 18), engine.depths.takeLast(2))
+    }
+
+    /**
+     * `test_a_move_on_the_first_answers_lines_is_not_read_from_them_against_the_full_depth`: the
+     * sheet still on the first answer (the hint's lines at EARLY_DEPTH): a move one of them begins
+     * is searched, not read from that line, and set against the full depth's best (the audit of
+     * 2026-10-05, round 3).
+     */
+    @Test
+    fun aMoveOnTheFirstAnswersLinesIsNotReadFromThemAgainstTheFullDepth() {
+        val engine = Asked()
+        val known = listOf(
+            Line(moves = listOf("e2e4"), depth = 12, expectedScore = 0.55),
+            Line(moves = listOf("d2d4"), depth = 12, expectedScore = 0.54),
+        )
+        val out = analyseNamed("what if I play 1. d4 instead?", Board(), engine, userColour = WHITE, level = DisclosureLevel.LINE, known = known)
+        assertTrue("$out", out.isNotEmpty() && "better than the engine's first line" !in out[0])
+        assertEquals("the best and the move's reply, each one line", listOf(true, true), engine.bestOnly)
     }
 
     private fun lines(array: JSONArray): List<Line> = (0 until array.length()).map { i ->

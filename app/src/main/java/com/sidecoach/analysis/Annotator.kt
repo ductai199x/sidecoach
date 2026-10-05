@@ -54,6 +54,13 @@ interface Tagger {
  */
 const val EARLY_DEPTH = 12
 
+/**
+ * Lines a reader may set against a full-depth search: none of them the first answer's hint, at
+ * [EARLY_DEPTH] (the audits of 2026-10-05: the hint's 12 set against a reply searched to 18 read
+ * a move as good as the best as worse, or better, by what the depths differ by). `at_full_depth`.
+ */
+fun atFullDepth(lines: List<Line>): Boolean = lines.isNotEmpty() && lines.minOf { it.depth } > EARLY_DEPTH
+
 /** One position, measured once: its lines and what they mean. */
 class Measured(
     val fen: String,

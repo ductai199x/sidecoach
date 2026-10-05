@@ -65,6 +65,9 @@ const val PHONE_WORKERS = 2
  * in a verdict (the file's docstring).
  */
 const val DECIDED_AFTER_MS = 1000L
+
+/** The soonest the decided rule looks again when the engine's own clock is short of its time. */
+const val DECIDED_RELOOK_MS = 50L
 const val DECIDED_LOW = 0.15
 const val DECIDED_HIGH = 0.85
 
@@ -114,7 +117,18 @@ fun openAnalyser(
         }, "sidecoach-engine-open").apply { isDaemon = true }
     }
     openers.forEach { it.start() }
-    openers.forEach { it.join() }
+    try {
+        openers.forEach { it.join() }
+    } catch (exc: InterruptedException) {
+        // The openers finished first (an `open` re-opens an engine closed before it), then every
+        // engine closed: none is left running with no one to close it.
+        for (opener in openers) {
+            while (opener.isAlive) runCatching { opener.join() }
+        }
+        for (engine in engines) runCatching { engine.close() }
+        Thread.currentThread().interrupt()
+        throw exc
+    }
     if (errors.isNotEmpty()) {
         for (engine in engines) runCatching { engine.close() }
         throw errors[0]
@@ -853,7 +867,10 @@ class Analyser(
                     // The engine's own clock starts at its `go`, after the worker's: it has run
                     // less than the rule's time yet (or the voice paused it). Looked at again
                     // once it has, as the desktop's clock would.
-                    deciding[index] = later(maxOf(1L, DECIDED_AFTER_MS - ran)) { decide(job, index) }
+                    // Never sooner than DECIDED_RELOOK_MS: paused by the voice, the engine's
+                    // clock stands still, and a near-second left would look again every
+                    // millisecond for the whole pause.
+                    deciding[index] = later(maxOf(DECIDED_RELOOK_MS, DECIDED_AFTER_MS - ran)) { decide(job, index) }
                 }
             }
         } catch (exc: Throwable) {
