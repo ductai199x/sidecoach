@@ -132,6 +132,7 @@ class PanelParityTest {
         val speaker = PanelVoice.speaker
         val voicing = PanelVoice.voicing
         val paced = PanelVoice.coach
+        val following = PanelVoice.pace != null
         val profiler = PanelEngine.profiler
         var runner: CoachRunner? = null
         try {
@@ -146,6 +147,10 @@ class PanelParityTest {
             val voice = FakeTts()
             PanelVoice.speaker = voice
             PanelVoice.coach = null // the pace: not a fast game, as the desktop's fresh coach
+            // And a fresh "follow my pace" plan, the desktop's default: the voice is the
+            // process's, and what an earlier test left in it decided these cases.
+            PanelVoice.setVoicePace("simple")
+            PanelVoice.setVoicePace("follow")
             PanelEngine.profiler = null
             if (PanelVoice.muted) PanelVoice.setMuted(false)
             val cases = fixture.getJSONArray("coach_meta")
@@ -178,6 +183,7 @@ class PanelParityTest {
             PanelVoice.speaker = speaker
             PanelVoice.voicing = voicing
             PanelVoice.coach = paced
+            PanelVoice.setVoicePace(if (following) "follow" else "simple")
             PanelEngine.profiler = profiler
             if (saved == null) prefs.edit().remove("json").commit() else prefs.edit().putString("json", saved).commit()
         }
