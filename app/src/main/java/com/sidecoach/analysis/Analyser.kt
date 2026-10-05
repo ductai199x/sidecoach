@@ -43,11 +43,11 @@ import kotlin.concurrent.schedule
  */
 
 /**
- * How many workers search side by side, one thread each: the desktop's four (the scheduling
- * sweep's front, 2026-10-05); the phone's two ([PHONE_WORKERS]), the two cores its one engine of
- * two threads took before.
+ * How many workers search side by side, one thread each: the desktop's three, which answer as
+ * fast as four or six (tools/engine/workers_compare.py); the phone's two ([PHONE_WORKERS]), the
+ * two cores its one engine of two threads took before.
  */
-const val WORKERS = 4
+const val WORKERS = 3
 const val PHONE_WORKERS = 2
 
 /**
