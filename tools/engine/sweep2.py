@@ -124,6 +124,7 @@ class Policy:
     look: int
     reach: float
     order: str = "newest"
+    coach: bool = False  # the AI coach's requests (lessons, questions on either turn)
 
     def name(self) -> str:
         return (
@@ -179,6 +180,11 @@ class Run:
         self.cpu = self.wasted = 0.0
         self.ahead_cpu: dict[str, float] = {}
         self.skipped: set[str] = set()  # candidate positions never measured, left out
+        # The coach's own requests: a lesson's prompt after each user move, a question on the
+        # opponent's turn, a move asked about; each (name, the searches it needs, when asked).
+        self.requests: list[tuple[str, list[tuple[str, list[str]]], float]] = []
+        self.asked: dict[str, list[float]] = {}
+        self.superseded = 0
 
     # -- positions --
 
@@ -233,6 +239,10 @@ class Run:
 
     def step(self, s: Any) -> None:
         was = self.path.get(self.current)
+        # What the coach asked about a moment the game has moved past is not said any more: its
+        # requests are let go (counted), never searched for nothing.
+        self.superseded += len(self.requests)
+        self.requests = []
         self._step(s)
         now = self.path.get(self.current)
         if was is not None and was != now:
@@ -276,6 +286,13 @@ class Run:
                 self.next_verdict = s.ply
             self.current = s.ply
             self.reach(after.key)
+            if s.by_user:
+                # The lesson on the user's move: the position they moved from whole, and the
+                # position after it -- its best line and its threats (the model's prompt).
+                self.ask(
+                    "lesson",
+                    [(before.key, ["1", "m12", "threats"]), (after.key, ["1", "threats"])],
+                )
         elif s.kind == "takeback":
             for p in [p for p in self.path if p > s.ply]:
                 del self.path[p]
@@ -294,10 +311,43 @@ class Run:
                 self.reach(p.key)
 
     def reach(self, key: str) -> None:
-        if self.is_u(self.pos[key].board):
+        board = self.pos[key].board
+        if self.is_u(board):
             self._open_hint[key] = self.now
             self._open_deep[key] = self.now
             self.tell(key)
+            # A move the user (or the model) asks about: the third candidate, its own search.
+            a = self.atoms.get(key)
+            if a and len(a.six) > 2 and a.six[2]["moves"]:
+                move = chess.Move.from_uci(a.six[2]["moves"][0])
+                if move in board.legal_moves:
+                    child = board.copy()
+                    child.push(move)
+                    c = self.node(child)
+                    if c.key in self.atoms or child.is_game_over():
+                        self.ask("question", [(c.key, ["1"])])
+                    else:
+                        self.skipped.add(c.key)
+        elif not board.is_game_over():
+            # A question on the opponent's turn, the moment it begins: the model's prompt
+            # renders the position whole.
+            self.ask("their_turn", [(key, ["1", "m12", "threats"])])
+
+    def ask(self, name: str, needs: list[tuple[str, list[str]]]) -> None:
+        """A prompt or an answer that needs these searches: timed from now until all are in."""
+        if not self.p.coach:
+            return
+        self.requests.append((name, needs, self.now))
+        self.answer()
+
+    def answer(self) -> None:
+        left = []
+        for name, needs, at in self.requests:
+            if all(k in self.pos[key].done for key, kinds in needs for k in kinds):
+                self.asked.setdefault(name, []).append(self.now - at)
+            else:
+                left.append((name, needs, at))
+        self.requests = left
 
     def deep_done(self, key: str) -> bool:
         p = self.pos[key]
@@ -438,13 +488,26 @@ class Run:
                 elif self.best_move(before) != move.uci() and self.pos[after].value_at is None:
                     add(after, False, verdict_only=True)
 
+        def requests() -> None:
+            """The coach's requests, oldest first: each search they need."""
+            for _, needs, _ in self.requests:
+                for key, kinds in needs:
+                    if key not in self.atoms:
+                        continue
+                    p = self.pos[key]
+                    for kind in kinds:
+                        if kind in p.done or (key, kind) in busy or (key, kind) in seen:
+                            continue
+                        seen.add((key, kind))
+                        out.append((key, kind, False))
+
         newest = self.path.get(self.current)
-        if self.p.order == "verdicts":
-            verdicts()
+        # The verdicts first (the word on each move, in order), then the coach's requests, then
+        # the rest of the newest position.
+        verdicts()
+        requests()
         if newest:
             add(newest, False)
-        if self.p.order == "newest":
-            verdicts()
         for ply in sorted(self.path, reverse=True):
             add(self.path[ply], False, verdict_only=self.path[ply] != newest)
         for key, _ in sorted(self.ahead.items(), key=lambda kv: -kv[1]):
@@ -476,6 +539,7 @@ class Run:
         if job.kind == "1" and p.value_at is None:
             p.value_at = self.now
         self.judge()
+        self.answer()
         for key in set(self._open_hint) | set(self._open_deep):
             self.tell(key)
         self.reframe()
@@ -540,6 +604,9 @@ class Run:
             "wall": max(self.now, steps[-1].t - t0, 1e-9),
             "moves": sum(1 for s in steps if s.kind == "move"),
             "skipped": len(self.skipped),
+            "asked": self.asked,
+            "unanswered": len(self.requests),
+            "superseded": self.superseded,
         }
 
 

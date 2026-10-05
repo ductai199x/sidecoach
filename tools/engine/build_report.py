@@ -143,6 +143,28 @@ def puzzles() -> tuple[int, list[tuple[int, int]]]:
     return len(out), rows
 
 
+def coach_rows() -> str:
+    """The AI coach's requests by workload (requests.txt: four workers, the coach on)."""
+    import re
+
+    path = C / "requests.txt"
+    if not path.exists():
+        return "<tr><td>not measured</td></tr>"
+    text = path.read_text(encoding="utf-8").split("== workers 4", 1)[-1]
+    rows: dict[str, dict[str, str]] = {}
+    for line in text.splitlines():
+        m = re.match(r"(\S+(?: \S+)?)\s+(lesson|question|their_turn|verdict)\s+n\s+\d+\s+p50 ([\d.]+) p90 ([\d.]+) max\s+([\d.]+)", line)
+        if m:
+            rows.setdefault(m.group(1), {})[m.group(2)] = f"{m.group(4)} s <span class=\"lede\">(max {m.group(5)})</span>"
+    out = ["<tr><th>workload</th><th>verdict p90</th><th>lesson prompt p90</th><th>question, their turn p90</th><th>move asked about p90</th></tr>"]
+    for kind, r in rows.items():
+        out.append(
+            f"<tr><th>{html.escape(kind)}</th><td>{r.get('verdict', '–')}</td><td>{r.get('lesson', '–')}</td>"
+            f"<td>{r.get('their_turn', '–')}</td><td>{r.get('question', '–')}</td></tr>"
+        )
+    return "".join(out)
+
+
 def fmt(x: float) -> str:
     return f"{x:.2f}"
 
@@ -178,6 +200,7 @@ def build(out: Path) -> None:
         + row("After: one line, depth 14", p["one_rnd"], True)
         + row("After: one line, depth 18", p["one18_rnd"], True),
         front=front_rows(),
+        coach=coach_rows(),
         desk_cpu=f"{d['before']['sum']:.0f} s → {d['one']['sum']:.0f} s",
         n_desk=d["one"]["n"],
         puz_rows=puz_rows or "<tr><td colspan=4>still running</td></tr>",
@@ -243,11 +266,16 @@ code {{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:13px; }}
 <p>With searches this cheap, look-ahead buys a few hundredths of a second and throws away a third of its work: computing on demand is the front.</p>
 <p><b>Deep candidates</b> (each of the six best moves' own one-line search, for the coach's lessons and the review) are not in this table: the simulation lacked measurements for too many of those positions to be trusted. Measured directly instead, on 1,000 real positions, three workers side by side: <span class="key">p50 0.42 s, p90 0.77 s, p99 1.86 s</span>, worst 10.6 s (a decided position); 6% less CPU than one six-line search, which took p50 1.12 s, p99 5.8 s, worst 47 s on the same positions.</p>
 
+<h2>The AI coach's own requests <span class="lede">(desktop, four workers, simulated)</span></h2>
+<p>What the model's prompt needs, on both turns, through the same pool and never a second Stockfish: after each of your moves, the lesson's prompt (the position you moved from, whole; the position after, its best line and threats); on the opponent's turn, a question asked the moment it begins (their position, whole); and a move you or the model ask about (that move's own one-line search). Verdicts go first; a request about a moment the game has moved past is let go — before that rule, bursts piled requests up to 14 s and pushed verdicts back with them.</p>
+<div class="wrap"><table>{coach}</table></div>
+
 <h2>Recommendation</h2>
 <ul>
 <li><b>Verdicts and the best move</b>: one line to depth 18 on both platforms (the phone included: 0.78 s median, against 1.15 s for its old six lines at depth 14). Decided positions over 1 s take the decided score (your call; no larger error than depth 18's own noise).</li>
 <li><b>Hints</b>: six lines to depth 12, at once (desktop never over 1.9 s, phone p90 0.72 s).</li>
 <li><b>The coach's candidates, lessons and the review</b>: each candidate move's own one-line depth-18 search, in parallel — never a multi-line search at depth 18 (the review has the same explosion today).</li>
+<li><b>The AI coach</b>: every engine question it asks (and every move you ask about) goes through the same pool as one-line searches, with priority after the verdicts; the second Stockfish it uses today (three lines at depth 14) goes. Requests the game has moved past are let go.</li>
 <li><b>Workers</b>: 3 to 4 single-thread on the desktop, 2 on the phone; no look-ahead beyond the candidates.</li>
 <li><b>Fixed already</b>: the watchdog (silence <i>and</i> idle CPU), a guard against Git Bash path mangling.</li>
 </ul>
