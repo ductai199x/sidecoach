@@ -82,16 +82,21 @@ class Engine:
     # Work the player is not waiting on (the background review of imported games) yields
     # the processor to everything else: the process runs below normal priority.
     low_priority: bool = False
-    # An engine that says nothing for this long is hung, not thinking: a search reports each
-    # depth it finishes, and every root move it takes up once it has run three seconds. Its
-    # process is ended and the search made again (`_watched`). Silence, not a time limit:
-    # a long search that is still talking is never cut.
+    # An engine that for this long neither says anything nor uses the processor is hung, not
+    # thinking: its process is ended and the search made again (`_watched`). Silence alone is
+    # not enough: a search reports each depth and each root move it takes up, but one root
+    # move can take most of a search -- a real position (three moves, in check) went 48 s
+    # without a word at depth 18, still searching, and was killed (the engine audit,
+    # 2026-10-04). A search still working, however long it takes, is never cut.
     watchdog_s: float = 30.0
     # How the watchdog waits: until the search is done (True) or the patience has run (False).
     # A test drives it without waiting on the clock.
     watchdog_wait: Callable[[threading.Event, float], bool] = field(
         default=lambda done, seconds: done.wait(seconds), repr=False
     )
+    # The engine process's processor time so far, in seconds (None when it cannot be read):
+    # what tells a search working in silence from a hung one. A test gives its own.
+    cpu_seconds: Callable[[], float | None] | None = field(default=None, repr=False)
     _engine: chess.engine.SimpleEngine | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _wdl_from_engine: bool = field(default=False, init=False, repr=False)
@@ -273,19 +278,24 @@ class Engine:
 
     @contextlib.contextmanager
     def _watched(self) -> Iterator[None]:
-        """A search watched: one that reports nothing for a whole `watchdog_s` is an engine
-        that stopped answering without dying -- the search would wait on it for good, and
-        its worker with it -- so its process is ended, and the search is made again on a new
-        one (`_analyse_with_restart`), watched the same way. A search still reporting, however
-        long it takes, is left to finish: the depth asked for is the depth answered."""
+        """A search watched: one that for a whole `watchdog_s` reports nothing and uses
+        (almost) no processor time is an engine that stopped answering without dying -- the
+        search would wait on it for good, and its worker with it -- so its process is ended,
+        and the search is made again on a new one (`_analyse_with_restart`), watched the same
+        way. A search still reporting or still working, however long it takes, is left to
+        finish: the depth asked for is the depth answered."""
         done = threading.Event()
+        # Working: at least a tenth of the patience spent searching.
+        busy = self.watchdog_s / 10
 
         def watch() -> None:
-            heard = self._heard
+            heard, spent = self._heard, self._cpu()
             while not self.watchdog_wait(done, self.watchdog_s):
-                if self._heard == heard:
+                now = self._cpu()
+                working = spent is not None and now is not None and now - spent >= busy
+                if self._heard == heard and not working:
                     self._end_process()
-                heard = self._heard
+                heard, spent = self._heard, now
 
         watcher = threading.Thread(target=watch, name="sidecoach-engine-watchdog", daemon=True)
         watcher.start()
@@ -293,6 +303,21 @@ class Engine:
             yield
         finally:
             done.set()
+
+    def _cpu(self) -> float | None:
+        """The engine process's processor time so far (`cpu_seconds`), or None."""
+        if self.cpu_seconds is not None:
+            return self.cpu_seconds()
+        engine = self._engine
+        if engine is None:
+            return None
+        try:
+            import psutil
+
+            times = psutil.Process(engine.transport.get_pid()).cpu_times()
+        except Exception:  # noqa: BLE001 - gone, or unreadable: silence decides alone
+            return None
+        return times.user + times.system
 
     def _end_process(self) -> None:
         """The engine's process ended from outside, the way a crash ends it."""

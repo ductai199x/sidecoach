@@ -15,6 +15,11 @@ Blocked (exit 2, the reason goes back to Claude):
     Move-Item): moves of data go through a Write'd Python script, copy-verify-then-remove
   - deleting or moving files from an inline `python -c` (rmtree, remove, unlink, rename)
   - format, diskpart, Format-Volume, cipher /w
+  - in Git Bash, an argument Git Bash would rewrite as a path before a Windows program sees
+    it, without MSYS_NO_PATHCONV=1 on the command: an Android path (/sdcard/..., /data/...)
+    became "C:/Program Files/Git/sdcard/..." and the push went nowhere (2026-10-04), and a
+    Windows switch (/PID, /c, /s) becomes a Git path the same way. Tai: "you already
+    catastrophically did it once" (the 2026-09-21 robocopy /MOVE with a mangled path)
   - the WHOLE test suite, desktop or phone (pytest with no test file named; the phone's
     tools/test.ps1 without -Class; connected*AndroidTest or am instrument without a class):
     Tai, 2026-10-01, the third time, "DO NOT RUN THE WHOLE FUCKING TEST SUITE". Not a block
@@ -135,8 +140,45 @@ def full_suite(words: list[str]) -> str | None:
     return None
 
 
-def check(command: str) -> str | None:
+# An argument that starts with one of these is a path on the phone, never on this machine.
+DEVICE_PATH = re.compile(
+    r"(?:^|(?<=[\s\"'=]))/(?:sdcard|storage|data|system|vendor|apex|mnt|odm|product|cache)(?=/|\s|$|[\"'])"
+)
+# Windows programs whose switches start with a slash: Git Bash turns a switch into a path.
+SLASH_SWITCHED = {
+    "cmd", "taskkill", "tasklist", "robocopy", "xcopy", "schtasks", "reg", "sc", "net", "wmic",
+    "icacls", "findstr", "where", "shutdown", "attrib", "msiexec", "certutil",
+}
+MANGLED = (
+    "Git Bash would rewrite {what} as a Windows path before the program sees it (MSYS path "
+    "conversion: /sdcard/x becomes C:/Program Files/Git/sdcard/x, /PID becomes "
+    "C:/Program Files/Git/PID). Put MSYS_NO_PATHCONV=1 on the command (export "
+    "MSYS_NO_PATHCONV=1; ... or MSYS_NO_PATHCONV=1 cmd ...), and give this machine's paths "
+    "as D:/... (they are no longer converted then), or use the PowerShell tool."
+)
+
+
+def mangling(command: str) -> str | None:
+    """The reason a Git Bash command would hand a mangled path to a Windows program, or None."""
+    if "MSYS_NO_PATHCONV=1" in command or "MSYS2_ARG_CONV_EXCL" in command:
+        return None
+    found = DEVICE_PATH.search(command)
+    if found:
+        return MANGLED.format(what=f"the Android path {found.group(0).strip()!r}")
+    for words in segments(command):
+        if program(words) in SLASH_SWITCHED:
+            switch = next((w for w in words[1:] if re.fullmatch(r"/[A-Za-z?][\w:]*", w)), None)
+            if switch:
+                return MANGLED.format(what=f"the switch {switch!r} of {program(words)}")
+    return None
+
+
+def check(command: str, tool: str = "Bash") -> str | None:
     """The reason to refuse `command`, or None."""
+    if tool == "Bash":
+        reason = mangling(command)
+        if reason:
+            return reason
     if "FULL_SUITE_ASKED=1" not in command:
         for words in segments(command):
             what = full_suite(words)
@@ -243,7 +285,7 @@ def main() -> None:
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str):
         return
-    reason = check(command)
+    reason = check(command, str(payload.get("tool_name") or "Bash"))
     if reason:
         print(f"Blocked by guard_commands.py: {reason}", file=sys.stderr)
         sys.exit(2)

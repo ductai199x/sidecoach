@@ -966,7 +966,37 @@ def test_a_long_search_that_keeps_reporting_is_never_cut() -> None:
     assert looks >= 4 and not ended, "a search still reporting was taken for a hung engine"
 
 
-def test_an_illegal_move_is_refused_rather_than_measured() -> None:
+def test_a_search_working_in_silence_is_never_cut_and_an_idle_silent_one_is() -> None:
+    """A real position (three moves, in check) went 48 s at depth 18 without a word -- one root
+    move searched all that time -- and the 30 s silence watchdog killed it, twice, so the
+    position was never answered (the engine audit, 2026-10-04). Silence with the processor
+    working is a search; silence with the processor idle is a hung engine. Driven, never
+    timed: each look of the watchdog sees no report, and the engine's processor time either
+    moves on by a whole patience or stands still."""
+    for working, killed in ((True, False), (False, True)):
+        uci = _ScriptedUci([*_D13], [*_D13])
+        uci.hold = threading.Event()
+        running = _scripted_engine(uci)
+        ended: list[bool] = []
+        running._end_process = lambda ended=ended: ended.append(True)  # type: ignore[method-assign]
+        spent = [0.0]
+        running.cpu_seconds = lambda spent=spent: spent[0]
+        looks = 0
+
+        def wait(done: threading.Event, seconds: float, uci=uci, spent=spent, w=working) -> bool:
+            nonlocal looks
+            looks += 1
+            if looks <= 3:
+                assert uci.started.wait(HANG_S)  # under way, and then not a word
+                if w:
+                    spent[0] += seconds  # a whole patience of processor time
+                return False
+            uci.hold.set()
+            return done.wait(HANG_S)
+
+        running.watchdog_wait = wait
+        running.analyse(chess.Board(), depth=13)
+        assert bool(ended) is killed, (working, ended)
     annotator = GameAnnotator(engine=FakeEngine({}), depth=6, with_threats=False)
     with pytest.raises(ValueError, match="not legal"):
         annotator.assess("g", chess.Board(), chess.Move.from_uci("e2e5"), 1)
