@@ -1403,7 +1403,9 @@ class _ItalianEngine:
     """Before the move the best is Bb5 at 0.55; after 3. Bc4, 0.48 for Black to move (0.52
     for White), the reply ...Bc5."""
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         if board.turn == chess.WHITE:
             return [Line(moves=["f1b5"], depth=14, expected_score=0.55)]
         return [Line(moves=["f8c5", "d2d3"], depth=14, expected_score=0.48)]

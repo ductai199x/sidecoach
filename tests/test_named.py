@@ -29,7 +29,9 @@ class _Engine:
     def __init__(self, lines: dict[str, list[Line]]) -> None:
         self.lines = lines
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         return self.lines.get(board.board_fen(), [])
 
 

@@ -468,6 +468,33 @@ def test_a_late_engine_note_is_the_records_and_has_its_lines() -> None:
     assert "Engine note" not in now
 
 
+def test_lines_the_model_never_read_get_their_note_once() -> None:
+    """The position's message frozen before its analysis came: the whole (provisional) and then
+    the final word with the same lines -- the model read neither, so the final word gets its
+    note, and a second final word with those lines none (the audit of 2026-10-05, round 2:
+    the rule compared against the record's last analysis, not what the model read, and the
+    model kept "not in yet" for the rest of the game)."""
+    from tests.coaching import SCHOLAR, SCHOLAR_MOVES, play, start_game
+
+    coach, provider = scripted_coach([])
+    start_game(coach)
+    play(coach, SCHOLAR_MOVES)
+    coach.on_event(_analysis(chess.Board(SCHOLAR), 6), 6.5)
+    coach.ask("what is my plan?", 7.0)  # 3. Qh5's message frozen with no analysis
+    drain(coach)
+    after_qh5 = chess.Board()
+    for san in SCHOLAR_MOVES[:5]:
+        after_qh5.push_san(san)
+    whole = _analysis(after_qh5, 5)
+    coach.on_event(whole.model_copy(update={"provisional": True}), 8.0)
+    coach.on_event(whole, 9.0)
+    coach.on_event(whole, 9.5)
+    coach.ask("and what should I watch out for?", 10.0)
+    drain(coach)
+    record = harness_of(sent(provider)).split("# Position now\n", 1)[0]
+    assert record.count("Engine note on the position after 3. Qh5") == 1, record
+
+
 def test_a_final_word_that_changes_no_line_the_model_read_adds_no_note() -> None:
     """The analyser tells a position whole (provisional), then final once its side searches are
     in, the lines the same: the model read them whole, and a note repeating them on every move

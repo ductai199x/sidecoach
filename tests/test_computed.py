@@ -42,7 +42,9 @@ class _Recording:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         self.seen.append(board.fen())
         move = sorted(board.legal_moves, key=lambda m: m.uci())[0]
         return [Line(moves=[move.uci()], depth=depth or 14, expected_score=0.5)]
@@ -224,7 +226,9 @@ def test_the_coachs_engine_asks_for_a_whole_it_lacks_and_files_only_what_it_foun
         def __init__(self) -> None:
             self.asked = 0
 
-        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+        def analyse(
+            self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+        ) -> list[Line]:
             self.asked += 1
             return list(best)  # its wait ran out: the best line alone
 
@@ -241,3 +245,30 @@ def test_the_coachs_engine_asks_for_a_whole_it_lacks_and_files_only_what_it_foun
     assert engine.analyse(START) == whole and pool.asked == 1, "the whole known: no asking"
     engine.close()
     assert engine.analyse(_after("d4")) == [], "closed: nothing searched"
+
+
+def test_a_caller_reading_one_line_takes_the_best_line_known_or_asks_for_it_alone() -> None:
+    """`best_only` (a move examined, a reply rated: the first line is all that is read): a
+    best line known answers at once, and an unknown position is asked for its best line alone
+    -- never the whole position waited for (the audit of 2026-10-05, round 2) -- and filed as
+    a best line, not whole."""
+    best = [Line(moves=["e2e4"], depth=18, expected_score=0.55)]
+    asked: list[bool] = []
+
+    class Searcher:
+        def analyse(
+            self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+        ) -> list[Line]:
+            asked.append(best_only)
+            return list(best)
+
+        def close(self) -> None:
+            return
+
+    computed = Computed()
+    computed.add(START, best, thin=True)
+    engine = ComputedFirst(Searcher(), computed)
+    assert engine.analyse(START, best_only=True) == best and asked == [], "known: no asking"
+    after_d4 = _after("d4")
+    assert engine.analyse(after_d4, best_only=True) == best and asked == [True]
+    assert computed.whole(after_d4) == [] and computed.lines(after_d4) == best

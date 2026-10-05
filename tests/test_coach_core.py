@@ -316,7 +316,9 @@ def test_the_claim_check_says_a_good_move_is_good_and_not_the_best() -> None:
     class Lines:
         """The engine, asked when the facts are not this position's: the fixture's lines."""
 
-        def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+        def analyse(
+            self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+        ) -> list[Line]:
             return list(reversed(analysis.lines))  # in any order: graded from the best
 
     claim = Claim(ClaimKind.BEST, None, None, "Be7", "Be7 is a good move")

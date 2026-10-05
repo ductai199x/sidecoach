@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 import chess
+import chess.engine
 import psutil
 import pytest
 
@@ -73,3 +74,28 @@ def test_a_closed_engine_is_not_reopened_by_a_search_under_way() -> None:
     engine.open()
     assert engine.analyse(chess.Board(), depth=4, multipv=1)
     engine.close()
+
+
+def test_an_engine_closed_while_its_process_starts_quits_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel stops while a crashed engine restarts: the process started as the engine
+    closed is quit, never kept by a closed engine nobody will close again (the audit of
+    2026-10-05, round 2). The real start, the close made from inside it."""
+    assert STOCKFISH is not None
+    engine = Engine(STOCKFISH, threads=1, hash_mb=16, multipv=1)
+    started: list[psutil.Process] = []
+    popen = chess.engine.SimpleEngine.popen_uci
+
+    def closing(*args: object, **kwargs: object) -> chess.engine.SimpleEngine:
+        process = popen(*args, **kwargs)  # type: ignore[arg-type]
+        started.append(psutil.Process(process.transport.get_pid()))
+        engine.close()  # the owner closes it meanwhile
+        return process
+
+    monkeypatch.setattr(chess.engine.SimpleEngine, "popen_uci", closing)
+    with pytest.raises(EngineUnavailable):
+        engine.analyse(chess.Board(), depth=2)
+    assert engine._engine is None and len(started) == 1
+    _gone, alive = psutil.wait_procs(started, timeout=30)
+    assert not alive, "a Stockfish nobody closes"

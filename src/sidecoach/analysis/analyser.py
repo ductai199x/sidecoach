@@ -429,7 +429,8 @@ class Analyser:
 
     def _trim(self) -> None:
         """Past KEEP_NODES, the oldest tenth of the positions let go -- but for the game's, the
-        coach's, those a worker is on and their candidates. Run between the steps that choose
+        coach's, those a worker is on, their candidates and the forced moves' positions they
+        take their best lines from. Run between the steps that choose
         candidates, never inside one; a candidate let go is made again when it is wanted."""
         if len(self._nodes) < KEEP_NODES:
             return
@@ -443,7 +444,8 @@ class Analyser:
         for key in roots:
             node = self._nodes.get(key)
             if node is not None:
-                keep.update(child for _, child in node.candidates or [])
+                for wanted in [key, *(child for _, child in node.candidates or [])]:
+                    keep.update(self._forced(wanted, make=False))
         for key in list(self._nodes)[: KEEP_NODES // 10]:
             if key in keep:
                 continue
@@ -504,16 +506,32 @@ class Analyser:
     def _empty(node: _Node) -> Measured:
         return Measured(node.board.fen(), [], 0.5, False, False, key=node.key)
 
+    def _forced(self, key: str, *, make: bool = True) -> list[str]:
+        """`key`, and the positions a chain of single legal moves from it leads to: a position
+        with one legal move takes its best line from the next (`_jobs_for`), so the searches it
+        waits on are theirs, however many forced moves down. `make`: the chain's positions made
+        as `_jobs_for` makes them; without it (`_trim`), only those already made."""
+        out = [key]
+        node = self._nodes.get(key)
+        while node is not None and node.only is not None:
+            candidates = self._candidates_of(node) if make else node.candidates or []
+            if not candidates or candidates[0][1] in out:
+                break
+            key = candidates[0][1]
+            out.append(key)
+            node = self._nodes.get(key)
+        return out
+
     def _wanted(self) -> set[str]:
-        """Every position a search is wanted for: the game's, what the coach asked for, and
-        their candidates."""
+        """Every position a search is wanted for: the game's, what the coach asked for, their
+        candidates, and the forced moves' positions each of those takes its best line from."""
         out: set[str] = set()
         for key in [*self._path.values(), *(r.key for r in self._requests)]:
             node = self._nodes.get(key)
             if node is None:
                 continue
-            out.add(key)
-            out.update(child for _, child in self._candidates_of(node))
+            for wanted in [key, *(child for _, child in self._candidates_of(node))]:
+                out.update(self._forced(wanted))
         return out
 
     # ---- what the workers take ---------------------------------------------------------------
@@ -711,8 +729,24 @@ class Analyser:
             only_move=False,
             key=node.key,
         )
+        self._carry_stand_in(node)
         self._judge()
         self._cond.notify_all()
+
+    def _carry_stand_in(self, node: _Node) -> None:
+        """`node`'s decided stand-in, carried as its best line is (`_carry_only`): a position
+        whose one legal move leads here, and so on back up a forced sequence, stands in with
+        it -- a verdict on the move that led into the forced sequence reads that position."""
+        if node.stand_in is None:
+            return
+        for key in list(node.parents):
+            parent = self._nodes.get(key)
+            if parent is None or parent.only is None or parent.best is not None:
+                continue
+            parent.stand_in = self.annotator.from_only_move(
+                parent.board, parent.only, node.stand_in
+            )
+            self._carry_stand_in(parent)
 
     def _found(self, job: _Job, found: Measured | list[Line]) -> None:
         node = self._nodes[job.key]
@@ -734,11 +768,13 @@ class Analyser:
         """A search of `node` done (or failed): a single legal move's position it is the
         candidate of given its best line, it and every position it is a candidate of made whole
         if they can be, and what waited on them told, judged and answered."""
-        self._carry_only(node)
-        for key in [node.key, *node.parents]:
-            whole = self._nodes.get(key)
-            if whole is not None and whole.whole is None:
-                self._complete(whole)
+        # Every position given a best line here -- this one, and those up a forced sequence --
+        # and the positions each is a candidate of.
+        for changed in [node, *self._carry_only(node)]:
+            for key in [changed.key, *changed.parents]:
+                whole = self._nodes.get(key)
+                if whole is not None and whole.whole is None:
+                    self._complete(whole)
         if SIDE in node.failed and node.whole is not None and node.final is None:
             node.final = node.whole
         # The positions moves are judged from told before the verdicts (a verdict's reader finds
@@ -753,9 +789,11 @@ class Analyser:
             self._tell(ply)
         self._answer_requests()
 
-    def _carry_only(self, node: _Node) -> None:
+    def _carry_only(self, node: _Node) -> list[_Node]:
         """`node`'s best line in (or failed): each position whose one legal move leads here
-        takes its best line from it, and so on back up a forced sequence."""
+        takes its best line from it, and so on back up a forced sequence. The positions it
+        reached."""
+        reached: list[_Node] = []
         for key in list(node.parents):
             parent = self._nodes.get(key)
             if parent is None or parent.only is None or parent.best is not None:
@@ -766,7 +804,8 @@ class Analyser:
                 parent.failed.add(BEST)
             else:
                 continue
-            self._carry_only(parent)
+            reached += [parent, *self._carry_only(parent)]
+        return reached
 
     def _complete(self, node: _Node) -> None:
         """`node` made whole once its candidates are all in (a failed one left out) -- but for
@@ -915,13 +954,16 @@ class PoolSearcher:
 
     fills_computed = True
 
-    def __init__(self, analyser: Analyser, *, timeout: float = REQUEST_TIMEOUT_S) -> None:
+    def __init__(self, analyser: Analyser, *, timeout: float | None = REQUEST_TIMEOUT_S) -> None:
         self.analyser = analyser
         self.timeout = timeout
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
-        """`board`'s lines, whole; `depth` is the analyser's own, whatever is asked."""
-        measured = self.analyser.request(board, whole=True, timeout=self.timeout)
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
+        """`board`'s lines, whole -- or with `best_only` its best line, not waiting for the
+        whole; `depth` is the analyser's own, whatever is asked."""
+        measured = self.analyser.request(board, whole=not best_only, timeout=self.timeout)
         return list(measured.lines) if measured is not None else []
 
     def close(self) -> None:

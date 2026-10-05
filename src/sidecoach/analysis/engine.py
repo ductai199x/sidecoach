@@ -54,6 +54,21 @@ def _lower_priority() -> None:
         os.nice(5)
 
 
+def _quit(engine: chess.engine.SimpleEngine) -> None:
+    """The process ended: asked to quit, and killed if that fails -- a process wedged without
+    reading its input would otherwise outlive its engine, and the app."""
+    try:
+        engine.quit()
+    except Exception:  # noqa: BLE001 - a dead engine needs no goodbye
+        # By its PID, as `Engine._end_process` does: the transport is its event loop's, not
+        # this thread's, and the process's handle is held until `close`, so the PID is its own.
+        with contextlib.suppress(Exception):
+            kill = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+            os.kill(engine.transport.get_pid(), kill)
+        with contextlib.suppress(Exception):
+            engine.close()
+
+
 class EngineUnavailable(RuntimeError):
     """The engine binary is missing, or died and could not be restarted."""
 
@@ -108,6 +123,9 @@ class Engine:
     # Closed by its owner: a search under way (a request's next one, a crash's restart)
     # does not start another process nobody would close. `open` opens it again.
     _closed: bool = field(default=False, init=False, repr=False)
+    # Taken to set `_engine` or `_closed`, never across a search or a process's start: a
+    # process started as the engine closes is quit, not kept by a closed engine for good.
+    _life: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     # Threads or hash saved while a search ran: set on the process before the next search.
     _options_owed: bool = field(default=False, init=False, repr=False)
     # How many reports the engine has made: the watchdog reads it to tell a search that is
@@ -129,7 +147,8 @@ class Engine:
         return str(self._engine.id.get("name", self.path.name))
 
     def open(self) -> None:
-        self._closed = False
+        with self._life:
+            self._closed = False
         self._start()
 
     def _start(self) -> None:
@@ -158,7 +177,15 @@ class Engine:
             options["UCI_ShowWDL"] = True
         if options:
             engine.configure(options)
-        self._engine = engine
+        with self._life:
+            closed = self._closed
+            if not closed:
+                self._engine = engine
+        if closed:
+            # Closed while it started (the panel stopped as a crashed engine restarted): no
+            # one would ever quit it.
+            _quit(engine)
+            raise EngineUnavailable("the engine was closed")
 
     def reconfigure(self, *, threads: int | None = None, hash_mb: int | None = None) -> None:
         """Threads and hash on the running engine (the settings saved mid-session). Never
@@ -192,15 +219,16 @@ class Engine:
                 self._engine.configure(options)
 
     def close(self) -> None:
-        self._closed = True
+        with self._life:
+            self._closed = True
         self._drop()
 
     def _drop(self) -> None:
         """The process gone (a crash's restart starts another; `close` does not)."""
-        engine, self._engine = self._engine, None
+        with self._life:
+            engine, self._engine = self._engine, None
         if engine is not None:
-            with contextlib.suppress(Exception):  # a dead engine needs no goodbye
-                engine.quit()
+            _quit(engine)
 
     def analyse(
         self,

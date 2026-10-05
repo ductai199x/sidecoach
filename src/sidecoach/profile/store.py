@@ -242,6 +242,8 @@ QUERY_SECONDS = 2.0
 # (its library key is WATCHED + the id).
 WATCHED = "watched:"
 LIBRARY_TABLES = ("library", "reviews", "review_progress", "stat_games", "stat_moves")
+# The record's format (`Store._upgrade`): raised with each change a record kept before needs.
+STORE_VERSION = 1
 WATCHED_TABLES = ("evidence", "dialogue", "recommendations", "moves", "games")
 RESTORABLE = frozenset({*LIBRARY_TABLES, *WATCHED_TABLES, "twins"})
 # A removed game's rows are kept this long, for Undo (the page offers it for seconds).
@@ -471,7 +473,20 @@ class Store:
         self._lock = threading.RLock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            self._upgrade()
             self._db.commit()
+
+    def _upgrade(self) -> None:
+        """What a record kept by an older build needs to be read by this one, by SQLite's
+        `user_version`. 1: every position measured the one-line way (the engine's redesign,
+        2026-10-05) -- a review under way measured before it goes on from nothing, never from
+        positions measured the old way beside ones measured the new (its positions only: a
+        review saved whole is kept, with its words)."""
+        version = int(self._db.execute("PRAGMA user_version").fetchone()[0])
+        if version < 1:
+            self._db.execute("DELETE FROM review_progress")
+        if version < STORE_VERSION:
+            self._db.execute(f"PRAGMA user_version = {STORE_VERSION}")
 
     def close(self) -> None:
         with self._lock:

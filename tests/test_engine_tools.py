@@ -26,7 +26,9 @@ class FirstLegal:
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         self.seen.append(board.fen())
         replay = board.copy(stack=False)
         moves: list[str] = []
@@ -98,10 +100,14 @@ class _Asked:
     def __init__(self) -> None:
         self.histories: list[list[str]] = []
         self.depths: list[int | None] = []
+        self.best_only: list[bool] = []
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         self.histories.append([m.uci() for m in board.move_stack])
         self.depths.append(depth)
+        self.best_only.append(best_only)
         move = sorted(board.legal_moves, key=lambda m: m.uci())[0]
         return [Line(moves=[move.uci()], depth=depth or 0, expected_score=0.55)]
 
@@ -129,6 +135,19 @@ def test_a_move_off_the_lines_is_rated_at_the_lines_depth() -> None:
     tools = EngineTools(chess.Board(), None, engine, chess.WHITE, known_now=known)
     tools.run("analyse", {"moves": ["a3"]})
     assert engine.depths == [14, 18], "the position searched, then the move rated at 18"
+    assert engine.best_only == [False, True], "the reply read for its first line alone"
+
+
+def test_a_first_answer_shown_is_not_set_against_the_full_depth() -> None:
+    """The first answer shown (the hint's lines, at EARLY_DEPTH) is not what a move off it is
+    rated against: the reply is searched to the full depth, so the best comes from the full
+    depth too -- else a move as good as the best reads as worse by what the depths differ by
+    (the audit of 2026-10-05, round 2)."""
+    engine = _Asked()
+    known = [Line(moves=["e2e4"], depth=12, expected_score=0.6)]
+    tools = EngineTools(chess.Board(), None, engine, chess.WHITE, known_now=known, depth=18)
+    tools.run("analyse", {"moves": ["a3"]})
+    assert engine.depths[-2:] == [18, 18], engine.depths
 
 
 class ToolModel:

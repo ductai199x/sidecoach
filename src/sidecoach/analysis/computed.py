@@ -32,9 +32,12 @@ from sidecoach.events import Line
 
 
 class Searcher(Protocol):
-    """What `ComputedFirst` searches with; `analysis.engine.Engine` satisfies it."""
+    """What `ComputedFirst` searches with (`analyser.PoolSearcher`, `annotator.WholeSearcher`):
+    a position whole, or with `best_only` its best line alone."""
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]: ...
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]: ...
 
     def close(self) -> None: ...
 
@@ -137,16 +140,23 @@ class ComputedFirst:
         self.searches = 0  # positions searched, not found computed
         self._closed = False
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
+        """`board`'s lines whole; with `best_only` (a caller that reads the first line alone)
+        whatever is known, its best line at least -- searched for alone, never the whole
+        position waited for."""
         known = self.computed.whole(board)
         if known:
             return known
-        if self._closed:
-            return self.computed.lines(board)
+        if self._closed or best_only:
+            known = self.computed.lines(board)
+            if known or self._closed:
+                return known
         self.searches += 1
-        lines = self.engine.analyse(board, depth=depth)
+        lines = self.engine.analyse(board, depth=depth, best_only=best_only)
         if not getattr(self.engine, "fills_computed", False):
-            self.computed.add(board, lines)
+            self.computed.add(board, lines, thin=best_only)
         return lines
 
     def close(self) -> None:

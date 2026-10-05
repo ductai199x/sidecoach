@@ -267,6 +267,9 @@ class Entry:
     text: str = ""
     record: PlyRecord | None = None
     frozen: str | None = None
+    # The engine's lines on the ply's position the model has read: those its frozen text was
+    # written from, then a late note's.
+    read_lines: list[Line] | None = None
     folded: bool = False  # dialogue folded into the summary: no longer written out
     # A routine word after a sound move (the POST_MOVE nod): the verdict is on the move's
     # line, so the nod is written out only while recent, and never summarised.
@@ -377,12 +380,9 @@ class Conversation:
         record = self._record_at(event.ply)
         if record is None or record.move.fen_after.split(" ")[:3] != same:
             return None
-        shown = record.analysis
         record.analysis = event
         record.facts = facts
-        # A note only for what the model has not read: the final word on a position adds its
-        # side searches to lines it may already have seen whole.
-        if not event.provisional and (shown is None or shown.lines != event.lines):
+        if not event.provisional:
             self._note_if_frozen(record, "analysis")
         return record
 
@@ -508,6 +508,8 @@ class Conversation:
                     continue  # the position now, in full below
                 if entry.frozen is None:
                     entry.frozen = self.render_ply(entry.record, full=False)
+                    analysis = entry.record.analysis
+                    entry.read_lines = analysis.lines if analysis is not None else None
                 sink.append(entry.frozen)
             elif entry.kind == "ask":
                 sink.append(f"    PLAYER said: {entry.text}")
@@ -1348,12 +1350,19 @@ class Conversation:
         the position a move left went under "Said here" of the position the player faces now,
         its standing beside the one now's, and its lines were dropped: their title had grown
         a tail ("Engine lines (the opponent's move; ...)", the coach review, 2026-10-01). The
-        position now needs none: it is shown in full."""
+        position now needs none: it is shown in full. An analysis whose lines the model has read
+        already gets none: the final word on a position adds its side searches to lines it may
+        have read whole, in the frozen text or a note before (the audits of 2026-10-05)."""
         active = self.active_records()
         if active and active[-1] is record:
             return
         for entry in self.entries:
             if entry.record is record and entry.frozen is not None:
+                if what == "analysis":
+                    lines = record.analysis.lines if record.analysis is not None else None
+                    if lines == entry.read_lines:
+                        return
+                    entry.read_lines = lines
                 board_before = chess.Board(record.move.fen_before)
                 user_colour = self.user_side.color
                 name = self._numbered(record.move)

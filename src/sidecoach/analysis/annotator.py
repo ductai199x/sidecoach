@@ -653,13 +653,19 @@ class WholeSearcher:
         self.depth = depth
         self._annotators: dict[int, GameAnnotator] = {}
 
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
+        """`board`'s lines whole; with `best_only`, its best line alone (or its whole, if
+        measured)."""
         depth = depth or self.depth
         annotator = self._annotators.get(depth)
         if annotator is None:
             annotator = self._annotators[depth] = GameAnnotator(
                 engine=self.engine, depth=depth, multipv=self.lines, with_threats=False
             )
+        if best_only:
+            return annotator.best_line(board).lines
         return annotator.measure(board).lines
 
     def close(self) -> None:

@@ -122,6 +122,43 @@ def test_a_save_writes_the_file_and_says_what_applies_when(
     assert (tmp_path / "sidecoach.toml").read_text(encoding="utf-8") == before
 
 
+def test_positions_at_once_saved_builds_the_engine_again_at_the_next_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Positions at once" is the pool's size: saved, it applies at the next Start, where the
+    engine and the coach built before are closed and built again with it (the audit of
+    2026-10-05, round 2: the save path had no test)."""
+    from types import SimpleNamespace
+
+    import sidecoach.cli as cli
+
+    client, engine = _client(tmp_path, monkeypatch)
+    closed: list[str] = []
+    engine._assessing = SimpleNamespace(
+        on=True, analyser=None, close=lambda: closed.append("engine")
+    )
+    engine._coaching = SimpleNamespace(coach=None, close=lambda: closed.append("coach"))
+    built: list[int] = []
+
+    class Assessing:
+        def __init__(self, settings: Settings, _on: bool) -> None:
+            built.append(settings.engine.workers)
+            self.on, self.detail, self.computed, self.analyser = True, "", None, None
+
+    class Coaching:
+        def __init__(self, *_: object, **__: object) -> None:
+            self.on, self.detail, self.coach = False, "", None
+
+    monkeypatch.setattr(cli, "_Assessing", Assessing)
+    monkeypatch.setattr(cli, "_Coaching", Coaching)
+    values = client.get("/api/settings").json()["settings"]
+    values["engine"]["workers"] = 2
+    res = client.put("/api/settings", json={"settings": values}).json()
+    assert res["ok"] and res["next"] == ["engine.workers"] and closed == []
+    engine._prepare_stages()
+    assert closed == ["engine", "coach"] and built == [2]
+
+
 def test_a_save_changes_only_what_it_sends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A page sends what it changed; the rest stays as it is now: a Settings window opened
     before another saved put the chess.com username back to empty (Tai 2026-09-30)."""

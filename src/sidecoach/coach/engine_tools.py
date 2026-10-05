@@ -103,7 +103,12 @@ _NUMBER = re.compile(r"^\d+\.+")
 
 
 class EngineLike(Protocol):
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]: ...
+    """The coach's engine (`computed.ComputedFirst`): a position whole, or with `best_only`
+    its best line alone, for a caller that reads only the first line."""
+
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]: ...
 
 
 class EngineTools:
@@ -301,7 +306,11 @@ class EngineTools:
         as the best move there ("White's best is 8. Kg2", Tai's puzzle). A move one of `start`'s
         lines plays is rated by that line's score, as the model was shown it; another by a
         search after it."""
-        best = list(known) or self.engine.analyse(start, depth=self.depth)
+        # The lines shown, when they are the full depth's: the first answer (the hint's, at
+        # EARLY_DEPTH) set against a reply searched to the full depth reads a move as good as
+        # the best as worse by what the depths differ by (the audit of 2026-10-05, round 2).
+        full = bool(known) and min(line.depth for line in known) >= self.depth
+        best = list(known) if full else self.engine.analyse(start, depth=self.depth)
         if not best:
             return ""
         after = start.copy()
@@ -318,7 +327,7 @@ class EngineTools:
         else:
             # At the best line's depth: set against a shallower search, a move as good as
             # the best read as worse by what the depths differ by.
-            reply = self.engine.analyse(after, depth=best[0].depth or self.depth)
+            reply = self.engine.analyse(after, depth=best[0].depth or self.depth, best_only=True)
             if not reply:
                 return ""
             score = 1.0 - reply[0].expected_score

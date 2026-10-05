@@ -105,7 +105,9 @@ def test_the_lesson_says_when_the_move_played_stopped_the_threat_too():
 
 
 class _NoSearch:
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]:
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]:
         raise AssertionError("a move the position's own lines play needs no second search")
 
     def close(self) -> None:

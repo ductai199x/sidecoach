@@ -49,7 +49,12 @@ _SQUARE_ASKED = re.compile(r"\b(?:square|on|about|at)\s+(?P<square>[a-h][1-8])\b
 
 
 class EngineLike(Protocol):
-    def analyse(self, board: chess.Board, *, depth: int | None = None) -> list[Line]: ...
+    """The coach's engine (`computed.ComputedFirst`): a position whole, or with `best_only`
+    its best line alone, for a caller that reads only the first line."""
+
+    def analyse(
+        self, board: chess.Board, *, depth: int | None = None, best_only: bool = False
+    ) -> list[Line]: ...
 
 
 @dataclass
@@ -321,7 +326,9 @@ def examine(
     head = f"Engine on {probe.label}, which the player asked about:"
     if not probe.parsed:
         return f"{head} {probe.illegal} is not a legal move here."
-    after = board.copy(stack=False)
+    # The moves that led here come along: the analyser keys a position by them, so the game's
+    # own candidate positions are found measured.
+    after = board.copy()
     for move in probe.parsed:
         after.push(move)
     played = (
@@ -340,7 +347,8 @@ def examine(
         if all(m != chess.Move.null() for m in probe.parsed)
         else None
     )
-    lines = [own] if own is not None else engine.analyse(after, depth=depth)
+    # The first line is all that is read: its best line, never the whole position waited for.
+    lines = [own] if own is not None else engine.analyse(after, depth=depth, best_only=True)
     if not lines:
         return f"{head} the engine has nothing to say about the position after {played}."
     score = lines[0].expected_score if after.turn == user_colour else 1.0 - lines[0].expected_score
@@ -541,7 +549,10 @@ def analyse_named(
     out: list[str] = []
     best: Line | None = None
     if engine is not None and any(p.square is None for p in probes):
-        before = list(known) or engine.analyse(board, depth=depth)
+        # The lines shown when they are the full depth's (`EngineTools._rating`); else the
+        # best line alone, the only one read.
+        full = bool(known) and min(line.depth for line in known) >= depth
+        before = list(known) if full else engine.analyse(board, depth=depth, best_only=True)
         best = before[0] if before else None
     for p in probes:
         if p.square is not None:

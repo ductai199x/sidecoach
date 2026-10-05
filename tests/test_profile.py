@@ -5,6 +5,7 @@ analysis of the position it leads to."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import chess
@@ -1298,5 +1299,66 @@ def test_the_engines_words_may_come_in_any_order() -> None:
     moves = f.store.moves("g")
     assert [m.san for m in moves] == ["e4", "e5"]
     assert moves[1].available_tags == ["fork"], "the tactic e5 was played past"
+    game = f.store.game("g")
+    assert game is not None and game.opening == "C20 King's Pawn Game"
+
+
+def test_a_record_from_before_the_one_line_engine_drops_only_its_reviews_under_way(
+    tmp_path: Path,
+) -> None:
+    """A record kept by an older build (`user_version` 0): its reviews under way measured
+    their positions the old way, and go -- a review goes on from nothing rather than mix the
+    two -- and nothing else does; opened again, what this build keeps stays."""
+    from sidecoach.profile.store import STORE_VERSION, Store
+
+    path = tmp_path / "profile.sqlite"
+    store = Store(path)
+    store.start_game("g", 1.0, "white", chess.STARTING_FEN)
+    store.add_progress("k", "standard", 18, 6, chess.STARTING_FEN, "{}")
+    store._db.execute("PRAGMA user_version = 0")
+    store._db.commit()
+    store.close()
+    store = Store(path)
+    assert store.progress("k", "standard", 18, 6) == []
+    assert store.game("g") is not None
+    store.add_progress("k", "standard", 18, 6, chess.STARTING_FEN, "{}")
+    store.close()
+    store = Store(path)
+    try:
+        assert store.progress("k", "standard", 18, 6) == ["{}"]
+        assert store._db.execute("PRAGMA user_version").fetchone()[0] == STORE_VERSION
+    finally:
+        store.close()
+
+
+def test_a_takeback_takes_the_withdrawn_lines_opening_with_it() -> None:
+    """The opening is the latest position's name -- of the moves that stand: a line taken back
+    and played otherwise is not named by the moves withdrawn (the audit of 2026-10-05,
+    round 2: the withdrawn line's later name stood over the new line's)."""
+    from sidecoach.events import Analysis, Takeback
+
+    f = Feed()
+
+    def told(opening: str) -> None:
+        f.send(
+            Analysis(
+                game_id="g",
+                fen=f.board.fen(),
+                ply=len(f.board.move_stack),
+                lines=[],
+                decisive=False,
+                only_move=False,
+                opening=opening,
+            )
+        )
+
+    for san, name in (("e4", "B00 King's Pawn"), ("e5", "C20 King's Pawn Game")):
+        f.play(san, analysis=False)
+        told(name)
+    f.play("Nf3", analysis=False)
+    told("C40 King's Knight Opening")
+    f.board.pop()
+    f.send(Takeback(game_id="g", plies=1, fen=f.board.fen()))
+    f.end()
     game = f.store.game("g")
     assert game is not None and game.opening == "C20 King's Pawn Game"

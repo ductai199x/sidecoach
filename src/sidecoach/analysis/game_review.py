@@ -33,7 +33,7 @@ from sidecoach.analysis.annotator import (
     cache_key,
     opening_name,
 )
-from sidecoach.analysis.engine import Engine
+from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import Previous, Thresholds, position_score, verdict
 from sidecoach.events import ReviewedGame, ReviewedMove, Side
 
@@ -58,6 +58,9 @@ STRENGTHS: dict[str, Strength] = {
 # them, the rest left to everything else the machine does (a game, the capture, the page).
 THREADS = 1
 MAX_WORKERS = 8
+# How often a review running with a stop looks at it: the searches under way are cut at most
+# this long after the stop.
+STOP_LOOK_S = 0.2
 
 
 def workers_for(cores: int | None = None) -> int:
@@ -174,7 +177,10 @@ def measure_all(
             except queue.Empty:
                 return
             try:
-                measured = measure(annotator, board)
+                with engine.interruptible():  # a stop reaches the search under way
+                    measured = measure(annotator, board)
+            except Interrupted:
+                return  # stopped: the position is not done, and nothing failed
             except Exception:  # noqa: BLE001 - the walk measures what is missing itself
                 if failed is not None:
                     with cond:
@@ -195,6 +201,17 @@ def measure_all(
     ]
     for thread in threads:
         thread.start()
+    if stop is not None:
+        # A stop (the room's Pause) cuts the searches under way, not only the positions after
+        # them: each engine's position whole is its best line, its hint, up to six candidates
+        # and its side searches. Told again while any runs: a stop landing between two
+        # positions is cleared as the next search begins (`Engine.interruptible`).
+        while any(t.is_alive() for t in threads):
+            if stop.wait(STOP_LOOK_S):
+                for engine in engines:
+                    engine.interrupt()
+                for thread in threads:
+                    thread.join(STOP_LOOK_S)
     for thread in threads:
         thread.join()
     return found

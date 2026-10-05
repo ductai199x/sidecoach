@@ -941,30 +941,37 @@ def test_an_engine_that_stops_answering_is_replaced(tmp_path: Path) -> None:
 
 def test_a_long_search_that_keeps_reporting_is_never_cut() -> None:
     """The watchdog ends only an engine that has gone silent: a search reporting between two of
-    its looks -- however long it runs -- is left to reach its depth. The watchdog's waits are
-    driven by the search's own reports here, never by a clock: each look comes after a report,
-    and the process is never ended."""
-    uci = _ScriptedUci([*_D13, *_D13], [*_D13])
-    uci.hold = threading.Event()
-    running = _scripted_engine(uci)
-    ended: list[bool] = []
-    running._end_process = lambda: ended.append(True)  # type: ignore[method-assign]
-    looks = 0
+    its looks -- however long it runs -- is left to reach its depth, even with its processor
+    read as idle: the reports alone keep it. The watchdog's waits are driven by the search's
+    own reports here, never by a clock: each look comes after a report, and the process is
+    never ended; the same search without the reports is (the audit of 2026-10-05, round 2:
+    with no processor reading, nothing was ever ended, and the test proved nothing)."""
+    for reporting, killed in ((True, False), (False, True)):
+        uci = _ScriptedUci([*_D13, *_D13], [*_D13])
+        uci.hold = threading.Event()
+        running = _scripted_engine(uci)
+        ended: list[bool] = []
+        running._end_process = lambda ended=ended: ended.append(True)  # type: ignore[method-assign]
+        running.cpu_seconds = lambda: 0.0  # readable, and idle
+        looks = 0
 
-    def wait(done: threading.Event, seconds: float) -> bool:
-        nonlocal looks
-        looks += 1
-        if looks <= 3:
-            assert uci.started.wait(HANG_S)  # the reports are in: the search talked
-            running._heard += 1  # and talks on between this look and the next
-            return False
-        uci.hold.set()  # long enough: the search ends
-        return done.wait(HANG_S)
+        def wait(
+            done: threading.Event, seconds: float, uci=uci, running=running, r=reporting
+        ) -> bool:
+            nonlocal looks
+            looks += 1
+            if looks <= 3:
+                assert uci.started.wait(HANG_S)  # the reports are in: the search talked
+                if r:
+                    running._heard += 1  # and talks on between this look and the next
+                return False
+            uci.hold.set()  # long enough: the search ends
+            return done.wait(HANG_S)
 
-    running.watchdog_wait = wait
-    lines = running.analyse(chess.Board(), depth=13)
-    assert lines and lines[0].depth == 13
-    assert looks >= 4 and not ended, "a search still reporting was taken for a hung engine"
+        running.watchdog_wait = wait
+        running.analyse(chess.Board(), depth=13)
+        assert looks >= 4 or killed
+        assert bool(ended) is killed, (reporting, ended)
 
 
 def test_a_search_working_in_silence_is_never_cut_and_an_idle_silent_one_is() -> None:

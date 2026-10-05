@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import chess
 import pytest
@@ -376,6 +377,68 @@ def test_a_position_with_one_legal_move_is_never_searched() -> None:
     assert analyser.searches == sum(1 for m in engine.multipvs if m == 1)
 
 
+# Black to move; Qg2+ leaves White one legal move, Kxg2.
+QG2 = "k7/p7/8/8/8/6q1/8/7K b - - 0 1"
+
+
+def test_a_candidate_giving_check_with_one_reply_is_searched_through() -> None:
+    """A candidate check with a single reply: its position takes its best line from the
+    reply's, two moves down the game -- wanted as the plan wants it, never refused and asked
+    again (the audit of 2026-10-05, round 2: a worker spun on it and every verdict after it
+    waited for good). For the game's position, a verdict on a move from it, and a question."""
+    lines = {QG2: [_line("a7a6", score=0.5), _line("g3g2", score=0.4)]}
+    asked = QG2.replace("p7/8/8/8/6q1", "1p6/8/8/8/6q1")  # the same check, the pawn on b7
+    lines[asked] = [_line("b7b6", score=0.5), _line("g3g2", score=0.4)]
+    engines = [FakeEngine(lines), FakeEngine(lines)]
+    analyser = _analyser(engines)
+    watch = AnalyserWatch(analyser)
+    with analyser:
+        board = chess.Board(QG2)
+        analyser.submit_position("g", board, 0)
+        whole = [e for e in watch.settled() if isinstance(e, Analysis)][-1]
+        analyser.submit_move("g", board, chess.Move.from_uci("a7a6"), 1)
+        verdicts = [e for e in watch.settled() if isinstance(e, MoveAssessment)]
+        answer = analyser.request(chess.Board(asked), timeout=None)
+        watch.quiet()
+    assert not whole.provisional and "g3g2" in [line.moves[0] for line in whole.lines]
+    assert [v.ply for v in verdicts] == [1]
+    assert answer is not None and "g3g2" in [line.moves[0] for line in answer.lines]
+
+
+def test_a_decided_stand_in_reaches_a_move_into_a_forced_reply() -> None:
+    """A move into a check with one reply, the position after the reply decided while its
+    search runs on: the stand-in is carried back up the forced move, as its best line would
+    be, and the move is judged at DECIDED_AFTER_S rather than at the full depth."""
+    clock = ManualClock()
+    after_reply = _board_from(QG2, "g3g2", "h1g2")
+    engine = GatedEngine(
+        {QG2: [_line("a7a6", score=0.5)]},  # Qg2+ not among the candidates: judged from after
+        gated=[after_reply],
+        reports={after_reply: [_line("a6a5", score=0.1, depth=15)]},  # Black lost
+    )
+    analyser = _analyser([engine], clock=clock)
+    watch = AnalyserWatch(analyser)
+    with analyser:
+        board = chess.Board(QG2)
+        analyser.submit_position("g", board, 0)
+        watch.idle()
+        analyser.submit_move("g", board, chess.Move.from_uci("g3g2"), 1)
+        assert engine.entered[after_reply].wait(HANG_S)
+        clock.advance(DECIDED_AFTER_S)
+        judged = [e for e in analyser.poll() if isinstance(e, MoveAssessment)]
+        engine.release(after_reply)
+        watch.settled()
+    assert [v.ply for v in judged] == [1], "not judged at the stand-in"
+    assert judged[0].expected_loss == pytest.approx(0.5 - 0.1)
+
+
+def _board_from(fen: str, *ucis: str) -> str:
+    board = chess.Board(fen)
+    for uci in ucis:
+        board.push_uci(uci)
+    return board.fen()
+
+
 def test_a_mate_on_the_board_is_judged_told_and_owes_nothing() -> None:
     """Scholar's mate played through, threats on: the mating move judged, the mated position
     told final with no lines, nothing owed."""
@@ -473,6 +536,24 @@ def test_the_coach_is_answered_from_the_pool_and_never_searches_twice() -> None:
     assert analyser._requests == []
 
 
+def test_the_coach_asking_for_one_line_does_not_wait_for_the_whole() -> None:
+    """`best_only`: a probe that reads the first line alone gets the position's best line
+    while its candidates are still held -- the whole is not waited for."""
+    lines = {_after("d4"): [_line("d7d5", score=0.5), _line("g8f6", score=0.45)]}
+    held = _after("d4", "g8f6")
+    engine = GatedEngine(lines, gated=[held])
+    analyser = _analyser([engine])
+    try:
+        analyser.start()
+        got = PoolSearcher(analyser, timeout=None).analyse(_board("d4"), best_only=True)
+        assert [line.moves[0] for line in got] == ["d7d5"]
+        with analyser._cond:
+            assert analyser._nodes[cache_key(_board("d4"))].whole is None, "the whole waited for"
+    finally:
+        engine.release(held)
+        analyser.close()
+
+
 def test_a_question_is_never_left_hanging() -> None:
     """The coach's wait is bounded however the search goes: past its time it gets what is
     known (here nothing) and its question is dropped; a question whose search fails is
@@ -533,16 +614,38 @@ def test_the_workers_engines_search_on_one_thread_each() -> None:
     assert len(analyser.engines) == 4
 
 
+def test_settings_saved_mid_session_reach_every_workers_engine() -> None:
+    """Hash, the lines' length and the scoring saved: on each worker's engine, hash through
+    the engine's own `reconfigure` (set between searches), the rest set (the audit of
+    2026-10-05, round 2: the route ran in no test)."""
+    engines = [FakeEngine({}), FakeEngine({})]
+    analyser = _analyser(engines)
+    hashed: list[int | None] = []
+    for engine in engines:
+        engine.reconfigure = lambda *, threads=None, hash_mb=None: hashed.append(hash_mb)  # type: ignore[method-assign]
+    analyser.reconfigure(hash_mb=128, multipv=3, pv_plies=8)
+    assert hashed == [128, 128]
+    assert [(e.multipv, e.pv_plies) for e in engines] == [(3, 8), (3, 8)]
+
+
 def test_settings_changed_mid_search_keep_nothing_measured_the_old_way() -> None:
     """The depth or the lines saved while a search runs: what it finds is not kept -- even a
     search that runs on to its end -- and the game's position is measured again and told
     from the new search."""
 
     class Stubborn(GatedEngine):
-        """A search no stop reaches: it runs to its end, the old way."""
+        """A search no stop reaches: it runs to its end, the old way -- scoring as the settings
+        were when it began, so what it found is told apart from the new search's."""
 
         def interrupt(self) -> None:
             self._wake.set()
+
+        def analyse(self, board: chess.Board, **kwargs: Any) -> list[Line]:
+            began = [line.expected_score for line in self.answers.get(board.fen(), [])]
+            lines = super().analyse(board, **kwargs)
+            if not began:
+                return lines
+            return [line.model_copy(update={"expected_score": began[0]}) for line in lines]
 
     engine = Stubborn({START: [_line("e2e4", score=0.3)]}, gated=[START])
     analyser = _analyser([engine])
@@ -749,7 +852,7 @@ def test_a_position_re_read_mid_search_gets_no_word_on_the_old_reading(tmp_path:
         assessing.submit(
             GameStarted(game_id="g", user_side=Side.WHITE, start_fen=white, kind="position")
         )
-        assert engine.entered[white].wait(5), "the search never began"
+        assert engine.entered[white].wait(HANG_S), "the search never began"
         assessing.submit(Resync(game_id="g", fen=black, reason="side to move settled by the clock"))
         watch.until(lambda: engine.stopped == [white], "the reset let go of the search")
         watch.idle()

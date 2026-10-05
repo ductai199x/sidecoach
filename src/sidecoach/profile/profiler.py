@@ -129,9 +129,9 @@ class _Game:
     # The analysis of the position after (segment, ply); ply 0 is the segment's base.
     analyses: dict[tuple[int, int], Analysis] = field(default_factory=dict)
     opening: str | None = None
-    # The ply the opening was named at: a later ply's name stands over an earlier one's, in
-    # whatever order the analyses come.
-    opening_ply: int = -1
+    # Where the opening was named, (segment, ply): a later position's name stands over an
+    # earlier one's, in whatever order the analyses come.
+    opening_at: tuple[int, int] = (-1, -1)
     last_fen: str = chess.STARTING_FEN
     time_control: str | None = None
     ended: bool = False
@@ -406,8 +406,8 @@ class Profiler:
         played from it (its verdict may be in already) each take what it says."""
         key = (game.segment, event.ply)
         game.analyses[key] = event
-        if event.opening and event.ply >= game.opening_ply:
-            game.opening, game.opening_ply = event.opening, event.ply
+        if event.opening and key >= game.opening_at:
+            game.opening, game.opening_at = event.opening, key
         ply = game.plies.get(key)
         if ply is not None and ply.move_id:
             self.store.analyse_move(
@@ -527,6 +527,9 @@ class Profiler:
         for key in plies[keep:]:
             game.plies.pop(key)
             game.analyses.pop(key, None)
+        # The opening the moves left name: a withdrawn line's name goes with it.
+        named = [(k, a.opening) for k, a in game.analyses.items() if a.opening]
+        game.opening_at, game.opening = max(named) if named else ((-1, -1), None)
         self.store.withdraw_moves(game.game_id, game.segment, from_ply)
         game.last_fen = event.fen
         return []

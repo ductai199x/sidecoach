@@ -20,7 +20,7 @@ from sidecoach.analysis.game_review import (
 )
 from sidecoach.analysis.score import Thresholds
 from sidecoach.events import Line, ReviewedGame, Side
-from tests.fakes import FakeEngine, scripted
+from tests.fakes import HANG_S, FakeEngine, GatedEngine, scripted
 
 PGN = """[Event "Live Chess"]
 [TimeControl "600+5"]
@@ -178,6 +178,26 @@ def test_a_review_stopped_before_it_measured_anything_searches_nothing() -> None
         _game(), [engine], depth=18, multipv=2, thresholds=Thresholds(), stop=stop
     )
     assert engine.calls == [] and reviewed.moves == []
+
+
+def test_a_review_stopped_mid_search_cuts_the_search() -> None:
+    """The room's Pause lands while an engine searches: the search under way is stopped, not
+    finished first with the rest of its position (the audit of 2026-10-05, round 2), and
+    nothing is counted failed."""
+    start = chess.Board().fen()
+    engine = GatedEngine({}, gated=[start])
+    stop = threading.Event()
+    reviewing = threading.Thread(
+        target=lambda: review_game(
+            _game(), [engine], depth=18, multipv=2, thresholds=Thresholds(), stop=stop
+        ),
+        daemon=True,
+    )
+    reviewing.start()
+    assert engine.entered[start].wait(HANG_S)
+    stop.set()
+    reviewing.join(HANG_S)
+    assert not reviewing.is_alive() and engine.stopped == [start]
 
 
 def test_the_clock_and_the_time_each_move_took() -> None:
