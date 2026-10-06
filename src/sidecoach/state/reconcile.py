@@ -1045,9 +1045,14 @@ class Reconciler:
             # The piece on its way is the one the move from the ply moves, off its square and
             # short of the other end: read on either, it is the ply or the next one at rest.
             move = game.move_stack[ply]
-            if obs[move.from_square].kind == "empty" and (
-                flight < 0
-                or (flight != move.to_square and _on_way(move.from_square, move.to_square, flight))
+            # Read on its way, never only missing: a queen taken on h8, gone from the board,
+            # was the ply before it browsed with the queen "unread on her way", every frame
+            # for good (the premove sweep, 2026-10-06, seed 356).
+            if (
+                obs[move.from_square].kind == "empty"
+                and flight >= 0
+                and flight != move.to_square
+                and _on_way(move.from_square, move.to_square, flight)
             ):
                 return ply, flight
         return None, None
@@ -1097,10 +1102,14 @@ class Reconciler:
                 # never passes h2, and the game fell a move behind: the premove sweep,
                 # 2026-10-06, seed 48).
                 passed = root.flight
+                mover = root.board(self.board).turn
                 more = [
                     s
                     for s in more
-                    if len(s.moves) == len(root.moves)  # put back: a drag let go
+                    # Put back: a drag of the user's let go. An opponent's piece is never put
+                    # back (a king read on f3 sliding from f2, then on f2, was read as no move
+                    # at all, and the game fell two moves behind: the premove sweep, seed 673).
+                    if (len(s.moves) == len(root.moves) and mover == self.user_side.color)
                     or any(
                         _on_way(m.from_square, m.to_square, passed)
                         for m in s.moves[len(root.moves) :]
