@@ -45,8 +45,10 @@ At any instant the screen is produced by a hidden state with three parts:
 
 The picture R(state) the site shows, square by square:
 
-- **Browsing** (V is an earlier ply): that ply's position. The queue is empty: browsing
-  cancels it on chess.com, and no site plays premoves while browsing.
+- **Browsing** (V is an earlier ply): that ply's position; no queue is drawn. Browsing
+  cancels the queue on chess.com, and no site plays premoves while browsing; the
+  reconciler keeps the queue under the ply all the same (a frame it reads as a ply browsed
+  may be none), and the live board shown again without it is the queue cancelled.
 - **Latest position, no queue:** P.
 - **Latest position with a queue.** A site does one of two things:
   - **It draws the queue** (chess.com, `premove.move`/`v` in its board bundle). It starts from
@@ -86,20 +88,34 @@ Any short sequence of these events, in order:
 A story's cost is the pictures it needs that no frame showed. Each event between two frames
 makes a picture and only the last is seen, except that a move and the instant reply to it,
 by either side, are one picture: a premove of the user's, a puzzle's or a bot's answer.
-Within the pictures seen alike, a small prior orders stories by what they assume: a premove
-edit (0.1), an instant reply (0.05 for the opponent's, 0.1 for the user's, which is a
-premove), a shape read off its square on a square the story draws empty (0.05), a move that
-is not the piece the frames just showed in the hand (0.1). As built:
+Nothing is weighed (Tai, 2026-10-06: no priors, no heuristics). Of the stories that need
+the fewest unseen pictures, the ones kept are those that assume the fewest **events**: what
+is done to the record (a takeback, a new game, a turn corrected, a piece's kind corrected),
+each move, a premove queue (once, however many steps: where it ends is drawn, the way it
+went never is), and each step through the move list (a ply shown, another, the live board
+again). As built:
 
 - A frame's events may need at most one unseen picture when frames follow each other, and a
   catch-up's worth after a gap (the board unseen, or a frame over half a second late).
 - A story told afresh from the record, throwing away the stories ahead, costs a picture.
-- A story that catches a piece in flight -- a move seen on fewer frames than a move needs
-  to settle, the same piece going on along the same line -- costs two more. A premove step
-  is never a slide's stop (it is drawn at once), and while a queue was already about the
-  rule stands aside (a bot's moves land faster than frames).
-- A queue never comes back over the squares its piece has walked, nor to the square the
-  story's last move of that piece came from: those draw what a shorter story draws.
+- **A piece in flight.** A story whose one piece of the side to move is off its square
+  (read empty) and read on a square a legal move of it passes over -- within half a square
+  of the straight line every site slides it along -- or read nowhere, is that story with
+  the piece on its way. It assumes nothing yet and is kept beside the rest. Read centred on
+  one square two frames running, the piece has stopped. Read again, it is further along
+  the same line; and the move that ends the story passes over where it was read. A frame
+  of an earlier ply with that ply's move on its way, forward or back, is that ply browsed
+  (a takeback slides each move back in turn).
+- **A move the queue hides.** An opponent's move whose squares the drawn queue covers whole
+  is kept beside the story without it, also free of the count: no picture could show it.
+- **Visible before hidden.** When a story with no drawn queue fits, the stories that need
+  one are dropped (Tai, 2026-10-06); a real queue fires with the opponent's next move.
+- A queue that draws nothing (its piece back where it stood) is no story.
+- A ply browsed keeps the story's queue under it, and what earlier frames showed of it. A
+  move from the ply that the game itself played there is the live board again, never a
+  takeback.
+- A story whose position ends the game is kept whatever it assumes: the end shown (a badge,
+  a dialog, the next game) decides (`pending_terminal`).
 
 ## 5. The algorithm: keep every story that fits
 
@@ -112,12 +128,9 @@ On every frame:
    plus queue edits) whose resulting state draws a picture consistent with the frame. The
    search runs from the picture back, as now: the squares that disagree say which pieces
    moved, so only stories touching them are tried.
-2. **Keep.** When the cheapest story needs no unseen picture, the frames showed everything:
-   only it, and stories as likely, are kept. When it needs one, frames were missed, and a
-   story needing one more and no more premoves is kept as well. Likelihood never picks a
-   side to move: an equally seen story with the other side to move is kept until it is
-   three premove assumptions less likely than the cheapest. When none is left, the board is
-   read whole and adopted (the position resync, as now).
+2. **Keep.** The stories with the fewest unseen pictures, of those the fewest events (section
+   4), one to each state. When none is left, the stories are told afresh from the record;
+   when that fails too, the board is read whole and adopted (the position resync).
 3. **Settle.** A hypothesis must be consistent for the settle frames before any of its moves
    count. This is the same rule as now, now applied per hypothesis.
 4. **Commit.** When every story leads to one position, side to move, queue and ply shown,

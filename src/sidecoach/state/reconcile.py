@@ -970,10 +970,11 @@ class Reconciler:
             # takebacks: a king's move taken back read as the king premoved back). Browsing
             # changes nothing of the game: the story goes on underneath, the ply shown over it.
             for story in self._stories:
-                # The premove queue stays under the ply shown, as the site keeps it: the user
-                # browsing with a queue drawn comes back to it (a frame read as a ply browsed
-                # lost the queue, and the queue's moves were told as a walk of their own:
-                # the premove sweep, 2026-10-06, seed 16).
+                # The premove queue stays under the ply shown: a frame read as a ply browsed
+                # may be none, and one that dropped the queue had the queue's moves told as a
+                # walk of their own (the premove sweep, 2026-10-06, seed 16). Where browsing
+                # did clear it (chess.com), the live board shown again is the queue cancelled
+                # (`Search.extend`).
                 base = replace(story, view=None, flight=None)
                 if any(op[0] != "back" for op in base.head):
                     continue  # a story's own game is its moves on the record, taken back or not
@@ -1141,13 +1142,17 @@ class Reconciler:
                 for sq, r in obs.items()
                 if r.kind == "piece" and not r.settled and r.symbol == piece.symbol()
             }
+        # Where a move of the piece could take it: a pawn read four squares up its file is not
+        # on its way (a pawn's a3, a4, a5 one frame each read as one slide a2-a7, and a3-a4
+        # as one push a2-a4: the six-step ladder).
+        ways = [m.to_square for m in picture.legal_moves if m.from_square == start]
         for sq in sorted(ends):
             reading = obs[sq]
             before = self._prev_obs.get(sq)
             if (
                 picture.piece_at(sq) is None
                 and reading.symbol == piece.symbol()
-                and _in_line(start, sq)
+                and any(_on_way(start, to, sq) for to in ways)
                 # Read on its way before, it goes on along that line, past where it was read
                 # (seed 48: a king read on h2 sliding from g3, then on g2, was "on its way"
                 # g3-g2 as well).

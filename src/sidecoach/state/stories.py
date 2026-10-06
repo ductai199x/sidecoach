@@ -389,8 +389,7 @@ class Search:
             if cancelled:
                 node(start, (), story.moves, 1, 0, limit, False)
         if (
-            not story.hidden
-            and story.queue
+            story.queue
             and start.turn != self.user
             and not self.wrong(premove_picture(start, story.queue))
         ):
