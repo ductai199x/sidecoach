@@ -3,8 +3,10 @@
 docs/reconciler-model.md is the design. Every way the game may have gone on past the
 record that the frames allow is kept as a story (`stories.Story`): moves, the user's premove
 queue as the site draws it, a ply of the move list shown, a piece on its way. A story costs
-the pictures it needs that no frame showed; only the stories of the fewest are kept, and no
-likelihood ever drops one. The record takes only what every story agrees on, and the side to
+the pictures it needs that no frame showed; of the stories of the fewest, the ones kept
+assume the fewest events (`_events`), and nothing is weighed. A piece caught on its way and
+an opponent's move the drawn queue hides assume nothing the pictures deny, and stay beside
+the rest. The record takes only what every story agrees on, and the side to
 move is told pending while they disagree on it (`TurnPending`). When they differ only in what
 no picture tells apart, the record follows the one the board shows as a position and keeps
 the others, told again from it.
