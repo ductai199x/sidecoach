@@ -127,6 +127,9 @@ class Story:
     # a straight line, or a negative mark of that frame when it was read on none
     # (`Reconciler._in_flight`); None when the frame showed it at rest.
     flight: int | None = None
+    # The steps through the move list the story has the user take: a ply shown, another ply
+    # shown, the live board shown again. Each is an event as a move is (`reconcile._events`).
+    steps: int = 0
 
     @property
     def ops(self) -> tuple[object, ...]:
