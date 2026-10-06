@@ -287,13 +287,6 @@ def _draws_nothing(record: chess.Board, story: Story) -> bool:
     return premove_picture(board, story.queue).board_fen() == board.board_fen()
 
 
-def _in_line(a: chess.Square, b: chess.Square) -> bool:
-    """Whether `b` lies on a rank, a file or a diagonal through `a`."""
-    files = abs(chess.square_file(a) - chess.square_file(b))
-    ranks = abs(chess.square_rank(a) - chess.square_rank(b))
-    return files == 0 or ranks == 0 or files == ranks
-
-
 def _on_way(a: chess.Square, b: chess.Square, sq: chess.Square) -> bool:
     """Whether a piece sliding in a straight line from `a` to `b` passes over `sq` (or lands
     on it): its centre within half a square of the line, past `a`. A knight's slide g1-f3
@@ -691,12 +684,6 @@ class Reconciler:
             if diff <= undone and matches(earlier, obs, set(obs)):
                 return plies - back
         return None
-
-    def _board_at(self, index: int) -> chess.Board:
-        earlier = self.board.copy()
-        while len(earlier.move_stack) > index:
-            earlier.pop()
-        return earlier
 
     def _shown(self, story: Story) -> chess.Board:
         """What `story` draws: the ply of its game it shows, or its position with its premove
