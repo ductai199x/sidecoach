@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
-from collections.abc import Callable, Hashable, Iterator
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +37,10 @@ DARK = (86, 150, 118)
 YELLOW = (0, 255, 255)
 RED = (0, 0, 255)
 TINT_ALPHA = 0.5
+# The premove tints in BGR: chess.com's `premoveHighlightColor` #f42a32, lichess's
+# `current-premove` rgb(20 30 85), both at half opacity over whatever is under them.
+PREMOVE_RED = (50, 42, 244)
+PREMOVE_NAVY = (85, 30, 20)
 # Square colours (light, dark) in BGR, as the sites draw them. Brown is chess.com's default
 # (the trial games were played on it); green is chess.com's green and the default here;
 # "dark" is a dark board (light squares darker than a white piece's outline is bright);
@@ -616,6 +620,37 @@ def draw_coordinates(
         )
 
 
+def premove_picture(board: chess.Board, queue: Sequence[chess.Move]) -> chess.Board:
+    """The pieces chess.com draws while premoves are queued: the position with every queued
+    step applied in queue order, each lifting the piece off its square and putting it down
+    on the step's square over whatever stood there, of either side (its board bundle's `v`,
+    read 2026-10-05). A step whose square no longer holds a piece of the queue's side (the
+    opponent took it) is skipped; a promotion puts down the promoted piece; castling puts
+    the king on g/c and the rook on f/d. `queue` may mix several pieces, in the order the
+    user queued them."""
+    shown = board.copy(stack=False)
+    side: chess.Color | None = None
+    for move in queue:
+        piece = shown.piece_at(move.from_square)
+        if side is None:
+            first = board.piece_at(move.from_square)
+            side = first.color if first is not None else None
+        if piece is None or piece.color != side:
+            continue
+        shown.remove_piece_at(move.from_square)
+        rank = chess.square_rank(move.from_square)
+        files = chess.square_file(move.to_square) - chess.square_file(move.from_square)
+        if piece.piece_type == chess.KING and abs(files) == 2:
+            rook_from, rook_to = (7, 5) if files > 0 else (0, 3)
+            rook = shown.remove_piece_at(chess.square(rook_from, rank))
+            if rook is not None:
+                shown.set_piece_at(chess.square(rook_to, rank), rook)
+        if move.promotion:
+            piece = chess.Piece(move.promotion, piece.color)
+        shown.set_piece_at(move.to_square, piece)
+    return shown
+
+
 def render_board(
     frame: np.ndarray,
     x0: int,
@@ -647,6 +682,8 @@ def render_board(
     dialog: float | None = None,
     badges: bool = True,
     drag_outline: bool = True,
+    premove_drawn: bool = True,
+    premove_tint: tuple[int, int, int] | None = PREMOVE_RED,
 ) -> None:
     """Render `board`. `dragging` = (origin, hovered square, dx, dy): the origin's piece is
     drawn over the hovered square displaced by (dx, dy) cells, under a hover outline.
@@ -661,11 +698,12 @@ def render_board(
     `drag_outline=False` draws a drag the way chess.com's phone app does: the piece under
     the finger and no outline round the square it is over.
 
-    `premoves` are queues the user has set up while the opponent thinks, drawn the way
-    chess.com draws them: every square of a queue is tinted red, the piece is drawn at
-    the end of its queue and its real square is left empty. A queue is a tuple of moves
-    of one piece, each from the last one's destination; several queues are several
-    pieces.
+    `premoves` are queues the user has set up while the opponent thinks, in the order they
+    were made. `premove_drawn` draws them the way chess.com does (`premove_picture`): the
+    queue played out over the position, every piece it lands on hidden. Without it they are
+    drawn the way lichess does: the pieces where they stand. `premove_tint` is the colour
+    laid over every queued step's two squares (chess.com's red, lichess's navy, any other),
+    or None for none.
 
     `result` ("1-0", "0-1", "1/2-1/2") stamps the site's badges on the two kings;
     `labels` (an alpha) shows the result labels on them instead of, or as well as, the
@@ -692,25 +730,26 @@ def render_board(
     if selected is not None:
         tinted.append((selected, highlight_colour))
     tinted += [(square, RED) for square in red_marks]
-    queued_from: dict[chess.Square, chess.Square] = {}  # the piece's real square -> queue end
-    # A pawn queued to promotion is drawn as the piece it becomes, from then on (chess.com's
-    # queen: Tai's game, 2026-09-28, b6-b1=Q premoved and drawn as a queen on b1).
-    promoted: dict[chess.Square, int] = {}
-    for queue in premoves:
-        for move in queue:
-            tinted += [(move.from_square, RED), (move.to_square, RED)]
-            if move.promotion:
-                promoted[queue[0].from_square] = move.promotion
-        if queue:
-            queued_from[queue[0].from_square] = queue[-1].to_square
+    # The queue in the order it was made: the queues one after another (a test's queues of
+    # different pieces do not cross), or one queue mixing pieces as the user made it.
+    queue = [move for chain in premoves for move in chain]
+    if premove_tint is not None:
+        # Each queued step's two squares, once each (chess.com keys a highlight by its
+        # square), stacked over the last-move highlight, which stays drawn.
+        squares = dict.fromkeys(sq for move in queue for sq in (move.from_square, move.to_square))
+        tinted += [(square, premove_tint) for square in squares]
+    stacked: dict[chess.Square, tuple[int, int, int]] = {}
     for square, overlay in tinted:
         r, c = row_col(square, bottom)
-        base = light if (r + c) % 2 == 0 else dark
+        under = stacked.get(square, light if (r + c) % 2 == 0 else dark)
+        stacked[square] = tint(under, overlay)
+    for square, colour in stacked.items():
+        r, c = row_col(square, bottom)
         cv2.rectangle(
             frame,
             (x0 + c * cell, y0 + r * cell),
             (x0 + (c + 1) * cell - 1, y0 + (r + 1) * cell - 1),
-            tint(base, overlay),
+            colour,
             -1,
         )
     king = board.king(board.turn)
@@ -718,24 +757,13 @@ def render_board(
         draw_check(frame, x0, y0, cell, bottom, king)
     lifted = dragging[0] if dragging else None
     flying = animating[0] if animating else None
-    for square, piece in board.piece_map().items():
+    # Chess.com draws the queue played out (`premove_picture`); lichess leaves the pieces
+    # where they stand and only tints the premove's squares.
+    shown = premove_picture(board, queue) if premove_drawn else board
+    for square, piece in shown.piece_map().items():
         if square in (lifted, flying):
             continue
-        if square in queued_from:
-            continue  # drawn at the end of its queue instead
-        if square in queued_from.values():
-            continue  # a queued capture: the premoved piece is drawn over it
         r, c = row_col(square, bottom)
-        draw_piece(
-            frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol(), style
-        )
-    for origin, end in queued_from.items():
-        piece = board.piece_at(origin)
-        if piece is None:
-            continue
-        if origin in promoted:
-            piece = chess.Piece(promoted[origin], piece.color)
-        r, c = row_col(end, bottom)
         draw_piece(
             frame, x0 + c * cell + cell // 2, y0 + r * cell + cell // 2, cell, piece.symbol(), style
         )
@@ -1003,6 +1031,8 @@ def synthetic_board(
     dialog: float | None = None,
     badges: bool = True,
     drag_outline: bool = True,
+    premove_drawn: bool = True,
+    premove_tint: tuple[int, int, int] | None = PREMOVE_RED,
 ) -> np.ndarray:
     """A board on a busy background. `pieces=False` renders an empty board; `theme` names
     the square colours (see THEMES) unless `light` and `dark` are given; `style` the piece
@@ -1038,6 +1068,8 @@ def synthetic_board(
         "dialog": dialog,
         "badges": badges,
         "drag_outline": drag_outline,
+        "premove_drawn": premove_drawn,
+        "premove_tint": premove_tint,
     }
 
     def draw() -> np.ndarray:

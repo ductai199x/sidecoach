@@ -12,6 +12,7 @@ from sidecoach.events import (
     Unexplained,
 )
 from sidecoach.state.reconcile import Reconciler, cell_agrees
+from sidecoach.state.stories import lone_moves, premove_picture
 from sidecoach.vision.pieces import CellReading, ThemeModel
 from sidecoach.vision.squares import row_col
 from tests.games import recogniser, sans_of
@@ -224,18 +225,31 @@ def test_plies_missed_between_frames_are_caught_up(
 ) -> None:
     """Moves no frame showed, one or several, are told from the position after them
     (test_two_move_catch_up_when_one_move_was_missed,
-    test_four_ply_catch_up_after_window_was_hidden)."""
+    test_four_ply_catch_up_after_window_was_hidden) -- by the next move at the latest. A
+    picture nobody saw can leave two stories a ply apart on the same pieces (e4 c5, or e3
+    c5 and e4 premoved the instant c5 landed); the side to move is never guessed, and the
+    next move tells them apart: a side never moves twice (Tai, 2026-10-05)."""
     model, rec = _setup()
     board = chess.Board()
     _feed(model, rec, board, Side.WHITE, 0.0)
     ts = _play(model, rec, board, list(before))
     for san in missed:
         board.push_san(san)
+    # The window away while they were played: the next frame comes after a gap. Between
+    # frames that follow each other, a story may need one picture nobody saw, not three.
+    ts += 0.4 * len(missed)
     events = []
     for _ in range(3):
         ts += 0.1
         events += _feed(model, rec, board, Side.WHITE, ts, highlight=board.peek())
-    assert sorted(sans_of(events)) == sorted(missed)
+    assert not rec.agrees or rec.board.fen() == board.fen(), "never the wrong side to move"
+    nxt = next(iter(board.legal_moves))
+    board.push(nxt)
+    for _ in range(3):
+        ts += 0.1
+        events += _feed(model, rec, board, Side.WHITE, ts, highlight=nxt)
+    told = sans_of(events)
+    assert sorted(told[: len(missed)]) == sorted(missed) and len(told) == len(missed) + 1
     assert rec.board.fen() == board.fen()
 
 
@@ -573,7 +587,7 @@ def test_story_seen_before_a_drag_is_extended_after_it() -> None:
     assert played == []
     see(3, dragging=(chess.A5, chess.B4, 0.1, -0.1))
     see(2, dragging=(chess.A5, chess.A5, 0.1, -0.1))
-    assert played == [], "a drag is not a move"
+    assert played == ["Ke7", "Kxa5"], "what was seen settled before the drag, the drag nothing"
     board.push_san("Ke8")
     see(6, dragging=(chess.A5, chess.A5, 0.1, -0.1))
     assert played == ["Ke7", "Kxa5", "Ke8"], "the bot's reply confirms the story mid-drag"
@@ -714,38 +728,46 @@ def test_browsing_anywhere_in_a_long_game_is_browsing() -> None:
         assert rec.viewing is None
 
 
-QUEUE_BOARD = "4k3/P7/8/3p4/4P3/8/P7/4K3 w - - 0 1"
-# (position, origin, target, the piece drawn at the target, the queue's moves or None)
-QUEUE_PATHS = [
-    # A pawn takes the double step when that is shorter.
-    (QUEUE_BOARD, chess.A2, chess.A5, "P", ["a2a4", "a4a5"]),
-    # A pawn only captures on the way to its target, never through an empty square.
-    (QUEUE_BOARD, chess.E4, chess.D5, "P", ["e4d5"]),
-    (QUEUE_BOARD, chess.E4, chess.F5, "P", None),
-    # Promotion to the piece drawn on the last rank; a pawn drawn there is not decided.
-    (QUEUE_BOARD, chess.A7, chess.A8, "N", ["a7a8n"]),
-    (QUEUE_BOARD, chess.A7, chess.A8, "P", None),
-    (QUEUE_BOARD, chess.A7, chess.A8, "q", None),  # the wrong colour
-    # A king two squares away has several shortest ways: nothing is assumed.
-    (QUEUE_BOARD, chess.E1, chess.E3, "K", None),
-    (QUEUE_BOARD, chess.E1, chess.E2, "K", ["e1e2"]),
-    # A blocked file has no way at all.
-    ("4k3/8/8/8/8/p7/P7/4K3 w - - 0 1", chess.A2, chess.A4, "P", None),
-    # A queue never passes through the en-passant square: the pawn on e5 may go on up its
-    # file, but not by way of d6 (test_queue_path_never_passes_through_the_en_passant_square).
-    ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", chess.E5, chess.D7, "P", None),
-    ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", chess.E5, chess.E7, "P", ["e5e6", "e6e7"]),
+# (position, queue, the pieces chess.com draws) -- its board bundle's `v`, read 2026-10-05.
+QUEUE_PICTURES = [
+    # Each step lifts the piece and puts it down over whatever stands there, of either side:
+    # the black queen the queue passes over and the knight it lands on are not drawn.
+    (
+        "r3k2r/pppq1ppp/2n5/8/8/2N5/PPPQ1PPP/R3K2R w KQkq - 0 1",
+        ["d2d7", "d7c6"],
+        "r3k2r/ppp2ppp/2Q5/8/8/2N5/PPP2PPP/R3K2R",
+    ),
+    # Castling puts the rook beside the king.
+    ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", ["e1g1"], "r3k2r/8/8/8/8/8/8/R4RK1"),
+    # A promotion puts down the queen, and the queue goes on with it.
+    ("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", ["a7a8q", "a8a5"], "4k3/8/8/Q7/8/8/8/4K3"),
+    # A step whose square holds no piece of the queue's side is passed over.
+    ("4k3/8/8/8/8/8/P7/4K3 w - - 0 1", ["a2a3", "b4b5"], "4k3/8/8/8/8/P7/8/4K3"),
 ]
 
 
-def test_queue_path_shortest_unique_ways() -> None:
-    rec = Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
-    for fen, origin, target, symbol, expected in QUEUE_PATHS:
-        if rec.board.fen() != fen:
-            rec.board = chess.Board(fen)
-        path = rec._queue_path(origin, target, symbol)
-        got = None if path is None else [m.uci() for m in path]
-        assert got == expected, (fen, chess.square_name(origin), chess.square_name(target))
+@pytest.mark.parametrize(("fen", "queue", "drawn"), QUEUE_PICTURES)
+def test_a_queue_is_drawn_played_out_over_the_position(
+    fen: str, queue: list[str], drawn: str
+) -> None:
+    board = chess.Board(fen)
+    picture = premove_picture(board, [chess.Move.from_uci(uci) for uci in queue])
+    assert picture.board_fen() == drawn
+    assert board.fen() == fen, "the position itself is untouched"
+
+
+def test_premoves_are_the_moves_of_a_piece_alone_on_the_board() -> None:
+    """chess.com's generator `_`: a slider premoves through anything and onto anything, a
+    pawn may premove a capture onto an empty square, a king the castling still allowed."""
+    board = chess.Board("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1")
+    rook = {m.uci() for m in lone_moves(board, chess.A1)}
+    assert {"a1a8", "a1h1"} <= rook, "through pieces of either side"
+    pawn = {m.uci() for m in lone_moves(board, chess.E2)}
+    assert pawn == {"e2e3", "e2e4", "e2d3", "e2f3"}
+    king = {m.uci() for m in lone_moves(board, chess.E1)}
+    assert {"e1g1", "e1c1"} <= king
+    board.castling_rights = chess.BB_EMPTY
+    assert not {"e1g1", "e1c1"} & {m.uci() for m in lone_moves(board, chess.E1)}
 
 
 def test_opponent_move_waits_while_its_squares_are_under_the_drag() -> None:
