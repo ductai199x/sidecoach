@@ -14,7 +14,9 @@ the others, told again from it.
 Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
 empty, or unknown; unknown cells carry no evidence either way. A move is played only after
 `settle_frames` frames have shown every square it touches settled, none under something
-drawn (an arrow), and no hover outline of a drag. No colour is read, highlight or tint.
+drawn (an arrow), and no hover outline of a drag. No colour is read, highlight or tint, save
+the site's last-move mark, and only to recover a record that every story has led astray
+(`_marked`).
 
 Browsing the move list is a story too: a frame that shows an earlier ply of a story's game
 is that story with the ply shown, and nothing is played while the user browses. A takeback
@@ -419,6 +421,10 @@ class Reconciler:
     _last_obs: Observation = field(default_factory=dict)
     # The frame before it (`_in_flight`: a piece read on one square twice running has stopped).
     _prev_obs: Observation = field(default_factory=dict)
+    # The site's last-move mark agreed with no story, nor with one told the other way, this
+    # frame (`_marked`), and for how many frames running (`_marked_resync`).
+    _mark_denied: bool = False
+    _unmarked: int = 0
     _ts: float = 0.0
     _last_commit_ts: float | None = None
     # When a frame last fitted a story with a premove queue drawn (`_maybe_position_resync`).
@@ -781,6 +787,9 @@ class Reconciler:
             quiet = frozenset()
         stories = self._fitting(obs, diff, quiet=quiet)
         if stories:
+            adopted = self._marked_resync(obs)
+            if adopted:
+                return events + adopted
             return events + self._decide(stories)
         # Nothing fits the frame: the record is not what the screen shows. A drag hides what is
         # under the hand; the stories wait for the drop, as they are, but the frame is one no
@@ -952,6 +961,7 @@ class Reconciler:
                 # No story kept fits: the frames before were misread. The game is told again
                 # from the record, with a picture the frames since it do not show.
                 found = self._found([Story(cost=1.0)], search, obs)
+            found = self._marked(found, search, obs, record)
         else:
             found = self._found(roots, search, obs)
         browsed: list[Story] = []
@@ -1043,6 +1053,99 @@ class Reconciler:
             ):
                 return ply, flight
         return None, None
+
+    def _marked(
+        self, found: list[Story], search: Search, obs: Observation, record: Story | None
+    ) -> list[Story]:
+        """The recovery from a side to move read the other way (Tai, 2026-10-06: "a good and
+        reliable recovery mechanism"). On a site that draws premoves, the user's moves and
+        the same moves premoved, each fired by the opponent's next, draw every frame alike:
+        once the record is a ply out, the pieces alone never put it back (the premove sweep,
+        2026-10-06, seeds 360, 481, 673, ...). What tells them apart is the site's own mark of
+        the move just played, which a premove is not. When the frame shows the mark and no
+        story that fits has its last move marked, the stories are told again with the side to
+        move the other way, and kept when one of them has. A frame with nothing marked, or
+        a site that marks nothing, changes nothing."""
+        self._mark_denied = False
+        lit = highlighted_squares(obs)
+        if not lit or not found or self._blocked:
+            return found
+        if any(self._marks_hold(s, lit) for s in found):
+            return found
+        flipped: list[Story] = []
+        if _turn_valid(self.board.copy(stack=False), not self.board.turn):
+            root = Story(head=(("flip",),), steps=record.steps if record is not None else 0)
+            flipped = [
+                s
+                for s in self._found([root], search, obs)
+                if s.moves and s.view is None and self._marks_hold(s, lit)
+            ]
+        # Nothing told the other way has the mark either: the record has gone wrong further
+        # back than the side to move (`_marked_resync`).
+        self._mark_denied = not flipped
+        return flipped or found
+
+    def _marked_resync(self, obs: Observation) -> list[Event]:
+        """The board read whole and adopted, when the site's last-move mark has agreed with no
+        story for as many frames as a move needs to be played (`_marked`): the record went
+        wrong further back than a side to move, and every story since explains the screen
+        with a premove queue drawn over the true position (the premove sweep, 2026-10-06,
+        seed 956: a queued king's step read as a takeback). The mark names the side that
+        moved; a picture it does not fit -- a queue still drawn, a piece unread -- is not
+        adopted, and the stories go on."""
+        if not self._mark_denied:
+            self._unmarked = 0
+            return []
+        self._unmarked += 1
+        if self._unmarked < self.settle_frames + 1 or self._finished or len(obs) < 64:
+            return []
+        if any(
+            r.hover or (r.kind == "piece" and (r.symbol is None or not r.settled))
+            for r in obs.values()
+        ):
+            return []
+        adopted = self._adopt_placement(
+            loose_placement(obs), prefer=self.bottom.color, highlighted=highlighted_squares(obs)
+        )
+        if adopted is None or adopted[1]:
+            return []  # the mark does not settle the side to move: nothing proven
+        board = adopted[0]
+        if board.board_fen() == self.board.board_fen() and board.turn == self.board.turn:
+            return []
+        # A position the game has stood in is a ply shown or a takeback under way, marked
+        # with that ply's own move (the flow matrix, 2026-10-06, seed 5 puzzle: two
+        # takebacks pressed quickly were adopted as a position, the game's moves lost).
+        lit = highlighted_squares(obs)
+        earlier = self.board.copy()
+        while earlier.move_stack:
+            earlier.pop()
+            if earlier.board_fen() != board.board_fen() or not earlier.move_stack:
+                continue
+            into = earlier.move_stack[-1]
+            if {into.from_square, into.to_square} <= lit:
+                return []
+        self._unmarked = 0
+        self._clear_story()
+        self.viewing = None
+        self._set_position(board)
+        return self._resynced("position adopted: the site's last-move mark fits no story")
+
+    def _marks_hold(self, story: Story, lit: frozenset[chess.Square]) -> bool:
+        """Whether the site's last-move mark, `lit`, agrees with `story`: both squares of the
+        last move of its game are marked. A ply browsed and a piece on its way carry their
+        own marks, and a game with no move, or a castling (marked by each site its own way),
+        says nothing."""
+        if story.view is not None or story.flight is not None or story.queue:
+            return True  # a queue drawn covers marks with its tint and its pieces
+        board = story.board(self.board)
+        if not board.move_stack:
+            return True
+        last = board.move_stack[-1]
+        moved = board.piece_at(last.to_square)
+        files = abs(chess.square_file(last.from_square) - chess.square_file(last.to_square))
+        if moved is not None and moved.piece_type == chess.KING and files > 1:
+            return True
+        return {last.from_square, last.to_square} <= lit
 
     def _cut(self, story: Story) -> Story | None:
         """The story a move played from the ply `story` shows goes on from: its own moves

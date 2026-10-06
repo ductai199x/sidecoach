@@ -27,8 +27,10 @@ Never relied on, because a theme, a setting or another site changes them:
 - the move list and any text.
 
 They may still be read as hints that speed a decision up. A decision never depends on them:
-the answer must be the same with every colour turned off. (Game-end badges are a separate
-stage, not covered here.)
+the answer must be the same with every colour turned off -- save one recovery, which only
+acts when the site marks the last move and every story contradicts the mark (section 4,
+"Recovery by the site's last-move mark"). (Game-end badges are a separate stage, not
+covered here.)
 
 ## 2. The hidden state
 
@@ -116,6 +118,18 @@ again). As built:
   takeback.
 - A story whose position ends the game is kept whatever it assumes: the end shown (a badge,
   a dialog, the next game) decides (`pending_terminal`).
+- **Recovery by the site's last-move mark** (Tai, 2026-10-06: "a good and reliable recovery
+  mechanism"). On a site that draws premoves, the user's moves and the same moves premoved,
+  each fired by the opponent's next, draw every frame alike: a record a ply out is never put
+  back by the pieces alone. The squares the site marks for the move just played tell them
+  apart (a premove is not that move; chess.com's red premove tint is not read as a mark).
+  When the frame marks squares and no story that fits, with no queue drawn, has its last
+  move marked, the stories are told again with the side to move the other way and kept if
+  one has it (`_marked`). When none has it either, for the frames a move needs to be played,
+  the board is read whole and adopted with the side the mark names (`_marked_resync`) --
+  unless the position is one the game stood in, reached by the marked move: that is a ply
+  shown or a takeback. A frame with nothing marked, or a site that marks nothing, changes
+  nothing: this is the one place a mark is read, and only to recover.
 
 ## 5. The algorithm: keep every story that fits
 
