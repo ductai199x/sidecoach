@@ -26,16 +26,12 @@ import com.sidecoach.vision.Pieces.Kind
  * costs to believe. Every frame each story is extended by the cheapest events that make it
  * draw what the frame shows; the record takes only what every story agrees on. Nothing here
  * reads a colour: a story is checked against the pieces on the squares, and nothing else.
+ *
+ * How a state is drawn (section 3): a site that draws a premove queue (chess.com) plays it out
+ * over the position, each step lifting the piece and putting it down over whatever stood there
+ * ([premovePicture]); a site that does not (lichess) shows the position, and its queue is then
+ * no different from the user's moves played the instant the opponent's lands.
  */
-
-/** What each premove edit adds to a story's prior ([Story.prior]). */
-const val EDIT_PRIOR = 0.1
-
-/**
- * What the opponent's reply the instant the user's move landed adds: common (a puzzle's reply,
- * a bot's, a premove of theirs), yet less likely than a frame that shows one thing.
- */
-const val REPLY_PRIOR = 0.05
 
 /** Positions the premove search may try for one way the queue stood ([Search.edits]). */
 const val EDIT_BUDGET = 300
@@ -45,8 +41,8 @@ const val EDIT_BUDGET = 300
  * position with every step applied in queue order, each lifting the piece off its square and
  * putting it down on the step's square over whatever stood there, of either side (chess.com's
  * board bundle, `v`, read 2026-10-05). A step whose square no longer holds a piece of the
- * queue's side is skipped; a promotion puts down the promoted piece; castling puts the king on
- * g/c and the rook on f/d.
+ * queue's side is skipped (the opponent took it); a promotion puts down the promoted piece;
+ * castling puts the king on g/c and the rook on f/d.
  */
 fun premovePicture(board: Board, queue: List<Move>): Board {
     if (queue.isEmpty()) return board
@@ -85,7 +81,10 @@ fun loneMoves(board: Board, square: Int): List<Move> {
     return LONE_MOVES.getOrPut(Triple(piece, square, rights)) { loneMovesOf(piece, square, rights) }
 }
 
-/** [loneMoves], once for each piece, square and castling rights: they depend on nothing else. */
+/**
+ * `_lone_moves`: [loneMoves], once for each piece, square and castling rights: they depend on
+ * nothing else, and the premove search asks for them a few hundred times a frame.
+ */
 private val LONE_MOVES = java.util.concurrent.ConcurrentHashMap<Triple<Piece, Int, ULong>, List<Move>>()
 
 private fun loneMovesOf(piece: Piece, sq: Int, rights: ULong): List<Move> {
@@ -129,15 +128,22 @@ sealed class HeadOp {
     /** A takeback, seen as a move from an earlier position. */
     data class Back(val plies: Int) : HeadOp()
 
-    /** The record's side to move read the other way. */
+    /**
+     * The record's side to move read the other way: a position adopted with the turn open, or a
+     * turn told wrong.
+     */
     object Flip : HeadOp() { override fun toString() = "('flip',)" }
 }
 
 /**
- * One way the game may have gone on past the record (`stories.Story`): [head] done to the
- * record first, then [moves] played; [queue] the user's premove queue as it stands; [view] the
- * ply of the record shown while the user browses; [cost] the pictures the story needs that no
- * frame showed; [prior] orders stories every frame showed as well.
+ * One way the game may have gone on past the record (`stories.Story`).
+ *
+ * [head] is what was done to the record before anything was played on it, in order ([HeadOp]).
+ * Then [moves] were played. [queue] is the user's premove queue as it stands, which exists only
+ * while the opponent is to move; [view] is the ply of the story's game (the record's moves and
+ * its own) the board shows while the user browses the move list; [cost] is how many pictures
+ * the story needs that no frame showed. Nothing else is weighed: of the stories the pictures
+ * allow, none is likelier.
  */
 data class Story(
     val moves: List<Move> = emptyList(),
@@ -145,13 +151,19 @@ data class Story(
     val head: List<HeadOp> = emptyList(),
     val view: Int? = null,
     val cost: Double = 0.0,
-    val prior: Double = 0.0,
     /** Whether the story holds an opponent's move no picture showed ([Search.unseenReplies]). */
     val hidden: Boolean = false,
-    /** Whether it was charged for catching a piece in flight (`landed`). */
-    val slide: Boolean = false,
-    /** Its moves that were premoves played. Drawn at once, never slid. */
-    val premoved: Set<Move> = emptySet(),
+    /**
+     * The square the last frame read one of its pieces on, off its own and on its way along a
+     * straight line, or a negative mark of that frame when it was read on none
+     * ([Reconciler.inFlight]); null when the frame showed it at rest.
+     */
+    val flight: Int? = null,
+    /**
+     * The steps through the move list the story has the user take: a ply shown, another ply
+     * shown, the live board shown again. Each is an event as a move is (`reconcile._events`).
+     */
+    val steps: Int = 0,
 ) {
     /** What the record must do to become this story's game, in order. */
     val ops: List<Any> get() = head + moves
@@ -185,10 +197,21 @@ data class Story(
         return board
     }
 
-    /** What the screen will go on from: the position, its side to move, the queue, the ply shown. */
+    /**
+     * What the screen will go on from: the position, its side to move, the queue, the ply shown,
+     * and how many times the position has stood there (to three: the draw that ends the game
+     * whichever way it came). Stories with one key differ only in how they got there.
+     */
     fun key(record: Board): List<Any?> {
         val board = board(record)
-        return listOf(board.boardFen(), board.turn, board.castlingRights, queue, view)
+        return listOf(
+            board.boardFen(),
+            board.turn,
+            board.castlingRights,
+            queue,
+            view,
+            if (board.isRepetition(3)) 3 else if (board.isRepetition(2)) 2 else 1,
+        )
     }
 
     /** This story told from a record that has done its first [done] ops. */
@@ -199,9 +222,10 @@ data class Story(
 }
 
 /**
- * What a frame reads, as bitboards, for comparing pictures fast (`stories.Evidence`): the
- * squares read empty, the squares read occupied, and for each piece read by its kind the
- * squares it is read on. Cells that carry no evidence are in none.
+ * What a frame reads, as bitboards, for comparing pictures fast (`stories.Evidence`; a story's
+ * search compares hundreds a frame): the squares read empty, the squares read occupied, and for
+ * each piece read by its kind the squares it is read on. Cells that carry no evidence are in
+ * none.
  */
 class Evidence(val empty: ULong, val occupied: ULong, val kinds: List<Triple<Int, Boolean, ULong>>) {
     /** The squares the frame reads otherwise than [picture], as a bitboard. */
@@ -234,12 +258,20 @@ class Evidence(val empty: ULong, val occupied: ULong, val kinds: List<Triple<Int
     }
 }
 
-/** `unseen`: the pictures [events] made between two frames that neither frame showed. */
-fun unseen(events: Int): Int = maxOf(0, events - 1)
-
 /**
- * The cheapest stories that make one story draw the frame (`stories.Search`; see the desktop
- * for the full account of what a way costs and how the search goes).
+ * The cheapest stories that make one story draw the frame (`stories.Search`; section 5, step 1).
+ *
+ * From the story's position: up to [maxPlies] moves, the sides in turn, each touching a square
+ * the picture gets wrong or one a queue hides, and each witnessed ([witness]: every square it
+ * changes is read, and nothing on them is in motion); every opponent's move plays the queue's
+ * first step at once if it is legal and clears the queue if not (chess.com's `consume`). While
+ * the opponent is to move, the user may also have cancelled the queue, or queued up to
+ * [maxSteps] more steps from where their pieces are drawn, or both. What a way costs is the
+ * pictures it needs that the frames never showed: each move (an opponent's with the queued step
+ * it sets off, drawn in one picture) and each queue edit makes a picture, and only the last of a
+ * frame's is seen ([unseen]). Ways dearer than the cheapest are dropped. [budget] bounds the
+ * positions expanded. [lifted]: a drag is under way, and one of the user's pieces may be off its
+ * square in the user's hand.
  */
 class Search(
     val record: Board,
@@ -248,23 +280,29 @@ class Search(
     val ignore: (Int, CellReading) -> Boolean,
     val witness: (Board, Move) -> Boolean,
     val lifted: Boolean = false,
-    /** The squares a piece in the user's hand may have been lifted from. */
+    /**
+     * The squares a piece in the user's hand may have been lifted from: where the user's pieces
+     * stood before this frame. A story never excuses a piece it moved itself.
+     */
     val liftable: Set<Int> = emptySet(),
     val maxPlies: Int = 4,
     val maxSteps: Int = 3,
     val budget: Int = 4000,
-    val margin: Double = 1.0,
     /** Pictures this frame's events may need that neither frame showed. */
     val maxUnseen: Int = 1,
 ) {
-    private val evidence = Evidence.of(obs, ignore)
-
-    private fun unread(square: Int): Boolean {
+    /** Whether the frame says nothing of [square]. */
+    fun unread(square: Int): Boolean {
         val reading = obs[square]
         return reading == null || reading.kind == Kind.UNKNOWN || ignore(square, reading)
     }
 
-    /** The squares the frame reads otherwise than [picture]; during a drag, less one lifted piece. */
+    private val evidence = Evidence.of(obs, ignore)
+
+    /**
+     * The squares the frame reads otherwise than [picture]; during a drag, less one of the
+     * user's pieces read gone from its square (the one in the user's hand).
+     */
     fun wrong(picture: Board): MutableSet<Int> {
         val mask = evidence.wrong(picture)
         if (mask == 0uL) return LinkedHashSet()
@@ -273,7 +311,7 @@ class Search(
         if (lifted) {
             for (sq in out.sorted()) {
                 val piece = picture.pieceAt(sq)
-                if (sq in liftable && piece != null && piece.colour == user && obs[sq]?.kind == Kind.EMPTY) {
+                if (sq in liftable && piece != null && piece.colour == user && obs.getValue(sq).kind == Kind.EMPTY) {
                     out.remove(sq)
                     break
                 }
@@ -290,21 +328,20 @@ class Search(
         val plies: Int,
         val limit: Int,
         val edits: Boolean,
-        val prior: Double,
         val blind: Boolean = false,
-        val premoved: Set<Move> = emptySet(),
         val paired: Boolean = false,
     )
 
-    /** The ways [story] goes on to draw the frame, none dearer than [ceiling]. */
+    /**
+     * The ways [story] goes on to draw the frame, none dearer than [ceiling]: what the stories
+     * already extended this frame have left worth looking for.
+     */
     fun extend(story: Story, ceiling: Double = Double.POSITIVE_INFINITY): List<Story> {
         val found = ArrayList<Story>()
         var best = Double.POSITIVE_INFINITY
         val budgetLeft = intArrayOf(budget)
 
-        fun allowed(): Double = minOf(ceiling, best + (if (best > story.cost) margin else 0.0))
-
-        fun perfect(): Boolean = found.any { it.cost <= story.cost && it.prior <= story.prior }
+        fun allowed(): Double = minOf(ceiling, best)
 
         fun add(new: Story) {
             if (new.cost <= allowed() || new.cost < best) {
@@ -319,12 +356,12 @@ class Search(
             budgetLeft[0] -= 1
             val wrong = wrong(premovePicture(n.board, n.queue))
             if (wrong.isEmpty()) {
-                add(story.copy(moves = n.moves, queue = n.queue, view = null, premoved = n.premoved, cost = cost, prior = n.prior))
+                add(story.copy(moves = n.moves, queue = n.queue, view = null, cost = cost))
                 return
             }
             if (n.edits && n.board.turn != user && n.plies == n.limit) {
                 // Once for each position, at the deepest level of the pass that reaches it.
-                edits(story, n.board, n.queue, n.moves, n.events, n.prior, wrong, ::add, budgetLeft)
+                edits(story, n.board, n.queue, n.moves, n.events, ::add, budgetLeft)
             }
             // A move changes four squares at most (castling), and a queue hides its own.
             val hidden = HashSet<Int>()
@@ -334,67 +371,91 @@ class Search(
             val children = ArrayList<Triple<Int, Int, Node>>()
             for (move in n.board.legalMoves()) {
                 val touched = touchedSquares(n.board, move)
-                // One move of a frame may live on cells nobody can read; a second is invented.
+                // One move of a frame may live on cells nobody can read (a king under the mate's
+                // badge, its two squares spoiled); a second is invented to fill a turn.
                 val touchesReach = touched.any { it in reach }
                 val unreadMove = !touchesReach && !n.blind && touched.all { unread(it) }
                 if (!(touchesReach || unreadMove) || !witness(n.board, move)) continue
-                if (n.plies >= 2 && move.from == n.moves[n.moves.size - 2].to &&
-                    move.to == n.moves[n.moves.size - 2].from
-                ) continue // there and straight back: no trace, no story
                 val after = n.board.copy(withStack = false)
                 after.push(move)
                 var told = n.moves + move
                 var rest = n.queue
-                var played = n.premoved
+                var fired = false
                 if (n.board.turn != user && n.queue.isNotEmpty()) {
                     val step = n.queue[0]
                     if (after.isLegal(step)) {
                         after.push(step)
                         told = told + step
                         rest = n.queue.drop(1)
-                        played = played + step
+                        fired = true
                     } else {
                         rest = emptyList()
                     }
                 }
-                // A move the instant the other side's lands is drawn in one picture with it.
+                // A move the instant the other side's lands is drawn in one picture with it: the
+                // user's is a premove played, on a site that draws the queue or one that does
+                // not; the opponent's is a puzzle's reply, a bot's, a premove of theirs. Two to a
+                // picture: a reply to a reply is a picture of its own, and a premove fired by the
+                // move is its reply already.
                 val instant = n.plies > 0 && !n.paired
-                val premove = instant && n.board.turn == user
-                if (premove) played = played + move
                 val left = wrong(premovePicture(after, rest)).size
                 val child = Node(
-                    after, rest, told,
-                    n.events + (if (instant) 0 else 1), n.plies + 1, n.limit, n.edits,
-                    n.prior + (if (premove) EDIT_PRIOR else if (instant) REPLY_PRIOR else 0.0),
-                    n.blind || unreadMove, played, instant,
+                    after,
+                    rest,
+                    told,
+                    n.events + (if (instant) 0 else 1),
+                    n.plies + 1,
+                    n.limit,
+                    n.edits,
+                    n.blind || unreadMove,
+                    instant || fired,
                 )
                 children.add(Triple(left, children.size, child))
             }
-            // The moves that leave the least wrong first.
+            // The moves that leave the least wrong first: a budget spent on hopeless moves (a
+            // queen tried on every square before the one it went to, each with premoves to
+            // explain the rest) once ran out before the move that was played.
             for ((_, _, child) in children.sortedWith(compareBy({ it.first }, { it.second }))) node(child)
         }
 
+        // Shortest first: every story of each length is searched before any longer one, so a
+        // budget spent deep can never hide a simple one; and every length is searched, up to the
+        // plies a frame can hold, since a longer story that needs no more pictures nobody saw is
+        // as possible as a shorter one. At each length the moves alone are tried, then with the
+        // queue edited.
         val start = story.board(record)
+        // The queue cancelled before anything else happened, a picture of its own: the user
+        // takes a premove back, and the opponent moves (a premove drawn and cancelled before the
+        // reply was read as fired by the reply and premoved back: the stress sweep, 2026-10-06,
+        // seed 28).
+        val cancelled = story.queue.isNotEmpty() && start.turn != user
         for (limit in 0..maxPlies) {
-            node(Node(start, story.queue, story.moves, 0, 0, limit, false, story.prior, false, story.premoved))
-            // Past a fit that needs a premove, a story a picture longer is looked for in moves alone.
-            if (found.isEmpty()) {
-                node(Node(start, story.queue, story.moves, 0, 0, limit, true, story.prior, false, story.premoved))
-            }
-            // A picture more is two plies: the opponent's move and the premove it sets off.
-            if (found.isNotEmpty() && (perfect() || limit > firstFit(found, story) + 1)) break
+            node(Node(start, story.queue, story.moves, 0, 0, limit, false))
+            node(Node(start, story.queue, story.moves, 0, 0, limit, true))
+            if (cancelled) node(Node(start, emptyList(), story.moves, 1, 0, limit, false))
         }
-        if (!story.hidden && story.queue.isNotEmpty() && start.turn != user &&
+        if (story.queue.isNotEmpty() && start.turn != user &&
             wrong(premovePicture(start, story.queue)).isEmpty()
         ) {
             found.addAll(unseenReplies(story, start))
         }
-        val cap = allowed()
-        return found.filter { it.cost <= cap }
+        // Each story once: the moves alone and the moves with the queue edited find many alike.
+        val unique = LinkedHashMap<Triple<List<Move>, List<Move>, Boolean>, Story>()
+        for (s in found) {
+            if (s.cost <= allowed()) unique.putIfAbsent(Triple(s.moves, s.queue, s.hidden), s)
+        }
+        return unique.values.toList()
     }
 
-    /** `_unseen_replies`: the opponent's moves a queue drawn over their squares hides whole. */
-    private fun unseenReplies(story: Story, start: Board): List<Story> {
+    /**
+     * `_unseen_replies`: the opponent's moves the picture cannot show: a queue drawn over the
+     * squares a move leaves and lands on hides it whole, and the queue's step it sets off as
+     * well. A bot's pawn went c4-c5 under a king queued d3-c4-c5, nothing changed on the screen,
+     * and the game stayed a step behind the site for good (the premove sweep, 2026-10-05, seed
+     * 205). Each such move is kept as a story beside the one without it, as likely, one to a
+     * line of stories: the moves after tell them apart ([Reconciler] `_fitting`).
+     */
+    internal fun unseenReplies(story: Story, start: Board): List<Story> {
         val hidden = HashSet<Int>()
         for (step in story.queue) { hidden.add(step.from); hidden.add(step.to) }
         val out = ArrayList<Story>()
@@ -404,35 +465,37 @@ class Search(
             after.push(move)
             var told = story.moves + move
             var rest = story.queue.drop(1)
-            var premoved = story.premoved
             if (after.isLegal(story.queue[0])) {
                 after.push(story.queue[0])
                 told = told + story.queue[0]
-                premoved = premoved + story.queue[0]
             } else {
                 rest = emptyList()
             }
             if (wrong(premovePicture(after, rest)).isNotEmpty()) continue
-            out.add(story.copy(moves = told, queue = rest, view = null, premoved = premoved, hidden = true))
+            out.add(story.copy(moves = told, queue = rest, view = null, hidden = true))
         }
         return out
     }
 
-    /** `_edits`: the queue cancelled, grown, or cancelled and begun again, so the picture fits. */
+    /**
+     * `_edits`: the queue cancelled, or grown by steps from where the user's pieces are drawn,
+     * or cancelled and begun again, so that the picture fits. A step lands on a square the
+     * picture gets wrong, or on one the frame reads empty on its way to another. A queue moves
+     * only the user's pieces, over whatever is in their way: a square where the frame shows an
+     * opponent's piece the picture has not is beyond any edit.
+     */
     internal fun edits(
         story: Story,
         board: Board,
         queue: List<Move>,
         moves: List<Move>,
         events: Int,
-        prior: Double,
-        @Suppress("UNUSED_PARAMETER") wrongNow: Set<Int>,
         add: (Story) -> Unit,
         budgetLeft: IntArray,
     ) {
         if (queue.isNotEmpty() && wrong(board).isEmpty() && unseen(events + 1) <= maxUnseen) {
             val cost = story.cost + unseen(events + 1)
-            add(story.copy(moves = moves, queue = emptyList(), view = null, cost = cost, prior = prior + EDIT_PRIOR))
+            add(story.copy(moves = moves, queue = emptyList(), view = null, cost = cost))
         }
         val free = obs.filter { (_, r) -> r.kind == Kind.EMPTY }.keys
         val bases = ArrayList<Pair<List<Move>, Int>>()
@@ -451,78 +514,73 @@ class Search(
                 val last = start.pieceAt(base.last().to)
                 if (last != null && last.colour == user) movable.add(base.last().to)
             }
-            // Where a piece moved by the queue now stands, the frame shows it.
-            val targets = off.filter { obs[it]?.kind == Kind.PIECE }.toSet()
+
+            // Where a piece moved by the queue now stands, the frame shows it: every way ends on
+            // such a square, and a step before the last ends one step from one.
+            val targets = off.filter { obs.getValue(it).kind == Kind.PIECE }.toSet()
             if (targets.isEmpty()) continue
+
             // One base's premoves get a share of the budget, not all of it.
             val share = intArrayOf(minOf(budgetLeft[0], EDIT_BUDGET))
+            val fits = intArrayOf(0)
 
-            fun grow(picture: Board, steps: List<Move>) {
+            fun grow(picture: Board, steps: List<Move>, limit: Int) {
                 if (budgetLeft[0] <= 0 || share[0] <= 0) return
                 budgetLeft[0] -= 1
                 share[0] -= 1
                 if (unseen(paid + steps.size) > maxUnseen) return
                 if (steps.isNotEmpty() && steps.last().to in targets && wrong(picture).isEmpty()) {
                     val cost = story.cost + unseen(paid + steps.size)
-                    val more = EDIT_PRIOR * (steps.size + (if (base != queue) 1 else 0))
-                    add(story.copy(moves = moves, queue = base + steps, view = null, cost = cost, prior = prior + more))
+                    add(story.copy(moves = moves, queue = base + steps, view = null, cost = cost))
+                    fits[0] += 1
                     return
                 }
-                val left = maxSteps - steps.size
+                val left = limit - steps.size
                 if (left == 0) return
                 for (sq in if (steps.isNotEmpty()) listOf(steps.last().to) else movable) {
-                    val walkedSet = walked(base + steps, sq, moves)
                     for (step in loneMoves(picture, sq)) {
                         val to = step.to
-                        if (to in walkedSet) continue // back over its own way
                         if (to !in targets) {
                             if (left == 1 || (to !in off && to !in free)) continue
                             if (left == 2 && targets.none { it in loneReach(picture, sq, to) }) continue
                         }
                         val after = picture.copy(withStack = false)
                         applyStep(after, step)
-                        grow(after, steps + step)
+                        grow(after, steps + step, limit)
                     }
                 }
             }
-            grow(start, emptyList())
+
+            // Shortest first: each step more is a picture more, so a queue that fits in fewer
+            // steps ends the search (a queen premoved g3-g1 was crowded out of the budget by
+            // g3-g8-g1, g3-g7-g1, ... searched before it).
+            for (limit in 1..maxSteps) {
+                grow(start, emptyList(), limit)
+                if (fits[0] != 0) break
+            }
         }
     }
 
-    /** `_editable`: whether a queue edit could put [square] right. */
+    /**
+     * `_editable`: whether a queue edit could put [square] right: the picture has one of the
+     * user's pieces there (it moved on), or the frame shows a piece that could be the user's (a
+     * piece moved there), or the frame shows it empty where the picture has the opponent's (a
+     * step went over it and on).
+     */
     private fun editable(picture: Board, square: Int): Boolean {
         val piece = picture.pieceAt(square)
         if (piece != null && piece.colour == user) return true
-        val reading = obs[square]!!
+        val reading = obs.getValue(square)
         if (reading.kind == Kind.EMPTY) return piece != null
         val symbol = reading.symbol ?: return true
         return Piece.fromSymbol(symbol).colour == user
     }
 }
 
-/** `_walked`: the squares the piece queued to [square] has stood on, its own way. */
-internal fun walked(queue: List<Move>, square: Int, moves: List<Move> = emptyList()): Set<Int> {
-    val walked = LinkedHashSet<Int>()
-    walked.add(square)
-    for (step in queue.asReversed()) if (step.to in walked) walked.add(step.from)
-    val origin = origin(queue, square)
-    for (move in moves.asReversed()) {
-        if (move.to == origin) {
-            walked.add(move.from)
-            break
-        }
-    }
-    return walked
-}
-
-/** `_origin`: where the piece queued to [square] stood before its queue. */
-internal fun origin(queue: List<Move>, square: Int): Int {
-    var origin = square
-    for (step in queue.asReversed()) if (step.to == origin) origin = step.from
-    return origin
-}
-
-/** `_apply_step`: one queued step drawn on [board], over whatever is there. */
+/**
+ * `_apply_step`: one queued step drawn on [board]: the piece lifted and put down over whatever
+ * is there ([premovePicture]).
+ */
 internal fun applyStep(board: Board, move: Move) {
     var piece = board.pieceAt(move.from) ?: return
     board.removePieceAt(move.from)
@@ -547,5 +605,8 @@ internal fun loneReach(picture: Board, square: Int, to: Int): Set<Int> {
     return loneMoves(after, to).map { it.to }.toSet()
 }
 
-/** `_first_fit`: the fewest moves past [story] of the stories found. */
-internal fun firstFit(found: List<Story>, story: Story): Int = found.minOf { it.moves.size - story.moves.size }
+/**
+ * `unseen`: the pictures [events] made between two frames that neither frame showed: all but the
+ * last.
+ */
+fun unseen(events: Int): Int = maxOf(0, events - 1)

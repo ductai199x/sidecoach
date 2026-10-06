@@ -130,7 +130,9 @@ class ReconcileOpsTest {
             )
             "turn_from_clock" -> rec.turnFromClock(op.getBoolean("colour"))
             "end" -> rec.end(op.getString("result"), op.getString("reason"))
-            "commit_pending_terminal" -> rec.commitPendingTerminal()
+            "commit_pending_terminal" -> rec.commitPendingTerminal(
+                if (op.isNull("result")) null else op.getString("result"),
+            )
             "reorient" -> rec.reorient(side(op.getString("bottom")))
             "commit" -> rec.commit(Move.fromUci(op.getString("uci")))
             "observe" -> {

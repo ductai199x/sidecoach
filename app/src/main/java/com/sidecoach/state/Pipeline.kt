@@ -562,9 +562,8 @@ class GamePipeline(
         val seen = if (game.badges != null && game.badges!!.first == result) game.badges!!.second + 1 else 1
         game.badges = result to seen
         if (seen < BADGE_FRAMES) return mutableListOf()
-        val pending = rec.pendingTerminal()
-        if (pending != null && pending.second.result() == result) {
-            val events = rec.commitPendingTerminal()
+        if (rec.pendingTerminal(result) != null) {
+            val events = rec.commitPendingTerminal(result)
             if (events.isNotEmpty()) return events
         }
         if (!rec.agrees && seen < BADGE_PATIENCE) {

@@ -1,6 +1,5 @@
 package com.sidecoach.state
 
-import com.sidecoach.chess.BB_EMPTY
 import com.sidecoach.chess.BB_SQUARES
 import com.sidecoach.chess.BISHOP
 import com.sidecoach.chess.BLACK
@@ -15,7 +14,6 @@ import com.sidecoach.chess.QUEEN
 import com.sidecoach.chess.ROOK
 import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
-import com.sidecoach.chess.between
 import com.sidecoach.chess.square
 import com.sidecoach.chess.squareDistance
 import com.sidecoach.chess.squareFile
@@ -44,19 +42,28 @@ import kotlin.math.sign
  * `sidecoach/state/reconcile.py`, line for line.
  *
  * The desktop's docs/reconciler-model.md is the design. Every way the game may have gone on
- * past the record that fits the frames is kept as a story ([Story], `Stories.kt`), costed by
- * the pictures it needs that no frame showed; the record takes only what all of them agree
- * on. Premove queues are part of the state, drawn the way the site draws them, and no colour
- * is read.
+ * past the record that the frames allow is kept as a story ([Story], `Stories.kt`): moves, the
+ * user's premove queue as the site draws it, a ply of the move list shown, a piece on its way. A
+ * story costs the pictures it needs that no frame showed; of the stories of the fewest, the ones
+ * kept assume the fewest events (`_events`), and nothing is weighed. A piece caught on its way
+ * and an opponent's move the drawn queue hides assume nothing the pictures deny, and stay beside
+ * the rest. The record takes only what every story agrees on, and the side to move is told
+ * pending while they disagree on it ([TurnPending]). When they differ only in what no picture
+ * tells apart, the record follows the one the board shows as a position and keeps the others,
+ * told again from it.
  *
- * A move is committed only after it has held `settleFrames` frames in which every square it
- * touches is read settled, none of them is under something drawn, and no square carries the
- * hover outline of a drag. Highlight colours are never consulted.
+ * Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
+ * empty, or unknown; unknown cells carry no evidence either way. A move is played only after
+ * `settleFrames` frames have shown every square it touches settled, none under something drawn
+ * (an arrow), and no hover outline of a drag. No colour is read, highlight or tint.
  *
- * Browsing history is normal; a takeback is recorded only when a different move is played
- * from the earlier position, which is the only way the two can be told apart on the board.
- * Cells that keep disagreeing go stale and are ignored, so one unreadable cell cannot stall
- * the game; resync fires only when several stay unexplained for a long time.
+ * Browsing the move list is a story too: a frame that shows an earlier ply of a story's game is
+ * that story with the ply shown, and nothing is played while the user browses. A takeback is a
+ * different move played from the ply shown, the only way the two can be told apart.
+ *
+ * Cells that keep disagreeing without any move explaining them are treated as stale after a few
+ * frames and ignored, so one unreadable cell cannot stall the game. Resync fires only when
+ * several cells stay unexplained for a long time, which a long drag never triggers.
  */
 
 /**
@@ -77,9 +84,6 @@ private data class StaleKey(
     val colour: Side?,
     val highlighted: Boolean,
 )
-
-/** One op every story agrees on, the frames it has held, and the frames it needs (`_agreed`). */
-private data class Agreed(val op: Any, val count: Int, val need: Int)
 
 /**
  * `reconcile.highlighted_squares`: the squares the site marks as its last move (or a
@@ -269,21 +273,6 @@ const val QUEUE_RESYNC_S = 1.0
 /** A frame later than this after the last is a gap: moves may have come and gone unseen. */
 const val GAP_S = 0.5
 
-/**
- * What a shape off its square on a square a story draws empty adds to its prior
- * ([Reconciler.weighed]): less than a premove edit's.
- */
-const val SHAPE_PRIOR = 0.05
-
-/**
- * How much less likely a story with the other side to move may be and still be kept: three
- * premove assumptions more than the likeliest ([Reconciler.fitting]).
- */
-const val TURN_PRIOR_GAP = 0.29
-
-/** How long the square a dragged piece was lifted from says which piece the hand moved. */
-const val LIFT_MEMORY_S = 2.0
-
 /** Stories kept at most, cheapest first ([Story]). */
 const val MAX_STORIES = 12
 
@@ -321,61 +310,79 @@ fun matches(board: Board, obs: Observation, squares: Set<Int>): Boolean =
     squares.all { sq -> sq !in obs || cellAgrees(obs.getValue(sq), board.pieceAt(sq)) }
 
 /**
- * `reconcile.in_flight`: whether a story has a piece stop partway along a straight line and then
- * go on the same way: a to x, and later x to y by that piece, x strictly between a and y. Every
- * site slides a moved piece in a straight line from its square to the next, and a frame that
- * catches it near the centre of a square on its way reads as a piece standing there; the next
- * frame, the piece further on, then reads as the same piece moving on -- a move, or a premove
- * queued (Tai, 2026-09-25: "I played Rxc1+ but it misunderstood as Rc7"; a pawn sliding d7-d5
- * caught on d6, the stress sweep, 2026-10-05, seed 2). A piece that turns (Kd4-c3, then c3-c4
- * premoved) or comes back is no slide. Geometry alone: no highlight is read. Returns the stop,
- * the move to x, or null.
- */
-fun inFlight(moves: List<Move>): Move? {
-    val landed = HashMap<Int, Move>()
-    for (move in moves) {
-        val came = landed.remove(move.from)
-        if (came != null && between(came.from, move.to) and BB_SQUARES[move.from] != BB_EMPTY) {
-            return came
-        }
-        landed[move.to] = move
-    }
-    return null
-}
-
-/**
- * `reconcile._landed`: [story], two pictures dearer when it catches a piece in flight
- * ([inFlight]) at a stop seen on fewer frames than a move needs to settle: the stop was a frame
- * of the slide, and the move straight from the record is what was played. A stop seen longer was
- * a move: no hand plays a move and premoves on from it inside a tenth of a second. Only a move
- * played can be a stop: a premove is dropped by hand and drawn at once, never slid (the premove
- * sweep, 2026-10-05, seed 57).
- */
-private fun landed(story: Story, agreed: List<Agreed>, queued: Boolean = false): Story {
-    if (story.slide) return story  // charged once, when it was told so
-    // A queue about before this frame: its steps land one for each reply, the bot's replies
-    // faster than frames can witness them, and a pawn the bot pushes twice in two frames is no
-    // slide. A queue this frame's story makes up to explain a piece further on along its line is
-    // no such queue (the stress sweep, seed 2).
-    if (queued) return story
-    val stop = inFlight(story.moves + story.queue)
-    if (stop == null || stop !in story.moves || stop in story.premoved) return story
-    if (agreed.any { it.op == stop && it.count >= 2 }) return story
-    return story.copy(cost = story.cost + 2.0, slide = true)
-}
-
-/**
  * `reconcile._story_order`: stories cheapest first; of equal cost, a takeback or a new game
  * before moves that retell it (a takeback and the bot's quick reply, never four retreats), then
- * fewer moves. The sort is stable: what is left in the order the search found them, so the
- * story followed does not change from frame to frame.
+ * fewer moves. The sort is stable: what is left in the order the search found them, the order
+ * the moves are generated in, so the story followed does not change from frame to frame.
  */
 private val STORY_ORDER: Comparator<Story> = compareBy<Story>(
     { it.cost },
-    { it.prior },
     { s -> if (s.head.any { it is HeadOp.Back || it is HeadOp.NewGame }) 0 else 1 },
     { it.ops.size },
+    { it.queue.size },
 )
+
+/**
+ * `_retold`: [story] told from a record that has played [played], which it does not begin with:
+ * the moves the record played past their common start taken back, then the story's own. Null
+ * when the record's part past the common start is no run of moves to take back, or the story's
+ * own head lies past it.
+ */
+private fun retold(story: Story, played: List<Any>): Story? {
+    val common = commonStart(listOf(story.ops, played)).size
+    if (common < story.head.size) return null
+    val tail = played.drop(common)
+    if (tail.isEmpty() || !tail.all { it is Move }) return null
+    val moves = story.ops.drop(common)
+    check(moves.all { it is Move })
+    return story.copy(head = listOf(HeadOp.Back(tail.size)), moves = moves.map { it as Move })
+}
+
+/**
+ * `_events`: the events [story] assumes: what it does to the record, its moves, and a premove
+ * queue as one -- where a queue ends is drawn, the way it went there never is (a king queued
+ * h3-g3-h4 lost to h3-h4 by a step, and the first step fired put the king on the wrong square:
+ * the flow matrix, 2026-10-06) -- and every step through the move list, a click as a move is:
+ * free, a ply shown read the knights shuffled back to a position as the user browsing to it (the
+ * repetition tests), and a takeback and a move from the ply as the user browsing, coming back and
+ * premoving the move (the flow matrix, 2026-10-06, seed 8 puzzle).
+ */
+private fun events(story: Story): Int =
+    story.head.size + story.moves.size + (if (story.queue.isNotEmpty()) 1 else 0) + story.steps
+
+/** `_draws_nothing`: whether [story]'s premove queue, played out, draws the position itself. */
+private fun drawsNothing(record: Board, story: Story): Boolean {
+    val board = story.board(record)
+    return premovePicture(board, story.queue).boardFen() == board.boardFen()
+}
+
+/** `_in_line`: whether [b] lies on a rank, a file or a diagonal through [a]. */
+@Suppress("unused")
+private fun inLine(a: Int, b: Int): Boolean {
+    val files = kotlin.math.abs(squareFile(a) - squareFile(b))
+    val ranks = kotlin.math.abs(squareRank(a) - squareRank(b))
+    return files == 0 || ranks == 0 || files == ranks
+}
+
+/**
+ * `_on_way`: whether a piece sliding in a straight line from [a] to [b] passes over [sq] (or
+ * lands on it): its centre within half a square of the line, past [a]. A knight's slide g1-f3
+ * passes over the corners of g2 and f2.
+ */
+private fun onWay(a: Int, b: Int, sq: Int): Boolean {
+    val ax = squareFile(a)
+    val ay = squareRank(a)
+    val dx = squareFile(b) - ax
+    val dy = squareRank(b) - ay
+    val px = squareFile(sq) - ax
+    val py = squareRank(sq) - ay
+    val length = dx * dx + dy * dy
+    if (sq == a || length == 0) return false
+    val t = (px * dx + py * dy).toDouble() / length
+    if (!(0 < t && t <= 1)) return false
+    val cross = px * dy - py * dx
+    return (cross * cross).toDouble() <= 0.25 * length + 1e-9
+}
 
 /** `reconcile._common_start`: the ops every list begins with. */
 private fun commonStart(lists: List<List<Any>>): List<Any> {
@@ -450,12 +457,12 @@ class Reconciler(
     private var hoverSeen = false
 
     /**
-     * The stories that fit the frames so far ([Story], docs/reconciler-model.md), and what the
-     * record does next: each op every story agrees on, with the frames it has held and the
-     * frames it needs before it is played ([decide]).
+     * The stories that fit the frames so far ([Story], docs/reconciler-model.md), and for each
+     * run of ops a story begins with, the frames that have shown it settled ([decide]): counted
+     * for every story, whether the stories agree yet or not.
      */
     private var stories: List<Story> = listOf(Story())
-    private var agreed: List<Agreed> = emptyList()
+    private var seen: Map<List<Any>, Int> = emptyMap()
 
     /** Whether the last frame showed the record as it stands (a queue drawn on it aside). */
     private var agreesFlag = true
@@ -532,25 +539,21 @@ class Reconciler(
     private var frameIndex = 0
     private var blockedFlag = false
 
-    /**
-     * Whether a piece is in the user's hand this frame ([update]), and the square the last piece
-     * seen in the hand was lifted from, and when ([otherHand]).
-     */
+    /** Whether a piece is in the user's hand this frame ([update]). */
     private var dragging = false
-    private var lifted: Pair<Int, Double>? = null
 
     /** When the last frame came, and how many unseen pictures a story may need this frame. */
     private var frameTs: Double? = null
     private var maxUnseen = 1
     private var lastObs: Observation = Observation()
+
+    /** The frame before it ([inFlight]: a piece read on one square twice running has stopped). */
+    private var prevObs: Observation = Observation()
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
 
     /** When a frame last fitted a story with a premove queue drawn ([maybePositionResync]). */
     private var queueTs: Double? = null
-
-    /** For how many frames in a row a story with a queue has fitted. */
-    private var queueFrames = 0
 
     val started: Boolean get() = startedFlag
     val finished: Boolean get() = finishedFlag
@@ -684,7 +687,7 @@ class Reconciler(
      */
     private fun clearStory() {
         stories = listOf(Story())
-        agreed = emptyList()
+        seen = emptyMap()
         stale.clear()
         unexplainedFrames = 0
         unexplainedNoted = false
@@ -768,28 +771,43 @@ class Reconciler(
     }
 
     /**
-     * Index of the earlier position of this game the frame shows, if any. Every position back
-     * to the base is checked, one by one, however long the game: a click anywhere in the move
-     * list shows one. Only the last forty were, and the base; a click further back read as a
-     * position no move explains and was adopted by a resync -- the game numbered again from
-     * it, or, after the end, a new game begun -- and stepping forward through the list then
-     * recorded the game's own moves a second time (the state review, 2026-10-01).
+     * Index of the earlier position of this game (or of [board]'s) the frame shows, if any.
+     *
+     * Every position back to the base is checked, one by one, however long the game: a click
+     * anywhere in the move list shows one. Only the last forty were, and the base; a click
+     * further back read as a position no move explains and was adopted by a resync -- the game
+     * numbered again from it, or, after the end, a new game begun -- and stepping forward
+     * through the list then recorded the game's own moves a second time (the state review,
+     * 2026-10-01).
      */
-    private fun historyIndex(obs: Observation, diff: Set<Int>): Int? {
-        val earlier = board.copy()
+    private fun historyIndex(obs: Observation, diff: Set<Int>, board: Board? = null, shown: Int? = null): Int? {
+        val earlier = (board ?: this.board).copy()
         val undone = HashSet<Int>()
-        val plies = board.moveStack.size
+        val plies = earlier.moveStack.size
         for (back in 1..plies) {
             val move = earlier.pop()
             undone.addAll(touchedSquares(earlier, move))
+            if (shown != null && plies - back > shown) continue  // a ply the screen never showed
             if (undone.containsAll(diff) && matches(earlier, obs, obs.keys)) return plies - back
         }
         return null
     }
 
+    @Suppress("unused")
     private fun boardAt(index: Int): Board {
         val earlier = board.copy()
         while (earlier.moveStack.size > index) earlier.pop()
+        return earlier
+    }
+
+    /**
+     * What [story] draws (`_shown`): the ply of its game it shows, or its position with its
+     * premove queue played out.
+     */
+    private fun shown(story: Story): Board {
+        val view = story.view ?: return premovePicture(story.board(board), story.queue)
+        val earlier = story.copy(view = null, queue = emptyList()).board(board).copy()
+        while (earlier.moveStack.size > view) earlier.pop()
         return earlier
     }
 
@@ -830,12 +848,18 @@ class Reconciler(
         var obs = observe(readings)
         if (obs.size < minReadableCells) return events
         var diff: Set<Int> = disagreements(obs)
-        // What stays wrong is counted against the picture the likeliest story draws, not the
-        // record: a premove queue drawn for ten seconds is the story, not stale junk.
-        var lead = leadPicture()
-        var off: Set<Int> = disagreements(obs, lead)
+        // What stays wrong is what no story kept draws: a premove queue drawn for ten seconds is
+        // a story, not stale junk, and so is a square every story but the first explains (a
+        // bishop's square left empty, read stale while the record waited on the stories, and
+        // ignored: the stress sweep, 2026-10-06, seed 60).
+        val pictures = stories.map { shown(it) }.ifEmpty { listOf(board) }
+        var off: Set<Int> = disagreements(obs, pictures[0])
+        for (picture in pictures.drop(1)) {
+            val other = disagreements(obs, picture)
+            off = off.filterTo(LinkedHashSet()) { it in other }
+        }
         advanceStale(off, obs)
-        val ghosts = ghosts(off, obs, lead)
+        val ghosts = ghosts(off, obs, pictures)
         if (ghosts.isNotEmpty()) {
             // An arrow drawn over an empty square reads as a piece of no known kind, off
             // centre, for as long as it is drawn. Once such a reading has gone stale it is
@@ -851,20 +875,13 @@ class Reconciler(
                 r.kind == Kind.PIECE && !r.settled && !decoratedKing(sq, r)
             }
         }
+        prevObs = lastObs
         lastObs = obs
         // A piece in the user's hand: the hover outline a site draws under it, or one of the
         // user's own pieces, known and off its square. A shape of no known kind off a square is
         // a decoration -- a badge, an arrow, a glow -- and no hand.
         dragging = hoverSeen || obs.values.any { r ->
             r.kind == Kind.PIECE && !r.settled && r.symbol != null && r.colour == userSide
-        }
-        if (dragging) {
-            // Which piece the hand holds: the one of the user's read gone from its square.
-            lead = leadPicture()
-            val gone = obs.filter { (sq, r) ->
-                r.kind == Kind.EMPTY && lead.pieceAt(sq)?.colour == userSide.color
-            }.keys.toList()
-            if (gone.size == 1) lifted = gone[0] to ts
         }
 
         if (finishedFlag) {
@@ -948,7 +965,7 @@ class Reconciler(
         // side to move was told wrong and the other side has moved.
         fitted = fitting(obs, diff, roots = misreadRoots(obs, diff))
         if (fitted.isEmpty()) {
-            fitted = fitting(obs, diff, roots = listOf(Story(head = listOf(HeadOp.Flip), cost = 3.0)))
+            fitted = fitting(obs, diff, roots = listOf(Story(head = listOf(HeadOp.Flip))))
         }
         if (fitted.isNotEmpty()) {
             events.addAll(decide(fitted, cautious = true))
@@ -957,6 +974,9 @@ class Reconciler(
 
         // New game: the start position is back on the board.
         if (inProgress && obs.size >= 48 && matches(Board(), obs, obs.keys)) {
+            // The game replaced: a story whose position proves its end is the game's end.
+            val concluded = if (finishedFlag) mutableListOf() else commitPendingTerminal()
+            events.addAll(concluded)
             events.addAll(restart())
             return events
         }
@@ -997,8 +1017,9 @@ class Reconciler(
 
     /**
      * The stories that draw this frame (docs/reconciler-model.md, section 5; `_fitting`): each
-     * story kept, and the record itself, extended by the cheapest events that fit; the record
-     * shown at an earlier ply (browsing); a move played from the ply shown (a takeback).
+     * story kept extended by the cheapest events that fit, or the record told again when none
+     * fits; a story's game shown at an earlier ply (browsing); a move played from the ply shown
+     * (a takeback).
      * [quiet] cells are left out of the matching but witness no move; [wild] cells carry no
      * evidence at all, and a move may pass through them (stale badges); [denied] readings among
      * them must not be contradicted by a square a story changes; [roots], when given, are the
@@ -1029,146 +1050,345 @@ class Reconciler(
             budget = searchBudget,
             maxUnseen = maxUnseen,
         )
-        var from = roots
-        if (from == null) {
-            // The record itself is a root too: a story built on a frame that caught a piece
-            // mid-slide is told again from it. Told from the record, the frames the stories ahead
-            // of it explained -- their moves, the queue they drew -- go unexplained, and that
-            // costs a picture.
-            val fresh = fresh()
-            val all = ArrayList(stories)
-            all.add(Story(cost = fresh))
-            if (turnUnknownFlag) {
+        var found: List<Story>
+        if (roots == null) {
+            // The stories kept are what every frame since the record allows: each carries their
+            // evidence, and only they are extended. A side to move left open is a story of its
+            // own while the record still stands as it was adopted.
+            val from = ArrayList(stories)
+            val record = from.firstOrNull { it.ops.isEmpty() && it.view == null }
+            if (turnUnknownFlag && record != null) {
                 val flipped = board.copy(withStack = false)
-                if (turnValid(flipped, !board.turn)) all.add(Story(head = listOf(HeadOp.Flip), cost = fresh))
+                if (turnValid(flipped, !board.turn)) {
+                    // The same history as the record's story: the steps it took through the move
+                    // list are the flipped one's too.
+                    from.add(Story(head = listOf(HeadOp.Flip), steps = record.steps))
+                }
             }
-            from = all
+            found = this.found(from, search, obs)
+            if (found.isEmpty() && !stories.all { it.ops.isEmpty() && it.queue.isEmpty() }) {
+                // No story kept fits: the frames before were misread. The game is told again from
+                // the record, with a picture the frames since it do not show.
+                found = this.found(listOf(Story(cost = 1.0)), search, obs)
+            }
+        } else {
+            found = this.found(roots, search, obs)
         }
-        var found = ArrayList<Story>()
+        val browsed = ArrayList<Story>()
+        if (diff.isNotEmpty() && !blockedFlag) {
+            // The move list browsed: an earlier ply of a story's game, as it stands -- its moves
+            // not yet told included: a move the user takes back before the record has told it is
+            // in the list all the same (the flow matrix, 2026-10-06, a puzzle with takebacks: a
+            // king's move taken back read as the king premoved back). Browsing changes nothing of
+            // the game: the story goes on underneath, the ply shown over it.
+            for (story in stories) {
+                // The premove queue stays under the ply shown: a frame read as a ply browsed may
+                // be none, and one that dropped the queue had the queue's moves told as a walk of
+                // their own (the premove sweep, 2026-10-06, seed 16). Where browsing did clear it
+                // (chess.com), the live board shown again is the queue cancelled
+                // ([Search.extend]).
+                val base = story.copy(view = null, flight = null)
+                if (base.head.any { it !is HeadOp.Back }) {
+                    continue  // a story's own game is its moves on the record, taken back or not
+                }
+                val game = base.board(board)
+                // The plies the screen has shown: the record's, and the story's own moves as far
+                // as each has been seen settled. A premove fired and never shown at rest is no ply
+                // to browse back to (a premove drawn and cancelled left a story that read a still
+                // board as its own ply browsed, for good: the stress sweep, 2026-10-06, seed 28).
+                var shown = game.moveStack.size - base.moves.size
+                for (i in base.moves.indices) {
+                    if ((this.seen[base.ops.take(base.head.size + i + 1)] ?: 0) < settleFrames) break
+                    shown += 1
+                }
+                var index = historyIndex(obs, disagreements(obs, game), game, shown)
+                var flight: Int? = null
+                if (index == null) {
+                    val ply = browsedInFlight(base, game, shown, search, obs)
+                    index = ply.first
+                    flight = ply.second
+                }
+                val viewed = base.copy(
+                    view = index,
+                    flight = flight,
+                    steps = story.steps + (if (story.view != index) 1 else 0),
+                )
+                if (index != null && viewed !in browsed) browsed.add(viewed)
+            }
+            // A move played from the ply shown: a takeback, or, from the start position of a game
+            // begun there, a new game. An earlier position of the game is browsing: a different
+            // move from the one shown is the only thing a takeback shows.
+            if (browsed.isEmpty()) {
+                for (story in stories) {
+                    val cut = cut(story) ?: continue
+                    // The move the game itself played from the ply is no takeback: it is the live
+                    // board shown again ([found]).
+                    val game = story.copy(view = null, queue = emptyList(), flight = null).board(board)
+                    val view = story.view!!
+                    val stack = game.moveStack
+                    val taken = if (view < stack.size) stack[view] else null
+                    for (s in search.extend(cut)) {
+                        if (s.ops.size > cut.ops.size && s.ops[cut.ops.size] != taken &&
+                            decorationsHold(s, obs)
+                        ) {
+                            browsed.add(s)
+                        }
+                    }
+                }
+            }
+        }
+        return kept(found, browsed, denied)
+    }
+
+    /**
+     * The ply of [base]'s game whose move on from it the frame shows on its way, either way --
+     * played forward through the list, or slid back by a takeback or a step back -- and where
+     * ([inFlight]): the ply and the flight, or (null, null). A takeback slides each move back in
+     * turn, and a frame catches the plies between at their move's slide only: a queen caught on
+     * c2 sliding b3-d1 back was read as two moves played from the ply before (the quick
+     * takebacks, 2026-10-06). `_browsed_in_flight`.
+     */
+    private fun browsedInFlight(
+        base: Story,
+        game: Board,
+        shown: Int,
+        search: Search,
+        obs: Observation,
+    ): Pair<Int?, Int?> {
+        for (ply in minOf(shown, game.moveStack.size - 1) downTo 0) {
+            val flight = inFlight(base.copy(view = ply), search, obs) ?: continue
+            // The piece on its way is the one the move from the ply moves, off its square and
+            // short of the other end: read on either, it is the ply or the next one at rest.
+            val move = game.moveStack[ply]
+            // Read on its way, never only missing: a queen taken on h8, gone from the board, was
+            // the ply before it browsed with the queen "unread on her way", every frame for good
+            // (the premove sweep, 2026-10-06, seed 356).
+            if (obs.getValue(move.from).kind == Kind.EMPTY &&
+                flight >= 0 &&
+                flight != move.to &&
+                onWay(move.from, move.to, flight)
+            ) {
+                return ply to flight
+            }
+        }
+        return null to null
+    }
+
+    /**
+     * The story a move played from the ply [story] shows goes on from (`_cut`): its own moves
+     * past the ply cut off, or, past them, the record's taken back; a new game from the start
+     * position when that is the ply and the game began there. Null when [story] shows no ply.
+     */
+    private fun cut(story: Story): Story? {
+        val view = story.view ?: return null
+        // The ply shown was the takeback, not a step through the list: the step it was counted
+        // as is the takeback's own event.
+        val base = story.copy(view = null, queue = emptyList(), flight = null, steps = maxOf(story.steps - 1, 0))
+        val back = base.board(board).moveStack.size - view
+        if (back <= base.moves.size) return base.copy(moves = base.moves.take(base.moves.size - back))
+        if (view == 0 && baseFenValue == STARTING_FEN) {
+            return Story(head = listOf(HeadOp.NewGame), steps = base.steps)
+        }
+        val taken = back - base.moves.size + base.head.sumOf { op ->
+            when (op) {
+                is HeadOp.Back -> op.plies
+                is HeadOp.Fix -> op.square
+                else -> error("a head of $op has no count")
+            }
+        }
+        return Story(head = listOf(HeadOp.Back(taken)), steps = base.steps)
+    }
+
+    /** Every way the [roots] go on to draw the frame, the cheapest first (`_found`). */
+    private fun found(roots: List<Story>, search: Search, obs: Observation): List<Story> {
+        val found = ArrayList<Story>()
         val seenRoots = HashSet<Pair<List<Any>, List<Move>>>()
-        // The cheapest stories first; each found sets a ceiling on what the rest may cost (the
-        // margin kept by), so a story that could only end up dearer is not searched through --
-        // with five premove stories alive, frames took a third of a second.
+        // The cheapest stories first; each found sets a ceiling on what the rest may cost, so a
+        // story that could only end up dearer than the ones kept is not searched through.
         var ceiling = Double.POSITIVE_INFINITY
-        val queued = stories.any { it.queue.isNotEmpty() || it.premoved.isNotEmpty() }
-        for (story in from.sortedWith(compareBy({ it.cost }, { it.prior }))) {
-            if (story.view != null || story.cost > ceiling) continue
+        for (root in roots.sortedWith(compareBy({ it.cost }, { it.view != null }))) {
+            // Browsing goes on as the story underneath it: the live board shown again, or a move
+            // played on it (an opponent's while the user browsed).
+            val story = if (root.view == null) root else root.copy(view = null)
+            if (story.cost > ceiling) continue
             if (!seenRoots.add(story.ops to story.queue)) continue
-            val more = search.extend(story, ceiling)
+            var more = search.extend(story, ceiling).map {
+                it.copy(flight = null, steps = root.steps + (if (root.view != null) 1 else 0))
+            }
+            val passed = root.flight
+            if (root.view == null && passed != null && passed >= 0) {
+                // The piece was on its way over the square it was read on: its move goes there or
+                // past it (a king read sliding g3-h2 was told as g3-g2, a move that never passes
+                // h2, and the game fell a move behind: the premove sweep, 2026-10-06, seed 48).
+                val mover = root.board(board).turn
+                more = more.filter { s ->
+                    // Put back: a drag of the user's let go. An opponent's piece is never put back
+                    // (a king read on f3 sliding from f2, then on f2, was read as no move at all,
+                    // and the game fell two moves behind: the premove sweep, seed 673).
+                    (s.moves.size == root.moves.size && mover == userSide.color) ||
+                        s.moves.drop(root.moves.size).any { m -> onWay(m.from, m.to, passed) }
+                }
+            }
             found.addAll(more)
             if (more.isNotEmpty()) {
-                // As charged: a slide's stop costs its two pictures here too.
-                val cheapest = found.minOf { landed(it, agreed, queued).cost }
-                ceiling = minOf(ceiling, cheapest + (if (cheapest > 0) 1.0 else 0.0))
+                val cheapest = found.minOf { it.cost }
+                ceiling = minOf(ceiling, cheapest)
+            }
+            val flight = inFlight(root, search, obs)
+            if (flight != null && root.cost <= ceiling) found.add(root.copy(flight = flight))
+        }
+        return found.filter { decorationsHold(it, obs) }
+    }
+
+    /**
+     * The square of the frame's one piece of [story] on its way (`_in_flight`): off its square,
+     * which reads empty, and read on a square in a straight line from it that the story has empty
+     * -- every site slides a moved piece in a straight line, and a frame can catch it centred on
+     * a square it passes; a negative mark when it is read on none, its way over squares the frame
+     * cannot read. Null when the frame shows anything else. A slide never shows its piece centred
+     * on one square in two frames running: read so in the frame before as well, it has stopped
+     * there, and is on its way no longer. Off centre it is moving, however many frames catch it
+     * near one square (a rook sliding a7-c7, caught near b7 twice, was told as Rb7: the stress
+     * sweep, 2026-10-06, seed 16).
+     */
+    private fun inFlight(story: Story, search: Search, obs: Observation): Int? {
+        val picture = shown(story)
+        val wrong = search.wrong(picture)
+        val left = wrong.filter { picture.pieceAt(it) != null && obs.getValue(it).kind == Kind.EMPTY }
+        if (left.size != 1 || wrong.size > 2) return null
+        val start = left[0]
+        val piece = picture.pieceAt(start)!!
+        if (piece.colour != picture.turn) {
+            // Only a move slides a piece, and only the side to move moves; a premove is not drawn
+            // sliding until it fires, on its side's move (a white pawn read sliding c4-c5 with
+            // black to move let a later frame tell black's reply before it: the flow matrix,
+            // 2026-10-06, seed 7 puzzle).
+            return null
+        }
+        var ends: Set<Int> = wrong - start
+        if (ends.isEmpty()) {
+            // The piece read off its square carries no evidence; it is somewhere on its way.
+            ends = obs.filter { (_, r) ->
+                r.kind == Kind.PIECE && !r.settled && r.symbol == piece.symbol()
+            }.keys
+        }
+        // Where a move of the piece could take it: a pawn read four squares up its file is not on
+        // its way (a pawn's a3, a4, a5 one frame each read as one slide a2-a7, and a3-a4 as one
+        // push a2-a4: the six-step ladder).
+        val ways = picture.legalMoves().filter { it.from == start }.map { it.to }
+        val flown = story.flight
+        for (sq in ends.sorted()) {
+            val reading = obs.getValue(sq)
+            val before = prevObs[sq]
+            if (picture.pieceAt(sq) == null &&
+                reading.symbol == piece.symbol() &&
+                ways.any { onWay(start, it, sq) } &&
+                // Read on its way before, it goes on along that line, past where it was read
+                // (seed 48: a king read on h2 sliding from g3, then on g2, was "on its way" g3-g2
+                // as well).
+                (flown == null || flown < 0 || onWay(start, sq, flown)) &&
+                !(reading.settled && before != null && before.settled && before.symbol == piece.symbol())
+            ) {
+                return sq
             }
         }
-
-        fun weigh(list: List<Story>): List<Story> =
-            list.filter { decorationsHold(it, obs) }.map { weighed(landed(it, agreed, queued), obs) }
-
-        // Weighed before browsing is looked for: a takeback's pieces caught sliding back read as
-        // moves from the ply shown, and only the slide's charge lets the browsing in (the
-        // takebacks pressed quickly, 2026-10-05).
-        found = ArrayList(weigh(found))
-        val plain = found.any { it.cost == 0.0 && it.prior == 0.0 && it.queue.isEmpty() }
-        if (diff.isNotEmpty() && !plain && !blockedFlag) {
-            // The move list browsed: an earlier ply of the record, as it stands.
-            val index = if (board.moveStack.isNotEmpty()) historyIndex(obs, diff) else null
-            if (index != null) found.add(Story(view = index, cost = fresh()))
-            // A move played from the ply shown: a takeback, or, from the start position of a
-            // game begun there, a new game. An earlier position of the game is browsing: a
-            // different move from the one shown is the only thing a takeback shows.
-            for (story in stories) {
-                val view = story.view
-                if (view == null || index != null) continue
-                val head = if (view == 0 && baseFenValue == STARTING_FEN) {
-                    listOf<HeadOp>(HeadOp.NewGame)
-                } else {
-                    listOf<HeadOp>(HeadOp.Back(board.moveStack.size - view))
-                }
-                found.addAll(weigh(search.extend(Story(head = head)).filter { it.moves.isNotEmpty() }))
-            }
+        if (wrong == setOf(start)) {
+            // Its square empty and the piece read on no other: it has not vanished, it is
+            // between squares, or over ones the frame cannot read (a pawn sliding d7-d5 under an
+            // arrow was taken as stopped on d6: the stress sweep, 2026-10-06, seed 2; a bishop
+            // over the pawn it was taking: seed 71). Seen on no square, it is seen stopped on
+            // none: the mark is this frame's own, never a square another frame can repeat (a
+            // bishop unread on its way f8-c5, then read on e7, was taken as read on e7 twice and
+            // stopped: seed 60).
+            return -1 - frameIndex
         }
-        if (!denied.isNullOrEmpty()) found = ArrayList(found.filter { spares(it, denied) })
+        return null
+    }
+
+    /**
+     * Of the stories that draw the frame, the ones kept (`_kept`): every one the pictures allow,
+     * one to each state.
+     */
+    private fun kept(found: List<Story>, browsed: List<Story>, denied: Observation?): List<Story> {
+        var all = found + browsed
+        // No story holds a premove queue that draws nothing: played out over the position it
+        // leaves every piece where it stands, so no picture shows it, and it is an assumption with
+        // no trace. A king premoved f6-e7-e6 and then cancelled was read as the queue walked on
+        // back to f6, and that queue shadowed every move after it (the premove sweep, 2026-10-06,
+        // seed 7). Were one real, it fires as the user's instant reply.
+        all = all.filter { it.queue.isEmpty() || !drawsNothing(board, it) }
+        if (!denied.isNullOrEmpty()) all = all.filter { spares(it, denied) }
         // A piece corrected is one the story moves: its move is what says what it was.
-        found = ArrayList(
-            found.filter { s ->
-                s.head.all { op -> op !is HeadOp.Fix || s.moves.any { it.from == op.square } }
-            },
-        )
+        all = all.filter { s ->
+            s.head.all { op -> op !is HeadOp.Fix || s.moves.any { it.from == op.square } }
+        }
         // A side to move read the other way is told by a move played, never by a queue alone: a
         // rook sliding h1-h4 to take the checking queen, caught on h2 and h3, was read as the turn
-        // wrong and the rook premoved, and the side to move was flipped (the desktop's stress
-        // sweep, 2026-10-05, seed 116).
-        found = ArrayList(found.filter { s -> s.moves.isNotEmpty() || HeadOp.Flip !in s.head })
-        if (found.isEmpty()) return emptyList()
-        // The same story found from two roots is one; within a margin of the cheapest only.
-        val best = LinkedHashMap<Triple<List<Any>, List<Move>, Int?>, Story>()
-        for (story in found) {
-            val ident = Triple(story.ops, story.queue, story.view)
-            val had = best[ident]
-            if (had == null || story.cost < had.cost) best[ident] = story
+        // wrong and the rook premoved, and the side to move was flipped (the stress sweep,
+        // 2026-10-05, seed 116).
+        // With the side to move still open, a piece on its way is that move being played, and
+        // says which side it is (a puzzle's setup move caught sliding, its story dropped, was read
+        // as the queen taken and premoved back: the fast puzzles, 2026-10-06).
+        all = all.filter { s ->
+            s.moves.isNotEmpty() || (s.flight != null && turnUnknownFlag) || HeadOp.Flip !in s.head
         }
-        // When the cheapest story needs no picture the frames did not show, the frames showed
-        // everything, and a story that needs one did not happen: after e2-e4, "e2-e3, then e4
-        // premoved" draws the same pieces from a picture nobody saw. When even the cheapest needs
-        // one, frames were missed, and a story needing one more is as possible: kept, so that
-        // nothing is told that only one of them says (the side to move above all).
-        val top = best.values.minWith(compareBy({ it.cost }, { it.prior }))
-        // Likelihood never picks a side to move (Tai, 2026-10-05: "the turn order ... should
-        // never fail"): an equally seen story that leaves the other side to move is kept,
-        // however much less likely, until a move or a cancel tells them apart. Not for ever: a
-        // story that needs `TURN_PRIOR_GAP` more premove assumptions than the likeliest is let
-        // go, or the side to move would stay unknown for good.
-        val turn = top.board(board).turn
-        val kept = best.values.filter { s ->
-            (s.cost == top.cost && s.prior == top.prior) ||
-                (s.cost == top.cost && s.board(board).turn != turn && s.prior < top.prior + TURN_PRIOR_GAP) ||
-                (top.cost > 0 && s.cost <= top.cost + 1.0 && s.prior <= top.prior)
-        }.sortedWith(STORY_ORDER)
-        return kept.take(MAX_STORIES)
-    }
-
-    /**
-     * What a story told afresh from the record costs (`_fresh`): a picture when the stories kept
-     * had moves or a queue the frames before showed. A premove queue walked e5-d6-e6 drew the
-     * board as it was a ply before, and browsing, told afresh, took the next step for a takeback
-     * (the premove sweep, 2026-10-05, seed 16).
-     */
-    private fun fresh(): Double = if (stories.any { it.ops.isNotEmpty() || it.queue.isNotEmpty() }) 1.0 else 0.0
-
-    /**
-     * [story] with what the cells read off their squares says of it (`_weighed`): a piece of a
-     * known kind off its square is a piece moving, or one under something drawn -- no evidence
-     * of what stands there, but some that something does. A story drawing the square empty is the
-     * less likely of two that fit otherwise alike ([Story.prior]).
-     */
-    private fun weighed(story: Story, obs: Observation): Story {
-        val view = story.view
-        val picture = if (view != null) boardAt(view) else premovePicture(story.board(board), story.queue)
-        val hints = obs.count { (sq, r) ->
-            r.kind == Kind.PIECE && !r.settled && r.symbol != null && picture.pieceAt(sq) == null
+        if (all.isEmpty()) return emptyList()
+        // No story assumes more pictures nobody saw than the frames require: after e2-e4, "e2-e3,
+        // then e4 premoved" draws the same pieces from a picture nobody saw.
+        val least = all.minOf { it.cost }
+        var allowed = all.filter { it.cost == least }
+        // Of what the pictures allow alike, the story that assumes the fewest events: moves,
+        // queued steps, what is done to the record. A premove drawn and taken back was read as
+        // moves invented around it (the stress sweep, 2026-10-06, seed 23). A story of a piece on
+        // its way assumes nothing yet, and stays. Nor does a story of an opponent's move the drawn
+        // queue covers whole ([Search.unseenReplies]): no picture could show it, and none says it
+        // did not happen; the queue's end tells (a queen's move under a queued pawn's path,
+        // dropped as an event too many, left the game a move behind for good: the premove sweep,
+        // 2026-10-06, seed 24).
+        // A story whose position ends the game -- a mate, a draw by repetition -- is kept all the
+        // same: the end shown, or the next game, is the evidence that decides it
+        // ([pendingTerminal]).
+        val atRest = allowed.filter { it.flight == null && !it.hidden }
+        if (atRest.isNotEmpty()) {
+            val fewest = atRest.minOf { events(it) }
+            allowed = allowed.filter { s ->
+                s.flight != null ||
+                    s.hidden ||
+                    events(s) == fewest ||
+                    resultOnBoard(s.board(board)) != null
+            }
         }
-        val more = SHAPE_PRIOR * hints + (if (otherHand(story)) EDIT_PRIOR else 0.0)
-        return if (more != 0.0) story.copy(prior = story.prior + more) else story
-    }
-
-    /**
-     * Whether the user's move the story plays first is not the piece the frames just showed in
-     * the user's hand (`_other_hand`). With both queens moved, one played and one premoved, the
-     * pictures after are one and the same; the drag before them showed the queen on g5 lifted
-     * while the one on h4 stood, so g5 is the one played (Tai's third game, 2026-09-14).
-     */
-    private fun otherHand(story: Story): Boolean {
-        val hand = lifted ?: return false
-        if (tsValue - hand.second > LIFT_MEMORY_S) return false
-        val replay = Story(head = story.head).board(board).copy(withStack = false)
-        for (move in story.moves) {
-            if (replay.turn == userSide.color && move !in story.premoved) return move.from != hand.first
-            if (!replay.isLegal(move)) return false
-            replay.push(move)
+        // Visible before hidden (Tai, 2026-10-06): when a story with no premove queue draws the
+        // frame, a story that needs a queue no frame has shown it needs is dropped. On a site that
+        // draws premoves, the user's moves and the same moves premoved a step behind draw every
+        // frame alike, and kept side by side they never part: the record stalled. Read wrong, a
+        // real queue fires with the opponent's next move, and the record is put right by the move
+        // after it. It covers browsing and takebacks against a premove drawing the same pieces as
+        // well (Tai, 2026-10-05: "takeback and browse back has to work correctly always; premove
+        // can be a bit wrong").
+        val queued = allowed.filter { it.queue.isNotEmpty() && it.view == null }
+        if (queued.isNotEmpty() && allowed.any { it !in queued && it.flight == null }) {
+            allowed = allowed.filter { it !in queued }
         }
-        return false
+        // Likelihood never drops a story (Tai, 2026-10-05: the side to move must never go wrong,
+        // and the position must be right once premoves resolve): every story the pictures allow
+        // is kept, whatever it assumes, and the record takes only what all of them agree on.
+        // Stories that end in one state -- position, side to move, queue, ply shown -- have one
+        // future, and are kept as one: the simplest of them, which is the one told when the record
+        // follows it.
+        allowed = allowed.sortedWith(STORY_ORDER)
+        val byState = LinkedHashMap<List<Any?>, Story>()
+        for (story in allowed) byState.putIfAbsent(story.key(board), story)
+        var kept = byState.values.toList()
+        if (kept.size > MAX_STORIES) {
+            // More states than are searched each frame: the cap may never cost a side to move --
+            // the first story of each comes before the rest.
+            val firsts = LinkedHashMap<Boolean, Story>()
+            for (story in kept) firsts.putIfAbsent(story.board(board).turn, story)
+            val heads = firsts.values.toList()
+            kept = heads + kept.filter { it !in heads }.take(MAX_STORIES - heads.size)
+        }
+        return kept
     }
 
     /**
@@ -1200,60 +1420,130 @@ class Reconciler(
     }
 
     /**
+     * The story whose position the screen shows, when the stories differ only in what no picture
+     * can tell apart (`_shown_alike`): each leaves the same side to move and draws the same board,
+     * and the first with no premove queue (and no ply browsed) has the board shown as its
+     * position. Null otherwise.
+     */
+    private fun shownAlike(stories: List<Story>): Story? {
+        if (stories.any { it.view != null }) return null
+        if (stories.map { it.board(board).turn }.toSet().size != 1) return null
+        val drawn = stories.map { premovePicture(it.board(board), it.queue).boardFen() }.toSet()
+        if (drawn.size != 1) return null
+        val lead = stories.firstOrNull { it.queue.isEmpty() } ?: return null
+        // Followed only when every other story can be kept, told again from it: one that cannot
+        // (its side to move read the other way before its moves) would be lost, and with it the
+        // side to move it may be right about.
+        for (story in stories) {
+            if (story.ops.take(lead.ops.size) != lead.ops && retold(story, lead.ops) == null) return null
+        }
+        return lead
+    }
+
+    /**
      * What the record does with the stories that fit (docs/reconciler-model.md, section 5,
      * steps 3 and 4; `_decide`). When every story leads to one key -- one position, one side to
      * move, one queue, one ply shown -- they differ only in how they got there, and the cheapest
      * is the record's to follow. Otherwise the record follows only the ops every story begins
      * with. An op is played once it has held [settleFrames] frames, one more when it came with
-     * others in one frame or from the stale retry. A wrong side to move is never told.
+     * others in one frame or from the stale retry. A wrong side to move is never told: while
+     * stories disagree on it, nothing past their common start is played.
      */
     private fun decide(found: List<Story>, cautious: Boolean = false): MutableList<Event> {
         var fitted = found
-        if (fitted.size == 1 && (fitted[0].cost != 0.0 || fitted[0].prior != 0.0)) {
-            fitted = listOf(fitted[0].copy(cost = 0.0, prior = 0.0))  // alone, its past is the past
+        if (fitted.size == 1 && fitted[0].cost != 0.0) {
+            fitted = listOf(fitted[0].copy(cost = 0.0))  // alone, its past is the past
+        }
+        var concluded: MutableList<Event> = mutableListOf()
+        if (!finishedFlag && fitted.any { it.head.take(1) == listOf(HeadOp.NewGame) }) {
+            // A new game on the board: the game it replaces ends first, with a story the stories
+            // before it prove the end of (a mate, a draw by repetition).
+            concluded = commitPendingTerminal()
+            if (concluded.isNotEmpty()) {
+                // The record has moved on to the old game's end: what is told from it now is the
+                // new game alone, which owes nothing to the record.
+                fitted = fitted.filter { it.head.take(1) == listOf(HeadOp.NewGame) }
+            }
         }
         stories = fitted
-        val told = tellTurn()
+        val told = concluded
+        told.addAll(tellTurn())
         unexplainedFrames = 0
         unexplainedNoted = false
-        agreesFlag = fitted.any { it.ops.isEmpty() && it.view == null }
+        agreesFlag = fitted.any { it.ops.isEmpty() && it.view == null && it.flight == null }
         queueTs = if (fitted.any { it.queue.isNotEmpty() }) tsValue else null
-        queueFrames = if (queueTs != null) queueFrames + 1 else 0
+        // A frame confirms a move only when the squares it changed are seen settled in it: a
+        // frame with a piece in motion keeps the stories, and confirms nothing it cannot see (the
+        // bishop caught on c5 sliding d6-b4 was told as Bc5 on the slide's next frame: the stress
+        // sweep, 2026-10-05, seed 1).
+        val seen = HashMap<List<Any>, Int>()
+        for (story in fitted) {
+            if (story.view != null) {
+                // A ply browsed shows nothing of the story underneath, and takes nothing from it:
+                // what earlier frames showed of it stands (a takeback's story lost the sightings
+                // of the move it went back to, so that ply was no longer one the screen had shown,
+                // and a story with the wrong side to move took over: the flow matrix, 2026-10-06,
+                // seed 6 puzzle).
+                for (i in story.ops.indices) {
+                    val path = story.ops.take(i + 1)
+                    val had = this.seen[path]
+                    if (had != null) seen[path] = maxOf(seen[path] ?: 0, had)
+                }
+                continue
+            }
+            for ((i, now) in seenOps(story.ops).withIndex()) {
+                val path = story.ops.take(i + 1)
+                seen[path] = maxOf(seen[path] ?: 0, (this.seen[path] ?: 0) + now)
+            }
+        }
+        this.seen = seen
+        if (fitted.any { it.view != null }) {
+            // The board may show a ply browsed: a frame of an earlier ply confirms nothing of the
+            // stories underneath, and nothing is played until the live board is shown again. A
+            // takeback's piece caught mid-slide read as a move from the ply browsed, and the
+            // browsing frames after it, counted for that move, told it (the takebacks pressed
+            // quickly, 2026-10-06).
+            if (!blockedFlag) viewing = fitted.firstOrNull { it.view != null }?.view
+            return told
+        }
         val keys = fitted.map { it.key(board) }.toSet()
         // One key is one future: the position, the side to move, the queue and the ply shown are
         // certain, and the record follows the simplest story to them (Tai, 2026-10-05: the side
         // to move first, then the position current, then the moves themselves).
-        val ops: List<Any>
+        var ops: List<Any>
         if (keys.size == 1) {
             val chosen = fitted[0]
             ops = chosen.ops
             if (ops.isEmpty()) {
-                agreed = emptyList()
                 if (chosen.view == null || !blockedFlag) viewing = chosen.view
                 return told
             }
         } else {
             ops = commonStart(fitted.map { it.ops })
+            val lead = shownAlike(fitted)
+            if (lead != null) {
+                // Every story has the side to move of the others and draws the same board, and
+                // one of them has no premove queue: the board shown is its position. The record
+                // follows it at once (Tai, 2026-10-05: the position current, the side to move
+                // exact); the others stay, retold from it ([play]), and the moves are what may be
+                // put right later.
+                ops = lead.ops
+            }
+            if (ops.isEmpty()) {
+                // Nothing all stories agree on yet. What is shown meanwhile is the simplest
+                // story's ply: browsing the move list before a premove that draws the same
+                // picture (Tai, 2026-10-05: a takeback and browsing are always read right). It is
+                // shown only, never played: the record waits for agreement.
+                if (fitted[0].view == null || !blockedFlag) viewing = fitted[0].view
+                return told
+            }
         }
         viewing = null
-        // A frame confirms a move only when the squares it changed are seen settled in it: a
-        // frame with a piece in motion keeps the stories, and confirms nothing it cannot see
-        // (the bishop caught on c5 sliding d6-b4 was told as Bc5 on the slide's next frame: the
-        // stress sweep, 2026-10-05, seed 1).
-        val seen = seenOps(ops)
-        val next = ArrayList<Agreed>()
-        for ((i, op) in ops.withIndex()) {
-            if (i >= agreed.size || agreed[i].op != op) break
-            next.add(Agreed(op, agreed[i].count + seen[i], agreed[i].need))
-        }
-        val fresh = ops.drop(next.size)
-        val plies = fresh.count { it is Move }
-        val need = settleFrames + (if (plies > 1) 1 else 0) + (if (cautious) 1 else 0)
-        val done = next.size
-        for ((i, op) in fresh.withIndex()) next.add(Agreed(op, seen[done + i], need))
-        agreed = next
+        // An op is played once the frames have shown it settled [settleFrames] times, one more
+        // when it came from the stale retry.
+        val need = settleFrames + (if (cautious) 1 else 0)
         var ready = 0
-        while (ready < next.size && next[ready].count >= next[ready].need) ready += 1
+        while (ready < ops.size && (seen[ops.take(ready + 1)] ?: 0) >= need) ready += 1
         if (ready == 0) return told
         val events = play(ops.take(ready))
         told.addAll(events)
@@ -1338,7 +1628,6 @@ class Reconciler(
     /** The record does [ops], and every story is told from it (`_play`). */
     private fun play(ops: List<Any>): MutableList<Event> {
         val before = stories
-        val held = agreed
         val events = mutableListOf<Event>()
         for (op in ops) {
             when (op) {
@@ -1358,8 +1647,21 @@ class Reconciler(
             }
         }
         val done = ops.size
-        stories = before.filter { it.ops.take(done) == ops }.map { it.rebased(done) }.ifEmpty { listOf(Story()) }
-        agreed = held.drop(done)
+        val kept = ArrayList<Story>()
+        for (story in before) {
+            if (story.ops.take(done) == ops) {
+                kept.add(story.rebased(done))
+                continue
+            }
+            val retold = retold(story, ops)
+            if (retold != null) kept.add(retold)
+        }
+        stories = kept.ifEmpty { listOf(Story()) }
+        val seen = LinkedHashMap<List<Any>, Int>()
+        for ((path, count) in this.seen) {
+            if (path.take(done) == ops && path.size > done) seen[path.drop(done)] = count
+        }
+        this.seen = seen
         stale.clear()
         viewing = null
         return events
@@ -1456,22 +1758,35 @@ class Reconciler(
     val unexplainedFor: Int get() = unexplainedFrames
 
     /**
-     * The story every story agrees with, when it ends the game: the mate the site's dialog then
-     * covered before a second clean frame could confirm it.
+     * The story that ends the game, when the end is all the stories leave (`pending_terminal`):
+     * the mate the site's dialog or badges then covered before a clean frame could confirm it.
+     * The end shown is evidence as good as a frame: a story that does not end the game -- with
+     * [result], when the site shows one -- is ruled out by it (a premove queue still drawn is not
+     * a game over; the site clears it). A game over is what its final position proves
+     * ([resultOnBoard]): a mate or a stalemate, dead material, the third repetition or the
+     * fiftieth move played. Every story left must end in one state.
      */
-    fun pendingTerminal(): Pair<List<Move>, Board>? {
-        if (stories.isEmpty()) return null
-        val keys = stories.map { it.key(board) }.toSet()
-        val story = stories[0]
-        if (keys.size != 1 || story.head.isNotEmpty() || story.moves.isEmpty()) return null
-        val end = story.board(board)
-        if (!end.isGameOver()) return null
-        return story.moves to end
+    fun pendingTerminal(result: String? = null): Pair<List<Any>, Board>? {
+        val ended = ArrayList<Pair<Story, Board>>()
+        for (story in stories) {
+            val takesBack = story.head.all { it is HeadOp.Back }
+            if (!takesBack || story.moves.isEmpty() || story.queue.isNotEmpty()) {
+                continue  // a ply browsed over a story is the story still: its view is no end
+            }
+            val end = story.board(board)
+            val proved = resultOnBoard(end)
+            if (proved == null || (result != null && proved.first != result)) continue
+            ended.add(story to end)
+        }
+        if (ended.isEmpty() || ended.map { it.first.copy(view = null).key(board) }.toSet().size != 1) return null
+        val (story, end) = ended[0]
+        return story.ops to end
     }
 
     /** Commit the story that ends the game (see [pendingTerminal]). */
-    fun commitPendingTerminal(): MutableList<Event> {
-        val story = pendingTerminal() ?: return mutableListOf()
+    fun commitPendingTerminal(result: String? = null): MutableList<Event> {
+        val story = pendingTerminal(result) ?: return mutableListOf()
+        stories = stories.filter { it.ops == story.first }.take(1)
         return play(story.first)
     }
 
@@ -1495,37 +1810,34 @@ class Reconciler(
                 if (kind == PAWN && (squareRank(sq) == 0 || squareRank(sq) == 7)) continue
                 val trial = board.copy(withStack = false)
                 trial.setPieceAt(sq, Piece(kind, piece.colour))
-                if (turnValid(trial, trial.turn)) roots.add(Story(head = listOf(HeadOp.Fix(sq, kind)), cost = 2.0))
+                if (turnValid(trial, trial.turn)) roots.add(Story(head = listOf(HeadOp.Fix(sq, kind))))
             }
         }
         return roots
     }
 
-    /** Stale readings of something unnameable on squares the picture has empty (`_ghosts`). */
-    private fun ghosts(off: Set<Int>, obs: Observation, picture: Board): Set<Int> =
+    /** Stale readings of something unnameable on squares every story has empty (`_ghosts`). */
+    private fun ghosts(off: Set<Int>, obs: Observation, pictures: List<Board>): Set<Int> =
         off.filter { sq ->
             stale.getValue(sq).second > staleAfter &&
                 obs.getValue(sq).kind == Kind.PIECE &&
                 obs.getValue(sq).symbol == null &&
-                picture.pieceAt(sq) == null
+                pictures.all { it.pieceAt(sq) == null }
         }.toSet()
 
     /**
-     * Where the user's pieces stood before this frame, as the likeliest story draws them
-     * (`_liftable`): the squares a piece in the hand can have come from.
+     * Where the user's pieces stood before this frame, in any story kept (`_liftable`): the
+     * squares a piece in the hand can have come from. One story's squares only, and the king
+     * lifted off b6 in the story that had it there was no king in hand (the drag of the fourth
+     * game's king walk, 2026-10-06).
      */
-    private fun liftable(): Set<Int> =
-        squaresOf(leadPicture().occupiedCo[if (userSide.color) 1 else 0]).toSet()
-
-    /**
-     * What the likeliest story draws (`_lead_picture`): its position with its queue played out,
-     * or the ply of the record it shows.
-     */
-    private fun leadPicture(): Board {
-        val story = stories.firstOrNull() ?: Story()
-        val view = story.view
-        if (view != null) return boardAt(view)
-        return premovePicture(story.board(board), story.queue)
+    private fun liftable(): Set<Int> {
+        val squares = HashSet<Int>()
+        for (story in stories.ifEmpty { listOf(Story()) }) {
+            val picture = shown(story)
+            squares.addAll(squaresOf(picture.occupiedCo[if (userSide.color) 1 else 0]))
+        }
+        return squares
     }
 
     // Position resync
@@ -1937,8 +2249,11 @@ class Reconciler(
      */
     fun endUnseen(): MutableList<Event> {
         if (!inProgress || finishedFlag) return mutableListOf()
-        val proved = resultOnBoard(board) ?: return mutableListOf()
-        return end(proved.first, proved.second)
+        val concluded = commitPendingTerminal()
+        if (finishedFlag) return concluded
+        val proved = resultOnBoard(board) ?: return concluded
+        concluded.addAll(end(proved.first, proved.second))
+        return concluded
     }
 
     /** The GameEnded of this game as it stands (`ended_event`): also the pipeline's, for a game it drops. */

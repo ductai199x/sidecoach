@@ -160,7 +160,8 @@ REPETITION = ("d4", "d5", "e3", "e6", "Bd3", "Bd6", "Nf3", "Nf6", *("Nc3", "Nc6"
 
 def a_repetition_played(theme: str, style: str) -> list[dict]:
     """Sixteen plies, the last the position's third time, and nothing more: the pipeline ends
-    nothing (a threefold is not `is_game_over`); the session's end draws it
+    nothing (a threefold is not `is_game_over`, and the shuffles are as well browsing, so the
+    moves that repeat it are told only then); the session's end draws it
     (`test_a_session_ended_on_a_repetition_played_records_the_draw`; PanelEngineTest closes a
     GameWatcher on these frames)."""
     board = chess.Board()
@@ -1330,8 +1331,12 @@ EXPECT = {
         any(line.startswith("GameStarted position black " + FLIP_FIRST) for line in lines)
         and any(line.startswith("MovePlayed 1 Nf3 g1f3") for line in lines)
     ),
+    # The knights shuffled back are as well the user browsing back to the position (the
+    # reconciler's `_events`): the moves that repeat it wait, and the session's end tells them
+    # with the draw (`Reconciler.end_unseen`, `commit_pending_terminal`).
     "repetition-green": lambda lines, data: (
-        _sans(lines) == list(REPETITION) and not any(ln.startswith("GameEnded") for ln in lines)
+        _sans(lines) == list(REPETITION[: len(_sans(lines))])
+        and not any(ln.startswith("GameEnded") for ln in lines)
     ),
     "theme-changed-mid-game": lambda lines, data: _told_never_learned(lines, data, 5),
     "set-changed-mid-game": lambda lines, data: _told_never_learned(lines, data, 5),

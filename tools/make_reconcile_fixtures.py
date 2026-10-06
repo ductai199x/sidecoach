@@ -641,7 +641,7 @@ CALLS = {
     ),
     "turn_from_clock": (lambda a: {"colour": a["colour"]}, _events),
     "end": (lambda a: {"result": a["result"], "reason": a["reason"]}, _events),
-    "commit_pending_terminal": (lambda a: {}, _events),
+    "commit_pending_terminal": (lambda a: {"result": a["result"]}, _events),
     "reorient": (lambda a: {"bottom": a["bottom"].value}, _events),
     "_commit": (lambda a: {"uci": a["move"].uci()}, _events),
     "_observe": (

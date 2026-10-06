@@ -10,6 +10,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.TurnPending
 import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.Pieces.CellReading
@@ -195,6 +196,7 @@ class ReconcileTest {
             "MovePlayed ${event.ply} ${event.san} ${event.uci} " +
                 "${if (event.byUser) "user" else "them"} ${event.thinkMs ?: "None"}"
         is Takeback -> "Takeback ${event.plies} ${event.fen}"
+        is TurnPending -> "TurnPending ${if (event.pending) "True" else "False"}"
         is Resync -> "Resync ${event.reason} | ${event.fen}"
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded ->
