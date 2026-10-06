@@ -106,12 +106,12 @@ class DumpReplayTest {
             obs.filter { pick(it.value) }.keys.sorted().map { com.sidecoach.chess.squareName(it) }
         Log.i(
             TAG,
-            "%.3f %s cells %d unsettled %s soft %s hover %s red %s cand %s redSince %s fen %s %s".format(
+            "%.3f %s cells %d unsettled %s soft %s hover %s red %s cand %s queueTs %s fen %s %s".format(
                 ts, what, obs.size,
                 names { it.kind == Pieces.Kind.PIECE && it.symbol != null && !it.settled },
                 names { it.kind == Pieces.Kind.PIECE && it.symbol == null },
                 names { it.hover }, names { it.tint == "red" },
-                cand?.second, field(rec, "redSince"), rec.board.boardFen(), said,
+                cand?.second, field(rec, "queueTs"), rec.board.boardFen(), said,
             ),
         )
     }

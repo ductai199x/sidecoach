@@ -12,6 +12,7 @@ import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.PositionChanged
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.TurnPending
 import com.sidecoach.events.Unexplained
 import com.sidecoach.vision.Pieces
 import com.sidecoach.vision.Pieces.CellReading
@@ -36,7 +37,8 @@ import org.junit.Test
  * it -- and after each, what it said of itself. Here each op is done to the ported reconciler
  * and its answer must be the same: the events, line for line, and the state (the position,
  * the record, browsing, the turn left open, a story pending, a drag, the frames unexplained,
- * whether the record agrees with the screen, which game, the cells remembered).
+ * whether the record agrees with the screen, whether the side to move is pending, which game,
+ * the cells remembered).
  *
  * A run stops at its first difference: what follows it is the difference again.
  */
@@ -131,17 +133,6 @@ class ReconcileOpsTest {
             "commit_pending_terminal" -> rec.commitPendingTerminal()
             "reorient" -> rec.reorient(side(op.getString("bottom")))
             "commit" -> rec.commit(Move.fromUci(op.getString("uci")))
-            "queue_path" -> {
-                val path = rec.queuePath(
-                    op.getInt("origin"),
-                    op.getInt("target"),
-                    op.getString("symbol"),
-                    ints(op.getJSONArray("tinted")).toSet(),
-                    if (op.isNull("board")) null else Board(op.getString("board")),
-                )?.map { it.uci() }
-                val wanted = if (op.isNull("path")) null else strings(op.getJSONArray("path"))
-                return if (path != wanted) "queue path $path, python's $wanted" else null
-            }
             "observe" -> {
                 val seen = rec.observe(readings(table.getString(op.getInt("readings")))).keys.sorted()
                 val wanted = ints(op.getJSONArray("seen"))
@@ -174,8 +165,6 @@ class ReconcileOpsTest {
         resyncHoldS = args.getDouble("resync_hold_s"),
         resyncJumpCells = args.getInt("resync_jump_cells"),
         maxStaleSubsetCells = args.getInt("max_stale_subset_cells"),
-        pendingMaxAge = args.getInt("pending_max_age"),
-        maxChainPlies = args.getInt("max_chain_plies"),
         maxQueueSteps = args.getInt("max_queue_steps"),
         resyncMaxSoft = args.getInt("resync_max_soft"),
         memoryFrames = args.getInt("memory_frames"),
@@ -208,8 +197,6 @@ class ReconcileOpsTest {
             "resync_hold_s" -> rec.resyncHoldS = (value as Number).toDouble()
             "resync_jump_cells" -> rec.resyncJumpCells = value as Int
             "max_stale_subset_cells" -> rec.maxStaleSubsetCells = value as Int
-            "pending_max_age" -> rec.pendingMaxAge = value as Int
-            "max_chain_plies" -> rec.maxChainPlies = value as Int
             "max_queue_steps" -> rec.maxQueueSteps = value as Int
             "resync_max_soft" -> rec.resyncMaxSoft = value as Int
             "memory_frames" -> rec.memoryFrames = value as Int
@@ -235,6 +222,7 @@ class ReconcileOpsTest {
         "blocked" to rec.blocked,
         "unexplained" to rec.unexplainedFor,
         "agrees" to rec.agrees,
+        "turn_pending" to rec.turnPending,
         "game" to games.getOrPut(rec.gameId) { games.size },
         "last_seen" to rec.lastSeen.keys.sorted(),
     )
@@ -305,6 +293,7 @@ class ReconcileOpsTest {
         is Resync -> "Resync ${event.reason} | ${event.fen}"
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
+        is TurnPending -> "TurnPending ${if (event.pending) "True" else "False"}"
         else -> event::class.java.simpleName
     }
 

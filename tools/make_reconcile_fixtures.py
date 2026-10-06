@@ -20,8 +20,8 @@ and the pipeline tests whose games go through one (`RECORDED`) --
 as they stand, with every reconciler they build swapped for one that writes
 down what is done to it: built with which tunables, each frame of readings it is given and the
 events it answers, every call from outside (`start_from`, `turn_from_clock`, `end`,
-`board_unseen`, `commit_pending_terminal`, `reorient`, and the tests' own `_commit`,
-`_queue_path`, `_observe`), every field a test sets on it (`rec.board = ...`, `rec._base_fen`,
+`board_unseen`, `commit_pending_terminal`, `reorient`, and the tests' own `_commit` and
+`_observe`), every field a test sets on it (`rec.board = ...`, `rec._base_fen`,
 `rec.stale_after = 2`), and after each of those what it then says of itself (the position, the
 record, whether it is browsing, whose turn is open, whether a story is pending, ...). The
 tests' own assertions run as well, so a fixture is only written from tests that pass.
@@ -64,6 +64,7 @@ from sidecoach.events import (  # noqa: E402
     Unexplained,
     Side,
     Takeback,
+    TurnPending,
 )
 from sidecoach.state.reconcile import Reconciler  # noqa: E402
 from sidecoach.vision.pieces import ThemeModel, orientation_from_start  # noqa: E402
@@ -114,6 +115,8 @@ def event_json(event) -> str:
         return f"Unexplained {event.reason} | {event.fen}" + (" | told" if event.told else "")
     if isinstance(event, GameEnded):
         return f"GameEnded {event.result} {event.reason} | {event.pgn} | {event.final_fen}"
+    if isinstance(event, TurnPending):
+        return f"TurnPending {event.pending}"
     return type(event).__name__
 
 
@@ -454,8 +457,6 @@ TUNABLES = (
     "resync_hold_s",
     "resync_jump_cells",
     "max_stale_subset_cells",
-    "pending_max_age",
-    "max_chain_plies",
     "max_queue_steps",
     "resync_max_soft",
     "memory_frames",
@@ -555,6 +556,7 @@ class _Log:
             "blocked": rec.blocked,
             "unexplained": rec.unexplained_frames,
             "agrees": rec.agrees,
+            "turn_pending": rec.turn_pending,
             "game": self.games[rec.game_id],
             "last_seen": sorted(rec._last_seen),
         }
@@ -642,16 +644,6 @@ CALLS = {
     "commit_pending_terminal": (lambda a: {}, _events),
     "reorient": (lambda a: {"bottom": a["bottom"].value}, _events),
     "_commit": (lambda a: {"uci": a["move"].uci()}, _events),
-    "_queue_path": (
-        lambda a: {
-            "origin": a["origin"],
-            "target": a["target"],
-            "symbol": a["symbol"],
-            "tinted": sorted(a["tinted"]),
-            "board": None if a["board"] is None else a["board"].fen(),
-        },
-        lambda out: {"path": None if out is None else [m.uci() for m in out]},
-    ),
     "_observe": (
         lambda a: {"readings": LOG.frame(a["readings"])},
         lambda out: {"seen": sorted(out)},
@@ -770,6 +762,10 @@ def record_tests() -> dict:
         names = wanted or sorted({n for n in dir(module) if n.startswith("test_")} | set(kept))
         for test_name in names:
             func = kept.get(test_name) or getattr(module, test_name)
+            if any(mark.name == "xfail" for mark in getattr(func, "pytestmark", [])):
+                # A known limit, failing by design: its assertions say what it cannot do.
+                print(f"  {short}::{test_name}: xfail, not recorded")
+                continue
             seeds = RECORDED_SEEDS.get((module_name, test_name))
             for label, params in _cases(func, module, seeds):
                 _record_case(f"{short}::{test_name}" + (f"[{label}]" if label else ""), func, params)

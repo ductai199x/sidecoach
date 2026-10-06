@@ -163,13 +163,6 @@ def _opponent_move_while_browsing_snaps_to_latest() -> None:
     assert rec.board.fen() == board.fen()
 
 
-def _queue_path_never_passes_through_the_en_passant_square() -> None:
-    rec = rt.Reconciler(bottom=Side.WHITE, user_side=Side.WHITE)
-    rec.board = chess.Board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2")
-    assert rec._queue_path(chess.E5, chess.D7, "P") is None
-    assert rec._queue_path(chess.E5, chess.E7, "P") is not None
-
-
 # ---- tests.test_pipeline ----------------------------------------------------------------
 
 
@@ -609,11 +602,6 @@ FOLDED: dict[str, list[tuple[str, Callable[..., None], dict]]] = {
         (
             "test_opponent_move_while_browsing_snaps_to_latest",
             _opponent_move_while_browsing_snaps_to_latest,
-            {},
-        ),
-        (
-            "test_queue_path_never_passes_through_the_en_passant_square",
-            _queue_path_never_passes_through_the_en_passant_square,
             {},
         ),
     ],

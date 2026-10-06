@@ -27,6 +27,7 @@ import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
+import com.sidecoach.events.TurnPending
 import com.sidecoach.events.Trigger
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.LLMProvider
@@ -636,6 +637,13 @@ class Coach(
     private var pendingAsks = ArrayList<Pair<String, Double>>()
 
     /**
+     * The side to move not known yet ([TurnPending]): nothing unasked is said, and a question
+     * waits for it -- answered for the wrong side, it would teach the wrong move.
+     * `Coach._turn_pending`.
+     */
+    private var turnPending = false
+
+    /**
      * The offline coach asked which move "that" was ([thatMove]): the question, the moment and
      * the ply it was asked at, for the words that answer it ([picked]).
      */
@@ -707,7 +715,14 @@ class Coach(
     // Events in
 
     fun onEvent(event: Event, ts: Double) {
+        if (event is GameStarted || event is Takeback || event is Resync || event is GameEnded) {
+            turnPending = false // a position told whole, with its side to move
+        }
         when (event) {
+            is TurnPending -> {
+                turnPending = event.pending
+                if (!event.pending) answerPending(ts) // the questions held for it, answered now
+            }
             is GameStarted -> newGame(event, ts)
             is MovePlayed -> onMove(event, ts)
             is Analysis -> onAnalysis(event, ts)
@@ -771,6 +786,7 @@ class Coach(
     fun tick(ts: Double) {
         val held = heldLesson
         if (held != null && ts - held.ts >= lessonWaitS) releaseLesson(ts)
+        if (turnPending) return // no hint for a side to move not known yet
         val trigger = policy.tick(ts) ?: return
         val position = current ?: return
         if (position.facts == null) return
@@ -812,6 +828,20 @@ class Coach(
             return
         }
         var position = current
+        if (turnPending && !finished) {
+            // The board has moved on to a side to move not yet known: answered the moment it is,
+            // never for the wrong side (Tai, 2026-10-05: the turn order should never fail).
+            if (pendingAsks.isEmpty()) {
+                queuePlain(
+                    Trigger.USER_ASK,
+                    "One moment -- following the moves on the board.",
+                    ts,
+                    turn = false,
+                )
+            }
+            pendingAsks.add(text to ts)
+            return
+        }
         if (position != null && position.facts == null &&
             (userToMove || waitsForTheBoard(text)) && !finished &&
             !position.board.isGameOver() // a finished board has nothing to read

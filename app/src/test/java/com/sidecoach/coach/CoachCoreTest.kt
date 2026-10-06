@@ -23,6 +23,7 @@ import com.sidecoach.events.Recommendation
 import com.sidecoach.events.Severity
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Trigger
+import com.sidecoach.events.TurnPending
 import com.sidecoach.llm.ChatMessage
 import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
@@ -786,6 +787,30 @@ class CoachCoreTest {
         val answered = messages(coach)
         assertEquals("the last question did not overwrite the first", 2, answered.size)
         assertTrue("Qxf7" in answered[0].text)
+    }
+
+    /**
+     * The reconciler cannot yet say whose move it is ([TurnPending], the desktop's
+     * docs/reconciler-model.md section 6): nothing unasked is said, and a question waits --
+     * answered for the wrong side it would teach the wrong move (Tai, 2026-10-05: the turn order
+     * should never fail). Once the side to move is known again the question is answered.
+     * `test_a_question_while_the_side_to_move_is_not_known_waits_for_it`.
+     */
+    @Test
+    fun aQuestionWhileTheSideToMoveIsNotKnownWaitsForIt() {
+        val (board, analysis) = load("scholar")
+        val coach = offlineCoach()
+        coach.onEvent(GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = board.fen(), kind = "position"), 1.0)
+        coach.onEvent(analysis, 2.0)
+        messages(coach)
+        coach.onEvent(TurnPending(gameId = "g", pending = true), 3.0)
+        coach.ask("what's the best move?", 4.0)
+        assertEquals(listOf("One moment -- following the moves on the board."), messages(coach).map { it.text })
+        coach.tick(120.0) // stuck long past a hint, were the side to move known
+        assertEquals(emptyList<CoachMessage>(), messages(coach))
+        coach.onEvent(TurnPending(gameId = "g", pending = false), 121.0)
+        val answered = messages(coach)
+        assertTrue(answered.toString(), answered.size == 1 && "Qxf7" in answered[0].text)
     }
 
     // 14. The review's sentence names the labels it counts
