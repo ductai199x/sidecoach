@@ -24,11 +24,6 @@ import chess
 from sidecoach.vision.pieces import CellReading
 
 Observation = dict[chess.Square, CellReading]
-# What each premove edit adds to a story's prior (`Story.prior`).
-EDIT_PRIOR = 0.1
-# What the opponent's reply the instant the user's move landed adds: common (a puzzle's
-# reply, a bot's, a premove of theirs), yet less likely than a frame that shows one thing.
-REPLY_PRIOR = 0.05
 # Positions the premove search may try for one way the queue stood (`Search._edits`).
 EDIT_BUDGET = 300
 
@@ -118,23 +113,15 @@ class Story:
     `moves` were played. `queue` is the user's premove queue as it stands, which exists only
     while the opponent is to move; `view` is the ply of the record the board shows while the
     user browses the move list; `cost` is how many pictures the story needs that no frame
-    showed. `prior` only orders stories every frame showed as well: each premove edit adds a
-    little, since a queue step that draws what browsing or a takeback draws (a piece back to
-    the square it came from) is the less likely of the two."""
+    showed. Nothing else is weighed: of the stories the pictures allow, none is likelier."""
 
     moves: tuple[chess.Move, ...] = ()
     queue: tuple[chess.Move, ...] = ()
     head: tuple[tuple[object, ...], ...] = ()
     view: int | None = None
     cost: float = 0.0
-    prior: float = 0.0
     # Whether the story holds an opponent's move no picture showed (`Search._unseen_replies`).
     hidden: bool = False
-    # Whether it was charged for catching a piece in flight (`reconcile._landed`).
-    slide: bool = False
-    # Its moves that were premoves played: a queued step the opponent's move set off, or the
-    # user's move the instant the opponent's landed. Drawn at once, never slid.
-    premoved: frozenset[chess.Move] = frozenset()
 
     @property
     def ops(self) -> tuple[object, ...]:
@@ -308,9 +295,6 @@ class Search:
             # picture the frames did not show (`Reconciler._fitting`).
             return min(ceiling, best[0] + (self.margin if best[0] > story.cost else 0.0))
 
-        def perfect() -> bool:
-            return any(s.cost <= story.cost and s.prior <= story.prior for s in found)
-
         def add(new: Story) -> None:
             if new.cost <= allowed() or new.cost < best[0]:
                 found.append(new)
@@ -324,9 +308,7 @@ class Search:
             plies: int,
             limit: int,
             edits: bool,
-            prior: float,
             blind: bool = False,
-            premoved: frozenset[chess.Move] = frozenset(),
             paired: bool = False,
         ) -> None:
             cost = story.cost + unseen(events)
@@ -335,12 +317,11 @@ class Search:
             budget[0] -= 1
             wrong = self.wrong(premove_picture(board, queue))
             if not wrong:
-                new = replace(story, moves=moves, queue=queue, view=None, premoved=premoved)
-                add(replace(new, cost=cost, prior=prior))
+                add(replace(story, moves=moves, queue=queue, view=None, cost=cost))
                 return
             if edits and board.turn != self.user and plies == limit:
                 # Once for each position, at the deepest level of the pass that reaches it.
-                self._edits(story, board, queue, moves, events, prior, wrong, add, budget)
+                self._edits(story, board, queue, moves, events, add, budget)
             # A move changes four squares at most (castling), and a queue hides its own.
             hidden = {sq for step in queue for sq in (step.from_square, step.to_square)}
             if plies >= limit or len(wrong - hidden) > 4 * (limit - plies):
@@ -366,14 +347,12 @@ class Search:
                 after.push(move)
                 told = moves + (move,)
                 rest = queue
-                played = premoved
                 if board.turn != self.user and queue:
                     step = queue[0]
                     if step in after.legal_moves:
                         after.push(step)
                         told += (step,)
                         rest = queue[1:]
-                        played = played | {step}
                     else:
                         rest = ()
                 # A move the instant the other side's lands is drawn in one picture with it:
@@ -381,9 +360,6 @@ class Search:
                 # does not; the opponent's is a puzzle's reply, a bot's, a premove of theirs.
                 # Two to a picture: a reply to a reply is a picture of its own.
                 instant = plies > 0 and not paired
-                premove = instant and board.turn == self.user
-                if premove:
-                    played = played | {move}
                 left = len(self.wrong(premove_picture(after, rest)))
                 args = (
                     after,
@@ -393,9 +369,7 @@ class Search:
                     plies + 1,
                     limit,
                     edits,
-                    prior + (EDIT_PRIOR if premove else REPLY_PRIOR if instant else 0.0),
                     blind or unread,
-                    played,
                     instant,
                 )
                 children.append((left, len(children), args))
@@ -406,44 +380,14 @@ class Search:
                 node(*args)  # type: ignore[arg-type]
 
         # Shortest first: every story of each length is searched before any longer one, so
-        # a budget spent deep can never hide a simple one. Past the first length that fits,
-        # one more is searched when even the cheapest story needs a picture nobody saw.
+        # a budget spent deep can never hide a simple one; and every length is searched, up
+        # to the plies a frame can hold, since a longer story that needs no more pictures
+        # nobody saw is as possible as a shorter one. At each length the moves alone are
+        # tried, then with the queue edited.
         start = story.board(self.record)
-        # At each length the moves alone are tried first: a queue edit on top of a move is a
-        # picture more, so it is looked for only when no story of that length needs none.
-        # A story that needs neither a picture nobody saw nor a premove ends the search;
-        # one that needs a premove is weighed against stories a move longer.
         for limit in range(self.max_plies + 1):
-            node(
-                start,
-                story.queue,
-                story.moves,
-                0,
-                0,
-                limit,
-                False,
-                story.prior,
-                False,
-                story.premoved,
-            )
-            # Past a fit that needs a premove, a story a picture longer is looked for in moves
-            # alone: a premove on top of it would be the dearer of the two anyway.
-            if not found:
-                node(
-                    start,
-                    story.queue,
-                    story.moves,
-                    0,
-                    0,
-                    limit,
-                    True,
-                    story.prior,
-                    False,
-                    story.premoved,
-                )
-            # A picture more is two plies: the opponent's move and the premove it sets off.
-            if found and (perfect() or limit > _first_fit(found, story) + 1):
-                break
+            node(start, story.queue, story.moves, 0, 0, limit, False)
+            node(start, story.queue, story.moves, 0, 0, limit, True)
         if (
             not story.hidden
             and story.queue
@@ -469,17 +413,14 @@ class Search:
             after.push(move)
             told = story.moves + (move,)
             rest = story.queue[1:]
-            premoved = story.premoved
             if story.queue[0] in after.legal_moves:
                 after.push(story.queue[0])
                 told += (story.queue[0],)
-                premoved = premoved | {story.queue[0]}
             else:
                 rest = ()
             if self.wrong(premove_picture(after, rest)):
                 continue
-            new = replace(story, moves=told, queue=rest, view=None, premoved=premoved)
-            out.append(replace(new, hidden=True))
+            out.append(replace(story, moves=told, queue=rest, view=None, hidden=True))
         return out
 
     def _edits(
@@ -489,8 +430,6 @@ class Search:
         queue: tuple[chess.Move, ...],
         moves: tuple[chess.Move, ...],
         events: int,
-        prior: float,
-        wrong: set[chess.Square],
         add: Callable[[Story], None],
         budget: list[int],
     ) -> None:
@@ -501,11 +440,7 @@ class Search:
         shows an opponent's piece the picture has not is beyond any edit."""
         if queue and not self.wrong(board) and unseen(events + 1) <= self.max_unseen:
             cost = story.cost + unseen(events + 1)
-            add(
-                replace(
-                    story, moves=moves, queue=(), view=None, cost=cost, prior=prior + EDIT_PRIOR
-                )
-            )
+            add(replace(story, moves=moves, queue=(), view=None, cost=cost))
         free = {sq for sq, r in self.obs.items() if r.kind == "empty"}
         bases = [(queue, events)] + ([((), events + 1)] if queue else [])
         for base, paid in bases:
@@ -550,9 +485,7 @@ class Search:
                     return
                 if steps and steps[-1].to_square in targets and not self.wrong(picture):
                     cost = story.cost + unseen(paid + len(steps))
-                    more = EDIT_PRIOR * (len(steps) + (base != queue))
-                    new = replace(story, moves=moves, queue=base + steps, view=None)
-                    add(replace(new, cost=cost, prior=prior + more))
+                    add(replace(story, moves=moves, queue=base + steps, view=None, cost=cost))
                     return
                 left = self.max_steps - len(steps)
                 if not left:
@@ -644,11 +577,6 @@ def _lone_reach(picture: chess.Board, square: chess.Square, to: chess.Square) ->
     after = picture.copy(stack=False)
     _apply_step(after, chess.Move(square, to))
     return {m.to_square for m in lone_moves(after, to)}
-
-
-def _first_fit(found: list[Story], story: Story) -> int:
-    """The fewest moves past `story` of the stories found."""
-    return min(len(s.moves) - len(story.moves) for s in found)
 
 
 def unseen(events: int) -> int:

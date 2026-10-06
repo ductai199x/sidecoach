@@ -603,9 +603,8 @@ class GamePipeline:
         self._badges = (result, seen)
         if seen < BADGE_FRAMES:
             return []
-        pending = rec.pending_terminal()
-        if pending is not None and pending[1].result() == result:
-            events = rec.commit_pending_terminal()
+        if rec.pending_terminal(result) is not None:
+            events = rec.commit_pending_terminal(result)
             if events:
                 return events
         if not rec.agrees and seen < BADGE_PATIENCE:
