@@ -254,9 +254,20 @@ def _story_order(story: Story) -> tuple[object, ...]:
     return (story.cost, head, len(story.ops), len(story.queue))
 
 
-def _rewinds(story: Story) -> bool:
-    """Whether a story takes the record back: a takeback, or a new game."""
-    return any(op[0] in ("back", "newgame") for op in story.head)
+def _retold(story: Story, played: tuple[object, ...]) -> Story | None:
+    """`story` told from a record that has played `played`, which it does not begin with:
+    the moves the record played past their common start taken back, then the story's own.
+    None when the record's part past the common start is no run of moves to take back, or
+    the story's own head lies past it."""
+    common = len(_common_start([story.ops, played]))
+    if common < len(story.head):
+        return None
+    tail = played[common:]
+    if not tail or not all(isinstance(op, chess.Move) for op in tail):
+        return None
+    moves = story.ops[common:]
+    assert all(isinstance(op, chess.Move) for op in moves)
+    return replace(story, head=(("back", len(tail)),), moves=moves)  # type: ignore[arg-type]
 
 
 def _common_start(lists: list[tuple[object, ...]]) -> tuple[object, ...]:
@@ -886,11 +897,17 @@ class Reconciler:
                 found = self._found([Story(cost=1.0)], search, obs)
         else:
             found = self._found(roots, search, obs)
+        browsed: list[Story] = []
         if diff and not self._blocked:
             # The move list browsed: an earlier ply of the record, as it stands.
             index = self._history_index(obs, diff) if self.board.move_stack else None
             if index is not None:
-                found.append(Story(view=index))
+                # Browsing changes nothing of the game: every story kept goes on underneath,
+                # the ply shown over it.
+                for story in self._stories:
+                    viewed = replace(story, view=index)
+                    if viewed not in browsed:
+                        browsed.append(viewed)
             # A move played from the ply shown: a takeback, or, from the start position of a
             # game begun there, a new game. An earlier position of the game is browsing: a
             # different move from the one shown is the only thing a takeback shows.
@@ -901,12 +918,12 @@ class Reconciler:
                     head: tuple[tuple[object, ...], ...] = (("newgame",),)
                 else:
                     head = (("back", len(self.board.move_stack) - story.view),)
-                found += [
+                browsed += [
                     s
                     for s in search.extend(Story(head=head))
                     if s.moves and self._decorations_hold(s, obs)
                 ]
-        return self._kept(found, denied)
+        return self._kept(found, browsed, denied)
 
     def _found(self, roots: list[Story], search: Search, obs: Observation) -> list[Story]:
         """Every way the `roots` go on to draw the frame, the cheapest first."""
@@ -915,11 +932,10 @@ class Reconciler:
         # The cheapest stories first; each found sets a ceiling on what the rest may cost, so
         # a story that could only end up dearer than the ones kept is not searched through.
         ceiling = float("inf")
-        for story in sorted(roots, key=lambda s: s.cost):
-            if story.view is not None:
-                # Browsing goes on from the record as it stands: the live board shown again,
-                # or a move played on it (an opponent's while the user browsed).
-                story = Story(cost=story.cost)
+        for root in sorted(roots, key=lambda s: s.cost):
+            # Browsing goes on as the story underneath it: the live board shown again, or a
+            # move played on it (an opponent's while the user browsed).
+            story = root if root.view is None else replace(root, view=None)
             if story.cost > ceiling:
                 continue
             ident = (story.ops, story.queue)
@@ -933,9 +949,12 @@ class Reconciler:
                 ceiling = min(ceiling, cheapest + (1.0 if cheapest > 0 else 0.0))
         return [s for s in found if self._decorations_hold(s, obs)]
 
-    def _kept(self, found: list[Story], denied: Observation | None) -> list[Story]:
+    def _kept(
+        self, found: list[Story], browsed: list[Story], denied: Observation | None
+    ) -> list[Story]:
         """Of the stories that draw the frame, the ones kept: every one the pictures allow,
         one to each state."""
+        found = found + browsed
         if denied:
             found = [s for s in found if self._spares(s, denied)]
         # A piece corrected is one the story moves: its move is what says what it was.
@@ -962,8 +981,8 @@ class Reconciler:
         # back has to work correctly always; premove can be a bit wrong"). That costs neither
         # the side to move nor the position for long: a queue read as browsing executes when
         # the opponent moves, and the record reads it then as the user's instant reply.
-        if any(s.view is not None or _rewinds(s) for s in allowed):
-            allowed = [s for s in allowed if not s.queue]
+        if any(s in browsed for s in allowed):
+            allowed = [s for s in allowed if s in browsed or not s.queue]
         # Likelihood never drops a story (Tai, 2026-10-05: the side to move must never go
         # wrong, and the position must be right once premoves resolve): every story the
         # pictures allow is kept, whatever it assumes, and the record takes only what all of
@@ -1011,6 +1030,20 @@ class Reconciler:
             for sq, reading in denied.items()
         )
 
+    def _shown_alike(self, stories: list[Story]) -> Story | None:
+        """The story whose position the screen shows, when the stories differ only in what no
+        picture can tell apart: each leaves the same side to move and draws the same board,
+        and the first with no premove queue (and no ply browsed) has the board shown as its
+        position. None otherwise."""
+        if any(s.view is not None for s in stories):
+            return None
+        if len({s.board(self.board).turn for s in stories}) != 1:
+            return None
+        drawn = {premove_picture(s.board(self.board), s.queue).board_fen() for s in stories}
+        if len(drawn) != 1:
+            return None
+        return next((s for s in stories if not s.queue), None)
+
     def _decide(self, stories: list[Story], cautious: bool = False) -> list[Event]:
         """What the record does with the stories that fit (docs/reconciler-model.md, section
         5, steps 3 and 4). When every story leads to one key -- one position, one side to
@@ -1028,6 +1061,13 @@ class Reconciler:
         self._unexplained_noted = False
         self._agrees = any(not s.ops and s.view is None for s in stories)
         self._queue_ts = self._ts if any(s.queue for s in stories) else None
+        if all(s.view is not None for s in stories):
+            # The user browses: the ply shown, and nothing played until the live board is
+            # shown again -- the stories underneath wait as they are.
+            self._agreed = []
+            if not self._blocked:
+                self.viewing = stories[0].view
+            return told
         keys = {s.key(self.board) for s in stories}
         # One key is one future: the position, the side to move, the queue and the ply shown
         # are certain, and the record follows the simplest story to them (Tai, 2026-10-05:
@@ -1042,6 +1082,14 @@ class Reconciler:
                 return told
         else:
             ops = _common_start([s.ops for s in stories])
+            lead = self._shown_alike(stories)
+            if lead is not None:
+                # Every story has the side to move of the others and draws the same board,
+                # and one of them has no premove queue: the board shown is its position. The
+                # record follows it at once (Tai, 2026-10-05: the position current, the side
+                # to move exact); the others stay, retold from it (`_play`), and the moves are
+                # what may be put right later.
+                ops = lead.ops
             if not ops:
                 # Nothing all stories agree on yet. What is shown meanwhile is the simplest
                 # story's ply: browsing the move list before a premove that draws the same
@@ -1181,7 +1229,15 @@ class Reconciler:
                 assert isinstance(square, int) and isinstance(kind, int)
                 events += self._fix(square, kind)
         done = len(ops)
-        self._stories = [s.rebased(done) for s in stories if s.ops[:done] == ops] or [Story()]
+        kept = []
+        for story in stories:
+            if story.ops[:done] == ops:
+                kept.append(story.rebased(done))
+                continue
+            retold = _retold(story, ops)
+            if retold is not None:
+                kept.append(retold)
+        self._stories = kept or [Story()]
         self._agreed = agreed[done:]
         self._stale = {}
         self.viewing = None

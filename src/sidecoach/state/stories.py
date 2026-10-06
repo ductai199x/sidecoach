@@ -337,12 +337,6 @@ class Search:
                 )
                 if not (touched & reach or unread) or not self.witness(board, move):
                     continue
-                if (
-                    plies >= 2
-                    and move.from_square == moves[-2].to_square
-                    and move.to_square == moves[-2].from_square
-                ):
-                    continue  # there and straight back: no trace, no story
                 after = board.copy(stack=False)
                 after.push(move)
                 told = moves + (move,)
@@ -491,11 +485,8 @@ class Search:
                 if not left:
                     return
                 for sq in [steps[-1].to_square] if steps else movable:
-                    walked = _walked(base + steps, sq, moves)
                     for step in lone_moves(picture, sq):
                         to = step.to_square
-                        if to in walked:
-                            continue  # back over its own way: the shorter queue draws the same
                         if to not in targets:
                             if left == 1 or (to not in off and to not in free):
                                 continue
@@ -523,35 +514,6 @@ class Search:
         if reading.symbol is None:
             return True
         return chess.Piece.from_symbol(reading.symbol).color == self.user
-
-
-def _walked(
-    queue: Sequence[chess.Move], square: chess.Square, moves: Sequence[chess.Move] = ()
-) -> set[chess.Square]:
-    """The squares the piece queued to `square` has stood on in `queue`, and the square the
-    story's last move of it came from: its own way, not another piece's -- a pawn may be
-    premoved onto the square a queen's step leaves. A piece premoved back where it just came
-    from draws the picture before the move: a bishop that took on h3 and was premoved back to
-    e6 explained a knight caught in flight as taken (the cold start, 2026-10-05)."""
-    walked = {square}
-    for step in reversed(queue):
-        if step.to_square in walked:
-            walked.add(step.from_square)
-    origin = _origin(queue, square)
-    for move in reversed(moves):
-        if move.to_square == origin:
-            walked.add(move.from_square)
-            break
-    return walked
-
-
-def _origin(queue: Sequence[chess.Move], square: chess.Square) -> chess.Square:
-    """Where the piece queued to `square` stood before its queue."""
-    origin = square
-    for step in reversed(queue):
-        if step.to_square == origin:
-            origin = step.from_square
-    return origin
 
 
 def _apply_step(board: chess.Board, move: chess.Move) -> None:
