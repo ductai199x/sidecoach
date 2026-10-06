@@ -155,4 +155,8 @@ if(EXISTS ${ESPEAK}/src/libespeak-ng/speech.c)
         -Wno-unused-parameter -Wno-missing-prototypes -Wno-unused-but-set-variable
     )
     target_link_libraries(sidecoach_espeak m ${log-lib})
+else()
+    # The voice loads this library at start: built without it, the app shut down after its
+    # splash on every launch (0.1.80 and 0.1.81, the source gone from third_party/).
+    message(FATAL_ERROR "espeak-ng source missing at ${ESPEAK}: run tools/fetch_espeak.py")
 endif()

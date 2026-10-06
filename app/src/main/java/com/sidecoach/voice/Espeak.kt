@@ -37,7 +37,14 @@ object Espeak {
      */
     fun ensure(context: Context) {
         if (initialised) return
-        System.loadLibrary("sidecoach_espeak")
+        try {
+            System.loadLibrary("sidecoach_espeak")
+        } catch (missing: UnsatisfiedLinkError) {
+            // An Error, which the voice's threads do not catch: the app shut down after its
+            // splash on every launch (0.1.80 and 0.1.81, built without the library). As an
+            // exception it is the voice failing, which the voice already reports and survives.
+            throw IllegalStateException("the espeak library is missing: ${missing.message}", missing)
+        }
         val data = dataPath(context)
         if (initialize(data.path.toByteArray(Charsets.UTF_8)) <= 0) {
             throw IllegalStateException("failed to initialize espeak shared library")
