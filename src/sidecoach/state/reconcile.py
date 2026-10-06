@@ -1205,7 +1205,14 @@ class Reconciler:
         # a rook sliding h1-h4 to take the checking queen, caught on h2 and h3, was read as the
         # turn wrong and the rook premoved, and the side to move was flipped (the stress sweep,
         # 2026-10-05, seed 116).
-        found = [s for s in found if s.moves or ("flip",) not in s.head]
+        # With the side to move still open, a piece on its way is that move being played, and
+        # says which side it is (a puzzle's setup move caught sliding, its story dropped, was
+        # read as the queen taken and premoved back: the fast puzzles, 2026-10-06).
+        found = [
+            s
+            for s in found
+            if s.moves or (s.flight is not None and self._turn_unknown) or ("flip",) not in s.head
+        ]
         if not found:
             return []
         # No story assumes more pictures nobody saw than the frames require: after e2-e4,
