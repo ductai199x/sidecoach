@@ -221,6 +221,22 @@ class Evidence:
         return out
 
 
+@dataclass(frozen=True)
+class _Step:
+    """A move tried from a position (`Search._expansion`): the position after it (and after
+    the queued step it set off), the queue left, the moves told, whether a queued step fired,
+    whether it touches a square the picture gets wrong or the queue hides (`near`), or else
+    only squares the frame cannot read (`unread`)."""
+
+    after: chess.Board
+    key: tuple[object, ...]
+    rest: tuple[chess.Move, ...]
+    told: tuple[chess.Move, ...]
+    fired: bool
+    near: bool
+    unread: bool
+
+
 @dataclass
 class Search:
     """The cheapest stories that make one story draw the frame (section 5, step 1).
@@ -260,6 +276,67 @@ class Search:
 
     def __post_init__(self) -> None:
         self._evidence = Evidence.of(self.obs, self.ignore)
+        # A position's picture and the moves tried from it are the same on every path to it
+        # and in every pass of the deepening: worked out once a frame.
+        self._wrongs: dict[tuple[object, ...], set[chess.Square]] = {}
+        self._expansions: dict[tuple[object, ...], list[_Step]] = {}
+
+    def _wrong_at(
+        self, key: tuple[object, ...], board: chess.Board, queue: tuple[chess.Move, ...]
+    ) -> set[chess.Square]:
+        """`wrong` for `board` with `queue` drawn, once a frame (`key`: the position's own)."""
+        wrong = self._wrongs.get(key)
+        if wrong is None:
+            wrong = self._wrongs[key] = self.wrong(premove_picture(board, queue))
+        return wrong
+
+    def _steps(
+        self,
+        key: tuple[object, ...],
+        board: chess.Board,
+        queue: tuple[chess.Move, ...],
+        wrong: set[chess.Square],
+    ) -> list[_Step]:
+        """The moves from `board` worth trying, the ones that leave the least wrong first:
+        each touches a square the picture gets wrong or one the queue hides, or only squares
+        the frame cannot read, and is witnessed. An opponent's move plays the queue's first
+        step at once if it is legal and clears the queue if not. A budget spent on hopeless
+        moves (a queen tried on every square before the one it went to, each with premoves to
+        explain the rest) once ran out before the move that was played. Once a frame."""
+        known = self._expansions.get(key)
+        if known is not None:
+            return known
+        hidden = {sq for step in queue for sq in (step.from_square, step.to_square)}
+        reach = wrong | hidden
+        steps: list[tuple[int, int, _Step]] = []
+        if wrong:
+            for move in board.legal_moves:
+                touched = _touches(board, move)
+                near = bool(touched & reach)
+                unread = not near and all(self.unread(sq) for sq in touched)
+                if not (near or unread) or not self.witness(board, move):
+                    continue
+                after = board.copy(stack=False)
+                after.push(move)
+                told: tuple[chess.Move, ...] = (move,)
+                rest = queue
+                fired = False
+                if board.turn != self.user and queue:
+                    step = queue[0]
+                    if step in after.legal_moves:
+                        after.push(step)
+                        told += (step,)
+                        rest = queue[1:]
+                        fired = True
+                    else:
+                        rest = ()
+                after_key = (after._transposition_key(), rest)  # noqa: SLF001
+                left = len(self._wrong_at(after_key, after, rest))
+                tried = _Step(after, after_key, rest, told, fired, near, unread)
+                steps.append((left, len(steps), tried))
+        out = [step for _, _, step in sorted(steps, key=lambda s: s[:2])]
+        self._expansions[key] = out
+        return out
 
     def wrong(self, picture: chess.Board) -> set[chess.Square]:
         """The squares the frame reads otherwise than `picture`; during a drag, less one of
@@ -306,12 +383,15 @@ class Search:
             edits: bool,
             blind: bool = False,
             paired: bool = False,
+            key: tuple[object, ...] | None = None,
         ) -> None:
             cost = story.cost + unseen(events)
             if cost > allowed() or unseen(events) > self.max_unseen or budget[0] <= 0:
                 return
             budget[0] -= 1
-            wrong = self.wrong(premove_picture(board, queue))
+            if key is None:
+                key = (board._transposition_key(), queue)  # noqa: SLF001
+            wrong = self._wrong_at(key, board, queue)
             if not wrong:
                 add(replace(story, moves=moves, queue=queue, view=None, cost=cost))
                 return
@@ -322,55 +402,30 @@ class Search:
             hidden = {sq for step in queue for sq in (step.from_square, step.to_square)}
             if plies >= limit or len(wrong - hidden) > 4 * (limit - plies):
                 return
-            reach = wrong | hidden
-            children: list[tuple[int, int, tuple[object, ...]]] = []
-            for move in board.legal_moves:
-                touched = _touches(board, move)
+            # A move the instant the other side's lands is drawn in one picture with it: the
+            # user's is a premove played, on a site that draws the queue or one that does not;
+            # the opponent's is a puzzle's reply, a bot's, a premove of theirs. Two to a
+            # picture: a reply to a reply is a picture of its own, and a premove fired by the
+            # move is its reply already.
+            instant = plies > 0 and not paired
+            for step in self._steps(key, board, queue, wrong):
                 # One move of a frame may live on cells nobody can read (a king under the
                 # mate's badge, its two squares spoiled); a second is invented to fill a turn.
-                unread = (
-                    not touched & reach and not blind and all(self.unread(sq) for sq in touched)
-                )
-                if not (touched & reach or unread) or not self.witness(board, move):
+                unread = not step.near and not blind and step.unread
+                if not (step.near or unread):
                     continue
-                after = board.copy(stack=False)
-                after.push(move)
-                told = moves + (move,)
-                rest = queue
-                fired = False
-                if board.turn != self.user and queue:
-                    step = queue[0]
-                    if step in after.legal_moves:
-                        after.push(step)
-                        told += (step,)
-                        rest = queue[1:]
-                        fired = True
-                    else:
-                        rest = ()
-                # A move the instant the other side's lands is drawn in one picture with it:
-                # the user's is a premove played, on a site that draws the queue or one that
-                # does not; the opponent's is a puzzle's reply, a bot's, a premove of theirs.
-                # Two to a picture: a reply to a reply is a picture of its own, and a premove
-                # fired by the move is its reply already.
-                instant = plies > 0 and not paired
-                left = len(self.wrong(premove_picture(after, rest)))
-                args = (
-                    after,
-                    rest,
-                    told,
+                node(
+                    step.after,
+                    step.rest,
+                    moves + step.told,
                     events + (0 if instant else 1),
                     plies + 1,
                     limit,
                     edits,
                     blind or unread,
-                    instant or fired,
+                    instant or step.fired,
+                    step.key,
                 )
-                children.append((left, len(children), args))
-            # The moves that leave the least wrong first: a budget spent on hopeless moves
-            # (a queen tried on every square before the one it went to, each with premoves to
-            # explain the rest) once ran out before the move that was played.
-            for _, _, args in sorted(children, key=lambda child: child[:2]):
-                node(*args)  # type: ignore[arg-type]
 
         # Shortest first: every story of each length is searched before any longer one, so
         # a budget spent deep can never hide a simple one; and every length is searched, up

@@ -34,8 +34,9 @@ from sidecoach.events import MovePlayed, Side, TurnPending
 from tests.games import Game, sans_of
 from tests.synth import HIGHLIGHTS, PREMOVE_NAVY, PREMOVE_RED, premove_picture
 
-# Seed 117 leaves the side to move open for a while: the suite always sees it told so.
-SEEDS = (*range(1, 9), 117)
+# Seed 117 leaves the side to move open for a while: the suite always sees it told so. A few
+# games by default; the sweep is `--seeds N` (Tai, 2026-10-06: sweeps are not run by default).
+SEEDS = (*range(1, 5), 117)
 # Frames of each picture. A bot takes a second or more, and a premove executes the instant
 # it answers, in the same picture; a bot that premoves too answers within a frame.
 FRAMES = (1, 2, 2, 3, 4)

@@ -36,7 +36,9 @@ from tests.games import sans_of
 from tests.synth import synthetic_board
 from tests.test_premove_sweep import FRAMES, POSITIONS, STILL, _Site
 
-SEEDS = (1, 2, 3)
+# One game a cell by default: every start, takeback, lookback and premove combination is
+# played once; the sweep is `--seeds N` (Tai, 2026-10-06: sweeps are not run by default).
+SEEDS = (1,)
 CASES = [
     dict(zip(("puzzle", "takebacks", "lookbacks", "premoves"), flags, strict=True))
     for flags in itertools.product((False, True), repeat=4)
