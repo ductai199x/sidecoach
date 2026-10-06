@@ -356,14 +356,6 @@ private fun drawsNothing(record: Board, story: Story): Boolean {
     return premovePicture(board, story.queue).boardFen() == board.boardFen()
 }
 
-/** `_in_line`: whether [b] lies on a rank, a file or a diagonal through [a]. */
-@Suppress("unused")
-private fun inLine(a: Int, b: Int): Boolean {
-    val files = kotlin.math.abs(squareFile(a) - squareFile(b))
-    val ranks = kotlin.math.abs(squareRank(a) - squareRank(b))
-    return files == 0 || ranks == 0 || files == ranks
-}
-
 /**
  * `_on_way`: whether a piece sliding in a straight line from [a] to [b] passes over [sq] (or
  * lands on it): its centre within half a square of the line, past [a]. A knight's slide g1-f3
@@ -793,12 +785,6 @@ class Reconciler(
         return null
     }
 
-    @Suppress("unused")
-    private fun boardAt(index: Int): Board {
-        val earlier = board.copy()
-        while (earlier.moveStack.size > index) earlier.pop()
-        return earlier
-    }
 
     /**
      * What [story] draws (`_shown`): the ply of its game it shows, or its position with its
