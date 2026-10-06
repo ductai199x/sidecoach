@@ -37,6 +37,7 @@ import com.sidecoach.vision.Pieces.Side
 import com.sidecoach.vision.Squares.squareAt
 import com.sidecoach.vision.pyRound
 import java.util.UUID
+import kotlin.math.sign
 
 /**
  * Per-frame cell readings reconciled into a legal game: a port of
@@ -1095,6 +1096,11 @@ class Reconciler(
                 s.head.all { op -> op !is HeadOp.Fix || s.moves.any { it.from == op.square } }
             },
         )
+        // A side to move read the other way is told by a move played, never by a queue alone: a
+        // rook sliding h1-h4 to take the checking queen, caught on h2 and h3, was read as the turn
+        // wrong and the rook premoved, and the side to move was flipped (the desktop's stress
+        // sweep, 2026-10-05, seed 116).
+        found = ArrayList(found.filter { s -> s.moves.isNotEmpty() || HeadOp.Flip !in s.head })
         if (found.isEmpty()) return emptyList()
         // The same story found from two roots is one; within a margin of the cheapest only.
         val best = LinkedHashMap<Triple<List<Any>, List<Move>, Int?>, Story>()
@@ -1258,7 +1264,8 @@ class Reconciler(
     /**
      * For each op, 1 when this frame shows it settled (`_seen_ops`): a move whose squares are
      * all read, none in motion, under the cursor or under a drawing (a king under its decoration
-     * aside); what is done to the record before the moves always.
+     * aside); what is done to the record before the moves always. Nor does a frame that shows
+     * the moved piece off its square further along the move's line ([slidingOn]).
      */
     private fun seenOps(ops: List<Any>): List<Int> {
         val obs = lastObs
@@ -1270,11 +1277,43 @@ class Reconciler(
                 out.add(1)
                 continue
             }
-            val clean = touchedSquares(replay, op).all { settledOn(replay, op, it, obs) }
+            val clean = touchedSquares(replay, op).all { settledOn(replay, op, it, obs) } &&
+                !slidingOn(replay, op, obs)
             out.add(if (clean) 1 else 0)
             if (replay.isLegal(op)) replay.push(op)
         }
         return out
+    }
+
+    /**
+     * Whether the frame reads the moved piece off its square further along the move's line
+     * (`_sliding_on`): still sliding on, the square it seems to have stopped on a frame of its
+     * way. A pawn sliding a7-a5 was caught on a6, told as a6 on the next frame with the pawn
+     * still on its way, and a5 then read as a premove nobody played (the desktop's stress sweep,
+     * 2026-10-05, seed 69).
+     */
+    private fun slidingOn(board: Board, move: Move, obs: Observation): Boolean {
+        val piece = board.pieceAt(move.from) ?: return false
+        val files = squareFile(move.to) - squareFile(move.from)
+        val ranks = squareRank(move.to) - squareRank(move.from)
+        if (files != 0 && ranks != 0 && kotlin.math.abs(files) != kotlin.math.abs(ranks)) {
+            return false  // a knight's jump: no line to go on along
+        }
+        val stepFile = files.sign
+        val stepRank = ranks.sign
+        var file = squareFile(move.to) + stepFile
+        var rank = squareRank(move.to) + stepRank
+        while (file in 0..7 && rank in 0..7) {
+            val reading = obs[square(file, rank)]
+            if (reading != null && reading.kind == Kind.PIECE && !reading.settled &&
+                reading.symbol == piece.symbol()
+            ) {
+                return true
+            }
+            file += stepFile
+            rank += stepRank
+        }
+        return false
     }
 
     /**
