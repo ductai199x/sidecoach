@@ -637,6 +637,40 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     assert any(isinstance(e, GameEnded) for e in events)
 
 
+def test_the_mark_adopts_only_a_board_held_still() -> None:
+    """The recovery by the site's last-move mark counts frames of one still board only
+    (Tai's puzzle, 2026-10-06): frames of a move under way, each marked by the site before
+    the stories could take the move, added up, and the board was adopted on the move's
+    first settled frame -- the frame that would have told it -- and the moves were lost.
+    The board here is a record a ply out: White's knight played, Black to move, shown with
+    White's move marked as Black's."""
+    model, rec = _setup()
+    board = chess.Board()
+    _feed(model, rec, board, Side.WHITE, 0.0)
+    ts = _play(model, rec, board, ["e4", "e5", "Nf3"])
+    shown = board.copy()
+    shown.push_san("Nc6")
+    reply = shown.peek()
+    sliding = shown.copy()
+    sliding.remove_piece_at(reply.to_square)
+    sliding.set_piece_at(chess.C5, chess.Piece(chess.KNIGHT, chess.BLACK))  # off course
+    frames = [synthetic_board(board=sliding, highlight=reply)] * 2 + [
+        synthetic_board(board=shown, highlight=reply)
+    ]
+    for frame in frames:
+        ts += 0.1
+        readings = model.classify_frame(frame, GEOM)
+        rec._mark_denied = True  # every story contradicts the mark, as on that frame
+        assert rec._marked_resync(rec._observe(readings)) == []
+    rec._mark_denied = True
+    still = rec._observe(model.classify_frame(frames[-1], GEOM))
+    assert rec._marked_resync(still) == [], "two frames of the still board"
+    rec._mark_denied = True
+    adopted = rec._marked_resync(still)
+    assert any(isinstance(e, Resync) for e in adopted), "three frames of one still board"
+    assert rec.board.board_fen() == shown.board_fen() and rec.board.turn == shown.turn
+
+
 def test_a_queen_nobody_can_read_is_not_moved_there_and_back() -> None:
     """Both queens read as pieces of no known kind for a whole game (a set whose queens the
     recogniser could not tell apart), so every cell a queen touches is a soft wildcard.

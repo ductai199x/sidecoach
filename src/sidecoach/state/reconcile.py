@@ -425,6 +425,7 @@ class Reconciler:
     # frame (`_marked`), and for how many frames running (`_marked_resync`).
     _mark_denied: bool = False
     _unmarked: int = 0
+    _unmarked_view: tuple[str, tuple[chess.Square, ...]] | None = None
     _ts: float = 0.0
     _last_commit_ts: float | None = None
     # When a frame last fitted a story with a premove queue drawn (`_maybe_position_resync`).
@@ -1093,16 +1094,29 @@ class Reconciler:
         seed 956: a queued king's step read as a takeback). The mark names the side that
         moved; a picture it does not fit -- a queue still drawn, a piece unread -- is not
         adopted, and the stories go on."""
-        if not self._mark_denied:
+        if (
+            not self._mark_denied
+            or len(obs) < 64
+            or any(
+                r.hover or (r.kind == "piece" and (r.symbol is None or not r.settled))
+                for r in obs.values()
+            )
+        ):
             self._unmarked = 0
             return []
+        # Counted over frames of one still board -- the same pieces, the same marks: a move
+        # under way is marked by the site before its pieces settle, and the stories wait for
+        # it (Tai's puzzle, 2026-10-06: Nxg5 and hxg5 caught under the "Brilliant!" badge
+        # were adopted as a position a second after, the two moves lost from the list).
+        view = (
+            loose_placement(obs).board_fen(),
+            tuple(sorted(highlighted_squares(obs))),
+        )
+        if view != self._unmarked_view:
+            self._unmarked_view = view
+            self._unmarked = 0
         self._unmarked += 1
-        if self._unmarked < self.settle_frames + 1 or self._finished or len(obs) < 64:
-            return []
-        if any(
-            r.hover or (r.kind == "piece" and (r.symbol is None or not r.settled))
-            for r in obs.values()
-        ):
+        if self._unmarked < self.settle_frames + 1 or self._finished:
             return []
         adopted = self._adopt_placement(
             loose_placement(obs), prefer=self.bottom.color, highlighted=highlighted_squares(obs)
@@ -1111,6 +1125,12 @@ class Reconciler:
             return []  # the mark does not settle the side to move: nothing proven
         board = adopted[0]
         if board.board_fen() == self.board.board_fen() and board.turn == self.board.turn:
+            return []
+        # A record a move or two out, never another position: a board that jumped is a new
+        # puzzle or game, which the position's own resync begins afresh (Tai's puzzles,
+        # 2026-10-06: the next puzzle was adopted into the last one's record).
+        changed = sum(board.piece_at(sq) != self.board.piece_at(sq) for sq in chess.SQUARES)
+        if changed >= self.resync_jump_cells:
             return []
         # A position the game has stood in is a ply shown or a takeback under way, marked
         # with that ply's own move (the flow matrix, 2026-10-06, seed 5 puzzle: two
