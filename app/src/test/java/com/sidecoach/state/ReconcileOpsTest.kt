@@ -103,6 +103,9 @@ class ReconcileOpsTest {
         assertFalse(cellAgrees(reading, null))
     }
 
+    // Each reconciler's last observed frame, for the ops that act on it (`marked_resync`).
+    private val lastObserved = HashMap<Int, Observation>()
+
     /** Does one op; a description of what the port answered differently, or null. */
     private fun doOp(
         op: JSONObject,
@@ -136,10 +139,14 @@ class ReconcileOpsTest {
             "reorient" -> rec.reorient(side(op.getString("bottom")))
             "commit" -> rec.commit(Move.fromUci(op.getString("uci")))
             "observe" -> {
-                val seen = rec.observe(readings(table.getString(op.getInt("readings")))).keys.sorted()
+                val observed = rec.observe(readings(table.getString(op.getInt("readings"))))
+                lastObserved[which] = observed
+                val seen = observed.keys.sorted()
                 val wanted = ints(op.getJSONArray("seen"))
                 return if (seen != wanted) "observed $seen, python's $wanted" else null
             }
+            // On the frame the test observed last (`_marked_resync`).
+            "marked_resync" -> rec.markedResync(checkNotNull(lastObserved[which]) { "nothing observed" })
             "set" -> { set(rec, op.getString("name"), op.get("value")); null }
             else -> return "an op this test does not know"
         }
@@ -205,6 +212,7 @@ class ReconcileOpsTest {
             "memory_gap_ticks" -> rec.memoryGapTicks = value as Int
             "min_readable_cells" -> rec.minReadableCells = value as Int
             "unexplained_note_frames" -> rec.unexplainedNoteFrames = value as Int
+            "_mark_denied" -> rec.markDenied = value as Boolean
             else -> throw IllegalArgumentException("a field this test cannot set: $name")
         }
     }

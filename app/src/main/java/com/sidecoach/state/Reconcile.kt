@@ -546,8 +546,9 @@ class Reconciler(
 
     // The site's last-move mark agreed with no story, nor with one told the other way, this
     // frame ([marked]), and for how many frames running ([markedResync]).
-    private var markDenied = false
+    internal var markDenied = false
     private var unmarked = 0
+    private var unmarkedView: Pair<String, List<Int>>? = null
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
 
@@ -1216,19 +1217,25 @@ class Reconciler(
      * picture it does not fit -- a queue still drawn, a piece unread -- is not adopted, and the
      * stories go on.
      */
-    private fun markedResync(obs: Observation): List<Event> {
-        if (!markDenied) {
-            unmarked = 0
-            return emptyList()
-        }
-        unmarked += 1
-        if (unmarked < settleFrames + 1 || finishedFlag || obs.size < 64) return emptyList()
-        if (obs.values.any {
+    internal fun markedResync(obs: Observation): List<Event> {
+        if (!markDenied || obs.size < 64 || obs.values.any {
                 it.hover || (it.kind == Kind.PIECE && (it.symbol == null || !it.settled))
             }
         ) {
+            unmarked = 0
             return emptyList()
         }
+        // Counted over frames of one still board -- the same pieces, the same marks: a move under
+        // way is marked by the site before its pieces settle, and the stories wait for it (Tai's
+        // puzzle, 2026-10-06: Nxg5 and hxg5 caught under the "Brilliant!" badge were adopted as a
+        // position a second after, the two moves lost from the list).
+        val view = loosePlacement(obs).boardFen() to highlightedSquares(obs).sorted()
+        if (view != unmarkedView) {
+            unmarkedView = view
+            unmarked = 0
+        }
+        unmarked += 1
+        if (unmarked < settleFrames + 1 || finishedFlag) return emptyList()
         val adopted = adoptPlacement(
             loosePlacement(obs),
             prefer = bottom.color,
@@ -1241,6 +1248,11 @@ class Reconciler(
         if (adoptedBoard.boardFen() == board.boardFen() && adoptedBoard.turn == board.turn) {
             return emptyList()
         }
+        // A record a move or two out, never another position: a board that jumped is a new
+        // puzzle or game, which the position's own resync begins afresh (Tai's puzzles,
+        // 2026-10-06: the next puzzle was adopted into the last one's record).
+        val changed = (0 until 64).count { adoptedBoard.pieceAt(it) != board.pieceAt(it) }
+        if (changed >= resyncJumpCells) return emptyList()
         // A position the game has stood in is a ply shown or a takeback under way, marked with
         // that ply's own move (the flow matrix, 2026-10-06, seed 5 puzzle: two takebacks pressed
         // quickly were adopted as a position, the game's moves lost).

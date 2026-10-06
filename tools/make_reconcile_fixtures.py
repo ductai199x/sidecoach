@@ -465,7 +465,8 @@ TUNABLES = (
 )
 # What a test (or the pipeline) sets on a reconciler from outside; anything else stops the run.
 SETTABLE = frozenset(TUNABLES) | {
-    "board", "_base_fen", "_started", "_finished", "bottom", "user_side", "unexplained_note_frames"
+    "board", "_base_fen", "_started", "_finished", "bottom", "user_side", "unexplained_note_frames",
+    "_mark_denied",
 }
 
 KINDS = {"empty": "e", "piece": "p", "unknown": "u"}
@@ -648,6 +649,8 @@ CALLS = {
         lambda a: {"readings": LOG.frame(a["readings"])},
         lambda out: {"seen": sorted(out)},
     ),
+    # On the frame the test observed last (`test_the_mark_adopts_only_a_board_held_still`).
+    "_marked_resync": (lambda a: {}, _events),
 }
 
 
