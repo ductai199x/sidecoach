@@ -317,22 +317,6 @@ def _common_start(lists: list[tuple[object, ...]]) -> tuple[object, ...]:
     return tuple(out)
 
 
-def single_explanations(
-    board: chess.Board, obs: Observation, diff: set[chess.Square]
-) -> list[Explanation]:
-    """Legal moves from `board` whose touched squares cover `diff` and agree with the readings."""
-    found: list[Explanation] = []
-    for move in board.legal_moves:
-        touched = touched_squares(board, move)
-        if not diff <= touched:
-            continue
-        after = board.copy(stack=False)
-        after.push(move)
-        if matches(after, obs, touched):
-            found.append((move,))
-    return found
-
-
 @dataclass
 class Reconciler:
     bottom: Side
@@ -429,9 +413,6 @@ class Reconciler:
     # Squares something is drawn over in the current frame: unreadable, and no move
     # commits through them, though the drawing blocks nothing else.
     _drawn: set[chess.Square] = field(default_factory=set)
-    # In the retry that ignores stale cells: the exact, settled readings among the ignored
-    # cells. A story need not explain them, but may not contradict one it changes.
-    _denied: Observation = field(default_factory=dict)
     _frame_index: int = 0
     _blocked: bool = False
     # Whether a piece is in the user's hand this frame (`update`), and the square the last
@@ -617,119 +598,6 @@ class Reconciler:
 
     # Explanations
 
-    def _path_explanations(
-        self,
-        obs: Observation,
-        diff: set[chess.Square],
-        base: chess.Board | None = None,
-        wild: frozenset[chess.Square] = frozenset(),
-    ) -> list[Explanation]:
-        """Sequences of up to `max_plies` legal moves explaining `diff` from `base`.
-
-        `wild` cells are stale junk a badge left, ignored by the caller: a move may touch
-        them instead of an unexplained cell, and they need no exact reading, so that the
-        mating move still settles when the checkmate badge has made the king's square
-        unreadable. One move of a story may live on wild cells alone; a second is a
-        move nobody saw invented to fill a turn, and a piece that goes and comes straight
-        back is the same invention in one piece. An ignored cell that reads exactly
-        (`_denied`) may stay as wrong as it was, but a story that changes it must agree
-        with it: a stale empty square is no place to land a queen. All three once told a
-        queen's shuffle, or its tour to a square that read empty, through the cells a
-        badge and a stale reading had hidden, while the queen's real move went untold.
-
-        This is the catch-up for missed moves: the window was minimised, a dialog covered the
-        board, or a badge hid a piece until the next move. Every move must touch a still
-        unexplained square, every touched square must be read exactly, and the final position
-        must agree with every readable cell. The shortest paths are kept, as a person would
-        assume the simplest story; transpositions among them lead to one position and are
-        accepted, while different final positions are a genuine ambiguity and nothing is
-        committed.
-        """
-        # A move touches at most four squares (castling), so more disagreements than that
-        # times the depth cannot be a missed-move story.
-        if len(diff) + len(wild) < 3 or len(diff) > 4 * self.max_plies:
-            return []
-
-        start = base if base is not None else self.board
-        # Iterative deepening: the shortest story is searched exhaustively before any
-        # longer one is attempted, so a budget spent on deep branches can never hide a
-        # simple two-ply explanation. Each depth also prunes branches whose remaining
-        # plies cannot touch the cells still unexplained.
-        for depth in range(2, self.max_plies + 1):
-            solutions: list[Explanation] = []
-            budget = [self.search_budget]
-
-            def search(
-                board: chess.Board,
-                remaining: set[chess.Square],
-                path: list[chess.Move],
-                unseen: int,
-                decorated: set[chess.Square] = frozenset(),  # type: ignore[assignment]
-                depth: int = depth,
-                solutions: list[Explanation] = solutions,
-                budget: list[int] = budget,
-            ) -> None:
-                plies_left = depth - len(path)
-                if plies_left <= 0 or len(solutions) >= 64 or budget[0] <= 0:
-                    return
-                if len(remaining) > 4 * plies_left:
-                    return
-                for move in board.legal_moves:
-                    if (
-                        len(path) >= 2
-                        and move.from_square == path[-2].to_square
-                        and move.to_square == path[-2].from_square
-                    ):
-                        continue  # there and straight back: no trace, no story
-                    touched = touched_squares(board, move)
-                    seen = bool(touched & remaining)
-                    if not seen and (unseen >= 1 or not touched & wild):
-                        continue  # a second move told through wild cells alone
-                    lenient = {
-                        sq
-                        for sq in touched
-                        if sq not in wild
-                        and not (sq in obs and obs[sq].exact)
-                        and self._king_lands(board, move, sq, obs)
-                    }
-                    if not all(
-                        sq in wild or (sq in obs and obs[sq].exact) or sq in lenient
-                        for sq in touched
-                    ):
-                        continue
-                    budget[0] -= 1
-                    if budget[0] < 0:
-                        return
-                    after = board.copy(stack=False)
-                    after.push(move)
-                    path.append(move)
-                    still = remaining - touched
-                    used = set(decorated) | lenient
-                    if not still:
-                        if (
-                            matches(after, obs, set(obs) - wild)
-                            and self._not_denied(after, start)
-                            and self._checked_kings(after, used)
-                        ):
-                            solutions.append(tuple(path))
-                    else:
-                        search(after, still, path, unseen + (0 if seen else 1), used)
-                    path.pop()
-
-            search(start, set(diff), [], 0)
-            if not solutions:
-                continue
-            finals: set[str] = set()
-            for path in solutions:
-                board = start.copy(stack=False)
-                for move in path:
-                    board.push(move)
-                finals.add(board.board_fen() + " " + ("w" if board.turn else "b"))
-            if len(finals) > 1:
-                return solutions
-            return [solutions[0]]
-        return []
-
     def _decorated_king(self, square: chess.Square, reading: CellReading) -> bool:
         """Whether an unsettled reading of a piece of no known kind is a king under the
         site's decoration: on the king's own square, or one step from it (a king that
@@ -794,13 +662,6 @@ class Reconciler:
             return True
         return after.is_check() and after.king(after.turn) in decorated
 
-    def _not_denied(self, after: chess.Board, start: chess.Board) -> bool:
-        """Whether `after` agrees with every ignored exact reading on a cell it changed."""
-        return all(
-            after.piece_at(sq) == start.piece_at(sq) or cell_agrees(reading, after.piece_at(sq))
-            for sq, reading in self._denied.items()
-        )
-
     def _history_index(self, obs: Observation, diff: set[chess.Square]) -> int | None:
         """Index of the earlier position of this game the frame shows, if any.
 
@@ -826,61 +687,6 @@ class Reconciler:
         while len(earlier.move_stack) > index:
             earlier.pop()
         return earlier
-
-    def _highlight_ok(
-        self,
-        obs: Observation,
-        moves: Explanation,
-        base: chess.Board | None = None,
-        wild: frozenset[chess.Square] = frozenset(),
-    ) -> bool:
-        """Geometry evidence that `moves` are complete, independent of any colour.
-
-        `base` is the position the moves start from; the latest position by default, or
-        an earlier one when the user plays on from a browsed position.
-
-        A settled piece is drawn exactly where its exemplar from the start position sits in
-        the square; a dragged piece follows the cursor and an animating piece is between
-        squares, so neither is centred. During a drag the site also outlines the hovered
-        square. So every square the moves touch must hold a settled piece or be empty, the
-        square a move lands on must be read at all, and no square on the board may carry a
-        hover outline. A square with an arrow over it is no witness either: an arrowhead
-        over a piece can look like another piece, so nothing commits through it, while the
-        arrow, which is no drag, holds nothing else back.
-        Highlights and tints are not consulted: their colours vary by theme, by site and by
-        what the user clicks, and the reconciler stays agnostic to them by design
-        (docs/reconciler-model.md, section 1).
-        """
-        if self._hover_seen or any(reading.hover for reading in obs.values()):
-            return False
-        touched: set[chess.Square] = set()
-        # The squares a king of the story lands on: its reading may be unsettled and of
-        # no known kind, the king under what the site draws on it (see `_king_lands`).
-        decorated: set[chess.Square] = set()
-        board = (base if base is not None else self.board).copy(stack=False)
-        for move in moves:
-            if move not in board.legal_moves:
-                return False
-            if move.to_square not in wild and move.to_square not in obs:
-                # The piece must be seen where it landed. A bishop animated across a
-                # square read as unknown while it passed over it, and the square it
-                # had left explained the move to that square on its own.
-                return False
-            if self._king_lands(board, move, move.to_square, obs):
-                decorated.add(move.to_square)
-            touched |= touched_squares(board, move)
-            board.push(move)
-        if not self._checked_kings(board, decorated):
-            return False
-        for sq in touched:
-            if sq in wild or sq in decorated:
-                continue
-            if sq in self._drawn:
-                return False
-            reading = obs.get(sq)
-            if reading is not None and reading.unsettled:
-                return False
-        return True
 
     # Main entry
 
@@ -978,10 +784,14 @@ class Reconciler:
         stories = self._fitting(obs, diff, quiet=quiet)
         if stories:
             return events + self._decide(stories)
-        # Nothing fits the frame. A drag hides what is under the hand; the stories wait for
-        # the drop, as they are.
+        # Nothing fits the frame: the record is not what the screen shows. A drag hides what is
+        # under the hand; the stories wait for the drop, as they are, but the frame is one no
+        # story explains. Left uncounted, a new piece set read as pieces off their squares --
+        # every frame a "drag" -- kept the record agreeing with a screen it could not read,
+        # and the look change was never told (the look-change fixture, 2026-10-05).
+        self._agrees = False
         if self._blocked:
-            return events
+            return events + self._maybe_resync(diff)
         stale = (
             {sq for sq in off if self._stale[sq][1] > self.stale_after}
             if self.viewing is None
@@ -1900,40 +1710,6 @@ class Reconciler:
         return [self._begin(board, "position")]
 
     # Settling and committing
-
-    def _commit_moves(self, moves: Explanation) -> Callable[[], list[Event]]:
-        def commit() -> list[Event]:
-            events: list[Event] = []
-            for move in moves:
-                events.extend(self._commit(move))
-            return events
-
-        return commit
-
-    def _commit_takeback(self, plies: int, moves: Explanation) -> Callable[[], list[Event]]:
-        def commit() -> list[Event]:
-            for _ in range(plies):
-                self.board.pop()
-            events: list[Event] = [
-                Takeback(game_id=self.game_id, plies=plies, fen=self.board.fen()),
-                PositionChanged(
-                    game_id=self.game_id, fen=self.board.fen(), ply=len(self.board.move_stack)
-                ),
-            ]
-            for move in moves:
-                events.extend(self._commit(move))
-            return events
-
-        return commit
-
-    def _commit_new_game(self, moves: Explanation) -> Callable[[], list[Event]]:
-        def commit() -> list[Event]:
-            events = self._restart()
-            for move in moves:
-                events.extend(self._commit(move))
-            return events
-
-        return commit
 
     def _stale_subsets(
         self, stale: set[chess.Square], obs: Observation
