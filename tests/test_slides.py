@@ -14,19 +14,7 @@ import numpy as np
 import pytest
 
 from sidecoach.state.pipeline import GamePipeline
-from sidecoach.state.reconcile import in_flight
 from tests.synth import puzzle_frame
-
-
-def test_a_piece_that_stops_partway_and_goes_on_is_in_flight() -> None:
-    m = chess.Move.from_uci
-    assert in_flight([m("c8c7"), m("h1f1"), m("c7c1")])  # the rook on its way to c1
-    assert in_flight([m("d8d7"), m("a5c3"), m("c3e1")])  # the reply's queen, a5 to e1
-    assert not in_flight([m("c8c7"), m("h1f1"), m("c7c8")])  # back where it came from
-    assert not in_flight([m("g1f3"), m("e7e5"), m("f3g1")])
-    assert not in_flight([m("c8c7"), m("h1f1"), m("c7a7")])  # on, but another way
-    assert not in_flight([m("e2e4"), m("e7e5"), m("g1f3")])
-
 
 # The phone's frame period.
 PERIOD = 0.104

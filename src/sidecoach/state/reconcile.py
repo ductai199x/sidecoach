@@ -276,6 +276,13 @@ def _draws_nothing(record: chess.Board, story: Story) -> bool:
     return premove_picture(board, story.queue).board_fen() == board.board_fen()
 
 
+def _in_line(a: chess.Square, b: chess.Square) -> bool:
+    """Whether `b` lies on a rank, a file or a diagonal through `a`."""
+    files = abs(chess.square_file(a) - chess.square_file(b))
+    ranks = abs(chess.square_rank(a) - chess.square_rank(b))
+    return files == 0 or ranks == 0 or files == ranks
+
+
 def _common_start(lists: list[tuple[object, ...]]) -> tuple[object, ...]:
     """The ops every list begins with."""
     out: list[object] = []
@@ -308,10 +315,10 @@ class Reconciler:
     viewing: int | None = None
     _hover_seen: bool = False
     # The stories that fit the frames so far (`stories.Story`, docs/reconciler-model.md),
-    # and what the record does next: each op every story agrees on, with the frames it has
-    # held and the frames it needs before it is played (`_decide`).
+    # and for each run of ops a story begins with, the frames that have shown it settled
+    # (`_decide`): counted for every story, whether the stories agree yet or not.
     _stories: list[Story] = field(default_factory=lambda: [Story()])
-    _agreed: list[tuple[object, int, int]] = field(default_factory=list)
+    _seen: dict[tuple[object, ...], int] = field(default_factory=dict)
     # Whether the last frame showed the record as it stands (a queue drawn on it aside).
     _agrees: bool = True
     # Whether the side to move was last told pending (`TurnPending`).
@@ -537,7 +544,7 @@ class Reconciler:
         """No story pending, no cell remembered as stale or unexplained: the position they
         were read against is gone."""
         self._stories = [Story()]
-        self._agreed = []
+        self._seen = {}
         self._stale = {}
         self._unexplained_frames = 0
         self._unexplained_noted = False
@@ -950,12 +957,64 @@ class Reconciler:
             if ident in seen_roots:
                 continue
             seen_roots.add(ident)
-            more = search.extend(story, ceiling)
+            more = [replace(s, flight=None) for s in search.extend(story, ceiling)]
             found += more
             if more:
                 cheapest = min(s.cost for s in found)
                 ceiling = min(ceiling, cheapest)
+            flight = self._in_flight(root, search, obs)
+            if flight is not None and flight != root.flight and root.cost <= ceiling:
+                found.append(replace(root, flight=flight))
         return [s for s in found if self._decorations_hold(s, obs)]
+
+    def _in_flight(self, story: Story, search: Search, obs: Observation) -> chess.Square | None:
+        """The square of the frame's one piece of `story` on its way: off its square, which
+        reads empty, and read on a square in a straight line from it that the story has empty
+        -- every site slides a moved piece in a straight line, and a frame can catch it centred
+        on a square it passes. None when the frame shows anything else. A slide never shows its
+        piece on one square in two frames running: read there again, the piece has stopped,
+        and the story that it was on its way ends (`_found`)."""
+        picture = (
+            self._board_at(story.view)
+            if story.view is not None
+            else premove_picture(story.board(self.board), story.queue)
+        )
+        wrong = search.wrong(picture)
+        left = [sq for sq in wrong if picture.piece_at(sq) is not None and obs[sq].kind == "empty"]
+        if len(left) != 1 or len(wrong) > 2:
+            return None
+        start = left[0]
+        piece = picture.piece_at(start)
+        assert piece is not None
+        ends = wrong - {start}
+        if not ends:
+            # The piece read off its square carries no evidence; it is somewhere on its way.
+            ends = {
+                sq
+                for sq, r in obs.items()
+                if r.kind == "piece" and not r.settled and r.symbol == piece.symbol()
+            }
+        for sq in sorted(ends):
+            reading = obs[sq]
+            if (
+                picture.piece_at(sq) is None
+                and reading.symbol == piece.symbol()
+                and _in_line(start, sq)
+            ):
+                return sq
+        if wrong == {start}:
+            # Not read anywhere: on its way over a square the frame cannot read (a pawn
+            # sliding d7-d5 under an arrow was taken as stopped on d6: the stress sweep,
+            # 2026-10-06, seed 2).
+            for sq in chess.SQUARES:
+                if (
+                    sq != start
+                    and picture.piece_at(sq) is None
+                    and search.unread(sq)
+                    and _in_line(start, sq)
+                ):
+                    return sq
+        return None
 
     def _kept(
         self, found: list[Story], browsed: list[Story], denied: Observation | None
@@ -1054,7 +1113,16 @@ class Reconciler:
         drawn = {premove_picture(s.board(self.board), s.queue).board_fen() for s in stories}
         if len(drawn) != 1:
             return None
-        return next((s for s in stories if not s.queue), None)
+        lead = next((s for s in stories if not s.queue), None)
+        if lead is None:
+            return None
+        # Followed only when every other story can be kept, told again from it: one that
+        # cannot (its side to move read the other way before its moves) would be lost, and
+        # with it the side to move it may be right about.
+        for story in stories:
+            if story.ops[: len(lead.ops)] != lead.ops and _retold(story, lead.ops) is None:
+                return None
+        return lead
 
     def _decide(self, stories: list[Story], cautious: bool = False) -> list[Event]:
         """What the record does with the stories that fit (docs/reconciler-model.md, section
@@ -1072,18 +1140,36 @@ class Reconciler:
             # A new game on the board: the game it replaces ends first, with a story the
             # stories before it prove the end of (a mate, a draw by repetition).
             concluded = self.commit_pending_terminal()
+            if concluded:
+                # The record has moved on to the old game's end: what is told from it now is
+                # the new game alone, which owes nothing to the record.
+                stories = [s for s in stories if s.head[:1] == (("newgame",),)]
         self._stories = stories
         told = concluded + self._tell_turn()
         self._unexplained_frames = 0
         self._unexplained_noted = False
-        self._agrees = any(not s.ops and s.view is None for s in stories)
+        self._agrees = any(not s.ops and s.view is None and s.flight is None for s in stories)
         self._queue_ts = self._ts if any(s.queue for s in stories) else None
-        if all(s.view is not None for s in stories):
-            # The user browses: the ply shown, and nothing played until the live board is
-            # shown again -- the stories underneath wait as they are.
-            self._agreed = []
+        # A frame confirms a move only when the squares it changed are seen settled in it: a
+        # frame with a piece in motion keeps the stories, and confirms nothing it cannot see
+        # (the bishop caught on c5 sliding d6-b4 was told as Bc5 on the slide's next frame:
+        # the stress sweep, 2026-10-05, seed 1).
+        seen: dict[tuple[object, ...], int] = {}
+        for story in stories:
+            if story.view is not None:
+                continue  # a ply browsed shows nothing of the story underneath
+            for i, shown in enumerate(self._seen_ops(story.ops)):
+                path = story.ops[: i + 1]
+                seen[path] = max(seen.get(path, 0), self._seen.get(path, 0) + shown)
+        self._seen = seen
+        if any(s.view is not None for s in stories):
+            # The board may show a ply browsed: a frame of an earlier ply confirms nothing of
+            # the stories underneath, and nothing is played until the live board is shown
+            # again. A takeback's piece caught mid-slide read as a move from the ply browsed,
+            # and the browsing frames after it, counted for that move, told it (the takebacks
+            # pressed quickly, 2026-10-06).
             if not self._blocked:
-                self.viewing = stories[0].view
+                self.viewing = next((s.view for s in stories if s.view is not None), None)
             return told
         keys = {s.key(self.board) for s in stories}
         # One key is one future: the position, the side to move, the queue and the ply shown
@@ -1093,7 +1179,6 @@ class Reconciler:
             chosen = stories[0]
             ops = chosen.ops
             if not ops:
-                self._agreed = []
                 if chosen.view is None or not self._blocked:
                     self.viewing = chosen.view
                 return told
@@ -1112,29 +1197,15 @@ class Reconciler:
                 # story's ply: browsing the move list before a premove that draws the same
                 # picture (Tai, 2026-10-05: a takeback and browsing are always read right). It
                 # is shown only, never played: the record waits for agreement.
-                self._agreed = []
                 if stories[0].view is None or not self._blocked:
                     self.viewing = stories[0].view
                 return told
         self.viewing = None
-        # A frame confirms a move only when the squares it changed are seen settled in it: a
-        # frame with a piece in motion keeps the stories, and confirms nothing it cannot see
-        # (the bishop caught on c5 sliding d6-b4 was told as Bc5 on the slide's next frame:
-        # the stress sweep, 2026-10-05, seed 1).
-        seen = self._seen_ops(ops)
-        agreed: list[tuple[object, int, int]] = []
-        for i, op in enumerate(ops):
-            if i >= len(self._agreed) or self._agreed[i][0] != op:
-                break
-            _, count, need = self._agreed[i]
-            agreed.append((op, count + seen[i], need))
-        fresh = ops[len(agreed) :]
-        plies = sum(isinstance(op, chess.Move) for op in fresh)
-        need = self.settle_frames + (1 if plies > 1 else 0) + (1 if cautious else 0)
-        agreed += [(op, seen[len(agreed) + i], need) for i, op in enumerate(fresh)]
-        self._agreed = agreed
+        # An op is played once the frames have shown it settled `settle_frames` times, one
+        # more when it came from the stale retry.
+        need = self.settle_frames + (1 if cautious else 0)
         ready = 0
-        while ready < len(agreed) and agreed[ready][1] >= agreed[ready][2]:
+        while ready < len(ops) and seen.get(ops[: ready + 1], 0) >= need:
             ready += 1
         if not ready:
             return told
@@ -1217,7 +1288,7 @@ class Reconciler:
 
     def _play(self, ops: tuple[object, ...]) -> list[Event]:
         """The record does `ops`, and every story is told from it."""
-        stories, agreed = self._stories, self._agreed
+        stories = self._stories
         events: list[Event] = []
         for op in ops:
             if isinstance(op, chess.Move):
@@ -1255,7 +1326,11 @@ class Reconciler:
             if retold is not None:
                 kept.append(retold)
         self._stories = kept or [Story()]
-        self._agreed = agreed[done:]
+        self._seen = {
+            path[done:]: count
+            for path, count in self._seen.items()
+            if path[:done] == ops and len(path) > done
+        }
         self._stale = {}
         self.viewing = None
         return events
@@ -1361,7 +1436,6 @@ class Reconciler:
         if story is None:
             return []
         self._stories = [s for s in self._stories if s.ops == story[0]][:1]
-        self._agreed = []
         return self._play(story[0])
 
     def _misread_roots(self, obs: Observation, diff: set[chess.Square]) -> list[Story]:
@@ -1422,12 +1496,19 @@ class Reconciler:
         }
 
     def _liftable(self) -> frozenset[chess.Square]:
-        """Where the user's pieces stood before this frame, as the likeliest story draws them:
-        the squares a piece in the hand can have come from."""
-        lead = self._lead_picture()
-        return frozenset(lead.pieces(chess.PAWN, self.user_side.color)).union(
-            *(lead.pieces(kind, self.user_side.color) for kind in range(2, 7))
-        )
+        """Where the user's pieces stood before this frame, in any story kept: the squares a
+        piece in the hand can have come from. One story's squares only, and the king lifted
+        off b6 in the story that had it there was no king in hand (the drag of the fourth
+        game's king walk, 2026-10-06)."""
+        squares: set[chess.Square] = set()
+        for story in self._stories or [Story()]:
+            picture = (
+                self._board_at(story.view)
+                if story.view is not None
+                else premove_picture(story.board(self.board), story.queue)
+            )
+            squares |= set(chess.SquareSet(picture.occupied_co[self.user_side.color]))
+        return frozenset(squares)
 
     def _lead_picture(self) -> chess.Board:
         """What the likeliest story draws: its position with its queue played out, or the

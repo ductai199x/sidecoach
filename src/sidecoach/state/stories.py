@@ -122,6 +122,9 @@ class Story:
     cost: float = 0.0
     # Whether the story holds an opponent's move no picture showed (`Search._unseen_replies`).
     hidden: bool = False
+    # The square the last frame read one of its pieces on, off its own and on its way along
+    # a straight line (`Reconciler._in_flight`); None when the frame showed it at rest.
+    flight: chess.Square | None = None
 
     @property
     def ops(self) -> tuple[object, ...]:
@@ -263,7 +266,7 @@ class Search:
     # Pictures this frame's events may need that neither frame showed.
     max_unseen: int = 1
 
-    def _unread(self, square: chess.Square) -> bool:
+    def unread(self, square: chess.Square) -> bool:
         """Whether the frame says nothing of `square`."""
         reading = self.obs.get(square)
         return reading is None or reading.kind == "unknown" or self.ignore(square, reading)
@@ -339,7 +342,7 @@ class Search:
                 # One move of a frame may live on cells nobody can read (a king under the
                 # mate's badge, its two squares spoiled); a second is invented to fill a turn.
                 unread = (
-                    not touched & reach and not blind and all(self._unread(sq) for sq in touched)
+                    not touched & reach and not blind and all(self.unread(sq) for sq in touched)
                 )
                 if not (touched & reach or unread) or not self.witness(board, move):
                     continue

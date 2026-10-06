@@ -584,7 +584,7 @@ def test_story_seen_before_a_drag_is_extended_after_it() -> None:
     board.push_san("Ke7")
     board.push_san("Kxa5")
     see(2)
-    assert played == []
+    assert played == ["Ke7", "Kxa5"], "two plies seen settled twice are told"
     see(3, dragging=(chess.A5, chess.B4, 0.1, -0.1))
     see(2, dragging=(chess.A5, chess.A5, 0.1, -0.1))
     assert played == ["Ke7", "Kxa5"], "what was seen settled before the drag, the drag nothing"
