@@ -270,6 +270,12 @@ def _retold(story: Story, played: tuple[object, ...]) -> Story | None:
     return replace(story, head=(("back", len(tail)),), moves=moves)  # type: ignore[arg-type]
 
 
+def _draws_nothing(record: chess.Board, story: Story) -> bool:
+    """Whether `story`'s premove queue, played out, draws the position itself."""
+    board = story.board(record)
+    return premove_picture(board, story.queue).board_fen() == board.board_fen()
+
+
 def _common_start(lists: list[tuple[object, ...]]) -> tuple[object, ...]:
     """The ops every list begins with."""
     out: list[object] = []
@@ -794,7 +800,9 @@ class Reconciler:
 
         # New game: the start position is back on the board.
         if self.in_progress and len(obs) >= 48 and matches(chess.Board(), obs, set(obs)):
-            return events + self._restart()
+            # The game replaced: a story whose position proves its end is the game's end.
+            concluded = [] if self._finished else self.commit_pending_terminal()
+            return events + concluded + self._restart()
 
         adopted = self._maybe_position_resync(obs, diff)
         if adopted:
@@ -946,7 +954,7 @@ class Reconciler:
             found += more
             if more:
                 cheapest = min(s.cost for s in found)
-                ceiling = min(ceiling, cheapest + (1.0 if cheapest > 0 else 0.0))
+                ceiling = min(ceiling, cheapest)
         return [s for s in found if self._decorations_hold(s, obs)]
 
     def _kept(
@@ -955,6 +963,12 @@ class Reconciler:
         """Of the stories that draw the frame, the ones kept: every one the pictures allow,
         one to each state."""
         found = found + browsed
+        # No story holds a premove queue that draws nothing: played out over the position it
+        # leaves every piece where it stands, so no picture shows it, and it is an assumption
+        # with no trace. A king premoved f6-e7-e6 and then cancelled was read as the queue
+        # walked on back to f6, and that queue shadowed every move after it (the premove
+        # sweep, 2026-10-06, seed 7). Were one real, it fires as the user's instant reply.
+        found = [s for s in found if not s.queue or not _draws_nothing(self.board, s)]
         if denied:
             found = [s for s in found if self._spares(s, denied)]
         # A piece corrected is one the story moves: its move is what says what it was.
@@ -970,12 +984,10 @@ class Reconciler:
         found = [s for s in found if s.moves or ("flip",) not in s.head]
         if not found:
             return []
-        # When the cheapest story needs no picture the frames did not show, the frames showed
-        # everything, and a story that needs one did not happen: after e2-e4, "e2-e3, then e4
-        # premoved" draws the same pieces from a picture nobody saw. When even the cheapest
-        # needs one, frames were missed, and a story needing one more is as possible.
+        # No story assumes more pictures nobody saw than the frames require: after e2-e4,
+        # "e2-e3, then e4 premoved" draws the same pieces from a picture nobody saw.
         least = min(s.cost for s in found)
-        allowed = [s for s in found if s.cost == least or (least > 0 and s.cost <= least + 1.0)]
+        allowed = [s for s in found if s.cost == least]
         # The move list browsed, or a takeback, against a premove queue drawing the same
         # pieces: the browsing or the takeback is read (Tai, 2026-10-05: "takeback and browse
         # back has to work correctly always; premove can be a bit wrong"). That costs neither
@@ -1055,8 +1067,13 @@ class Reconciler:
         played."""
         if len(stories) == 1 and stories[0].cost:
             stories = [replace(stories[0], cost=0.0)]  # alone, its past is the past
+        concluded: list[Event] = []
+        if not self._finished and any(s.head[:1] == (("newgame",),) for s in stories):
+            # A new game on the board: the game it replaces ends first, with a story the
+            # stories before it prove the end of (a mate, a draw by repetition).
+            concluded = self.commit_pending_terminal()
         self._stories = stories
-        told = self._tell_turn()
+        told = concluded + self._tell_turn()
         self._unexplained_frames = 0
         self._unexplained_noted = False
         self._agrees = any(not s.ops and s.view is None for s in stories)
@@ -1313,31 +1330,37 @@ class Reconciler:
         turns = {s.board(self.board).turn for s in self._stories}
         return len(turns) > 1
 
-    def pending_terminal(self, result: str | None = None) -> tuple[Explanation, chess.Board] | None:
+    def pending_terminal(
+        self, result: str | None = None
+    ) -> tuple[tuple[object, ...], chess.Board] | None:
         """The story that ends the game, when the end is all the stories leave: the mate the
         site's dialog or badges then covered before a clean frame could confirm it. The end
         shown is evidence as good as a frame: a story that does not end the game -- with
         `result`, when the site shows one -- is ruled out by it (a premove queue still drawn
-        is not a game over; the site clears it). Every story left must end in one state."""
+        is not a game over; the site clears it). A game over is what its final position proves
+        (`result_on_board`): a mate or a stalemate, dead material, the third repetition or the
+        fiftieth move played. Every story left must end in one state."""
         ended = []
         for story in self._stories:
+            takes_back = all(op[0] == "back" for op in story.head)
+            if not takes_back or not story.moves or story.queue:
+                continue  # a ply browsed over a story is the story still: its view is no end
             board = story.board(self.board)
-            if story.head or not story.moves or story.queue or not board.is_game_over():
-                continue
-            if result is not None and board.result() != result:
+            proved = result_on_board(board)
+            if proved is None or (result is not None and proved[0] != result):
                 continue
             ended.append((story, board))
-        if not ended or len({s.key(self.board) for s, _ in ended}) != 1:
+        if not ended or len({replace(s, view=None).key(self.board) for s, _ in ended}) != 1:
             return None
         story, board = ended[0]
-        return story.moves, board
+        return story.ops, board
 
     def commit_pending_terminal(self, result: str | None = None) -> list[Event]:
         """Commit the story that ends the game (see `pending_terminal`)."""
         story = self.pending_terminal(result)
         if story is None:
             return []
-        self._stories = [Story(moves=story[0])]
+        self._stories = [s for s in self._stories if s.ops == story[0]][:1]
         self._agreed = []
         return self._play(story[0])
 
@@ -1883,8 +1906,11 @@ class Reconciler:
         unfinished ("*"), as it did (Tai, 2026-10-02)."""
         if not self.in_progress or self._finished:
             return []
+        concluded = self.commit_pending_terminal()
+        if self._finished:
+            return concluded
         proved = result_on_board(self.board)
-        return [] if proved is None else self.end(*proved)
+        return concluded if proved is None else concluded + self.end(*proved)
 
     def ended_event(self, result: str, reason: str) -> GameEnded:
         return GameEnded(

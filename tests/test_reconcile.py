@@ -369,7 +369,7 @@ def test_a_game_whose_end_was_never_seen_ends_at_the_session_by_its_final_positi
     assert [(e.result, e.reason) for e in ended if isinstance(e, GameEnded)] == [
         ("1/2-1/2", "repetition")
     ]
-    assert len(ended) == 1
+    assert rec.board.is_repetition(3), "the moves that repeat it told first"
     assert rec.finished and rec.result == "1/2-1/2"
     assert rec.end_unseen() == []
 
@@ -604,8 +604,10 @@ def test_story_seen_before_a_drag_is_extended_after_it() -> None:
 def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     """After 67.Qg8+ Kh6 68.Qaf8#: the checkmate badge spoils h6 and spills into g6.
 
-    Both cells the king's move touched are junk, so the two-ply story can only be found
-    by letting the ignored stale cells stand in for exact readings.
+    Both cells the king's move touched are junk: the pieces alone cannot tell the mate from
+    the queen premoved to f8 with the king still on g6, in check under its glow. The site's
+    result does (the pipeline's badges, `Reconciler.commit_pending_terminal`): the mate is
+    the one story that ends the game with it.
     """
     fen = "Q5Q1/8/2K3k1/4Bp1p/5PpP/6P1/8/8 b - - 0 67"
     model, rec = _setup()
@@ -630,6 +632,7 @@ def test_mate_settles_with_two_badge_cells_as_wildcards() -> None:
     events = []
     for i in range(8):
         events += rec.update(badge(model.classify_frame(frame, GEOM)), 1.0 + 0.1 * i)
+    events += rec.commit_pending_terminal("1-0")
     assert sans_of(events) == ["Kh6", "Qaf8#"]
     assert any(isinstance(e, GameEnded) for e in events)
 

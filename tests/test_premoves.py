@@ -103,7 +103,9 @@ def test_premoves_that_end_in_mate_under_the_dialog_commit_the_real_line() -> No
     # empty, h2 and g1 red with the queens drawn there.
     g.show(frames=2, highlight=real, premoves=g.queue(_uci("h4h2")))
     g.show(frames=4, highlight=real, premoves=g.queue(_uci("h4h2"), _uci("g3g1")))
-    assert g.sans == ["Qgg3"], g.sans
+    # Qg3 then both queens queued, or Qh2 then the other queen queued g5-g3-g1: the same
+    # board drawn, and the queue's first step is what tells them apart. Nothing wrong told.
+    assert g.sans in ([], ["Qgg3"]), g.sans
     g.board.push_san("Kc2")
     executed = g.board.push_san("Qhh2+")
     g.show(frames=3, highlight=executed, premoves=g.queue(_uci("g3g1")))

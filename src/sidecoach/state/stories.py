@@ -155,10 +155,19 @@ class Story:
         return board
 
     def key(self, record: chess.Board) -> tuple[object, ...]:
-        """What the screen will go on from: the position, its side to move, the queue and the
-        ply shown. Stories with one key differ only in how they got there."""
+        """What the screen will go on from: the position, its side to move, the queue, the
+        ply shown, and how many times the position has stood there (to three: the draw that
+        ends the game whichever way it came). Stories with one key differ only in how they
+        got there."""
         board = self.board(record)
-        return (board.board_fen(), board.turn, board.castling_rights, self.queue, self.view)
+        return (
+            board.board_fen(),
+            board.turn,
+            board.castling_rights,
+            self.queue,
+            self.view,
+            3 if board.is_repetition(3) else 2 if board.is_repetition(2) else 1,
+        )
 
     def rebased(self, done: int) -> Story:
         """This story told from a record that has done its first `done` ops."""
@@ -234,8 +243,8 @@ class Search:
     the queue, or queued up to `max_steps` more steps from where their pieces are drawn, or
     both. What a way costs is the pictures it needs that the frames never showed: each move
     (an opponent's with the queued step it sets off, drawn in one picture) and each queue
-    edit makes a picture, and only the last of a frame's is seen (`unseen`). Ways more than
-    `margin` dearer than the cheapest are dropped. `budget` bounds the positions expanded.
+    edit makes a picture, and only the last of a frame's is seen (`unseen`). Ways dearer than
+    the cheapest are dropped. `budget` bounds the positions expanded.
     `lifted`: a drag is under way, and one of the user's pieces may be off its square in the
     user's hand."""
 
@@ -251,7 +260,6 @@ class Search:
     max_plies: int = 4
     max_steps: int = 3
     budget: int = 4000
-    margin: float = 1.0
     # Pictures this frame's events may need that neither frame showed.
     max_unseen: int = 1
 
@@ -291,9 +299,7 @@ class Search:
         budget = [self.budget]
 
         def allowed() -> float:
-            # A story dearer than the cheapest is kept only once even the cheapest needs a
-            # picture the frames did not show (`Reconciler._fitting`).
-            return min(ceiling, best[0] + (self.margin if best[0] > story.cost else 0.0))
+            return min(ceiling, best[0])
 
         def add(new: Story) -> None:
             if new.cost <= allowed() or new.cost < best[0]:
@@ -341,18 +347,21 @@ class Search:
                 after.push(move)
                 told = moves + (move,)
                 rest = queue
+                fired = False
                 if board.turn != self.user and queue:
                     step = queue[0]
                     if step in after.legal_moves:
                         after.push(step)
                         told += (step,)
                         rest = queue[1:]
+                        fired = True
                     else:
                         rest = ()
                 # A move the instant the other side's lands is drawn in one picture with it:
                 # the user's is a premove played, on a site that draws the queue or one that
                 # does not; the opponent's is a puzzle's reply, a bot's, a premove of theirs.
-                # Two to a picture: a reply to a reply is a picture of its own.
+                # Two to a picture: a reply to a reply is a picture of its own, and a premove
+                # fired by the move is its reply already.
                 instant = plies > 0 and not paired
                 left = len(self.wrong(premove_picture(after, rest)))
                 args = (
@@ -364,7 +373,7 @@ class Search:
                     limit,
                     edits,
                     blind or unread,
-                    instant,
+                    instant or fired,
                 )
                 children.append((left, len(children), args))
             # The moves that leave the least wrong first: a budget spent on hopeless moves
@@ -460,16 +469,19 @@ class Search:
 
             # One base's premoves get a share of the budget, not all of it.
             share = [min(budget[0], EDIT_BUDGET)]
+            fits = [0]
 
             def grow(
                 picture: chess.Board,
                 steps: tuple[chess.Move, ...],
+                limit: int,
                 base: tuple[chess.Move, ...] = base,
                 paid: int = paid,
                 off: set[chess.Square] = off,
                 targets: set[chess.Square] = targets,
                 movable: list[chess.Square] = movable,
                 share: list[int] = share,
+                fits: list[int] = fits,
             ) -> None:
                 if budget[0] <= 0 or share[0] <= 0:
                     return
@@ -480,8 +492,9 @@ class Search:
                 if steps and steps[-1].to_square in targets and not self.wrong(picture):
                     cost = story.cost + unseen(paid + len(steps))
                     add(replace(story, moves=moves, queue=base + steps, view=None, cost=cost))
+                    fits[0] += 1
                     return
-                left = self.max_steps - len(steps)
+                left = limit - len(steps)
                 if not left:
                     return
                 for sq in [steps[-1].to_square] if steps else movable:
@@ -496,9 +509,15 @@ class Search:
                                 continue
                         after = picture.copy(stack=False)
                         _apply_step(after, step)
-                        grow(after, steps + (step,))
+                        grow(after, steps + (step,), limit)
 
-            grow(start, ())
+            # Shortest first: each step more is a picture more, so a queue that fits in fewer
+            # steps ends the search (a queen premoved g3-g1 was crowded out of the budget by
+            # g3-g8-g1, g3-g7-g1, ... searched before it).
+            for limit in range(1, self.max_steps + 1):
+                grow(start, (), limit)
+                if fits[0]:
+                    break
 
     def _editable(self, picture: chess.Board, square: chess.Square) -> bool:
         """Whether a queue edit could put `square` right: the picture has one of the user's
