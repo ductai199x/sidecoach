@@ -43,6 +43,7 @@ from sidecoach.events import (
     Resync,
     Side,
     Takeback,
+    TurnPending,
     Unexplained,
 )
 from sidecoach.state.stories import EDIT_PRIOR, Search, Story, premove_picture
@@ -360,6 +361,8 @@ class Reconciler:
     _agreed: list[tuple[object, int, int]] = field(default_factory=list)
     # Whether the last frame showed the record as it stands (a queue drawn on it aside).
     _agrees: bool = True
+    # Whether the side to move was last told pending (`TurnPending`).
+    _turn_pending_told: bool = False
     _stale: dict[chess.Square, tuple[tuple[object, ...], int]] = field(default_factory=dict)
     _unexplained_frames: int = 0
     _started: bool = False
@@ -1313,6 +1316,7 @@ class Reconciler:
         if len(stories) == 1 and (stories[0].cost or stories[0].prior):
             stories = [replace(stories[0], cost=0.0, prior=0.0)]  # alone, its past is the past
         self._stories = stories
+        told = self._tell_turn()
         self._unexplained_frames = 0
         self._unexplained_noted = False
         self._agrees = any(not s.ops and s.view is None for s in stories)
@@ -1329,7 +1333,7 @@ class Reconciler:
                 self._agreed = []
                 if chosen.view is None or not self._blocked:
                     self.viewing = chosen.view
-                return []
+                return told
         else:
             ops = _common_start([s.ops for s in stories])
         self.viewing = None
@@ -1353,8 +1357,9 @@ class Reconciler:
         while ready < len(agreed) and agreed[ready][1] >= agreed[ready][2]:
             ready += 1
         if not ready:
-            return []
-        return self._play(ops[:ready])
+            return told
+        events = self._play(ops[:ready])
+        return told + events + self._tell_turn()
 
     def _seen_ops(self, ops: tuple[object, ...]) -> list[int]:
         """For each op, 1 when this frame shows it settled: a move whose squares are all read,
@@ -1387,6 +1392,14 @@ class Reconciler:
         if self._king_lands(board, move, sq, obs) or self._king_leaves(board, move, sq, obs):
             return True
         return sq not in self._drawn and not reading.unsettled
+
+    def _tell_turn(self) -> list[Event]:
+        """`TurnPending` when whether the stories agree on the side to move has changed."""
+        pending = self.turn_pending
+        if pending == self._turn_pending_told:
+            return []
+        self._turn_pending_told = pending
+        return [TurnPending(game_id=self.game_id, pending=pending)]
 
     def _play(self, ops: tuple[object, ...]) -> list[Event]:
         """The record does `ops`, and every story is told from it."""

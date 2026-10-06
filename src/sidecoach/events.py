@@ -122,6 +122,18 @@ class Resync(Event):
     reason: str
 
 
+class TurnPending(Event):
+    """Whether the side to move is not known yet (docs/reconciler-model.md, section 6): the
+    pictures fit stories that leave different sides to move -- a picture nobody saw, a queue
+    whose steps the screen does not show -- and the next move tells them apart. While it is
+    pending the record stands on the last position every story agrees on, and nothing is
+    said for a side to move: a wrong side to move is never told (Tai, 2026-10-05). False when
+    the stories agree again."""
+
+    game_id: str
+    pending: bool
+
+
 class Unexplained(Event):
     """Cells that have disagreed with the game for a long while, or a move refused as
     illegal: a note for the log, the game kept as it stands. Not a resync -- the position

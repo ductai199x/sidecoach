@@ -111,6 +111,14 @@ Screen state: derived from board presence, running clocks, and a few layout cues
 
 ### 5.3 State reconciliation
 
+Since 2026-10-05 the explanations are stories (`state/stories.py`): every way the game may
+have gone on past the record that fits the frames is kept, costed by the pictures it needs
+that no frame showed, and the record takes only what all of them agree on; premove queues
+are part of the state, drawn the way the site draws them, and no colour is read. The model,
+its guarantees and its known limits are in docs/reconciler-model.md, which supersedes the
+bullets below where they describe the order of explanations, the premove queue read from red
+squares, and the side to move settled by the clock or by the first story.
+
 The core idea: detect moves, not positions. Given a known legal position there are about thirty legal moves. Only the squares that changed need classifying, and the legal move most consistent with the diff wins. Full FEN reconstruction is only for cold start and resync.
 
 - Settle: commit a move only after two consecutive frames agree.

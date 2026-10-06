@@ -30,11 +30,12 @@ import random
 import chess
 import pytest
 
-from sidecoach.events import MovePlayed, Side
+from sidecoach.events import MovePlayed, Side, TurnPending
 from tests.games import Game, sans_of
 from tests.synth import HIGHLIGHTS, PREMOVE_NAVY, PREMOVE_RED, premove_picture
 
-SEEDS = range(1, 9)
+# Seed 117 leaves the side to move open for a while: the suite always sees it told so.
+SEEDS = (*range(1, 9), 117)
 # Frames of each picture. A bot takes a second or more, and a premove executes the instant
 # it answers, in the same picture; a bot that premoves too answers within a frame.
 FRAMES = (1, 2, 2, 3, 4)
@@ -118,6 +119,7 @@ class _Site:
         self.told = 0
         # What the reconciler told or held that the game never was (`check`).
         self.lies: list[tuple[str, str]] = []
+        self.pending_seen = False
 
     @staticmethod
     def _key(board: chess.Board) -> str:
@@ -168,7 +170,11 @@ class _Site:
                 before = chess.Board(event.fen_before)
                 if (self._key(before), event.uci) not in self.moves:
                     self.lies.append(("told", event.san))
+        told = [e.pending for e in self.game.events if isinstance(e, TurnPending)]
         self.told = len(self.game.events)
+        # A side to move the stories disagree on is told pending, and settled when they agree.
+        assert (told[-1] if told else False) == rec.turn_pending, ("pending", self.played)
+        self.pending_seen |= rec.turn_pending
         if self._key(rec.board) not in self.history and not rec.turn_unknown:
             self.lies.append(("held", rec.board.fen()))
 

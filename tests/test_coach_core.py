@@ -20,6 +20,7 @@ from sidecoach.events import (
     Side,
     Takeback,
     Trigger,
+    TurnPending,
 )
 from tests.coaching import (
     SCHOLAR,
@@ -665,6 +666,28 @@ def test_two_questions_held_for_the_engine_are_both_answered_in_order() -> None:
     answered = drain(coach)
     assert len(answered) == 2, "the last question did not overwrite the first"
     assert "Qxf7" in answered[0].text
+
+
+def test_a_question_while_the_side_to_move_is_not_known_waits_for_it() -> None:
+    """The reconciler cannot yet say whose move it is (`TurnPending`, docs/reconciler-model.md
+    section 6): nothing unasked is said, and a question waits -- answered for the wrong side
+    it would teach the wrong move (Tai, 2026-10-05: the turn order should never fail). Once
+    the side to move is known again the question is answered."""
+    board, analysis = load("scholar")
+    coach = offline_coach()
+    coach.on_event(
+        GameStarted(game_id="g", user_side=Side.WHITE, start_fen=board.fen(), kind="position"), 1.0
+    )
+    coach.on_event(analysis, 2.0)
+    drain(coach)
+    coach.on_event(TurnPending(game_id="g", pending=True), 3.0)
+    coach.ask("what's the best move?", 4.0)
+    assert [m.text for m in drain(coach)] == ["One moment -- following the moves on the board."]
+    coach.tick(120.0)  # stuck long past a hint, were the side to move known
+    assert drain(coach) == []
+    coach.on_event(TurnPending(game_id="g", pending=False), 121.0)
+    answered = drain(coach)
+    assert len(answered) == 1 and "Qxf7" in answered[0].text
 
 
 # 10. What the log keeps is bounded

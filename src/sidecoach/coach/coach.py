@@ -91,6 +91,7 @@ from sidecoach.events import (
     Side,
     Takeback,
     Trigger,
+    TurnPending,
 )
 from sidecoach.llm.base import ChatMessage, Completion, LLMProvider, ToolRound, refused_for_good
 from sidecoach.profile.causes import HABIT
@@ -2892,6 +2893,9 @@ class Coach:
         # A question asked before the engine had looked at the position on the board: it is
         # answered the moment the analysis lands (see `ask`).
         self._pending_asks: list[tuple[str, float]] = []
+        # The side to move not known yet (`TurnPending`): nothing unasked is said, and a
+        # question waits for it -- answered for the wrong side, it would teach the wrong move.
+        self._turn_pending = False
         # The moment of the game: a new game, a takeback and a re-read each start another. A
         # reply asked for in an earlier one and landing in this one is shown in its place (Tai,
         # 2026-10-02: no reply is dropped) but is not a turn of this one: recorded where it
@@ -2951,7 +2955,13 @@ class Coach:
     # Events in
 
     def on_event(self, event: Event, ts: float) -> None:
-        if isinstance(event, GameStarted):
+        if isinstance(event, (GameStarted, Takeback, Resync, GameEnded)):
+            self._turn_pending = False  # a position told whole, with its side to move
+        if isinstance(event, TurnPending):
+            self._turn_pending = event.pending
+            if not event.pending:
+                self._answer_pending(ts)  # the questions held for it, answered now
+        elif isinstance(event, GameStarted):
             self._new_game(event, ts)
         elif isinstance(event, MovePlayed):
             self._on_move(event, ts)
@@ -3014,6 +3024,8 @@ class Coach:
         long enough."""
         if self._held_lesson is not None and ts - self._held_lesson[0] >= self.lesson_wait_s:
             self._release_lesson(ts)
+        if self._turn_pending:
+            return  # no hint for a side to move not known yet
         trigger = self.policy.tick(ts)
         if trigger is None or self._current is None or self._current.facts is None:
             return
@@ -3052,6 +3064,18 @@ class Coach:
             self._ask_profile(text, ts, moment)
             return
         position = self._current
+        if self._turn_pending and not self.finished:
+            # The board has moved on to a side to move not yet known: answered the moment it
+            # is, never for the wrong side (Tai, 2026-10-05: the turn order should never fail).
+            if not self._pending_asks:
+                self._queue_plain(
+                    Trigger.USER_ASK,
+                    "One moment -- following the moves on the board.",
+                    ts,
+                    turn=False,
+                )
+            self._pending_asks.append((text, ts))
+            return
         if (
             position is not None
             and position.facts is None
