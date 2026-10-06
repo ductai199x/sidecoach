@@ -111,9 +111,10 @@ class Story:
     seen as a move from an earlier position), `("flip",)` (the record's side to move read
     the other way: a position adopted with the turn open, or a turn told wrong). Then
     `moves` were played. `queue` is the user's premove queue as it stands, which exists only
-    while the opponent is to move; `view` is the ply of the record the board shows while the
-    user browses the move list; `cost` is how many pictures the story needs that no frame
-    showed. Nothing else is weighed: of the stories the pictures allow, none is likelier."""
+    while the opponent is to move; `view` is the ply of the story's game (the record's moves
+    and its own) the board shows while the user browses the move list; `cost` is how many
+    pictures the story needs that no frame showed. Nothing else is weighed: of the stories the
+    pictures allow, none is likelier."""
 
     moves: tuple[chess.Move, ...] = ()
     queue: tuple[chess.Move, ...] = ()
@@ -123,8 +124,9 @@ class Story:
     # Whether the story holds an opponent's move no picture showed (`Search._unseen_replies`).
     hidden: bool = False
     # The square the last frame read one of its pieces on, off its own and on its way along
-    # a straight line (`Reconciler._in_flight`); None when the frame showed it at rest.
-    flight: chess.Square | None = None
+    # a straight line, or a negative mark of that frame when it was read on none
+    # (`Reconciler._in_flight`); None when the frame showed it at rest.
+    flight: int | None = None
 
     @property
     def ops(self) -> tuple[object, ...]:
@@ -179,24 +181,6 @@ class Story:
         return replace(self, head=head, moves=moves)
 
 
-def disagreeing(
-    picture: chess.Board, obs: Observation, ignore: Callable[[chess.Square, CellReading], bool]
-) -> set[chess.Square]:
-    """The squares whose reading contradicts `picture`, skipping those `ignore` says carry no
-    evidence (a piece in motion, a stale badge, an arrow)."""
-    out = set()
-    for sq, reading in obs.items():
-        if reading.kind == "unknown" or ignore(sq, reading):
-            continue
-        piece = picture.piece_at(sq)
-        if reading.kind == "empty":
-            if piece is not None:
-                out.add(sq)
-        elif piece is None or (reading.symbol is not None and piece.symbol() != reading.symbol):
-            out.add(sq)
-    return out
-
-
 @dataclass(frozen=True)
 class Evidence:
     """What a frame reads, as bitboards, for comparing pictures fast (a story's search compares
@@ -227,7 +211,7 @@ class Evidence:
         return Evidence(empty, occupied, tuple((t, c, m) for (t, c), m in kinds.items()))
 
     def wrong(self, picture: chess.Board) -> int:
-        """The squares the frame reads otherwise than `picture`, as a bitboard (`disagreeing`)."""
+        """The squares the frame reads otherwise than `picture`, as a bitboard."""
         out = (picture.occupied & self.empty) | (self.occupied & ~picture.occupied)
         for kind, colour, mask in self.kinds:
             out |= mask & ~picture.pieces_mask(kind, colour)
@@ -391,9 +375,16 @@ class Search:
         # nobody saw is as possible as a shorter one. At each length the moves alone are
         # tried, then with the queue edited.
         start = story.board(self.record)
+        # The queue cancelled before anything else happened, a picture of its own: the user
+        # takes a premove back, and the opponent moves (a premove drawn and cancelled before
+        # the reply was read as fired by the reply and premoved back: the stress sweep,
+        # 2026-10-06, seed 28).
+        cancelled = bool(story.queue) and start.turn != self.user
         for limit in range(self.max_plies + 1):
             node(start, story.queue, story.moves, 0, 0, limit, False)
             node(start, story.queue, story.moves, 0, 0, limit, True)
+            if cancelled:
+                node(start, (), story.moves, 1, 0, limit, False)
         if (
             not story.hidden
             and story.queue
@@ -401,7 +392,12 @@ class Search:
             and not self.wrong(premove_picture(start, story.queue))
         ):
             found += self._unseen_replies(story, start)
-        return [s for s in found if s.cost <= allowed()]
+        # Each story once: the moves alone and the moves with the queue edited find many alike.
+        unique: dict[tuple[object, ...], Story] = {}
+        for s in found:
+            if s.cost <= allowed():
+                unique.setdefault((s.moves, s.queue, s.hidden), s)
+        return list(unique.values())
 
     def _unseen_replies(self, story: Story, start: chess.Board) -> list[Story]:
         """The opponent's moves the picture cannot show: a queue drawn over the squares a

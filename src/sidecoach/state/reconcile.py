@@ -1,25 +1,22 @@
 """Reconcile per-frame cell readings into a legal python-chess game.
 
-The core idea from DESIGN.md section 5.3: detect moves, not positions. Given the current
-legal position, a frame is explained by the legal move whose touched squares match what the
-cells now show, or, when moves were missed, by a short path of moves. Everything else is
-held: a piece lifted mid-drag empties one square and matches no move, a promotion dialog
-hides cells, an arrow makes a cell unreadable.
+docs/reconciler-model.md is the design. Every way the game may have gone on past the
+record that the frames allow is kept as a story (`stories.Story`): moves, the user's premove
+queue as the site draws it, a ply of the move list shown, a piece on its way. A story costs
+the pictures it needs that no frame showed; only the stories of the fewest are kept, and no
+likelihood ever drops one. The record takes only what every story agrees on, and the side to
+move is told pending while they disagree on it (`TurnPending`). When they differ only in what
+no picture tells apart, the record follows the one the board shows as a position and keeps
+the others, told again from it.
 
 Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
-empty, or unknown; unknown cells carry no evidence either way. A move is committed only after
-it has explained `settle_frames` consecutive frames in which every square it touches holds a
-settled piece or is empty, none of them is under something drawn (an arrow), and no square
-carries the hover outline of a drag. Highlight colours are never consulted. That is what
-stops a dragged piece drawn over a neighbouring square from being taken as a move, and a
-move from committing through a square an arrow hides while the arrow, which is no drag,
-holds nothing else back.
+empty, or unknown; unknown cells carry no evidence either way. A move is played only after
+`settle_frames` frames have shown every square it touches settled, none under something
+drawn (an arrow), and no hover outline of a drag. No colour is read, highlight or tint.
 
-Browsing history is normal: the user steps back through the move list with the arrow keys
-or by clicking a move, and the board shows an earlier position. A frame that matches an
-earlier position of this game puts the reconciler in a viewing state; nothing is undone. A
-takeback is recorded only when a different move is then played from that earlier position,
-which is the only way the two can be told apart on the board.
+Browsing the move list is a story too: a frame that shows an earlier ply of a story's game
+is that story with the ply shown, and nothing is played while the user browses. A takeback
+is a different move played from the ply shown, the only way the two can be told apart.
 
 Cells that keep disagreeing without any move explaining them are treated as stale after a
 few frames and ignored, so one unreadable cell cannot stall the game. Resync fires only when
@@ -268,6 +265,11 @@ def _retold(story: Story, played: tuple[object, ...]) -> Story | None:
     moves = story.ops[common:]
     assert all(isinstance(op, chess.Move) for op in moves)
     return replace(story, head=(("back", len(tail)),), moves=moves)  # type: ignore[arg-type]
+
+
+def _events(story: Story) -> int:
+    """The events `story` assumes: what it does to the record, its moves, its queued steps."""
+    return len(story.head) + len(story.moves) + len(story.queue)
 
 
 def _draws_nothing(record: chess.Board, story: Story) -> bool:
@@ -634,8 +636,15 @@ class Reconciler:
             return True
         return after.is_check() and after.king(after.turn) in decorated
 
-    def _history_index(self, obs: Observation, diff: set[chess.Square]) -> int | None:
-        """Index of the earlier position of this game the frame shows, if any.
+    def _history_index(
+        self,
+        obs: Observation,
+        diff: set[chess.Square],
+        board: chess.Board | None = None,
+        shown: int | None = None,
+    ) -> int | None:
+        """Index of the earlier position of this game (or of `board`'s) the frame shows, if
+        any.
 
         Every position back to the base is checked, one by one, however long the game: a
         click anywhere in the move list shows one. Only the last forty were, and the base;
@@ -644,12 +653,14 @@ class Reconciler:
         and stepping forward through the list then recorded the game's own moves a second
         time (the state review, 2026-10-01).
         """
-        earlier = self.board.copy()
+        earlier = (self.board if board is None else board).copy()
         undone: set[chess.Square] = set()
-        plies = len(self.board.move_stack)
+        plies = len(earlier.move_stack)
         for back in range(1, plies + 1):
             move = earlier.pop()
             undone |= touched_squares(earlier, move)
+            if shown is not None and plies - back > shown:
+                continue  # a ply the screen never showed
             if diff <= undone and matches(earlier, obs, set(obs)):
                 return plies - back
         return None
@@ -657,6 +668,16 @@ class Reconciler:
     def _board_at(self, index: int) -> chess.Board:
         earlier = self.board.copy()
         while len(earlier.move_stack) > index:
+            earlier.pop()
+        return earlier
+
+    def _shown(self, story: Story) -> chess.Board:
+        """What `story` draws: the ply of its game it shows, or its position with its premove
+        queue played out."""
+        if story.view is None:
+            return premove_picture(story.board(self.board), story.queue)
+        earlier = replace(story, view=None, queue=()).board(self.board).copy()
+        while len(earlier.move_stack) > story.view:
             earlier.pop()
         return earlier
 
@@ -701,12 +722,14 @@ class Reconciler:
         if len(obs) < self.min_readable_cells:
             return events
         diff = self.disagreements(obs)
-        # What stays wrong is counted against the picture the likeliest story draws, not the
-        # record: a premove queue drawn for ten seconds is the story, not stale junk.
-        lead = self._lead_picture()
-        off = self.disagreements(obs, lead)
+        # What stays wrong is what no story kept draws: a premove queue drawn for ten seconds
+        # is a story, not stale junk, and so is a square every story but the first explains (a
+        # bishop's square left empty, read stale while the record waited on the stories, and
+        # ignored: the stress sweep, 2026-10-06, seed 60).
+        pictures = [self._shown(s) for s in self._stories] or [self.board]
+        off = set.intersection(*(self.disagreements(obs, p) for p in pictures))
         self._advance_stale(off, obs)
-        ghosts = self._ghosts(off, obs, lead)
+        ghosts = self._ghosts(off, obs, pictures)
         if ghosts:
             # An arrow drawn over an empty square reads as a piece of no known kind, off
             # centre, for as long as it is drawn. Once such a reading has gone stale it is
@@ -867,8 +890,9 @@ class Reconciler:
         roots: list[Story] | None = None,
     ) -> list[Story]:
         """The stories that draw this frame (docs/reconciler-model.md, section 5): each story
-        kept, and the record itself, extended by the cheapest events that fit; the record
-        shown at an earlier ply (browsing); a move played from the ply shown (a takeback).
+        kept extended by the cheapest events that fit, or the record told again when none
+        fits; a story's game shown at an earlier ply (browsing); a move played from the ply
+        shown (a takeback).
         `quiet` cells are left out of the matching but witness no move; `wild` cells carry no
         evidence at all, and a move may pass through them (stale badges); `denied` readings
         among them must not be contradicted by a square a story changes; `roots`, when given,
@@ -914,31 +938,59 @@ class Reconciler:
             found = self._found(roots, search, obs)
         browsed: list[Story] = []
         if diff and not self._blocked:
-            # The move list browsed: an earlier ply of the record, as it stands.
-            index = self._history_index(obs, diff) if self.board.move_stack else None
-            if index is not None:
-                # Browsing changes nothing of the game: every story kept goes on underneath,
-                # the ply shown over it.
-                for story in self._stories:
-                    viewed = replace(story, view=index)
-                    if viewed not in browsed:
-                        browsed.append(viewed)
+            # The move list browsed: an earlier ply of a story's game, as it stands -- its
+            # moves not yet told included: a move the user takes back before the record has
+            # told it is in the list all the same (the flow matrix, 2026-10-06, a puzzle with
+            # takebacks: a king's move taken back read as the king premoved back). Browsing
+            # changes nothing of the game: the story goes on underneath, the ply shown over it.
+            for story in self._stories:
+                base = replace(story, view=None, queue=(), flight=None)
+                if any(op[0] != "back" for op in base.head):
+                    continue  # a story's own game is its moves on the record, taken back or not
+                game = base.board(self.board)
+                # The plies the screen has shown: the record's, and the story's own moves as
+                # far as each has been seen settled. A premove fired and never shown at rest is
+                # no ply to browse back to (a premove drawn and cancelled left a story that
+                # read a still board as its own ply browsed, for good: the stress sweep,
+                # 2026-10-06, seed 28).
+                shown = len(game.move_stack) - len(base.moves)
+                for i in range(len(base.moves)):
+                    if self._seen.get(base.ops[: len(base.head) + i + 1], 0) < self.settle_frames:
+                        break
+                    shown += 1
+                index = self._history_index(obs, self.disagreements(obs, game), game, shown)
+                viewed = replace(base, view=index)
+                if index is not None and viewed not in browsed:
+                    browsed.append(viewed)
             # A move played from the ply shown: a takeback, or, from the start position of a
             # game begun there, a new game. An earlier position of the game is browsing: a
             # different move from the one shown is the only thing a takeback shows.
-            for story in self._stories:
-                if story.view is None or index is not None:
-                    continue
-                if story.view == 0 and self._base_fen == chess.STARTING_FEN:
-                    head: tuple[tuple[object, ...], ...] = (("newgame",),)
-                else:
-                    head = (("back", len(self.board.move_stack) - story.view),)
-                browsed += [
-                    s
-                    for s in search.extend(Story(head=head))
-                    if s.moves and self._decorations_hold(s, obs)
-                ]
+            if not browsed:
+                for story in self._stories:
+                    cut = self._cut(story)
+                    if cut is not None:
+                        browsed += [
+                            s
+                            for s in search.extend(cut)
+                            if len(s.ops) > len(cut.ops) and self._decorations_hold(s, obs)
+                        ]
         return self._kept(found, browsed, denied)
+
+    def _cut(self, story: Story) -> Story | None:
+        """The story a move played from the ply `story` shows goes on from: its own moves
+        past the ply cut off, or, past them, the record's taken back; a new game from the start
+        position when that is the ply and the game began there. None when `story` shows no
+        ply."""
+        if story.view is None:
+            return None
+        base = replace(story, view=None, queue=(), flight=None)
+        back = len(base.board(self.board).move_stack) - story.view
+        if back <= len(base.moves):
+            return replace(base, moves=base.moves[: len(base.moves) - back])
+        if story.view == 0 and self._base_fen == chess.STARTING_FEN:
+            return Story(head=(("newgame",),))
+        taken = back - len(base.moves) + sum(op[1] for op in base.head)  # type: ignore[misc]
+        return Story(head=(("back", taken),))
 
     def _found(self, roots: list[Story], search: Search, obs: Observation) -> list[Story]:
         """Every way the `roots` go on to draw the frame, the cheapest first."""
@@ -967,18 +1019,15 @@ class Reconciler:
                 found.append(replace(root, flight=flight))
         return [s for s in found if self._decorations_hold(s, obs)]
 
-    def _in_flight(self, story: Story, search: Search, obs: Observation) -> chess.Square | None:
+    def _in_flight(self, story: Story, search: Search, obs: Observation) -> int | None:
         """The square of the frame's one piece of `story` on its way: off its square, which
         reads empty, and read on a square in a straight line from it that the story has empty
         -- every site slides a moved piece in a straight line, and a frame can catch it centred
-        on a square it passes. None when the frame shows anything else. A slide never shows its
+        on a square it passes; a negative mark when it is read on none, its way over squares
+        the frame cannot read. None when the frame shows anything else. A slide never shows its
         piece on one square in two frames running: read there again, the piece has stopped,
         and the story that it was on its way ends (`_found`)."""
-        picture = (
-            self._board_at(story.view)
-            if story.view is not None
-            else premove_picture(story.board(self.board), story.queue)
-        )
+        picture = self._shown(story)
         wrong = search.wrong(picture)
         left = [sq for sq in wrong if picture.piece_at(sq) is not None and obs[sq].kind == "empty"]
         if len(left) != 1 or len(wrong) > 2:
@@ -1003,17 +1052,14 @@ class Reconciler:
             ):
                 return sq
         if wrong == {start}:
-            # Not read anywhere: on its way over a square the frame cannot read (a pawn
-            # sliding d7-d5 under an arrow was taken as stopped on d6: the stress sweep,
-            # 2026-10-06, seed 2).
-            for sq in chess.SQUARES:
-                if (
-                    sq != start
-                    and picture.piece_at(sq) is None
-                    and search.unread(sq)
-                    and _in_line(start, sq)
-                ):
-                    return sq
+            # Its square empty and the piece read on no other: it has not vanished, it is
+            # between squares, or over ones the frame cannot read (a pawn sliding d7-d5 under
+            # an arrow was taken as stopped on d6: the stress sweep, 2026-10-06, seed 2; a
+            # bishop over the pawn it was taking: seed 71). Seen on no square, it is seen
+            # stopped on none: the mark is this frame's own, never a square another frame can
+            # repeat (a bishop unread on its way f8-c5, then read on e7, was taken as read on
+            # e7 twice and stopped: seed 60).
+            return -1 - self._frame_index
         return None
 
     def _kept(
@@ -1047,13 +1093,24 @@ class Reconciler:
         # "e2-e3, then e4 premoved" draws the same pieces from a picture nobody saw.
         least = min(s.cost for s in found)
         allowed = [s for s in found if s.cost == least]
-        # The move list browsed, or a takeback, against a premove queue drawing the same
-        # pieces: the browsing or the takeback is read (Tai, 2026-10-05: "takeback and browse
-        # back has to work correctly always; premove can be a bit wrong"). That costs neither
-        # the side to move nor the position for long: a queue read as browsing executes when
-        # the opponent moves, and the record reads it then as the user's instant reply.
-        if any(s in browsed for s in allowed):
-            allowed = [s for s in allowed if s in browsed or not s.queue]
+        # Of what the pictures allow alike, the story that assumes the fewest events: moves,
+        # queued steps, what is done to the record. A premove drawn and taken back was read as
+        # moves invented around it (the stress sweep, 2026-10-06, seed 23). A story of a piece
+        # on its way assumes nothing yet, and stays.
+        at_rest = [s for s in allowed if s.flight is None]
+        if at_rest:
+            fewest = min(_events(s) for s in at_rest)
+            allowed = [s for s in allowed if s.flight is not None or _events(s) == fewest]
+        # Visible before hidden (Tai, 2026-10-06): when a story with no premove queue draws
+        # the frame, a story that needs a queue no frame has shown it needs is dropped. On a
+        # site that draws premoves, the user's moves and the same moves premoved a step
+        # behind draw every frame alike, and kept side by side they never part: the record
+        # stalled. Read wrong, a real queue fires with the opponent's next move, and the
+        # record is put right by the move after it. It covers browsing and takebacks against
+        # a premove drawing the same pieces as well (Tai, 2026-10-05: "takeback and browse
+        # back has to work correctly always; premove can be a bit wrong").
+        if any(not s.queue and s.flight is None for s in allowed):
+            allowed = [s for s in allowed if not s.queue]
         # Likelihood never drops a story (Tai, 2026-10-05: the side to move must never go
         # wrong, and the position must be right once premoves resolve): every story the
         # pictures allow is kept, whatever it assumes, and the record takes only what all of
@@ -1483,16 +1540,16 @@ class Reconciler:
         return self._unexplained_frames
 
     def _ghosts(
-        self, off: set[chess.Square], obs: Observation, picture: chess.Board
+        self, off: set[chess.Square], obs: Observation, pictures: list[chess.Board]
     ) -> set[chess.Square]:
-        """Stale readings of something unnameable on squares the picture has empty."""
+        """Stale readings of something unnameable on squares every story has empty."""
         return {
             sq
             for sq in off
             if self._stale[sq][1] > self.stale_after
             and obs[sq].kind == "piece"
             and obs[sq].symbol is None
-            and picture.piece_at(sq) is None
+            and all(picture.piece_at(sq) is None for picture in pictures)
         }
 
     def _liftable(self) -> frozenset[chess.Square]:
@@ -1502,21 +1559,9 @@ class Reconciler:
         game's king walk, 2026-10-06)."""
         squares: set[chess.Square] = set()
         for story in self._stories or [Story()]:
-            picture = (
-                self._board_at(story.view)
-                if story.view is not None
-                else premove_picture(story.board(self.board), story.queue)
-            )
+            picture = self._shown(story)
             squares |= set(chess.SquareSet(picture.occupied_co[self.user_side.color]))
         return frozenset(squares)
-
-    def _lead_picture(self) -> chess.Board:
-        """What the likeliest story draws: its position with its queue played out, or the
-        ply of the record it shows."""
-        story = self._stories[0] if self._stories else Story()
-        if story.view is not None:
-            return self._board_at(story.view)
-        return premove_picture(story.board(self.board), story.queue)
 
     # Position resync
 
