@@ -953,10 +953,13 @@ class Reconciler:
             # their evidence, and only they are extended. A side to move left open is a story
             # of its own while the record still stands as it was adopted.
             roots = list(self._stories)
-            if self._turn_unknown and any(not s.ops and s.view is None for s in roots):
+            record = next((s for s in roots if not s.ops and s.view is None), None)
+            if self._turn_unknown and record is not None:
                 flipped = self.board.copy(stack=False)
                 if _turn_valid(flipped, not self.board.turn):
-                    roots.append(Story(head=(("flip",),)))
+                    # The same history as the record's story: the steps it took through the
+                    # move list are the flipped one's too.
+                    roots.append(Story(head=(("flip",),), steps=record.steps))
             found = self._found(roots, search, obs)
             if not found and not all(not s.ops and not s.queue for s in self._stories):
                 # No story kept fits: the frames before were misread. The game is told again
