@@ -1002,6 +1002,11 @@ class Reconciler:
             for s in found
             if all(any(m.from_square == op[1] for m in s.moves) for op in s.head if op[0] == "fix")
         ]
+        # A side to move read the other way is told by a move played, never by a queue alone:
+        # a rook sliding h1-h4 to take the checking queen, caught on h2 and h3, was read as the
+        # turn wrong and the rook premoved, and the side to move was flipped (the stress sweep,
+        # 2026-10-05, seed 116).
+        found = [s for s in found if s.moves or ("flip",) not in s.head]
         if not found:
             return []
         # The same story found from two roots is one; within a margin of the cheapest only.
@@ -1174,7 +1179,8 @@ class Reconciler:
     def _seen_ops(self, ops: tuple[object, ...]) -> list[int]:
         """For each op, 1 when this frame shows it settled: a move whose squares are all read,
         none in motion, under the cursor or under a drawing (a king under its decoration
-        aside); what is done to the record before the moves always."""
+        aside); what is done to the record before the moves always. Nor does a frame that shows
+        the moved piece off its square further along the move's line (`_sliding_on`)."""
         obs = self._last_obs
         head = tuple(op for op in ops if not isinstance(op, chess.Move))
         board = Story(head=head).board(self.board).copy(stack=False)  # type: ignore[arg-type]
@@ -1183,11 +1189,44 @@ class Reconciler:
             if not isinstance(op, chess.Move):
                 out.append(1)
                 continue
-            clean = all(self._settled_on(board, op, sq, obs) for sq in touched_squares(board, op))
+            clean = all(
+                self._settled_on(board, op, sq, obs) for sq in touched_squares(board, op)
+            ) and not self._sliding_on(board, op, obs)
             out.append(1 if clean else 0)
             if op in board.legal_moves:
                 board.push(op)
         return out
+
+    @staticmethod
+    def _sliding_on(board: chess.Board, move: chess.Move, obs: Observation) -> bool:
+        """Whether the frame reads the moved piece off its square further along the move's
+        line: still sliding on, the square it seems to have stopped on a frame of its way.
+        A pawn sliding a7-a5 was caught on a6, told as a6 on the next frame with the pawn
+        still on its way, and a5 then read as a premove nobody played (the stress sweep,
+        2026-10-05, seed 69)."""
+        piece = board.piece_at(move.from_square)
+        if piece is None:
+            return False
+        files = chess.square_file(move.to_square) - chess.square_file(move.from_square)
+        ranks = chess.square_rank(move.to_square) - chess.square_rank(move.from_square)
+        if files and ranks and abs(files) != abs(ranks):
+            return False  # a knight's jump: no line to go on along
+        step_file = (files > 0) - (files < 0)
+        step_rank = (ranks > 0) - (ranks < 0)
+        file = chess.square_file(move.to_square) + step_file
+        rank = chess.square_rank(move.to_square) + step_rank
+        while 0 <= file < 8 and 0 <= rank < 8:
+            reading = obs.get(chess.square(file, rank))
+            if (
+                reading is not None
+                and reading.kind == "piece"
+                and not reading.settled
+                and reading.symbol == piece.symbol()
+            ):
+                return True
+            file += step_file
+            rank += step_rank
+        return False
 
     def _settled_on(
         self, board: chess.Board, move: chess.Move, sq: chess.Square, obs: Observation
