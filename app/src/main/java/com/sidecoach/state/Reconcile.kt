@@ -55,7 +55,9 @@ import kotlin.math.sign
  * Cell readings can be exact (a symbol), occupied (a piece whose type is hidden by a badge),
  * empty, or unknown; unknown cells carry no evidence either way. A move is played only after
  * `settleFrames` frames have shown every square it touches settled, none under something drawn
- * (an arrow), and no hover outline of a drag. No colour is read, highlight or tint.
+ * (an arrow), and no hover outline of a drag. No colour is read, highlight or tint, save the
+ * site's last-move mark, and only to recover a record that every story has led astray
+ * ([Reconciler.marked]).
  *
  * Browsing the move list is a story too: a frame that shows an earlier ply of a story's game is
  * that story with the ply shown, and nothing is played while the user browses. A takeback is a
@@ -541,6 +543,11 @@ class Reconciler(
 
     /** The frame before it ([inFlight]: a piece read on one square twice running has stopped). */
     private var prevObs: Observation = Observation()
+
+    // The site's last-move mark agreed with no story, nor with one told the other way, this
+    // frame ([marked]), and for how many frames running ([markedResync]).
+    private var markDenied = false
+    private var unmarked = 0
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
 
@@ -882,6 +889,11 @@ class Reconciler(
         if (quiet.size >= resyncCells) quiet = emptySet()
         var fitted = fitting(obs, diff, quiet = quiet)
         if (fitted.isNotEmpty()) {
+            val adopted = markedResync(obs)
+            if (adopted.isNotEmpty()) {
+                events.addAll(adopted)
+                return events
+            }
             events.addAll(decide(fitted))
             return events
         }
@@ -1057,6 +1069,7 @@ class Reconciler(
                 // the record, with a picture the frames since it do not show.
                 found = this.found(listOf(Story(cost = 1.0)), search, obs)
             }
+            found = marked(found, search, obs, record)
         } else {
             found = this.found(roots, search, obs)
         }
@@ -1158,6 +1171,113 @@ class Reconciler(
             }
         }
         return null to null
+    }
+
+    /**
+     * The recovery from a side to move read the other way (`_marked`; Tai, 2026-10-06: "a good
+     * and reliable recovery mechanism"). On a site that draws premoves, the user's moves and the
+     * same moves premoved, each fired by the opponent's next, draw every frame alike: once the
+     * record is a ply out, the pieces alone never put it back (the premove sweep, 2026-10-06,
+     * seeds 360, 481, 673, ...). What tells them apart is the site's own mark of the move just
+     * played, which a premove is not. When the frame shows the mark and no story that fits has
+     * its last move marked, the stories are told again with the side to move the other way, and
+     * kept when one of them has. A frame with nothing marked, or a site that marks nothing,
+     * changes nothing.
+     */
+    private fun marked(
+        found: List<Story>,
+        search: Search,
+        obs: Observation,
+        record: Story?,
+    ): List<Story> {
+        markDenied = false
+        val lit = highlightedSquares(obs)
+        if (lit.isEmpty() || found.isEmpty() || blockedFlag) return found
+        if (found.any { marksHold(it, lit) }) return found
+        var flipped: List<Story> = emptyList()
+        if (turnValid(board.copy(withStack = false), !board.turn)) {
+            val root = Story(head = listOf(HeadOp.Flip), steps = record?.steps ?: 0)
+            flipped = this.found(listOf(root), search, obs).filter {
+                it.moves.isNotEmpty() && it.view == null && marksHold(it, lit)
+            }
+        }
+        // Nothing told the other way has the mark either: the record has gone wrong further back
+        // than the side to move ([markedResync]).
+        markDenied = flipped.isEmpty()
+        return flipped.ifEmpty { found }
+    }
+
+    /**
+     * The board read whole and adopted, when the site's last-move mark has agreed with no story
+     * for as many frames as a move needs to be played ([marked]; `_marked_resync`): the record
+     * went wrong further back than a side to move, and every story since explains the screen
+     * with a premove queue drawn over the true position (the premove sweep, 2026-10-06, seed
+     * 956: a queued king's step read as a takeback). The mark names the side that moved; a
+     * picture it does not fit -- a queue still drawn, a piece unread -- is not adopted, and the
+     * stories go on.
+     */
+    private fun markedResync(obs: Observation): List<Event> {
+        if (!markDenied) {
+            unmarked = 0
+            return emptyList()
+        }
+        unmarked += 1
+        if (unmarked < settleFrames + 1 || finishedFlag || obs.size < 64) return emptyList()
+        if (obs.values.any {
+                it.hover || (it.kind == Kind.PIECE && (it.symbol == null || !it.settled))
+            }
+        ) {
+            return emptyList()
+        }
+        val adopted = adoptPlacement(
+            loosePlacement(obs),
+            prefer = bottom.color,
+            highlighted = highlightedSquares(obs),
+        )
+        if (adopted == null || adopted.second) {
+            return emptyList()  // the mark does not settle the side to move: nothing proven
+        }
+        val adoptedBoard = adopted.first
+        if (adoptedBoard.boardFen() == board.boardFen() && adoptedBoard.turn == board.turn) {
+            return emptyList()
+        }
+        // A position the game has stood in is a ply shown or a takeback under way, marked with
+        // that ply's own move (the flow matrix, 2026-10-06, seed 5 puzzle: two takebacks pressed
+        // quickly were adopted as a position, the game's moves lost).
+        val lit = highlightedSquares(obs)
+        val earlier = board.copy()
+        while (earlier.moveStack.isNotEmpty()) {
+            earlier.pop()
+            if (earlier.boardFen() != adoptedBoard.boardFen() || earlier.moveStack.isEmpty()) {
+                continue
+            }
+            val into = earlier.moveStack.last()
+            if (into.from in lit && into.to in lit) return emptyList()
+        }
+        unmarked = 0
+        clearStory()
+        viewing = null
+        setPosition(adoptedBoard)
+        return resynced("position adopted: the site's last-move mark fits no story")
+    }
+
+    /**
+     * Whether the site's last-move mark, [lit], agrees with [story] (`_marks_hold`): both
+     * squares of the last move of its game are marked. A ply browsed and a piece on its way carry
+     * their own marks, and a game with no move, or a castling (marked by each site its own way),
+     * says nothing.
+     */
+    private fun marksHold(story: Story, lit: Set<Int>): Boolean {
+        if (story.view != null || story.flight != null || story.queue.isNotEmpty()) {
+            return true  // a queue drawn covers marks with its tint and its pieces
+        }
+        val game = story.board(board)
+        if (game.moveStack.isEmpty()) return true
+        val last = game.moveStack.last()
+        val moved = game.pieceAt(last.to)
+        val files = kotlin.math.abs(squareFile(last.from) - squareFile(last.to))
+        if (moved != null && moved.pieceType == KING && files > 1) return true
+        return last.from in lit && last.to in lit
     }
 
     /**
