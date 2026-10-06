@@ -330,7 +330,99 @@ class Search(
         val edits: Boolean,
         val blind: Boolean = false,
         val paired: Boolean = false,
+        val key: PositionKey? = null,
     )
+
+    /** A position and its queue, for the frame's caches (`_transposition_key` with the queue). */
+    private data class PositionKey(
+        val pawns: ULong,
+        val knights: ULong,
+        val bishops: ULong,
+        val rooks: ULong,
+        val queens: ULong,
+        val kings: ULong,
+        val white: ULong,
+        val black: ULong,
+        val turn: Boolean,
+        val castling: ULong,
+        val ep: Int?,
+        val queue: List<Move>,
+    )
+
+    private fun keyOf(board: Board, queue: List<Move>) = PositionKey(
+        board.pawns, board.knights, board.bishops, board.rooks, board.queens, board.kings,
+        board.occupiedCo[1], board.occupiedCo[0], board.turn, board.castlingRights,
+        board.epSquare, queue,
+    )
+
+    /**
+     * A move tried from a position ([steps]): the position after it (and after the queued step
+     * it set off), the queue left, the moves told, whether a queued step fired, whether it
+     * touches a square the picture gets wrong or the queue hides ([near]), or else only squares
+     * the frame cannot read ([unread]). `_Step`.
+     */
+    private class Step(
+        val after: Board,
+        val key: PositionKey,
+        val rest: List<Move>,
+        val told: List<Move>,
+        val fired: Boolean,
+        val near: Boolean,
+        val unread: Boolean,
+    )
+
+    // A position's picture and the moves tried from it are the same on every path to it and in
+    // every pass of the deepening: worked out once a frame.
+    private val wrongs = HashMap<PositionKey, MutableSet<Int>>()
+    private val expansions = HashMap<PositionKey, List<Step>>()
+
+    /** [wrong] for [board] with [queue] drawn, once a frame ([key]: the position's own). */
+    private fun wrongAt(key: PositionKey, board: Board, queue: List<Move>): MutableSet<Int> =
+        wrongs.getOrPut(key) { wrong(premovePicture(board, queue)) }
+
+    /**
+     * The moves from [board] worth trying, the ones that leave the least wrong first: each
+     * touches a square the picture gets wrong or one the queue hides, or only squares the frame
+     * cannot read, and is witnessed. An opponent's move plays the queue's first step at once if
+     * it is legal and clears the queue if not. A budget spent on hopeless moves (a queen tried on
+     * every square before the one it went to, each with premoves to explain the rest) once ran
+     * out before the move that was played. Once a frame. `_steps`.
+     */
+    private fun steps(key: PositionKey, board: Board, queue: List<Move>, wrong: Set<Int>): List<Step> {
+        expansions[key]?.let { return it }
+        val hidden = HashSet<Int>()
+        for (step in queue) { hidden.add(step.from); hidden.add(step.to) }
+        val reach = wrong + hidden
+        val tried = ArrayList<Triple<Int, Int, Step>>()
+        for (move in board.legalMoves()) {
+            val touched = touchedSquares(board, move)
+            val near = touched.any { it in reach }
+            val unreadMove = !near && touched.all { unread(it) }
+            if (!(near || unreadMove) || !witness(board, move)) continue
+            val after = board.copy(withStack = false)
+            after.push(move)
+            var told = listOf(move)
+            var rest = queue
+            var fired = false
+            if (board.turn != user && queue.isNotEmpty()) {
+                val step = queue[0]
+                if (after.isLegal(step)) {
+                    after.push(step)
+                    told = told + step
+                    rest = queue.drop(1)
+                    fired = true
+                } else {
+                    rest = emptyList()
+                }
+            }
+            val afterKey = keyOf(after, rest)
+            val left = wrongAt(afterKey, after, rest).size
+            tried.add(Triple(left, tried.size, Step(after, afterKey, rest, told, fired, near, unreadMove)))
+        }
+        val out = tried.sortedWith(compareBy({ it.first }, { it.second })).map { it.third }
+        expansions[key] = out
+        return out
+    }
 
     /**
      * The ways [story] goes on to draw the frame, none dearer than [ceiling]: what the stories
@@ -354,7 +446,8 @@ class Search(
             val cost = story.cost + unseen(n.events)
             if (cost > allowed() || unseen(n.events) > maxUnseen || budgetLeft[0] <= 0) return
             budgetLeft[0] -= 1
-            val wrong = wrong(premovePicture(n.board, n.queue))
+            val key = n.key ?: keyOf(n.board, n.queue)
+            val wrong = wrongAt(key, n.board, n.queue)
             if (wrong.isEmpty()) {
                 add(story.copy(moves = n.moves, queue = n.queue, view = null, cost = cost))
                 return
@@ -367,55 +460,32 @@ class Search(
             val hidden = HashSet<Int>()
             for (step in n.queue) { hidden.add(step.from); hidden.add(step.to) }
             if (n.plies >= n.limit || (wrong - hidden).size > 4 * (n.limit - n.plies)) return
-            val reach = wrong + hidden
-            val children = ArrayList<Triple<Int, Int, Node>>()
-            for (move in n.board.legalMoves()) {
-                val touched = touchedSquares(n.board, move)
+            // A move the instant the other side's lands is drawn in one picture with it: the
+            // user's is a premove played, on a site that draws the queue or one that does not;
+            // the opponent's is a puzzle's reply, a bot's, a premove of theirs. Two to a picture:
+            // a reply to a reply is a picture of its own, and a premove fired by the move is its
+            // reply already.
+            val instant = n.plies > 0 && !n.paired
+            for (step in steps(key, n.board, n.queue, wrong)) {
                 // One move of a frame may live on cells nobody can read (a king under the mate's
                 // badge, its two squares spoiled); a second is invented to fill a turn.
-                val touchesReach = touched.any { it in reach }
-                val unreadMove = !touchesReach && !n.blind && touched.all { unread(it) }
-                if (!(touchesReach || unreadMove) || !witness(n.board, move)) continue
-                val after = n.board.copy(withStack = false)
-                after.push(move)
-                var told = n.moves + move
-                var rest = n.queue
-                var fired = false
-                if (n.board.turn != user && n.queue.isNotEmpty()) {
-                    val step = n.queue[0]
-                    if (after.isLegal(step)) {
-                        after.push(step)
-                        told = told + step
-                        rest = n.queue.drop(1)
-                        fired = true
-                    } else {
-                        rest = emptyList()
-                    }
-                }
-                // A move the instant the other side's lands is drawn in one picture with it: the
-                // user's is a premove played, on a site that draws the queue or one that does
-                // not; the opponent's is a puzzle's reply, a bot's, a premove of theirs. Two to a
-                // picture: a reply to a reply is a picture of its own, and a premove fired by the
-                // move is its reply already.
-                val instant = n.plies > 0 && !n.paired
-                val left = wrong(premovePicture(after, rest)).size
-                val child = Node(
-                    after,
-                    rest,
-                    told,
-                    n.events + (if (instant) 0 else 1),
-                    n.plies + 1,
-                    n.limit,
-                    n.edits,
-                    n.blind || unreadMove,
-                    instant || fired,
+                val unreadMove = !step.near && !n.blind && step.unread
+                if (!(step.near || unreadMove)) continue
+                node(
+                    Node(
+                        step.after,
+                        step.rest,
+                        n.moves + step.told,
+                        n.events + (if (instant) 0 else 1),
+                        n.plies + 1,
+                        n.limit,
+                        n.edits,
+                        n.blind || unreadMove,
+                        instant || step.fired,
+                        step.key,
+                    ),
                 )
-                children.add(Triple(left, children.size, child))
             }
-            // The moves that leave the least wrong first: a budget spent on hopeless moves (a
-            // queen tried on every square before the one it went to, each with premoves to
-            // explain the rest) once ran out before the move that was played.
-            for ((_, _, child) in children.sortedWith(compareBy({ it.first }, { it.second }))) node(child)
         }
 
         // Shortest first: every story of each length is searched before any longer one, so a
