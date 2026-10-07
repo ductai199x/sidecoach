@@ -2777,6 +2777,7 @@ class PanelEngine:
         from sidecoach.events import (
             BoardUnread,
             ClockObservation,
+            Corrected,
             GameEnded,
             GameStarted,
             MovePlayed,
@@ -2861,6 +2862,9 @@ class PanelEngine:
             self._fen_before.clear()
             self._last_ply = 0
             self._set(labels={})
+        elif isinstance(event, Corrected):
+            # A note for the log: a piece's kind corrected, the game kept as it stands.
+            self._emit("game", "info", f"corrected: {event.reason}", fen=event.fen)
         elif isinstance(event, Unexplained):
             # A note: cells the game has not explained for a while. The game is kept as it
             # stands; nothing downstream starts again.
@@ -3420,7 +3424,9 @@ class PanelEngine:
         except Exception as exc:  # noqa: BLE001
             self._emit("vision", "error", f"analyse failed: {exc!r}")
             return []
-        if not events:
+        if not events and getattr(pipe, "reread_kept", False):
+            self._emit("vision", "info", "the board read is the game being followed; it goes on")
+        elif not events:
             self._emit(
                 "vision",
                 "warn",

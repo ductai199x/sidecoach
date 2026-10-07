@@ -55,6 +55,7 @@ sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 
 from sidecoach.events import (  # noqa: E402
+    Corrected,
     GameEnded,
     Region,
     GameStarted,
@@ -117,6 +118,8 @@ def event_json(event) -> str:
         return f"GameEnded {event.result} {event.reason} | {event.pgn} | {event.final_fen}"
     if isinstance(event, TurnPending):
         return f"TurnPending {event.pending}"
+    if isinstance(event, Corrected):
+        return f"Corrected {event.reason} | {event.fen}"
     return type(event).__name__
 
 

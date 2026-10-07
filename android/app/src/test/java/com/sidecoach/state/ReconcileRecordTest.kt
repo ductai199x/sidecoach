@@ -5,6 +5,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.PgnReader
 import com.sidecoach.chess.WHITE
+import com.sidecoach.chess.parseSquare
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -126,6 +127,22 @@ class ReconcileRecordTest {
     }
 
     private fun blank() = com.sidecoach.vision.Pieces.CellReading(kind = com.sidecoach.vision.Pieces.Kind.EMPTY)
+
+    /** `test_a_board_read_whole_is_the_game_when_it_shows_its_position`. */
+    @Test
+    fun aBoardReadWholeIsTheGameWhenItShowsItsPosition() {
+        val rec = reconciler("e4", "e5", "Nf3")
+        val shown = rec.board.copy(withStack = false)
+        val marked = setOf(parseSquare("g1"), parseSquare("f3"))
+        assertTrue(rec.showsTheGame(shown, marked))
+        assertTrue("no mark: the turn the stories have", rec.showsTheGame(shown))
+        assertFalse("Black just moved", rec.showsTheGame(shown, setOf(parseSquare("e7"), parseSquare("e5"))))
+        val other = rec.board.copy()
+        other.push(other.parseSan("Nc6")!!)
+        assertFalse(rec.showsTheGame(other.copy(withStack = false)))
+        rec.end("1-0", "resignation")
+        assertFalse("a game over is followed no more", rec.showsTheGame(shown, marked))
+    }
 
     /** `test_the_record_of_a_position_is_a_game_from_it`. */
     @Test

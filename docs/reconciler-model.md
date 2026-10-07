@@ -297,7 +297,8 @@ When nothing fits the frame, in order:
    never moved since, that left its square, tried as each other kind. Played, it keeps the
    game: the piece has stood on its square since the base, so the base is corrected and the
    moves since are played again from it (`_replayed`), their numbering kept; no `Resync`, the
-   position told by `PositionChanged` and the move that showed the kind. Only when there is
+   position told by `PositionChanged` and the move that showed the kind, and a `Corrected`
+   note for the debug log that nothing acts on. Only when there is
    no move to keep, or one does not replay, is the position adopted again (a `Resync`).
 4. **The side to move flipped** (`flip`): last of all, the record's turn read the other way.
    With the turn open (a position adopted) the first move settles it silently; otherwise
@@ -376,7 +377,9 @@ not only at the end (section 7):
    recorded before the first re-read and the game kept to the end (`library.watched_row`).
    Every path that replaces the reconciler ends its game first, with the mating story the
    stories leave when the dialog covered it (`pipeline._end_in_progress`: the next game, the
-   board turned round, the board re-read).
+   board turned round, the board re-read). A re-read that finds the game's own position (the
+   same pieces, a side to move the stories allow: `shows_the_game`) keeps the game and ends
+   nothing (Tai, 2026-10-07).
 
 The order of failure modes, from acceptable to unacceptable: a move told late; the turn
 open for a move or two; a re-read that restarts the move numbering; a move told wrong; the

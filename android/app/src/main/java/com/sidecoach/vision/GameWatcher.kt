@@ -488,7 +488,9 @@ class GameWatcher(
         val events = runCatching { pipeline.coldStart(frame, geometry, forcedBottom, ts) }
             .onFailure { PanelEngine.emit("vision", "error", "analyse failed: ${PanelEngine.pyRepr(it)}") }
             .getOrNull() ?: return mutableListOf()
-        if (events.isEmpty()) {
+        if (events.isEmpty() && pipeline.rereadKept) {
+            PanelEngine.emit("vision", "info", "the board read is the game being followed; it goes on")
+        } else if (events.isEmpty()) {
             PanelEngine.emit(
                 "vision",
                 "warn",
@@ -653,6 +655,7 @@ class GameWatcher(
             is Takeback -> Log.i(TAG, "takeback of ${event.plies} plies")
             is Resync -> Log.i(TAG, "resync: ${event.reason}")
             is Unexplained -> Log.i(TAG, "board unexplained: ${event.reason}; the game is kept")
+            is com.sidecoach.events.Corrected -> Log.i(TAG, "corrected: ${event.reason}")
             is BoardUnread -> Log.i(TAG, "board unread: ${event.reason}")
             is GameEnded -> Log.i(TAG, "game over ${event.result}: ${event.reason} — ${event.pgn}")
             is ScreenStateChanged -> {

@@ -305,6 +305,7 @@ class ReconcileOpsTest {
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
         is TurnPending -> "TurnPending ${if (event.pending) "True" else "False"}"
+        is com.sidecoach.events.Corrected -> "Corrected ${event.reason} | ${event.fen}"
         else -> event::class.java.simpleName
     }
 

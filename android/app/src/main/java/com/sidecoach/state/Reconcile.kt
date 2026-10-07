@@ -20,6 +20,7 @@ import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.chess.squaresOf
+import com.sidecoach.events.Corrected
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -1885,6 +1886,7 @@ class Reconciler(
         val was = board.pieceAt(square)!!
         val read = readSquares - square
         val since = lastCommitTs
+        val reason = "the ${MISREAD_NAMES[was.pieceType]} read on ${squareName(square)} was a ${MISREAD_NAMES[kind]}"
         val base = Board(baseFenValue)
         var again: Board? = null
         if (board.moveStack.isNotEmpty() && base.pieceAt(square) == was) {
@@ -1895,7 +1897,9 @@ class Reconciler(
             board = again
             baseFenValue = base.fen()
             readSquares = read
+            // Said for the debug log only, as the Resync's reason was ([Corrected]).
             val events = mutableListOf<Event>(
+                Corrected(gameId = gameId, fen = board.fen(), reason = reason),
                 PositionChanged(gameId = gameId, fen = board.fen(), ply = board.moveStack.size),
             )
             if (board.isGameOver()) {
@@ -1910,9 +1914,7 @@ class Reconciler(
         setPosition(fixed)
         readSquares = read
         lastCommitTs = since
-        return resynced(
-            "the ${MISREAD_NAMES[was.pieceType]} read on ${squareName(square)} was a ${MISREAD_NAMES[kind]}",
-        )
+        return resynced(reason)
     }
 
     /**
@@ -1962,6 +1964,20 @@ class Reconciler(
 
     /** For how many frames in a row the board has disagreed and no story explained it. */
     val unexplainedFor: Int get() = unexplainedFrames
+
+    /**
+     * Whether a board read whole is the position the game under way stands on (`shows_the_game`):
+     * the same pieces, and a side to move the stories allow -- the side the site's last-move mark
+     * names, when it names one ([adoptPlacement]). A re-read of it is the same game, kept
+     * ([GamePipeline.coldStart]).
+     */
+    fun showsTheGame(placement: Board, highlighted: Set<Int> = emptySet()): Boolean {
+        if (!startedFlag || finishedFlag) return false
+        if (placement.boardFen() != board.boardFen()) return false
+        val adopted = adoptPlacement(placement, bottom.color, highlighted) ?: return false
+        val (adoptedBoard, turnOpen) = adopted
+        return turnOpen || adoptedBoard.turn in stories.map { it.board(board).turn }.toSet()
+    }
 
     /**
      * The story that ends the game, when the end is all the stories leave (`pending_terminal`):

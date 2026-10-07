@@ -36,6 +36,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 import chess
 
 from sidecoach.events import (
+    Corrected,
     Event,
     GameEnded,
     GameStarted,
@@ -1748,6 +1749,10 @@ class Reconciler:
         was = self.board.piece_at(square)
         assert was is not None
         read, since = self._read_squares - {square}, self._last_commit_ts
+        reason = (
+            f"the {chess.piece_name(was.piece_type)} read on {chess.square_name(square)} "
+            f"was a {chess.piece_name(kind)}"
+        )
         base = chess.Board(self._base_fen)
         replayed = None
         if self.board.move_stack and base.piece_at(square) == was:
@@ -1757,10 +1762,12 @@ class Reconciler:
             self.board = replayed
             self._base_fen = base.fen()
             self._read_squares = read
+            # Said for the debug log only, as the Resync's reason was (`Corrected`).
             events: list[Event] = [
+                Corrected(game_id=self.game_id, fen=self.board.fen(), reason=reason),
                 PositionChanged(
                     game_id=self.game_id, fen=self.board.fen(), ply=len(self.board.move_stack)
-                )
+                ),
             ]
             if self.board.is_game_over():
                 self._finished = True
@@ -1771,10 +1778,7 @@ class Reconciler:
         board.set_piece_at(square, chess.Piece(kind, was.color))
         self._set_position(board)
         self._read_squares, self._last_commit_ts = read, since
-        return self._resynced(
-            f"the {chess.piece_name(was.piece_type)} read on {chess.square_name(square)} "
-            f"was a {chess.piece_name(kind)}"
-        )
+        return self._resynced(reason)
 
     def _after_the_end(self, obs: Observation, diff: set[chess.Square]) -> list[Event]:
         """After the game has ended the board is a review board: browsing is followed, and
@@ -1812,6 +1816,25 @@ class Reconciler:
         and cannot yet say whose move it is."""
         turns = {s.board(self.board).turn for s in self._stories}
         return len(turns) > 1
+
+    def shows_the_game(
+        self, placement: chess.Board, highlighted: frozenset[chess.Square] = frozenset()
+    ) -> bool:
+        """Whether a board read whole is the position the game under way stands on: the same
+        pieces, and a side to move the stories allow -- the side the site's last-move mark
+        names, when it names one (`_adopt_placement`). A re-read of it is the same game, kept
+        (`GamePipeline.cold_start`)."""
+        if not self._started or self._finished:
+            return False
+        if placement.board_fen() != self.board.board_fen():
+            return False
+        adopted = self._adopt_placement(
+            placement, prefer=self.bottom.color, highlighted=highlighted
+        )
+        if adopted is None:
+            return False
+        board, turn_open = adopted
+        return turn_open or board.turn in {s.board(self.board).turn for s in self._stories}
 
     def pending_terminal(
         self, result: str | None = None

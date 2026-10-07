@@ -160,6 +160,9 @@ class GamePipeline(
     var board: BoardCandidate? = null
     var bootstraps = 0
 
+    /** Whether the last asked re-read ([coldStart]) found the game being followed, and kept it. */
+    var rereadKept = false
+
     /** The clock reader, when the app has its templates; without one there are no clocks. */
     var clock: ClockReader? = null
 
@@ -1449,7 +1452,17 @@ class GamePipeline(
         bottom: Side? = null,
         ts: Double? = null,
     ): MutableList<Event> {
+        rereadKept = false
         val read = coldRead(frame, geometry, bottom, asked = true) ?: return mutableListOf()
+        val rec = reconciler
+        if (rec != null && read.bottom == this.bottom &&
+            rec.showsTheGame(read.placement, highlightedSquares(bySquare(read.readings, read.bottom)))
+        ) {
+            // The board read is the game being followed: the same game, kept -- not ended, not
+            // begun again (Tai, 2026-10-07). Only a board that differs ends it first.
+            rereadKept = true
+            return mutableListOf()
+        }
         return adoptCold(read, ts, ending = "board re-read")
     }
 

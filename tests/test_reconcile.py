@@ -5,6 +5,7 @@ import chess.pgn
 import pytest
 
 from sidecoach.events import (
+    Corrected,
     GameEnded,
     GameStarted,
     MovePlayed,
@@ -982,6 +983,9 @@ def test_a_piece_misread_in_a_position_read_cold_is_corrected_by_its_move() -> N
     # numbered as it was (the audit of 2026-10-07: the game was adopted afresh from the
     # correction, and Rd2 left the record and the review).
     assert not [e for e in events if isinstance(e, Resync)]
+    # Said for the debug log only, as the Resync's reason was.
+    notes = [e.reason for e in events if isinstance(e, Corrected)]
+    assert notes == ["the bishop read on h4 was a knight"]
     assert sans_of(events) == ["Nxg6"]
     events = []
     for san in ["hxg6", "Bf3"]:

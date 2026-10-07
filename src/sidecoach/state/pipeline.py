@@ -304,6 +304,8 @@ class GamePipeline:
     clock: ClockReader | None = None
     cache: ThemeCache | None = None
     bootstraps: int = 0
+    # Whether the last asked re-read (`cold_start`) found the game being followed, and kept it.
+    reread_kept: bool = False
     _start_seen: int = 0
     _start_on_screen: bool = False
     _readings: Readings | None = None
@@ -1390,10 +1392,24 @@ class GamePipeline:
         """Recognise the board cold from the theme cache and begin a game from the position on
         it -- a puzzle or a mid-game board, with no move-0 bootstrap. `bottom` may be supplied
         (the panel's flip control); otherwise it is read from the coordinate labels. Returns the
-        GameStarted, or [] when no cached theme matches or the orientation cannot be determined.
+        GameStarted, or [] when no cached theme matches or the orientation cannot be determined
+        -- or when the board read is the game being followed, which goes on (`reread_kept`). A
+        board that differs ends the game under way first (`_end_in_progress`).
         """
+        self.reread_kept = False
         read = self._cold_read(frame, geometry, bottom, asked=True)
         if read is None:
+            return []
+        _model, side, readings, placement = read
+        rec = self.reconciler
+        if (
+            rec is not None
+            and side == self.bottom
+            and rec.shows_the_game(placement, highlighted_squares(by_square(readings, side)))
+        ):
+            # The board read is the game being followed: the same game, kept -- not ended, not
+            # begun again (Tai, 2026-10-07). Only a board that differs ends it first.
+            self.reread_kept = True
             return []
         return self._adopt_cold(*read, ts=ts, ending="board re-read")
 

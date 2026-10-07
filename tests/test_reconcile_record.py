@@ -153,6 +153,23 @@ def test_a_game_replaced_ends_with_the_mate_its_stories_leave() -> None:
     assert ended[0].pgn == "1. f3 e5 2. g4 Qh4#"
 
 
+def test_a_board_read_whole_is_the_game_when_it_shows_its_position() -> None:
+    """A re-read asked over a game being followed: the game's own position -- the same
+    pieces, the side to move the mark names one the stories allow -- is the same game, kept
+    (Tai, 2026-10-07); other pieces, or the mark naming the other side, are not."""
+    rec = _reconciler("e4", "e5", "Nf3")
+    shown = rec.board.copy(stack=False)
+    marked = frozenset({chess.G1, chess.F3})
+    assert rec.shows_the_game(shown, marked)
+    assert rec.shows_the_game(shown), "no mark: the turn the stories have"
+    assert not rec.shows_the_game(shown, frozenset({chess.E7, chess.E5})), "Black just moved"
+    other = rec.board.copy()
+    other.push_san("Nc6")
+    assert not rec.shows_the_game(other.copy(stack=False))
+    rec.end("1-0", "resignation")
+    assert not rec.shows_the_game(shown, marked), "a game over is followed no more"
+
+
 def test_the_record_of_a_position_is_a_game_from_it() -> None:
     """A game begun from a position, or corrected mid-game to one, is written with the
     position it began from: a PGN that plays out (the audit of 2026-10-07: the moves alone,

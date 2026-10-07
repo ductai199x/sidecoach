@@ -78,6 +78,13 @@ class TurnPending(val gameId: String, val pending: Boolean) : Event()
 class Unexplained(val gameId: String, val fen: String, val reason: String, val told: Boolean = false) : Event()
 
 /**
+ * A piece's kind corrected in the game kept as it stands (`Reconciler.fix`): the moves and their
+ * numbering go on, and the next move carries the position corrected. For the debug log only,
+ * as its Resync's reason was: nothing acts on it.
+ */
+class Corrected(val gameId: String, val fen: String, val reason: String) : Event()
+
+/**
  * A board on screen, no game followed on it, and nothing read from it for a while (Tai on
  * the Pixel, 2026-09-23: a puzzle up, "the program is not registering anything"). A note for
  * the person, said once while the board stays: "unlearned" when no learned board-and-piece

@@ -32,6 +32,7 @@ import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
+import com.sidecoach.events.Corrected
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.state.Readings
@@ -727,6 +728,9 @@ object PanelEngine {
                 lastPly = 0
                 set("labels" to emptyMap<String, String>())
             }
+
+            // A note for the log: a piece's kind corrected, the game kept as it stands.
+            is Corrected -> emit("game", "info", "corrected: ${event.reason}", JSONObject().put("fen", event.fen))
 
             // A note: cells the game has not explained for a while. The game is kept as it
             // stands; nothing downstream starts again.

@@ -378,10 +378,11 @@ def test_flip_re_reads_a_joined_position_the_other_way_up(tmp_path: Path) -> Non
 
 
 def test_re_reading_the_screen_ends_the_game_in_progress_first(tmp_path: Path) -> None:
-    """ "Re-read the screen" over a game under way: the game ends -- with the result its
-    position proves, or none -- before the board read begins the next; it was replaced with
-    no end at all, and nothing recorded or reviewed it (the audit of 2026-10-07). A read
-    that adopts nothing ends nothing."""
+    """ "Re-read the screen" over a game under way: a board that is the game's position is
+    the same game, kept -- not ended, not begun again (Tai, 2026-10-07). A board that differs
+    ends the game -- with the result its position proves, or none -- before it begins the
+    next; it was replaced with no end at all, and nothing recorded or reviewed it (the audit
+    of 2026-10-07). A read that adopts nothing ends nothing."""
     from sidecoach.events import GameEnded
 
     cache = ThemeCache(tmp_path)
@@ -401,7 +402,15 @@ def test_re_reading_the_screen_ends_the_game_in_progress_first(tmp_path: Path) -
     )
     assert live.cold_start(dragged, GEOM, ts=11.0) == [], "nothing read, nothing ended"
     assert live.reconciler.game_id == first and not live.reconciler.finished
-    events = live.cold_start(after, GEOM, ts=11.0)
+    assert live.cold_start(after, GEOM, ts=11.0) == [], "the game's own board: kept"
+    assert live.reread_kept
+    assert live.reconciler.game_id == first and not live.reconciler.finished
+    assert [m.uci() for m in live.reconciler.board.move_stack] == ["d2d4"]
+    other = truth.copy()
+    reply = other.push_san("exd4")
+    elsewhere = synthetic_board(board=other, coordinates=True, highlight=reply)
+    events = live.cold_start(elsewhere, GEOM, ts=12.0)
+    assert not live.reread_kept
     kinds = [type(e).__name__ for e in events]
     assert kinds[0] == "GameEnded" and "GameStarted" in kinds, kinds
     assert isinstance(events[0], GameEnded) and events[0].game_id == first
