@@ -104,20 +104,54 @@
   }
 
   function onInput() {
+    notSent = null;
     // The person is editing: the dictation (if any) is theirs now, nothing sends itself.
     if (dictated || dictation?.text) void takeOver();
   }
 
-  function send() {
+  // The box is cleared only once the sidecar took the question: one that did not reach it (no
+  // answer, an error) stays in the box, said under it with Retry (the 2026-10-07 audit: it was
+  // cleared before the request, and lost with it).
+  let sending = $state(false);
+  let notSent = $state<{ quick: "hint" | "move" | "line" | null } | null>(null);
+
+  async function send() {
     const t = text.trim();
-    if (!t) return;
+    if (!t || sending) return;
     if (dictated || dictation?.text) void takeOver();
-    store.ask(t);
-    text = "";
-    typed = "";
+    sending = true;
+    notSent = null;
+    try {
+      await store.ask(t);
+      // Sent: the box clears, unless more was typed meanwhile (that is the next question).
+      if (text.trim() === t) {
+        text = "";
+        typed = "";
+      }
+    } catch {
+      notSent = { quick: null };
+    } finally {
+      sending = false;
+    }
+  }
+
+  async function quick(cmd: "hint" | "move" | "line") {
+    notSent = null;
+    try {
+      await store.quick(cmd);
+    } catch {
+      notSent = { quick: cmd };
+    }
+  }
+
+  function retry() {
+    const what = notSent;
+    if (!what) return;
+    if (what.quick) void quick(what.quick);
+    else void send();
   }
   function onSendClick() {
-    if (sendState === "send") send();
+    if (sendState === "send") void send();
     else if (sendState === "idle" || sendState === "quiet") input?.focus();
   }
 </script>
@@ -170,6 +204,7 @@
       class:live={(sendState === "ptt" && (store.pttDown || keyHeld)) || (sendState === "vad" && !!dictation?.live)}
       class:armed={sendState === "send" && armed}
       data-state={sendState}
+      disabled={sending && sendState === "send"}
       title={sendTitle}
       aria-label={sendTitle}
       onclick={onSendClick}
@@ -185,9 +220,12 @@
       <svg class="ic ic-wave" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h2v4H3zm4-3h2v10H7zm4-4h2v18h-2zm4 4h2v10h-2zm4 3h2v4h-2z"/></svg>
     </button>
   </div>
+  {#if notSent}
+    <div class="not-sent" role="alert">Not sent — <button onclick={retry}>Retry</button></div>
+  {/if}
   <div class="chips-row">
-    <button class="qchip" title="A nudge at the current disclosure level" onclick={() => store.quick("hint")}>Hint</button>
-    <button class="qchip" title="The engine's move, then why" onclick={() => store.quick("move")}>Best move</button>
-    <button class="qchip" title="The engine's line" onclick={() => store.quick("line")}>Line</button>
+    <button class="qchip" title="A nudge at the current disclosure level" onclick={() => quick("hint")}>Hint</button>
+    <button class="qchip" title="The engine's move, then why" onclick={() => quick("move")}>Best move</button>
+    <button class="qchip" title="The engine's line" onclick={() => quick("line")}>Line</button>
   </div>
 </div>

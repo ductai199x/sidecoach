@@ -23,6 +23,8 @@
   import AnalysisPane from "$lib/review/AnalysisPane.svelte";
   import EvalGraph from "$lib/review/EvalGraph.svelte";
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
+  import LineControls from "$lib/review/LineControls.svelte";
+  import { LinePlayer } from "$lib/review/lineplayer.svelte";
   import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, moveLabel, moveNumber, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
   import { motifWords } from "$lib/chess";
 
@@ -36,11 +38,15 @@
   let bottom = $state<"white" | "black">("white");
   let unfolded = $state(false);
   // A line the board shows instead of the game: the best from before the move, or what follows
-  // it; `i` is the step shown (-1: the position the line starts from); `open` whether its moves
-  // are out (Best shows the one move, its line on asking). `autoplay` while Play runs it.
-  let line = $state<{ kind: "best" | "follow"; steps: LineStep[]; from: string; i: number; open: boolean } | null>(null);
-  let playing: ReturnType<typeof setTimeout> | null = null;
-  let autoplay = $state(false);
+  // it; `open` whether its moves are out (Best shows the one move, its line on asking). Its
+  // stepping (the move shown, -1 its start; Play) is the shared line player's.
+  let line = $state<{ kind: "best" | "follow"; steps: LineStep[]; from: string; open: boolean } | null>(null);
+  // A step past its first move brings its moves out: the arrows go through the line once it is
+  // on the board.
+  const player = new LinePlayer({
+    sound: (i) => { if (line?.steps[i]) soundOf(i > 0 ? line.steps[i - 1].fen : line.from, line.steps[i].uci); },
+    changed: (i) => { if (line && i > 0 && !line.open) line = { ...line, open: true }; },
+  });
   let closed = false;
   // Retry (the plan's D; lib/review/retry): the review's own moves found again. `retry` the
   // one under way, `retried` the best try at each; the best arrow stays hidden meanwhile.
@@ -151,7 +157,7 @@
     }
     if (line) {
       // Each move of a line is the engine's first choice: the best move's badge.
-      const step = line.i >= 0 ? line.steps[line.i] : null;
+      const step = player.i >= 0 ? line.steps[player.i] : null;
       return { fen: step ? step.fen : line.from, uci: step ? step.uci : null, cls: step && look.marks ? "best" : null };
     }
     if (!room) return null;
@@ -344,14 +350,8 @@
     if (takes) captureSound(); else moveSound();
   }
 
-  function pause(): void {
-    if (playing) clearTimeout(playing);
-    playing = null;
-    autoplay = false;
-  }
-
   function stopLine(): void {
-    pause();
+    player.pause();
     line = null;
   }
 
@@ -400,19 +400,9 @@
     go(ply + delta, delta === 1);
   }
 
-  // A line's move shown: -1 the position it starts from. A step past its first move brings its
-  // moves out: the arrows go through the line once it is on the board.
-  function lineTo(i: number, heard = true): void {
-    if (!line) return;
-    const to = Math.max(-1, Math.min(line.steps.length - 1, i));
-    if (heard && to === line.i + 1 && line.steps[to]) soundOf(to > 0 ? line.steps[to - 1].fen : line.from, line.steps[to].uci);
-    line = { ...line, i: to, open: line.open || to > 0 };
-  }
-
   // The player's own step stops Play.
   function lineStep(delta: number): void {
-    pause();
-    if (line) lineTo(line.i + delta);
+    if (line) player.step(delta);
   }
 
   function nextKey(): void {
@@ -430,11 +420,9 @@
 
   // A line on the board: its first move only, played from where the line starts (the move
   // taken back first, for Best), and nothing more till the player asks -- the arrows or ◀ ▶
-  // step it, Play runs it a move every LINE_MS. Best shows the move, its line on asking;
-  // Follow-up and a retry's line come with their moves out (Tai, 2026-09-30: a line that ran
-  // by itself, fast, on a click could not be read).
-  const LINE_MS = 1100;
-  const TAKEBACK_MS = 350;
+  // step it, Play runs it a move every LINE_MS (lib/review/lineplayer). Best shows the move, its
+  // line on asking; Follow-up and a retry's line come with their moves out (Tai, 2026-09-30: a
+  // line that ran by itself, fast, on a click could not be read).
   function showLine(kind: "best" | "follow", open = kind === "follow", played = false): void {
     if (!move) return;
     stopRun();
@@ -442,12 +430,9 @@
     const steps = kind === "best" ? move.best_line : move.follow_line;
     if (!steps.length) return;
     if (kind === "best") reveal(move.ply);
-    line = { kind, steps, from: kind === "best" ? move.fen_before : move.fen_after, i: played ? 0 : -1, open };
-    if (played) return;
-    playing = setTimeout(() => {
-      playing = null;
-      if (line?.i === -1) lineTo(0);
-    }, TAKEBACK_MS);
+    line = { kind, steps, from: kind === "best" ? move.fen_before : move.fen_after, open };
+    player.reset(steps.length, played ? 0 : -1);
+    if (!played) player.showFirst();
   }
 
   // Best and Follow-up press in and out: pressed again, back to the game.
@@ -458,33 +443,16 @@
 
   // A line's start or end, or the game's when no line is shown.
   function toEnd(last: boolean): void {
-    if (line) {
-      pause();
-      lineTo(last ? line.steps.length - 1 : -1, false);
-    } else go(last ? moves.length : 0);
+    if (line) player.toEnd(last);
+    else go(last ? moves.length : 0);
   }
 
   // Play from the move shown (from the line's start when it is at its end), a move every
   // LINE_MS, to its end; Pause, or any step, stops it.
   function playPause(): void {
     if (!line) return;
-    if (autoplay) {
-      pause();
-      return;
-    }
-    pause();
-    line = { ...line, open: true, i: line.i >= line.steps.length - 1 ? -1 : line.i };
-    autoplay = true;
-    const advance = () => {
-      if (!line || line.i >= line.steps.length - 1) {
-        playing = null;
-        autoplay = false;
-        return;
-      }
-      lineTo(line.i + 1);
-      playing = setTimeout(advance, LINE_MS);
-    };
-    playing = setTimeout(advance, line.i === -1 ? TAKEBACK_MS : 0);
+    if (!line.open) line = { ...line, open: true };
+    player.playPause();
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -1078,20 +1046,9 @@
               {/if}
               {#if line.open}
                 <p class="rv-line">
-                  {#each numbered(line.from, line.steps.map((s) => s.san)) as t, i (i)}<button class="mv" class:at={i === line.i} class:dim={i > line.i} onclick={() => { pause(); lineTo(i, false); }}>{t}</button>{" "}{/each}
+                  {#each numbered(line.from, line.steps.map((s) => s.san)) as t, i (i)}<button class="mv" class:at={i === player.i} class:dim={i > player.i} onclick={() => { player.pause(); player.to(i, false); }}>{t}</button>{" "}{/each}
                 </p>
-                <div class="rv-line-play">
-                  <span class="pair">
-                    <button class="iconbtn" aria-label="Back a move of the line" title="Back (←)" disabled={line.i < 0} onclick={() => lineStep(-1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
-                    <button class="iconbtn play" aria-label={autoplay ? "Pause the line" : "Play the line"} title={autoplay ? "Pause (Space)" : line.i >= line.steps.length - 1 ? "Play it again (Space)" : "Play (Space)"} onclick={playPause}>
-                      {#if autoplay}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-                      {:else if line.i >= line.steps.length - 1}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/></svg>
-                      {:else}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>{/if}
-                    </button>
-                    <button class="iconbtn" aria-label="On a move of the line" title="On (→)" disabled={line.i >= line.steps.length - 1} onclick={() => lineStep(1)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
-                  </span>
-                  <span class="where" aria-live="polite">{line.i < 0 ? "Before the line" : `Move ${line.i + 1} of ${line.steps.length}`}</span>
-                </div>
+                <LineControls {player} />
               {/if}
               {#if (!line.open && line.steps.length > 1) || (said?.better && line.kind === "best")}
                 <div class="rv-bubble-foot">

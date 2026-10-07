@@ -572,6 +572,15 @@ html.stacked .lmenu small { display: none; }
 @keyframes arm { from { box-shadow: 0 0 0 6px #81b64c66; } to { box-shadow: 0 0 0 0 #81b64c00; } }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 #81b64c33; } 50% { box-shadow: 0 0 0 5px #81b64c22; } }
 .chips-row { display: flex; align-items: center; gap: 6px; padding: 0 4px; flex-wrap: wrap; }
+/* A question that did not reach the coach: kept in the box, said under it, with Retry (the panel's
+   and the puzzle's composers). */
+.not-sent { display: flex; align-items: center; gap: 6px; padding: 0 4px; color: var(--error); font-size: 13px; font-weight: 600; }
+.not-sent button {
+  min-height: 32px; padding: 4px 12px; border-radius: 14px; font: inherit; color: var(--ink);
+  background: var(--panel2); border: 1px solid var(--panel3); cursor: pointer;
+}
+.not-sent button:hover { background: var(--panel3); }
+.composer .sendbtn:disabled { opacity: 0.5; cursor: progress; }
 .qchip {
   padding: 4px 12px; border-radius: 14px; font-size: 12.5px; font-weight: 600;
   background: transparent; color: var(--ink); border: 1px solid var(--panel3);

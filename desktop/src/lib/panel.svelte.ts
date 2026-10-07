@@ -2,7 +2,7 @@
 // component through runes. What the old app.js kept in module variables lives here;
 // what it rendered by hand the components derive.
 
-import { connect, noAnswer, panel, put, restartSidecar, type LogLine, type Mark, type PanelState } from "./api";
+import { connect, followCursor, noAnswer, panel, put, restartSidecar, type LogLine, type Mark, type PanelState } from "./api";
 
 export type TermRow = { key: string; count: number; line: LogLine; open: boolean };
 
@@ -177,7 +177,7 @@ export class PanelStore {
       const res = await panel.poll(this.cursor);
       this.polls.push(performance.now() - t0);
       if (this.polls.length > 400) this.polls = this.polls.slice(-200);
-      if (res.cursor !== undefined) this.cursor = Math.max(this.cursor, res.cursor);
+      this.cursor = followCursor(this.cursor, res.cursor);
       if (res.lines) for (const line of res.lines) this.addLine(line);
       if (res.state) this.apply(res.state);
       this.stopped = false;
@@ -352,16 +352,28 @@ export class PanelStore {
 
   // ---- talking ---------------------------------------------------------------------------------
 
-  ask(text: string): void {
+  /** Asked: resolves once the sidecar took the question, rejects when it did not (no answer, an
+   *  error, or a refusal) -- the typing dots go then, as no reply is coming; the caller keeps
+   *  the words to send again. */
+  async ask(text: string): Promise<void> {
     const t = text.trim();
     if (!t) return;
-    this.showPending();
-    panel.ask(t).catch(() => this.dropPending());
+    await this.sent(panel.ask(t));
   }
 
-  quick(cmd: "hint" | "move" | "line"): void {
+  quick(cmd: "hint" | "move" | "line"): Promise<void> {
+    return this.sent(panel[cmd]());
+  }
+
+  private async sent(request: Promise<unknown>): Promise<void> {
     this.showPending();
-    panel[cmd]().catch(() => this.dropPending());
+    try {
+      const res = (await request) as { ok?: boolean } | null;
+      if (res?.ok === false) throw new Error("Sidecoach did not take the question");
+    } catch (e) {
+      this.dropPending();
+      throw e;
+    }
   }
 
   setPtt(down: boolean): void {

@@ -408,16 +408,7 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 .rv-line-nav .shut { width: 28px; border-radius: 50%; color: #8b8987; }
 .rv-line-nav .shut:hover { background: #0000000f; box-shadow: none; }
 .rv-line-nav .shut svg { width: 20px; height: 20px; }
-/* Under a line's moves: back, play (pause while it runs; again at its end), on; where it is. */
-.rv-line-play { display: flex; align-items: center; gap: 10px; }
-.rv-line-play .pair { display: inline-flex; gap: 2px; padding: 2px; border-radius: 7px; background: #ebe9e6; }
-.rv-line-play .iconbtn { width: 36px; height: 30px; border-radius: 5px; color: #312e2b; }
-.rv-line-play .iconbtn:hover { background: #fff; box-shadow: 0 1px 2px #00000026; color: #312e2b; }
-.rv-line-play .iconbtn:disabled { opacity: 0.3; }
-.rv-line-play .iconbtn:disabled:hover { background: transparent; box-shadow: none; }
-.rv-line-play .iconbtn svg { width: 24px; height: 24px; fill: currentColor; }
-.rv-line-play .iconbtn.play svg { width: 20px; height: 20px; }
-.rv-line-play .where { font-size: 12.5px; font-weight: 600; color: #8b8987; font-variant-numeric: tabular-nums; }
+/* Under a line's moves: its controls (lib/review/LineControls.svelte, styled there). */
 .rv-bubble p.rv-err { color: #c0412c; font-weight: 600; }
 .rv-line { line-height: 1.9; }
 .rv-line .mv {

@@ -18,7 +18,8 @@ globalThis.__TAURI_INTERNALS__ = {
 globalThis.fetch = async (url, init = {}) => {
   calls.push({ url, body: init.body, auth: init.headers?.Authorization });
   if (!url.startsWith(live)) throw new TypeError("Failed to fetch");
-  return { json: async () => ({ ok: true, from: url }) };
+  const body = JSON.stringify({ ok: true, from: url });
+  return { status: 200, ok: true, text: async () => body, json: async () => JSON.parse(body) };
 };
 
 const api = await import("../src/lib/api.ts");

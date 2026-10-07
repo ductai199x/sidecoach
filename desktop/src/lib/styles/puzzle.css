@@ -37,6 +37,14 @@ a.iconbtn { text-decoration: none; }
 .pz-link { color: var(--muted); font-size: 14px; font-weight: 600; text-decoration: none; padding: 6px 2px; }
 .pz-link:hover, .pz-link:active { color: var(--ink); }
 .pz-link.ready { color: var(--accent); }
+/* A solution given up: the review's line controls (lib/review/LineControls) in this page's
+   colours, with targets a finger hits. */
+.pz-foot:has(.pz-solution) { grid-template-rows: 22px 44px; }
+.pz-left.pz-solution {
+  overflow: visible; color: var(--ink);
+  --line-pair-bg: var(--panel2); --line-hover-bg: var(--panel3); --line-ink: var(--ink); --line-muted: var(--muted);
+  --line-btn-w: 44px; --line-btn-h: 38px;
+}
 /* A phone: the knight and the Lichess link give way to the title. */
 @media (max-width: 420px) {
   .pz-mark, .puzzle-page #bar .controls a.iconbtn { display: none; }
