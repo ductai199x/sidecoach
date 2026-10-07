@@ -224,6 +224,30 @@ class PipelinePartsTest {
         }
     }
 
+    /**
+     * `tests/test_reconcile_record.py`'s `test_a_game_replaced_ends_with_the_mate_its_stories_leave`:
+     * the mate under the site's dialog, its story pending, when the next game comes up the other
+     * way round or the board is read again -- the game ends with the mate played and its result
+     * (the audit of 2026-10-07: "*" and no mate).
+     */
+    @Test
+    fun aGameReplacedEndsWithTheMateItsStoriesLeave() {
+        val pipe = GamePipeline(net)
+        val rec = Reconciler(bottom = Side.WHITE, userSide = Side.WHITE)
+        rec.start()
+        val board = Board()
+        for (san in listOf("f3", "e5", "g4")) board.push(board.parseSan(san)!!)
+        rec.board = board
+        rec.stories = listOf(com.sidecoach.state.Story(moves = listOf(com.sidecoach.chess.Move.fromUci("d8h4"))))
+        pipe.reconciler = rec
+        val events = pipe.endInProgress("new game started")
+        assertEquals(listOf("Qh4#"), events.filterIsInstance<com.sidecoach.events.MovePlayed>().map { it.san })
+        val ended = events.filterIsInstance<com.sidecoach.events.GameEnded>()
+        assertEquals(1, ended.size)
+        assertEquals("0-1", ended[0].result)
+        assertEquals("1. f3 e5 2. g4 Qh4#", ended[0].pgn)
+    }
+
     private fun load(file: String): Mat {
         val context = InstrumentationRegistry.getInstrumentation().context
         val bitmap = context.assets.open("pipeline/$file").use {

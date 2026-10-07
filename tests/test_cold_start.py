@@ -377,6 +377,38 @@ def test_flip_re_reads_a_joined_position_the_other_way_up(tmp_path: Path) -> Non
     assert not _squares_off(live.reconciler.board, truth)
 
 
+def test_re_reading_the_screen_ends_the_game_in_progress_first(tmp_path: Path) -> None:
+    """ "Re-read the screen" over a game under way: the game ends -- with the result its
+    position proves, or none -- before the board read begins the next; it was replaced with
+    no end at all, and nothing recorded or reviewed it (the audit of 2026-10-07). A read
+    that adopts nothing ends nothing."""
+    from sidecoach.events import GameEnded
+
+    cache = ThemeCache(tmp_path)
+    _warm(cache, "green", Side.WHITE)
+    truth = chess.Board(MIDGAME)
+    frame = synthetic_board(board=truth, coordinates=True)
+    live = GamePipeline(cache=cache)
+    _join(live, frame)
+    move = truth.push_san("d4")
+    after = synthetic_board(board=truth, coordinates=True, highlight=move)
+    for j in range(3):
+        _tick(live, after, 10.0 + 0.1 * j)
+    assert live.reconciler is not None and live.reconciler.board.move_stack
+    first = live.reconciler.game_id
+    dragged = synthetic_board(
+        board=truth, coordinates=True, dragging=(chess.C1, chess.F4, 0.1, 0.1)
+    )
+    assert live.cold_start(dragged, GEOM, ts=11.0) == [], "nothing read, nothing ended"
+    assert live.reconciler.game_id == first and not live.reconciler.finished
+    events = live.cold_start(after, GEOM, ts=11.0)
+    kinds = [type(e).__name__ for e in events]
+    assert kinds[0] == "GameEnded" and "GameStarted" in kinds, kinds
+    assert isinstance(events[0], GameEnded) and events[0].game_id == first
+    assert events[0].reason == "board re-read" and events[0].result == "*"
+    assert live.reconciler.game_id != first
+
+
 def test_a_resync_onto_a_board_the_other_way_up_reads_the_labels(tmp_path: Path) -> None:
     """The next puzzle comes up from the other side: the resync would keep the old
     orientation and adopt the position on its head; the labels say otherwise, and the

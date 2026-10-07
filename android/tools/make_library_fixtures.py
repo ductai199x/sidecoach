@@ -415,6 +415,28 @@ def by_hand_store(folder: Path) -> dict:
     own_way = ["c3", "O-O", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+", "Nbxd2", "d5", "exd5", "Nxd5", "Qb3"]
     watch("g3", [*sans[:6], *own_way], start + 120)
     watch("g4", sans, start + 5 * 3600)
+    # tests/test_library.py's `test_a_game_corrected_mid_way_is_the_longer_of_its_two_records`:
+    # re-read a ply out early (g5: the reconciler's game is longer) and late (g6: the moves
+    # recorded are), each ending with the reconciler's record from the board re-read.
+    for gid, cut in (("g5", 6), ("g6", 16)):
+        watch(gid, sans[:cut], start + 7 * 3600 + cut)
+        for ply, san in enumerate(sans[cut + 1 :], start=1):
+            store.add_move(
+                gid, 1, ply, move_number=0, san=san, uci="0000", by_user=False,
+                fen_before="-", fen_after="-", phase=None, think_ms=None, clock_ms=None,
+                capture=False, gives_check=False, material=None, ts=start + 8 * 3600 + ply,
+            )  # fmt: skip
+        base = chess.Board()
+        for san in sans[: cut + 1]:
+            base.push_san(san)
+        kept = chess.pgn.Game()
+        kept.setup(base.copy(stack=False))
+        node: chess.pgn.GameNode = kept
+        for san in sans[cut + 1 :]:
+            node = node.add_main_variation(node.board().parse_san(san))
+        movetext = kept.accept(chess.pgn.StringExporter(headers=False))
+        record = f'[SetUp "1"]\n[FEN "{base.fen()}"]\n\n{movetext}'
+        store.end_game(gid, start + 9 * 3600, "0-1", "resignation", pgn=record)
     games = store.games(200)
     case = {
         "games": [dataclasses.asdict(g) for g in games],

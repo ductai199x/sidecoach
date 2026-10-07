@@ -3,9 +3,11 @@ chess.com's public archive or Lichess's API, which side was the player's, kept a
 
 from __future__ import annotations
 
+import io
 import json
 
 import chess
+import chess.pgn
 import httpx
 
 from sidecoach.profile.library import (
@@ -378,6 +380,53 @@ def test_a_watched_record_that_is_no_game_stays_out(tmp_path) -> None:  # noqa: 
     _watch(store, "g4", SANS[:6], 4000.0)
     assert [r.key for r in from_watched(store)] == [good]
     assert from_watched(store)[0].time_class is None, "no clock read at the start: no class"
+    store.close()
+
+
+def test_a_game_corrected_mid_way_is_the_longer_of_its_two_records(tmp_path) -> None:  # noqa: ANN001
+    """A correction mid-game (the side to move told wrong, a board the mark re-reads) starts
+    the reconciler's game again from the board corrected: the moves recorded stop at it, and
+    the game the reconciler kept to its end (`GameEnded.pgn`, the FEN given) begins there. The
+    library takes the longer: a game corrected at its sixth ply was dropped, under the ten
+    plies a game needs (the audit of 2026-10-07); one corrected late keeps the moves before."""
+    import chess.pgn
+
+    def base_at(ply: int) -> chess.Board:
+        board = chess.Board()
+        for san in SANS[:ply]:
+            board.push_san(san)
+        return board.copy(stack=False)
+
+    def kept_from(ply: int) -> str:
+        """The reconciler's record of a game re-read at `ply`: its moves from there."""
+        game = chess.pgn.Game()
+        game.setup(base_at(ply))
+        node: chess.pgn.GameNode = game
+        for san in SANS[ply:]:
+            node = node.add_main_variation(node.board().parse_san(san))
+        moves = game.accept(chess.pgn.StringExporter(headers=False))
+        return f'[SetUp "1"]\n[FEN "{base_at(ply).fen()}"]\n\n{moves}'
+
+    store = Store(tmp_path / "profile.sqlite")
+    for game_id, cut in (("early", 6), ("late", 16)):
+        # The record a ply out: the moves after the re-read do not follow the moves before.
+        _watch(store, game_id, SANS[:cut], 1000.0 + cut)
+        for ply, san in enumerate(SANS[cut + 1 :], start=1):
+            store.add_move(
+                game_id, 1, ply, move_number=0, san=san, uci="0000", by_user=False,
+                fen_before="-", fen_after="-", phase=None, think_ms=None, clock_ms=None,
+                capture=False, gives_check=False, material=None, ts=2000.0 + ply,
+            )  # fmt: skip
+        store.end_game(game_id, 3000.0, "0-1", "resignation", pgn=kept_from(cut + 1))
+    rows = {r.key: r for r in from_watched(store)}
+    early = chess.pgn.read_game(io.StringIO(rows["watched:early"].pgn))
+    assert early is not None and not early.errors
+    assert len(list(early.mainline_moves())) == len(SANS) - 7
+    assert early.board().fen() == base_at(7).fen()
+    assert early.headers["White"] == "Opponent" and early.headers["Result"] == "0-1"
+    late = chess.pgn.read_game(io.StringIO(rows["watched:late"].pgn))
+    assert late is not None and len(list(late.mainline_moves())) == 16
+    assert late.board().fen() == chess.STARTING_FEN
     store.close()
 
 

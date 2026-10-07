@@ -235,25 +235,40 @@ def from_watched(store: Store, limit: int | None = None) -> list[LibraryRow]:
 
 
 def watched_row(game: GameRow, moves: list[MoveRow]) -> LibraryRow | None:
-    """One watched record as the library shows it, or None when it is no game (`from_watched`)."""
+    """One watched record as the library shows it, or None when it is no game (`from_watched`).
+
+    The game is the longer of two records that each play out from where they begin: the moves
+    as recorded, from the record's start up to its first re-read, and the game the reconciler
+    kept to its end (`GameEnded.pgn`, from its base, the FEN given). A correction mid-game
+    starts the reconciler's game again from the board corrected: the moves before it are the
+    first record's, the moves after it the second's, and a game corrected early was dropped
+    for being under WATCHED_PLIES before it (the audit of 2026-10-07). A piece's kind
+    corrected keeps the whole game in the second, from the base corrected."""
     if not moves or game.result not in ("1-0", "0-1", "1/2-1/2"):
         return None
-    pgn = chess.pgn.Game()
-    board = chess.Board(game.start_fen)
-    if game.start_fen != chess.STARTING_FEN:
-        pgn.setup(board)
-    node: chess.pgn.GameNode = pgn
-    played = 0
+    start = chess.Board(game.start_fen)
+    setup = game.start_fen != chess.STARTING_FEN
+    board = start.copy()
+    line: list[chess.Move] = []
     for row in sorted(moves, key=lambda m: (m.segment, m.ply)):
         try:
             move = board.parse_san(row.san)
         except ValueError:
-            break  # a resync's new line: the review stops where the record does
-        node = node.add_variation(move)
+            break  # a resync's new line: the record stops where the re-read began
         board.push(move)
-        played += 1
-    if played < WATCHED_PLIES:
+        line.append(move)
+    kept = games_in(game.pgn or "")
+    if len(kept) == 1 and len(list(kept[0].mainline_moves())) > len(line):
+        start, setup = kept[0].board(), "FEN" in kept[0].headers
+        line = list(kept[0].mainline_moves())
+    if len(line) < WATCHED_PLIES:
         return None
+    pgn = chess.pgn.Game()
+    if setup:
+        pgn.setup(start)
+    node: chess.pgn.GameNode = pgn
+    for move in line:
+        node = node.add_variation(move)
     you, them = "You", game.opponent or "Opponent"
     pgn.headers["White"] = you if game.user_side == "white" else them
     pgn.headers["Black"] = you if game.user_side == "black" else them

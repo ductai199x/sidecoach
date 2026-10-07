@@ -857,8 +857,9 @@ class GamePipeline:
             read = self._reread(bottom) or self._cold_read(frame, geometry, bottom)
         if read is None:
             return []
-        events = self._end_in_progress("board reoriented") if end_previous else []
-        events += self._adopt_cold(*read, ts=ts, before=before)
+        events = self._adopt_cold(
+            *read, ts=ts, before=before, ending="board reoriented" if end_previous else None
+        )
         if events:
             self._learn_labels(frame, geometry, told=told)
         return events
@@ -895,10 +896,22 @@ class GamePipeline:
                 return
 
     def _end_in_progress(self, reason: str) -> list[Event]:
+        """The game under way ended because another replaces it: first with the story that
+        proves its end, when the stories leave only that (a mate the site's dialog covered
+        before a clean frame: `Reconciler.commit_pending_terminal`), as the reconciler's own
+        new game ends it; else with the result its final position proves (`replaced_event`).
+        Every path that replaces the reconciler ends its game here: the next game come up
+        with the colours swapped (`_bootstrap`), the board read the other way up
+        (`reorient`), and the board re-read (`cold_start`) -- the mate under the dialog was
+        lost on the first two, and the game left with no end at all on the third (the audit
+        of 2026-10-07)."""
         previous = self.reconciler
         if previous is None or not previous.in_progress or previous.finished:
             return []
-        return [previous.replaced_event(reason)]
+        concluded = previous.commit_pending_terminal()
+        if previous.finished:
+            return concluded
+        return [*concluded, previous.replaced_event(reason)]
 
     def _turn_from_clock(self, ts: float) -> list[Event]:
         """A side to move left open by a resync or a cold start, settled by the clock
@@ -1382,7 +1395,7 @@ class GamePipeline:
         read = self._cold_read(frame, geometry, bottom, asked=True)
         if read is None:
             return []
-        return self._adopt_cold(*read, ts=ts)
+        return self._adopt_cold(*read, ts=ts, ending="board re-read")
 
     def _adopt_cold(
         self,
@@ -1392,7 +1405,11 @@ class GamePipeline:
         placement: chess.Board,
         ts: float | None = None,
         before: tuple[chess.Board, frozenset[chess.Square]] | None = None,
+        ending: str | None = None,
     ) -> list[Event]:
+        """A new reconciler begun from the placement read cold. `ending`: why the game under
+        way ends with it (`_end_in_progress`) -- ended only once the placement is adopted, so
+        a read that adopts nothing leaves the game going."""
         reconciler = Reconciler(bottom=bottom, user_side=bottom)
         # The site's last-move highlight, for what a cold read cannot know: a pawn that has
         # just advanced two squares, and whose move it is (`reconcile.last_move_seen`).
@@ -1400,6 +1417,8 @@ class GamePipeline:
         events = reconciler.start_from(placement, ts, highlighted, before=before)
         if not events:
             return []  # the placement is not a legal position; adopt nothing
+        if ending is not None:
+            events = self._end_in_progress(ending) + events
         # Only now, with a legal position begun, is the pipeline switched onto this theme.
         if bottom != self.bottom:
             # The clock read the other way up named the other side as running, and the

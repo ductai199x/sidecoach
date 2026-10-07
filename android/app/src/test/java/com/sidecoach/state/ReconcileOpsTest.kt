@@ -137,6 +137,7 @@ class ReconcileOpsTest {
                 if (op.isNull("result")) null else op.getString("result"),
             )
             "reorient" -> rec.reorient(side(op.getString("bottom")))
+            "replaced_event" -> listOf(rec.replacedEvent(op.getString("reason")))
             "commit" -> rec.commit(Move.fromUci(op.getString("uci")))
             "observe" -> {
                 val observed = rec.observe(readings(table.getString(op.getInt("readings"))))

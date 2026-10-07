@@ -1,4 +1,7 @@
+import io
+
 import chess
+import chess.pgn
 import pytest
 
 from sidecoach.events import (
@@ -439,7 +442,9 @@ def test_position_resync_after_a_long_gap() -> None:
     assert sans_of(events) == ["d6"]
     assert not rec.turn_unknown
     assert rec.board.fen().split()[0] == board.board_fen()
-    assert rec.pgn() == "1... d6"
+    # The record is a game from the position adopted, which it names (the audit of
+    # 2026-10-07: "1... d6" alone was no game anyone could read back).
+    assert rec.pgn() == f'[SetUp "1"]\n[FEN "{rec.base_fen}"]\n\n1... d6'
 
 
 def test_move_from_adopted_position_is_a_takeback_not_a_new_game() -> None:
@@ -457,7 +462,7 @@ def test_move_from_adopted_position_is_a_takeback_not_a_new_game() -> None:
     adopted = board.copy()
 
     _play(model, rec, board, ["Re1", "b5"], ts=2.0)  # settles the turn and continues
-    assert rec.pgn() == "1. Re1 b5"
+    assert rec.pgn().endswith("\n\n1. Re1 b5")
 
     # Browse back to the adopted position, then play a different move from it.
     for ts in (3.0, 3.1):
@@ -669,6 +674,26 @@ def test_the_mark_adopts_only_a_board_held_still() -> None:
     adopted = rec._marked_resync(still)
     assert any(isinstance(e, Resync) for e in adopted), "three frames of one still board"
     assert rec.board.board_fen() == shown.board_fen() and rec.board.turn == shown.turn
+
+
+def test_the_mark_adopting_a_board_settles_its_side_to_move() -> None:
+    """A position read with both sides able to move leaves the turn open; the mark's
+    recovery adopts a board with the side to move the mark names, and the turn is no longer
+    open: left open, the first move or the clock could still turn it (the audit of
+    2026-10-07)."""
+    model, rec = _setup()
+    rec.start_from(chess.Board(MIDDLEGAME), ts=0.0)
+    assert rec.turn_unknown
+    shown = chess.Board(MIDDLEGAME)
+    move = shown.push_san("Be2")
+    still = rec._observe(model.classify_frame(synthetic_board(board=shown, highlight=move), GEOM))
+    adopted: list = []
+    for _ in range(rec.settle_frames + 1):
+        rec._mark_denied = True
+        adopted = rec._marked_resync(still)
+    assert any(isinstance(e, Resync) for e in adopted)
+    assert rec.board.board_fen() == shown.board_fen() and rec.board.turn == chess.BLACK
+    assert not rec.turn_unknown
 
 
 def test_a_queen_nobody_can_read_is_not_moved_there_and_back() -> None:
@@ -953,8 +978,10 @@ def test_a_piece_misread_in_a_position_read_cold_is_corrected_by_its_move() -> N
     move = truth.push_san("Nxg6")  # the knight moves: its kind read right where it lands
     for k in range(4):
         events += _feed(model, rec, truth, Side.BLACK, ts + 0.5 + 0.1 * k, highlight=move)
-    resyncs = [e for e in events if isinstance(e, Resync)]
-    assert len(resyncs) == 1 and resyncs[0].reason == "the bishop read on h4 was a knight"
+    # The same game, its base corrected: the move before the correction stays in the record,
+    # numbered as it was (the audit of 2026-10-07: the game was adopted afresh from the
+    # correction, and Rd2 left the record and the review).
+    assert not [e for e in events if isinstance(e, Resync)]
     assert sans_of(events) == ["Nxg6"]
     events = []
     for san in ["hxg6", "Bf3"]:
@@ -963,6 +990,11 @@ def test_a_piece_misread_in_a_position_read_cold_is_corrected_by_its_move() -> N
             ts += 0.1
             events += _feed(model, rec, truth, Side.BLACK, ts + 1.0, highlight=move)
     assert sans_of(events) == ["hxg6", "Bf3"]
+    corrected = chess.Board(MISREAD_PUZZLE)
+    corrected.set_piece_at(chess.H4, chess.Piece(chess.KNIGHT, chess.WHITE))
+    assert rec.base_fen == corrected.fen()
+    assert rec.pgn() == f'[SetUp "1"]\n[FEN "{corrected.fen()}"]\n\n1... Rd2 2. Nxg6 hxg6 3. Bf3'
+    assert rec.board.fen() == truth.fen()
 
 
 def test_a_piece_of_a_game_played_from_the_start_is_never_taken_for_misread() -> None:
@@ -1257,6 +1289,14 @@ def test_a_move_by_the_side_not_to_move_corrects_the_side_to_move() -> None:
     # The game goes on from the corrected turn.
     _play(model, rec, board, ["Bb5", "a6"], ts=ts + 1.0)
     assert rec.board.fen() == board.fen()
+    # The moves told before the correction, each its side's, never play out with the other
+    # side to move: the record is the game from the position corrected, and says so -- a
+    # game that plays out to the board (the audit of 2026-10-07: the moves alone, from the
+    # middle, with no FEN).
+    kept = chess.pgn.read_game(io.StringIO(rec.pgn()))
+    assert kept is not None and not kept.errors
+    assert [m.uci() for m in kept.mainline_moves()] == ["b8c6", "f1b5", "a7a6"]
+    assert kept.end().board().fen() == board.fen()
 
 
 def test_no_move_is_told_through_wildcards_alone() -> None:

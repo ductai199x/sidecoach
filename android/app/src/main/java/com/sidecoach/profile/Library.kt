@@ -1,6 +1,7 @@
 package com.sidecoach.profile
 
 import com.sidecoach.chess.Board
+import com.sidecoach.chess.Move
 import com.sidecoach.chess.PgnGame
 import com.sidecoach.chess.PgnNode
 import com.sidecoach.chess.PgnReader
@@ -216,22 +217,40 @@ object Library {
     fun fromWatched(store: Store, limit: Int? = null): List<LibraryRow> =
         store.games(limit).mapNotNull { watchedRow(it, store.moves(it.gameId)) }
 
-    /** One watched record as the library shows it, or null when it is no game ([fromWatched]). */
+    /**
+     * One watched record as the library shows it, or null when it is no game ([fromWatched]).
+     *
+     * The game is the longer of two records that each play out from where they begin: the moves
+     * as recorded, from the record's start up to its first re-read, and the game the reconciler
+     * kept to its end (`GameEnded.pgn`, from its base, the FEN given). A correction mid-game
+     * starts the reconciler's game again from the board corrected: the moves before it are the
+     * first record's, the moves after it the second's, and a game corrected early was dropped for
+     * being under [WATCHED_PLIES] before it (the audit of 2026-10-07). A piece's kind corrected
+     * keeps the whole game in the second, from the base corrected.
+     */
     fun watchedRow(game: GameRow, moves: List<MoveRow>): LibraryRow? {
         if (moves.isEmpty() || game.result !in listOf("1-0", "0-1", "1/2-1/2")) return null
-        val pgn = PgnGame()
+        var start = Board(game.startFen)
+        var setup = game.startFen != STARTING_FEN
         val board = Board(game.startFen)
-        if (game.startFen != STARTING_FEN) pgn.setup(board)
-        var node: PgnNode = pgn
-        var played = 0
+        var line = ArrayList<Move>()
         for (row in moves.sortedWith(compareBy({ it.segment }, { it.ply }))) {
-            // A resync's new line: the review stops where the record does.
+            // A resync's new line: the record stops where the re-read began.
             val move = board.parseSan(row.san) ?: break
-            node = node.addVariation(move)
             board.push(move)
-            played += 1
+            line.add(move)
         }
-        if (played < WATCHED_PLIES) return null
+        val kept = gamesIn(game.pgn ?: "")
+        if (kept.size == 1 && kept[0].mainlineMoves().size > line.size) {
+            start = kept[0].board()
+            setup = kept[0].headers["FEN"] != null
+            line = ArrayList(kept[0].mainlineMoves())
+        }
+        if (line.size < WATCHED_PLIES) return null
+        val pgn = PgnGame()
+        if (setup) pgn.setup(start)
+        var node: PgnNode = pgn
+        for (move in line) node = node.addVariation(move)
         val you = "You"
         val them = game.opponent?.takeIf { it.isNotEmpty() } ?: "Opponent"
         pgn.headers["White"] = if (game.userSide == "white") you else them
