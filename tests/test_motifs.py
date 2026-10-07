@@ -356,6 +356,26 @@ MADE: list[tuple[str, str, str, list[str], int | None, dict[str, Squares]]] = [
         4,
         {"sacrifice": None, "capture": None, "check": None},
     ),
+    # A knight for two pawns: Nxg5 hxg5 Bxg5 takes one back and is still a piece down, and
+    # Nh7 Bxd8 wins the queen (Tai's puzzle 3596728, 2026-10-06: Brilliant on chess.com).
+    (
+        "a piece for two pawns",
+        "r1bq1rk1/pp3p2/1bp2n1p/3pP1p1/3P3B/1P3N1P/1P3PP1/RN1Q1RK1 w - - 0 3",
+        "f3g5",
+        ["h6g5", "h4g5", "f6h7", "g5d8"],
+        None,
+        {"sacrifice": None, "capture": None},
+    ),
+    # The same knight, offered and declined, as the engine plays it: ...Ne8 Nf3, hxg5 being a
+    # mistake. Left to be taken is a sacrifice whether or not it is (chess.com's brilliant).
+    (
+        "a piece offered and declined",
+        "r1bq1rk1/pp3p2/1bp2n1p/3pP1p1/3P3B/1P3N1P/1P3PP1/RN1Q1RK1 w - - 0 3",
+        "f3g5",
+        ["f6e8", "g5f3", "d8d7", "b1c3", "f7f6"],
+        None,
+        {"sacrifice": None},
+    ),
 ]
 
 
@@ -445,6 +465,15 @@ NOT_MADE: list[tuple[str, str, str, list[str], str | frozenset[str]]] = [
         OPEN_GAME,
         "g1f3",
         ["b8c6", "f1b5", "g8f6", "b5c6", "d7c6", "f3e5"],
+        "sacrifice",
+    ),
+    # The knight taken and taken back, a check in between: O-O Bxf3 Bb5+ Nc6 Bxc6+ bxc6 Qxf3
+    # is a trade, not castling giving a knight away (Tai's games, 2026-10-06: called brilliant).
+    (
+        "a recapture after a check",
+        "rn1qk1nr/pp3ppp/4p3/2bpP3/6b1/2N2N2/PPP1BPPP/R1BQK2R w KQkq - 0 8",
+        "e1g1",
+        ["g4f3", "e2b5", "b8c6", "b5c6", "b7c6", "d1f3", "g8e7"],
         "sacrifice",
     ),
     # The same Greek gift, cut before it wins anything: a sacrifice, not yet a lure.

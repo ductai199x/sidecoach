@@ -1178,27 +1178,81 @@ def _sacrifice(
     comes straight back: measured that way, `2. Nf3` in the game of 2026-09-14 20:06 was a
     sacrifice. So the balance is read after the move and the opponent's answer to it.
 
-    Two points, so a pawn gambit does not count. The deficit must survive the mover's own
-    next move as well: a reply that captures and is taken straight back is a trade, and
+    Two points, so a pawn gambit does not count. The mover must still be behind after its
+    own next move as well: a reply that captures and is taken straight back is a trade, and
     measured after the reply alone, 5...d6 in a real game was a sacrifice because 6.Bxc6+
-    bxc6 followed. "Still wins" is a mate for the mover, or the material coming back by the
-    end of the line: a piece given for nothing at all is a blunder, and the assessment
-    already says so.
+    bxc6 followed. Behind, not two points behind: a knight given for two pawns is a piece
+    sacrificed (Tai's puzzle, 2026-10-06: Nxg5 hxg5 Bxg5, Brilliant on chess.com, was no
+    sacrifice here, and in 1,426 of his moves five were). "Still wins" is a mate for the
+    mover, or the material coming back by the end of the line: a piece given for nothing at
+    all is a blunder, and the assessment already says so.
+
+    Or the material is offered and the line declines it: after the move the opponent could
+    win two points or more by a capture, the recaptures played out, more than it could
+    before -- the move put it there -- and the best line leaves it be, because taking it
+    loses. That is chess.com's brilliant, a piece left to be taken whether or not it is
+    (Tai's puzzle, 2026-10-06: after Nxg5 the engine's line declines the knight, hxg5 being
+    a mistake, and the move was read as no sacrifice at all).
     """
-    if len(played) < 2:
+    if not played:
         return None
     start = _balance(boards[0], mover)
-    answered = _balance(boards[2], mover) if len(boards) > 2 else _balance(boards[-1], mover)
-    if start - answered < _SACRIFICE_THRESHOLD:
-        return None
-    if len(boards) > 3 and start - _balance(boards[3], mover) < _SACRIFICE_THRESHOLD:
-        return None
     mating = mate_in is not None and mate_in > 0
     if not mating and _balance(boards[-1], mover) < start:
         return None
-    return _tag(
-        "sacrifice", [played[0].from_square, played[0].to_square, played[1].to_square], played[0]
-    )
+    if _given_in_line(boards, played, mover, start):
+        squares = [played[0].from_square, played[0].to_square, played[1].to_square]
+        return _tag("sacrifice", squares, played[0])
+    offered = _offered(boards[0], boards[1], played[0], mover)
+    if offered is not None:
+        squares = [played[0].from_square, played[0].to_square, offered]
+        return _tag("sacrifice", squares, played[0])
+    return None
+
+
+def _given_in_line(
+    boards: list[chess.Board], played: list[chess.Move], mover: chess.Color, start: int
+) -> bool:
+    """The line takes what the move gives (`_sacrifice`): two points down after the reply,
+    still behind after the mover's next move, and the reply's capture a gain once the
+    recaptures on its square are played out."""
+    if len(played) < 2:
+        return False
+    answered = _balance(boards[2], mover)
+    if start - answered < _SACRIFICE_THRESHOLD:
+        return False
+    if len(boards) > 3 and _balance(boards[3], mover) >= start:
+        return False
+    # The reply's capture wins it, the recaptures on its square played out: a knight taken
+    # and taken back is a trade, however the line orders it (O-O Bxf3 Bb5+ Nc6 Bxc6+ bxc6
+    # Qxf3, a check before the recapture, read as castling giving up a knight).
+    return exchange.exchange(boards[1], played[1]) >= _SACRIFICE_THRESHOLD
+
+
+def _offered(
+    before: chess.Board, after: chess.Board, move: chess.Move, mover: chess.Color
+) -> chess.Square | None:
+    """The square of a piece of `mover`'s the move left to be won (`_sacrifice`): a piece,
+    not a pawn, the opponent could take for more than the move itself took -- the mover a
+    point or more down once the recaptures are played out -- and for more than the same
+    piece could have been won before the move. A capture taken back is a trade (Bxc3 bxc3,
+    and 30 others like it in Tai's games, read as brilliant); a knight for two pawns is not
+    (Nxg5 hxg5 Bxg5). Each piece against itself: a move that answers one threat may offer
+    something else at once (Nxg5 left the knight to hxg5 while the bishop on h4, attacked
+    by that pawn, was no longer). None when the move offers nothing."""
+    if before.is_en_passant(move):
+        took = exchange.VALUE[chess.PAWN]
+    else:
+        taken = before.piece_type_at(move.to_square)
+        took = exchange.VALUE[taken] if taken is not None else 0
+    for square in chess.SquareSet(after.occupied_co[mover] & ~after.kings & ~after.pawns):
+        won = exchange.best_capture(after, not mover, square)
+        if won - took < 1 or exchange.VALUE[after.piece_type_at(square) or chess.PAWN] < _MINOR:
+            continue
+        was = move.from_square if square == move.to_square else square
+        if before.piece_at(was) is None or exchange.best_capture(before, not mover, was) < won:
+            return square
+    return None
 
 
 def _clearance(boards: list[chess.Board], played: list[chess.Move]) -> MotifTag | None:
