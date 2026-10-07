@@ -29,18 +29,17 @@ from pathlib import Path
 
 import numpy as np
 
-from sidecoach.analysis.score import DEFAULT_THRESHOLDS
-
 MODEL_PATH = Path(__file__).with_name("performance.json")
 
 # The loss lines of the buckets, in expected score: below each line is the bucket before it.
-EDGES = (
-    1e-9,
-    0.02,
-    DEFAULT_THRESHOLDS.inaccuracy,
-    DEFAULT_THRESHOLDS.mistake,
-    DEFAULT_THRESHOLDS.blunder,
-)
+# The buckets are the models' own features, not the move labels: a fitted model reads moves by
+# the lines it was fitted with, which it keeps (`edges` in performance.json, categories.json),
+# never by the labels' thresholds of the day (the audit of 2026-10-07: chess.com's cut-offs,
+# 0.05 / 0.10 / 0.20 since 0.1.84, read every move through lines the models were not fitted on,
+# and every rating fell). These are the lines a fit uses (`tools/review/fit_performance.py`,
+# `fit_stats.py`, which write them with the model): the coach's labels' of 2026-09-30, when the
+# shipped models were fitted.
+EDGES = (1e-9, 0.02, 0.04, 0.10, 0.28)
 BUCKETS = len(EDGES) + 1
 OPENING_PLIES = 20
 LOST, WON = 0.15, 0.85
@@ -64,8 +63,16 @@ def plies_before(fen: str) -> int:
     return 2 * (max(number, 1) - 1) + (1 if len(fields) > 1 and fields[1] == "b" else 0)
 
 
-def bucket(loss: float) -> int:
-    return bisect.bisect_right(EDGES, loss)
+def bucket(loss: float, edges: tuple[float, ...] = EDGES) -> int:
+    return bisect.bisect_right(edges, loss)
+
+
+def edges_of(model: Mapping) -> tuple[float, ...]:
+    """The loss lines a fitted model reads moves by: the ones it was fitted with."""
+    edges = tuple(float(e) for e in model["edges"])
+    if len(edges) != BUCKETS - 1:
+        raise ValueError(f"a model of {len(edges) + 1} buckets, not {BUCKETS}")
+    return edges
 
 
 def context(ply: int, score: float) -> int:
@@ -88,8 +95,9 @@ class Performance:
 
 
 @cache
-def _default_table() -> np.ndarray:
-    return _table(json.loads(MODEL_PATH.read_text(encoding="utf-8")))
+def _default_model() -> tuple[tuple[float, ...], np.ndarray]:
+    model = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
+    return edges_of(model), _table(model)
 
 
 def _table(model: dict) -> np.ndarray:
@@ -109,11 +117,12 @@ def estimate(
 ) -> Performance:
     """The rating one side's moves were played at. `moves`: each with its ply, its loss and the
     mover's expected score before it. `prior`: (mean, spread) of a normal over the grid, or
-    None. `model`: fitted weights, when not the shipped model's."""
-    table = _table(model) if model is not None else _default_table()
+    None. `model`: fitted weights and the edges they were fitted with, when not the shipped
+    model's."""
+    edges, table = (edges_of(model), _table(model)) if model is not None else _default_model()
     counts = np.zeros(table.shape[:2])
     for move in moves:
-        counts[context(move["ply"], move["score"]), bucket(move["loss"])] += 1
+        counts[context(move["ply"], move["score"]), bucket(move["loss"], edges)] += 1
     log_weight = np.einsum("cb,cbg->g", counts, table)
     if prior is not None:
         log_weight = log_weight - 0.5 * ((GRID - prior[0]) / prior[1]) ** 2

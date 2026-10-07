@@ -512,23 +512,46 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         engine.settings_followers.append(lambda s: setattr(backlog, "settings", s))
     app.state.backlog = backlog  # closed with the panel (`serve`)
 
+    rederiving = threading.Lock()
+
     def rederive_saved() -> None:
-        """The saved reviews' labels, openings, summaries and Stats made again when their rule
-        changed."""
+        """The saved reviews' labels, severities, motifs, openings, summaries and Stats made
+        again when their rule or the thresholds in Settings changed (`derived_stamp`), one pass
+        at a time: a pass reads the settings as they are when it starts."""
         from sidecoach.analysis.score import Thresholds
-        from sidecoach.cli import _load_book
+        from sidecoach.cli import _load_book, _load_tagger
         from sidecoach.profile.store import Store
         from sidecoach.ui.review_room import rederive
 
-        with contextlib.suppress(Exception):  # never in the way of the panel
+        with rederiving, contextlib.suppress(Exception):  # never in the way of the panel
             store = Store(store_path)
             try:
                 settings = engine.settings
-                rederive(store, Thresholds.from_settings(settings.coach), _load_book(settings))
+                rederive(
+                    store,
+                    Thresholds.from_settings(settings.coach),
+                    _load_book(settings),
+                    _load_tagger(),
+                )
             finally:
                 store.close()
 
-    threading.Thread(target=rederive_saved, name="rederive", daemon=True).start()
+    def rederive_in_background() -> None:
+        threading.Thread(target=rederive_saved, name="rederive", daemon=True).start()
+
+    rederive_in_background()
+    from sidecoach.analysis.score import Thresholds
+
+    labelled_by = [Thresholds.from_settings(engine.settings.coach)]
+
+    def thresholds_followed(settings: Settings) -> None:
+        """A threshold changed in Settings: the saved reviews are labelled by it too."""
+        now = Thresholds.from_settings(settings.coach)
+        if now != labelled_by[0]:
+            labelled_by[0] = now
+            rederive_in_background()
+
+    engine.settings_followers.append(thresholds_followed)
 
     @app.get("/games")
     @app.get("/stats")

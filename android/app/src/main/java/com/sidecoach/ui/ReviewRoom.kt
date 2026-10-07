@@ -10,6 +10,7 @@ import com.sidecoach.analysis.Measured
 import com.sidecoach.analysis.Motifs
 import com.sidecoach.analysis.OpeningBook
 import com.sidecoach.analysis.Strength
+import com.sidecoach.analysis.Tagger
 import com.sidecoach.analysis.Thresholds
 import com.sidecoach.coach.ReviewLinks
 import com.sidecoach.coach.ReviewWords
@@ -645,21 +646,59 @@ class ReviewRoom(
         // Lichess names them (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a
         // longer one -- is a miss (Tai, 2026-10-02 12:16). 5: only a mate in 1 not given, no mate
         // left, or one 4+ moves longer with a piece on the opponent's side (Tai, 2026-10-02 12:50).
-        const val DERIVED = 5
+        // 6: chess.com's cut-offs and brilliant (2026-10-06), the severities and the positions'
+        // calls made again with the labels, the motifs read again (the sacrifice of 2026-10-06;
+        // the audit of 2026-10-07: reviews saved before 0.1.84 kept the old labels, and Stats
+        // mixed the two rules). The thresholds the labels are made with are part of what they are
+        // made of ([derivedStamp]): a change in Settings makes the saved reviews again too.
+        const val DERIVED = 6
         const val DERIVED_KEY = "reviews.derived"
 
         /**
-         * Every saved review's labels, openings, summary and facts for Stats made again from its
-         * report when what they are made of has changed since ([DERIVED]): no engine. The phases
-         * became Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and
-         * 745 of 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). The
-         * labels are made again by today's rule from each move's saved measurements
-         * ([GameReview.relabel]), the openings by [book] when there is one, and the AI coach's
-         * words -- paid for -- are never touched (Tai, 2026-10-02). [thresholds]: the settings'.
-         * Returns the reviews made again. `rederive`.
+         * What the saved reviews' derived parts are made of, as [rederive] stamps it: the rule's
+         * version and every threshold a label, a severity or a position's call reads. `derived_stamp`.
          */
-        fun rederive(store: Store, thresholds: Thresholds = Thresholds(), book: Book? = null): Int {
-            if (store.setting(DERIVED_KEY) == DERIVED.toString()) return 0
+        fun derivedStamp(t: Thresholds): String =
+            "$DERIVED:" + listOf(t.inaccuracy, t.mistake, t.blunder, t.decisiveGap, t.onlyMoveGap, t.excellent, t.decided)
+                .joinToString(",") { String.format(Locale.ROOT, "%.6f", it) }
+
+        private val rederiving = Any()
+
+        /**
+         * The saved reviews' labels, severities, motifs, openings, summaries and Stats made again
+         * when their rule or the thresholds in Settings changed ([derivedStamp]), one pass at a
+         * time: a pass reads the settings as they are when it starts. [first]: what runs on the
+         * profile before it (the start's library refresh). Never in the way of the panel: what
+         * fails is let go. `server.rederive_saved`.
+         */
+        fun rederiveSaved(filesDir: File, settings: SettingsStore, first: ((Store) -> Unit)? = null) {
+            synchronized(rederiving) {
+                runCatching {
+                    val profile = Store(File(filesDir, "profile.sqlite"))
+                    try {
+                        first?.let { runCatching { it(profile) } }
+                        rederive(profile, settings.thresholds(), OpeningBook.load(File(filesDir, "openings")), Motifs)
+                    } finally {
+                        profile.close()
+                    }
+                }
+            }
+        }
+
+        /**
+         * Every saved review's labels, severities, motifs, openings, summary and facts for Stats
+         * made again from its report when what they are made of has changed since
+         * ([derivedStamp]: the rule's [DERIVED] and the thresholds): no engine. The phases became
+         * Lichess's with the reviews saved as they were: 98 of 106 sides' phase grades and 745 of
+         * 3,522 moves' phases in Stats were the old rule's (the review of 2026-10-01). The review
+         * is made again by today's rule from each move's saved measurements
+         * ([GameReview.relabel]; the motifs by [tagger], the openings by [book], when there are),
+         * and the AI coach's words -- paid for -- are never touched (Tai, 2026-10-02).
+         * [thresholds]: the settings'. Returns the reviews made again. `rederive`.
+         */
+        fun rederive(store: Store, thresholds: Thresholds = Thresholds(), book: Book? = null, tagger: Tagger? = null): Int {
+            val stamp = derivedStamp(thresholds)
+            if (store.setting(DERIVED_KEY) == stamp) return 0
             val counted = store.statStrengths()
             var done = 0
             for ((key, strength) in store.savedReviews()) {
@@ -667,7 +706,7 @@ class ReviewRoom(
                 if (saved.version != REVIEW_VERSION) continue
                 var written = false
                 val ok = runCatching {
-                    val reviewed = GameReview.relabel(ReviewJson.reviewed(saved.report), thresholds, book)
+                    val reviewed = GameReview.relabel(ReviewJson.reviewed(saved.report), thresholds, book, tagger)
                     val summary = ReviewJson.summary(GameSummaries.summarize(reviewed)).toString()
                     written = store.setReviewReport(
                         key, strength, saved.reviewedAt, ReviewJson.reviewed(reviewed).toString(), summary,
@@ -682,7 +721,7 @@ class ReviewRoom(
                 }.isSuccess
                 if (ok && written) done += 1
             }
-            store.setSetting(DERIVED_KEY, DERIVED.toString())
+            store.setSetting(DERIVED_KEY, stamp)
             return done
         }
 

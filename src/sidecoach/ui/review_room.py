@@ -18,13 +18,14 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import chess
 import chess.pgn
 
-from sidecoach.analysis.annotator import Book, Measured
+from sidecoach.analysis.annotator import Book, Measured, Tagger
 from sidecoach.analysis.engine import Engine
 from sidecoach.analysis.game_review import (
     STRENGTHS,
@@ -63,9 +64,23 @@ REVIEW_VERSION = 1
 # error; chess.com's great, brilliant and book) and the openings named as Lichess names them
 # (Tai, 2026-10-02). 4: a forced mate let go -- none left, or only a longer one -- is a miss
 # (Tai, 2026-10-02 12:16). 5: only a mate in 1 not given, no mate left, or one 4+ moves longer
-# with a piece on the opponent's side (Tai, 2026-10-02 12:50).
-DERIVED = 5
+# with a piece on the opponent's side (Tai, 2026-10-02 12:50). 6: chess.com's cut-offs and
+# brilliant (84c1395, 2026-10-06), the severities and the positions' calls made again with the
+# labels, the motifs read again (the sacrifice of 2026-10-06; the audit of 2026-10-07: reviews
+# saved before 0.1.84 kept the old labels, and Stats mixed the two rules).
+# The thresholds the labels are made with are part of what they are made of (`derived_stamp`):
+# a change in Settings makes the saved reviews again too.
+DERIVED = 6
 DERIVED_KEY = "reviews.derived"
+
+
+def derived_stamp(thresholds: Thresholds) -> str:
+    """What the saved reviews' derived parts are made of, as `rederive` stamps it: the rule's
+    version and every threshold a label, a severity or a position's call reads."""
+    values = (getattr(thresholds, f.name) for f in fields(thresholds))
+    return f"{DERIVED}:" + ",".join(f"{v:.6f}" for v in values)
+
+
 # The loop's pace, and how long an untouched room lives.
 TICK_S = 0.25
 IDLE_CLOSE_S = 20 * 60.0
@@ -729,18 +744,25 @@ def review_row(
     return reviewed, summary
 
 
-def rederive(store: Store, thresholds: Thresholds | None = None, book: Book | None = None) -> int:
-    """Every saved review's labels, openings, summary and facts for Stats made again from its
-    report when what they are made of has changed since (DERIVED): no engine, a few hundredths
-    of a second a game. The phases became Lichess's (efdd8a3) with the reviews saved as they
-    were: 98 of 106 sides' phase grades and 745 of 3,522 moves' phases in Stats were the old
-    rule's (the review of 2026-10-01). The labels are made again by today's rule from each
-    move's saved measurements (`relabel`), the openings by `book` when there is one, and the
-    AI coach's words -- paid for -- are never touched (Tai, 2026-10-02). `thresholds`: the
+def rederive(
+    store: Store,
+    thresholds: Thresholds | None = None,
+    book: Book | None = None,
+    tagger: Tagger | None = None,
+) -> int:
+    """Every saved review's labels, severities, motifs, openings, summary and facts for Stats
+    made again from its report when what they are made of has changed since (`derived_stamp`:
+    the rule's DERIVED and the thresholds): no engine, a few hundredths of a second a game. The
+    phases became Lichess's (efdd8a3) with the reviews saved as they were: 98 of 106 sides'
+    phase grades and 745 of 3,522 moves' phases in Stats were the old rule's (the review of
+    2026-10-01). The review is made again by today's rule from each move's saved measurements
+    (`relabel`; the motifs by `tagger`, the openings by `book`, when there are), and the AI
+    coach's words -- paid for -- are never touched (Tai, 2026-10-02). `thresholds`: the
     settings' (the defaults without). Returns the reviews made again."""
-    if store.setting(DERIVED_KEY) == str(DERIVED):
-        return 0
     thresholds = thresholds or Thresholds()
+    stamp = derived_stamp(thresholds)
+    if store.setting(DERIVED_KEY) == stamp:
+        return 0
     counted = store.stat_strengths()
     done = 0
     for key, strength in store.saved_reviews():
@@ -748,7 +770,9 @@ def rederive(store: Store, thresholds: Thresholds | None = None, book: Book | No
         if saved is None or saved.version != REVIEW_VERSION:
             continue
         try:
-            reviewed = relabel(ReviewedGame.model_validate_json(saved.report), thresholds, book)
+            reviewed = relabel(
+                ReviewedGame.model_validate_json(saved.report), thresholds, book, tagger
+            )
             summary = summarize(reviewed).model_dump_json()
             if not store.set_review_report(
                 key, strength, saved.reviewed_at, reviewed.model_dump_json(), summary
@@ -763,7 +787,7 @@ def rederive(store: Store, thresholds: Thresholds | None = None, book: Book | No
             )
             continue
         done += 1
-    store.set_setting(DERIVED_KEY, str(DERIVED))
+    store.set_setting(DERIVED_KEY, stamp)
     return done
 
 

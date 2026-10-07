@@ -654,6 +654,12 @@ object PanelWarm {
                 analyser.forgetMeasured()
             }
         }
+        // A threshold changed in Settings: the saved reviews are labelled by it too (the desktop
+        // server's `thresholds_followed`).
+        if (changed.any { it in THRESHOLD_FIELDS } && ::appContext.isInitialized) {
+            val files = appContext.filesDir
+            thread(name = "rederive", isDaemon = true) { ReviewRoom.rederiveSaved(files, store) }
+        }
         return applied.toSortedSet().toList()
     }
 

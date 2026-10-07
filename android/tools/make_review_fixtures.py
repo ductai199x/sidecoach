@@ -17,6 +17,11 @@ with a repetition, and a game Sidecoach watched (no clocks, "You" for the player
 
     cd D:/chess-coaching-companion
     uv run --no-sync python android/tools/make_review_fixtures.py
+
+A rule changed and the measurements did not: `--rewalk [--openings DIR]` walks the recorded
+games again from their recorded measurements, no engine (the same measurements, today's review).
+Each game also records itself made again with other thresholds, its motifs read again
+(`relabel`, `relabelled`).
 """
 
 from __future__ import annotations
@@ -88,13 +93,41 @@ BY_HAND = {
 }
 
 
-def review(game: chess.pgn.Game, strength_name: str, engines: list[Engine], book: OpeningBook | None) -> dict:
+# A saved review made again with other thresholds, its motifs read again (`relabel`): the
+# phone's relabel is held to it -- every line a label, a severity or a position's call reads.
+OTHER = {
+    "inaccuracy": 0.03,
+    "mistake": 0.13,
+    "blunder": 0.31,
+    "decisive_gap": 0.2,
+    "only_move_gap": 0.4,
+    "excellent": 0.01,
+    "decided": 0.8,
+}
+
+
+class _NoEngine:
+    """An engine never asked: every position is measured already (`--rewalk`)."""
+
+    def analyse(self, board: chess.Board, **_: object) -> list:
+        raise AssertionError(f"searched {board.fen()}")
+
+
+def review(
+    game: chess.pgn.Game,
+    strength_name: str,
+    engines: list,
+    book: OpeningBook | None,
+    measured: list | None = None,
+) -> dict:
+    """The game reviewed: measured by `engines`, or walked from `measured` (`--rewalk`)."""
     strength = game_review.STRENGTHS[strength_name]
     thresholds = Thresholds()
-    boards = game_review.positions(game)
-    measured = game_review.measure_all(
-        boards, engines, depth=strength.depth, multipv=strength.multipv, thresholds=thresholds
-    )
+    if measured is None:
+        boards = game_review.positions(game)
+        measured = game_review.measure_all(
+            boards, engines, depth=strength.depth, multipv=strength.multipv, thresholds=thresholds
+        )
     known = {m.fen: m for m in measured}
     reviewed = game_review.review_game(
         game,
@@ -108,8 +141,19 @@ def review(game: chess.pgn.Game, strength_name: str, engines: list[Engine], book
         game_id="review",
         known=known,
     )
+    # Saved before a motif existed: no tags; made again with OTHER.
+    untagged = reviewed.model_copy(
+        update={
+            "moves": [
+                m.model_copy(update={"assessment": m.assessment.model_copy(update={"tags": []})})
+                for m in reviewed.moves
+            ]
+        }
+    )
+    relabelled = game_review.relabel(untagged, Thresholds(**OTHER), tagger=motifs)  # type: ignore[arg-type]
     return {
         "measured": [json.loads(game_review.measured_json(m)) for m in measured],
+        "relabelled": {"thresholds": OTHER, "reviewed": relabelled.model_dump(mode="json")},
         "reviewed": reviewed.model_dump(mode="json"),
         "clocks": [list(c) for c in game_review.clocks(game)],
         "summary": summarize(reviewed).model_dump(mode="json"),
@@ -123,7 +167,32 @@ def review(game: chess.pgn.Game, strength_name: str, engines: list[Engine], book
     }
 
 
+def rewalk(openings: Path) -> None:
+    """`--rewalk`: the recorded games walked again from their recorded measurements, no engine --
+    what the review makes of them by today's rules (labels, motifs, the summary, the views),
+    the measurements kept to the byte."""
+    book = OpeningBook.load(openings)
+    if book is None:
+        raise SystemExit(f"no opening tables under {openings}")
+    games = json.loads(OUT.read_text(encoding="utf-8"))["games"]
+    out = []
+    for g in games:
+        game = chess.pgn.read_game(io.StringIO(g["pgn"]))
+        assert game is not None, g["name"]
+        measured = [game_review.measured_from_json(json.dumps(m)) for m in g["measured"]]
+        done = review(game, g["strength"], [_NoEngine()], book, measured)
+        assert done["measured"] == g["measured"], g["name"]
+        out.append({k: g[k] for k in ("name", "strength", "user_side", "pgn")} | done)
+        print(f"{g['name']}: {len(done['reviewed']['moves'])} moves walked again", flush=True)
+    OUT.write_text(json.dumps({"games": out}), encoding="utf-8")
+    print(f"{OUT}: {len(out)} games, {OUT.stat().st_size // 1024} KB")
+
+
 def main() -> None:
+    if "--rewalk" in sys.argv:
+        at = sys.argv.index("--openings") + 1 if "--openings" in sys.argv else None
+        rewalk(Path(sys.argv[at]) if at else DESKTOP / "data" / "openings")
+        return
     texts: list[tuple[str, str, str | None, str]] = []
     if COPY.exists():
         db = sqlite3.connect(COPY)

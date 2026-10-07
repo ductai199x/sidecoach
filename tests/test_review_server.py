@@ -1363,8 +1363,11 @@ class _VariedEngine(FakeEngine):
         return [Line(moves=[best], depth=6, expected_score=score)]
 
 
-def _varied_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
-    """GAME reviewed at the fast strength with `_VariedEngine`: the store, and its library row."""
+def _varied_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coach: Any = None
+) -> tuple[Any, Any]:
+    """GAME reviewed at the fast strength with `_VariedEngine`: the store, and its library row.
+    `coach`: the settings' coach section (their thresholds), when not the defaults."""
     from sidecoach.analysis.game_review import STRENGTHS
     from sidecoach.config import Settings
     from sidecoach.profile import library
@@ -1375,8 +1378,11 @@ def _varied_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any
     store = Store(tmp_path / "profile.sqlite")
     row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
     store.add_library_game(row)
+    settings = Settings(data_dir=tmp_path)
+    if coach is not None:
+        settings = settings.model_copy(update={"coach": coach})
     made = review_room.review_row(
-        Settings(data_dir=tmp_path),
+        settings,
         row,
         store,
         STRENGTHS["fast"],
@@ -1458,6 +1464,103 @@ def test_saved_reviews_are_relabelled_by_the_new_rules_and_keep_their_words(
     assert [m.after.opening for m in relabelled.moves][4:] == ["C50 Italian Game"] * 8
     assert again.words == words, "the paid words are never touched"
     assert review_room.rederive(store, book=book) == 0, "once"
+    store.close()
+
+
+def _judged(reviewed: Any) -> Any:
+    """What a review judged, apart from when it was made: each position's calls and motifs,
+    each move's assessment."""
+    return (
+        reviewed.start.model_dump(exclude={"ts"}),
+        [
+            (m.assessment.model_dump(exclude={"ts"}), m.after.model_dump(exclude={"ts"}))
+            for m in reviewed.moves
+        ],
+    )
+
+
+# Thresholds other than the defaults on every line a label, a severity or a call reads.
+_OTHER = {
+    "inaccuracy": 0.03,
+    "mistake": 0.13,
+    "blunder": 0.31,
+    "decisive_gap": 0.2,
+    "only_move_gap": 0.4,
+    "excellent": 0.01,
+    "decided": 0.8,
+}
+
+
+def test_a_review_relabelled_with_other_thresholds_is_the_review_made_with_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit of 2026-10-07: reviews saved before chess.com's cut-offs (0.1.84) kept their
+    old severities, positions' calls and motifs -- `relabel` remade the label alone, and read
+    the saved `sacrifice` tag, so the brilliant rule of 2026-10-06 never reached them. A review
+    made with other thresholds, its motifs gone (saved before a motif existed), made again
+    with today's is the review made today, whole."""
+    from sidecoach.analysis import motifs
+    from sidecoach.analysis.game_review import relabel
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.config import CoachSettings
+    from sidecoach.events import ReviewedGame
+
+    store, row = _varied_review(tmp_path / "today", monkeypatch)
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    today = ReviewedGame.model_validate_json(saved.report)
+    store.close()
+    coach = CoachSettings.model_validate(_OTHER)
+    store, row = _varied_review(tmp_path / "before", monkeypatch, coach)
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    before = ReviewedGame.model_validate_json(saved.report)
+    store.close()
+    assert _judged(before) != _judged(today), "the thresholds make a difference here"
+    assert any(m.assessment.tags for m in today.moves), "a game with motifs"
+    untagged = before.model_copy(
+        update={
+            "moves": [
+                m.model_copy(update={"assessment": m.assessment.model_copy(update={"tags": []})})
+                for m in before.moves
+            ]
+        }
+    )
+    again = relabel(untagged, Thresholds(), tagger=motifs)  # type: ignore[arg-type]
+    assert _judged(again) == _judged(today)
+    # And back: made with today's, relabelled with the others' -- the others' review.
+    assert _judged(relabel(today, Thresholds(**_OTHER), tagger=motifs)) == _judged(before)  # type: ignore[arg-type]
+
+
+def test_saved_reviews_follow_the_thresholds_they_are_labelled_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A review saved under rule 5 (before 0.1.84's cut-offs) is made again; and a threshold
+    changed in Settings makes the saved reviews again too, their Stats facts with them, the
+    paid words untouched -- once for each change."""
+    from sidecoach.analysis import motifs
+    from sidecoach.analysis.score import Thresholds, severity
+    from sidecoach.events import ReviewedGame
+    from sidecoach.ui import review_room
+
+    store, row = _varied_review(tmp_path, monkeypatch)
+    words = json.dumps({"model": "luna", "cost": 0.03, "texts": {"4": {"why": "Paid for."}}})
+    store.set_review_words(row.key, "fast", words)
+    store.set_setting(review_room.DERIVED_KEY, "5")
+    assert review_room.rederive(store, Thresholds(), tagger=motifs) == 1  # type: ignore[arg-type]
+    assert review_room.rederive(store, Thresholds(), tagger=motifs) == 0, "once"  # type: ignore[arg-type]
+    other = Thresholds(**_OTHER)
+    assert review_room.rederive(store, other, tagger=motifs) == 1  # type: ignore[arg-type]
+    again = store.review(row.key, "fast")
+    assert again is not None and again.words == words, "the paid words are never touched"
+    relabelled = ReviewedGame.model_validate_json(again.report)
+    assert [m.assessment.severity for m in relabelled.moves] == [
+        severity(m.assessment.expected_loss, other) for m in relabelled.moves
+    ]
+    facts = {m["ply"]: m["label"] for m in store.stat_moves([row.key])}
+    labels = {m.ply: m.assessment.label for m in relabelled.moves if m.ply in facts}
+    assert facts == {ply: label and label.value for ply, label in labels.items()}
+    assert review_room.rederive(store, other, tagger=motifs) == 0, "once"  # type: ignore[arg-type]
     store.close()
 
 

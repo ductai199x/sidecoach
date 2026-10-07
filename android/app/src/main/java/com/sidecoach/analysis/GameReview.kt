@@ -7,9 +7,11 @@ import com.sidecoach.chess.STARTING_FEN
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.Analysis
 import com.sidecoach.events.Label
+import com.sidecoach.events.MotifTag
 import com.sidecoach.events.MoveAssessment
 import com.sidecoach.events.ReviewedGame
 import com.sidecoach.events.ReviewedMove
+import com.sidecoach.events.Severity
 import com.sidecoach.events.Side
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -261,56 +263,67 @@ object GameReview {
     private val CONTROL = Regex("^(\\d+)(?:\\+(\\d+))?$")
 
     /**
-     * A saved review's labels made again from what it kept -- each position's lines, its
-     * decisive call and whether it was in book, each move's loss and tags -- by the rule a review
-     * labels with now ([verdict]), and, with [book], each position's opening named again: no
-     * engine. A review saved before the rules changed keeps its measurements and is labelled as
-     * one made today (Tai, 2026-10-02). `relabel`.
+     * A saved review made again from what it kept -- each position's lines and whether it was in
+     * book, each move's loss -- as a review made today with [thresholds] makes it, no engine: each
+     * position's decisive and only-move calls, each move's severity and label ([verdict], read off
+     * the lines [verdictLines] gives, as the annotator reads them), and with [tagger] each move's
+     * and position's motifs read again (a sacrifice is what makes a move brilliant: the rule of
+     * 2026-10-06 reaches reviews saved before it); without, the saved tags stand. With [book],
+     * each position's opening is named again. A review saved before the rules changed keeps its
+     * measurements and is labelled as one made today (Tai, 2026-10-02). `relabel`.
      */
-    fun relabel(reviewed: ReviewedGame, thresholds: Thresholds, book: Book? = null): ReviewedGame {
-        val named = book != null && Board(reviewed.start.fen).fen() == STARTING_FEN
-        var beforeLines = reviewed.start.lines
-        var beforeDecisive = reviewed.start.decisive
+    fun relabel(reviewed: ReviewedGame, thresholds: Thresholds, book: Book? = null, tagger: Tagger? = null): ReviewedGame {
+        val start = Board(reviewed.start.fen)
+        val named = book != null && start.fen() == STARTING_FEN
+        val first = recalled(start, reviewed.start, thresholds, tagger, reviewed.start.opening)
+        var beforeLines = first.lines
+        var beforeDecisive = first.decisive
         var previous: Previous? = null
         val played = ArrayList<Move>()
         val moves = ArrayList<ReviewedMove>()
         for (item in reviewed.moves) {
             val board = Board(item.fenBefore)
             val move = Move.fromUci(item.assessment.uci)
+            val loss = item.assessment.expectedLoss
+            val afterLines = verdictLines(ownLine(beforeLines, move), item.after.lines)
+            val tags = if (tagger != null) moveTags(tagger, board, move, afterLines) else item.assessment.tags
             val label = verdict(
                 board,
                 move,
                 beforeLines,
-                item.after.lines,
-                loss = item.assessment.expectedLoss,
+                afterLines,
+                loss = loss,
                 beforeScore = positionScore(board, beforeLines),
                 decisive = beforeDecisive,
                 inBook = item.after.inBook,
-                sacrifice = item.assessment.tags.any { it.name == "sacrifice" },
+                sacrifice = tags.any { it.name == "sacrifice" },
                 previous = previous,
                 thresholds = thresholds,
             )
+            val afterBoard = board.copy(withStack = false)
+            afterBoard.push(move)
             played.add(move)
-            val after = if (named) withOpening(item.after, openingName(book!!, played)) else item.after
+            val opening = if (named) openingName(book!!, played) else item.after.opening
+            val after = recalled(afterBoard, item.after, thresholds, tagger, opening)
             moves.add(
                 ReviewedMove(
                     ply = item.ply,
                     san = item.san,
                     side = item.side,
                     fenBefore = item.fenBefore,
-                    assessment = withLabel(item.assessment, label),
+                    assessment = withLabel(item.assessment, label, severityOf(loss, thresholds), tags),
                     after = after,
                     clockMs = item.clockMs,
                     spentMs = item.spentMs,
                 ),
             )
-            previous = Previous(item.assessment.expectedLoss, move.to, board.isCapture(move))
-            beforeLines = item.after.lines
-            beforeDecisive = item.after.decisive
+            previous = Previous(loss, move.to, board.isCapture(move))
+            beforeLines = after.lines
+            beforeDecisive = after.decisive
         }
         return ReviewedGame(
             headers = reviewed.headers,
-            start = reviewed.start,
+            start = first,
             moves = moves,
             strength = reviewed.strength,
             depth = reviewed.depth,
@@ -318,16 +331,16 @@ object GameReview {
         )
     }
 
-    /** [a] with another label, its time and frame kept. */
-    private fun withLabel(a: MoveAssessment, label: Label): MoveAssessment =
+    /** [a] with another label, severity and tags, its time and frame kept. */
+    private fun withLabel(a: MoveAssessment, label: Label, severity: Severity, tags: List<MotifTag>): MoveAssessment =
         MoveAssessment(
             gameId = a.gameId,
             ply = a.ply,
             uci = a.uci,
             expectedLoss = a.expectedLoss,
-            severity = a.severity,
+            severity = severity,
             best = a.best,
-            tags = a.tags,
+            tags = tags,
             depth = a.depth,
             label = label,
             accuracy = a.accuracy,
@@ -336,20 +349,24 @@ object GameReview {
             it.sourceFrameId = a.sourceFrameId
         }
 
-    /** [a] with another opening, its time and frame kept. */
-    private fun withOpening(a: Analysis, opening: String?): Analysis =
+    /**
+     * A saved position's calls made again from its saved lines, as `GameAnnotator.whole` makes
+     * them with [thresholds], with [tagger] its motifs ([positionTags]), and [opening] its
+     * opening; its time and frame kept. `_recalled`.
+     */
+    private fun recalled(board: Board, a: Analysis, thresholds: Thresholds, tagger: Tagger?, opening: String?): Analysis =
         Analysis(
             gameId = a.gameId,
             fen = a.fen,
             ply = a.ply,
             lines = a.lines,
-            decisive = a.decisive,
-            onlyMove = a.onlyMove,
+            decisive = isDecisive(board, a.lines, thresholds),
+            onlyMove = isOnlyMove(board, a.lines, thresholds),
             threats = a.threats,
             traps = a.traps,
             defences = a.defences,
             threatens = a.threatens,
-            tags = a.tags,
+            tags = if (tagger != null) positionTags(tagger, board, a.lines) else a.tags,
             opening = opening,
             inBook = a.inBook,
             provisional = a.provisional,

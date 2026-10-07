@@ -1,6 +1,5 @@
 package com.sidecoach.profile
 
-import com.sidecoach.analysis.Thresholds
 import kotlin.math.exp
 import kotlin.math.ln
 
@@ -18,10 +17,15 @@ import kotlin.math.ln
  * The model's scale is Lichess rapid; [chesscom] converts to chess.com's.
  */
 object Performance {
-    private val DEFAULTS = Thresholds()
-
     // The loss lines of the buckets, in expected score: below each line is the bucket before it.
-    private val EDGES = doubleArrayOf(1e-9, 0.02, DEFAULTS.inaccuracy, DEFAULTS.mistake, DEFAULTS.blunder)
+    // The buckets are the models' own features, not the move labels: a fitted model reads moves
+    // by the lines it was fitted with, which it keeps (`edges` in performance.json,
+    // categories.json), never by the labels' thresholds of the day (the audit of 2026-10-07:
+    // chess.com's cut-offs, 0.05 / 0.10 / 0.20 since 0.1.84, read every move through lines the
+    // models were not fitted on, and every rating fell). These are the lines a fit uses
+    // (`tools/review/fit_performance.py`, `fit_stats.py`, which write them with the model): the
+    // coach's labels' of 2026-09-30, when the shipped models were fitted.
+    val EDGES = doubleArrayOf(1e-9, 0.02, 0.04, 0.10, 0.28)
     private val BUCKETS = EDGES.size + 1
     private const val OPENING_PLIES = 20
     private const val LOST = 0.15
@@ -101,8 +105,19 @@ object Performance {
         return 2 * (maxOf(number, 1) - 1) + (if (fields.size > 1 && fields[1] == "b") 1 else 0)
     }
 
-    /** `bisect_right(EDGES, loss)`. */
-    fun bucket(loss: Double): Int = EDGES.count { it <= loss }
+    /** `bisect_right(edges, loss)`. */
+    fun bucket(loss: Double, edges: DoubleArray = EDGES): Int = edges.count { it <= loss }
+
+    /** A fitted model: its weights (per context, per bucket, the logit's (1, x, x^2)) and the loss lines it was fitted with. */
+    class Model(val edges: DoubleArray, val weights: Array<Array<DoubleArray>>) {
+        init {
+            // `edges_of`: the lines a fitted model reads moves by, the ones it was fitted with.
+            require(edges.size == BUCKETS - 1) { "a model of ${edges.size + 1} buckets, not $BUCKETS" }
+        }
+    }
+
+    /** `performance.json`: its edges and its weights. */
+    private val SHIPPED: Model by lazy { Model(doubleArrayOf(1e-9, 0.02, 0.04, 0.10, 0.28), WEIGHTS) }
 
     /**
      * The move's context: the opening or after it ([ply], the half-moves before the move), times
@@ -113,7 +128,7 @@ object Performance {
         return (if (ply < OPENING_PLIES) 0 else 3) + zone
     }
 
-    private val TABLE: Array<Array<DoubleArray>> by lazy { table(WEIGHTS) }
+    private val TABLE: Array<Array<DoubleArray>> by lazy { table(SHIPPED.weights) }
 
     /** Each context's and bucket's log chance at every rating of the grid: (C, B, G). `_table`. */
     private fun table(weights: Array<Array<DoubleArray>>): Array<Array<DoubleArray>> =
@@ -141,13 +156,14 @@ object Performance {
 
     /**
      * The rating one side's moves were played at, with the broad prior. [model]: fitted weights
-     * (per context, per bucket, the logit's (1, x, x^2)), when not the shipped model's -- a Stats
-     * category's (`categories.json`). `estimate`.
+     * and the edges they were fitted with, when not the shipped model's -- a Stats category's
+     * (`categories.json`). `estimate`.
      */
-    fun estimate(moves: List<Played>, model: Array<Array<DoubleArray>>? = null): Estimate {
-        val logChance = if (model != null) table(model) else TABLE
+    fun estimate(moves: List<Played>, model: Model? = null): Estimate {
+        val logChance = if (model != null) table(model.weights) else TABLE
+        val edges = (model ?: SHIPPED).edges
         val counts = Array(CONTEXTS) { DoubleArray(BUCKETS) }
-        for (move in moves) counts[context(move.ply, move.score)][bucket(move.loss)] += 1.0
+        for (move in moves) counts[context(move.ply, move.score)][bucket(move.loss, edges)] += 1.0
         val logWeight = DoubleArray(GRID.size) { g ->
             var total = 0.0
             for (c in 0 until CONTEXTS) for (b in 0 until BUCKETS) total += counts[c][b] * logChance[c][b][g]

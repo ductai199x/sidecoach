@@ -31,12 +31,9 @@ All of them also failed before the 2026-10-05 reconciler rewrite. How to run the
 
 ## Move labels, reviews and Stats
 
-- **Reviews saved before 0.1.84 keep the old labels.** Relabelling runs only when
-  `ui/review_room.py` `DERIVED` changes, and it was not raised with the new cut-offs; Stats
-  mixes old and new labels. See [move-classification.md](move-classification.md).
-- **Game ratings read the new bands with models fitted on the old ones** (`performance.json`,
-  `categories.json`, `peers.json`, fitted 2026-09-30 at 0.04 / 0.10 / 0.28): ratings and
-  trends lean low. See [stats.md](stats.md).
+- **The peers' label counts are the old rule's** (`peers.json`, fitted 2026-09-30 from labels at
+  0.04 / 0.10 / 0.28): the peers' mistakes, misses and blunders are set against the player's
+  labels of today until it is refitted. See [stats.md](stats.md).
 
 ## Vision (found 2026-09-27; not re-measured one by one since)
 

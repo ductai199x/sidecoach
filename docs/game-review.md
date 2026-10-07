@@ -100,10 +100,12 @@ delay setting.
 - **Watched and imported twins**: a watched game and its import are paired, and the watched
   review is carried to the import without an engine when the two are the same game
   (`review_room.carry_twins`); a review with AI words is never lost to a copy (Tai, 2026-10-02).
-- **Relabelling**: a saved review's labels, openings, summary and Stats facts are made again
-  from its saved measurements when the rules change (`rederive`, keyed on `DERIVED`), without
-  an engine; the AI words are never touched. See the known gap in
-  [move-classification.md](move-classification.md).
+- **Relabelling**: a saved review's labels, severities, positions' calls, motifs, openings,
+  summary and Stats facts are made again from its saved measurements when the rules or the
+  thresholds change (`rederive`, keyed on `derived_stamp`: `DERIVED` and the thresholds; a
+  Settings change starts it too), without an engine; the AI words are never touched. A review
+  made today, made again with today's thresholds, is itself (the seven real reviews of the
+  phone's fixtures, 158 moves).
 - **Numbers**: labels and accuracy from `analysis/score.py`; the summary from
   `profile/game_summary.py`; the game rating from `profile/performance.py`.
 - **The review's own words** (`desktop/src/lib/review/words.ts`): a headline per kind of move and
@@ -170,6 +172,6 @@ the estimates run 300-450 above the players' ratings (more time than the sample'
 ChessGoals table extrapolated below chess.com 815). A player's level is better read across games
 (Stats).
 
-The buckets were fitted with the move bands of the time (0.04 / 0.10 / 0.28); `EDGES` now follows
-`DEFAULT_THRESHOLDS` (0.05 / 0.10 / 0.20) while `performance.json` was not refitted. See
-[move-classification.md](move-classification.md#known-gaps).
+The buckets were fitted with the move bands of the time (0.04 / 0.10 / 0.28), and the model
+keeps them (`edges` in `performance.json`): it reads moves by them whatever the labels'
+thresholds become (0.05 / 0.10 / 0.20 since 2026-10-06).

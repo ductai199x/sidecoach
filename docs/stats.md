@@ -142,9 +142,11 @@ of 300, from 800 to 2300 and up; `tools/review/human_facts.py`).
   (`RATING_GAMES`); each game's own rating is a dot.
 
 These models were fitted with the move bands of the time (inaccuracy 0.04, blunder 0.28). Since
-2026-10-06 the labels use chess.com's 0.05 and 0.20, and the fitted files have not been refitted:
-the peers' figures that count labels (mistakes, misses, blunders) and the rating buckets
-(`performance.EDGES`) now read moves by bands they were not fitted on.
+2026-10-06 the labels use chess.com's 0.05 and 0.20. The rating models keep the lines they were
+fitted with (`edges` in `performance.json` and `categories.json`; `performance.EDGES` is what a
+fit uses and writes) and read moves by them, never by the labels' thresholds (the audit of
+2026-10-07). The peers' figures that count labels (mistakes, misses, blunders) are still the old
+rule's until `peers.json` is refitted.
 
 ## Work on this
 

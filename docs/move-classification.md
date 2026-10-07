@@ -153,15 +153,17 @@ A pawn gambit is never a sacrifice, and a capture taken back (Bxc3 bxc3) is a tr
 
 ## Known gaps
 
-- **Saved reviews keep old labels.** A saved review is relabelled only when
-  `ui/review_room.py` `DERIVED` is raised (`rederive`). It is still 5 (the 2026-10-02 miss
-  rule), so reviews saved before 0.1.84 keep the labels of the old thresholds and the old
-  brilliant rule. `relabel` also reads the `sacrifice` tag kept with each saved move, so the
-  2026-10-06 sacrifice motif reaches a saved review only when its moves are tagged again.
-- **Fitted models read the new bands.** `profile/performance.py` `EDGES` takes its buckets
-  from `DEFAULT_THRESHOLDS` (now 0.05 / 0.10 / 0.20), but `performance.json`,
-  `categories.json` and `peers.json` were fitted on 2026-09-30 with the old lines (0.04 / 0.10 /
-  0.28). See [stats.md](stats.md).
+- **Peers' label counts are the old rule's.** `peers.json` was fitted on 2026-09-30 from
+  labels made with 0.04 / 0.10 / 0.28 and the old brilliant rule; the peers' figures that count
+  labels (mistakes, misses, blunders) are set against the player's labels of today until it is
+  refitted. See [stats.md](stats.md).
+
+Fixed on 2026-10-07 (the audit's #1 and #2): saved reviews are made again whenever the rule
+(`ui/review_room.py` `DERIVED`, 6) or the thresholds change (`derived_stamp`; a Settings change
+too), whole -- labels, severities, the positions' calls and the motifs (`relabel` with the
+tagger, read off the lines `annotator.verdict_lines` gives) -- and the rating models read moves
+by the lines they were fitted with (`performance.EDGES`, kept in each model as `edges`), not by
+the labels' thresholds.
 
 ## The phone
 

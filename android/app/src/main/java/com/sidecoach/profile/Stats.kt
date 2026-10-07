@@ -453,18 +453,26 @@ object Stats {
         (Stats::class.java.getResourceAsStream(name) ?: throw IllegalStateException("no $name beside Stats"))
             .bufferedReader(Charsets.UTF_8).use { it.readText() }
 
-    /** `_category_models`: each category's fitted weights, per context, per bucket, the logit's (1, x, x^2). */
-    private val categoryModels: Map<String, Array<Array<DoubleArray>>> by lazy {
+    /**
+     * `_category_models`: each category's fitted weights, per context, per bucket, the logit's
+     * (1, x, x^2), and the loss lines they were fitted with.
+     */
+    private val categoryModels: Map<String, Performance.Model> by lazy {
         val models = JSONObject(resource(CATEGORIES_PATH))
         models.keys().asSequence().associateWith { name ->
-            val w = models.getJSONObject(name).getJSONArray("weights")
-            Array(w.length()) { c ->
-                val context = w.getJSONArray(c)
-                Array(context.length()) { b ->
-                    val bucket = context.getJSONArray(b)
-                    DoubleArray(bucket.length()) { bucket.getDouble(it) }
-                }
-            }
+            val model = models.getJSONObject(name)
+            val w = model.getJSONArray("weights")
+            val edges = model.getJSONArray("edges")
+            Performance.Model(
+                DoubleArray(edges.length()) { edges.getDouble(it) },
+                Array(w.length()) { c ->
+                    val context = w.getJSONArray(c)
+                    Array(context.length()) { b ->
+                        val bucket = context.getJSONArray(b)
+                        DoubleArray(bucket.length()) { bucket.getDouble(it) }
+                    }
+                },
+            )
         }
     }
 

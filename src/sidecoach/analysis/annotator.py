@@ -528,14 +528,10 @@ class GameAnnotator:
             loss = (
                 0.0 if own is best_line else max(0.0, best_line.expected_score - own.expected_score)
             )
-            rest = line_after(own, 1)
-            # The rest of the line is the position after's line; one that stops at the move
-            # still carries the position's score.
-            after_lines = [rest] if rest.moves else []
             measured_after = Measured(
                 fen=after.fen(),
-                lines=after_lines,
-                score=position_score(after, [rest]),
+                lines=verdict_lines(own, []),
+                score=position_score(after, [line_after(own, 1)]),
                 decisive=False,
                 only_move=False,
                 key=cache_key(after),
@@ -595,36 +591,10 @@ class GameAnnotator:
     # Tagging and openings are optional collaborators, so a bare engine still works.
 
     def _position_tags(self, board: chess.Board, measured: Measured) -> list[MotifTag]:
-        """What the position holds for the side to move; their mate distance counts their
-        own next move, which is the same convention a move's tags use."""
-        if self.tagger is None or not measured.lines:
-            return []
-        return self.tagger.tags_for_position(
-            board, pv=_moves(measured.lines[0]), mate_in=measured.lines[0].mate
-        )
+        return position_tags(self.tagger, board, measured.lines)
 
     def _move_tags(self, before: chess.Board, move: chess.Move, after: Measured) -> list[MotifTag]:
-        if self.tagger is None:
-            return []
-        pv = _moves(after.lines[0]) if after.lines else []
-        tags = self.tagger.tags_for_move(
-            before, move, pv=pv, mate_in=_mate_in(before, move, after.lines)
-        )
-        # A tactic the move makes is only its point when the line after it cashes it in:
-        # "the queen on e7 is loose" was said of a queen that simply steps away, 98 times
-        # in the master games at moves whose note names no tactic (2026-09-24).
-        line = [move, *pv]
-        boards = [before.copy(stack=False)]
-        for m in line:
-            if m not in boards[-1].legal_moves:
-                break
-            nxt = boards[-1].copy(stack=False)
-            nxt.push(m)
-            boards.append(nxt)
-        line = line[: len(boards) - 1]
-        return [
-            t for t in tags if t.name not in motifs.TARGETED or motifs.pays_off(boards, line, 0, t)
-        ]
+        return move_tags(self.tagger, before, move, after.lines)
 
     def _in_book(self, board: chess.Board) -> bool:
         """Whether the game is still in theory after this move; needs the moves that got here."""
@@ -724,6 +694,53 @@ def _moves(line: Line) -> list[chess.Move]:
         except ValueError:
             break
     return out
+
+
+def verdict_lines(own: Line | None, after_lines: Sequence[Line]) -> list[Line]:
+    """What a verdict reads of the position a move led to: for a move among the lines of the
+    position before (`own`, its line there), the rest of that line -- the same search and depth
+    as the best move it is set against; one that stops at the move leaves none. Any other
+    move's, the position after's own lines (`after_lines`). The annotator judging a move and a
+    saved review labelled again (`game_review.relabel`) both read it here, so they cannot
+    drift."""
+    if own is None:
+        return list(after_lines)
+    rest = line_after(own, 1)
+    return [rest] if rest.moves else []
+
+
+def position_tags(
+    tagger: Tagger | None, board: chess.Board, lines: Sequence[Line]
+) -> list[MotifTag]:
+    """What the position holds for the side to move, from its best line; their mate distance
+    counts their own next move, which is the same convention a move's tags use."""
+    if tagger is None or not lines:
+        return []
+    return tagger.tags_for_position(board, pv=_moves(lines[0]), mate_in=lines[0].mate)
+
+
+def move_tags(
+    tagger: Tagger | None, before: chess.Board, move: chess.Move, after_lines: Sequence[Line]
+) -> list[MotifTag]:
+    """What the move did (a sacrifice is what makes a move brilliant), read with the line after
+    it (`after_lines`, `verdict_lines`)."""
+    if tagger is None:
+        return []
+    pv = _moves(after_lines[0]) if after_lines else []
+    tags = tagger.tags_for_move(before, move, pv=pv, mate_in=_mate_in(before, move, after_lines))
+    # A tactic the move makes is only its point when the line after it cashes it in:
+    # "the queen on e7 is loose" was said of a queen that simply steps away, 98 times
+    # in the master games at moves whose note names no tactic (2026-09-24).
+    line = [move, *pv]
+    boards = [before.copy(stack=False)]
+    for m in line:
+        if m not in boards[-1].legal_moves:
+            break
+        nxt = boards[-1].copy(stack=False)
+        nxt.push(m)
+        boards.append(nxt)
+    line = line[: len(boards) - 1]
+    return [t for t in tags if t.name not in motifs.TARGETED or motifs.pays_off(boards, line, 0, t)]
 
 
 def _mate_in(before: chess.Board, move: chess.Move, after_lines: Sequence[Line]) -> int | None:

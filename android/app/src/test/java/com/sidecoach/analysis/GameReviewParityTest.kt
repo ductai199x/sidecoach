@@ -96,6 +96,44 @@ class GameReviewParityTest {
         assertTrue("$moves moves; ${failures.size} failures:\n" + failures.take(30).joinToString("\n"), failures.isEmpty())
     }
 
+    /**
+     * `test_a_review_relabelled_with_other_thresholds_is_the_review_made_with_them` (the audit of
+     * 2026-10-07): a saved review made again ([GameReview.relabel]) is the review made today --
+     * with today's thresholds, the desktop's review itself; with other thresholds and its motifs
+     * gone (saved before a motif existed), what the desktop's relabel made of it (`relabelled`):
+     * labels, severities, the positions' calls and the motifs read again.
+     */
+    @Test
+    fun aSavedReviewMadeAgainIsTheReviewMadeToday() {
+        val book = book()
+        val games = fixture.getJSONArray("games")
+        val failures = ArrayList<String>()
+        for (i in 0 until games.length()) {
+            val g = games.getJSONObject(i)
+            val name = g.getString("name")
+            val want = g.getJSONObject("reviewed")
+            val desktop = ReviewJson.reviewed(want)
+            same("$name relabelled today", ReviewJson.reviewed(GameReview.relabel(desktop, Thresholds(), book, Motifs)), want, failures)
+            val relabelled = g.getJSONObject("relabelled")
+            val t = relabelled.getJSONObject("thresholds")
+            val other = Thresholds(
+                inaccuracy = t.getDouble("inaccuracy"),
+                mistake = t.getDouble("mistake"),
+                blunder = t.getDouble("blunder"),
+                decisiveGap = t.getDouble("decisive_gap"),
+                onlyMoveGap = t.getDouble("only_move_gap"),
+                excellent = t.getDouble("excellent"),
+                decided = t.getDouble("decided"),
+            )
+            val untagged = JSONObject(want.toString())
+            val moves = untagged.getJSONArray("moves")
+            for (m in 0 until moves.length()) moves.getJSONObject(m).getJSONObject("assessment").put("tags", JSONArray())
+            val again = GameReview.relabel(ReviewJson.reviewed(untagged), other, tagger = Motifs)
+            same("$name relabelled", ReviewJson.reviewed(again), relabelled.getJSONObject("reviewed"), failures)
+        }
+        assertTrue("${failures.size} failures:\n" + failures.take(30).joinToString("\n"), failures.isEmpty())
+    }
+
     /** The two JSON values the same, numbers by value, `ts` and `seconds` left out ([GameReviewParity]). */
     private fun same(path: String, mine: Any?, theirs: Any?, failures: MutableList<String>) =
         GameReviewParity.same(path, mine, theirs, failures)

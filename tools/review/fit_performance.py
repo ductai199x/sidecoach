@@ -112,7 +112,9 @@ def fit(rows: list[dict], *, steps: int = 3000, rate: float = 0.05, ridge: float
         weights -= rate * (m / (1 - 0.9**step)) / (np.sqrt(v / (1 - 0.999**step)) + 1e-8)
     nll = -np.log(probs[np.arange(len(buckets)), buckets] + 1e-12).mean()
     print(f"  fitted on {len(buckets)} moves: mean -loglik {nll:.4f}", flush=True)
-    return {"weights": weights.round(5).tolist()}
+    # The loss lines the buckets were read by go with the weights: the model reads moves by
+    # them, whatever the labels' thresholds become (`performance.edges_of`).
+    return {"edges": list(performance.EDGES), "weights": weights.round(5).tolist()}
 
 
 def estimators(model: dict, train: list[dict]) -> dict[str, Callable[[list], float]]:

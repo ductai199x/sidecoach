@@ -123,6 +123,46 @@ class ReviewFixesTest {
         }
     }
 
+    /**
+     * `test_saved_reviews_follow_the_thresholds_they_are_labelled_with` (the audit of 2026-10-07):
+     * a review saved under rule 5 (before 0.1.84's cut-offs) is made again; and a threshold
+     * changed in Settings makes the saved reviews again too, their Stats facts with them, the paid
+     * words untouched -- once for each change.
+     */
+    @Test
+    fun savedReviewsFollowTheThresholdsTheyAreLabelledWith() {
+        val g = fixture.getJSONArray("games").getJSONObject(0)
+        val store = Store(null)
+        try {
+            val row = Library.fromPgn(g.getString("pgn"), listOf("nosegazm")).single()
+            store.addLibraryGame(row)
+            val reviewed = ReviewJson.reviewed(g.getJSONObject("reviewed"))
+            store.saveReview(row.key, "fast", ReviewRoom.REVIEW_VERSION, 1.0, ReviewJson.reviewed(reviewed).toString(), null)
+            val (fact, moves) = StatFacts.factsOf(reviewed, row)
+            store.saveStats("fast", fact, moves)
+            val words = JSONObject().put("model", "luna").put("cost", 0.03)
+                .put("texts", JSONObject().put("4", JSONObject().put("why", "Paid for."))).toString()
+            store.setReviewWords(row.key, "fast", words)
+            store.setSetting(ReviewRoom.DERIVED_KEY, "5")
+            assertEquals(1, ReviewRoom.rederive(store, Thresholds(), tagger = com.sidecoach.analysis.Motifs))
+            assertEquals("once", 0, ReviewRoom.rederive(store, Thresholds(), tagger = com.sidecoach.analysis.Motifs))
+            val other = Thresholds(0.03, 0.13, 0.31, 0.2, 0.4, 0.01, 0.8)
+            assertEquals(1, ReviewRoom.rederive(store, other, tagger = com.sidecoach.analysis.Motifs))
+            val again = store.review(row.key, "fast")!!
+            assertEquals("the paid words are never touched", words, again.words)
+            val relabelled = ReviewJson.reviewed(again.report)
+            assertEquals(
+                relabelled.moves.map { com.sidecoach.analysis.severityOf(it.assessment.expectedLoss, other) },
+                relabelled.moves.map { it.assessment.severity },
+            )
+            val labels = relabelled.moves.associate { it.ply to it.assessment.label?.name?.lowercase() }
+            for (m in store.statMoves(listOf(row.key))) assertEquals("ply ${m.ply}", labels[m.ply], m.label)
+            assertEquals("once", 0, ReviewRoom.rederive(store, other, tagger = com.sidecoach.analysis.Motifs))
+        } finally {
+            store.close()
+        }
+    }
+
     /** `test_no_shape_says_a_side_kept_the_upper_hand_it_lost`, test_game_summary.py. */
     @Test
     fun noShapeSaysASideKeptTheUpperHandItLost() {
@@ -287,5 +327,19 @@ class ReviewFixesTest {
     fun aGameSetUpFromAPositionIsRatedFromWhereItStarts() {
         assertEquals(45, com.sidecoach.profile.Performance.pliesBefore("4k3/8/8/8/8/8/4P3/4K3 b - - 0 23"))
         assertEquals(0, com.sidecoach.profile.Performance.pliesBefore(com.sidecoach.chess.STARTING_FEN))
+    }
+
+    /**
+     * `test_the_models_read_moves_by_the_lines_they_were_fitted_with`, test_performance.py (the
+     * audit of 2026-10-07): losses of 0.045 and 0.06 are one bucket to the models (0.04 to 0.10,
+     * the lines they were fitted with), whatever today's labels call them.
+     */
+    @Test
+    fun theModelsReadMovesByTheLinesTheyWereFittedWith() {
+        val p = com.sidecoach.profile.Performance
+        assertEquals(listOf(1e-9, 0.02, 0.04, 0.10, 0.28), p.EDGES.toList())
+        fun side(loss: Double) = List(20) { com.sidecoach.profile.Performance.Played(20 + 2 * it, loss, 0.5) }
+        assertEquals(p.estimate(side(0.045)), p.estimate(side(0.06)))
+        assertTrue(p.estimate(side(0.03)) != p.estimate(side(0.045)))
     }
 }

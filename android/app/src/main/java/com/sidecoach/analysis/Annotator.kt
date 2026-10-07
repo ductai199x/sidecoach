@@ -499,13 +499,10 @@ class GameAnnotator(
         if (own != null) {
             val bestLine = measuredBefore.lines[0]
             loss = if (own === bestLine) 0.0 else maxOf(0.0, bestLine.expectedScore - own.expectedScore)
-            val rest = lineAfter(own, 1)
-            // The rest of the line is the position after's line; one that stops at the move
-            // still carries the position's score.
             measuredAfter = Measured(
                 fen = after.fen(),
-                lines = if (rest.moves.isNotEmpty()) listOf(rest) else emptyList(),
-                score = positionScore(after, listOf(rest)),
+                lines = verdictLines(own, emptyList()),
+                score = positionScore(after, listOf(lineAfter(own, 1))),
                 decisive = false,
                 onlyMove = false,
                 key = cacheKey(after),
@@ -560,30 +557,9 @@ class GameAnnotator(
      * What the position holds for the side to move; their mate distance counts their own
      * next move, which is the same convention a move's tags use.
      */
-    private fun positionTags(board: Board, measured: Measured): List<MotifTag> {
-        val tagger = tagger ?: return emptyList()
-        if (measured.lines.isEmpty()) return emptyList()
-        return tagger.tagsForPosition(board, pv = lineMoves(measured.lines[0]), mateIn = measured.lines[0].mate)
-    }
+    private fun positionTags(board: Board, measured: Measured): List<MotifTag> = positionTags(tagger, board, measured.lines)
 
-    private fun moveTags(before: Board, move: Move, after: Measured): List<MotifTag> {
-        val tagger = tagger ?: return emptyList()
-        val pv = if (after.lines.isNotEmpty()) lineMoves(after.lines[0]) else emptyList()
-        val tags = tagger.tagsForMove(before, move, pv = pv, mateIn = mateIn(before, move, after.lines))
-        // A tactic the move makes is only its point when the line after it cashes it in: "the
-        // queen on e7 is loose" was said of a queen that simply steps away, 98 times in the
-        // master games at moves whose note names no tactic (2026-09-24).
-        var line = listOf(move) + pv
-        val boards = arrayListOf(before.copy(withStack = false))
-        for (m in line) {
-            if (!boards.last().isLegal(m)) break
-            val nxt = boards.last().copy(withStack = false)
-            nxt.push(m)
-            boards.add(nxt)
-        }
-        line = line.subList(0, boards.size - 1)
-        return tags.filter { it.name !in Motifs.TARGETED || Motifs.paysOff(boards, line, 0, it) }
-    }
+    private fun moveTags(before: Board, move: Move, after: Measured): List<MotifTag> = moveTags(tagger, before, move, after.lines)
 
     /** Whether the game is still in theory after this move; needs the moves that got here. */
     private fun inBook(board: Board): Boolean {
@@ -604,6 +580,51 @@ class GameAnnotator(
         if (board.root().fen() != STARTING_FEN) return null
         return openingName(book, board.moveStack)
     }
+}
+
+/**
+ * What a verdict reads of the position a move led to: for a move among the lines of the position
+ * before ([own], its line there), the rest of that line -- the same search and depth as the best
+ * move it is set against; one that stops at the move leaves none. Any other move's, the position
+ * after's own lines ([afterLines]). The annotator judging a move and a saved review labelled again
+ * (`GameReview.relabel`) both read it here, so they cannot drift. `verdict_lines`.
+ */
+fun verdictLines(own: Line?, afterLines: List<Line>): List<Line> {
+    if (own == null) return afterLines.toList()
+    val rest = lineAfter(own, 1)
+    return if (rest.moves.isNotEmpty()) listOf(rest) else emptyList()
+}
+
+/**
+ * What the position holds for the side to move, from its best line; their mate distance counts
+ * their own next move, which is the same convention a move's tags use. `position_tags`.
+ */
+fun positionTags(tagger: Tagger?, board: Board, lines: List<Line>): List<MotifTag> {
+    if (tagger == null || lines.isEmpty()) return emptyList()
+    return tagger.tagsForPosition(board, pv = lineMoves(lines[0]), mateIn = lines[0].mate)
+}
+
+/**
+ * What the move did (a sacrifice is what makes a move brilliant), read with the line after it
+ * ([afterLines], [verdictLines]). `move_tags`.
+ */
+fun moveTags(tagger: Tagger?, before: Board, move: Move, afterLines: List<Line>): List<MotifTag> {
+    if (tagger == null) return emptyList()
+    val pv = if (afterLines.isNotEmpty()) lineMoves(afterLines[0]) else emptyList()
+    val tags = tagger.tagsForMove(before, move, pv = pv, mateIn = mateIn(before, move, afterLines))
+    // A tactic the move makes is only its point when the line after it cashes it in: "the
+    // queen on e7 is loose" was said of a queen that simply steps away, 98 times in the
+    // master games at moves whose note names no tactic (2026-09-24).
+    var line = listOf(move) + pv
+    val boards = arrayListOf(before.copy(withStack = false))
+    for (m in line) {
+        if (!boards.last().isLegal(m)) break
+        val nxt = boards.last().copy(withStack = false)
+        nxt.push(m)
+        boards.add(nxt)
+    }
+    line = line.subList(0, boards.size - 1)
+    return tags.filter { it.name !in Motifs.TARGETED || Motifs.paysOff(boards, line, 0, it) }
 }
 
 /**

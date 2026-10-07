@@ -31,11 +31,23 @@ from sidecoach.analysis.annotator import (
     Measured,
     Tagger,
     cache_key,
+    move_tags,
     opening_name,
+    own_line,
+    position_tags,
+    verdict_lines,
 )
 from sidecoach.analysis.engine import Engine, Interrupted
-from sidecoach.analysis.score import Previous, Thresholds, position_score, verdict
-from sidecoach.events import ReviewedGame, ReviewedMove, Side
+from sidecoach.analysis.score import (
+    Previous,
+    Thresholds,
+    is_decisive,
+    is_only_move,
+    position_score,
+    severity,
+    verdict,
+)
+from sidecoach.events import Analysis, ReviewedGame, ReviewedMove, Side
 
 
 @dataclass(frozen=True)
@@ -307,53 +319,79 @@ def review_game(
 
 
 def relabel(
-    reviewed: ReviewedGame, thresholds: Thresholds, book: Book | None = None
+    reviewed: ReviewedGame,
+    thresholds: Thresholds,
+    book: Book | None = None,
+    tagger: Tagger | None = None,
 ) -> ReviewedGame:
-    """A saved review's labels made again from what it kept -- each position's lines, its
-    decisive call and whether it was in book, each move's loss and tags -- by the rule a review
-    labels with now (`score.verdict`), and, with `book`, each position's opening named again:
-    no engine. A review saved before the rules changed keeps its measurements and is labelled
-    as one made today (Tai, 2026-10-02)."""
+    """A saved review made again from what it kept -- each position's lines and whether it was
+    in book, each move's loss -- as a review made today with `thresholds` makes it, no engine:
+    each position's decisive and only-move calls, each move's severity and label (`score.verdict`,
+    read off the lines `annotator.verdict_lines` gives, as the annotator reads them), and with
+    `tagger` each move's and position's motifs read again (a sacrifice is what makes a move
+    brilliant: the rule of 2026-10-06 reaches reviews saved before it); without, the saved tags
+    stand. With `book`, each position's opening is named again. A review saved before the rules
+    changed keeps its measurements and is labelled as one made today (Tai, 2026-10-02)."""
     start = chess.Board(reviewed.start.fen)
     named = book is not None and start.fen() == chess.STARTING_FEN
-    before_lines = reviewed.start.lines
-    before_decisive = reviewed.start.decisive
+    first = _recalled(start, reviewed.start, thresholds, tagger)
+    before_lines = first.lines
+    before_decisive = first.decisive
     previous: Previous | None = None
     played: list[chess.Move] = []
     moves: list[ReviewedMove] = []
     for item in reviewed.moves:
         board = chess.Board(item.fen_before)
         move = chess.Move.from_uci(item.assessment.uci)
+        loss = item.assessment.expected_loss
+        after_lines = verdict_lines(own_line(before_lines, move), item.after.lines)
+        tags = (
+            move_tags(tagger, board, move, after_lines)
+            if tagger is not None
+            else item.assessment.tags
+        )
         label = verdict(
             board,
             move,
             before_lines,
-            item.after.lines,
-            loss=item.assessment.expected_loss,
+            after_lines,
+            loss=loss,
             before_score=position_score(board, before_lines),
             decisive=before_decisive,
             in_book=item.after.in_book,
-            sacrifice=any(tag.name == "sacrifice" for tag in item.assessment.tags),
+            sacrifice=any(tag.name == "sacrifice" for tag in tags),
             previous=previous,
             thresholds=thresholds,
         )
-        after = item.after
+        after_board = board.copy(stack=False)
+        after_board.push(move)
+        after = _recalled(after_board, item.after, thresholds, tagger)
         played.append(move)
         if named:
             assert book is not None
             after = after.model_copy(update={"opening": opening_name(book, played)})
-        moves.append(
-            item.model_copy(
-                update={
-                    "assessment": item.assessment.model_copy(update={"label": label}),
-                    "after": after,
-                }
-            )
+        assessment = item.assessment.model_copy(
+            update={"label": label, "severity": severity(loss, thresholds), "tags": tags}
         )
-        previous = Previous(item.assessment.expected_loss, move.to_square, board.is_capture(move))
-        before_lines = item.after.lines
-        before_decisive = item.after.decisive
-    return reviewed.model_copy(update={"moves": moves})
+        moves.append(item.model_copy(update={"assessment": assessment, "after": after}))
+        previous = Previous(loss, move.to_square, board.is_capture(move))
+        before_lines = after.lines
+        before_decisive = after.decisive
+    return reviewed.model_copy(update={"start": first, "moves": moves})
+
+
+def _recalled(
+    board: chess.Board, analysis: Analysis, thresholds: Thresholds, tagger: Tagger | None
+) -> Analysis:
+    """A saved position's calls made again from its saved lines, as `GameAnnotator.whole` makes
+    them with `thresholds`, and with `tagger` its motifs (`annotator.position_tags`)."""
+    update: dict[str, object] = {
+        "decisive": is_decisive(board, analysis.lines, thresholds),
+        "only_move": is_only_move(board, analysis.lines, thresholds),
+    }
+    if tagger is not None:
+        update["tags"] = position_tags(tagger, board, analysis.lines)
+    return analysis.model_copy(update=update)
 
 
 _CONTROL = re.compile(r"^(\d+)(?:\+(\d+))?$")

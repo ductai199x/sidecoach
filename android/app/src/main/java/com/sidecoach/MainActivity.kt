@@ -146,18 +146,8 @@ class MainActivity : ComponentActivity() {
         // background review to do it, and Stats and the coach's biggest cost left out a game
         // brought in before the username was set until Stats or Your games was opened.
         Thread({
-            runCatching {
-                val profile = com.sidecoach.profile.Store(File(filesDir, "profile.sqlite"))
-                try {
-                    runCatching { com.sidecoach.profile.Library.refresh(profile, SettingsApi.userNames(store)) }
-                    ReviewRoom.rederive(
-                        profile,
-                        store.thresholds(),
-                        com.sidecoach.analysis.OpeningBook.load(File(filesDir, "openings")),
-                    )
-                } finally {
-                    profile.close()
-                }
+            ReviewRoom.rederiveSaved(filesDir, store) { profile ->
+                com.sidecoach.profile.Library.refresh(profile, SettingsApi.userNames(store))
             }
         }, "rederive").apply { isDaemon = true }.start()
         val ports = getSharedPreferences("panel", MODE_PRIVATE)
