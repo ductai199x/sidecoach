@@ -15,7 +15,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The AI coach's words as the review page draws them (docs/game-review-plan.md, decision 3):
+ * The AI coach's words as the review page draws them (docs/game-review.md, decision 3):
  * each move, piece, square, file and chess term in a paragraph a link to the board (Tai,
  * 2026-09-30: "hovering or tapping/clicking on the highlights must also interact with the
  * board"). `coach/review_links.py`.

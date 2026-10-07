@@ -1,6 +1,6 @@
 """Ship the desktop's mark to the app: the launcher icon, the splash and the notification.
 
-The brand is the knight in `desktop/brand/logo.svg` (docs/app-plan.md, "The logo"): amber
+The brand is the knight in `desktop/brand/logo.svg` (docs/app.md, "The logo"): amber
 #F2B441 with a navy #141A2A mane stroke and a camera-lens eye, traced by vtracer into seven
 stacked paths. The desktop's icon set is that mark on a rounded tile a step lighter than
 the navy (#212A45), so the mane shows. Android wants vectors rather than the desktop's

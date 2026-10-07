@@ -10,7 +10,7 @@ import java.io.File
 
 /**
  * Stats, the player's games added up (`server.stats_now`, `server.stats_positions` and their
- * helpers `_filter` and `_drills`; profile/Stats.kt, docs/stats-plan.md): every section's
+ * helpers `_filter` and `_drills`; profile/Stats.kt, docs/stats.md): every section's
  * numbers for the games a filter takes, with puzzles for each area to work on, and the positions
  * behind a figure.
  *

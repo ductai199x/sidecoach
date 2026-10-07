@@ -3,7 +3,7 @@
 The rules are the desktop's (`docs/testing.md` in chess-coaching-companion): the budget, logic
 never timing, caches with tested invalidation, duplicates only when proven, nothing made faster
 by proving less. This file adds what is particular to the phone. How the suite is put together
-(the two halves, lanes, `apart` processes) is in the README's "Building and testing".
+(the two halves, lanes, `apart` processes) is in the README's "Testing".
 
 ## The budget
 
@@ -11,12 +11,16 @@ by proving less. This file adds what is particular to the phone. How the suite i
   no `-All` needed) aims at the desktop's ballpark — about 40-60 s — and never more than 2
   minutes, with the host at most 70% busy, measured with the APKs already built (build and
   install reported separately). Measured 2026-10-02 on emulator-5556 at 6 cores / 6 GB: 105-111 s
-  for 315 device + 375 host tests, from 400 s before. The floor on that emulator is ~70 s
+  for 315 device + 375 host tests, from 400 s before (not re-measured since). The floor on that emulator is ~70 s
   (≈420 guest CPU-seconds on 6 cores); getting lower needs less work per test or a second device.
 - Never reach it by `@Ignore`, assumptions that skip, opt-in flags, fewer piece sets or
   scenarios, or shorter/longer waits. Every skipped test is printed by name at the end of a run;
   a test that is skipped in every whole run is a bug.
-- Tests run only on the emulator (`emulator-5556`), never on the phone in use.
+- Tests run only on the emulator (`emulator-5556`, `tools\test.ps1`'s default), never on the
+  phone in use.
+- While developing, run the classes you changed (`tools\test.ps1 -Class <class>`, `gradlew.bat
+  :app:testPhoneUnitTest --tests <class>`); the whole suite only when asked (the desktop's agent
+  guard wants `FULL_SUITE_ASKED=1` for it).
 
 ## Where a test goes
 
@@ -40,9 +44,10 @@ by proving less. This file adds what is particular to the phone. How the suite i
 - **One thread per net and per OpenCV pool in a test** (`TestNets.THREADS`,
   `Core.setNumThreads(1)`); the classes side by side are the parallelism. Measure before adding
   threads: a collector-bound class gets slower with more.
-- **A clock the test moves** (`StepClock`, the caption box's `Clock`, the dictation's
-  `SendClock`, `Analyser.nanoTime`) and **signals from the code's own hooks** (`Analyser.Watch`)
-  instead of sleeps; the shipped delays, never shortened ones.
+- **A clock the test moves** (`StepClock`, `ManualClock`, the caption box's `Clock`, the
+  dictation's `SendClock`) and **signals from the code's own hooks** (`Analyser.Watch`, through
+  `AnalyserWatch` in `src/sharedTest`) instead of sleeps; the shipped delays, never shortened
+  ones.
 - **A test of state the app keeps starts from a known state** (the default settings, a quiet fake
   voice) — earlier tests in the same process leave theirs behind.
 - **Wait on the condition you mean, at its granularity:** a stopped process is every thread of

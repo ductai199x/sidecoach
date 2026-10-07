@@ -25,7 +25,7 @@ import com.sidecoach.profile.GameSummaries.round
 import java.util.Locale
 
 /**
- * What a reviewed game says for Stats (docs/stats-plan.md): each move's facts and the game's,
+ * What a reviewed game says for Stats (docs/stats.md): each move's facts and the game's,
  * read off the review once and kept, so the Stats window adds them up at once.
  * `sidecoach/profile/stat_facts.py`.
  *

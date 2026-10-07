@@ -36,7 +36,7 @@ import kotlin.concurrent.withLock
  *
  * The desktop loads the embedding net, the voice and speech recognition, Stockfish and the
  * coach before any Start, so Start only starts the screen and the splash can show each one
- * land (docs/app-plan.md, "everything loads when the app opens"). The phone does the same.
+ * land (docs/app.md, "everything loads when the app opens"). The phone does the same.
  * The engine and the coach are built here and kept across Starts, rebuilt only when a save
  * changed what they were built from; a save that can reach them does so now
  * ([applySettings], `panel.apply_settings` for what the phone has).

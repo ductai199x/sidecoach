@@ -23,7 +23,7 @@ import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 
 /**
- * The model's review of a game's key moves (docs/game-review-plan.md, decision 3):
+ * The model's review of a game's key moves (docs/game-review.md, decision 3):
  * `coach/review_words.py`.
  *
  * Asked for only when the player presses Game Review's button, about a cent a game, never ahead
