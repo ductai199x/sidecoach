@@ -10,7 +10,6 @@ Run from the repo root:
 
 ```
 uv run --with zstandard python tools/puzzles/fetch.py [per-theme]   # the sample, first
-uv run --no-sync python tools/puzzles/engine_check.py [limit] [depth]   # defaults 100, 16
 uv run --no-sync python tools/puzzles/validate.py [limit]               # 0: every puzzle
 uv run --no-sync python tools/puzzles/coach_bench.py [--source sample|full|themes] [--n 400]
 ```
@@ -18,7 +17,6 @@ uv run --no-sync python tools/puzzles/coach_bench.py [--source sample|full|theme
 | Script | What it does |
 |---|---|
 | `fetch.py` | Streams the Lichess puzzle database and keeps up to K puzzles per theme of interest |
-| `engine_check.py` | Whether our Stockfish's best line starts with the solution (top-1), or has it among its lines |
 | `validate.py` | Our motif tagger against the themes Lichess assigned, and `describe_tactic`'s sentences checked |
 | `analysis_cache.py` | The positions analysed once, in parallel, as the live coach reads them (imported by the benches) |
 | `coach_bench.py` | The offline coach's idea, focus, move and lesson at each rung, checked against the solution and the board |

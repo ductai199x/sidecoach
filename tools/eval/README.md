@@ -42,7 +42,7 @@ tools default to `openai:gpt-5.6-luna@medium` where they take a model.
 | `masters.py`, `masters_notes.py`, `story_masters.py` | The annotated master games: aligned, the coach against the annotators' notes, the story checks on them | |
 | `positional_eval.py` | The coach's strategic plans on the books' master positions | |
 | `chessqa.py`, `chessqa_coach.py`, `chessqa_prompt_utils.py` | ChessQA on the coach's model; the offline coach against ChessQA | `chessqa.py` |
-| `coach_qa.py`, `coach_qa_verify.py` | The coach's replies to a user's claims, and `verify_claims`, against puzzle ground truth | |
+| `coach_qa.py` | The coach's replies to a user's claims, against puzzle ground truth | |
 | `puzzle_coach.py`, `read_batch.py` | A few Lichess puzzles through the live coach; the fixed batch of hints for reading by hand | `puzzle_coach.py` with a provider |
 | `coach_games.py` | Every recorded game coached from its PGN with the real LLM, logged for judging | yes |
 | `students.py`, `student_loop.py`, `habits.py` | Simulated students with planted habits, and the round-by-round loop on them | yes |

@@ -21,6 +21,7 @@ import contextlib
 import json
 import os
 import pathlib
+import shutil
 import socket
 import tempfile
 from collections.abc import Callable
@@ -91,6 +92,11 @@ if not os.environ.get("PYTEST_XDIST_WORKER"):
 # start while that port is served, unless SIDECOACH_TEST_ALONGSIDE=1 says the port is not a
 # live game (a replay, a test server of one's own).
 LIVE_PANEL_PORT = 8765
+
+# The run's scratch folder (pytest_configure), named to the workers through the environment;
+# the process that made it removes it (pytest_unconfigure).
+_SCRATCH_ENV = "SIDECOACH_TEST_SCRATCH"
+_scratch_made: list[str] = []
 
 
 def _app_lock_ports() -> list[int]:
@@ -205,9 +211,15 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ.setdefault("SIDECOACH_EMBED_DEVICE", "cpu")
     # A Settings made by a test has no file of its own; a save from it (set_record, the
     # settings API) would land on `sidecoach.toml` in the working directory -- the
-    # developer's -- as one did on 2026-09-22. It lands in a scratch file instead.
-    scratch = pathlib.Path(tempfile.mkdtemp(prefix="sidecoach-tests-")) / "sidecoach.toml"
-    os.environ["SIDECOACH_CONFIG"] = str(scratch)
+    # developer's -- as one did on 2026-09-22. It lands in a scratch file instead: one folder
+    # for the run, made by the controller (the workers inherit it) and removed when the run
+    # ends -- a folder per process, never removed, had left 19,624 behind (2026-10-07).
+    folder = os.environ.get(_SCRATCH_ENV)
+    if not folder:
+        folder = tempfile.mkdtemp(prefix="sidecoach-tests-")
+        os.environ[_SCRATCH_ENV] = folder
+        _scratch_made.append(folder)
+    os.environ["SIDECOACH_CONFIG"] = str(pathlib.Path(folder) / "sidecoach.toml")
     if os.environ.get("SIDECOACH_TEST_ALONGSIDE") == "1" or os.environ.get("PYTEST_XDIST_WORKER"):
         return  # the controller has looked, once
     if _live_panel_up():
@@ -273,6 +285,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return
     _measured[report.nodeid] = _measured.get(report.nodeid, 0.0) + report.duration
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """The run's scratch folder goes with the process that made it, after its workers."""
+    while _scratch_made:
+        shutil.rmtree(_scratch_made.pop(), ignore_errors=True)
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
