@@ -105,7 +105,7 @@ async function send(path: string, init: () => RequestInit): Promise<Response> {
   }
 }
 
-/** The sidecar answered, with an error: it is running (a 500, a body that is not JSON). */
+/** The sidecar answered, with an error: it is running (a 4xx or 5xx, a body that is not JSON). */
 export class ServerError extends Error {
   readonly status: number;
   constructor(status: number, detail: string) {
@@ -114,65 +114,114 @@ export class ServerError extends Error {
   }
 }
 
-/** A GET whose error answer is told apart from no answer: a ServerError for the first, the
- *  fetch's own failure for the second. */
-async function getChecked<T>(path: string): Promise<T> {
-  const r = await send(path, () => ({ headers: headers(false) }));
-  const text = await r.text();
-  let body: unknown;
+/** No answer in the time a request is given: the sidecar may be alive but stuck, or the
+ *  connection hangs without closing. Told apart from an error answer and from no connection. */
+export class TimedOut extends Error {
+  constructor(path: string, ms: number) {
+    super(`Sidecoach didn't answer in ${Math.round(ms / 1000)} s (${path.split("?")[0]})`);
+  }
+}
+
+/** How long a request is given by default: the sidecar answers its routes in milliseconds, so
+ *  this is only for one that hangs (the panel's one-at-a-time poll froze on stale state with no
+ *  offline banner, the 2026-10-07 audit). */
+export const TIMEOUT_MS = 10_000;
+/** Routes that do real work before they answer (an engine search, the stats over every game,
+ *  a dump, settings that reload a model, a puzzle database opened on the phone). */
+export const SLOW_MS = 60_000;
+
+/** `timeout`: ms, or null for none (a route whose time depends on the network or on the
+ *  player, such as games fetched from chess.com, or a PGN saved through a dialog). */
+export type RequestOpts = { timeout?: number | null; keepalive?: boolean };
+
+/** Every request to the sidecar: sent with a timeout, its answer checked. Resolves with the
+ *  JSON body of a 2xx; rejects with a ServerError for an error answer (its `detail` or `error`
+ *  said, a body that is not JSON quoted), a TimedOut for none in time, or the fetch's own
+ *  failure when nothing listens. */
+export async function request<T = unknown>(method: string, path: string, body?: unknown, opts: RequestOpts = {}): Promise<T> {
+  const ms = opts.timeout === undefined ? TIMEOUT_MS : opts.timeout;
+  const hasBody = method !== "GET" && method !== "DELETE";
+  let r: Response;
   try {
-    body = JSON.parse(text);
+    r = await send(path, () => ({
+      method,
+      headers: headers(hasBody),
+      body: hasBody ? JSON.stringify(body ?? {}) : undefined,
+      keepalive: !!opts.keepalive,
+      // A fresh signal for each send: a request sent again to a moved sidecar has its own time.
+      signal: ms ? AbortSignal.timeout(ms) : undefined,
+    }));
+  } catch (e) {
+    if (ms && (e as { name?: string } | null)?.name === "TimeoutError") throw new TimedOut(path, ms);
+    throw e;
+  }
+  let text: string;
+  try {
+    text = await r.text();
+  } catch (e) {
+    if (ms && (e as { name?: string } | null)?.name === "TimeoutError") throw new TimedOut(path, ms);
+    throw e;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
   } catch {
     throw new ServerError(r.status, text.trim().slice(0, 200));
   }
   if (!r.ok) {
-    const d = (body as { detail?: unknown } | null)?.detail;
-    throw new ServerError(r.status, typeof d === "string" ? d : "");
+    const b = parsed as { detail?: unknown; error?: unknown } | null;
+    const d = typeof b?.detail === "string" ? b.detail : typeof b?.error === "string" ? b.error : "";
+    throw new ServerError(r.status, d);
   }
-  return body as T;
+  return parsed as T;
 }
 
 /** What the panel says when a poll got no good answer, or null for nothing to say.
  *  "stopped" only when the sidecar's process has ended, which only the shell knows (it holds
- *  the child): a live sidecar answering an error shows that error, and one the shell still
- *  holds alive is a blip (the next poll goes on). In a browser there is no shell: a request
- *  that reached nobody says so as it is, and the next answer clears it (Tai, 2026-10-02:
- *  no count of failed polls decides that the sidecar stopped). */
+ *  the child): a live sidecar answering an error shows that error, one that does not answer in
+ *  time says so, and one the shell still holds alive with the connection refused is a blip (the
+ *  next poll goes on). In a browser there is no shell: a request that reached nobody says so as
+ *  it is, and the next answer clears it (Tai, 2026-10-02: no count of failed polls decides that
+ *  the sidecar stopped). */
 export async function noAnswer(e: unknown): Promise<{ text: string; stopped: boolean } | null> {
   if (e instanceof ServerError) return { text: e.message, stopped: false };
-  if (!isTauri()) return { text: "Can't reach Sidecoach", stopped: false };
+  if (!isTauri()) return { text: e instanceof TimedOut ? "Sidecoach isn't answering" : "Can't reach Sidecoach", stopped: false };
   const status = await invoke<{ exited?: boolean }>("sidecar_status").catch(() => null);
-  return status?.exited ? { text: "Sidecoach stopped", stopped: true } : null;
+  if (status?.exited) return { text: "Sidecoach stopped", stopped: true };
+  return e instanceof TimedOut ? { text: "Sidecoach isn't answering", stopped: false } : null;
 }
 
-export async function get<T = unknown>(path: string): Promise<T> {
-  const r = await send(path, () => ({ headers: headers(false) }));
-  return (await r.json()) as T;
+/** The log cursor to poll from next, given ours and the one the sidecar answered. Polls go one
+ *  at a time, so the sidecar's only moves on -- unless it is a new sidecar (stopped and started
+ *  again), numbering its lines afresh: then from its start, or its lines, the reply to a question
+ *  among them, stayed below our old cursor and never came (the typing dots stayed for good). */
+export function followCursor(ours: number, theirs: number | undefined): number {
+  if (theirs === undefined) return ours;
+  return theirs < ours ? 0 : theirs;
 }
 
-export async function post<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const r = await send(path, () => ({
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify(body ?? {}),
-  }));
-  return (await r.json()) as T;
+/** What to tell the player when a request failed, in plain words, with what to do. */
+export function failureText(e: unknown): string {
+  if (e instanceof ServerError) return `${e.message}. Try again; if it keeps happening, restart Sidecoach.`;
+  if (e instanceof TimedOut) return "Sidecoach isn't answering. Try again in a moment.";
+  return "Can't reach Sidecoach. Check it is running, then try again.";
+}
+
+export function get<T = unknown>(path: string, opts?: RequestOpts): Promise<T> {
+  return request<T>("GET", path, undefined, opts);
+}
+
+export function post<T = unknown>(path: string, body?: unknown, opts?: RequestOpts): Promise<T> {
+  return request<T>("POST", path, body, opts);
 }
 
 /** `keepalive`: the request is sent even if the page is closing (a save on the way out). */
-export async function put<T = unknown>(path: string, body?: unknown, opts: { keepalive?: boolean } = {}): Promise<T> {
-  const r = await send(path, () => ({
-    method: "PUT",
-    headers: headers(true),
-    body: JSON.stringify(body ?? {}),
-    keepalive: !!opts.keepalive,
-  }));
-  return (await r.json()) as T;
+export function put<T = unknown>(path: string, body?: unknown, opts?: RequestOpts): Promise<T> {
+  return request<T>("PUT", path, body, opts);
 }
 
-export async function del<T = unknown>(path: string): Promise<T> {
-  const r = await send(path, () => ({ method: "DELETE", headers: headers(false) }));
-  return (await r.json()) as T;
+export function del<T = unknown>(path: string, opts?: RequestOpts): Promise<T> {
+  return request<T>("DELETE", path, undefined, opts);
 }
 
 /** A beacon on unload (the puzzle room's close); falls back to a fetch with keepalive. */
@@ -187,7 +236,7 @@ export function beacon(path: string): void {
 export type Poll = { state?: PanelState; lines?: LogLine[]; cursor?: number };
 
 export const panel = {
-  poll: (since: number) => getChecked<Poll>(`/api/poll?since=${since | 0}`),
+  poll: (since: number) => get<Poll>(`/api/poll?since=${since | 0}`),
   /** The state alone, no log lines (the captions' window; the phone ignores `lines` and its
    *  page has no such window). */
   pollState: () => get<Poll>("/api/poll?lines=0"),
@@ -205,20 +254,20 @@ export const panel = {
   setRecord: (on: boolean) => post<{ ok: boolean; on: boolean; running: boolean; folder: string | null }>("/api/record", { on }),
   setListen: (mode: string) => post("/api/listen", { mode }),
   end: (outcome: string) => post("/api/end", { outcome }),
-  resetProfile: () => post("/api/reset_profile"),
-  clearCaches: () => post("/api/clear_caches"),
+  resetProfile: () => post("/api/reset_profile", {}, { timeout: SLOW_MS }),
+  clearCaches: () => post("/api/clear_caches", {}, { timeout: SLOW_MS }),
   correct: (body: { game_id: string; segment: number; ply: number; cause: string }) => post("/api/correct", body),
   exclude: (rect: { x: number; y: number; w: number; h: number }) => post("/api/exclude", rect),
   ptt: (down: boolean) => post("/api/ptt", { down }),
   cancelDictation: () => post<{ ok: boolean; text: string }>("/api/dictation/cancel"),
-  dump: () => post<{ ok: boolean; path: string }>("/api/dump"),
+  dump: () => post<{ ok: boolean; path: string }>("/api/dump", {}, { timeout: SLOW_MS }),
   perf: (label: string, sample: Record<string, unknown>) => post("/api/perf", { label, sample }),
 };
 
 export const puzzle = (id: string) => {
   const p = `/api/puzzle/${encodeURIComponent(id)}`;
   return {
-    open: () => post<{ ok: boolean; error?: string; next?: string[]; state?: PuzzleState }>(`${p}/open`),
+    open: () => post<{ ok: boolean; error?: string; next?: string[]; state?: PuzzleState }>(`${p}/open`, {}, { timeout: SLOW_MS }),
     /** `hidden`: the page is out of view, so the room does not take its quiet for its end. */
     poll: (since: number, hidden = false) =>
       get<{ ok: boolean; closed?: boolean; state?: PuzzleState; lines?: LogLine[]; cursor?: number }>(
@@ -281,7 +330,7 @@ export const games = {
   /** Games in: how many are new and how many were there already; on a failure, what to do,
    * and the setting to fix when the username is at fault (`field`). */
   bringIn: (source: "pgn" | "chesscom" | "lichess", text = "", months = 3) =>
-    post<{ ok: boolean; added?: number; already?: number; left_out?: number; keys?: string[]; error?: string; field?: string }>("/api/games/import", { source, text, months }),
+    post<{ ok: boolean; added?: number; already?: number; left_out?: number; keys?: string[]; error?: string; field?: string }>("/api/games/import", { source, text, months }, { timeout: null }),
   /** Games out of the player's record, each with the game it is paired with (`removed`). */
   remove: (keys: string[]) => post<{ ok: boolean; removed?: string[] }>("/api/games/remove", { keys }),
   /** Games removed moments ago, put back. */
@@ -409,27 +458,28 @@ export const review = (key: string) => {
   return {
     /** The game reviewed at `strength`; none named, at the server's own: Standard on a computer,
      *  Fast on the phone, whose engine is slower (the plan's depth 14). */
-    open: (strength?: string) => post<Polled & { voice?: boolean }>(`${p}/open`, strength ? { strength } : {}),
+    open: (strength?: string) => post<Polled & { voice?: boolean }>(`${p}/open`, strength ? { strength } : {}, { timeout: SLOW_MS }),
     poll: (since: number) => get<Polled>(`${p}/poll?since=${since | 0}`),
     /** The card said in the panel's voice, cutting off the one before; hush stops it. */
     say: (text: string) => post<{ ok: boolean }>(`${p}/say`, { text }),
     hush: () => post<{ ok: boolean }>(`${p}/hush`),
     /** The AI coach set writing on the key moves; the polls bring the words. */
     explain: () => post<{ ok: boolean; error: string | null }>(`${p}/ai`),
-    retry: (ply: number) => get<{ ok: boolean; error?: string } & RetryPosition>(`${p}/retry?ply=${ply | 0}`),
-    attempt: (ply: number, uci: string) => post<{ ok: boolean; error?: string } & Tried>(`${p}/try`, { ply, uci }),
+    retry: (ply: number) => get<{ ok: boolean; error?: string } & RetryPosition>(`${p}/retry?ply=${ply | 0}`, { timeout: SLOW_MS }),
+    attempt: (ply: number, uci: string) => post<{ ok: boolean; error?: string } & Tried>(`${p}/try`, { ply, uci }, { timeout: SLOW_MS }),
     hint: (ply: number, level: number) =>
-      post<{ ok: boolean; error?: string; level: number; text: string; best: string | null }>(`${p}/hint`, { ply, level }),
+      post<{ ok: boolean; error?: string; level: number; text: string; best: string | null }>(`${p}/hint`, { ply, level }, { timeout: SLOW_MS }),
     // Analysis (ui/review_analysis.py): any move from any position, the engine's lines for the
     // board, what the player's games went on with, the game as a PGN.
-    position: (fen: string) => post<{ ok: boolean; error?: string } & AnalysisPosition>(`${p}/position`, { fen }),
+    position: (fen: string) => post<{ ok: boolean; error?: string } & AnalysisPosition>(`${p}/position`, { fen }, { timeout: SLOW_MS }),
     move: (fen: string, uci: string) =>
-      post<{ ok: boolean; error?: string } & AnalysisPosition & { uci: string; san: string }>(`${p}/move`, { fen, uci }),
-    lines: (fen: string) => post<{ ok: boolean; error?: string } & EngineLines>(`${p}/lines`, { fen }),
-    explore: (fen: string, moves: string[]) => post<{ ok: boolean; error?: string } & Explored>(`${p}/explore`, { fen, moves }),
+      post<{ ok: boolean; error?: string } & AnalysisPosition & { uci: string; san: string }>(`${p}/move`, { fen, uci }, { timeout: SLOW_MS }),
+    lines: (fen: string) => post<{ ok: boolean; error?: string } & EngineLines>(`${p}/lines`, { fen }, { timeout: SLOW_MS }),
+    explore: (fen: string, moves: string[]) => post<{ ok: boolean; error?: string } & Explored>(`${p}/explore`, { fen, moves }, { timeout: SLOW_MS }),
     /** `copy`: the phone's app puts it on the clipboard (its web view's clipboard refuses writes). */
     pgn: (tree: PgnTree[], annotated: boolean, save: boolean, copy = false) =>
-      post<{ ok: boolean; error?: string; pgn: string; name: string; saved?: string; copied?: boolean }>(`${p}/pgn`, { tree, annotated, save, copy }),
+      // Saved through the system's dialog, which waits on the player: no timeout then.
+      post<{ ok: boolean; error?: string; pgn: string; name: string; saved?: string; copied?: boolean }>(`${p}/pgn`, { tree, annotated, save, copy }, { timeout: save ? null : SLOW_MS }),
     close: () => post(`${p}/close`),
     closePath: `${p}/close`,
   };
@@ -532,9 +582,9 @@ export type StatPosition = {
 const statsQuery = (f: StatsFilter) => `time_class=${encodeURIComponent(f.time_class)}&days=${f.days | 0}&opponents=${f.opponents}`;
 
 export const stats = {
-  get: (f: StatsFilter) => get<{ ok: boolean; stats: StatsNumbers; backlog: Backlog }>(`/api/stats?${statsQuery(f)}`),
+  get: (f: StatsFilter) => get<{ ok: boolean; stats: StatsNumbers; backlog: Backlog }>(`/api/stats?${statsQuery(f)}`, { timeout: SLOW_MS }),
   positions: (what: string, arg: string, f: StatsFilter) =>
-    get<{ ok: boolean; positions: StatPosition[] }>(`/api/stats/positions?what=${encodeURIComponent(what)}&arg=${encodeURIComponent(arg)}&${statsQuery(f)}`),
+    get<{ ok: boolean; positions: StatPosition[] }>(`/api/stats/positions?what=${encodeURIComponent(what)}&arg=${encodeURIComponent(arg)}&${statsQuery(f)}`, { timeout: SLOW_MS }),
 };
 
 // ---- what the sidecar sends -------------------------------------------------------------------
@@ -648,6 +698,8 @@ export type PuzzleState = {
   message?: string;
   remaining?: number;
   misses?: number;
+  /** The moves played, in SAN: moves[k] made positions[k + 1]. */
+  moves?: string[];
   motif?: string | null;
   rating?: number;
   url?: string;

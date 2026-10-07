@@ -7,7 +7,7 @@
   // and the field lights up. Every change is saved as it is made -- no Save button -- and the
   // save tells the other windows; what another window saved comes in here too.
   import { onDestroy, onMount, tick } from "svelte";
-  import { connect, del, get, post, put } from "$lib/api";
+  import { SLOW_MS, connect, del, get, post, put } from "$lib/api";
   import { announce, inShell, onAnnounce, openWindow, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
   import { keyFromEvent, keyFromMouse, keyName as hotkeyName, typesText } from "$lib/hotkey";
@@ -225,7 +225,7 @@
   async function listen(voice: string) {
     listening = voice;
     try {
-      const res = await post<{ ok: boolean }>("/api/say", { voice });
+      const res = await post<{ ok: boolean }>("/api/say", { voice }, { timeout: SLOW_MS });
       if (!res.ok) window.alert("The voice cannot speak yet: run Set up (Help menu) to fetch it, or check the Voice settings.");
     } catch (e) {
       window.alert("Could not play the voice: " + String(e));
@@ -454,7 +454,8 @@
             await put<NonNullable<typeof result>>(
               "/api/settings",
               { settings: body, secrets: sec, page: PAGE, seq: ++saves },
-              { keepalive },
+              // A change can reload a model before the answer.
+              { keepalive, timeout: SLOW_MS },
             )
           : null;
       if (shellChanged) {
@@ -565,8 +566,9 @@
     try {
       const sent = await Promise.all([...files].map(async (f) => ({ name: f.name, data: base64(await f.arrayBuffer()) })));
       const res = into
-        ? await post<OwnResult>(`/api/pieces/own/${into}/images`, { files: sent })
-        : await post<OwnResult>("/api/pieces/own", { name: "", files: sent });
+        ? // Read piece by piece: as long as the images take, the button says it is busy.
+          await post<OwnResult>(`/api/pieces/own/${into}/images`, { files: sent }, { timeout: null })
+        : await post<OwnResult>("/api/pieces/own", { name: "", files: sent }, { timeout: null });
       ownNote = noteOf(res, into === null);
       await refresh();
       if (res.ok && into === null && res.id && values.board) {
