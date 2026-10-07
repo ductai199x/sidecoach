@@ -111,7 +111,8 @@ uv run sidecoach review game.pgn         # what each move cost, where the game t
 uv run sidecoach puzzles fetch           # fill the puzzle store once
 ```
 
-`panel --record` saves a live session (frames, events, the log) for `replay`.
+`panel` saves a live session (frames, events, the log) for `replay` by default;
+`--no-record` turns it off (the installed app never records).
 
 ### Building the desktop app
 
@@ -161,8 +162,8 @@ that serves the same page from the phone.
 uv run pytest tests/test_<what you changed>.py   # the files that import what you changed
 uv run pytest                            # the whole suite (unit, synthetic vision, panel,
                                          # server), in parallel; on purpose only
-uv run pytest -m slow                    # adds the tests that need the voice models or the GPU
-uv run pytest tests/test_stress.py --seeds 1000   # the vision sweep (~7 min)
+uv run pytest -m slow                    # only the tests that need the voice models or the GPU
+uv run pytest tests/test_stress.py --seeds 1000 -n 8   # the vision sweep
 uv run ruff check . && uv run ruff format .
 uv run pyright
 ```

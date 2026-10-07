@@ -27,6 +27,8 @@ One line per document: what it is for, and when to read it.
   changing a class or its cut-offs.
 - [reconciler-model.md](reconciler-model.md): what the reconciler assumes about the screen
   and the one algorithm that follows. Read before changing `state/`.
+- [audit-2026-10-07.md](audit-2026-10-07.md): the full audit of 2026-10-07 (rough edges by
+  priority, features worth adding, UI improvements); strike items through as they are fixed.
 - [known-issues.md](known-issues.md): what is known to be wrong and shipped anyway, desktop
   and phone. Read before reporting or chasing a bug.
 
