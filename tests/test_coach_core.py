@@ -235,7 +235,7 @@ def test_asked_for_the_best_moves_every_move_about_as_good_is_named() -> None:
     """ "what are the best moves?", "any other good moves?", "what else works?" and "which moves
     are fine here?" were answered with line 1, or with a hint (Tai, 2026-10-01). Graded as the
     move labels grade them (Tai, 2026-10-02): Bc5 and Nf6 about as good as each other (Best,
-    Excellent), Be7 and d6 good, a little behind (Good) -- each named for what it is."""
+    Excellent), Be7, d6 and h6 good, a little behind (Good) -- each named for what it is."""
     for said in (
         "what are the best moves?",
         "any other good moves?",
@@ -249,7 +249,7 @@ def test_asked_for_the_best_moves_every_move_about_as_good_is_named() -> None:
         assert len(answer) == 1, said
         assert answer[0].text == (
             "Bc5 and Nf6 are both fine here -- about equally good. "
-            "Be7 and d6 are good too, a little behind."
+            "Be7, d6 and h6 are good too, a little behind."
         ), said
         assert answer[0].level is DisclosureLevel.MOVE
 
@@ -263,7 +263,7 @@ def test_the_model_is_told_to_read_every_line_and_to_name_the_moves_that_are_fin
     # moves about as good as the facts list them (no keyword picks this).
     assert "read all of the engine lines" in directive
     assert "The moves about equally good here: Bc5, Nf6." in directive
-    assert "Good too, a little behind the best: Be7, d6." in directive
+    assert "Good too, a little behind the best: Be7, d6, h6." in directive
     assert "name every move about level with the best" in directive
     assert "no percentages, scores or move numbers" in directive
     harness = harness_of(sent(provider))
@@ -278,7 +278,7 @@ def test_asked_whether_a_move_is_also_good_the_model_gets_the_fine_moves() -> No
     directive = directive_of(sent(provider))
     assert "or whether another move works too" in directive
     assert "The moves about equally good here: Bc5, Nf6." in directive
-    assert "Good too, a little behind the best: Be7, d6." in directive
+    assert "Good too, a little behind the best: Be7, d6, h6." in directive
     assert "read all of the engine lines" in directive
     # Offline, at the move level, the template says what it is: good, a little behind.
     coach, _ = _coach_at("italian")
@@ -312,7 +312,9 @@ def test_the_claim_check_says_a_good_move_is_good_and_not_the_best() -> None:
     best = verdict("Be7", "Be7 is the best move")
     assert best[0] == "false" and "is a good move here, a little behind" in best[1]
     assert verdict("d6", "d6 is a good move")[0] == "true"
-    assert verdict("h6", "h6 is a good move")[0] == "false", "an inaccuracy is no good move"
+    # h6 is 0.044 behind: good in chess.com's bands (up to 0.05); a5, 0.050, is not.
+    assert verdict("h6", "h6 is a good move")[0] == "true"
+    assert verdict("a5", "a5 is a good move")[0] == "false", "an inaccuracy is no good move"
 
     class Lines:
         """The engine, asked when the facts are not this position's: the fixture's lines."""

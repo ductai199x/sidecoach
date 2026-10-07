@@ -1223,6 +1223,10 @@ def _given_in_line(
         return False
     if len(boards) > 3 and _balance(boards[3], mover) >= start:
         return False
+    # A piece, as chess.com's "piece sacrifice" has it: two pawns given are not one.
+    taken = boards[1].piece_type_at(played[1].to_square)
+    if taken is None or exchange.VALUE[taken] < _MINOR:
+        return False
     # The reply's capture wins it, the recaptures on its square played out: a knight taken
     # and taken back is a trade, however the line orders it (O-O Bxf3 Bb5+ Nc6 Bxc6+ bxc6
     # Qxf3, a check before the recapture, read as castling giving up a knight).

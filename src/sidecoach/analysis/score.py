@@ -60,15 +60,16 @@ def expected_score(
 class Thresholds:
     """How much loss earns a name, and what makes a position a decisive moment.
 
-    The three severity lines were fitted to chess.com's review tallies over six of the
-    user's games (671 plies, 2026-09-15): they put our inaccuracy, mistake, miss and blunder
-    counts at 55, 33, 29 and 9 against their 55, 38, 24 and 10. A blunder throws away more
-    than a quarter of the game.
+    The severity lines are chess.com's published cut-offs in expected points lost
+    (support.chess.com 8572705, Classification V2): best 0, excellent up to 0.02, good up to
+    0.05, inaccuracy up to 0.10, mistake up to 0.20, blunder beyond (Tai, 2026-10-06: "use
+    their definition"). They had been fitted to six of the user's games instead, at 0.04
+    and 0.28.
     """
 
-    inaccuracy: float = 0.04
+    inaccuracy: float = 0.05
     mistake: float = 0.10
-    blunder: float = 0.28
+    blunder: float = 0.20
     decisive_gap: float = 0.10
     # An only move: everything else throws away this much. Wider than a decisive moment,
     # since "there is one move here" is a stronger claim than "this move matters".
@@ -239,14 +240,15 @@ def label_move(
       lost ground (`decisive`, the only good move), or the best reply to the opponent's
       blunder. Merely the best move after any error was great 30 times in the six games
       where chess.com said so 20 times.
-    - Brilliant, "the best move -- and tricky to find too": a sound sacrifice, as good as
-      the best, in a game still to be won. Whether it was won already is read from the
-      second-best line (`second_score`): the best is the line the sacrifice makes, and a
-      sacrifice that is the only win was never brilliant.
+    - Brilliant, chess.com's own definition and nothing more: "always the best or nearly
+      best move" (best or excellent), "a good piece sacrifice" (`sacrifice`, a piece given
+      or left to be taken),
+      "you should not be in a bad position after" it (not lost once it is played), and
+      "you should not be completely winning even if you hadn't found the move" (the
+      second-best line, `second_score`, short of decided).
 
-    Neither great nor brilliant applies to an `obvious` move (a recapture, a free capture
-    nobody can take back, the only legal move), nor in a lost position, where the best move
-    changes nothing.
+    Great applies to no `obvious` move (a recapture, a free capture nobody can take back,
+    the only legal move), nor in a lost position, where the best move changes nothing.
     """
     lost = before_score <= 1.0 - thresholds.decided
     # Walking into a mate from a lost position is not the move that lost: chess.com leaves
@@ -264,12 +266,24 @@ def label_move(
     if mate_allowed:
         return Label.BLUNDER
     if not flagged:
-        if not obvious and not lost:
-            without = second_score if second_score is not None else before_score
-            if sacrifice and loss < thresholds.excellent and without < thresholds.decided:
-                return Label.BRILLIANT
-            if is_best and (decisive or opponent_blundered):
-                return Label.GREAT
+        # Brilliant, as chess.com defines it and nothing more (Tai, 2026-10-06: "use their
+        # definition instead"; support.chess.com 8572705): "always the best or nearly best
+        # move" (best or excellent), "a good piece sacrifice" (`sacrifice`, a piece), after
+        # which "you should not be in a bad position" (not lost after the move) and without
+        # which you "should not be completely winning" (the best other line short of
+        # decided). Its generosity to newer players is not published, and is not guessed at.
+        without = second_score if second_score is not None else before_score
+        after = before_score - loss
+        nearly_best = is_best or about_as_good(loss, thresholds)
+        if (
+            sacrifice
+            and nearly_best
+            and after > 1.0 - thresholds.decided
+            and without < thresholds.decided
+        ):
+            return Label.BRILLIANT
+        if not obvious and not lost and is_best and (decisive or opponent_blundered):
+            return Label.GREAT
         if is_best:
             return Label.BEST
         return Label.EXCELLENT if about_as_good(loss, thresholds) else Label.GOOD

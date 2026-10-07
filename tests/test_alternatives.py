@@ -56,18 +56,19 @@ def test_a_quiet_position_has_moves_about_as_good_good_ones_and_none_clearly_wor
     board, analysis = load("italian")
     facts = facts_from_analysis(board, analysis, last_move=None, user=board.turn)
     assert facts.candidates == ["Bc5", "Nf6"]
-    assert facts.good == ["Be7", "d6"]
+    assert facts.good == ["Be7", "d6", "h6"]
     top = analysis.lines[0].expected_score
     labels = [_label(top - line.expected_score) for line in analysis.lines]
-    assert labels[:4] == [Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD]
-    assert labels[4] is Label.INACCURACY
+    # h6 is 0.044 behind, a5 0.050: good and an inaccuracy in chess.com's bands.
+    assert labels[:5] == [Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD, Label.GOOD]
+    assert labels[5] is Label.INACCURACY
     for line, label in zip(analysis.lines, labels, strict=True):
         loss = top - line.expected_score
         assert about_as_good(loss) == (label in (Label.BEST, Label.EXCELLENT))
         assert graded_good(loss) == (label in (Label.BEST, Label.EXCELLENT, Label.GOOD))
     assert worse_moves(board, analysis, board.turn) == []
     assert fine_said(facts.candidates) == "Bc5 and Nf6 are both fine here -- about equally good."
-    assert good_said(facts.good) == "Be7 and d6 are good too, a little behind."
+    assert good_said(facts.good) == "Be7, d6 and h6 are good too, a little behind."
 
 
 def test_clearly_worse_is_a_mistake_or_worse_as_the_labels_grade_it() -> None:

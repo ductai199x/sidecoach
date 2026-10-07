@@ -29,8 +29,8 @@ CELL_WIDTH = 60
 SCHEMA_DOC = """\
 The record is a SQLite database of the player's games, written as they were played.
 Scores are expected score from the PLAYER's side, 0 to 1 (1 = certain win, 0.5 = level);
-losses are in expected score too (a mistake costs 0.10 or more, a blunder 0.28 or more,
-an inaccuracy 0.04 or more). Times are milliseconds. Tag lists are JSON arrays of strings;
+losses are in expected score too (a mistake costs 0.10 or more, a blunder 0.20 or more,
+an inaccuracy 0.05 or more). Times are milliseconds. Tag lists are JSON arrays of strings;
 read them with json_each(). Boolean columns are 0/1. Rows of moves with withdrawn = 1
 were taken back: leave them out unless the question is about takebacks.
 

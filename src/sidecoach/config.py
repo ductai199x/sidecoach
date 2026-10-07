@@ -461,11 +461,11 @@ class CoachSettings(_Settings):
         ),
     )
     inaccuracy: float = Field(
-        default=0.04,
+        default=0.05,
         ge=0.0,
         le=1.0,
         description="A move that costs at least this much of your winning chances is called an "
-        "inaccuracy (0.04 is 4%).",
+        "inaccuracy (0.05 is 5%, as chess.com has it).",
         json_schema_extra=_extra(
             applies="now",
             advanced=True,
@@ -487,11 +487,11 @@ class CoachSettings(_Settings):
         ),
     )
     blunder: float = Field(
-        default=0.28,
+        default=0.20,
         ge=0.0,
         le=1.0,
         description="A move that costs at least this much of your winning chances is called a "
-        "blunder.",
+        "blunder (0.20, as chess.com has it).",
         json_schema_extra=_extra(
             applies="now",
             advanced=True,
@@ -966,6 +966,25 @@ def load_settings(path: str | os.PathLike[str] | None = None) -> Settings:
     return settings
 
 
+# Defaults since replaced, by setting: the old value and the new. A file holds every field
+# once the app has saved it, so a value equal to a retired default is the default it was
+# saved as, never one the user chose, and it moves on with the default.
+RETIRED_DEFAULTS: dict[tuple[str, str], tuple[float, float]] = {
+    # chess.com's published cut-offs (Tai, 2026-10-06: "use their definition").
+    ("coach", "inaccuracy"): (0.04, 0.05),
+    ("coach", "blunder"): (0.28, 0.20),
+}
+
+
+def _retired_defaults(data: dict[str, Any]) -> None:
+    """Every retired default in the file's `data` replaced by its successor
+    (`RETIRED_DEFAULTS`)."""
+    for (section, name), (old, new) in RETIRED_DEFAULTS.items():
+        values = data.get(section)
+        if isinstance(values, dict) and values.get(name) == old:
+            values[name] = new
+
+
 def _read_settings(path: Path) -> Settings:
     """The settings in `path`. A file the start cannot read whole is never run over in silence:
     a copy of it is kept beside it, the log says so, and what can be read of it is kept -- a
@@ -980,6 +999,7 @@ def _read_settings(path: Path) -> Settings:
         settings = Settings()
         settings._unreadable = _keep_unreadable(path, raw, f"is not readable ({exc})")
         return settings
+    _retired_defaults(data)
     refused: list[str] = []
     for _ in range(len(data) + 1):  # each round takes at least one field out
         try:

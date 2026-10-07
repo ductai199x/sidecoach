@@ -224,8 +224,10 @@ def test_great_is_the_move_that_altered_the_course_of_the_game() -> None:
 def test_brilliant_is_a_sound_sacrifice_that_was_needed() -> None:
     assert _label(0.0, is_best=True, sacrifice=True) is Label.BRILLIANT
     assert _label(0.01, sacrifice=True) is Label.BRILLIANT, "as good as the best"
-    # Not a sacrifice that gives ground: chess.com's brilliant is the best move.
+    # "Always the best or nearly best move" (chess.com's definition, Tai 2026-10-06): a
+    # merely good sacrifice is good, not brilliant.
     assert _label(0.03, sacrifice=True) is Label.GOOD
+    assert _label(0.06, sacrifice=True) is Label.INACCURACY
     assert _label(0.3, sacrifice=True) is Label.BLUNDER
     # Not when the game was won without it -- read from the second-best line, since the
     # best is the one the sacrifice makes. The only win is brilliant however won it leaves.
