@@ -404,11 +404,12 @@ class CoachCoreTest {
         val (board, analysis) = load("italian")
         val facts = factsFromAnalysis(board, analysis, lastMove = null, user = board.turn)
         assertEquals(listOf("Bc5", "Nf6"), facts.candidates)
-        assertEquals(listOf("Be7", "d6"), facts.good)
+        assertEquals(listOf("Be7", "d6", "h6"), facts.good)
         val top = analysis.lines[0].expectedScore
         val labels = analysis.lines.map { gradeOf(top - it.expectedScore) }
-        assertEquals(listOf(Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD), labels.take(4))
-        assertEquals(Label.INACCURACY, labels[4])
+        // h6 is 0.044 behind, a5 0.050: good and an inaccuracy in chess.com's bands.
+        assertEquals(listOf(Label.BEST, Label.EXCELLENT, Label.GOOD, Label.GOOD, Label.GOOD), labels.take(5))
+        assertEquals(Label.INACCURACY, labels[5])
         for ((line, label) in analysis.lines.zip(labels)) {
             val loss = top - line.expectedScore
             assertEquals(label in listOf(Label.BEST, Label.EXCELLENT), aboutAsGood(loss))
@@ -416,7 +417,7 @@ class CoachCoreTest {
         }
         assertEquals(emptyList<Worse>(), worseMoves(board, analysis, board.turn))
         assertEquals("Bc5 and Nf6 are both fine here -- about equally good.", fineSaid(facts.candidates))
-        assertEquals("Be7 and d6 are good too, a little behind.", goodSaid(facts.good))
+        assertEquals("Be7, d6 and h6 are good too, a little behind.", goodSaid(facts.good))
     }
 
     /** `test_clearly_worse_is_a_mistake_or_worse_as_the_labels_grade_it`. */
@@ -464,7 +465,7 @@ class CoachCoreTest {
             assertEquals(
                 said,
                 "Bc5 and Nf6 are both fine here -- about equally good. " +
-                    "Be7 and d6 are good too, a little behind.",
+                    "Be7, d6 and h6 are good too, a little behind.",
                 answer[0].text,
             )
             assertEquals(DisclosureLevel.MOVE, answer[0].level)
@@ -481,7 +482,7 @@ class CoachCoreTest {
         // the moves about as good as the facts list them (no keyword picks this).
         assertTrue(directive, "read all of the engine lines" in directive)
         assertTrue(directive, "The moves about equally good here: Bc5, Nf6." in directive)
-        assertTrue(directive, "Good too, a little behind the best: Be7, d6." in directive)
+        assertTrue(directive, "Good too, a little behind the best: Be7, d6, h6." in directive)
         assertTrue(directive, "name every move about level with the best" in directive)
         assertTrue(directive, "no percentages, scores or move numbers" in directive)
     }
@@ -494,7 +495,7 @@ class CoachCoreTest {
         val directive = directiveOf(provider)
         assertTrue(directive, "or whether another move works too" in directive)
         assertTrue(directive, "The moves about equally good here: Bc5, Nf6." in directive)
-        assertTrue(directive, "Good too, a little behind the best: Be7, d6." in directive)
+        assertTrue(directive, "Good too, a little behind the best: Be7, d6, h6." in directive)
         assertTrue(directive, "read all of the engine lines" in directive)
         // Offline, at the move level, the template says what it is: good, a little behind.
         val (offline, _) = coachAt("italian")
@@ -570,7 +571,9 @@ class CoachCoreTest {
         val best = verdict("Be7", "Be7 is the best move")
         assertTrue(best.second, best.first == ClaimResult.FALSE && "is a good move here, a little behind" in best.second)
         assertEquals(ClaimResult.TRUE, verdict("d6", "d6 is a good move").first)
-        assertEquals("an inaccuracy is no good move", ClaimResult.FALSE, verdict("h6", "h6 is a good move").first)
+        // h6 is 0.044 behind: good in chess.com's bands (up to 0.05); a5, 0.050, is not.
+        assertEquals(ClaimResult.TRUE, verdict("h6", "h6 is a good move").first)
+        assertEquals("an inaccuracy is no good move", ClaimResult.FALSE, verdict("a5", "a5 is a good move").first)
         // The engine, asked when the facts are not this position's: the fixture's lines, in any order.
         assertEquals(good, verdict("Be7", "Be7 is a good move", ClaimEngine { _, _ -> analysis.lines.reversed() }))
     }

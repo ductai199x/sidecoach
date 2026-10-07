@@ -66,15 +66,15 @@ fun expectedScore(model: String, scoreCp: Int?, mate: Int?, wdl: Triple<Int, Int
 /**
  * How much loss earns a name, and what makes a position a decisive moment.
  *
- * The three severity lines were fitted to chess.com's review tallies over six of the user's
- * games (671 plies, 2026-09-15): they put our inaccuracy, mistake, miss and blunder counts
- * at 55, 33, 29 and 9 against their 55, 38, 24 and 10. A blunder throws away more than a
- * quarter of the game.
+ * The severity lines are chess.com's published cut-offs in expected points lost
+ * (support.chess.com 8572705, Classification V2): best 0, excellent up to 0.02, good up to
+ * 0.05, inaccuracy up to 0.10, mistake up to 0.20, blunder beyond (Tai, 2026-10-06: "use their
+ * definition"). They had been fitted to six of the user's games instead, at 0.04 and 0.28.
  */
 data class Thresholds(
-    val inaccuracy: Double = 0.04,
+    val inaccuracy: Double = 0.05,
     val mistake: Double = 0.10,
-    val blunder: Double = 0.28,
+    val blunder: Double = 0.20,
     val decisiveGap: Double = 0.10,
     /**
      * An only move: everything else throws away this much. Wider than a decisive moment,
@@ -202,14 +202,14 @@ fun standing(score: Double): Int = when {
  *   ground ([decisive], the only good move), or the best reply to the opponent's blunder.
  *   Merely the best move after any error was great 30 times in the six games where chess.com
  *   said so 20 times.
- * - Brilliant, "the best move -- and tricky to find too": a sound sacrifice, as good as the
- *   best, in a game still to be won. Whether it was won already is read from the second-best
- *   line ([secondScore]): the best is the line the sacrifice makes, and a sacrifice that is the
- *   only win was never brilliant.
+ * - Brilliant, chess.com's own definition and nothing more: "always the best or nearly best
+ *   move" (best or excellent), "a good piece sacrifice" ([sacrifice], a piece given or left to
+ *   be taken), "you should not be in a bad position after" it (not lost once it is played),
+ *   and "you should not be completely winning even if you hadn't found the move" (the
+ *   second-best line, [secondScore], short of decided).
  *
- * Neither great nor brilliant applies to an [obvious] move (a recapture, a free capture nobody
- * can take back, the only legal move), nor in a lost position, where the best move changes
- * nothing.
+ * Great applies to no [obvious] move (a recapture, a free capture nobody can take back, the
+ * only legal move), nor in a lost position, where the best move changes nothing.
  */
 fun labelMove(
     loss: Double,
@@ -238,11 +238,19 @@ fun labelMove(
     if (flagged && chance && !isBest) return Label.MISS
     if (allowed) return Label.BLUNDER
     if (!flagged) {
-        if (!obvious && !lost) {
-            val without = secondScore ?: beforeScore
-            if (sacrifice && loss < thresholds.excellent && without < thresholds.decided) return Label.BRILLIANT
-            if (isBest && (decisive || opponentBlundered)) return Label.GREAT
+        // Brilliant, as chess.com defines it and nothing more (Tai, 2026-10-06: "use their
+        // definition instead"; support.chess.com 8572705): "always the best or nearly best move"
+        // (best or excellent), "a good piece sacrifice" ([sacrifice], a piece), after which "you
+        // should not be in a bad position" (not lost after the move) and without which you
+        // "should not be completely winning" (the best other line short of decided). Its
+        // generosity to newer players is not published, and is not guessed at.
+        val without = secondScore ?: beforeScore
+        val after = beforeScore - loss
+        val nearlyBest = isBest || aboutAsGood(loss, thresholds)
+        if (sacrifice && nearlyBest && after > 1.0 - thresholds.decided && without < thresholds.decided) {
+            return Label.BRILLIANT
         }
+        if (!obvious && !lost && isBest && (decisive || opponentBlundered)) return Label.GREAT
         if (isBest) return Label.BEST
         return if (aboutAsGood(loss, thresholds)) Label.EXCELLENT else Label.GOOD
     }

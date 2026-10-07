@@ -37,6 +37,18 @@ data class EngineSettings(
     val scoreModel: String = "human",
 )
 
+/** A default since replaced: its section and name, the old value and the new. */
+private data class Retired(val section: String, val name: String, val old: Double, val new: Double)
+
+/**
+ * Defaults since replaced (`config.RETIRED_DEFAULTS`): chess.com's published cut-offs (Tai,
+ * 2026-10-06: "use their definition").
+ */
+private val RETIRED_DEFAULTS = listOf(
+    Retired("coach", "inaccuracy", 0.04, 0.05),
+    Retired("coach", "blunder", 0.28, 0.20),
+)
+
 open class SettingsStore(private val context: Context) {
 
     private companion object {
@@ -91,12 +103,25 @@ open class SettingsStore(private val context: Context) {
             return withPaths(out)
         }
         merge(out, over)
+        retiredDefaults(out)
         val refused = SettingsCheck.dropRefused(schemaJson, defaults, out)
         if (refused.isNotEmpty()) {
             keepUnreadable(saved, "have values the settings refuse, left at their defaults: ${refused.joinToString(", ")}")
         }
         checked = saved to out.toString()
         return withPaths(out)
+    }
+
+    /**
+     * Every retired default in [values] replaced by its successor (`config._retired_defaults`):
+     * saved settings hold every field, so a value equal to a retired default is the default
+     * it was saved as, never one the user chose, and it moves on with the default.
+     */
+    private fun retiredDefaults(values: JSONObject) {
+        for ((section, name, old, new) in RETIRED_DEFAULTS) {
+            val group = values.optJSONObject(section) ?: continue
+            if (group.has(name) && group.optDouble(name) == old) group.put(name, new)
+        }
     }
 
     /**
