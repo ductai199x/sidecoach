@@ -204,9 +204,9 @@ fun standing(score: Double): Int = when {
  *   said so 20 times.
  * - Brilliant, chess.com's own definition and nothing more: "always the best or nearly best
  *   move" (best or excellent), "a good piece sacrifice" ([sacrifice], a piece given or left to
- *   be taken), "you should not be in a bad position after" it (not lost once it is played),
- *   and "you should not be completely winning even if you hadn't found the move" (the
- *   second-best line, [secondScore], short of decided).
+ *   be taken), "you should not be in a bad position after" it (about equal or better once it
+ *   is played: [standing] 2 or more), and "you should not be completely winning even if you
+ *   hadn't found the move" (the second-best line, [secondScore], short of winning).
  *
  * Great applies to no [obvious] move (a recapture, a free capture nobody can take back, the
  * only legal move), nor in a lost position, where the best move changes nothing.
@@ -241,13 +241,16 @@ fun labelMove(
         // Brilliant, as chess.com defines it and nothing more (Tai, 2026-10-06: "use their
         // definition instead"; support.chess.com 8572705): "always the best or nearly best move"
         // (best or excellent), "a good piece sacrifice" ([sacrifice], a piece), after which "you
-        // should not be in a bad position" (not lost after the move) and without which you
-        // "should not be completely winning" (the best other line short of decided). Its
-        // generosity to newer players is not published, and is not guessed at.
+        // should not be in a bad position" (about equal or better: worse is bad) and without
+        // which you "should not be completely winning" (the best other line short of the coach's
+        // "winning"). Tai, 2026-10-07, on his 135 reviews: the looser reading (not lost after,
+        // short of decided without) gave a brilliant that left the mover at 0.12, and seven where
+        // the best other move already won. Its generosity to newer players is not published, and
+        // is not guessed at.
         val without = secondScore ?: beforeScore
         val after = beforeScore - loss
         val nearlyBest = isBest || aboutAsGood(loss, thresholds)
-        if (sacrifice && nearlyBest && after > 1.0 - thresholds.decided && without < thresholds.decided) {
+        if (sacrifice && nearlyBest && standing(after) >= 2 && without < WINNING_FROM) {
             return Label.BRILLIANT
         }
         if (!obvious && !lost && isBest && (decisive || opponentBlundered)) return Label.GREAT

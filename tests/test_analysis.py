@@ -241,6 +241,18 @@ def test_brilliant_is_a_sound_sacrifice_that_was_needed() -> None:
     assert _label(0.0, is_best=True, sacrifice=True, before_score=0.97) is Label.BEST
     # Nor in a lost position.
     assert _label(0.0, is_best=True, sacrifice=True, before_score=0.05) is Label.BEST
+    # "Not in a bad position after": worse is bad (Tai, 2026-10-07; one of his left 0.12),
+    # about equal is not.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.30) is Label.BEST
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.45) is Label.BRILLIANT
+    # "Not completely winning without it": the best other move already winning (0.8 and up,
+    # the coach's "winning") is not short of it; seven of his were.
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.91, second_score=0.85) is (
+        Label.BEST
+    )
+    assert _label(0.0, is_best=True, sacrifice=True, before_score=0.91, second_score=0.75) is (
+        Label.BRILLIANT
+    )
 
 
 def test_a_miss_is_a_winning_chance_let_go() -> None:

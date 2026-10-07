@@ -70,7 +70,9 @@ REVIEW_VERSION = 1
 # saved before 0.1.84 kept the old labels, and Stats mixed the two rules).
 # The thresholds the labels are made with are part of what they are made of (`derived_stamp`):
 # a change in Settings makes the saved reviews again too.
-DERIVED = 6
+# 7: brilliant only about equal or better after, and short of winning without (Tai,
+# 2026-10-07).
+DERIVED = 7
 DERIVED_KEY = "reviews.derived"
 
 

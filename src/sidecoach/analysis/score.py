@@ -243,9 +243,9 @@ def label_move(
     - Brilliant, chess.com's own definition and nothing more: "always the best or nearly
       best move" (best or excellent), "a good piece sacrifice" (`sacrifice`, a piece given
       or left to be taken),
-      "you should not be in a bad position after" it (not lost once it is played), and
-      "you should not be completely winning even if you hadn't found the move" (the
-      second-best line, `second_score`, short of decided).
+      "you should not be in a bad position after" it (about equal or better once it is
+      played: `standing` 2 or more), and "you should not be completely winning even if you
+      hadn't found the move" (the second-best line, `second_score`, short of winning).
 
     Great applies to no `obvious` move (a recapture, a free capture nobody can take back,
     the only legal move), nor in a lost position, where the best move changes nothing.
@@ -269,17 +269,20 @@ def label_move(
         # Brilliant, as chess.com defines it and nothing more (Tai, 2026-10-06: "use their
         # definition instead"; support.chess.com 8572705): "always the best or nearly best
         # move" (best or excellent), "a good piece sacrifice" (`sacrifice`, a piece), after
-        # which "you should not be in a bad position" (not lost after the move) and without
-        # which you "should not be completely winning" (the best other line short of
-        # decided). Its generosity to newer players is not published, and is not guessed at.
+        # which "you should not be in a bad position" (about equal or better: worse is bad)
+        # and without which you "should not be completely winning" (the best other line short
+        # of the coach's "winning"). Tai, 2026-10-07, on his 135 reviews: the looser reading
+        # (not lost after, short of decided without) gave a brilliant that left the mover at
+        # 0.12, and seven where the best other move already won. Its generosity to newer
+        # players is not published, and is not guessed at.
         without = second_score if second_score is not None else before_score
         after = before_score - loss
         nearly_best = is_best or about_as_good(loss, thresholds)
         if (
             sacrifice
             and nearly_best
-            and after > 1.0 - thresholds.decided
-            and without < thresholds.decided
+            and standing(after) >= 2
+            and without < WINNING_FROM
         ):
             return Label.BRILLIANT
         if not obvious and not lost and is_best and (decisive or opponent_blundered):

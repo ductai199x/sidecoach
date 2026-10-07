@@ -100,10 +100,14 @@ Then, first match wins:
 4. **Blunder, into a mate** (`mate_allowed`).
 5. Not flagged (loss under 0.05):
    1. **Brilliant**: `sacrifice` (the motif below), and best or excellent (loss under 0.02),
-      and the mover is not lost after it (expected score after the move above 0.10), and the
-      second-best line (`second_score`, or the score before when there is no second line) is
-      short of decided (below 0.90): without the move the mover would not be completely
-      winning. Nothing else: no exclusion of recaptures or of the only legal move.
+      and the mover is not in a bad position after it (about equal or better: expected score
+      after the move above 0.38, `standing` 2 or more), and the second-best line
+      (`second_score`, or the score before when there is no second line) is short of winning
+      (below 0.80, the coach's "winning"): without the move the mover would not be completely
+      winning. Nothing else: no exclusion of recaptures or of the only legal move. Tai chose
+      this stricter reading on 2026-10-07: on his 135 saved reviews the looser one (after
+      above 0.10, without below 0.90) gave 27 brilliants, one leaving the mover at 0.12 and
+      seven where the best other move already won; this one keeps 19 of them.
    2. **Great**: the best move, not `obvious`, not `lost`, and either `decisive` (the position's
       best line is 0.10 ahead of the second, or it is an only move) or the opponent's previous
       move was a blunder (its loss 0.20 or more). `obvious` is a recapture on the square the
