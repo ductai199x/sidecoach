@@ -29,6 +29,7 @@ import chess
 
 from sidecoach.analysis import exchange
 from sidecoach.analysis.positional import is_passed
+from sidecoach.coach import inventory
 from sidecoach.coach.disclosure import PositionFacts
 from sidecoach.coach.facts import PIECE_NAMES, graded_moves
 from sidecoach.events import Line
@@ -1031,8 +1032,12 @@ _PIECE_ON = re.compile(
     r"(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,
 )
+# Not a move named by where it goes: "the c5 pawn break is Black's main idea" was refused as
+# "c5 is empty" (the audit, 2026-10-07).
 _SQUARE_PIECE = re.compile(
-    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<square>[a-h][1-8])[- ](?P<piece>{_PIECE_WORD})\b",
+    rf"\b(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<square>[a-h][1-8])[- ](?P<piece>{_PIECE_WORD})\b"
+    r"(?!\s+(?:break|push|lever|thrust|storm|sortie|jump|outpost|route)(?:s|es)?\b"
+    r"|\s+advance\b)",
     re.IGNORECASE,
 )
 # A token is a bare square ("f7") or a SAN move ending in its destination square ("Ng5",
@@ -1046,12 +1051,15 @@ _CASTLE = re.compile(r"(?<![A-Za-z0-9-])(O-O-O|O-O|0-0-0|0-0)[+#]?(?![A-Za-z0-9-
 
 # A tactical adjective claimed of a piece on a square: "the bishop on b3 is pinned", "your
 # rook on d1 is hanging". The coach must not assert these unless the board bears them out.
+# The state is a whole word ("safe", never "safely"); and said without "is", a pin or a trap
+# that takes an object is what the piece does, not its state: "the bishop on b5 pinned the
+# knight" says nothing of the bishop being pinned (the audit, 2026-10-07).
 _TACTIC = re.compile(
     rf"(?:(?P<colour>{_COLOUR_WORDS})\s+)?(?P<piece>{_PIECE_WORD})s?\s+(?:on|at)\s+"
     r"(?P<square>[a-h][1-8])\s+"
-    r"(?:(?:is|was|are|were)\s+(?:now\s+)?|,\s*(?:which\s+)?(?:is|was)\s+|now\s+)?"
+    r"(?:(?P<copula>(?:is|was|are|were)\s+(?:now\s+)?|,\s*(?:which\s+)?(?:is|was)\s+)|now\s+)?"
     r"(?P<state>pinned|hanging|undefended|unprotected|loose|en\s*prise|trapped|safe|"
-    r"forks?|forking|skewers?|skewering)",
+    r"forks?|forking|skewers?|skewering)\b",
     re.IGNORECASE,
 )
 # The same states said before the piece: "targeting the loose rook on e4" of a rook the
@@ -1061,138 +1069,25 @@ _STATE_FIRST = re.compile(
     rf"pinned|trapped)\s+(?P<piece>{_PIECE_WORD})\s+(?:on|at)\s+(?P<square>[a-h][1-8])\b",
     re.IGNORECASE,
 )
-# The tagger's own piece values, so a fork and a skewer are judged the way it judges them.
-_VALUE: dict[chess.PieceType, int] = {
-    chess.PAWN: 1,
-    chess.KNIGHT: 3,
-    chess.BISHOP: 3,
-    chess.ROOK: 5,
-    chess.QUEEN: 9,
-    chess.KING: 100,
-}
+# What follows a verb that takes an object: an article, an owner, a piece or a square.
+_OBJECT_NEXT = re.compile(
+    rf"\s+(?:the|a|an|your|their|his|its|white's|black's|both|two|(?:{_PIECE_WORD})s?|"
+    r"[a-h][1-8])\b",
+    re.IGNORECASE,
+)
+# Verbs whose past is also the state: "pinned", "trapped".
+_DEEDS = ("pinned", "trapped")
 
 
-_SLIDERS = (chess.BISHOP, chess.ROOK, chess.QUEEN)
-
-
-def _pin_line(board: chess.Board, square: chess.Square) -> chess.Square | None:
-    """The friendly piece a piece on `square` shields, or None if it shields nothing.
-
-    A pin, absolute or relative, by the inventory's rule (`inventory.pin_target`), so a pin
-    the coach was told about is not called false: an enemy slider that can legally take the
-    piece on `square` attacks it along a line, and the next piece past it on that line is a
-    friendly piece worth more that the slider would win once the front one moved -- the
-    king, or a piece the capture wins (worth more than the slider, or undefended). A knight
-    in front of a defended rook pins nothing.
-    """
-    piece = board.piece_at(square)
-    if piece is None or piece.piece_type == chess.KING:
-        return None
-    for attacker in exchange.capturers(board, not piece.color, square):
-        if board.piece_type_at(attacker) not in _SLIDERS:
-            continue
-        behind = _beyond(board, attacker, square)
-        occupant = board.piece_at(behind) if behind is not None else None
-        if (
-            behind is not None
-            and occupant is not None
-            and occupant.color == piece.color
-            and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
-            and _wins(board, attacker, behind, without=square)
-        ):
-            return behind
-    return None
-
-
-def _sign(n: int) -> int:
-    return (n > 0) - (n < 0)
-
-
-def _beyond(board: chess.Board, frm: chess.Square, through: chess.Square) -> chess.Square | None:
-    """The first occupied square past `through` on the line from `frm`, or None."""
-    df = _sign(chess.square_file(through) - chess.square_file(frm))
-    dr = _sign(chess.square_rank(through) - chess.square_rank(frm))
-    if df == 0 and dr == 0:
-        return None
-    file_, rank_ = chess.square_file(through) + df, chess.square_rank(through) + dr
-    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
-        square = chess.square(file_, rank_)
-        if board.piece_at(square) is not None:
-            return square
-        file_ += df
-        rank_ += dr
-    return None
-
-
-def _wins(
-    board: chess.Board,
-    frm: chess.Square,
-    target: chess.Square,
-    *,
-    without: chess.Square | None = None,
-) -> bool:
-    """Whether the piece on `frm` wins the piece on `target` by taking it, with the piece on
-    `without` stepped off the line: the target is the king, or the capture is legal and nets
-    material once the recaptures are played out (`exchange.exchange`)."""
-    if board.piece_type_at(target) == chess.KING:
-        return True
-    color = board.color_at(frm)
-    if color is None:
-        return False
-    probe = board.copy(stack=False)
-    if without is not None:
-        probe.remove_piece_at(without)
-    probe = _to_move(probe, color)
-    capture = next(
-        iter(probe.generate_legal_moves(chess.BB_SQUARES[frm], chess.BB_SQUARES[target])), None
+def _a_deed(text: str, match: re.Match[str]) -> bool:
+    """Whether a `_TACTIC` match is what the piece did to another ("the bishop on b5 pinned
+    the knight"), not a state of its own: a pin or trap with no "is" before it and an object
+    after it."""
+    return (
+        match.group("copula") is None
+        and match.group("state").lower() in _DEEDS
+        and _OBJECT_NEXT.match(text, match.end()) is not None
     )
-    return capture is not None and exchange.exchange(probe, capture) > 0
-
-
-def _fork_targets(board: chess.Board, square: chess.Square) -> list[chess.Square]:
-    """Enemy pieces a fork on `square` would win, by the inventory's rule
-    (`inventory.forks_in_place`): the king it checks, or a piece it can legally take that can
-    be won -- worth more than the forker, or not defended well enough. A pinned knight takes
-    nothing, so it forks nothing."""
-    piece = board.piece_at(square)
-    if piece is None:
-        return []
-    targets = []
-    for target in board.attacks(square):
-        other = board.piece_at(target)
-        if other is None or other.color == piece.color:
-            continue
-        if other.piece_type == chess.KING or (
-            square in exchange.capturers(board, piece.color, target)
-            and exchange.can_be_won(board, target)
-        ):
-            targets.append(target)
-    return targets
-
-
-def _skewers(board: chess.Board, square: chess.Square) -> bool:
-    """Whether the slider on `square` skewers, by the inventory's rule
-    (`inventory.skewer_target`): it attacks an enemy piece that must step aside -- the king,
-    or one it can legally take and win (worth more than the slider, or undefended) -- and
-    past it on the same line stands a less valuable enemy piece the slider then wins."""
-    piece = board.piece_at(square)
-    if piece is None or piece.piece_type not in _SLIDERS:
-        return False
-    for front in board.attacks(square):
-        target = board.piece_at(front)
-        if target is None or target.color == piece.color or not _wins(board, square, front):
-            continue
-        behind = _beyond(board, square, front)
-        occupant = board.piece_at(behind) if behind is not None else None
-        if (
-            behind is not None
-            and occupant is not None
-            and occupant.color != piece.color
-            and _VALUE[occupant.piece_type] < _VALUE[target.piece_type]
-            and _wins(board, square, behind, without=front)
-        ):
-            return True
-    return False
 
 
 def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | None:
@@ -1202,6 +1097,10 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     the king), a piece called loose that is defended, a piece called safe that can be won, a
     fork or skewer the piece does not make. Attack and defence are legal moves: a piece
     pinned to its king neither takes nor takes back, and a king takes back only where it may.
+    A pin, a fork and a skewer are the inventory's (`inventory.pin_target`, `fork_hits`,
+    `skewer_target`): the rule the facts sheet states is the rule the coach is held to, so
+    a pin the sheet tells the model of is never refused when the model says it (the audit,
+    2026-10-07: a mutual pin).
     """
     square = chess.parse_square(square_name.lower())
     piece = board.piece_at(square)
@@ -1210,7 +1109,7 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     name = PIECE_NAMES[piece.piece_type]
     state = state.lower().replace(" ", "").rstrip("s")
     if state == "pinned":
-        if _pin_line(board, square) is None:
+        if inventory.pin_target(board, square) is None:
             return f"the {name} on {square_name} is not pinned"
     elif state in ("hanging", "enprise"):
         if not exchange.capturers(board, not piece.color, square):
@@ -1231,13 +1130,13 @@ def _tactic_problem(board: chess.Board, square_name: str, state: str) -> str | N
     elif state == "trapped" and not board.attackers(not piece.color, square):
         return f"nothing is attacking the {name} on {square_name}"
     elif state in ("fork", "forking"):
-        if len(_fork_targets(board, square)) < 2:
+        if len(inventory.fork_hits(board, square)) < 2:
             if board.is_pinned(piece.color, square):
                 return f"the {name} on {square_name} is pinned, so it forks nothing"
             return f"the {name} on {square_name} does not fork two pieces"
         if exchange.can_be_won(board, square):
             return f"the {name} on {square_name} can be taken for profit, so it forks nothing"
-    elif state in ("skewer", "skewering") and not _skewers(board, square):
+    elif state in ("skewer", "skewering") and inventory.skewer_target(board, square) is None:
         return f"the {name} on {square_name} does not skewer anything"
     return None
 
@@ -1259,15 +1158,64 @@ _ELSEWHERE = re.compile(
 _CASTLING_SAID = re.compile(r"\bcastl\w*|O-O", re.IGNORECASE)
 
 
+_SENTENCE_STOPS = (". ", "! ", "? ", "; ")
+
+
+def _sentence_bounds(text: str, at: int) -> tuple[int, int]:
+    """Where the sentence holding position `at` of `text` starts and ends."""
+    start = max(text.rfind(stop, 0, at) for stop in _SENTENCE_STOPS) + 1
+    ends = [i for i in (text.find(stop, at) for stop in _SENTENCE_STOPS) if i >= 0]
+    return start, min(ends) if ends else len(text)
+
+
 def _elsewhere(text: str, at: int, piece: str = "") -> bool:
     """Whether the sentence holding position `at` of `text` is about another moment (for a
     king or rook, castling's)."""
-    start = max(text.rfind(stop, 0, at) for stop in (". ", "! ", "? ", "; ")) + 1
-    ends = [i for i in (text.find(stop, at) for stop in (". ", "! ", "? ", "; ")) if i >= 0]
-    sentence = text[start : min(ends) if ends else len(text)]
+    start, end = _sentence_bounds(text, at)
+    sentence = text[start:end]
     if piece.lower() in ("king", "rook") and _CASTLING_SAID.search(sentence):
         return True
     return bool(_ELSEWHERE.search(sentence))
+
+
+# Where a clause ends, for the question a clause can be: a full stop, an exclamation, a
+# question, a semicolon, a colon or a dash.
+_CLAUSE_STOPS = (".", "!", "?", ";", ":", "—", "--")
+# A question mark, but not one stuck to another mark of a move ("Nxe5!?", "Qh4??").
+_QUESTION_MARK = re.compile(r"(?<![!?])\?(?![!?])")
+
+
+def _questions(text: str) -> list[tuple[int, int]]:
+    """The spans of `text` that ask rather than say: each clause that ends in a question
+    mark, from the stop before it. A question asserts nothing ("Is the knight on c6
+    pinned?", "Which check comes first?"), so no claim is read in one (the audit,
+    2026-10-07). "The knight on c6 is pinned: how do you use it?" still asserts the pin, before
+    the colon."""
+    spans: list[tuple[int, int]] = []
+    for mark in _QUESTION_MARK.finditer(text):
+        start = 0
+        for stop in _CLAUSE_STOPS:
+            found = text.rfind(stop, 0, mark.start())
+            if found >= 0:
+                start = max(start, found + len(stop))
+        spans.append((start, mark.end()))
+    return spans
+
+
+def _asked(questions: Sequence[tuple[int, int]], at: int) -> bool:
+    return any(start <= at < end for start, end in questions)
+
+
+def _said_now(text: str, at: int, questions: Sequence[tuple[int, int]]) -> bool:
+    """Whether the words at `at` assert something of the board as it stands: not asked, and
+    nothing earlier in their sentence puts them at another moment -- a condition, a plan, a
+    future, a later move (`_OTHER_MOMENT`: "if", "once", "after", "would", "then"). The
+    board claims (a state, a file, a passed pawn) are read only where this holds, the way
+    the relations and mates always were."""
+    if _asked(questions, at):
+        return False
+    start, _ = _sentence_bounds(text, at)
+    return _OTHER_MOMENT.search(text, start, at) is None
 
 
 def check_draft(
@@ -1289,6 +1237,12 @@ def check_draft(
     of the frames: legal now, legal for the opponent after a pass (a coach may name a
     threat), or legal further along the line the coach was given. Bare squares are never
     flagged; a coach may point at one.
+
+    Only what the draft asserts is a claim (Tai: false claims about the board refuse a draft,
+    and nothing else may). A question asserts nothing (`_questions`); a claim about another
+    moment -- a condition, a plan, a later move -- is not one about these boards
+    (`_said_now`). A piece or a move a question names must still be real: the placement and
+    move checks read every sentence.
     """
     # The model writes curly apostrophes ("your opponent’s bishop"); the patterns spell
     # them straight, and read that way a flipped owner went unchecked (the test audit,
@@ -1298,6 +1252,7 @@ def check_draft(
     seen: set[str] = set()
     frames = [board, *after]
     us = board.turn if us is None else us
+    questions = _questions(text)
 
     def add(phrase: str, reason: str) -> None:
         if phrase not in seen:
@@ -1318,6 +1273,15 @@ def check_draft(
                 add(match.group(0), reasons[0] or "")
 
     for match in [*_TACTIC.finditer(text), *_STATE_FIRST.finditer(text)]:
+        # A state said of a piece ("the knight on c6 is pinned") is read only where it is
+        # said of the board now; a state that names the piece ("your undefended rook on c2")
+        # describes it as it stands whatever the sentence does with it ("could exploit"),
+        # like a placement, and only a question leaves it unsaid.
+        if match.re is _TACTIC:
+            if not _said_now(text, match.start(), questions) or _a_deed(text, match):
+                continue
+        elif _asked(questions, match.start()):
+            continue
         square, state = match.group("square"), match.group("state")
         present = [
             _placement_problem(frame, None, match.group("piece"), square, us) for frame in frames
@@ -1345,13 +1309,13 @@ def check_draft(
         reasons = [_move_problem(frame, match.group(1).replace("0", "O")) for frame in frames]
         if all(reasons):
             add(match.group(0), reasons[0] or "")
-    for phrase, reason in _strategic_problems(text, board, us):
+    for phrase, reason in _strategic_problems(text, frames, us, questions):
         add(phrase, reason)
-    for phrase, reason in _line_problems(text, frames, us):
+    for phrase, reason in _line_problems(text, frames, us, questions):
         add(phrase, reason)
-    for phrase, reason in _relation_problems(text, frames, us):
+    for phrase, reason in _relation_problems(text, frames, us, questions):
         add(phrase, reason)
-    for phrase, reason in _mate_problems(text, frames):
+    for phrase, reason in _mate_problems(text, frames, questions):
         add(phrase, reason)
     return problems
 
@@ -1359,15 +1323,18 @@ def check_draft(
 # What a move is said to force: the king away, or a piece onto a square. "The check forced the
 # King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
 # moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
+# "Force" says the piece has no other move. "Drive" says the piece is made to move and goes
+# there: true when it had no other move, or when the line the coach was given plays it ("a3
+# drives the knight back to c6" with ...Nc6 in the line was refused: the audit, 2026-10-07).
 _FORCE_KING = re.compile(
-    r"\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
+    r"\b(?P<verb>forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
     r"(?P<colour>your|their|the|his|white's|black's)\s+king\s+"
     r"(?:away|back|out|off|to\s+move|to\s+step\s+aside|to\s+(?P<square>[a-h][1-8]))\b"
     r"|\b(?P<colour2>your|their)\s+king\s+(?:has\s+to|must|is\s+forced\s+to)\s+move\b",
     re.IGNORECASE,
 )
 _FORCE_ONTO = re.compile(
-    r"\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
+    r"\b(?P<verb>forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\s+"
     r"(?P<colour>your|their|the|his|white's|black's)\s+"
     r"(?P<piece>queen|rook|bishop|knight|pawn)\s+(?:back\s+)?(?:onto|to|into)\s+"
     r"(?P<square>[a-h][1-8])\b",
@@ -1454,13 +1421,19 @@ _CLAUSE_END = re.compile(
     r"while|but|because|since|if|when|after|before|until|then|that|who|where|whereas)\b",
     re.IGNORECASE,
 )
-# What makes a sentence about a moment that is not on the board, or about a line: a plan, a
-# hope, a condition, a future ("once", "after", "would", "will"), an x-ray ("through").
+# What puts a claim at a moment that is not on the board: a plan, a hope, a condition, a
+# future, a later move ("once", "after", "would", "will", "then").
+_OTHER_MOMENT_WORDS = (
+    r"would|could|might|may|will|shall|won't|wouldn't|if|once|after|when|whenever|until|"
+    r"unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|trying|soon|later|"
+    r"eventually|next|then|imagine|suppose|afterwards|about to|going to|set to"
+)
+_OTHER_MOMENT = re.compile(rf"\b(?:{_OTHER_MOMENT_WORDS})\b", re.IGNORECASE)
+# And for a relation, what makes it about a line or a possibility rather than what a piece
+# does now: an x-ray ("through", "behind"), a line, what a piece can or should do.
 _NOT_PRESENT = re.compile(
-    r"\b(?:would|could|might|may|will|shall|should|can|cannot|can't|won't|wouldn't|if|once|"
-    r"after|when|whenever|until|unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|"
-    r"trying|soon|later|eventually|next|then|imagine|suppose|once|through|x-ray|x-rays|behind|"
-    r"line|lines|afterwards|ready|about to|going to|set to)\b",
+    rf"\b(?:{_OTHER_MOMENT_WORDS}|should|can|cannot|can't|through|x-ray|x-rays|behind|line|"
+    r"lines|ready)\b",
     re.IGNORECASE,
 )
 # A move said to mate now: "Qxf7 is mate", "Qxf7 mates", "Qxf7 gives checkmate".
@@ -1486,33 +1459,27 @@ def _on(frame: chess.Board, colour: str | None, piece: str, square: str, us: che
     return _placement_problem(frame, colour, piece, square, us) is None
 
 
-def _pins_it(board: chess.Board, attacker: chess.Square, front: chess.Square) -> bool:
-    """Whether the slider on `attacker` pins the piece on `front`, by `_pin_line`'s rule: the
-    piece behind, on the same line, is its side's and worth more, and would be won."""
-    if board.piece_type_at(attacker) not in _SLIDERS or front not in board.attacks(attacker):
-        return False
-    piece = board.piece_at(front)
-    behind = _beyond(board, attacker, front)
-    occupant = board.piece_at(behind) if behind is not None else None
-    return (
-        piece is not None
-        and behind is not None
-        and occupant is not None
-        and occupant.color == piece.color
-        and piece.color != board.color_at(attacker)
-        and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
-        and _wins(board, attacker, behind, without=front)
-    )
-
-
 def _relation_holds(
     board: chess.Board, kind: str, subject: chess.Square, objects: Sequence[chess.Square]
 ) -> bool:
     if kind == "pin":
-        return all(_pins_it(board, subject, o) for o in objects)
+        # The inventory's pin rule (`inventory.pinned_to`), the one the facts sheet states.
+        return all(inventory.pinned_to(board, subject, o) is not None for o in objects)
     # Attack and defence as python-chess has them: the squares the piece bears on, a pinned
-    # piece's included (a coach says a pinned knight still defends).
-    return all(o in board.attacks(subject) for o in objects)
+    # piece's included (a coach says a pinned knight still defends). A piece defends its own
+    # side's pieces and attacks the other side's: "your knight on f3 defends the pawn on e5"
+    # of Black's pawn passed (the audit, 2026-10-07). An empty square is covered either way.
+    colour = board.color_at(subject)
+
+    def bears(square: chess.Square) -> bool:
+        if square not in board.attacks(subject):
+            return False
+        held = board.color_at(square)
+        if held is None:
+            return True
+        return (held == colour) == (kind == "defend")
+
+    return all(bears(o) for o in objects)
 
 
 _KIND = {
@@ -1556,18 +1523,34 @@ def _objects_first(rest: str) -> list[tuple[str | None, str, str]]:
     return found
 
 
+def _sentences(text: str, stops: str = ".!?;") -> list[tuple[int, str]]:
+    """The sentences of `text`, each with where it starts."""
+    out: list[tuple[int, str]] = []
+    start = 0
+    for gap in re.finditer(rf"(?<=[{re.escape(stops)}])\s+", text):
+        out.append((start, text[start : gap.start()]))
+        start = gap.end()
+    out.append((start, text[start:]))
+    return out
+
+
 def _relation_problems(
-    text: str, frames: Sequence[chess.Board], us: chess.Color
+    text: str,
+    frames: Sequence[chess.Board],
+    us: chess.Color,
+    questions: Sequence[tuple[int, int]] = (),
 ) -> list[tuple[str, str]]:
     """Relations said of pieces in the present that no frame bears out: an attack, a defence,
     a pin or a fork. Only a sentence about the present is read (no plan, condition, future,
-    line or x-ray), only pieces named with their squares, and only where some frame has
-    every named piece on its square: elsewhere the placement check speaks."""
+    line or x-ray), never a question, only pieces named with their squares, and only where
+    some frame has every named piece on its square: elsewhere the placement check speaks."""
     problems: list[tuple[str, str]] = []
-    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+    for offset, sentence in _sentences(text):
         relations: list[tuple[str, str, str | None, str, str, list[tuple[str | None, str, str]]]]
         relations = []
         for match in _RELATION.finditer(sentence):
+            if _asked(questions, offset + match.start()):
+                continue
             if _NOT_PRESENT.search(sentence[: match.start()]) or _NOT_PRESENT.search(
                 sentence[match.start() : match.end("objects") - len(match.group("objects"))]
             ):
@@ -1600,7 +1583,9 @@ def _relation_problems(
                 )
             )
         for match in _RELATION_BY.finditer(sentence):
-            if _NOT_PRESENT.search(sentence[: match.start()]):
+            if _asked(questions, offset + match.start()) or _NOT_PRESENT.search(
+                sentence[: match.start()]
+            ):
                 continue
             kind = _verb_kind(match.group("verb"))
             relations.append(
@@ -1633,17 +1618,21 @@ def _relation_problems(
     return problems
 
 
-def _mate_problems(text: str, frames: Sequence[chess.Board]) -> list[tuple[str, str]]:
+def _mate_problems(
+    text: str, frames: Sequence[chess.Board], questions: Sequence[tuple[int, int]] = ()
+) -> list[tuple[str, str]]:
     """A move said to be mate that mates on no frame where it can be played, and "mate in
-    one" where no frame has one for either side."""
+    one" where no frame has one for either side. A question ("Is Qxf7 mate?") says neither."""
     problems: list[tuple[str, str]] = []
     # Only a sentence about the present: a mate named in a line, a threat or a plan ("stops
     # Qxg2#", "after Kf7, Ra7 is mate", "then Qa8 would be mate") is about a later moment,
     # and checked so, 20 of 21 flags over the stored replies were true claims (2026-10-01).
-    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+    for offset, sentence in _sentences(text):
         if _NOT_PRESENT.search(sentence) or _NOT_NOW.search(sentence):
             continue
         for match in _MATE_SAID.finditer(sentence):
+            if _asked(questions, offset + match.start()):
+                continue
             core = _TRAILING_MARKS.sub("", match.group("san") or match.group("san2"))
             played = mates = False
             for frame in frames:
@@ -1658,6 +1647,8 @@ def _mate_problems(text: str, frames: Sequence[chess.Board]) -> list[tuple[str, 
             if played and not mates:
                 problems.append((match.group(0), f"{core} is not mate"))
         said = _MATE_IN_ONE.search(sentence)
+        if said and _asked(questions, offset + said.start()):
+            said = None
         if said and not any(_has_mate_in_one(b) for f in frames for b in _both_sides(f)):
             problems.append((said.group(0), "no mate in one is on the board"))
     return problems
@@ -1732,67 +1723,93 @@ def _checked_frames(
     return out
 
 
+def _goes(
+    frame: chess.Board,
+    move: chess.Move,
+    kind: chess.PieceType | None,
+    target: chess.Square | None,
+) -> bool:
+    """Whether `move` takes a piece of `kind` to `target` (anywhere, when None)."""
+    return frame.piece_type_at(move.from_square) == kind and (
+        target is None or move.to_square == target
+    )
+
+
+def _line_plays(
+    frame: chess.Board,
+    keys: set[tuple[str, chess.Color]],
+    kind: chess.PieceType | None,
+    target: chess.Square | None,
+) -> bool:
+    """Whether the line the coach was given plays, from `frame`, a piece of `kind` to
+    `target` (`_goes`): the board after the move is one of the frames (`keys`)."""
+    for move in frame.legal_moves:
+        if not _goes(frame, move, kind, target):
+            continue
+        after = frame.copy(stack=False)
+        after.push(move)
+        if (after.board_fen(), after.turn) in keys:
+            return True
+    return False
+
+
 def _line_problems(
-    text: str, frames: Sequence[chess.Board], us: chess.Color
+    text: str,
+    frames: Sequence[chess.Board],
+    us: chess.Color,
+    questions: Sequence[tuple[int, int]] = (),
 ) -> list[tuple[str, str]]:
     """What a line is said to force, or to keep open, that none of the frames bears out. A
     claim no frame applies to -- no check on the board or the line for that side -- is left
-    alone: it is about some other moment of the game."""
+    alone: it is about some other moment of the game. A question claims nothing."""
     problems: list[tuple[str, str]] = []
-    for sentence_text in re.split(r"(?<=[.!?])\s+", text):
+    keys = {(f.board_fen(), f.turn) for f in frames}
+    for offset, sentence_text in _sentences(text, ".!?"):
         for match in _FORCE_KING.finditer(sentence_text):
+            if _asked(questions, offset + match.start()):
+                continue
             side = _side(match.group("colour") or match.group("colour2"), us)
             checked = _checked_frames(sentence_text, frames, side)
             if not checked:
                 continue
+            drives = (match.group("verb") or "").lower().startswith(("driv", "drov"))
             to = match.group("square")
+            target = chess.parse_square(to.lower()) if to is not None else None
+            if any(
+                any(True for _ in f.legal_moves)
+                and all(_goes(f, m, chess.KING, target) for m in f.legal_moves)
+                for f in checked
+            ):
+                continue
+            if drives and any(_line_plays(f, keys, chess.KING, target) for f in checked):
+                continue
             if to is None:
-                if any(
-                    any(True for _ in f.legal_moves)
-                    and all(f.piece_type_at(m.from_square) == chess.KING for m in f.legal_moves)
-                    for f in checked
-                ):
-                    continue
                 reason = (
                     "the check does not force the king to move: it can be blocked "
                     "or the checking piece taken"
                 )
             else:
                 # "Forces the King to h6" where Kf6 was legal too (the test audit).
-                target = chess.parse_square(to.lower())
-                if any(
-                    any(True for _ in f.legal_moves)
-                    and all(
-                        f.piece_type_at(m.from_square) == chess.KING and m.to_square == target
-                        for m in f.legal_moves
-                    )
-                    for f in checked
-                ):
-                    continue
                 reason = f"nothing forces the king to {to.lower()}: other moves are legal there"
             problems.append((match.group(0), reason))
         for match in _FORCE_ONTO.finditer(sentence_text):
+            if _asked(questions, offset + match.start()):
+                continue
             side = _side(match.group("colour"), us)
             kind = _PIECE_WORDS.get(match.group("piece").lower())
             square = chess.parse_square(match.group("square").lower())
+            drives = match.group("verb").lower().startswith(("driv", "drov"))
             candidates = [
                 f
                 for f in [*frames, *_checked_frames(sentence_text, frames, side)]
                 if (side is None or f.turn == side)
-                and any(
-                    m.to_square == square and f.piece_type_at(m.from_square) == kind
-                    for m in f.legal_moves
-                )
+                and any(_goes(f, m, kind, square) for m in f.legal_moves)
             ]
             if not candidates:
                 continue
-            if any(
-                all(
-                    m.to_square == square and f.piece_type_at(m.from_square) == kind
-                    for m in f.legal_moves
-                )
-                for f in candidates
-            ):
+            if any(all(_goes(f, m, kind, square) for m in f.legal_moves) for f in candidates):
+                continue
+            if drives and any(_line_plays(f, keys, kind, square) for f in candidates):
                 continue
             problems.append(
                 (
@@ -1802,6 +1819,8 @@ def _line_problems(
                 )
             )
     for match in _OWNED.finditer(text):
+        if _asked(questions, match.start()):
+            continue
         side = _side(match.group("colour"), us)
         kind = _PIECE_WORDS.get(match.group("piece").lower())
         if side is None or kind is None or kind == chess.KING:
@@ -1811,6 +1830,8 @@ def _line_problems(
         whose = "you have" if side == us else "they have"
         problems.append((match.group(0), f"{whose} no {match.group('piece').lower()}"))
     for match in _ONLY_MOVE.finditer(text):
+        if _asked(questions, match.start()):
+            continue
         san, king_only = match.group("san"), bool(match.group("king"))
         where = [f for f in frames if _legal_san(f, san)]
         if not where:
@@ -1824,11 +1845,13 @@ def _line_problems(
 
         if any(alone(f) for f in where):
             continue
-        kind = "king move" if king_only else "move"
-        problems.append((match.group(0), f"{san} is not the only {kind}: others are legal"))
+        what = "king move" if king_only else "move"
+        problems.append((match.group(0), f"{san} is not the only {what}: others are legal"))
     for match in _ALLOWS.finditer(text):
+        if _asked(questions, match.start()):
+            continue
         first, reply = match.group("first"), match.group("reply")
-        played_on = []
+        played_on: list[tuple[chess.Board, chess.Board]] = []
         for frame in frames:
             try:
                 move = frame.parse_san(first)
@@ -1836,15 +1859,28 @@ def _line_problems(
                 continue
             after = frame.copy(stack=False)
             after.push(move)
-            played_on.append(after)
+            played_on.append((frame, after))
         if not played_on:
             continue  # a move of some other moment: the move check has it
-        if any(_legal_san(after, reply) for after in played_on):
+        # What a move allows is the opponent's reply, or a next move of the mover's own that
+        # it makes possible: "Bc4 allows O-O next" clears f1 for castling (the audit,
+        # 2026-10-07).
+        if any(
+            _legal_san(after, reply)
+            or (
+                not after.is_check()
+                and not _legal_san(frame, reply)
+                and _legal_san(_both_sides(after)[-1], reply)
+            )
+            for frame, after in played_on
+        ):
             continue
         problems.append(
             (match.group(0), f"{reply} cannot be played after {first}: it does not allow it")
         )
     for match in _FILE_EMPTY.finditer(text):
+        if not _said_now(text, match.start(), questions):
+            continue
         letter = match.group("file").lower()
         index = ord(letter) - ord("a")
         if not any(
@@ -1852,6 +1888,8 @@ def _line_problems(
         ):
             problems.append((match.group(0), f"the {letter}-file has a pawn on it"))
     for match in _FILES_OPEN.finditer(text):
+        if not _said_now(text, match.start(), questions):
+            continue
         body = match.group("body") or match.group("body2") or ""
         for letter in dict.fromkeys(re.findall(r"\b([a-h])-", body.lower())):
             index = ord(letter) - ord("a")
@@ -1865,80 +1903,127 @@ def _line_problems(
     return problems
 
 
-# A file called open or half-open, in either word order ("the open e-file", "the e-file is
-# open"). A pawn called passed, by square or by file, in either order.
+# A file called open, half-open or semi-open, in either word order ("the open e-file", "the
+# e-file is open", "the semi-open c-file": once read as an open file and refused, the audit
+# of 2026-10-07). A pawn called passed, by square or by file, in either order; a file's pawn
+# is written with its hyphen ("the c-pawn"), so the article in "a pawn is passed when..." is
+# never the a-pawn.
 _OPEN_FILE = re.compile(
-    r"\b(?:(?P<k1>open|half[-\s]?open)\s+(?P<f1>[a-h])[-\s]?file"
-    r"|(?P<f2>[a-h])[-\s]?file\s+(?:is|are|remains?)\s+(?:now\s+)?(?P<k2>open|half[-\s]?open))\b",
+    r"\b(?:(?P<k1>(?:half|semi)[-\s]?open|open)\s+(?P<f1>[a-h])[-\s]?file"
+    r"|(?P<f2>[a-h])[-\s]?file\s+(?:is|are|remains?)\s+(?:now\s+)?"
+    r"(?P<k2>(?:half|semi)[-\s]?open|open))\b",
     re.IGNORECASE,
 )
 _PASSED = re.compile(
     r"\bpassed\s+pawn\s+on\s+(?P<sq1>[a-h][1-8])"
     r"|\bpawn\s+on\s+(?P<sq2>[a-h][1-8])\s+(?:is|are)\s+(?:a\s+|now\s+)*passed"
-    r"|\bpassed\s+(?P<file1>[a-h])[-\s]?pawn"
-    r"|\b(?P<file2>[a-h])[-\s]?pawn\s+(?:is|are)\s+(?:a\s+|now\s+)*passed",
+    r"|\bpassed\s+(?P<file1>[a-h])-pawn"
+    r"|\b(?P<file2>[a-h])-pawn\s+(?:is|are)\s+(?:a\s+|now\s+)*passed",
     re.IGNORECASE,
 )
+
+
+_FOR_THEM = re.compile(r"\bfor\s+them\b|\b(?:their|opponent's)\s+(?:half|semi)")
+_FOR_YOU = re.compile(r"\bfor\s+you\b|\byour\s+(?:half|semi)")
 
 
 def _file_squares(file_index: int) -> list[chess.Square]:
     return [chess.square(file_index, rank) for rank in range(8)]
 
 
+def _file_problem(
+    board: chess.Board, letter: str, kind: str, whose: str, us: chess.Color
+) -> str | None:
+    """Why the file is not what it was called on `board` ("open", or "halfopen" for `whose`:
+    "them", "you" or "either"), or None when it is."""
+    pawns = [board.piece_at(sq) for sq in _file_squares(ord(letter) - ord("a"))]
+    ours = any(p and p.piece_type == chess.PAWN and p.color == us for p in pawns)
+    theirs = any(p and p.piece_type == chess.PAWN and p.color != us for p in pawns)
+    if kind == "open":
+        return f"the {letter}-file is not open; a pawn stands on it" if ours or theirs else None
+    if whose == "them":
+        return (
+            f"the {letter}-file is not half-open for them; they have a pawn there"
+            if theirs
+            else None
+        )
+    if whose == "you":
+        return (
+            f"the {letter}-file is not half-open for you; you have a pawn there" if ours else None
+        )
+    if ours and theirs:
+        return f"the {letter}-file is not half-open for either side: both have a pawn there"
+    return None
+
+
+def _passed_verdict(
+    board: chess.Board, square_name: str | None, letter: str | None, us: chess.Color
+) -> tuple[bool | None, str]:
+    """Whether the pawn called passed is passed on `board`, with why not; None when `board`
+    has no such pawn to judge."""
+    if square_name:
+        square = chess.parse_square(square_name.lower())
+        if board.piece_type_at(square) != chess.PAWN:
+            return None, ""
+        return is_passed(board, square), f"the pawn on {square_name.lower()} is not passed"
+    ours = [
+        sq
+        for sq in _file_squares(ord((letter or "a").lower()) - ord("a"))
+        if board.piece_type_at(sq) == chess.PAWN and board.color_at(sq) == us
+    ]
+    if not ours:
+        return None, ""
+    passed = any(is_passed(board, sq) for sq in ours)
+    return passed, f"your {(letter or '').lower()}-pawn is not a passed pawn"
+
+
 def _strategic_problems(
-    text: str, board: chess.Board, us: chess.Color | None = None
+    text: str,
+    frames: Sequence[chess.Board],
+    us: chess.Color,
+    questions: Sequence[tuple[int, int]] = (),
 ) -> list[tuple[str, str]]:
-    """Concrete strategic claims the board contradicts: a file said open that has pawns, a
+    """Concrete strategic claims the boards contradict: a file said open that has pawns, a
     pawn said passed that an enemy pawn still holds up. Only clear, checkable contradictions
-    are flagged; a fuzzy claim (space, king safety, activity) is left alone.
+    are flagged; a fuzzy claim (space, king safety, activity) is left alone. Like the
+    placements, a claim is false only when it is false on every frame (the board now and
+    along the line the coach was given), and it is read only where the draft says it of the
+    board as it stands (`_said_now`): not in a question, a condition or a plan.
     """
-    us = board.turn if us is None else us
     problems: list[tuple[str, str]] = []
     for match in _OPEN_FILE.finditer(text):
-        kind = (match.group("k1") or match.group("k2")).lower().replace(" ", "").replace("-", "")
+        if not _said_now(text, match.start(), questions):
+            continue
+        kind = (match.group("k1") or match.group("k2")).lower()
+        kind = "open" if kind == "open" else "halfopen"
         letter = (match.group("f1") or match.group("f2")).lower()
-        pawns = [board.piece_at(sq) for sq in _file_squares(ord(letter) - ord("a"))]
-        ours = any(p and p.piece_type == chess.PAWN and p.color == us for p in pawns)
-        theirs = any(p and p.piece_type == chess.PAWN and p.color != us for p in pawns)
-        if kind == "open" and (ours or theirs):
-            problems.append((match.group(0), f"the {letter}-file is not open; a pawn stands on it"))
-        elif kind == "halfopen":
-            # Whose file it is, as the sentence says: "for you" or "your" is the player's,
-            # "their" or "the opponent's" theirs ("your opponent takes the half-open f-file":
-            # round 2 refused two good replies read as the player's); unsaid, either side's.
-            window = text[max(0, match.start() - 60) : match.end() + 20].lower()
-            if re.search(r"\bopponent|\btheir\b|\bfor them\b", window):
-                wrong, whose = theirs, "for them; they have a pawn there"
-            elif re.search(r"\byour?\b|\bfor you\b", window):
-                wrong, whose = ours, "for you; you have a pawn there"
-            else:
-                wrong, whose = ours and theirs, "for either side: both have a pawn there"
-            if wrong:
-                problems.append((match.group(0), f"the {letter}-file is not half-open {whose}"))
+        # Whose file it is, only where the sentence says so of the file: "for you", "your
+        # half-open file" is the player's, "for them", "their half-open file" theirs; else
+        # either side's. A "your" or an "opponent" anywhere near was read as the owner:
+        # "your opponent takes the half-open f-file" (round 2), and "...along the half-open
+        # d-file. Your opponent must..." from the next sentence (the audit, 2026-10-07).
+        start, end = _sentence_bounds(text, match.start())
+        window = text[max(start, match.start() - 20) : min(end, match.end() + 20)].lower()
+        if _FOR_THEM.search(window):
+            whose = "them"
+        elif _FOR_YOU.search(window):
+            whose = "you"
+        else:
+            whose = "either"
+        reasons = [_file_problem(f, letter, kind, whose, us) for f in frames]
+        if all(reasons):
+            problems.append((match.group(0), reasons[0] or ""))
     for match in _PASSED.finditer(text):
+        if not _said_now(text, match.start(), questions):
+            continue
         square_name = match.group("sq1") or match.group("sq2")
         letter = match.group("file1") or match.group("file2")
-        if square_name:
-            square = chess.parse_square(square_name.lower())
-            piece = board.piece_at(square)
-            if (
-                piece is not None
-                and piece.piece_type == chess.PAWN
-                and not is_passed(board, square)
-            ):
-                problems.append(
-                    (match.group(0), f"the pawn on {square_name.lower()} is not passed")
-                )
-        elif letter:
-            ours = [
-                sq
-                for sq in _file_squares(ord(letter.lower()) - ord("a"))
-                if board.piece_type_at(sq) == chess.PAWN and board.color_at(sq) == us
-            ]
-            if ours and not any(is_passed(board, sq) for sq in ours):
-                problems.append(
-                    (match.group(0), f"your {letter.lower()}-pawn is not a passed pawn")
-                )
+        verdicts = [_passed_verdict(f, square_name, letter, us) for f in frames]
+        # False where some frame shows the pawn not passed and none shows it passed; a frame
+        # without the pawn says nothing.
+        held = [passed for passed, _ in verdicts if passed is not None]
+        if held and not any(held):
+            problems.append((match.group(0), next(r for p, r in verdicts if p is False)))
     return problems
 
 

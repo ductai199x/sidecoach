@@ -91,6 +91,11 @@ data class Idea(
     val flight: List<Int> = emptyList(),
     /** How many checks the side to move has. */
     val checks: Int = 0,
+    /**
+     * "mate", "attack": the line's first move gives check. A mate in two that starts with a quiet
+     * move was hinted "Which check comes first?" (the audit, 2026-10-07).
+     */
+    val checksFirst: Boolean = false,
     /** The line only holds the balance: what it wins, it wins back. */
     val level: Boolean = false,
     /** The player is behind in material now. */
@@ -385,6 +390,7 @@ object IdeaReader {
                 target = king,
                 flight = flightOf(board, !us),
                 checks = checks,
+                checksFirst = board.givesCheck(first),
             )
         }
         val second = if (analysis.lines.size > 1) analysis.lines[1].expectedScore else null
@@ -565,6 +571,7 @@ object IdeaReader {
                 target = board.king(!us),
                 flight = flightOf(board, !us),
                 checks = checks,
+                checksFirst = board.givesCheck(first),
             )
         }
         // A won position with nothing to win in sight is won by technique, never "no tactic

@@ -52,32 +52,50 @@ fun pinTarget(board: Board, sq: Int): Pair<Int, Int>? {
     val piece = board.pieceAt(sq) ?: return null
     if (piece.pieceType == KING) return null
     for (attacker in board.attackers(!piece.colour, sq)) {
-        val slider = board.pieceAt(attacker) ?: continue
-        if (slider.pieceType !in SLIDERS.toList()) continue
-        val df = sign(squareFile(sq) - squareFile(attacker))
-        val dr = sign(squareRank(sq) - squareRank(attacker))
-        var file = squareFile(sq) + df
-        var rank = squareRank(sq) + dr
-        while (file in 0..7 && rank in 0..7) {
-            val behind = square(file, rank)
-            val occupant = board.pieceAt(behind)
-            if (occupant != null) {
-                // A pin to the king holds whatever the pinner: a pinned piece still gives check.
-                // A pin to anything else needs a pinner that can legally take.
-                val toKing = occupant.pieceType == KING
-                val takes = toKing || attacker in Exchange.capturers(board, !piece.colour, sq)
-                if (occupant.colour == piece.colour &&
-                    INV_VALUE[occupant.pieceType] > INV_VALUE[piece.pieceType] &&
-                    takes &&
-                    Motifs.winnable(board, behind, INV_VALUE[slider.pieceType], ignore = sq)
-                ) {
-                    return attacker to behind
-                }
-                break
+        val behind = pinnedTo(board, attacker, sq)
+        if (behind != null) return attacker to behind
+    }
+    return null
+}
+
+/**
+ * The piece the slider on `attacker` pins the piece on `sq` to, or null: the one pin rule, which
+ * the inventory states and the draft check ([checkDraft]) holds the coach to, so a pin the facts
+ * tell the model is never refused when the model says it. `inventory.pinned_to`.
+ */
+fun pinnedTo(board: Board, attacker: Int, sq: Int): Int? {
+    val piece = board.pieceAt(sq) ?: return null
+    val slider = board.pieceAt(attacker) ?: return null
+    if (piece.pieceType == KING ||
+        slider.pieceType !in SLIDERS.toList() ||
+        slider.colour == piece.colour ||
+        sq !in board.attacks(attacker)
+    ) {
+        return null
+    }
+    val df = sign(squareFile(sq) - squareFile(attacker))
+    val dr = sign(squareRank(sq) - squareRank(attacker))
+    var file = squareFile(sq) + df
+    var rank = squareRank(sq) + dr
+    while (file in 0..7 && rank in 0..7) {
+        val behind = square(file, rank)
+        val occupant = board.pieceAt(behind)
+        if (occupant != null) {
+            // A pin to the king holds whatever the pinner: a pinned piece still gives check.
+            // A pin to anything else needs a pinner that can legally take.
+            val toKing = occupant.pieceType == KING
+            val takes = toKing || attacker in Exchange.capturers(board, !piece.colour, sq)
+            if (occupant.colour == piece.colour &&
+                INV_VALUE[occupant.pieceType] > INV_VALUE[piece.pieceType] &&
+                takes &&
+                Motifs.winnable(board, behind, INV_VALUE[slider.pieceType], ignore = sq)
+            ) {
+                return behind
             }
-            file += df
-            rank += dr
+            return null
         }
+        file += df
+        rank += dr
     }
     return null
 }
@@ -182,23 +200,33 @@ fun forksInPlace(board: Board, colour: Boolean): List<Pair<Int, List<Int>>> {
     for (sq in 0 until 64) {
         val piece = board.pieceAt(sq) ?: continue
         if (piece.colour != colour) continue
-        val mine = INV_VALUE[piece.pieceType]
-        val hits = board.attacks(sq).filter { t ->
-            val o = board.pieceAt(t)
-            o != null && o.colour != colour &&
-                (o.pieceType == KING || sq in Exchange.capturers(board, colour, t)) &&
-                (
-                    o.pieceType == KING ||
-                        INV_VALUE[o.pieceType] > mine ||
-                        Exchange.defenders(board, !colour, t).isEmpty()
-                    )
-        }
-        val safe = Motifs.isSafe(board, sq)
-        if (hits.size >= 2 && safe) {
+        val hits = forkHits(board, sq)
+        if (hits.size >= 2 && Motifs.isSafe(board, sq)) {
             out.add(sq to hits.sortedByDescending { INV_VALUE[typeOrPawn(board, it)] })
         }
     }
     return out.sortedByDescending { entry -> entry.second.sumOf { INV_VALUE[typeOrPawn(board, it)] } }
+}
+
+/**
+ * The enemy units the piece on `sq` could win: the king, or one it can legally take that is worth
+ * more than itself or that nothing defends. The one fork rule, which the inventory states and the
+ * draft check ([checkDraft]) holds the coach to. `inventory.fork_hits`.
+ */
+fun forkHits(board: Board, sq: Int): List<Int> {
+    val piece = board.pieceAt(sq) ?: return emptyList()
+    val colour = piece.colour
+    val mine = INV_VALUE[piece.pieceType]
+    return board.attacks(sq).filter { t ->
+        val o = board.pieceAt(t)
+        o != null && o.colour != colour &&
+            (o.pieceType == KING || sq in Exchange.capturers(board, colour, t)) &&
+            (
+                o.pieceType == KING ||
+                    INV_VALUE[o.pieceType] > mine ||
+                    Exchange.defenders(board, !colour, t).isEmpty()
+                )
+    }
 }
 
 private fun typeOrPawn(board: Board, sq: Int): Int {

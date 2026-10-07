@@ -564,6 +564,13 @@ def clears_path(idea: Idea, board: chess.Board) -> bool:
     )
 
 
+# A first move that is no check, by what it is: "which quiet move threatens a mate...".
+QUIET_START: dict[str, str] = {
+    "quiet": "quiet move",
+    "capture": "capture",
+    "promotion": "promotion",
+}
+
 # A promotion whose first move is no clearing: the pawn needs a piece's help, not a road.
 PROMOTE_HELP_QUESTION = (
     "What does your pawn need to get through, and which of your pieces can give it?"
@@ -591,6 +598,14 @@ def question(idea: Idea, plan_kind: str | None, board: chess.Board | None = None
     if idea.goal == "mate":
         if idea.mate_in == 1:
             return "Which check leaves their king no square at all?"
+        if not idea.checks_first:
+            # A mate that starts with no check: the question points at what the first move
+            # does, never at the checks (the audit, 2026-10-07: "Go through your checks" for a
+            # mate in two that starts quietly). The move, its square and its piece stay unsaid.
+            if idea.starts_with == "sacrifice":
+                return "What could you give up so that the mate that follows cannot be stopped?"
+            noun = QUIET_START.get(idea.starts_with, "move")
+            return f"Which {noun} leaves them no defence against mate?"
         if idea.starts_with == "sacrifice" or idea.sacrifices:
             return (
                 "Go through your checks, the ones that give up material too: after which "
@@ -604,6 +619,8 @@ def question(idea: Idea, plan_kind: str | None, board: chess.Board | None = None
     if idea.goal == "attack":
         if idea.starts_with == "sacrifice" or idea.sacrifices:
             return "Which sacrifice tears open the cover around their king?"
+        if not idea.checks_first:
+            return "Which move opens the way to their king?"
         return "Which check drives their king into the open?"
     if idea.goal == "win":
         return "Which of their pieces is loose or attacked more times than it is defended?"
@@ -642,7 +659,11 @@ def nudge(idea: Idea, board: chess.Board | None = None) -> str | None:
     """The focus rung's question: the one that leads from the target to the move."""
     name = idea.blow.name if idea.blow is not None else None
     if idea.goal == "mate":
-        return "Which check is it?" if idea.mate_in == 1 else "Which check comes first?"
+        if idea.mate_in == 1:
+            return "Which check is it?"
+        if not idea.checks_first:
+            return "Which move threatens a mate they cannot meet?"
+        return "Which check comes first?"
     if idea.goal == "draw":
         return "Which check starts it?" if idea.draw == "perpetual" else "Which move is it?"
     if idea.goal == "convert":
@@ -652,7 +673,9 @@ def nudge(idea: Idea, board: chess.Board | None = None) -> str | None:
     if idea.goal == "breakthrough":
         return "Which pawn goes first?"
     if idea.goal == "attack":
-        return "Which sacrifice opens it?" if idea.sacrifices else "Which check comes first?"
+        if idea.sacrifices:
+            return "Which sacrifice opens it?"
+        return "Which check comes first?" if idea.checks_first else "Which move starts it?"
     if idea.goal == "promote":
         if board is not None and not clears_path(idea, board):
             return PROMOTE_HELP_NUDGE
@@ -681,11 +704,12 @@ def target(idea: Idea, board: chess.Board, *, defender_named: bool = False) -> s
             room = f"whose only free square is {free[0]}"
         else:
             room = "with free squares on " + ", ".join(free[:-1]) + f" and {free[-1]}"
-        # How many checks there are, while the number narrows the search.
+        # How many checks there are, while the number narrows the search -- only when the
+        # line starts with one: before a quiet first move it sends the search the wrong way.
         checks = (
             f"; you have {_NUMBER.get(idea.checks, str(idea.checks))} check"
             f"{'s' if idea.checks != 1 else ''}"
-            if 0 < idea.checks <= 4
+            if 0 < idea.checks <= 4 and idea.checks_first
             else ""
         )
         return f"their king on {_sq(idea.target)}, {room}{checks}"

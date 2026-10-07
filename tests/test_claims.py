@@ -678,12 +678,23 @@ DRAFT = [
         id="no-pawns-of-yours",
     ),
     # The locked test set's audit (2026-09-26): false claims the checker now catches, each
-    # beside the true sentence it must not fault. "Qf2+ drives the King to h3": Kh1 was
+    # beside the true sentence it must not fault. "Qf2+ forces the King to h3": Kh1 was
     # legal too; judged on Qf2+'s own frame.
     pytest.param(
-        "6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48", "Qf2+ drives the King to h3.",
+        "6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48", "Qf2+ forces the King to h3.",
         B, ("Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#"), ("nothing forces the king to h3", ...),
-        id="drives-the-king-where-it-had-a-choice",
+        id="forces-the-king-where-it-had-a-choice",
+    ),
+    # "Drives" says the king is made to move and goes there: the line plays Kh3 (the audit,
+    # 2026-10-07). Without the line, Kh1 was as legal, and it is refused.
+    pytest.param(
+        "6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48", "Qf2+ drives the King to h3.",
+        B, ("Qh4+", "Kg2", "Qf2+", "Kh3", "Rh4#"), (), id="drives-the-king-where-the-line-goes",
+    ),
+    pytest.param(
+        "6k1/5pp1/p2p4/1p3Pb1/2p1r1q1/P1P1p3/1P5K/4R3 b - - 1 48", "Qf2+ drives the King to h3.",
+        B, ("Qh4+", "Kg2", "Qf2+", "Kh1"), ("nothing forces the king to h3", ...),
+        id="drives-the-king-where-the-line-does-not-go",
     ),
     # "Kh7 is the only king move" where four were legal (Qd4+ given: the king has five);
     # "the only move that keeps your edge" is the stakes, and is not checked.
@@ -797,6 +808,147 @@ DRAFT = [
         "Bxf7+ first would only lose time; if they slip, Bxf7 is mate later. Once your knight "
         "on g1 comes out, your knight on g1 attacks nothing yet.", W, (), (),
         id="not-the-present",
+    ),
+    # The audit of 2026-10-07: good replies the check refused, each beside the false claim
+    # of the same kind it must still refuse. Only what the draft asserts is a claim.
+    # A question asserts nothing; a claim before the question in the same sentence does.
+    pytest.param(
+        ITALIAN, "Is the knight on c6 pinned? Is the bishop on c4 hanging?", W, (), (),
+        id="questions-claim-nothing",
+    ),
+    pytest.param(
+        ITALIAN, "The knight on c6 is pinned: how do you use it?", W, (),
+        ("the knight on c6 is not pinned",), id="a-claim-before-a-question",
+    ),
+    pytest.param(
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "Is Bxf7 mate? Is the knight on c6 forking anything?", W, (), (), id="asked-not-said",
+    ),
+    pytest.param(
+        ITALIAN, "Is your knight on e5 doing a lot?", W, (),
+        ("e5 holds their pawn, not a knight",), id="a-question-names-a-real-piece",
+    ),
+    # Said without "is", a pin taking an object is what the piece did, not its state.
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+        "Your bishop on b5 pinned the knight for a moment.", W, (), (),
+        id="a-pin-done-not-suffered",
+    ),
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+        "Your bishop on b5 is pinned.", W, (), ("the bishop on b5 is not pinned",),
+        id="a-pin-suffered-not-there",
+    ),
+    # A state said on a condition is another moment; a state naming the piece is said of it
+    # as it stands, whatever the sentence does with it.
+    pytest.param(
+        "4k3/8/8/8/8/5N2/4P3/4K3 w - - 0 1",
+        "If the pawn on e2 moves, the knight on f3 is undefended.", W, (), (),
+        id="a-state-on-a-condition",
+    ),
+    pytest.param(
+        "4k3/8/8/8/8/5N2/4P3/4K3 w - - 0 1",
+        "Their king could go after your undefended knight on f3.", W, (),
+        ("the knight on f3 is defended",), id="a-state-naming-the-piece",
+    ),
+    # A break named by its square is a plan; a piece placed there is still checked.
+    pytest.param(
+        "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3",
+        "The c5 pawn break is your main idea, and the f6 pawn push comes next.", B, (), (),
+        id="a-pawn-break",
+    ),
+    pytest.param(
+        "rnbqkbnr/ppp2ppp/4p3/3pP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3",
+        "Your c5 pawn is strong.", B, (), ("c5 is empty",), id="a-pawn-that-is-not-there",
+    ),
+    # The article is not the a-pawn; a definition is no claim about this board.
+    pytest.param(
+        chess.STARTING_FEN, "A pawn is passed when no enemy pawn can stop it.", W, (), (),
+        id="a-pawn-is-passed-when",
+    ),
+    pytest.param(
+        chess.STARTING_FEN, "Your a-pawn is passed.", W, (), ("not a passed pawn",),
+        id="the-a-pawn-is-not-passed",
+    ),
+    # Semi-open is half-open, not open; and whose it is read in its own sentence.
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "Your rook belongs on the semi-open c-file.", B, (), (), id="a-semi-open-file",
+    ),
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "The d-file is semi-open for you.", B, (),
+        ("not half-open for you",), id="a-semi-open-file-not-yours",
+    ),
+    pytest.param(
+        "rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5",
+        "Your opponent left c2 weak. Pressure on the half-open c-file wins it.", B, (),
+        (), id="whose-file-in-its-own-sentence",
+    ),
+    # A file opened by the line is open on its frames; a condition is another moment.
+    pytest.param(
+        "4k3/8/8/3p4/4P3/8/8/4K2R w - - 0 1", "Your rook takes the open e-file.", W,
+        ("exd5",), (), id="a-file-the-line-opens",
+    ),
+    pytest.param(
+        "4k3/8/8/3p4/4P3/8/8/4K2R w - - 0 1", "Your rook takes the open e-file.", W, (),
+        ("the e-file is not open",), id="a-file-not-yet-open",
+    ),
+    pytest.param(
+        "4k3/8/8/3p4/4P3/8/8/4K2R w - - 0 1", "If you take on d5, the e-file is open.", W,
+        (), (), id="a-file-open-on-a-condition",
+    ),
+    # A passed pawn the line makes; one that is not passed on any frame.
+    pytest.param(
+        "4k3/8/8/2p5/1P6/8/8/4K3 w - - 0 1", "Your passed pawn on c5 decides the game.", W,
+        ("bxc5",), (), id="a-pawn-the-line-passes",
+    ),
+    pytest.param(
+        "4k3/8/8/2p5/1P6/8/8/4K3 w - - 0 1", "Their pawn on c5 is passed.", W, (),
+        ("the pawn on c5 is not passed",), id="a-pawn-held-up",
+    ),
+    # "Drives ... back to c6" with the line playing it; "forces" says no other move.
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/8/4p3/1n2P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4",
+        "a3 drives the knight back to c6.", W, ("a3", "Nc6"), (), id="drives-where-the-line-goes",
+    ),
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/8/4p3/1n2P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4",
+        "a3 forces the knight back to c6.", W, ("a3", "Nc6"),
+        ("nothing forces the knight to c6",), id="forces-where-it-has-a-choice",
+    ),
+    # What a move allows may be the mover's own next move.
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "Bc4 allows O-O next.", W, ("Bc4",), (), id="allows-your-own-next-move",
+    ),
+    pytest.param(
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        "Bc4 allows Nxe4.", W, ("Bc4",), ("Nxe4 cannot be played after Bc4", ...),
+        id="allows-what-neither-side-can-play",
+    ),
+    # A mutual pin: the rook on e5 pins the knight to the king though the b2 bishop pins the
+    # rook in turn. The facts sheet says the knight is pinned; so does the check.
+    pytest.param(
+        "7k/8/8/4r3/8/4N3/1B6/4K3 w - - 0 1", "Your knight on e3 is pinned.", W, (), (),
+        id="a-mutual-pin",
+    ),
+    pytest.param(
+        "7k/8/8/4r3/8/4N3/1B6/4K3 w - - 0 1", "Their rook on e5 pins your knight on e3.", W, (),
+        (), id="a-mutual-pin-said-of-the-pinner",
+    ),
+    # A piece defends its own side's pieces and attacks the other side's.
+    pytest.param(
+        ITALIAN, "Your knight on f3 defends the pawn on e5.", W, (),
+        ("the knight on f3 does not defend e5",), id="defends-their-piece",
+    ),
+    pytest.param(
+        ITALIAN, "Your knight on f3 attacks the pawn on e5. Their knight on c6 defends the "
+        "pawn on e5.", W, (), (), id="attacks-theirs-defended-by-theirs",
+    ),
+    pytest.param(
+        ITALIAN, "Your knight on f3 attacks the pawn on d2.", W, (),
+        ("the knight on f3 does not attack d2",), id="attacks-its-own-piece",
     ),
 ]  # fmt: skip
 

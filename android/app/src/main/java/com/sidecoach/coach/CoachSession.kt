@@ -3406,7 +3406,7 @@ class Coach(
                 level.value >= DisclosureLevel.MOVE.value -> {
                     val bestSan = facts.candidates.firstOrNull() ?: ""
                     val given = bestSan.isNotEmpty() &&
-                        saidSinceMove().any { bestSan.trimEnd('+', '#') in it }
+                        saidSinceMove().any { namesMove(it, bestSan) }
                     // Asked again once the move was given, "The next hint is the answer" said it
                     // was still to come; said again, it is with why it beats what is clearly
                     // worse, as the board says it -- not a restatement (`alternatives`).
@@ -3512,7 +3512,7 @@ class Coach(
             // that?" got the same line back (Tai's puzzle, 2026-09-28). The engine's word on its
             // end is put before the model ([speak]).
             val lineStart = facts.line.take(3).map { it.trimEnd('+', '#') }
-            val given = saidSinceMove().any { said -> lineStart.all { it in said } }
+            val given = saidSinceMove().any { said -> lineStart.all { namesMove(said, it) } }
             directive =
                 "They asked to see the line: give it -- ${facts.line.joinToString(" ")} -- " +
                     "plainly, then one short sentence on the idea behind it." + byMove +
@@ -3910,13 +3910,13 @@ class Coach(
         if (worse.isNotEmpty()) {
             out += " Clearly worse here, and what goes wrong with them: ${worseText(worse)}."
         }
-        if (best.isNotEmpty() && spokenSince.any { best.trimEnd('+', '#') in it }) {
+        if (best.isNotEmpty() && spokenSince.any { namesMove(it, best) }) {
             out += AI_MOVE_GIVEN.replace("{move}", best)
         }
         if (best.startsWith("O-O")) out += " $FOCUS_KING"
         if (facts.line.isNotEmpty()) {
             val given = facts.line.take(3).map { it.trimEnd('+', '#') }
-            if (spokenSince.any { s -> given.all { it in s } }) out += " $LINE_GIVEN"
+            if (spokenSince.any { s -> given.all { namesMove(s, it) } }) out += " $LINE_GIVEN"
         }
         out += if (position.board.turn == userColour) {
             " When the engine does not rate a move they name, say it is not the strongest and, " +

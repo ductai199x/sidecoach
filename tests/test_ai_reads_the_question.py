@@ -8,7 +8,7 @@ import chess
 import pytest
 
 from sidecoach.coach.coach import AI_GUIDELINES
-from sidecoach.events import DisclosureLevel, Trigger
+from sidecoach.events import Analysis, DisclosureLevel, Line, Trigger
 from tests.coaching import (
     directive_of,
     drain,
@@ -16,9 +16,11 @@ from tests.coaching import (
     mate_analysis,
     mate_missed,
     offline_coach,
+    play,
     play_to_scholar,
     scripted_coach,
     sent,
+    start_game,
     stuck,
 )
 from tests.test_coach import _looked
@@ -95,6 +97,40 @@ def test_the_ladder_follows_what_the_reply_said_not_what_the_question_was_guesse
     third = directive_of(sent(provider, 2))
     assert "The move has been given already, in your turns above: it is Qxf7#" in third
     assert position.disclosure.level is DisclosureLevel.MOVE
+
+
+def test_a_move_inside_another_move_was_never_given() -> None:
+    """The best move d4 is not given by a reply that names their Nd4: a substring test took it
+    for the move already said, and the model was told to say it again -- the answer out early
+    (the audit, 2026-10-07)."""
+    coach, provider = scripted_coach(
+        [
+            "Their knight eyes Nd4, a square it would love. What do you want in the centre?",
+            "Think about the pawn that stands in front of your queen.",
+        ]
+    )
+    start_game(coach)
+    board = play(coach, ("e4", "e5", "Nf3", "Nc6"))
+    coach.on_event(
+        Analysis(
+            game_id="g",
+            fen=board.fen(),
+            ply=4,
+            lines=[
+                Line(moves=["d2d4", "e5d4", "f3d4"], depth=12, expected_score=0.56),
+                Line(moves=["f1b5"], depth=12, expected_score=0.555),
+            ],
+            decisive=False,
+            only_move=False,
+        ),
+        5.0,
+    )
+    drain(coach)
+    coach.ask("what's going on here?", 6.0)
+    drain(coach)
+    coach.ask("hint", 7.0)
+    drain(coach)
+    assert "The move has been given already" not in directive_of(sent(provider, 1))
 
 
 def test_a_question_about_a_move_asked_the_model_is_not_withheld_by_the_rung() -> None:

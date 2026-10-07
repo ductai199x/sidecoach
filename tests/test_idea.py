@@ -7,6 +7,8 @@ it, the sacrifices on the way, and the words at each rung.
 
 from __future__ import annotations
 
+import re
+
 import chess
 
 from sidecoach.coach import idea as idea_of
@@ -211,6 +213,36 @@ def test_a_queen_sacrifice_for_mate_is_said_at_each_rung() -> None:
     assert "sacrifice" in idea and not leak_check(idea, facts, DisclosureLevel.IDEA)
     assert "the piece you give up" in focus_template(facts)
     assert move_template(facts) == "Qxh7+, a queen sacrifice, and after Kxh7, Rh5 is mate."
+
+
+def test_a_mate_that_starts_quietly_is_never_hinted_as_checks() -> None:
+    """Rh5 Kf8 Rh8#: a mate in two whose first move gives no check. Its hints said "Go through
+    your checks one by one" and "Which check comes first?" beside "It starts with a quiet
+    move" (the audit, 2026-10-07). They point at the quiet move's threat now, without naming
+    the move, its square or its piece; a mate that starts with a check keeps its checks."""
+    fen = "6k1/8/5K2/3R4/8/8/8/8 w - - 0 1"
+    board = chess.Board(fen)
+    idea = read(fen, "Rh5 Kf8 Rh8#", mate=2)
+    assert idea.goal == "mate" and not idea.checks_first
+    facts = facts_from_analysis(board, analysis(fen, "Rh5 Kf8 Rh8#", mate=2))
+    said = {
+        "idea": idea_template(facts),
+        "focus": focus_template(facts),
+        "question": idea_words.question(idea, None, board),
+        "nudge": idea_words.nudge(idea, board) or "",
+        "target": idea_words.target(idea, board) or "",
+    }
+    for rung, text in said.items():
+        unsaid = re.sub(r"no check", "", text, flags=re.IGNORECASE)
+        assert not re.search(r"\bchecks?\b", unsaid, re.IGNORECASE), (rung, text)
+    assert "quiet move" in said["question"] and "mate" in said["nudge"]
+    assert not leak_check(said["idea"], facts, DisclosureLevel.IDEA)
+    assert not leak_check(said["focus"], facts, DisclosureLevel.FOCUS)
+
+    checking = "r3nr1k/4N1pp/p2p1p2/4nR2/1p2P3/2q4Q/P3B1PP/4R2K w - - 4 24"
+    first = read(checking, "Qxh7+ Kxh7 Rh5#", mate=2)
+    assert first.checks_first
+    assert idea_words.nudge(first, chess.Board(checking)) == "Which check comes first?"
 
 
 # ---- the words --------------------------------------------------------------------------
