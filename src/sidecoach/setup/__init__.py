@@ -1,6 +1,6 @@
 """First-run setup: what the app needs beyond its code, fetched into the data directory.
 
-The installer carries the code and nothing else (docs/app-plan.md, section 6, step 4).
+The installer carries the code and nothing else (docs/app.md).
 At first run the sidecar fetches, with one progress bar for the lot: the Kokoro voice
 (two files), Parakeet and the Silero gate (file by file, into a Hugging Face cache under
 the data directory, where onnx-asr finds them), Stockfish (the latest release), the

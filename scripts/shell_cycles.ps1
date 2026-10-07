@@ -1,4 +1,4 @@
-# Launch/teardown cycles of the desktop shell (docs/app-plan.md, section 5, step 6): every
+# Launch/teardown cycles of the desktop shell (docs/app.md): every
 # cycle starts the shell, waits for the sidecar's health through the lock file, ends it one
 # of three ways, and checks what was left behind.
 #

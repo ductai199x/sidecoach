@@ -1,4 +1,4 @@
-"""Analysis in a reviewed game (docs/game-review-plan.md, screen F): the player's own moves from
+"""Analysis in a reviewed game (docs/game-review.md, screen F): the player's own moves from
 any position of the game, the engine's best lines for the position on the board, the moves the
 player has played from it in their other games (the explorer), and the game as a PGN -- the
 review's verdicts on it, the player's side lines with it -- to copy or keep.

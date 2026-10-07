@@ -1,4 +1,4 @@
-"""Stats' peers and category ratings (docs/stats-plan.md, S2), from the real players' game sides
+"""Stats' peers and category ratings (docs/stats.md, S2), from the real players' game sides
 `human_facts.py` judged (Lichess rapid, six rating bands).
 
 The peers: each side becomes a game of Stats' own shape (its strategy themes read again from the

@@ -1,4 +1,4 @@
-"""The settings over HTTP, for the app's settings window (docs/app-plan.md, section 3).
+"""The settings over HTTP, for the app's settings window (docs/app.md).
 
 GET gives the settings, their JSON schema (every field's description, choices and when a
 change applies: now, at the next Start, or after a restart -- the `_extra` marks in

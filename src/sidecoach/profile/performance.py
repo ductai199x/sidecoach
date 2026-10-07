@@ -11,7 +11,7 @@ and the estimate is the mean over the grid, weighted by that and a broad prior.
 
 One game says little: a player's accuracy wanders ten points from game to game, and a rating
 band's is a point or two above the band below's. On players the fit never saw the estimate is
-about 300 from their rating (docs/game-review-plan.md, phase 0), and it leans to the middle.
+about 300 from their rating (docs/game-review.md, phase 0), and it leans to the middle.
 Reading the opponent's moves too (rated opponents are paired close) took that only from 298 to
 290, and misleads in a game against a bot, so each side is read alone.
 

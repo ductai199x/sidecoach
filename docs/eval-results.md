@@ -1,13 +1,57 @@
 # Coach evaluation and ICR: method, results, decisions
 
-State as of 2026-09-18. Everything below was measured with the tools in `tools/eval/`
-on data under `data/eval/` (not committed; layout in `data/eval/README.md`); the raw runs
-that produced numbers not needed again are in `data/eval-archive-2026-09-18.zip`.
+A dated record of the coach's evaluation work, 2026-09-18 to 2026-09-26. Everything was
+measured with the tools in `tools/eval/` (see its [README](../tools/eval/README.md)) on data
+under `data/eval/` (not committed; layout in `data/eval/README.md`); the raw runs that
+produced numbers not needed again are in `data/eval-archive-2026-09-18.zip`. The sections
+below are kept as they were written, with their numbers; a section headed "(history)"
+describes a setup the app no longer ships.
 
-Not re-measured since: the engine tools for questions (2026-09-28) and the switch of the
-OpenAI preset to its Responses API (2026-09-29), on which the tools run at medium effort.
+## Current state (2026-10-07)
 
-## What ships
+What ships, from the code (`src/sidecoach/config.py`, `src/sidecoach/llm/factory.py`,
+`src/sidecoach/coach/`):
+
+- **Default provider:** `llm.provider = "openai"`, model `gpt-5.6-luna` (the preset's), over
+  OpenAI's Responses API (`wire="responses"`, since 2026-09-29). The other presets: `local`
+  (LM Studio at `http://localhost:1234/v1`, `huihui-qwen3.8-27b-abliterated@q8_k_l`,
+  reasoning suppressed by prefill), `dashscope` (`qwen3.8-max`), `custom` (any
+  OpenAI-compatible endpoint), and `none` (the offline templates, `llm/offline.py`).
+- **Effort:** the app's default `llm.reasoning_effort` and `llm.routine_effort` are `"none"`
+  (Tai, 2026-10-04: latency first). Every number below was measured at **medium** effort
+  (the eval tools still use `openai:gpt-5.6-luna@medium`); the app's default has not been
+  measured on these benches.
+- **C, the distilled lessons:** `src/sidecoach/coach/context/corrections.md` (11 lessons
+  now, edited by hand since v4: 2026-09-25 to 2026-10-01), appended to the system prompt
+  under "Lessons from earlier games" (`coach/prompt.py`).
+- **What refuses a draft** (`Speaker._problems`): a false claim about the board
+  (`claims.check_draft`), a verdict word or cost against the record, an earlier moment of
+  the game it invents. Since 2026-09-26 a leak is only logged (`Speaker._leaks`); since
+  2026-09-28 the form (length, closing question, what it must name) is noted
+  (`Speaker._notes`) and never refused.
+- **Who answers:** with a model on, every question goes to the model, the Hint, Best move
+  and Line buttons included (3ff672b, 2026-09-28; this superseded the 2026-09-26 decision
+  below to give a bare move or line ask, and the plain facts, the template). The templates
+  answer offline, stand in when a reply fails, and speak in a fast game (`FAST_PACE_S`)
+  except for what the player asks. A best, excellent or book move gets its word from the
+  board (`coach.local_verdicts`, default on); good, great and brilliant moves go to the
+  model (great and brilliant at full effort: Tai, 2026-09-26).
+- **Off:** the claim reader (`Speaker.claim_reader` is None; Tai, 2026-09-26), the
+  second-opinion verifier (`coach.verify = ""`), summarising (`summarise_every = 0`), the
+  compact record and verbalized sampling.
+- **Move classes** follow chess.com's published definitions since 0.1.84 (2026-10-06; see
+  [move-classification.md](move-classification.md)); the benches below predate that.
+- **Spend:** the project's evaluation budget stood at $2.93 of Tai's $3 cap after the
+  2026-09-26 reruns; the default since is $0 (no paid run without an amount Tai names).
+  Every paid call goes through `judge.Ledger` (`data/eval/usage.jsonl` and one file per
+  process under `data/eval/usage/`).
+- **Open:** E1 (false chess claims in at most 1 AI reply in 50) is not met: about 8-12% of
+  AI replies carried a false claim of the model's own at the last audit.
+
+## What shipped on 2026-09-18 (history)
+
+The leak and form checks no longer refuse a draft, and the app's effort is now none: see
+[Current state](#current-state-2026-10-07).
 
 - **C = twelve distilled lessons** (`src/sidecoach/coach/context/corrections.md`, ~0.8k
   tokens), appended to the system prompt under "Lessons from earlier games". One line per
@@ -122,9 +166,10 @@ name; the decisive question once per 8 plies; plan questions unlock THEME withou
 canned template; exposedKing and defensiveMove as themes; the verdict says where the
 preferred line leads; the opening line in the record; the opponent's-move directive.
 
-## Spend
+## Spend (as of 2026-09-18)
 
-Ledger (`data/eval/usage.jsonl`, every paid call): gpt-5.6-luna 798M prompt tokens
+Ledger (`data/eval/usage.jsonl`, every paid call; later runs also write one file per process
+under `data/eval/usage/`): gpt-5.6-luna 798M prompt tokens
 (522M cached), 19M completion, ~$89 at luna prices over the project; the board checker's
 extractor was unmetered until 2026-09-18 evening, so the dashboard runs higher. Rules that
 came out of it: estimate before spending; pilot; one process at a time; no mid-run
@@ -237,7 +282,7 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 **Fixes, and a dev check.**
 - Lines now name the mover and list the king's moves.
-- Fact questions (the material, the opening by name, the standing) get the template, which is exact.
+- Fact questions (the material, the opening by name, the standing) get the template, which is exact (with a model on, superseded on 2026-09-28; offline it holds).
 - The draft check reads straight and curly quotes, adjectives, named checks' frames, "only king move", "allows", and state-before-piece. It catches 8 of the 30 flagged replies, and 18 new true flags across 9,832 stored replies.
 - A dev run (`bench-dev-final`, $0.30) was audited the same way, and all 14 flags were checked by hand:
   - 10 of 129 (7.8%) are the model's own false claims;
@@ -258,7 +303,8 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
 
 - The model's explanations of concrete sequences are where it is wrong.
 
-**Decision (d8c687c).** A bare "which move?" or "show me the line" gets the exact template: the line said move by move with what each does (`effects.line_spoken`), and no model call. There the rubric scored the templates as high as the model (1.00), so by Tai's rule the AI speaks only where it adds to the offline text. Counted on the hand-checked test flags:
+**Decision (d8c687c; superseded 2026-09-28 by 3ff672b: with a model on, every question
+goes to the model).** A bare "which move?" or "show me the line" gets the exact template: the line said move by move with what each does (`effects.line_spoken`), and no model call. There the rubric scored the templates as high as the model (1.00), so by Tai's rule the AI speaks only where it adds to the offline text. Counted on the hand-checked test flags:
 - the 5 note-caused errors are gone (4365dfa);
 - 7 of the other 22 were answers to a bare move or line, now exact;
 - that leaves 15 of 298, about 5%. This is an estimate, not a new run.
@@ -273,7 +319,7 @@ Tai's finish line (2026-09-26), with a hard cap of $3 for the rest of the projec
   - the x-ray wording is fixed;
   - the recapture comes from the engine's line when the new position has not been read yet.
 
-  Great and brilliant moves also get the board's sentence (Tai's rule of 2026-09-20; the model's delight carried a false claim in 18% of them).
+  Great and brilliant moves also get the board's sentence (Tai's rule of 2026-09-20; the model's delight carried a false claim in 18% of them). Superseded the same evening (Tai, 18:57: "They need to go through the api"): great and brilliant moves go to the model, the draft checks standing guard.
   - Estimate: about 2% on test.
   - About 7% on dev, whose errors (lessons, hints, plans) no fix was designed from. Dev is the honest number.
 - **Step 2 (1402650, 232fc11): a model lists the draft's claims, python-chess decides them** (`coach/draft_claims.py`). A claim is decided only on what its own words say.
@@ -334,7 +380,9 @@ here on."
 coach's own cent or so, it would double the cost of a game. `coach/draft_claims.py` stays in
 the tree, unwired (`Speaker.claim_reader` is None), and is not ported to the phone.
 
-## Next, if wanted
+## Next, if wanted (written 2026-09-18; not taken up)
+
+Any of this is a paid run, and needs an amount Tai names first.
 
 Scale the exemplars to 30-50 from the already-judged training moments: round 1's 400
 judged moments are kept with their harnesses (`icr-100/items-r1`, ~40 fails to draw

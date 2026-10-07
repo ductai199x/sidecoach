@@ -1,7 +1,7 @@
 """A chess.com player's games from the official public API (api.chess.com/pub): every month's
 archive, one request at a time as the API asks, saved as one PGN per game with chess.com's own
 accuracies (when chess.com reviewed the game) in the headers -- the check on our accuracy and
-performance rating against theirs (docs/game-review-plan.md, phase 0).
+performance rating against theirs (docs/game-review.md, phase 0).
 
     uv run --no-sync python tools/review/chesscom_games.py <username> [--out data/review/chesscom]
 """

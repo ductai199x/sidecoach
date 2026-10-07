@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     words TEXT,
     PRIMARY KEY (key, strength)
 );
--- Stats (docs/stats-plan.md; profile/stat_facts.py): a reviewed game's facts, kept when it is
+-- Stats (docs/stats.md; profile/stat_facts.py): a reviewed game's facts, kept when it is
 -- reviewed so the Stats window adds them up at once.
 CREATE TABLE IF NOT EXISTS stat_games (
     key TEXT PRIMARY KEY,

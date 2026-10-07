@@ -1,4 +1,4 @@
-// Retry (docs/game-review-plan.md, D): another move found in a position a move of a reviewed
+// Retry (docs/game-review.md, D): another move found in a position a move of a reviewed
 // game was played from, graded as the review graded the game's (ui/review_retry.py). The review
 // page retries its own moves; the Stats window retries the positions behind a figure. A solving
 // move stays; any other shows red and goes back (`wrong`, then `redraw`); the hints are the

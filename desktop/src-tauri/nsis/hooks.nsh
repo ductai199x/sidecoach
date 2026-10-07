@@ -1,4 +1,4 @@
-; Sidecoach installer hooks (Tauri NSIS, docs/app-plan.md section 2, "Delivery").
+; Sidecoach installer hooks (Tauri NSIS, docs/app.md, "Delivery").
 ;
 ; The same setup file serves as "install, or just run": when the very version this
 ; installer carries is already installed for this user, the installer launches it and

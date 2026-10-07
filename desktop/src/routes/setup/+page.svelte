@@ -1,6 +1,6 @@
 <script lang="ts">
   // First-run setup: what the app needs beyond its code, fetched into the data folder
-  // with one progress bar for the lot (docs/app-plan.md, section 6 step 4 and section 7).
+  // with one progress bar for the lot (docs/app.md).
   // The required items are ticked and cannot be unticked; the optional ones (the puzzle
   // sample, the CUDA pack when this machine's GPU can use it) start ticked and can be
   // left out. Re-runnable from the menu's Setup; nothing already present is fetched again.

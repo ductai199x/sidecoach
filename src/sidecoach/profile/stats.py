@@ -1,4 +1,4 @@
-"""The player's games added up (docs/stats-plan.md): the Stats window's numbers, from the facts
+"""The player's games added up (docs/stats.md): the Stats window's numbers, from the facts
 each review keeps (profile/stat_facts.py), for the player's own moves in the games the filter
 takes. Every figure carries how many it counts (`n`), so the page can grey a small sample; the
 positions behind a figure come from `positions` with the same selector.

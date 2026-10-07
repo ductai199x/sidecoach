@@ -1,4 +1,4 @@
-// Analysis (docs/game-review-plan.md, F): the player's own moves from any position of a reviewed
+// Analysis (docs/game-review.md, F): the player's own moves from any position of a reviewed
 // game, kept as a tree -- the game's moves its main line, the player's lines off it -- the
 // engine's best lines for the position on the board, and what the player's own games went on
 // with from it (ui/review_analysis.py). A move is checked and named by the sidecar; every

@@ -275,7 +275,7 @@ class PanelEngine:
     # Record a live session (frames + events.jsonl + debug.jsonl) like `watch` does. A replay
     # is never recorded; it still gets a session folder for its debug log.
     record: bool = True
-    # The app's mode (docs/app-plan.md, Tai 2026-09-21): with persist off nothing of a
+    # The app's mode (docs/app.md, Tai 2026-09-21): with persist off nothing of a
     # session reaches the disk on its own -- no session folder, no debug.jsonl, no
     # recording -- only the profile, which is the player's own model. The recent frames
     # live in `frames`, a ring in memory, and `dump()` writes them out when asked.

@@ -8,6 +8,12 @@ rasterisation of the vector at the cell's size looks like to within the anti-ali
 The cburnett set is not here: python-chess carries its vectors, and `tests/pieceset.py`
 rasterises them itself, in any colouring.
 
+`pieceset.sheet_sets()` lists the sheets in this folder (a new `<set>.png` of 12 sprites,
+2304 by 192, joins every sweep that draws from it); `pieceset.draw_sprite(..., sheet=name)`
+draws one. The sets the app ships for its own board (`desktop/static/pieces/`, Sidecoach's
+own and the freely licensed lichess sets: [tools/pieces/README.md](../../../tools/pieces/README.md))
+are a separate copy, not these.
+
 These are test fixtures only; nothing ships with them. Not here: `letter`, whose pawns
 are dots the size of chess.com's legal-move hints, which the recogniser refuses to call
 pieces by design; `monarchy`, missing from lila; `shahi-ivory-brown`, whose licence

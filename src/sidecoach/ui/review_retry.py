@@ -1,4 +1,4 @@
-"""Retry in a reviewed game (docs/game-review-plan.md, screen D): the player plays another move
+"""Retry in a reviewed game (docs/game-review.md, screen D): the player plays another move
 in the position a move of the game was played from, and it is graded as the review graded the
 game's own -- the same annotator and thresholds, the game's own measurements adopted so the
 position is read as the review read it, the position the new move leads to searched at the

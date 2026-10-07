@@ -1,4 +1,4 @@
-"""The sidecar side of the desktop shell (docs/app-plan.md, section 2): the health route,
+"""The sidecar side of the desktop shell (docs/app.md): the health route,
 the bearer token, the page's perf log, the in-memory frames with their on-demand dump, a
 session that persists nothing, and the lock file a second launch attaches through."""
 

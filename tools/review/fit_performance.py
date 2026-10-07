@@ -1,5 +1,5 @@
 """The performance rating fitted on real players' games and tested on players it never saw
-(docs/game-review-plan.md, phase 0). Reads the game sides `human_losses.py` judged, splits them
+(docs/game-review.md, phase 0). Reads the game sides `human_losses.py` judged, splits them
 by player (a fixed hash: the same split every run), fits on one part and reports on the rest,
 per band: how far the estimate is from the player's rating (mean absolute error), which way it
 leans, and the correlation -- for a straight line through the side's accuracy (the baseline)

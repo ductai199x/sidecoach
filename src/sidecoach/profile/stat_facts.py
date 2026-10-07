@@ -1,4 +1,4 @@
-"""What a reviewed game says for Stats (docs/stats-plan.md): each move's facts and the game's,
+"""What a reviewed game says for Stats (docs/stats.md): each move's facts and the game's,
 read off the review once and kept, so the Stats window adds them up at once.
 
 The definitions are ours, as chess.com publishes none, and each is shown on the page:

@@ -1,5 +1,5 @@
 """The games Game Review can open, brought in from where they were played
-(docs/game-review-plan.md): a pasted or opened PGN, the player's chess.com games through
+(docs/game-review.md): a pasted or opened PGN, the player's chess.com games through
 chess.com's official public data (api.chess.com/pub), their Lichess games through Lichess's
 public API. Each becomes a `LibraryRow`: who played, when, at what ratings and time control,
 which side was the player's (their username for the site, from the settings), and the PGN.

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The review's Analysis (docs/game-review-plan.md, F): the engine's best lines for the board's
+  // The review's Analysis (docs/game-review.md, F): the engine's best lines for the board's
   // position, each move of them played on the board at a click; then the moves -- the game's,
   // with the player's own lines off it, any of them gone back to -- what the player's games went
   // on with from the position (the explorer), the game's details and its PGN to copy or keep,

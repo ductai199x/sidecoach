@@ -1,6 +1,6 @@
 """Build the embedded Python the desktop shell runs the sidecar with.
 
-docs/app-plan.md, section 6, step 5: a python-build-standalone CPython (the one uv
+docs/app.md: a python-build-standalone CPython (the one uv
 manages, copied) with a real `site-packages` installed by `uv pip`, carrying the package
 and its panel and voice extras on the CPU build of onnxruntime -- no CUDA wheels, no
 torch: the CUDA pack (scripts/build_pack.py) adds the GPU at first run when the machine

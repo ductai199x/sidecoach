@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Stats window (/stats; docs/stats-plan.md): the player's games added up, as chess.com's
+  // The Stats window (/stats; docs/stats.md): the player's games added up, as chess.com's
   // Advanced Stats lays them out -- a menu of sections (the overview, openings, tactics,
   // strategy, endgames, time, brilliant moves), the filters on top, each section a trend and a
   // table of figures; a figure opens to what it means and the positions behind it, each opening

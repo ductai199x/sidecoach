@@ -1,5 +1,5 @@
 //! The Sidecoach desktop shell: a window and a tray around the Python
-//! pipeline, which runs as a sidecar behind its own HTTP API (docs/app-plan.md).
+//! pipeline, which runs as a sidecar behind its own HTTP API (docs/app.md).
 //!
 //! The shell knows nothing about chess. It spawns the sidecar (`sidecoach panel --port 0
 //! --announce --parent-pid <us> --no-persist --no-record`), reads the one JSON line the
@@ -470,7 +470,7 @@ fn show_main(app: &AppHandle) {
 }
 
 /// The splash screen: a small frameless window over the desktop while the sidecar
-/// starts and warms up (docs/app-plan.md, "everything loads when the app opens"). The
+/// starts and warms up (docs/app.md, "everything loads when the app opens"). The
 /// main window stays hidden until the splash says it is done. `SIDECOACH_NO_SPLASH`
 /// skips it (the smoke test, development), showing the main window at once.
 fn open_splash(app: &AppHandle) -> bool {

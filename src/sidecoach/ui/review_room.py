@@ -1,4 +1,4 @@
-"""A game reviewed in a window of its own (`/review/<key>`; docs/game-review-plan.md), apart
+"""A game reviewed in a window of its own (`/review/<key>`; docs/game-review.md), apart
 from the screen the panel watches, as a puzzle is (ui/puzzle_room.py).
 
 A room opens a game of the library: the review saved for it at this strength when there is one

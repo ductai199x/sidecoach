@@ -1,6 +1,6 @@
 """Sample a process tree's memory and CPU for the desktop shell's evaluation.
 
-docs/app-plan.md, section 4: the shell plus its webview processes (WebView2's are children
+docs/app.md: the shell plus its webview processes (WebView2's are children
 of the host process, Chrome's of the chrome.exe that was launched) sampled at 1 Hz for a
 run, with the page's own meter (`?perf=<label>` in the panel) writing beside it. Prints
 p50/p95/max of the tree's RSS and CPU and the growth from the first to the last minute.

@@ -1,7 +1,7 @@
 // What the review says before the coach's own words are ready: a headline per kind of move,
 // a sentence from the facts the review computed (the better move, what the move changed, the
 // motifs), the eval as chess.com writes it, and the summary's one line on the game. The
-// coach's prepared words (docs/game-review-plan.md, phase 4) take their place when present.
+// coach's prepared words (docs/game-review.md, phase 4) take their place when present.
 import type { Eval, GameSummary, ReviewMove } from "$lib/api";
 import { motifWords } from "$lib/chess";
 

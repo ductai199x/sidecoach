@@ -1,4 +1,4 @@
-"""The model's review of a game's key moves (docs/game-review-plan.md, decision 3).
+"""The model's review of a game's key moves (docs/game-review.md, decision 3).
 
 Asked for only when the player presses Game Review's button, about a cent a game, never ahead of
 time and never for the games the background review goes through. One call a key move, all at

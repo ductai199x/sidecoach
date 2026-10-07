@@ -1,5 +1,5 @@
 """What every move of real players' games cost, for fitting the performance rating
-(docs/game-review-plan.md, phase 0). The games are the Nova authors' sample of Lichess rapid
+(docs/game-review.md, phase 0). The games are the Nova authors' sample of Lichess rapid
 (March 2026; `data/models/nova/unified_sample_600k.jsonl`, 100,000 positions a band from 800 to
 2300 and up), which holds each game side whole, from the player's first move to their last,
 with their rating. Each move is judged as the review judges it -- `GameAnnotator.assess_move`,

@@ -1,4 +1,4 @@
-"""A reviewed game summed up (docs/game-review-plan.md, the summary screen): each side's
+"""A reviewed game summed up (docs/game-review.md, the summary screen): each side's
 accuracy and count of every kind of move, the rating it played at (`profile/performance.py`),
 how each side played each phase, the moves the review stops at, and the graph of the game --
 all read off the review's verdicts.

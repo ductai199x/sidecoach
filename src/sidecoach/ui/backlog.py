@@ -1,4 +1,4 @@
-"""Every game of the library reviewed on its own, in the background (docs/stats-plan.md, decision
+"""Every game of the library reviewed on its own, in the background (docs/stats.md, decision
 3), so Stats counts every game without the player opening each: the facts of reviews saved
 before Stats first (no engine), then each game no review covers yet -- imported or watched, the
 latest played first -- at the standard strength, one at a time, on two engines below normal

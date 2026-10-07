@@ -1,4 +1,4 @@
-// The page's own meter (?perf=<label>), for the shell's evaluation (docs/app-plan.md,
+// The page's own meter (?perf=<label>), for the shell's evaluation (docs/app.md,
 // section 4): frames per second from requestAnimationFrame, frames longer than 50 ms,
 // and the poll round trip, shown in the status strip, kept on window.__perf, and posted
 // every five seconds to /api/perf, which appends them to data/perf/<label>.jsonl.

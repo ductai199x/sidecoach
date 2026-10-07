@@ -1,5 +1,5 @@
 """Real players' games judged as the review judges them, with the facts Stats keeps
-(docs/stats-plan.md, S2): the peers' column, and the category ratings' fit. The games are the
+(docs/stats.md, S2): the peers' column, and the category ratings' fit. The games are the
 Nova authors' Lichess rapid sample (`human_losses.game_sides`); each position the player moved
 from, and the one their move led to, is measured whole as the review measures it (two lines, the
 tagger's motifs), the move assessed, and its facts read by the app's own definitions

@@ -1,4 +1,4 @@
-"""A finished game reviewed whole (docs/game-review-plan.md): every position of it measured by
+"""A finished game reviewed whole (docs/game-review.md): every position of it measured by
 several engines at once, then every move judged in order from what they found -- the numbers
 behind the review's summary, its step-through, and the coach's words on every move.
 

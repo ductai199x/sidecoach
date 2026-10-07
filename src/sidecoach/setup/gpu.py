@@ -1,5 +1,5 @@
 """The CUDA pack: GPU acceleration fetched on its own when the machine can use it
-(docs/app-plan.md, section 7).
+(docs/app.md).
 
 The app ships with the CPU build of onnxruntime. When an eligible NVIDIA GPU is found
 (`detect`), the pack -- onnxruntime-gpu and the nvidia CUDA/cuDNN wheels -- is one more

@@ -141,7 +141,7 @@
         {#if notes(r)}<div class="rv-notes">{notes(r)}</div>{/if}
         {#if item.insights.length}<div class="rv-insights">{item.insights.join(" ")}</div>{/if}
         {#if item.reviewKey}
-          <!-- Straight into Game Review of the game just played (docs/game-review-plan.md, A). -->
+          <!-- Straight into Game Review of the game just played (docs/game-review.md, A). -->
           <a class="rv-open" href="/review/{encodeURIComponent(item.reviewKey)}" target="_blank" rel="noopener" title="Review this game move by move" onclick={(e) => { if (inShell()) { e.preventDefault(); openWindow("review/" + encodeURIComponent(item.reviewKey!)); } }}>Game Review</a>
         {/if}
       </div>

@@ -1,5 +1,5 @@
 """Our game accuracy against chess.com's own (CAPS2) on games both of us reviewed
-(docs/game-review-plan.md, phase 0): per game and side, chess.com's number from the official
+(docs/game-review.md, phase 0): per game and side, chess.com's number from the official
 API's `accuracies`, and ours in several forms -- as the app computes it today, without book
 moves, Lichess's published formula, and our curve at other steepnesses -- with the mean error,
 the bias and the correlation of each.

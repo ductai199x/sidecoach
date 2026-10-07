@@ -2,7 +2,7 @@
 # tests that need no GPU (the vision suite is the GPU's; it does not run here, Tai
 # 2026-09-21), and the app -- the Svelte build, the embedded interpreter, the Tauri
 # build, the smoke test, and on a tag the installer as a release asset with the
-# updater's latest.json (docs/app-plan.md, section 6, step 10).
+# updater's latest.json (docs/app.md).
 #
 # Secrets the release job needs (Settings > Secrets):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD  -- the updater's key

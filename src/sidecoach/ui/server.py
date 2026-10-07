@@ -9,7 +9,7 @@ browser (debuggable with real devtools) and the API is testable end to end with 
 `build_app` makes the app around an engine (a recording-fed engine in a test, a live one in
 the field); `run_server` opens the browser and serves it.
 
-The desktop shell (desktop/, docs/app-plan.md) runs this server as a sidecar: `run_server`
+The desktop shell (desktop/, docs/app.md) runs this server as a sidecar: `run_server`
 with `port=0` binds an ephemeral port and prints one JSON line `{"port": N}` on stdout for
 the shell to read; `parent_pid` makes the server exit when that process is gone, so a
 crashed shell never leaves an orphan; a lock file under the data directory lets a second
@@ -494,7 +494,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         return {"ok": _room_command(rooms, puzzle_id, "close")}
 
     # ---- Game Review: the library of games, and a review in a window of its own ----------
-    # (profile/library.py, ui/review_room.py; docs/game-review-plan.md)
+    # (profile/library.py, ui/review_room.py; docs/game-review.md)
     from sidecoach.ui.review_room import ReviewRooms
 
     store_path = engine.settings.data_dir / "profile.sqlite"
@@ -709,7 +709,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
 
-    # ---- Stats: the player's games added up (profile/stats.py; docs/stats-plan.md) ---------
+    # ---- Stats: the player's games added up (profile/stats.py; docs/stats.md) ---------
     from sidecoach.profile import library
     from sidecoach.profile import stats as stat_sums
     from sidecoach.profile.store import Store

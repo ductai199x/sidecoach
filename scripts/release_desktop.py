@@ -6,10 +6,10 @@
 
 The steps, each logged under data/build/:
 1. `scripts/build_sidecar.py`: the embedded Python is a copy of the package, so it is rebuilt
-   before every installer build, or the installer ships the old coach (docs/app-plan.md).
+   before every installer build, or the installer ships the old coach (docs/app.md).
 2. `tauri build` in desktop/: the NSIS installer on Windows; the AppImage and the .deb on
    Linux (`APPIMAGELAUNCHER_DISABLE=1` set; the linuxdeploy plugin pinned in
-   ~/.cache/tauri/ is a one-time setup of the machine, docs/app-plan.md). The updater's
+   ~/.cache/tauri/ is a one-time setup of the machine, docs/app.md). The updater's
    artifacts need its signing key (TAURI_SIGNING_PRIVATE_KEY); without the key the build
    leaves them out (src-tauri/tauri.no-updater.json).
 3. With --install (Windows): the installer run silently, then the installed version checked

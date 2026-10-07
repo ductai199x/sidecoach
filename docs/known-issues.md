@@ -1,45 +1,60 @@
 # Known issues
 
-What we know is wrong and have chosen to ship with, desktop and phone alike (the phone is a
-1:1 port), each with how it shows and where it was found. Fixed items leave this list.
+What we know is wrong today (0.1.84, 2026-10-07), desktop and phone alike (the phone is a 1:1
+port), each with how it shows and where it was found. Fixed items leave this list. The
+2026-10-07 audit found more rough edges than are listed here; this list holds the ones a player
+can meet.
 
-## Vision
+## The release gate (sweeps, 0.1.84)
 
-- **Random games that are not followed to the end** in about 1.2% of the stress sweep
-  (`tests/test_stress.py --seeds 1000`; seeds 454 497 543 604 610 688 695 728 817 996,
-  2026-09-27 after the exact lock of 076cae1, which made 327, 822 and 830 pass and 695 fail,
-  and the result badge kept on the board, which made 436 and 699 pass): mostly dark shaded
-  piece sets on the dark board (riohacha, pirouetti) and 44 px cells
-  where a set's piece does not land where its exemplar did. Left by decision (2026-09-19); see
-  the stress test's docstring. In 688 (the wooden set on the wood board, 96 px) a black queen on
-  a light square reads as a knight: the start position shows each side's queen on one square
-  colour only, and at the embedder's 40 px the black knight learned on a light square is
-  nearer; a premove is then read as two pawn moves and the mate is never committed. Teaching
-  the model recoloured kings and queens fixed it, but made a set never learned read as a
-  position (2026-09-27).
-- **A queen read as the other side's in a cold read** (the stress sweep's seed 695: the wood
-  board, the caliente set at 96 px): the game was followed to its end, and the final position
-  read cold from the cache took the white queen on c7 for a black one. Found 2026-09-27.
+| Sweep | Result | Failing seeds |
+|---|---|---|
+| `tests/test_premove_sweep.py --seeds 1000` | 997/1000 | 742 is wrong for one ply, then right; 70 and 956 repeat an earlier position by the same move and hold it as a ply shown |
+| `tests/test_stress.py` criteria, 1000 seeds | 997/1000 | 543 (a knight under a result badge), 604 and 817 (the board is never picked up) |
+| `tests/test_flow_matrix.py --seeds 20` | 319/320 | seed 20, puzzle with takebacks, look-backs and premoves |
+
+All of them also failed before the 2026-10-05 reconciler rewrite. How to run them:
+[testing.md](testing.md).
+
+## Game state
+
+- **A correction mid-game cuts the record.** A flip, a fixed misread or a recovery by the
+  last-move mark adopts the position afresh (`_set_position`), so `GameEnded.pgn` and the
+  review hold only the moves after it; before ply 10 the game leaves the library
+  (`profile/library.py`). Found by the 2026-10-07 audit.
+- **The player is taken to be the side at the bottom.** A site set to "White always on the
+  bottom" while playing Black coaches the wrong side (`pipeline.py`, `Reconciler(user_side=
+  bottom)`).
+- **The move-list check grows with the game.** `_browsed_in_flight` copies the board for every
+  ply on every frame that disagrees with the record: about 40 ms a frame at 120 plies, 110 ms
+  at 200 (2026-10-07 audit, desktop CPU).
+
+## Move labels, reviews and Stats
+
+- **Reviews saved before 0.1.84 keep the old labels.** Relabelling runs only when
+  `ui/review_room.py` `DERIVED` changes, and it was not raised with the new cut-offs; Stats
+  mixes old and new labels. See [move-classification.md](move-classification.md).
+- **Game ratings read the new bands with models fitted on the old ones** (`performance.json`,
+  `categories.json`, `peers.json`, fitted 2026-09-30 at 0.04 / 0.10 / 0.28): ratings and
+  trends lean low. See [stats.md](stats.md).
+
+## Vision (found 2026-09-27; not re-measured one by one since)
+
+- **Random games not followed to the end** in a few seeds of the stress sweep: mostly dark
+  shaded piece sets on the dark board (riohacha, pirouetti) and 44 px cells where a set's
+  piece does not land where its exemplar did. Left by decision (2026-09-19).
+- **A queen read as the other side's in a cold read** (the wood board, the caliente set at
+  96 px).
 - **A piece whose outline is as heavy as its fill can read as the other side's after a large
-  shrink** (the geometry sweep's seed 122: the caliente set learned at 40 px, read at 29): the
-  white bishop's dark outline was taken for its fill, brightness voted black and the embedding
-  nearly tied (0.961 against 0.957). The misread held back a three-ply story until six plies
-  were missing, more than the missed-move search bridges, and the position was adopted anew.
-  Found 2026-09-27.
-- **A board nudged less than a third of a cell is followed only at the next periodic re-fit,
-  up to ten frames on**: the checker fit cannot see such a shift, so the lock stays where the
-  board was (the geometry sweep's seeds 83 and 97: 10 to 37 px off at 110 to 136 px cells).
-  For that second every piece reads as not landed and no move is read; nothing is invented
-  (a move needs a cleanly read square to commit from, 59763b9). A move the fit does see is
-  re-fitted on the frame it fails, and again every frame while the board keeps moving.
-  Found 2026-09-27.
+  shrink** (a set learned at 40 px, read at 29).
+- **A board nudged less than a third of a cell is followed only at the next periodic re-fit**,
+  up to ten frames on; nothing is invented meanwhile.
 - **After a large resize, a piece at rest can read as not landed** where its set draws its
-  outline at a fixed width (the phone's landing fixture king-48-132: the synthetic classic set
-  learned at 48 px and read at 132, the white king on e1 0.262 of a cell off). Learned small,
-  the outline is thick for the cell; read large, thin; brought to one size the two crosses
-  share no edge strong enough for the phase correlation's peak. The exact lock (076cae1)
-  showed it: the lock a pixel off had left a strip of the next square in the reference, and
-  that strip matched. Only moves from or to that square wait; sites' vector pieces scale their
-  outlines. Found 2026-09-27.
+  outline at a fixed width; only moves from or to that square wait.
 - **A board smaller than 24 px a cell (a 192 px board) is not seen at all**: the detector's
   floor. The game waits until the board is larger again.
+
+## Phone only
+
+- **Chess.com's live games cannot be watched on the phone**: its app sets FLAG_SECURE on the
+  game window, so the capture is black. Puzzles, reviews and bot games work.
