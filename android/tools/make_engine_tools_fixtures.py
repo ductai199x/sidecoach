@@ -4,7 +4,7 @@ plays the first legal moves (by UCI) so both sides see the same lines -- and, on
 the sheet shows for the board now and before the last move, which a move on them is read from.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_engine_tools_fixtures.py
+    uv run --no-sync python android/tools/make_engine_tools_fixtures.py
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP / "src"))
 
 import chess  # noqa: E402

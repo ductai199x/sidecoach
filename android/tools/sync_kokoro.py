@@ -5,7 +5,7 @@ kokoro-onnx maps each phoneme character to a token id with the vocabulary in its
 phone reads the same table; this writes it, with the version it came from, whenever the
 desktop's kokoro-onnx changes.
 
-    uv run --no-sync python D:/sidecoach-android/tools/sync_kokoro.py   (from the desktop repo)
+    uv run --no-sync python android/tools/sync_kokoro.py   (from the desktop repo)
 """
 
 from __future__ import annotations

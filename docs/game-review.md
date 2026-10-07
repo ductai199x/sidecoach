@@ -127,11 +127,11 @@ delay setting.
 
 ## The phone
 
-A 1:1 port (sidecoach-android: `analysis/GameReview.kt`, `profile/GameSummaries.kt`,
+A 1:1 port (android/: `analysis/GameReview.kt`, `profile/GameSummaries.kt`,
 `ui/ReviewViews.kt`, `coach/ReviewWords.kt`, `coach/ReviewLinks.kt`) behind the same page, held to
 the desktop by `GameReviewParityTest`, `ReviewWordsParityTest` and `ReviewAnalysisParityTest`
 from fixtures the desktop code records (`tools/make_review_fixtures.py`,
-`tools/make_review_words_fixtures.py` in the Android repo). The phone reviews a game only when
+`tools/make_review_words_fixtures.py` in android/tools). The phone reviews a game only when
 the player asks; its Games list has no background reviewer (`GamesApi`). A review's positions
 and AI answers are kept as they come, so a review the system killed goes on from where it was.
 

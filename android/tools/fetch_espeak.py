@@ -8,7 +8,7 @@ the English part of the same compiled data in its assets, copied here from the d
 `espeakng_loader`. The data is the same bytes on every platform, and the phonemes are the
 same only if both the library and the data are the desktop's.
 
-    uv run --no-sync python D:/sidecoach-android/tools/fetch_espeak.py   (from the desktop repo)
+    uv run --no-sync python android/tools/fetch_espeak.py   (from the desktop repo)
 
 The source goes to `third_party/` (not committed); the data subset is written into
 `app/src/main/assets/espeak-ng-data` (committed: it is what the app reads).

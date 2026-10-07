@@ -30,7 +30,7 @@ makes (recorded by running its tests), each with what the tagger answers -- the 
 tag must and must not be given, which no puzzle sample is sure to hold.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_motif_fixtures.py [puzzles]
+    uv run --no-sync python android/tools/make_motif_fixtures.py [puzzles]
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ import json
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

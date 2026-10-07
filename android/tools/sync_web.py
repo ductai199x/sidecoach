@@ -9,7 +9,7 @@ Run this whenever the frontend is rebuilt (`npm run build` in `desktop/`, which 
 `src/sidecoach/ui/web`).
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/sync_web.py
+    uv run --no-sync python android/tools/sync_web.py
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import filecmp
 import shutil
 from pathlib import Path
 
-WEB = Path("D:/chess-coaching-companion/src/sidecoach/ui/web")
+WEB = (Path(__file__).resolve().parents[2] / "src/sidecoach/ui/web")
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "main" / "assets" / "web"
 
 

@@ -16,7 +16,7 @@ mate in four with clocks, a game from a set-up position with a promotion, a Lich
 with a repetition, and a game Sidecoach watched (no clocks, "You" for the player).
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_review_fixtures.py
+    uv run --no-sync python android/tools/make_review_fixtures.py
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

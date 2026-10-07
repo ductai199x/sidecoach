@@ -12,7 +12,7 @@
   result, a date alone) -> `from_watched`'s rows and `reconcile`'s pairs.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_library_fixtures.py
+    uv run --no-sync python android/tools/make_library_fixtures.py
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ import httpx
 from sidecoach.profile import library
 from sidecoach.profile.store import Store
 
-OUT = Path("D:/sidecoach-android/app/src/androidTest/assets/profile/library.json")
+OUT = (Path(__file__).resolve().parents[1] / "app/src/androidTest/assets/profile/library.json")
 COPY = Path(
     "C:/Users/Tai/AppData/Local/Temp/claude/d--chess-coaching-companion/"
     "5a849ff1-467c-42d3-861a-c579f032804a/scratchpad/appcopy/profile.sqlite"

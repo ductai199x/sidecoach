@@ -15,7 +15,7 @@ VectorDrawables, and the phone's mark is the desktop's by construction rather th
 The tile colour is `ic_launcher_background` in values/colors.xml. Run it again whenever
 the logo changes:
 
-    uv run --no-sync python D:/sidecoach-android/tools/sync_brand.py
+    uv run --no-sync python android/tools/sync_brand.py
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 LOGO = DESKTOP / "desktop" / "brand" / "logo.svg"
 RES = Path(__file__).resolve().parent.parent / "app" / "src" / "main" / "res" / "drawable"
 

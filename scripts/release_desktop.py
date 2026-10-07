@@ -138,13 +138,13 @@ def main() -> None:
     if args.install and _running():
         sys.exit("Sidecoach is running: not installing over a live session. Close it first.")
     # One version for every platform (scripts/bump_version.py): a build refuses when they
-    # differ. The check needs the phone's repo beside this one.
-    if (ROOT.parent / "sidecoach-android").exists():
+    # differ. The check needs the phone's folder, android/.
+    if (ROOT / "android").exists():
         check = [sys.executable, str(ROOT / "scripts" / "bump_version.py"), "--check"]
         if subprocess.call(check, stdout=subprocess.DEVNULL) != 0:
             sys.exit("the platforms' versions differ: bump_version.py --check says where")
     else:
-        print("no ../sidecoach-android here: the versions are not checked", flush=True)
+        print("no android/ here: the versions are not checked", flush=True)
     LOGS.mkdir(parents=True, exist_ok=True)
     version = _version()
     print(f"Sidecoach {version}", flush=True)

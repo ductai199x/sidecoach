@@ -15,7 +15,10 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # The Android app (android/) builds with Gradle on Tai's machine, not here.
+    paths-ignore: ["android/**"]
   pull_request:
+    paths-ignore: ["android/**"]
 
 jobs:
   python:

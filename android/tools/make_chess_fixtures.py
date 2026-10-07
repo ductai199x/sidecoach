@@ -16,7 +16,7 @@ with odd fields -- a right with no rook, file letters -- or ones python-chess re
 Run from the desktop repo's environment, which has python-chess:
 
     cd D:/chess-coaching-companion
-    uv run python D:/sidecoach-android/tools/make_chess_fixtures.py
+    uv run python android/tools/make_chess_fixtures.py
 """
 
 from __future__ import annotations

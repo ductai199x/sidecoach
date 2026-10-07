@@ -25,7 +25,7 @@ break, and texts long enough to need several batches.
 phonemizer splits and joins lines on `os.linesep`; the phone is Linux, so this runs with it
 set to "\\n" whatever the desktop's own is.
 
-    uv run --no-sync python D:/sidecoach-android/tools/make_voice_fixtures.py   (desktop repo)
+    uv run --no-sync python android/tools/make_voice_fixtures.py   (desktop repo)
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ import phone_speech  # noqa: E402
 ANDROID = Path(__file__).resolve().parent.parent
 OUT = ANDROID / "app" / "src" / "androidTest" / "assets" / "voice" / "voice.json"
 SESSION = ANDROID / "app" / "src" / "androidTest" / "assets" / "chess" / "session.json"
-MODEL_DIR = Path("D:/chess-coaching-companion/data/models/kokoro")
+MODEL_DIR = (Path(__file__).resolve().parents[2] / "data/models/kokoro")
 
 EDGES = [
     "Nf3, still theory.",

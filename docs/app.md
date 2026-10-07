@@ -2,8 +2,8 @@
 
 How the desktop app and the phone app are built, where they keep things, and how a release
 is made. [DESIGN.md](../DESIGN.md) is the source of truth for the pipeline (capture, vision,
-state, analysis, coach, voice); this file covers what wraps it. The phone's own repository
-is `D:\sidecoach-android` (its `README.md` and `docs/testing.md`); the desktop's test rules
+state, analysis, coach, voice); this file covers what wraps it. The phone's app is
+`android/` (its [README.md](../android/README.md) and `docs/testing.md`); the desktop's test rules
 are in [docs/testing.md](testing.md).
 
 There is one pipeline, written in Python, and two hosts for it:
@@ -290,7 +290,7 @@ before a release.
 
 ## The Android app
 
-`D:\sidecoach-android`: Kotlin, `minSdk` 33, `targetSdk` 37, ABIs arm64-v8a and x86_64.
+`android/` (its own Gradle build): Kotlin, `minSdk` 33, `targetSdk` 37, ABIs arm64-v8a and x86_64.
 The test device is Tai's Pixel 10 Pro XL.
 
 ### The port
@@ -345,7 +345,7 @@ block capture of live games (`FLAG_SECURE`); nothing can read those.
   committed); the network is a data file the app downloads at first run.
 - **espeak-ng** (the phonemizer behind Kokoro) is built from source in the app's CMake, at
   the tag the desktop's `espeakng_loader` uses (1.52.0). `tools/fetch_espeak.py` (run from the
-  desktop repo) puts the source in `third_party/espeak-ng` and the English data subset into
+  repo root in its Python environment) puts the source in `third_party/espeak-ng` and the English data subset into
   the committed `app/src/main/assets/espeak-ng-data`. The CMake build stops with an error when
   the source is missing; an APK without `libsidecoach_espeak.so` dies after the splash.
 - **The voice** is Kokoro on onnxruntime-android, the graph made by the desktop's
@@ -381,7 +381,7 @@ uv run --no-sync python scripts/bump_version.py --check   # exit 1 when they dif
 It writes `pyproject.toml`, `src/sidecoach/__init__.py`, `uv.lock`, `desktop/package.json`,
 `desktop/src-tauri/tauri.conf.json`, `Cargo.toml` and `Cargo.lock`, and the phone's
 `app/build.gradle.kts` (`versionName`, and `versionCode` as the version read as a number:
-0.1.85 is 185). The phone's repo is found beside this one (`--android` otherwise). Nothing is
+0.1.85 is 185). The phone is the `android/` folder (`--android` otherwise). Nothing is
 committed. Both release scripts refuse a mismatch.
 
 ### The desktop
@@ -390,7 +390,7 @@ committed. Both release scripts refuse a mismatch.
 uv run --no-sync python scripts/release_desktop.py --install
 ```
 
-1. Checks the versions (when `../sidecoach-android` exists).
+1. Checks the versions (when `android/` exists).
 2. `scripts/build_sidecar.py`: copies uv's managed CPython 3.12 (python-build-standalone) to
    `desktop/resources/python/` (gitignored), installs the lock's requirement set for the
    `panel` and `voice` groups with the CPU onnxruntime in place of onnxruntime-gpu and without
@@ -418,7 +418,7 @@ one.
 ### The phone
 
 ```
-powershell -File tools\install.ps1 -Serial <serial>      # in D:\sidecoach-android
+powershell -File android\tools\install.ps1 -Serial <serial>
 ```
 
 It builds and installs the `phone` build type (the debug build in all but being debuggable,
@@ -431,7 +431,7 @@ serial is always named. `-Voice` also pushes the fast Kokoro graph from the desk
 
 ### Moving shared things to the phone
 
-Each runs from the desktop repo with `uv run --no-sync python D:/sidecoach-android/tools/<script>`:
+Each runs from the repo root with `uv run --no-sync python android/tools/<script>`:
 
 | Script | Copies |
 |---|---|
@@ -444,7 +444,7 @@ Each runs from the desktop repo with `uv run --no-sync python D:/sidecoach-andro
 ### Parity fixtures
 
 The phone's port is checked against what the Python itself answered. Each
-`tools/make_*_fixtures.py` in the phone repo runs in the desktop's environment, calls the
+`android/tools/make_*_fixtures.py` runs in the desktop's environment, calls the
 desktop code (often the desktop's own test cases, through `tools/desktop_tests.py`), and writes
 the inputs and answers under `app/src/androidTest/assets/` (`chess/`, `vision/`, `pipeline/`,
 `profile/`, `voice/`, `panel/`, ...). An instrumented test feeds the Kotlin the same inputs and
@@ -453,8 +453,7 @@ random draws are counted on both sides. Regenerate a stage's fixture whenever th
 it covers changes, in the same change as the Kotlin:
 
 ```
-cd D:/chess-coaching-companion
-uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
+uv run --no-sync python android/tools/make_coach_fixtures.py
 ```
 
 `tools/make_fixtures.py` makes the board fixtures and `tools/make_game.py` a rendered game for

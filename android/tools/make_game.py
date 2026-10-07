@@ -10,7 +10,7 @@ one: a test harness, not part of what is installed. They are generated, so they 
 committed either.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_game.py [moller|trap]
+    uv run --no-sync python android/tools/make_game.py [moller|trap]
 
 `moller` (the default) is thirty clean plies of theory; `trap` is the Blackburne Shilling
 trap, where White takes the bait twice and is mated on move seven -- a game that ends on the
@@ -23,7 +23,7 @@ import shutil
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 
@@ -33,7 +33,7 @@ import cv2  # noqa: E402
 from tests.synth import draw_clock_box, synthetic_board  # noqa: E402
 from sidecoach.vision.clock import GlyphTemplates  # noqa: E402
 
-OUT = Path("D:/sidecoach-android/app/src/debug/assets/game")
+OUT = (Path(__file__).resolve().parents[1] / "app/src/debug/assets/game")
 
 PHONE_W, PHONE_H = 672, 1496
 CELL = 83

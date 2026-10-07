@@ -87,6 +87,8 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The Android app (its own build, Gradle); its fixture tools were never held to this lint.
+extend-exclude = ["android"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

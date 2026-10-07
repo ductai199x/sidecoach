@@ -7,7 +7,7 @@ checkout is `text=auto`, and a raw string would carry CRLF into the prompt. Run 
 whenever ask.py changes:
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/emit_ask.py
+    uv run --no-sync python android/tools/emit_ask.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP / "src"))
 
 from sidecoach.profile.ask import EXAMPLES, SCHEMA_DOC, SYSTEM  # noqa: E402

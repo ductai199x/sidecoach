@@ -13,7 +13,7 @@ about each of its pieces -- hanging, safe, what attacks and defends it, whether 
 loose, trapped, forks or skewers -- and the positions include puzzles of the tactical themes.
 
     cd D:/chess-coaching-companion
-    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_claims_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python android/tools/make_claims_fixtures.py
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import json
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

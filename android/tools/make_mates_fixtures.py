@@ -11,7 +11,7 @@ on, each puzzle's solution played out to its final position; plus the desktop's 
 and negatives from `tests/test_mates.py`, the shapes each pattern must and must not be given.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_mates_fixtures.py
+    uv run --no-sync python android/tools/make_mates_fixtures.py
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import json
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

@@ -48,7 +48,7 @@ from pathlib import Path
 # The net on the CPU, as the phone runs it: the GPU's numbers are a hair further off.
 os.environ["SIDECOACH_EMBED_DEVICE"] = "cpu"
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

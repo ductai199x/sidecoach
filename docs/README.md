@@ -44,7 +44,7 @@ One line per document: what it is for, and when to read it.
 - [../tools/pieces/README.md](../tools/pieces/README.md): how Sidecoach's own piece set was
   made. Read before changing the set.
 - `data/eval/README.md` (local, not committed): the layout of the evaluation data.
-- [sidecoach-android README](../../sidecoach-android/README.md): the phone app, the port's
+- [android/README.md](../android/README.md): the phone app, the port's
   rules, building, installing and testing it.
-- [sidecoach-android docs/testing.md](../../sidecoach-android/docs/testing.md): what is
+- [android/docs/testing.md](../android/docs/testing.md): what is
   particular to the phone's tests. Read with [testing.md](testing.md) before writing one.

@@ -166,11 +166,11 @@ A pawn gambit is never a sacrifice, and a capture taken back (Bxc3 bxc3) is a tr
 ## The phone
 
 `app/src/main/java/com/sidecoach/analysis/Score.kt` (`labelMove`, `Thresholds`) and
-`Motifs.kt` (`givenInLine`, `offered`, `SACRIFICE_THRESHOLD`) in sidecoach-android are 1:1
+`Motifs.kt` (`givenInLine`, `offered`, `SACRIFICE_THRESHOLD`) in android/ are 1:1
 ports. They are held to the desktop by recorded fixtures, made by running the desktop code:
 `tools/make_score_fixtures.py` (read by `ScoreTest.kt`), `tools/make_motif_fixtures.py`
 (`MotifsTest.kt`), `tools/make_annotator_fixtures.py` (`AnnotatorParityTest.kt`) and
-`tools/make_review_fixtures.py` (`GameReviewParityTest.kt`), all in the Android repo. A change
+`tools/make_review_fixtures.py` (`GameReviewParityTest.kt`), all in android/tools. A change
 to any rule here regenerates them and is ported in the same change.
 
 See also: [game-review.md](game-review.md), [stats.md](stats.md), [coach.md](coach.md).

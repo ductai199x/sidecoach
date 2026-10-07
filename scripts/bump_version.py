@@ -6,9 +6,8 @@
 Every platform takes the new version, including one whose code did not change (Tai,
 2026-09-25: "the version number should be synced for all platforms ... even though sometimes
 we update only 1"), so a version names the same coach on the desktop and the phone. The
-phone's repo is found beside this one (../sidecoach-android, or --android); its versionCode
-is the version as a number (0.1.14 -> 114), always rising. Nothing is committed: commit
-each repo after.
+phone is the android/ folder (or --android); its versionCode is the version as a
+number (0.1.14 -> 114), always rising. Nothing is committed.
 """
 
 from __future__ import annotations
@@ -73,10 +72,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("version", nargs="?", help="the new version, e.g. 0.1.14")
     parser.add_argument("--check", action="store_true", help="exit 1 when the platforms differ")
-    parser.add_argument("--android", type=Path, default=ROOT.parent / "sidecoach-android")
+    parser.add_argument("--android", type=Path, default=ROOT / "android")
     args = parser.parse_args()
     if not (args.android / GRADLE).exists():
-        sys.exit(f"no Android repo at {args.android} (--android)")
+        sys.exit(f"no Android app at {args.android} (--android)")
 
     if args.check or args.version is None:
         found = versions(args.android)

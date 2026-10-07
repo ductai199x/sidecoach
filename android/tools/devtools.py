@@ -7,8 +7,8 @@ the way `chrome://inspect` inspects it -- what the DOM came to, what a store hol
 fetch answered.
 
     adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>   (done for you)
-    uv run --no-sync python D:/sidecoach-android/tools/devtools.py "document.title"
-    uv run --no-sync python D:/sidecoach-android/tools/devtools.py --file probe.js
+    uv run --no-sync python android/tools/devtools.py "document.title"
+    uv run --no-sync python android/tools/devtools.py --file probe.js
 
 A WebSocket client in sixty lines rather than a dependency: the protocol's handshake is an
 HTTP upgrade and its frames are short, and nothing here needs more than one round trip.

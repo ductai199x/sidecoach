@@ -39,7 +39,7 @@ its own king takes nothing back (`exchange.can_retake`) -- and `causes.classify`
 desktop test's pinned-guard blunder.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_profile_fixtures.py
+    uv run --no-sync python android/tools/make_profile_fixtures.py
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

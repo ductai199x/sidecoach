@@ -13,7 +13,7 @@ keep their busy backgrounds) and costs the repository ten megabytes; and a state
 several frames is stored once and named several times.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_pipeline_fixtures.py
+    uv run --no-sync python android/tools/make_pipeline_fixtures.py
 
 The frames land beside this file's checkout (`app/src/androidTest/assets/pipeline`), so a
 worktree's copy writes into that worktree.
@@ -39,7 +39,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

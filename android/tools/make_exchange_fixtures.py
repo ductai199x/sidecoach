@@ -16,7 +16,7 @@ can be won and whether it hangs. For every capture of the side to move, and of t
 to move after a pass: the exchange it starts and whether it can be taken back.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_exchange_fixtures.py
+    uv run --no-sync python android/tools/make_exchange_fixtures.py
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import random
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

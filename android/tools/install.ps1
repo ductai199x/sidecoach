@@ -33,14 +33,14 @@ try {
 # refused (Tai, 2026-09-25: synced "even though sometimes we update only 1").
 $gradle = Get-Content (Join-Path $root "app\build.gradle.kts") -Raw
 $phone = [regex]::Match($gradle, 'versionName = "([^"]+)"').Groups[1].Value
-$pyproject = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\pyproject.toml"
+$pyproject = Join-Path (Split-Path -Parent $root) "pyproject.toml"
 if (Test-Path $pyproject) {
     $desktop = [regex]::Match((Get-Content $pyproject -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
     if ($phone -ne $desktop) {
         throw "the phone is $phone and the desktop ${desktop}: run the desktop's scripts\bump_version.py <version>"
     }
 } else {
-    Write-Host "no desktop repo beside this one: the versions are not checked"
+    Write-Host "no desktop pyproject.toml above android/: the versions are not checked"
 }
 
 Connect-Device $adb $Serial
@@ -62,7 +62,7 @@ $commit = (& git -C $root log --oneline -1)
 Write-Host "installed com.sidecoach $version on $Serial at $updated ($commit)"
 
 if ($Voice) {
-    $fast = Join-Path (Split-Path -Parent $root) "chess-coaching-companion\data\models\kokoro\kokoro-v1.0-q8.onnx"
+    $fast = Join-Path (Split-Path -Parent $root) "data\models\kokoro\kokoro-v1.0-q8.onnx"
     if (-not (Test-Path $fast)) { throw "no ${fast}: run the desktop's tools\kokoro_fast.py first" }
     # The app's own folder, at its top: a folder adb's shell makes inside it is the shell's, and
     # the app cannot read it (the faster voice pushed by 0.1.65's install was never adopted).

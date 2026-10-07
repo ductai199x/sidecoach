@@ -6,7 +6,7 @@ not the copy in the model's repository, which differs. The phone runs Parakeet T
 an 80-band model (Tai, 2026-09-23), so it ships `nemo80.onnx`, the one the desktop's onnx-asr
 runs for it; this copies it, with the version it came from, whenever onnx-asr changes.
 
-    uv run --no-sync python D:/sidecoach-android/tools/sync_asr.py   (from the desktop repo)
+    uv run --no-sync python android/tools/sync_asr.py   (from the desktop repo)
 """
 
 from __future__ import annotations

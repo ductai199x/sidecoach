@@ -251,4 +251,4 @@ counts tokens per endpoint and, with the prices set, the session's cost. `provid
 gives the tools a short form (`openai:gpt-5.6-luna@medium`, `flash`). Paid calls in
 `tools/eval/` go through `judge.Ledger`.
 
-The phone's coach is a 1:1 port (`com.sidecoach.coach` in sidecoach-android).
+The phone's coach is a 1:1 port (`com.sidecoach.coach` in android/).

@@ -15,7 +15,7 @@ from the desktop's own code:
   every legal move on those boards; difflib's ratio on pairs of move forms; and the endpointer
   on scripted probabilities with its thresholds changed, the coach speaking and not.
 
-    uv run --no-sync python D:/sidecoach-android/tools/make_stt_fixtures.py   (desktop repo)
+    uv run --no-sync python android/tools/make_stt_fixtures.py   (desktop repo)
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from sidecoach.voice.correct import correct, normalise, spoken_forms
 from sidecoach.voice.vad import HOP, Endpointer, SileroGate
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "voice" / "stt.json"
-KOKORO = Path("D:/chess-coaching-companion/data/models/kokoro")
+KOKORO = (Path(__file__).resolve().parents[2] / "data/models/kokoro")
 
 SAID = [
     "Knight to f three.",

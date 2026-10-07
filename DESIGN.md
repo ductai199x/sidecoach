@@ -509,7 +509,7 @@ sidecar on an ephemeral port behind a bearer token; one setup exe, no code signi
 CUDA pack fetched when an eligible NVIDIA GPU is found. `scripts/release_desktop.py` builds
 and installs it.
 
-Phone: a native Kotlin app in `D:\sidecoach-android`, a 1:1 port of the pipeline, coach,
+Phone: a native Kotlin app in `android/`, a 1:1 port of the pipeline, coach,
 profile, Game Review, Stats and voice (each Kotlin file says what its Python file says, held
 to it by parity tests), capturing through a `mediaProjection` foreground service. Chess.com
 live games on Android are FLAG_SECURE and cannot be captured; puzzles and bot games can.

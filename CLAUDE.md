@@ -1,12 +1,12 @@
 # Sidecoach
 
-Vision-first chess coaching companion. Watches the screen, finds the board, reconciles a legal game, annotates with Stockfish, and coaches Socratically through an LLM (or offline templates). Read `DESIGN.md` before changing architecture; it is the source of truth for scope and decisions. `docs/README.md` indexes the other docs. The Android app (`D:\sidecoach-android`) is a 1:1 Kotlin port of this code, checked by parity fixtures: a change here gets its Kotlin twin there.
+Vision-first chess coaching companion. Watches the screen, finds the board, reconciles a legal game, annotates with Stockfish, and coaches Socratically through an LLM (or offline templates). Read `DESIGN.md` before changing architecture; it is the source of truth for scope and decisions. `docs/README.md` indexes the other docs. The Android app (`android/`, its own Gradle build) is a 1:1 Kotlin port of this code, checked by parity fixtures: a change here gets its Kotlin twin in the same commit.
 
 ## Commands
 
 - `uv sync --all-groups` installs everything (plain `uv sync` installs only the dev group). Python 3.12 is pinned in `.python-version`.
 - `uv run sidecoach --help` for the CLI. `uv run sidecoach doctor` checks the local setup.
-- `uv run --no-sync python scripts/release_desktop.py --install` builds the desktop app (the sidecar, then the installer) and installs it; it refuses while the app is running. The phone: `tools\install.ps1 -Serial <serial>` in the Android repo.
+- `uv run --no-sync python scripts/release_desktop.py --install` builds the desktop app (the sidecar, then the installer) and installs it; it refuses while the app is running. The phone: `android\tools\install.ps1 -Serial <serial>`.
 - One version for every platform, bumped together even when only one changed: `uv run --no-sync python scripts/bump_version.py <version>` (desktop files and the phone's `versionName`/`versionCode`); `--check` compares them, and both release scripts refuse a mismatch.
 - `uv run pytest` runs the suite: unit, synthetic-vision, panel and server tests, in parallel. Never the whole suite unless Tai asks: run the test files that import what you changed (a guard asks for `FULL_SUITE_ASKED=1` otherwise). `-m slow` adds the tests that need the voice models or the GPU; `--seeds N` widens the seeded sweeps. `uv run ruff check .` and `uv run ruff format .` for lint and format. `uv run pyright` for types.
 

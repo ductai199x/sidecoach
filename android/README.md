@@ -1,9 +1,9 @@
 # Sidecoach for Android
 
 The chess coaching companion on the phone: open it once, grant screen capture, switch to
-the chess app and play; the coach speaks. The desktop repo (`D:\chess-coaching-companion`)
-is the source of truth for scope and decisions: its `DESIGN.md`, and `docs/app.md` for the
-phone's plan.
+the chess app and play; the coach speaks. It lives in `android/` of the Sidecoach repo; the
+repo's `DESIGN.md` is the source of truth for scope and decisions, and `docs/app.md` describes
+the phone app.
 
 The desktop is Python behind a Tauri shell. The phone cannot run that interpreter, so the
 pipeline is ported to Kotlin file by file. The rule for the port is one to one: the Kotlin
@@ -45,8 +45,8 @@ The engine and the voice's phonemizer are built from source, which is fetched in
 ```
 python tools/fetch_stockfish.py         # Stockfish's source
 python tools/fetch_stockfish.py --net   # ... and its network, for a dev push (tools\push_net.ps1)
-cd D:/chess-coaching-companion
-uv run --no-sync python D:/sidecoach-android/tools/fetch_espeak.py   # espeak-ng's source and data
+cd ..   # the repo root, whose environment has espeakng_loader
+uv run --no-sync python android/tools/fetch_espeak.py   # espeak-ng's source and data
 ```
 
 The engine ships without its 98 MB network; the app fetches the network, the voice, speech
@@ -89,7 +89,7 @@ python tools/lane_seconds.py                   # the lanes' cost table, after a 
 ```
 
 `tools\test.ps1` runs on `emulator-5556` unless `-Serial` says otherwise. Without `-Class` it
-is the whole suite, which the desktop repo's agent guard asks to confirm with
+is the whole suite, which the repo's agent guard asks to confirm with
 `FULL_SUITE_ASKED=1`.
 
 The suite has two halves, and `tools/test.ps1` runs both at once; it exits 0 only if every
@@ -119,15 +119,15 @@ test of both passed.
 ### The fixtures
 
 Every parity test reads what the desktop recorded. The generators live in `tools/` and run
-from the desktop repo, which has python-chess, the renderer and the code being ported; they
+from the repo root, whose environment has python-chess, the renderer and the code being ported; they
 write under `app/src/androidTest/assets/`. There is one per ported module
 (`make_chess_fixtures.py`, `make_reconcile_fixtures.py`, `make_pipeline_fixtures.py`,
 `make_coach_fixtures.py`, `make_voice_fixtures.py`, ...; `make_fixtures.py` renders the
 boards); after a change on the desktop, run the ones for the modules it touched:
 
 ```
-cd D:/chess-coaching-companion
-uv run --no-sync python D:/sidecoach-android/tools/make_<module>_fixtures.py
+cd ..   # the repo root
+uv run --no-sync python android/tools/make_<module>_fixtures.py
 ```
 
 The `sync_*.py` scripts copy what the app ships from the desktop the same way: the page

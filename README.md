@@ -82,7 +82,7 @@ Then, in the app:
 3. Closing the window quits; a setting keeps the coach running in the tray instead.
 
 Linux: an AppImage and a .deb build and run; screen capture on a real Linux desktop is still
-open ([docs/app.md](docs/app.md)). Android: [sidecoach-android](../sidecoach-android/README.md).
+open ([docs/app.md](docs/app.md)). Android: [android/](android/README.md).
 
 ---
 

@@ -22,7 +22,7 @@ profile/), so a refit reaches the phone together with the fixture that holds it 
   `termination_kind`; `grade`; `performance.lichess`; `fmean`.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_stats_fixtures.py
+    uv run --no-sync python android/tools/make_stats_fixtures.py
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

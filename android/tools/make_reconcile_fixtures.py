@@ -33,7 +33,7 @@ folded into other tests are still played, as they stood and under the names they
 Run from the desktop repo, whose environment has python-chess and the test helpers:
 
     cd D:/chess-coaching-companion
-    uv run python D:/sidecoach-android/tools/make_reconcile_fixtures.py
+    uv run python android/tools/make_reconcile_fixtures.py
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from pathlib import Path
 
 import chess
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

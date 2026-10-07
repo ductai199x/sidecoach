@@ -12,7 +12,7 @@ pinned to its king neither attacks nor defends off its line. On each, `examine_p
 for every square of the board.
 
     cd D:/chess-coaching-companion
-    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_named_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python android/tools/make_named_fixtures.py
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

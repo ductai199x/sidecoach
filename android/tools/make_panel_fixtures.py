@@ -15,7 +15,7 @@ what `Settings.model_validate` says of a save that does not fit (the settings pa
 its messages by field), and what the server answers a route it does not serve.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android-wt/ui/tools/make_panel_fixtures.py
+    uv run --no-sync python android/tools/make_panel_fixtures.py
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from typing import Any
 # No voice models: the panel is silent and deaf, as in the desktop's tests.
 os.environ["SIDECOACH_VOICE_MODELS"] = "0"
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

@@ -3,7 +3,7 @@
 How a test in this repo is written so that the whole suite stays fast, honest and deterministic.
 These rules are Tai's (2026-10-01/02) and the measured lessons of making the suite meet them.
 Every new test follows them; a review that finds one that does not sends it back. The phone's
-version is `docs/testing.md` in sidecoach-android.
+version is [android/docs/testing.md](../android/docs/testing.md).
 
 ## The budget
 
@@ -90,13 +90,12 @@ count. What each sweep asserts, and the current results, are in
 
 ## Parity fixtures for the phone
 
-The Android port (`D:\sidecoach-android`) is held to the desktop by fixtures the desktop
-writes: the generators are the phone repo's `tools/make_*_fixtures.py` (and
+The Android port (`android/`) is held to the desktop by fixtures the desktop
+writes: the generators are `android/tools/make_*_fixtures.py` (and
 `make_fixtures.py`), run from this repo, which has the renderer and python-chess:
 
 ```
-cd D:/chess-coaching-companion
-uv run --no-sync python D:/sidecoach-android/tools/make_reconcile_fixtures.py
+uv run --no-sync python android/tools/make_reconcile_fixtures.py
 ```
 
 Each records what the desktop code does -- the boards it renders, the readings, every
@@ -106,8 +105,8 @@ engine's lines -- into the phone's test assets, and the phone's parity tests mus
 same. Regenerate the fixtures of a module whenever you change it (the generator's imports
 say which modules it records: `make_reconcile_fixtures.py` for `sidecoach.state.reconcile`,
 `make_pipeline_fixtures.py` for `state/pipeline.py`, `make_coach_fixtures.py` for `coach/`,
-...), and whenever a test it replays changes. Commit them in the phone repo with the port of
-the change; the phone's README lists the main ones.
+...), and whenever a test it replays changes. Commit them with the change and its
+Kotlin port; the phone's README lists the main ones.
 
 ## Tests prove logic, never timing
 
@@ -206,4 +205,4 @@ is written up with both tests side by side; when in doubt, it stays.
 - [ ] Runs in the default suite; `-m slow` only for real models or the GPU; a seeded sweep
       takes `seed` and keeps a few default `SEEDS`.
 - [ ] Changed code the phone ports: its parity fixtures regenerated.
-- [ ] Phone: the 1:1 test exists in sidecoach-android (or the reason it can't).
+- [ ] Phone: the 1:1 test exists in android/ (or the reason it can't).

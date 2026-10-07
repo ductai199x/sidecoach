@@ -15,7 +15,7 @@ capture of one of our pieces that wins it by the rules (`exchange.exchange` > 0)
 legal move -- the capture is where "a guard that still loses the piece stops nothing" lives.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_positional_fixtures.py
+    uv run --no-sync python android/tools/make_positional_fixtures.py
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import random
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

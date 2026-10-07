@@ -62,7 +62,7 @@ move's square by another piece (the right capture with the other piece), and the
 move.
 
     cd D:/chess-coaching-companion
-    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python D:/sidecoach-android/tools/make_coach_fixtures.py
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-sync python android/tools/make_coach_fixtures.py
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ import random
 import sys
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

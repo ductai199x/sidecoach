@@ -11,7 +11,7 @@ param(
 )
 
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
-$apk = "D:\sidecoach-android\app\build\outputs\apk\debug\app-debug.apk"
+$apk = "$PSScriptRoot\..\app\build\outputs\apk\debug\app-debug.apk"
 
 & $adb -s $Device install -r $apk | Select-Object -Last 1
 & $adb -s $Device shell am force-stop com.sidecoach

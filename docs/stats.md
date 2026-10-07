@@ -48,7 +48,7 @@ committed.
 - `desktop/src/routes/stats/+page.svelte`, with `lib/stats/TrendChart.svelte` and
   `Sparkline.svelte`.
 - `tools/review/fit_stats.py` and `tools/review/human_facts.py`: the peers and the category models.
-- The phone: `profile/Stats.kt`, `profile/StatFacts.kt`, `ui/StatsApi.kt` in sidecoach-android,
+- The phone: `profile/Stats.kt`, `profile/StatFacts.kt`, `ui/StatsApi.kt` in android/,
   held to the desktop by `StatsParityTest` (fixtures from `tools/make_stats_fixtures.py`).
 
 ## The window

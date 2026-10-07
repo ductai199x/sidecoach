@@ -82,7 +82,7 @@ $files = @()
 $net = Get-ChildItem (Join-Path $root "third_party") -Filter "*.nnue" -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if ($net) { $files += , @($net.FullName, "") } else { Write-Host "no network in third_party; the engine tests will say so and skip" }
-$voiceDir = "D:\chess-coaching-companion\data\models\kokoro"
+$voiceDir = "$PSScriptRoot\..\..\data\models\kokoro"
 foreach ($name in @("kokoro-v1.0.onnx", "voices-v1.0.bin")) {
     $file = Join-Path $voiceDir $name
     if (Test-Path $file) { $files += , @($file, "models/kokoro") } else { Write-Host "no $name in $voiceDir; the voice tests will skip" }

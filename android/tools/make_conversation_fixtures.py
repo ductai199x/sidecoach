@@ -11,7 +11,7 @@ The game is played twice, once plain and once with the compact record, and takes
 a re-read of the board, a dialog, notes, a review and the end of the game on the way.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_conversation_fixtures.py
+    uv run --no-sync python android/tools/make_conversation_fixtures.py
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 

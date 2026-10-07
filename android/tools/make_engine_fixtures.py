@@ -22,7 +22,7 @@ number of lines, and the lines `Engine.analyse` returned. `EngineParityTest` scr
 answers into a shell script, runs the Kotlin `Engine` against it and compares.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/make_engine_fixtures.py
+    uv run --no-sync python android/tools/make_engine_fixtures.py
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from pathlib import Path
 import chess
 
 OUT = Path(__file__).resolve().parent.parent / "app" / "src" / "androidTest" / "assets" / "chess"
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 
 # What Stockfish 19 answers to `uci` (the desktop's tools/stockfish build), less its name.
 OPTIONS = [

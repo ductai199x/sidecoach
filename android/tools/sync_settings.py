@@ -11,7 +11,7 @@ what the phone honours -- its folders, devices, GPU switches and the rest the de
 left out -- so the page never shows an option that does nothing on the phone.
 
     cd D:/chess-coaching-companion
-    uv run --no-sync python D:/sidecoach-android/tools/sync_settings.py
+    uv run --no-sync python android/tools/sync_settings.py
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sys
 import warnings
 from pathlib import Path
 
-DESKTOP = Path("D:/chess-coaching-companion")
+DESKTOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 
