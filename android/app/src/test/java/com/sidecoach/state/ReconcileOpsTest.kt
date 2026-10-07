@@ -137,6 +137,7 @@ class ReconcileOpsTest {
                 if (op.isNull("result")) null else op.getString("result"),
             )
             "reorient" -> rec.reorient(side(op.getString("bottom")))
+            "replaced_event" -> listOf(rec.replacedEvent(op.getString("reason")))
             "commit" -> rec.commit(Move.fromUci(op.getString("uci")))
             "observe" -> {
                 val observed = rec.observe(readings(table.getString(op.getInt("readings"))))
@@ -304,6 +305,7 @@ class ReconcileOpsTest {
         is Unexplained -> "Unexplained ${event.reason} | ${event.fen}" + if (event.told) " | told" else ""
         is GameEnded -> "GameEnded ${event.result} ${event.reason} | ${event.pgn} | ${event.finalFen}"
         is TurnPending -> "TurnPending ${if (event.pending) "True" else "False"}"
+        is com.sidecoach.events.Corrected -> "Corrected ${event.reason} | ${event.fen}"
         else -> event::class.java.simpleName
     }
 

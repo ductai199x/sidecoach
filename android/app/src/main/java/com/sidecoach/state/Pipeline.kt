@@ -160,6 +160,9 @@ class GamePipeline(
     var board: BoardCandidate? = null
     var bootstraps = 0
 
+    /** Whether the last asked re-read ([coldStart]) found the game being followed, and kept it. */
+    var rereadKept = false
+
     /** The clock reader, when the app has its templates; without one there are no clocks. */
     var clock: ClockReader? = null
 
@@ -876,15 +879,27 @@ class GamePipeline(
         endPrevious: Boolean = true,
         before: Pair<Board, Set<Int>>? = null,
     ): MutableList<Event> {
-        val events = if (endPrevious) endInProgress("board reoriented") else mutableListOf()
-        events.addAll(adoptCold(read, ts, before))
-        return events
+        return adoptCold(read, ts, before, ending = if (endPrevious) "board reoriented" else null)
     }
 
-    private fun endInProgress(reason: String): MutableList<Event> {
+    /**
+     * The game under way ended because another replaces it (`_end_in_progress`): first with the
+     * story that proves its end, when the stories leave only that (a mate the site's dialog
+     * covered before a clean frame: [Reconciler.commitPendingTerminal]), as the reconciler's own
+     * new game ends it; else with the result its final position proves ([Reconciler.replacedEvent]).
+     * Every path that replaces the reconciler ends its game here: the next game come up with the
+     * colours swapped ([bootstrap]), the board read the other way up ([reorientRead]), and the
+     * board re-read ([coldStart]) -- the mate under the dialog was lost on the first two, and the
+     * game left with no end at all on the third (the audit of 2026-10-07). `internal` for
+     * `ReconcileRecordTest`.
+     */
+    internal fun endInProgress(reason: String): MutableList<Event> {
         val previous = reconciler
         if (previous == null || !previous.inProgress || previous.finished) return mutableListOf()
-        return mutableListOf(previous.replacedEvent(reason))
+        val concluded = previous.commitPendingTerminal()
+        if (previous.finished) return concluded
+        concluded.add(previous.replacedEvent(reason))
+        return concluded
     }
 
     /**
@@ -1437,18 +1452,39 @@ class GamePipeline(
         bottom: Side? = null,
         ts: Double? = null,
     ): MutableList<Event> {
+        rereadKept = false
         val read = coldRead(frame, geometry, bottom, asked = true) ?: return mutableListOf()
-        return adoptCold(read, ts)
+        val rec = reconciler
+        if (rec != null && read.bottom == this.bottom &&
+            rec.showsTheGame(read.placement, highlightedSquares(bySquare(read.readings, read.bottom)))
+        ) {
+            // The board read is the game being followed: the same game, kept -- not ended, not
+            // begun again (Tai, 2026-10-07). Only a board that differs ends it first.
+            rereadKept = true
+            return mutableListOf()
+        }
+        return adoptCold(read, ts, ending = "board re-read")
     }
 
-    /** `internal` for the test that a board turned round forgets the clock. */
-    internal fun adoptCold(read: ColdRead, ts: Double?, before: Pair<Board, Set<Int>>? = null): MutableList<Event> {
+    /**
+     * A new reconciler begun from the placement read cold (`_adopt_cold`). [ending]: why the
+     * game under way ends with it ([endInProgress]) -- ended only once the placement is adopted,
+     * so a read that adopts nothing leaves the game going. `internal` for the test that a board
+     * turned round forgets the clock.
+     */
+    internal fun adoptCold(
+        read: ColdRead,
+        ts: Double?,
+        before: Pair<Board, Set<Int>>? = null,
+        ending: String? = null,
+    ): MutableList<Event> {
         val reconciler = Reconciler(bottom = read.bottom, userSide = read.bottom)
         // The site's last-move highlight, for what a cold read cannot know: a pawn that has
         // just advanced two squares, and whose move it is ([lastMoveSeen]).
         val highlighted = highlightedSquares(bySquare(read.readings, read.bottom))
-        val events = reconciler.startFrom(read.placement, ts, highlighted, before)
+        var events = reconciler.startFrom(read.placement, ts, highlighted, before)
         if (events.isEmpty()) return mutableListOf()  // not a legal position; adopt nothing
+        if (ending != null) events = (endInProgress(ending) + events).toMutableList()
         // Only now, with a legal position begun, is the pipeline switched onto this theme.
         if (read.bottom != bottom) {
             // The clock read the other way up named the other side as running, and the side to

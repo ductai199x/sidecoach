@@ -20,6 +20,7 @@ import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
 import com.sidecoach.chess.squareRank
 import com.sidecoach.chess.squaresOf
+import com.sidecoach.events.Corrected
 import com.sidecoach.events.Event
 import com.sidecoach.events.GameEnded
 import com.sidecoach.events.GameStarted
@@ -455,14 +456,19 @@ class Reconciler(
      * run of ops a story begins with, the frames that have shown it settled ([decide]): counted
      * for every story, whether the stories agree yet or not.
      */
-    private var stories: List<Story> = listOf(Story())
-    private var seen: Map<List<Any>, Int> = emptyMap()
+    // `internal` for `ReconcileRecordTest` (the desktop's tests/test_reconcile_record.py), which
+    // sets the stories no frame can stage on cue.
+    internal var stories: List<Story> = listOf(Story())
+    internal var seen: Map<List<Any>, Int> = emptyMap()
 
     /** Whether the last frame showed the record as it stands (a queue drawn on it aside). */
     private var agreesFlag = true
 
-    /** Whether the side to move was last told pending ([TurnPending]). */
-    private var turnPendingTold = false
+    /**
+     * Whether the listener (the coach) holds the side to move pending: the last [TurnPending]
+     * said so, and no event since has told a position whole ([toldWhole]).
+     */
+    internal var turnPendingTold = false
     private val stale = HashMap<Int, Pair<StaleKey, Int>>()
     private var unexplainedFrames = 0
 
@@ -479,7 +485,7 @@ class Reconciler(
     private var turnUnknownFlag = false
 
     /** The placement the resync would adopt, how many frames have shown it, and since when. */
-    private var resyncCandidate: Triple<String, Int, Double>? = null
+    internal var resyncCandidate: Triple<String, Int, Double>? = null
 
     /**
      * The last [briefKept] distinct placements a resync held for [briefFrames] clean frames:
@@ -490,9 +496,9 @@ class Reconciler(
      * Adopted, the board after is played from the brief one when one legal move joins them.
      * `_resync_seen`.
      */
-    private var resyncSeen: List<Seen> = emptyList()
+    internal var resyncSeen: List<Seen> = emptyList()
 
-    private data class Seen(val placed: Board, val highlighted: Set<Int>, val key: String, val ts: Double)
+    internal data class Seen(val placed: Board, val highlighted: Set<Int>, val key: String, val ts: Double)
 
     /**
      * One clean read: the phone, its voice and engine busy, read the next puzzle's first board,
@@ -542,18 +548,18 @@ class Reconciler(
     private var lastObs: Observation = Observation()
 
     /** The frame before it ([inFlight]: a piece read on one square twice running has stopped). */
-    private var prevObs: Observation = Observation()
+    internal var prevObs: Observation = Observation()
 
     // The site's last-move mark agreed with no story, nor with one told the other way, this
     // frame ([marked]), and for how many frames running ([markedResync]).
     internal var markDenied = false
-    private var unmarked = 0
-    private var unmarkedView: Pair<String, List<Int>>? = null
+    internal var unmarked = 0
+    internal var unmarkedView: Pair<String, List<Int>>? = null
     private var tsValue = 0.0
     private var lastCommitTs: Double? = null
 
     /** When a frame last fitted a story with a premove queue drawn ([maybePositionResync]). */
-    private var queueTs: Double? = null
+    internal var queueTs: Double? = null
 
     val started: Boolean get() = startedFlag
     val finished: Boolean get() = finishedFlag
@@ -643,10 +649,7 @@ class Reconciler(
     // Lifecycle
 
     fun start(): MutableList<Event> {
-        clearStory()
         viewing = null
-        turnUnknownFlag = false
-        resyncCandidate = null
         lastSeen.clear()
         previous.clear()
         val started = begin(Board(), "game")
@@ -654,22 +657,27 @@ class Reconciler(
     }
 
     /** A game of [kind] begun on [board], under a new id (`_begin`). */
-    private fun begin(board: Board, kind: String): GameStarted {
+    private fun begin(board: Board, kind: String, turnUnknown: Boolean = false): GameStarted {
         gameId = UUID.randomUUID().toString().replace("-", "").take(8)
         this.kind = kind
         startedFlag = true
-        setPosition(board)
+        setPosition(board, turnUnknown)
         return gameStarted()
     }
 
     /**
      * [board] adopted as the game's position, the base its moves are counted from; the first
-     * move's think time counts from now (`_set_position`).
+     * move's think time counts from now (`_set_position`). [turnUnknown]: both sides could be to
+     * move on it and nothing has said which; every other position set has its side to move
+     * settled (a mark recovery left it open: the audit of 2026-10-07). What was remembered of
+     * the position before goes with it ([resetPositionMemory]).
      */
-    private fun setPosition(board: Board) {
+    internal fun setPosition(board: Board, turnUnknown: Boolean = false) {
         this.board = board
         baseFenValue = board.fen()
+        turnUnknownFlag = turnUnknown
         clearStory()
+        resetPositionMemory()
         // The start position is known, not read; any other is the screen's word for it.
         val read = board.boardFen() != Board().boardFen()
         readSquares = if (read) board.pieceMap().keys.toSet() else emptySet()
@@ -678,8 +686,42 @@ class Reconciler(
         lastCommitTs = tsValue
     }
 
+    /**
+     * `POSITION_MEMORY`: what the reconciler remembers of the position the game stands on, beside
+     * the stories, each set back to its default whenever a position is set ([setPosition]: a new
+     * game, a position adopted or re-read, a correction that starts the record again), as the
+     * stories are. Kept over a new game, a premove queue drawn on the last one held a resync off
+     * ([queueTs]), the mark's count of a still board went on counting ([unmarked]), and "already
+     * told pending" stood for a listener that a Resync or a GameStarted had told otherwise
+     * ([turnPendingTold]; the audit of 2026-10-07). The desktop resets the dataclass fields it
+     * names; the same fields, in its order, here.
+     */
+    private fun resetPositionMemory() {
+        turnPendingTold = false
+        queueTs = null
+        resyncCandidate = null
+        resyncSeen = emptyList()
+        unmarked = 0
+        unmarkedView = null
+        markDenied = false
+        prevObs = Observation()
+    }
+
+    /**
+     * [event], which tells the position whole with its side to move (GameStarted, Takeback,
+     * Resync, GameEnded): its listener takes the turn as known from it (the coach's `onEvent`),
+     * so the turn is no longer told pending, and [tellTurn] tells it again if the stories still
+     * disagree. Kept over such an event, "already told" let a Takeback played in the same frame
+     * as the stories parting leave the coach sure of a side to move nobody knew (the audit of
+     * 2026-10-07). `_told_whole`.
+     */
+    private fun <E : Event> toldWhole(event: E): E {
+        turnPendingTold = false
+        return event
+    }
+
     private fun gameStarted(): GameStarted =
-        GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen(), kind = kind)
+        toldWhole(GameStarted(gameId = gameId, userSide = userSide, startFen = board.fen(), kind = kind))
 
     /**
      * No story pending, no cell remembered as stale or unexplained: the position they were
@@ -1266,8 +1308,10 @@ class Reconciler(
             val into = earlier.moveStack.last()
             if (into.from in lit && into.to in lit) return emptyList()
         }
-        unmarked = 0
-        clearStory()
+        // The record went wrong further back than its moves can say: the game is told again
+        // from this board, the mark's side to move settled ([setPosition]). What was played
+        // before it is not this game's any more; the record keeps a game from the board
+        // adopted ([pgn]).
         viewing = null
         setPosition(adoptedBoard)
         return resynced("position adopted: the site's last-move mark fits no story")
@@ -1567,7 +1611,7 @@ class Reconciler(
      * others in one frame or from the stale retry. A wrong side to move is never told: while
      * stories disagree on it, nothing past their common start is played.
      */
-    private fun decide(found: List<Story>, cautious: Boolean = false): MutableList<Event> {
+    internal fun decide(found: List<Story>, cautious: Boolean = false): MutableList<Event> {
         var fitted = found
         if (fitted.size == 1 && fitted[0].cost != 0.0) {
             fitted = listOf(fitted[0].copy(cost = 0.0))  // alone, its past is the past
@@ -1735,8 +1779,12 @@ class Reconciler(
         return sq !in drawn && !reading.unsettled
     }
 
-    /** [TurnPending] when whether the stories agree on the side to move has changed (`_tell_turn`). */
-    private fun tellTurn(): MutableList<Event> {
+    /**
+     * [TurnPending] when whether the stories agree on the side to move differs from what the
+     * listener holds: the last told, or known since an event told a position whole ([toldWhole];
+     * `_tell_turn`).
+     */
+    internal fun tellTurn(): MutableList<Event> {
         val pending = turnPending
         if (pending == turnPendingTold) return mutableListOf()
         turnPendingTold = pending
@@ -1757,7 +1805,7 @@ class Reconciler(
                 is HeadOp.NewGame -> events.addAll(restart())
                 is HeadOp.Back -> {
                     repeat(op.plies) { board.pop() }
-                    events.add(Takeback(gameId = gameId, plies = op.plies, fen = board.fen()))
+                    events.add(toldWhole(Takeback(gameId = gameId, plies = op.plies, fen = board.fen())))
                     events.add(PositionChanged(gameId = gameId, fen = board.fen(), ply = board.moveStack.size))
                 }
                 is HeadOp.Flip -> events.addAll(flip())
@@ -1788,6 +1836,10 @@ class Reconciler(
     /**
      * The record's side to move read the other way (`_flip`): the first move of a position
      * adopted with the turn open settles it, silently; a turn told wrong is told again.
+     *
+     * Told again from the position, not from the base: the sides alternate, so the moves played
+     * since the base, each its side's, never play out from the base with the other side to move.
+     * The record keeps a game from the position corrected ([pgn]).
      */
     private fun flip(): MutableList<Event> {
         val flipped = board.copy(withStack = false)
@@ -1808,23 +1860,61 @@ class Reconciler(
         return resynced("side to move corrected: ${Side.of(flipped.turn).name.lowercase()} to move")
     }
 
+    /** The game's moves played again from [base], or null when one of them is not legal there (`_replayed`). */
+    private fun replayed(base: Board): Board? {
+        val out = base.copy(withStack = false)
+        for (move in board.moveStack) {
+            if (!out.isLegal(move)) return null
+            out.push(move)
+        }
+        return out
+    }
+
     /**
      * A piece of a position read from the screen, never moved since, was of another kind
-     * (`_fix`): the position is adopted again with it corrected. Still the same game: the pieces
-     * that had moved stay known, and the next move's think time counts from the last move.
+     * (`_fix`). Still the same game: the piece has stood on its square since the base, so the
+     * base is corrected and the moves played since are played again from it -- the record keeps
+     * every one, and their numbering (the audit of 2026-10-07: the game was adopted afresh from
+     * the correction, and the moves before it left the record and the review). The position is
+     * told as it now stands; the move that showed the piece's kind follows it.
+     *
+     * When there is no move to keep, or one is not legal from the corrected base, the position
+     * is adopted again with the piece corrected, as a re-read. The pieces that had moved stay
+     * known either way, and the next move's think time counts from the last move.
      */
     private fun fix(square: Int, kind: Int): MutableList<Event> {
         val was = board.pieceAt(square)!!
-        val fixed = board.copy(withStack = false)
-        fixed.setPieceAt(square, Piece(kind, was.colour))
         val read = readSquares - square
         val since = lastCommitTs
+        val reason = "the ${MISREAD_NAMES[was.pieceType]} read on ${squareName(square)} was a ${MISREAD_NAMES[kind]}"
+        val base = Board(baseFenValue)
+        var again: Board? = null
+        if (board.moveStack.isNotEmpty() && base.pieceAt(square) == was) {
+            base.setPieceAt(square, Piece(kind, was.colour))
+            again = replayed(base)
+        }
+        if (again != null) {
+            board = again
+            baseFenValue = base.fen()
+            readSquares = read
+            // Said for the debug log only, as the Resync's reason was ([Corrected]).
+            val events = mutableListOf<Event>(
+                Corrected(gameId = gameId, fen = board.fen(), reason = reason),
+                PositionChanged(gameId = gameId, fen = board.fen(), ply = board.moveStack.size),
+            )
+            if (board.isGameOver()) {
+                finishedFlag = true
+                resultValue = board.result()
+                events.add(endedEvent(resultValue!!, "game over on board"))
+            }
+            return events
+        }
+        val fixed = board.copy(withStack = false)
+        fixed.setPieceAt(square, Piece(kind, was.colour))
         setPosition(fixed)
         readSquares = read
         lastCommitTs = since
-        return resynced(
-            "the ${MISREAD_NAMES[was.pieceType]} read on ${squareName(square)} was a ${MISREAD_NAMES[kind]}",
-        )
+        return resynced(reason)
     }
 
     /**
@@ -1874,6 +1964,20 @@ class Reconciler(
 
     /** For how many frames in a row the board has disagreed and no story explained it. */
     val unexplainedFor: Int get() = unexplainedFrames
+
+    /**
+     * Whether a board read whole is the position the game under way stands on (`shows_the_game`):
+     * the same pieces, and a side to move the stories allow -- the side the site's last-move mark
+     * names, when it names one ([adoptPlacement]). A re-read of it is the same game, kept
+     * ([GamePipeline.coldStart]).
+     */
+    fun showsTheGame(placement: Board, highlighted: Set<Int> = emptySet()): Boolean {
+        if (!startedFlag || finishedFlag) return false
+        if (placement.boardFen() != board.boardFen()) return false
+        val adopted = adoptPlacement(placement, bottom.color, highlighted) ?: return false
+        val (adoptedBoard, turnOpen) = adopted
+        return turnOpen || adoptedBoard.turn in stories.map { it.board(board).turn }.toSet()
+    }
 
     /**
      * The story that ends the game, when the end is all the stories leave (`pending_terminal`):
@@ -2029,16 +2133,11 @@ class Reconciler(
             return mutableListOf()
         }
         val (adoptedBoard, unknownTurn) = adopted
-        turnUnknownFlag = unknownTurn
         val first = openingMove(adoptedBoard, placement, since, highlightedSquares(obs))
-        resyncSeen = emptyList()
-        clearStory()
         viewing = null
-        resyncCandidate = null
         if (first != null) {
             // The brief board before it is the start, and the move between them is played.
             val (start, move) = first
-            turnUnknownFlag = false
             val events: MutableList<Event> = if (finishedFlag) {
                 (mutableListOf<Event>(begin(start, "position")) + positioned()).toMutableList()
             } else {
@@ -2054,11 +2153,11 @@ class Reconciler(
             // there is to say: a Resync after it as well had the engine measure the position
             // twice and the coach note a re-read board that was never read before (the state
             // review, 2026-10-01).
-            val events = mutableListOf<Event>(begin(adoptedBoard, "position"))
+            val events = mutableListOf<Event>(begin(adoptedBoard, "position", unknownTurn))
             events.addAll(positioned())
             return events
         }
-        setPosition(adoptedBoard)
+        setPosition(adoptedBoard, unknownTurn)
         var reason = "position adopted after ${diff.size} unexplained cells"
         if (turnUnknownFlag) reason += "; side to move pending"
         return resynced(reason)
@@ -2134,8 +2233,8 @@ class Reconciler(
      * A new position for the game: Resync and PositionChanged, and the end when the position
      * is over and the side to move known (`_resynced`).
      */
-    private fun resynced(reason: String): MutableList<Event> {
-        val events = mutableListOf<Event>(Resync(gameId = gameId, fen = board.fen(), reason = reason))
+    internal fun resynced(reason: String): MutableList<Event> {
+        val events = mutableListOf<Event>(toldWhole(Resync(gameId = gameId, fen = board.fen(), reason = reason)))
         events.addAll(positioned())
         return events
     }
@@ -2170,7 +2269,10 @@ class Reconciler(
         check(board.moveStack.isEmpty())
         board.turn = colour
         baseFenValue = board.fen()
-        return resynced("side to move settled by the clock: ${Side.of(colour).name.lowercase()}")
+        // The stories stay, and told again pending when they still disagree on the turn.
+        val events = resynced("side to move settled by the clock: ${Side.of(colour).name.lowercase()}")
+        events.addAll(tellTurn())
+        return events
     }
 
     /**
@@ -2195,15 +2297,13 @@ class Reconciler(
             val first = oneMove(before.first, before.second, placement.boardFen(), highlighted)
             if (first != null) {
                 val (start, move) = first
-                turnUnknownFlag = false
                 val events = mutableListOf<Event>(begin(start, "position"))
                 events.addAll(commit(move))
                 return events
             }
         }
         val (adoptedBoard, unknownTurn) = adopted
-        turnUnknownFlag = unknownTurn
-        return mutableListOf(begin(adoptedBoard, "position"))
+        return mutableListOf(begin(adoptedBoard, "position", unknownTurn))
     }
 
     // Settling and committing
@@ -2375,16 +2475,29 @@ class Reconciler(
     }
 
     /** The GameEnded of this game as it stands (`ended_event`): also the pipeline's, for a game it drops. */
-    fun endedEvent(result: String, reason: String): GameEnded = GameEnded(
-        gameId = gameId,
-        result = result,
-        reason = reason,
-        pgn = pgn(),
-        finalFen = board.fen(),
+    fun endedEvent(result: String, reason: String): GameEnded = toldWhole(
+        GameEnded(
+            gameId = gameId,
+            result = result,
+            reason = reason,
+            pgn = pgn(),
+            finalFen = board.fen(),
+        ),
     )
 
-    /** Moves since the base position; after a resync the numbering restarts at 1. */
+    /**
+     * The game as PGN: the moves since the base position, numbered from it. A base that is not
+     * the start position (a position adopted, joined or re-read) is given in the SetUp and FEN
+     * headers, so what is kept is a game that plays out from where it began; the moves alone,
+     * numbered from the middle, were no game anyone could read back (the audit of 2026-10-07).
+     * A game from the start is its moves alone.
+     */
     fun pgn(): String {
+        val head = if (baseFenValue == STARTING_FEN) "" else "[SetUp \"1\"]\n[FEN \"$baseFenValue\"]\n\n"
+        return head + movetext()
+    }
+
+    private fun movetext(): String {
         val replay = Board(baseFenValue)
         val parts = ArrayList<String>()
         for ((i, move) in board.moveStack.withIndex()) {

@@ -20,8 +20,8 @@ and the pipeline tests whose games go through one (`RECORDED`) --
 as they stand, with every reconciler they build swapped for one that writes
 down what is done to it: built with which tunables, each frame of readings it is given and the
 events it answers, every call from outside (`start_from`, `turn_from_clock`, `end`,
-`board_unseen`, `commit_pending_terminal`, `reorient`, and the tests' own `_commit` and
-`_observe`), every field a test sets on it (`rec.board = ...`, `rec._base_fen`,
+`board_unseen`, `commit_pending_terminal`, `reorient`, `replaced_event`, and the tests' own
+`_commit` and `_observe`), every field a test sets on it (`rec.board = ...`, `rec._base_fen`,
 `rec.stale_after = 2`), and after each of those what it then says of itself (the position, the
 record, whether it is browsing, whose turn is open, whether a story is pending, ...). The
 tests' own assertions run as well, so a fixture is only written from tests that pass.
@@ -55,6 +55,7 @@ sys.path.insert(0, str(DESKTOP))
 sys.path.insert(0, str(DESKTOP / "src"))
 
 from sidecoach.events import (  # noqa: E402
+    Corrected,
     GameEnded,
     Region,
     GameStarted,
@@ -117,6 +118,8 @@ def event_json(event) -> str:
         return f"GameEnded {event.result} {event.reason} | {event.pgn} | {event.final_fen}"
     if isinstance(event, TurnPending):
         return f"TurnPending {event.pending}"
+    if isinstance(event, Corrected):
+        return f"Corrected {event.reason} | {event.fen}"
     return type(event).__name__
 
 
@@ -356,6 +359,7 @@ RECORDED: dict[str, list[str] | None] = {
         "test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock",
         "test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps",
         "test_flip_re_reads_a_joined_position_the_other_way_up",
+        "test_re_reading_the_screen_ends_the_game_in_progress_first",
         "test_a_resync_onto_a_board_the_other_way_up_reads_the_labels",
         "test_two_piece_sets_on_one_board_are_both_kept_and_each_read",
         "test_a_selected_piece_is_not_explained",
@@ -644,6 +648,9 @@ CALLS = {
     "end": (lambda a: {"result": a["result"], "reason": a["reason"]}, _events),
     "commit_pending_terminal": (lambda a: {"result": a["result"]}, _events),
     "reorient": (lambda a: {"bottom": a["bottom"].value}, _events),
+    # The pipeline's end of a game another replaces (`_end_in_progress`): it tells a position
+    # whole, which the reconciler marks (`_told_whole`).
+    "replaced_event": (lambda a: {"reason": a["reason"]}, lambda out: _events([out])),
     "_commit": (lambda a: {"uci": a["move"].uci()}, _events),
     "_observe": (
         lambda a: {"readings": LOG.frame(a["readings"])},

@@ -31,11 +31,12 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 
 import chess
 
 from sidecoach.events import (
+    Corrected,
     Event,
     GameEnded,
     GameStarted,
@@ -178,6 +179,23 @@ QUEUE_RESYNC_S = 1.0
 GAP_S = 0.5
 # Stories kept at most, cheapest first (`stories.Story`).
 MAX_STORIES = 12
+# What the reconciler remembers of the position the game stands on, beside the stories:
+# each is set back to its default whenever a position is set (`_set_position`: a new game,
+# a position adopted or re-read, a correction that starts the record again), as the stories
+# are. Kept over a new game, a premove queue drawn on the last one held a resync off
+# (`_queue_ts`), the mark's count of a still board went on counting (`_unmarked`), and
+# "already told pending" stood for a listener that a Resync or a GameStarted had told
+# otherwise (`_turn_pending_told`; the audit of 2026-10-07).
+POSITION_MEMORY = (
+    "_turn_pending_told",
+    "_queue_ts",
+    "_resync_candidate",
+    "_resync_seen",
+    "_unmarked",
+    "_unmarked_view",
+    "_mark_denied",
+    "_prev_obs",
+)
 
 
 def touched_squares(board: chess.Board, move: chess.Move) -> set[chess.Square]:
@@ -343,7 +361,8 @@ class Reconciler:
     _seen: dict[tuple[object, ...], int] = field(default_factory=dict)
     # Whether the last frame showed the record as it stands (a queue drawn on it aside).
     _agrees: bool = True
-    # Whether the side to move was last told pending (`TurnPending`).
+    # Whether the listener (the coach) holds the side to move pending: the last `TurnPending`
+    # said so, and no event since has told a position whole (`_told_whole`).
     _turn_pending_told: bool = False
     _stale: dict[chess.Square, tuple[tuple[object, ...], int]] = field(default_factory=dict)
     _unexplained_frames: int = 0
@@ -531,29 +550,34 @@ class Reconciler:
     # Lifecycle
 
     def start(self) -> list[Event]:
-        self._clear_story()
         self.viewing = None
-        self._turn_unknown = False
-        self._resync_candidate = None
         self._last_seen = {}
         self._previous = {}
         started = self._begin(chess.Board(), "game")
         return [started, PositionChanged(game_id=self.game_id, fen=self.board.fen(), ply=0)]
 
-    def _begin(self, board: chess.Board, kind: str) -> GameStarted:
+    def _begin(self, board: chess.Board, kind: str, turn_unknown: bool = False) -> GameStarted:
         """A game of `kind` begun on `board`, under a new id."""
         self.game_id = uuid.uuid4().hex[:8]
         self.kind = kind
         self._started = True
-        self._set_position(board)
+        self._set_position(board, turn_unknown)
         return self._game_started()
 
-    def _set_position(self, board: chess.Board) -> None:
+    def _set_position(self, board: chess.Board, turn_unknown: bool = False) -> None:
         """`board` adopted as the game's position, the base its moves are counted from; the
-        first move's think time counts from now."""
+        first move's think time counts from now. `turn_unknown`: both sides could be to move
+        on it and nothing has said which; every other position set has its side to move
+        settled (a mark recovery left it open: the audit of 2026-10-07). What was remembered
+        of the position before goes with it (`POSITION_MEMORY`)."""
         self.board = board
         self._base_fen = board.fen()
+        self._turn_unknown = turn_unknown
         self._clear_story()
+        for f in fields(self):
+            if f.name in POSITION_MEMORY:
+                default = f.default_factory() if f.default_factory is not MISSING else f.default
+                setattr(self, f.name, default)
         # The start position is known, not read; any other is the screen's word for it.
         read = board.board_fen() != chess.STARTING_BOARD_FEN
         self._read_squares = set(board.piece_map()) if read else set()
@@ -561,12 +585,24 @@ class Reconciler:
         self._result = None
         self._last_commit_ts = self._ts
 
+    def _told_whole[E: Event](self, event: E) -> E:
+        """`event`, which tells the position whole with its side to move (GameStarted,
+        Takeback, Resync, GameEnded): its listener takes the turn as known from it (the
+        coach's `on_event`), so the turn is no longer told pending, and `_tell_turn` tells
+        it again if the stories still disagree. Kept over such an event, "already told" let
+        a Takeback played in the same frame as the stories parting leave the coach sure of
+        a side to move nobody knew (the audit of 2026-10-07)."""
+        self._turn_pending_told = False
+        return event
+
     def _game_started(self) -> GameStarted:
-        return GameStarted(
-            game_id=self.game_id,
-            user_side=self.user_side,
-            start_fen=self.board.fen(),
-            kind=self.kind,
+        return self._told_whole(
+            GameStarted(
+                game_id=self.game_id,
+                user_side=self.user_side,
+                start_fen=self.board.fen(),
+                kind=self.kind,
+            )
         )
 
     def _clear_story(self) -> None:
@@ -1144,8 +1180,10 @@ class Reconciler:
             into = earlier.move_stack[-1]
             if {into.from_square, into.to_square} <= lit:
                 return []
-        self._unmarked = 0
-        self._clear_story()
+        # The record went wrong further back than its moves can say: the game is told again
+        # from this board, the mark's side to move settled (`_set_position`). What was played
+        # before it is not this game's any more; the record keeps a game from the board
+        # adopted (`pgn`).
         self.viewing = None
         self._set_position(board)
         return self._resynced("position adopted: the site's last-move mark fits no story")
@@ -1605,7 +1643,9 @@ class Reconciler:
         return sq not in self._drawn and not reading.unsettled
 
     def _tell_turn(self) -> list[Event]:
-        """`TurnPending` when whether the stories agree on the side to move has changed."""
+        """`TurnPending` when whether the stories agree on the side to move differs from what
+        the listener holds: the last told, or known since an event told a position whole
+        (`_told_whole`)."""
         pending = self.turn_pending
         if pending == self._turn_pending_told:
             return []
@@ -1631,7 +1671,9 @@ class Reconciler:
                 for _ in range(plies):
                     self.board.pop()
                 events += [
-                    Takeback(game_id=self.game_id, plies=plies, fen=self.board.fen()),
+                    self._told_whole(
+                        Takeback(game_id=self.game_id, plies=plies, fen=self.board.fen())
+                    ),
                     PositionChanged(
                         game_id=self.game_id, fen=self.board.fen(), ply=len(self.board.move_stack)
                     ),
@@ -1663,7 +1705,11 @@ class Reconciler:
 
     def _flip(self) -> list[Event]:
         """The record's side to move read the other way: the first move of a position adopted
-        with the turn open settles it, silently; a turn told wrong is told again."""
+        with the turn open settles it, silently; a turn told wrong is told again.
+
+        Told again from the position, not from the base: the sides alternate, so the moves
+        played since the base, each its side's, never play out from the base with the other
+        side to move. The record keeps a game from the position corrected (`pgn`)."""
         board = self.board.copy(stack=False)
         board.turn = not board.turn
         board.ep_square = None
@@ -1678,21 +1724,61 @@ class Reconciler:
         self._read_squares, self._last_commit_ts = read, since
         return self._resynced(f"side to move corrected: {Side.of(board.turn).value} to move")
 
+    def _replayed(self, base: chess.Board) -> chess.Board | None:
+        """The game's moves played again from `base`, or None when one of them is not legal
+        there."""
+        board = base.copy(stack=False)
+        for move in self.board.move_stack:
+            if move not in board.legal_moves:
+                return None
+            board.push(move)
+        return board
+
     def _fix(self, square: chess.Square, kind: chess.PieceType) -> list[Event]:
-        """A piece of a position read from the screen, never moved since, was of another kind:
-        the position is adopted again with it corrected. Still the same game: the pieces that
-        had moved stay known, and the next move's think time counts from the last move."""
+        """A piece of a position read from the screen, never moved since, was of another kind.
+        Still the same game: the piece has stood on its square since the base, so the base is
+        corrected and the moves played since are played again from it -- the record keeps
+        every one, and their numbering (the audit of 2026-10-07: the game was adopted afresh
+        from the correction, and the moves before it left the record and the review). The
+        position is told as it now stands; the move that showed the piece's kind follows it.
+
+        When there is no move to keep, or one is not legal from the corrected base, the
+        position is adopted again with the piece corrected, as a re-read. The pieces that had
+        moved stay known either way, and the next move's think time counts from the last
+        move."""
         was = self.board.piece_at(square)
         assert was is not None
-        board = self.board.copy(stack=False)
-        board.set_piece_at(square, chess.Piece(kind, was.color))
         read, since = self._read_squares - {square}, self._last_commit_ts
-        self._set_position(board)
-        self._read_squares, self._last_commit_ts = read, since
-        return self._resynced(
+        reason = (
             f"the {chess.piece_name(was.piece_type)} read on {chess.square_name(square)} "
             f"was a {chess.piece_name(kind)}"
         )
+        base = chess.Board(self._base_fen)
+        replayed = None
+        if self.board.move_stack and base.piece_at(square) == was:
+            base.set_piece_at(square, chess.Piece(kind, was.color))
+            replayed = self._replayed(base)
+        if replayed is not None:
+            self.board = replayed
+            self._base_fen = base.fen()
+            self._read_squares = read
+            # Said for the debug log only, as the Resync's reason was (`Corrected`).
+            events: list[Event] = [
+                Corrected(game_id=self.game_id, fen=self.board.fen(), reason=reason),
+                PositionChanged(
+                    game_id=self.game_id, fen=self.board.fen(), ply=len(self.board.move_stack)
+                ),
+            ]
+            if self.board.is_game_over():
+                self._finished = True
+                self._result = self.board.result()
+                events.append(self.ended_event(self._result, "game over on board"))
+            return events
+        board = self.board.copy(stack=False)
+        board.set_piece_at(square, chess.Piece(kind, was.color))
+        self._set_position(board)
+        self._read_squares, self._last_commit_ts = read, since
+        return self._resynced(reason)
 
     def _after_the_end(self, obs: Observation, diff: set[chess.Square]) -> list[Event]:
         """After the game has ended the board is a review board: browsing is followed, and
@@ -1730,6 +1816,25 @@ class Reconciler:
         and cannot yet say whose move it is."""
         turns = {s.board(self.board).turn for s in self._stories}
         return len(turns) > 1
+
+    def shows_the_game(
+        self, placement: chess.Board, highlighted: frozenset[chess.Square] = frozenset()
+    ) -> bool:
+        """Whether a board read whole is the position the game under way stands on: the same
+        pieces, and a side to move the stories allow -- the side the site's last-move mark
+        names, when it names one (`_adopt_placement`). A re-read of it is the same game, kept
+        (`GamePipeline.cold_start`)."""
+        if not self._started or self._finished:
+            return False
+        if placement.board_fen() != self.board.board_fen():
+            return False
+        adopted = self._adopt_placement(
+            placement, prefer=self.bottom.color, highlighted=highlighted
+        )
+        if adopted is None:
+            return False
+        board, turn_open = adopted
+        return turn_open or board.turn in {s.board(self.board).turn for s in self._stories}
 
     def pending_terminal(
         self, result: str | None = None
@@ -1910,16 +2015,12 @@ class Reconciler:
         if adopted is None:
             self._resync_candidate = None
             return []
-        board, self._turn_unknown = adopted
+        board, turn_unknown = adopted
         first = self._opening_move(board, placement, since, highlighted_squares(obs))
-        self._resync_seen = []
-        self._clear_story()
         self.viewing = None
-        self._resync_candidate = None
         if first is not None:
             # The brief board before it is the start, and the move between them is played.
             start, move = first
-            self._turn_unknown = False
             if self._finished:
                 events = [self._begin(start, "position"), *self._positioned()]
             else:
@@ -1934,8 +2035,8 @@ class Reconciler:
             # start is all there is to say: a Resync after it as well had the engine measure
             # the position twice and the coach note a re-read board that was never read
             # before (the state review, 2026-10-01).
-            return [self._begin(board, "position"), *self._positioned()]
-        self._set_position(board)
+            return [self._begin(board, "position", turn_unknown), *self._positioned()]
+        self._set_position(board, turn_unknown)
         reason = f"position adopted after {len(diff)} unexplained cells"
         if self._turn_unknown:
             reason += "; side to move pending"
@@ -2018,7 +2119,7 @@ class Reconciler:
         """A new position for the game: Resync and PositionChanged, and the end when the
         position is over and the side to move known."""
         return [
-            Resync(game_id=self.game_id, fen=self.board.fen(), reason=reason),
+            self._told_whole(Resync(game_id=self.game_id, fen=self.board.fen(), reason=reason)),
             *self._positioned(),
         ]
 
@@ -2094,7 +2195,11 @@ class Reconciler:
         assert not self.board.move_stack
         self.board.turn = colour
         self._base_fen = self.board.fen()
-        return self._resynced(f"side to move settled by the clock: {Side.of(colour).value}")
+        # The stories stay, and told again pending when they still disagree on the turn.
+        return (
+            self._resynced(f"side to move settled by the clock: {Side.of(colour).value}")
+            + self._tell_turn()
+        )
 
     def start_from(
         self,
@@ -2124,10 +2229,9 @@ class Reconciler:
             first = self._one_move(before[0], before[1], placement.board_fen(), highlighted)
             if first is not None:
                 start, move = first
-                self._turn_unknown = False
                 return [self._begin(start, "position"), *self._commit(move)]
-        board, self._turn_unknown = adopted
-        return [self._begin(board, "position")]
+        board, turn_unknown = adopted
+        return [self._begin(board, "position", turn_unknown)]
 
     # Settling and committing
 
@@ -2308,16 +2412,30 @@ class Reconciler:
         return concluded if proved is None else concluded + self.end(*proved)
 
     def ended_event(self, result: str, reason: str) -> GameEnded:
-        return GameEnded(
-            game_id=self.game_id,
-            result=result,
-            reason=reason,
-            pgn=self.pgn(),
-            final_fen=self.board.fen(),
+        return self._told_whole(
+            GameEnded(
+                game_id=self.game_id,
+                result=result,
+                reason=reason,
+                pgn=self.pgn(),
+                final_fen=self.board.fen(),
+            )
         )
 
     def pgn(self) -> str:
-        """Moves since the base position; after a resync the numbering restarts at 1."""
+        """The game as PGN: the moves since the base position, numbered from it. A base that is
+        not the start position (a position adopted, joined or re-read) is given in the SetUp
+        and FEN headers, so what is kept is a game that plays out from where it began; the
+        moves alone, numbered from the middle, were no game anyone could read back (the audit
+        of 2026-10-07). A game from the start is its moves alone."""
+        head = (
+            ""
+            if self._base_fen == chess.STARTING_FEN
+            else f'[SetUp "1"]\n[FEN "{self._base_fen}"]\n\n'
+        )
+        return head + self._movetext()
+
+    def _movetext(self) -> str:
         replay = chess.Board(self._base_fen)
         parts: list[str] = []
         for i, move in enumerate(self.board.move_stack):

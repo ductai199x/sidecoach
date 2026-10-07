@@ -10,7 +10,9 @@ The model was written on 2026-10-05, before the code, to replace a cascade of sp
 (single move, browsing, takeback, catch-up paths, queue undo, the opponent's move alone,
 misread, stale retries, turn correction), each added for one failure and each able to
 swallow a frame another needed. It was built weight-free on 2026-10-05/06 and is described
-here as it stands (2026-10-07). Section 8 records what was settled with Tai.
+here as it stands (2026-10-07, after the audit's fixes to the turn told, the record kept
+through a correction and the game ended on every replacement). Section 8 records what was
+settled with Tai.
 
 ## 1. What the reconciler may rely on
 
@@ -224,7 +226,7 @@ premove tint is not read as a mark).
   frames must show one still board (the same pieces and the same marks), all 64 squares
   read, every piece of a known kind and settled, and no hover. After `settle_frames + 1` (3)
   such frames, while the game is not finished, the board is read whole and adopted with the
-  side the mark names -- unless:
+  side the mark names, the turn no longer open -- unless:
   - the mark does not settle the side to move;
   - the board is the record already;
   - it differs from the record on `resync_jump_cells` (12) squares or more: another position
@@ -277,7 +279,11 @@ On every frame (`Reconciler.update`):
      (`rebased`, or `_retold` as a takeback of what it did not share).
    - When the stories disagree on the side to move, `TurnPending` says so (`turn_pending`,
      `_tell_turn`); the coach then says nothing unasked and holds questions until it is
-     known again (`Coach`, `_turn_pending`).
+     known again (`Coach`, `_turn_pending`). What is compared is what the coach holds, not
+     what was last sent: an event that tells a position whole (GameStarted, Takeback,
+     Resync, GameEnded) makes the coach take the turn as known, so it clears "told pending"
+     too (`_told_whole`), and a frame that plays a takeback while the stories still part
+     tells `TurnPending` again after it (2026-10-07).
 
 When nothing fits the frame, in order:
 
@@ -288,10 +294,17 @@ When nothing fits the frame, in order:
    a ring), with junk cells as wildcards; the story found is played cautiously. Fewer than
    `resync_cells` (3) stale cells, all of the disagreement, are ignored outright.
 3. **A misread piece** (`_misread_roots`, `fix`): a piece of a position read from the screen,
-   never moved since, that left its square, tried as each other kind.
+   never moved since, that left its square, tried as each other kind. Played, it keeps the
+   game: the piece has stood on its square since the base, so the base is corrected and the
+   moves since are played again from it (`_replayed`), their numbering kept; no `Resync`, the
+   position told by `PositionChanged` and the move that showed the kind, and a `Corrected`
+   note for the debug log that nothing acts on. Only when there is
+   no move to keep, or one does not replay, is the position adopted again (a `Resync`).
 4. **The side to move flipped** (`flip`): last of all, the record's turn read the other way.
    With the turn open (a position adopted) the first move settles it silently; otherwise
-   it is a `Resync` ("side to move corrected").
+   it is a `Resync` ("side to move corrected"), the game told again from the position: the
+   sides alternate, so the moves before it never replay from the base with the other side to
+   move.
 5. **The start position back on the board**: a new game (the old one ended first, with a
    pending terminal story if one proves its end).
 6. **The position re-read** (`_maybe_position_resync`): a board that disagrees on at least
@@ -356,6 +369,17 @@ not only at the end (section 7):
 4. **Lost means re-read, not guess.** When no story fits and the board is still and whole,
    it is read and adopted as a position (section 5, step 6): the move numbering restarts
    from it. Being behind for a moment is acceptable; being wrong is not.
+5. **The record is always a game.** The game kept (`pgn`, `GameEnded.pgn`) plays out from
+   where it begins: a base other than the start position is named in its SetUp and FEN
+   headers. A correction that keeps the game (a piece's kind, `fix`) keeps every move; one
+   that cannot (a side to move flipped after moves, a board adopted by a re-read or by the
+   mark) starts the record at the board corrected. The library takes the longer of the moves
+   recorded before the first re-read and the game kept to the end (`library.watched_row`).
+   Every path that replaces the reconciler ends its game first, with the mating story the
+   stories leave when the dialog covered it (`pipeline._end_in_progress`: the next game, the
+   board turned round, the board re-read). A re-read that finds the game's own position (the
+   same pieces, a side to move the stories allow: `shows_the_game`) keeps the game and ends
+   nothing (Tai, 2026-10-07).
 
 The order of failure modes, from acceptable to unacceptable: a move told late; the turn
 open for a move or two; a re-read that restarts the move numbering; a move told wrong; the
