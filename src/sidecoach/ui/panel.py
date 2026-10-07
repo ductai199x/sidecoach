@@ -240,6 +240,15 @@ LOST_TRACK = (
     "again as soon as it does, or at the next game or puzzle."
 )
 
+# What the person is told, once a session, when the engine's searches fail (`_engine_trouble`;
+# the audit of 2026-10-07: they were counted and logged, and nothing was shown).
+# A move's label in the move list when the engine could not judge it (`VerdictFailed`).
+UNJUDGED = "unjudged"
+ENGINE_TROUBLE = (
+    "The chess engine stopped answering, so I can't judge some moves right now. Those moves "
+    'are marked "not judged" in the move list.'
+)
+
 
 def _all_of(*steps: Callable[[], None]) -> None:
     """Each step on a thread of its own, all waited for; the first failure raised after."""
@@ -515,6 +524,9 @@ class PanelEngine:
         self._on_demand: Any = None
         self._on_demand_lock = threading.Lock()
         self._failures_seen: tuple[Any, int] = (None, 0)  # the coach's speaker, its failures logged
+        # The analyser whose failed searches the player was told of (`_engine_trouble`): once a
+        # session, not once a search.
+        self._engine_trouble_told: Any = None
         logging.getLogger("sidecoach.voice").addHandler(_VoiceLogHandler(self))
         if self.settings.unreadable:
             self._emit("sys", "warn", self.settings.unreadable)  # where its copy is kept
@@ -2551,6 +2563,7 @@ class PanelEngine:
                     for event in engine_events:
                         events_log.write(event.model_dump_json() + "\n")
                 opening = self._dispatch_engine(engine_events, opening, chess)
+                self._engine_trouble(getattr(assessing, "analyser", None))
                 profile_events = self._profile(
                     profiler, [*events, *engine_events], tick=True, flush=engine_idle
                 )
@@ -2931,12 +2944,46 @@ class PanelEngine:
                 )
             self._emit("vision", "debug", f"screen: {event.state.value}")
 
+    def _engine_trouble(self, analyser: Any) -> None:
+        """The engine's searches failing, told to the person once a session (ENGINE_TROUBLE),
+        in the coach's pane, as a board left unread is; the failure itself to the log."""
+        if analyser is None or analyser is self._engine_trouble_told:
+            return
+        if not getattr(analyser, "search_failures", 0):
+            return
+        self._engine_trouble_told = analyser
+        self._emit(
+            "coach",
+            "error",
+            f"engine · {ENGINE_TROUBLE}",
+            full=ENGINE_TROUBLE,
+            trigger="engine",
+            ply=None,
+            voice="text",
+            error=analyser.last_error,
+        )
+        self.caption(ENGINE_TROUBLE)
+
     def _dispatch_engine(self, events: list[Any], opening: str | None, chess: Any) -> str | None:
         from sidecoach.analysis.engine import san_line
-        from sidecoach.events import Analysis, MoveAssessment
+        from sidecoach.events import Analysis, MoveAssessment, VerdictFailed
 
         for event in events:
-            if isinstance(event, MoveAssessment):
+            if isinstance(event, VerdictFailed):
+                # Told as not judged where the move is shown, never skipped in silence.
+                fen = self._fen_before.pop(event.ply, None)
+                board = chess.Board(fen) if fen else None
+                san = board.san(chess.Move.from_uci(event.uci)) if board else event.uci
+                self._labels[event.ply] = UNJUDGED
+                self._set(labels={str(k): v for k, v in self._labels.items()})
+                self._emit(
+                    "engine",
+                    "warn",
+                    f"ply {event.ply} {san}: not judged ({event.reason})",
+                    ply=event.ply,
+                    label=UNJUDGED,
+                )
+            elif isinstance(event, MoveAssessment):
                 fen = self._fen_before.pop(event.ply, None)
                 board = chess.Board(fen) if fen else None
                 san = board.san(chess.Move.from_uci(event.uci)) if board else event.uci

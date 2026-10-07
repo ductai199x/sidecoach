@@ -647,6 +647,26 @@ class TakebackTest {
         assertEquals("a resync numbers the plies again", emptySet<String>(), labels())
     }
 
+    /**
+     * A move the engine could not judge is marked "not judged" in the move list, not left blank
+     * (`test_engine_failures_are_told_once_and_a_move_not_judged_is_marked`, its move-list half;
+     * the audit of 2026-10-07).
+     */
+    @Test
+    fun aMoveNotJudgedIsMarkedInTheMoveList() {
+        com.sidecoach.ui.PanelEngine.onGameEvent(
+            GameStarted(gameId = "g", userSide = Pieces.Side.WHITE, startFen = STARTING_FEN),
+        )
+        val move = played(Board(), "e4", 1)
+        com.sidecoach.ui.PanelEngine.onGameEvent(move)
+        com.sidecoach.ui.PanelEngine.onEngineEvents(
+            listOf(com.sidecoach.events.VerdictFailed(gameId = "g", ply = 1, uci = move.uci, reason = "engine gone")),
+            null,
+        )
+        val labels = com.sidecoach.ui.PanelEngine.poll(0).getJSONObject("state").getJSONObject("labels")
+        assertEquals(com.sidecoach.ui.UNJUDGED, labels.getString("1"))
+    }
+
     private fun load(file: String): Mat {
         val context = InstrumentationRegistry.getInstrumentation().context
         val bitmap = context.assets.open("pipeline/$file").use {

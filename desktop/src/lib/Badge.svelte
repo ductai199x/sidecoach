@@ -21,6 +21,8 @@
     { fill: "M11.3 8.1C9.6 6.9 7.3 6.5 5.4 6.8v9.9c1.9-.3 4.2.1 5.9 1.3zM12.7 8.1c1.7-1.2 4-1.6 5.9-1.3v9.9c-1.9-.3-4.2.1-5.9 1.3z" },
   ];
   const CROSS: Glyph = [{ stroke: "M8.3 8.3l7.4 7.4M15.7 8.3l-7.4 7.4" }];
+  // A dash: no verdict.
+  const DASH: Glyph = [{ stroke: "M7.6 12h8.8" }];
 
   // A glyph drawn about the centre, moved to `x` and scaled by `s`.
   const at = (g: Glyph, x: number, s: number) => ({ g, t: `translate(${x} 12) scale(${s}) translate(-12 -12)` });
@@ -36,6 +38,8 @@
     mistake: [{ g: QUESTION }],
     miss: [{ g: CROSS }],
     blunder: [at(QUESTION, 8.35, 0.82), at(QUESTION, 15.65, 0.82)],
+    // The engine could not judge the move (its searches failed): told, not left blank.
+    unjudged: [{ g: DASH }],
   };
 </script>
 

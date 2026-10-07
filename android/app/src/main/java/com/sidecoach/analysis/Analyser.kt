@@ -5,6 +5,7 @@ import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
 import com.sidecoach.events.Event
 import com.sidecoach.events.Line
+import com.sidecoach.events.VerdictFailed
 import java.util.Timer
 import java.util.TreeMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -45,8 +46,9 @@ import kotlin.concurrent.schedule
  * A position with one legal move is never searched: its best line is its move's, read from the
  * position that move leads to ([GameAnnotator.fromOnlyMove]).
  *
- * A search fails alone: what it held back is judged or told without it, never waited on; and
- * nothing a worker or the decided rule's timer does after a search can end its thread -- an
+ * A search fails alone: what it held back is judged or told without it, never waited on; a move
+ * it leaves no way to judge is told as not judged ([com.sidecoach.events.VerdictFailed]), in its
+ * place among the verdicts, never skipped in silence; and nothing a worker or the decided rule's timer does after a search can end its thread -- an
  * exception escaping a thread ends the app.
  */
 
@@ -243,6 +245,12 @@ class Analyser(
     @Volatile var withdrawn = 0
         private set
     @Volatile var failures = 0
+        private set
+    /**
+     * The engine's own searches that failed (Stockfish stopped answering, a fault in it): what
+     * the player is told of, once (the panel's `engineTrouble`).
+     */
+    @Volatile var searchFailures = 0
         private set
     @Volatile var lastError: String? = null
         private set
@@ -736,6 +744,7 @@ class Analyser(
                 // A failed search must never end a session.
                 synchronized(lock) {
                     failed("the ${job.kind} search of ${board.fen()}", exc)
+                    searchFailures += 1
                     val failedNode = nodes[job.key]
                     if (failedNode != null && job.era == era) {
                         failedNode.failed.add(job.kind)
@@ -1021,7 +1030,8 @@ class Analyser(
             val whole = before.whole
             if (whole == null) {
                 if (before.lost) {
-                    nextVerdict = at + 1  // nothing to judge it from: it goes without
+                    // Nothing to judge it from: told as not judged, never skipped in silence.
+                    unjudged(move, "the position it was played from could not be searched")
                     continue
                 }
                 return
@@ -1029,20 +1039,33 @@ class Analyser(
             val own = ownLine(whole.lines, move.move) != null
             if (!own && after.value == null) {
                 if (BEST in after.failed) {
-                    nextVerdict = at + 1
+                    unjudged(move, "the position it led to could not be searched")
                     continue
                 }
                 return
             }
             val board = boards[move.ply - 1] ?: before.board
-            try {
-                put(annotator.assessFrom(gameId ?: "", board, move.move, move.ply, whole, if (own) null else after.value))
+            val verdict = try {
+                annotator.assessFrom(gameId ?: "", board, move.move, move.ply, whole, if (own) null else after.value)
             } catch (exc: Exception) {
-                // A move that cannot be judged is skipped.
+                // A move that cannot be judged is told so.
                 failed("judging ${move.move.uci()} at ply ${move.ply}", exc)
+                unjudged(move, "judging it failed: ${exc::class.java.simpleName}: ${exc.message}")
+                continue
             }
+            put(verdict)
             nextVerdict = at + 1
         }
+    }
+
+    /**
+     * [move] told as not judged ([VerdictFailed]), in its place among the verdicts, and the
+     * verdicts carried on from the next. `_unjudged`.
+     */
+    private fun unjudged(move: Played, why: String) {
+        val reason = why + (lastError?.let { " ($it)" } ?: "")
+        put(VerdictFailed(gameId = gameId ?: "", ply = move.ply, uci = move.move.uci(), reason = reason))
+        nextVerdict = move.ply + 1
     }
 
     private fun answered(node: Node, whole: Boolean): Boolean =

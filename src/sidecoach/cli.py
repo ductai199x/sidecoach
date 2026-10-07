@@ -1009,15 +1009,15 @@ class _Assessing:
         a measure under way when a resync re-read the board (the side to move settled by the
         clock, the next puzzle) came after the new position's and was filed as its (the
         state review, 2026-10-01)."""
-        from sidecoach.events import Analysis, MoveAssessment
+        from sidecoach.events import Analysis, MoveAssessment, VerdictFailed
 
-        if not isinstance(event, (MoveAssessment, Analysis)):
+        if not isinstance(event, (MoveAssessment, VerdictFailed, Analysis)):
             return False
         if event.game_id != self._game_id:
             return self._game_id is not None
         if event.ply > self._ply:
             return True
-        if isinstance(event, MoveAssessment):
+        if isinstance(event, (MoveAssessment, VerdictFailed)):
             played = self._line.get(event.ply)
             return played is not None and played != event.uci
         fen = self._fens.get(event.ply)
@@ -1048,7 +1048,7 @@ class _Assessing:
         """Print what the engine has finished, log it, and hand it back for the coach."""
         import chess
 
-        from sidecoach.events import MoveAssessment
+        from sidecoach.events import MoveAssessment, VerdictFailed
 
         if self.analyser is None:
             return []
@@ -1065,6 +1065,13 @@ class _Assessing:
                         self.sink(f"ply {assessed.ply} {text}")
                     else:
                         console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
+            elif isinstance(assessed, VerdictFailed):
+                self._from.pop(assessed.ply, None)
+                text = f"not judged: the engine failed ({assessed.reason})"
+                if self.sink is not None:
+                    self.sink(f"ply {assessed.ply} {text}")
+                else:
+                    console.print(f"{indent}[dim]ply {assessed.ply}[/dim] {text}")
             if log is not None:
                 log.write(assessed.model_dump_json() + "\n")
         return drained

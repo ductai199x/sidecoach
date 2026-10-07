@@ -187,6 +187,20 @@ class MoveAssessment(
     val accuracy: Double? = null,
 ) : Event()
 
+/**
+ * A move the engine could not judge: the searches its verdict needed failed (Stockfish stopped
+ * answering, a fault). Told in the move's place, in the order of the moves, as its verdict would
+ * have been: a reader waiting on the move's verdict waits no more, and the move is shown as not
+ * judged rather than skipped in silence (the audit of 2026-10-07). [reason]: what failed, for
+ * the log. `events.VerdictFailed`.
+ */
+class VerdictFailed(
+    val gameId: String,
+    val ply: Int,
+    val uci: String,
+    val reason: String = "",
+) : Event()
+
 // Coach and UI
 
 /**

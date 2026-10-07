@@ -329,6 +329,61 @@ def test_a_failed_search_does_not_end_the_session_nor_hold_the_game() -> None:
     assert analyser.failures == failed + 2, "the next position tried, and failed alike"
 
 
+def test_a_move_the_engine_could_not_judge_is_told_so_in_its_place() -> None:
+    """The audit of 2026-10-07: a move whose searches failed was skipped with no word, and a
+    reader waiting on its verdict (the review, the move list) waited on. Every way a verdict
+    fails -- the position it was played from lost, the position it led to lost, the judging
+    itself raising -- tells the move as not judged (`VerdictFailed`), in the order of the moves,
+    with what failed, and nothing is owed."""
+    from sidecoach.events import VerdictFailed
+
+    # A dead engine: every move's positions fail.
+    analyser = Analyser(GameAnnotator(engine=_Broken(), depth=6, with_threats=False))
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        _play(analyser, ["e4", "e5", "Nf3"])
+        got = watch.settled()
+    told = [e for e in got if isinstance(e, VerdictFailed | MoveAssessment)]
+    assert [(type(e).__name__, e.ply, e.uci) for e in told] == [
+        ("VerdictFailed", 1, "e2e4"),
+        ("VerdictFailed", 2, "e7e5"),
+        ("VerdictFailed", 3, "g1f3"),
+    ]
+    assert all("engine gone" in e.reason for e in told if isinstance(e, VerdictFailed))
+    assert analyser.pending == 0 and analyser.search_failures > 0
+
+    # The position before whole, the position after lost: the move not among the lines.
+    engine = _Broken([_after("d4")])
+    engine.answers = {START: [_line("e2e4", score=0.6)]}
+    analyser = _analyser([engine])
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        _play(analyser, ["d4"])
+        got = [e for e in watch.settled() if isinstance(e, VerdictFailed | MoveAssessment)]
+    assert [(type(e).__name__, e.ply) for e in got] == [("VerdictFailed", 1)]
+
+    # The judging raising: told, and the verdicts after it carry on.
+    engine = FakeEngine({START: [_line("e2e4")], _after("e4"): [_line("e7e5")]})
+    analyser = _analyser([engine])
+    real = analyser.annotator.assess_from
+
+    def assess_from(game_id: str, board: chess.Board, move: chess.Move, ply: int, *a: Any) -> Any:
+        if ply == 1:
+            raise RuntimeError("judging broke")
+        return real(game_id, board, move, ply, *a)
+
+    analyser.annotator.assess_from = assess_from  # type: ignore[method-assign]
+    watch = AnalyserWatch(analyser, failures_ok=True)
+    with analyser:
+        _play(analyser, ["e4", "e5"])
+        got = [e for e in watch.settled() if isinstance(e, VerdictFailed | MoveAssessment)]
+    assert [(type(e).__name__, e.ply) for e in got] == [
+        ("VerdictFailed", 1),
+        ("MoveAssessment", 2),
+    ]
+    assert "judging broke" in got[0].reason  # type: ignore[union-attr]
+
+
 def test_a_candidate_that_fails_is_left_out_of_the_whole() -> None:
     """One candidate's own search fails: the position is whole without it, told final, and
     nothing is owed."""

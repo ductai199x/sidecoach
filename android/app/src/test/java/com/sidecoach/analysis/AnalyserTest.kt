@@ -429,6 +429,44 @@ class AnalyserTest {
     }
 
     /**
+     * `test_a_move_the_engine_could_not_judge_is_told_so_in_its_place` (the audit of 2026-10-07):
+     * a move whose searches failed was skipped with no word, and a reader waiting on its verdict
+     * waited on. The position it was played from lost, or the position it led to lost: the move
+     * is told as not judged ([com.sidecoach.events.VerdictFailed]), in the order of the moves,
+     * with what failed, and nothing is owed. (The judging itself raising is the desktop test's
+     * third case: the phone's annotator cannot be stubbed in place.)
+     */
+    @Test
+    fun aMoveTheEngineCouldNotJudgeIsToldSoInItsPlace() {
+        val dead = Analyser(GameAnnotator(Broken(), depth = 6, withThreats = false))
+        var watch = AnalyserWatch(dead, failuresOk = true)
+        var got = running(dead) {
+            play(dead, listOf("e4", "e5", "Nf3"))
+            watch.settled()
+        }
+        val told = got.filter { it is com.sidecoach.events.VerdictFailed || it is MoveAssessment }
+        assertEquals(
+            listOf(1 to "e2e4", 2 to "e7e5", 3 to "g1f3"),
+            told.map { (it as com.sidecoach.events.VerdictFailed).ply to it.uci },
+        )
+        assertTrue(told.all { "engine gone" in (it as com.sidecoach.events.VerdictFailed).reason })
+        assertEquals(0, dead.pending)
+        assertTrue(dead.searchFailures > 0)
+
+        val engine = Broken(mapOf(START to listOf(line("e2e4", score = 0.6))), setOf(after("d4")))
+        val analyser = analyser(listOf(engine))
+        watch = AnalyserWatch(analyser, failuresOk = true)
+        got = running(analyser) {
+            play(analyser, listOf("d4"))
+            watch.settled()
+        }
+        val verdicts = got.filter { it is com.sidecoach.events.VerdictFailed || it is MoveAssessment }
+        assertEquals(1, verdicts.size)
+        assertTrue(verdicts[0] is com.sidecoach.events.VerdictFailed)
+        assertEquals(1, (verdicts[0] as com.sidecoach.events.VerdictFailed).ply)
+    }
+
+    /**
      * `test_a_candidate_that_fails_is_left_out_of_the_whole`: one candidate's own search fails:
      * the position is whole without it, told final, and nothing is owed.
      */

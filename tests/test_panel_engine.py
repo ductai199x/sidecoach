@@ -853,6 +853,51 @@ def test_with_the_ai_coach_on_an_ask_before_any_coach_is_built_goes_to_the_model
         engine.close()
 
 
+def test_engine_failures_are_told_once_and_a_move_not_judged_is_marked(
+    make_panel: Callable[..., PanelEngine],
+) -> None:
+    """The audit of 2026-10-07: the analyser counted and logged its failed searches and nothing
+    else read them; a move whose verdict failed was skipped with no word. The person is told in
+    plain words, once a session however many searches fail, and the move is marked "not judged"
+    in the move list."""
+    import chess
+
+    from sidecoach.events import VerdictFailed
+    from sidecoach.ui.panel import ENGINE_TROUBLE, UNJUDGED
+
+    engine = make_panel()
+
+    class Analyser:
+        search_failures = 0
+        last_error = "EngineUnavailable: engine died twice"
+
+    def told() -> int:
+        return sum(
+            1 for r in engine._log.since(0) if r.get("data", {}).get("full") == ENGINE_TROUBLE
+        )
+
+    first = Analyser()
+    engine._engine_trouble(first)
+    assert told() == 0, "nothing failed: nothing told"
+    first.search_failures = 3
+    for _ in range(3):
+        engine._engine_trouble(first)
+    assert told() == 1, "once, not once a search"
+    first.search_failures = 9
+    engine._engine_trouble(first)
+    assert told() == 1
+    engine._engine_trouble(Analyser())  # the next session's, nothing failed yet
+    second = Analyser()
+    second.search_failures = 1
+    engine._engine_trouble(second)
+    assert told() == 2, "the next session's failure is told too"
+
+    engine._dispatch_engine(
+        [VerdictFailed(game_id="g", ply=1, uci="e2e4", reason="engine gone")], None, chess
+    )
+    assert engine._state["labels"] == {"1": UNJUDGED}
+
+
 def test_the_move_list_badges_follow_takebacks_and_resyncs(
     make_panel: Callable[..., PanelEngine],
 ) -> None:

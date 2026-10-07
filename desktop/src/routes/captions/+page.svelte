@@ -27,7 +27,8 @@
   } from "$lib/captions";
 
   const shell = isTauri();
-  const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder"]);
+  // "unjudged": the engine could not judge the move (its searches failed), told rather than blank.
+  const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder", "unjudged"]);
   const PLAIN: Captions = { on: false, keep: false, text: "#FFFFFF", background: "#1F1F1F", opacity: 92, size: 17, preview: 0 };
 
   let live = $state<PanelState>({});

@@ -1198,6 +1198,8 @@ object Captions {
         "mistake" to (0xFFFFA459.toInt() to "?"),
         "miss" to (0xFFFF7769.toInt() to "\u2715"),
         "blunder" to (0xFFFA412D.toInt() to "??"),
+        // The engine could not judge the move (its searches failed): told, not left blank.
+        UNJUDGED to (0xFF7D7D7D.toInt() to "–"),
     )
 
     /** A badge in the move list: a coloured disc with its mark, the size of a letter. */

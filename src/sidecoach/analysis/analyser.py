@@ -28,8 +28,9 @@ Verdicts go out in move order.
 A position with one legal move is never searched: its best line is its move's, read from the
 position that move leads to (`GameAnnotator.from_only_move`).
 
-A search fails alone: what it held back is judged or told without it, never waited on; and
-nothing a worker does after a search can end the worker.
+A search fails alone: what it held back is judged or told without it, never waited on; a move
+it leaves no way to judge is told as not judged (`VerdictFailed`), in its place among the
+verdicts, never skipped in silence; and nothing a worker does after a search can end the worker.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ from sidecoach.analysis.annotator import (
 )
 from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.score import position_score, terminal_expected_score
-from sidecoach.events import Event, Line
+from sidecoach.events import Event, Line, VerdictFailed
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +190,9 @@ class Analyser:
         self.stopped = 0  # searches let go because nothing would read them
         self.withdrawn = 0
         self.failures = 0
+        # The engine's own searches that failed (Stockfish stopped answering, a fault in it):
+        # what the player is told of, once (the panel's `_engine_trouble`).
+        self.search_failures = 0
         self.last_error: str | None = None
 
     # ---- the caller's side ----------------------------------------------------------------
@@ -612,6 +616,7 @@ class Analyser:
             except Exception as exc:  # noqa: BLE001 - a failed search must never end a session
                 with self._cond:
                     self._failed(f"the {job.kind} search of {board.fen()}", exc)
+                    self.search_failures += 1
                     failed = self._nodes.get(job.key)
                     if failed is not None and job.era == self._era:
                         failed.failed.add(job.kind)
@@ -843,13 +848,14 @@ class Analyser:
             before, after = self._nodes[move.before], self._nodes[move.after]
             if before.whole is None:
                 if before.lost:
-                    self._next_verdict += 1  # nothing to judge it from: it goes without
+                    # Nothing to judge it from: told as not judged, never skipped in silence.
+                    self._unjudged(move, "the position it was played from could not be searched")
                     continue
                 return
             own = own_line(before.whole.lines, move.move) is not None
             if not own and after.value is None:
                 if BEST in after.failed:
-                    self._next_verdict += 1
+                    self._unjudged(move, "the position it led to could not be searched")
                     continue
                 return
             board = self._boards.get(move.ply - 1, before.board)
@@ -862,11 +868,23 @@ class Analyser:
                     before.whole,
                     None if own else after.value,
                 )
-            except Exception as exc:  # noqa: BLE001 - a move that cannot be judged is skipped
+            except Exception as exc:  # noqa: BLE001 - a move that cannot be judged is told so
                 self._failed(f"judging {move.move.uci()} at ply {move.ply}", exc)
-            else:
-                self._results.put(verdict)
+                self._unjudged(move, f"judging it failed: {type(exc).__name__}: {exc}")
+                continue
+            self._results.put(verdict)
             self._next_verdict += 1
+
+    def _unjudged(self, move: _Move, why: str) -> None:
+        """`move` told as not judged (`VerdictFailed`), in its place among the verdicts, and the
+        verdicts carried on from the next."""
+        reason = why + (f" ({self.last_error})" if self.last_error else "")
+        self._results.put(
+            VerdictFailed(
+                game_id=self._game_id or "", ply=move.ply, uci=move.move.uci(), reason=reason
+            )
+        )
+        self._next_verdict = move.ply + 1
 
     def _answered(self, node: _Node, whole: bool) -> bool:
         if whole:

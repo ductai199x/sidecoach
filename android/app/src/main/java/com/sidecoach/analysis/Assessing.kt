@@ -11,6 +11,7 @@ import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Label
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.MoveAssessment
+import com.sidecoach.events.VerdictFailed
 import com.sidecoach.events.Resync
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Analysis
@@ -173,14 +174,16 @@ class Assessing(
     private fun stale(event: Event): Boolean {
         val (id, at) = when (event) {
             is MoveAssessment -> event.gameId to event.ply
+            is VerdictFailed -> event.gameId to event.ply
             is Analysis -> event.gameId to event.ply
             else -> return false
         }
         if (id != gameId) return gameId != null
         if (at > ply) return true
-        if (event is MoveAssessment) {
+        if (event is MoveAssessment || event is VerdictFailed) {
             val played = line[at]
-            return played != null && played != event.uci
+            val uci = if (event is MoveAssessment) event.uci else (event as VerdictFailed).uci
+            return played != null && played != uci
         }
         val fen = fens[at] ?: return false
         return fen.split(" ").take(4) != (event as Analysis).fen.split(" ").take(4)
@@ -235,6 +238,11 @@ class Assessing(
                 } else if (fen != null) {
                     sink("ply ${event.ply} ${assessmentText(event, Board(fen))}")
                 }
+            } else if (event is VerdictFailed) {
+                from.remove(event.ply)
+                val text = "not judged: the engine failed (${event.reason})"
+                val sink = sink
+                if (sink == null) Log.i(TAG, "ply ${event.ply} $text") else sink("ply ${event.ply} $text")
             }
         }
         return drained

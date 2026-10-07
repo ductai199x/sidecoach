@@ -356,6 +356,7 @@ class GameWatcher(
         val assessed = assessing.drain()
         for (event in assessed) note(event)
         opening = PanelEngine.onEngineEvents(assessed, opening)
+        PanelEngine.engineTrouble(assessing.analyser)
         val profiled = PanelEngine.profile(profiler, events + assessed, tick = true, flush = idle)
         // The coach, in the order the desktop's loop runs it: the game's events, the engine's
         // word on them, then the profile's. The tick and the drain are the loop's own, and

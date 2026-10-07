@@ -44,6 +44,7 @@ from sidecoach.events import (
     Side,
     Takeback,
     UserUtterance,
+    VerdictFailed,
 )
 from sidecoach.profile import causes, stats
 from sidecoach.profile.insights import as_cells, insights, motif_rates, motif_words
@@ -125,6 +126,8 @@ class _Ply:
     move: MovePlayed
     move_id: int = 0
     assessment: MoveAssessment | None = None
+    # The engine could not judge it (`VerdictFailed`): no verdict is coming, none is waited for.
+    unjudged: bool = False
     clock_ms: int | None = None  # the mover's clock when the move was made
     phase: str = "middlegame"
     cause: str | None = None
@@ -249,8 +252,16 @@ class Profiler:
             return []
         if self._removed(game):
             return []
-        if isinstance(event, Analysis | MoveAssessment) and event.game_id != game.game_id:
+        if (
+            isinstance(event, Analysis | MoveAssessment | VerdictFailed)
+            and event.game_id != game.game_id
+        ):
             return []  # the engine's late word on the game before this one
+        if isinstance(event, VerdictFailed):
+            ply = game.plies.get((game.segment, event.ply))
+            if ply is not None and ply.move.uci == event.uci:
+                ply.unjudged = True
+            return self._maybe_review(game, ts)
         if isinstance(event, MovePlayed):
             return self._move(game, event, ts)
         if isinstance(event, Analysis):
@@ -582,11 +593,14 @@ class Profiler:
         return True
 
     def _maybe_review(self, game: _Game, ts: float, *, force: bool = False) -> list[Event]:
-        """The review of a finished game, once every move of the player's has its verdict
-        or the grace period is up; `force` builds it from what is there."""
+        """The review of a finished game, once every move of the player's has its verdict (or
+        was told it will have none: `VerdictFailed`) or the grace period is up; `force` builds it
+        from what is there."""
         if game.end is None or game.reviewed or self._removed(game):
             return []
-        waiting = any(p.assessment is None for p in game.plies.values() if p.move.by_user)
+        waiting = any(
+            p.assessment is None and not p.unjudged for p in game.plies.values() if p.move.by_user
+        )
         if waiting and not force and ts - game.ended_at < REVIEW_GRACE_S:
             return []
         game.reviewed = True

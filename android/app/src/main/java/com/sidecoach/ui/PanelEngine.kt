@@ -32,6 +32,7 @@ import com.sidecoach.events.ScreenState
 import com.sidecoach.events.ScreenStateChanged
 import com.sidecoach.events.Takeback
 import com.sidecoach.events.Unexplained
+import com.sidecoach.events.VerdictFailed
 import com.sidecoach.analysis.sanLine
 import com.sidecoach.state.GamePipeline
 import com.sidecoach.state.Readings
@@ -86,6 +87,16 @@ private val BOARD_UNREAD = mapOf(
  */
 val LOST_TRACK = "I've lost track of this board: what I see doesn't follow from the game. I'll pick it up " +
     "again as soon as it does, or at the next game or puzzle."
+
+/** A move's label in the move list when the engine could not judge it ([VerdictFailed]). `panel.UNJUDGED`. */
+const val UNJUDGED = "unjudged"
+
+/**
+ * What the person is told, once a session, when the engine's searches fail ([PanelEngine.engineTrouble];
+ * the audit of 2026-10-07: they were counted and logged, and nothing was shown). `panel.ENGINE_TROUBLE`.
+ */
+val ENGINE_TROUBLE = "The chess engine stopped answering, so I can't judge some moves right now. Those moves " +
+    "are marked \"not judged\" in the move list."
 
 object PanelEngine {
 
@@ -822,6 +833,35 @@ object PanelEngine {
         }
     }
 
+    /** The analyser whose failed searches the person was told of ([engineTrouble]): once a session. */
+    private var engineTroubleTold: Any? = null
+
+    /**
+     * The engine's searches failing, told to the person once a session ([ENGINE_TROUBLE]), in
+     * the coach's pane, as a board left unread is, and in the caption box; the failure itself to
+     * the log. `panel._engine_trouble`.
+     */
+    fun engineTrouble(analyser: com.sidecoach.analysis.Analyser?) {
+        if (analyser == null || analyser.searchFailures == 0) return
+        synchronized(lock) {
+            if (analyser === engineTroubleTold) return
+            engineTroubleTold = analyser
+        }
+        emit(
+            "coach",
+            "error",
+            "engine · $ENGINE_TROUBLE",
+            JSONObject().apply {
+                put("full", ENGINE_TROUBLE)
+                put("trigger", "engine")
+                put("ply", JSONObject.NULL)
+                put("voice", "text")
+                put("error", analyser.lastError ?: JSONObject.NULL)
+            },
+        )
+        Captions.show(ENGINE_TROUBLE)
+    }
+
     /** The move list's badges as the page reads them: ply (as text) -> label. */
     private fun labelState(): Map<String, String> =
         synchronized(lock) { labels.entries.associate { e -> e.key.toString() to e.value } }
@@ -835,6 +875,22 @@ object PanelEngine {
         var named = opening
         for (event in events) {
             when (event) {
+                is VerdictFailed -> {
+                    // Told as not judged where the move is shown, never skipped in silence.
+                    val fen = synchronized(lock) { fenBefore.remove(event.ply) }
+                    val san = if (fen != null) Board(fen).san(Move.fromUci(event.uci)) else event.uci
+                    synchronized(lock) { labels[event.ply] = UNJUDGED }
+                    set("labels" to labelState())
+                    emit(
+                        "engine",
+                        "warn",
+                        "ply ${event.ply} $san: not judged (${event.reason})",
+                        JSONObject().apply {
+                            put("ply", event.ply)
+                            put("label", UNJUDGED)
+                        },
+                    )
+                }
                 is MoveAssessment -> {
                     val fen = synchronized(lock) { fenBefore.remove(event.ply) }
                     val board = fen?.let { Board(it) }

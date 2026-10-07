@@ -21,6 +21,7 @@ import com.sidecoach.events.GameReview
 import com.sidecoach.events.GameStarted
 import com.sidecoach.events.Label
 import com.sidecoach.events.MoveAssessment
+import com.sidecoach.events.VerdictFailed
 import com.sidecoach.events.MovePlayed
 import com.sidecoach.events.ProfileEvidence
 import com.sidecoach.events.ProfileSnapshot
@@ -67,6 +68,8 @@ class Profiler(
     private class Ply(val move: MovePlayed) {
         var moveId: Long = 0
         var assessment: MoveAssessment? = null
+        /** The engine could not judge it ([VerdictFailed]): no verdict is coming, none is waited for. */
+        var unjudged = false
         var clockMs: Int? = null  // the mover's clock when the move was made
         var phase: String = "middlegame"
         var cause: String? = null
@@ -153,6 +156,7 @@ class Profiler(
         if (removed(game)) return emptyList()
         if (event is Analysis && event.gameId != game.gameId) return emptyList()  // the engine's late word
         if (event is MoveAssessment && event.gameId != game.gameId) return emptyList()
+        if (event is VerdictFailed && event.gameId != game.gameId) return emptyList()
         return when (event) {
             is MovePlayed -> move(game, event, ts)
             is Analysis -> {
@@ -160,6 +164,11 @@ class Profiler(
                 analysis(game, event) + maybeReview(game, ts)
             }
             is MoveAssessment -> assessment(game, event) + maybeReview(game, ts)
+            is VerdictFailed -> {
+                val ply = game.plies[Key(game.segment, event.ply)]
+                if (ply != null && ply.move.uci == event.uci) ply.unjudged = true
+                maybeReview(game, ts)
+            }
             is Takeback -> takeback(game, event)
             is Resync -> {
                 if (game.provisional) return anotherPosition(event, ts)
@@ -483,13 +492,14 @@ class Profiler(
     }
 
     /**
-     * The review of a finished game, once every move of the player's has its verdict or the
-     * grace period is up; [force] builds it from what is there.
+     * The review of a finished game, once every move of the player's has its verdict (or was told
+     * it will have none: [VerdictFailed]) or the grace period is up; [force] builds it from what is
+     * there.
      */
     private fun maybeReview(game: Game, ts: Double, force: Boolean = false): List<Event> {
         val end = game.end ?: return emptyList()
         if (game.reviewed || removed(game)) return emptyList()
-        val waiting = game.plies.values.any { it.move.byUser && it.assessment == null }
+        val waiting = game.plies.values.any { it.move.byUser && it.assessment == null && !it.unjudged }
         if (waiting && !force && ts - game.endedAt < REVIEW_GRACE_S) return emptyList()
         game.reviewed = true
         val reason = reasonWords(end)

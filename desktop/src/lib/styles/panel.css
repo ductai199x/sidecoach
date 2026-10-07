@@ -406,6 +406,8 @@ html.stacked .moves-empty, .oneline .moves-empty { display: flex; align-items: c
   --cls-mistake: #ff9a47;
   --cls-miss: #ff6e62;
   --cls-blunder: #f0402c;
+  /* A move the engine could not judge (its searches failed): a grey of no kind. */
+  --cls-unjudged: #7d7d7d;
 }
 .moves-hint { font-size: 11px; color: var(--muted); padding: 2px 8px; }
 

@@ -860,13 +860,16 @@ def test_the_player_may_be_either_colour(side: Side) -> None:
     assert [r.ply for r in rows] == [1 if side is Side.WHITE else 2]
 
 
-@pytest.mark.parametrize("flush", ["verdict", "grace", "close"])
+@pytest.mark.parametrize("flush", ["verdict", "failed", "grace", "close"])
 def test_a_review_waits_for_the_last_verdict_and_is_never_dropped(flush: str) -> None:
     """The player's last move reaches the profile before the engine has judged it, and the
-    game ends: the review waits for the verdict and follows it at once. Without it, the
-    review is built from the judged moves when the grace period is up or the session
-    closes -- never dropped. (The next game's start is the same flush as the close; that a
-    start flushes is test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start.)"""
+    game ends: the review waits for the verdict and follows it at once -- or the engine's word
+    that it could not judge the move (`VerdictFailed`; the audit of 2026-10-07: a dead engine
+    left the review waiting out the grace). Without either, the review is built from the
+    judged moves when the grace period is up or the session closes -- never dropped. (The
+    next game's start is the same flush as the close; that a start flushes is
+    test_a_game_whose_end_was_not_seen_is_still_reviewed_at_the_next_start.)"""
+    from sidecoach.events import VerdictFailed
     from sidecoach.profile.profiler import REVIEW_GRACE_S
 
     f = Feed()
@@ -894,6 +897,8 @@ def test_a_review_waits_for_the_last_verdict_and_is_never_dropped(flush: str) ->
                 accuracy=100.0,
             )
         )
+    elif flush == "failed":
+        got = f.send(VerdictFailed(game_id="g", ply=f.ply, uci="g1f3", reason="engine gone"))
     else:
         got = f.profiler.tick(f.ts + REVIEW_GRACE_S + 1)
     review = next(e for e in got if isinstance(e, GameReview) and e.game_id == "g")

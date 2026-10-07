@@ -11,7 +11,9 @@
 
   let { oneline = false }: { oneline?: boolean } = $props();
 
-  const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder"]);
+  // "unjudged": the engine could not judge the move (its searches failed), told rather than blank.
+  const BADGED = new Set(["brilliant", "great", "best", "inaccuracy", "mistake", "miss", "blunder", "unjudged"]);
+  const TITLES: Record<string, string> = { unjudged: "not judged: the engine failed on this move" };
   let wrap = $state<HTMLDivElement | null>(null);
   const sideways = () => oneline || stacked();
 
@@ -86,7 +88,7 @@
               onmouseleave={() => store.hoverPly(null)}
               onclick={() => store.pinPly(c.ply)}
               onkeydown={(e) => { if (e.key === "Enter") store.pinPly(c.ply); }}
-            >{c.san}{#if c.label}<Badge kind={c.label} />{/if}</span>
+            >{c.san}{#if c.label}<Badge kind={c.label} title={TITLES[c.label]} />{/if}</span>
           {:else}
             <span class="mv"></span>
           {/if}
