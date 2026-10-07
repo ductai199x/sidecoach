@@ -148,6 +148,9 @@ class Idea:
     follow: chess.Move | None = None
     flight: tuple[chess.Square, ...] = ()  # "mate": their king's free squares now
     checks: int = 0  # how many checks the side to move has
+    # "mate", "attack": the line's first move gives check. A mate in two that starts with a
+    # quiet move was hinted "Which check comes first?" (the audit, 2026-10-07).
+    checks_first: bool = False
     level: bool = False  # the line only holds the balance: what it wins, it wins back
     down: bool = False  # the player is behind in material now
     draw: str | None = None  # "draw": "perpetual", "stalemate" or "repetition"
@@ -290,6 +293,7 @@ def _read(board: chess.Board, analysis: Analysis, owed: dict[int, int]) -> Idea:
             target=king,
             flight=_flight(board, not us),
             checks=checks,
+            checks_first=board.gives_check(first),
         )
     second = analysis.lines[1].expected_score if len(analysis.lines) > 1 else None
     draw = _drawn(boards, pv, analysis.lines[0].expected_score, second)
@@ -453,6 +457,7 @@ def _read(board: chess.Board, analysis: Analysis, owed: dict[int, int]) -> Idea:
             target=board.king(not us),
             flight=_flight(board, not us),
             checks=checks,
+            checks_first=board.gives_check(first),
         )
     # A won position with nothing to win in sight is won by technique, never "no tactic
     # here -- gain space on the flank" in a king-and-pawn ending (Lichess pawnEndgame,

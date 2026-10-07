@@ -929,7 +929,9 @@ def mate_key(board: chess.Board, idea: Idea) -> str | None:
         if room == 0
         else ("one free square" if room == 1 else f"{_NUMBER.get(room, str(room))} free squares")
     )
-    checks = idea.checks
+    # The checks are counted only for a line that starts with one: before a quiet first move
+    # the count sends the search the wrong way (the audit, 2026-10-07).
+    checks = idea.checks if idea.checks_first else 0
     said = (
         f", and you have {_NUMBER.get(checks, str(checks))} checks"
         if checks > 1

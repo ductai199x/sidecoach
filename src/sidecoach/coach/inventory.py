@@ -50,29 +50,49 @@ def pin_target(
     if piece is None or piece.piece_type == chess.KING:
         return None
     for attacker in board.attackers(not piece.color, square):
-        slider = board.piece_at(attacker)
-        if slider is None or slider.piece_type not in _SLIDERS:
-            continue
-        df = _sign(chess.square_file(square) - chess.square_file(attacker))
-        dr = _sign(chess.square_rank(square) - chess.square_rank(attacker))
-        file_, rank_ = chess.square_file(square) + df, chess.square_rank(square) + dr
-        while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
-            behind = chess.square(file_, rank_)
-            occupant = board.piece_at(behind)
-            if occupant is not None:
-                # A pin to the king holds whatever the pinner: a pinned piece still gives
-                # check. A pin to anything else needs a pinner that can legally take.
-                to_king = occupant.piece_type == chess.KING
-                takes = to_king or attacker in exchange.capturers(board, not piece.color, square)
-                if (
-                    occupant.color == piece.color
-                    and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
-                    and takes
-                    and motifs.winnable(board, behind, _VALUE[slider.piece_type], ignore=square)
-                ):
-                    return attacker, behind
-                break
-            file_, rank_ = file_ + df, rank_ + dr
+        behind = pinned_to(board, attacker, square)
+        if behind is not None:
+            return attacker, behind
+    return None
+
+
+def pinned_to(
+    board: chess.Board, attacker: chess.Square, square: chess.Square
+) -> chess.Square | None:
+    """The piece the slider on `attacker` pins the piece on `square` to, or None: the one
+    pin rule, which the inventory states and the draft check (`claims`) holds the coach to,
+    so a pin the facts tell the model is never refused when the model says it."""
+    piece = board.piece_at(square)
+    slider = board.piece_at(attacker)
+    if (
+        piece is None
+        or piece.piece_type == chess.KING
+        or slider is None
+        or slider.piece_type not in _SLIDERS
+        or slider.color == piece.color
+        or square not in board.attacks(attacker)
+    ):
+        return None
+    df = _sign(chess.square_file(square) - chess.square_file(attacker))
+    dr = _sign(chess.square_rank(square) - chess.square_rank(attacker))
+    file_, rank_ = chess.square_file(square) + df, chess.square_rank(square) + dr
+    while 0 <= file_ <= 7 and 0 <= rank_ <= 7:
+        behind = chess.square(file_, rank_)
+        occupant = board.piece_at(behind)
+        if occupant is not None:
+            # A pin to the king holds whatever the pinner: a pinned piece still gives
+            # check. A pin to anything else needs a pinner that can legally take.
+            to_king = occupant.piece_type == chess.KING
+            takes = to_king or attacker in exchange.capturers(board, not piece.color, square)
+            if (
+                occupant.color == piece.color
+                and _VALUE[occupant.piece_type] > _VALUE[piece.piece_type]
+                and takes
+                and motifs.winnable(board, behind, _VALUE[slider.piece_type], ignore=square)
+            ):
+                return behind
+            return None
+        file_, rank_ = file_ + df, rank_ + dr
     return None
 
 
@@ -178,26 +198,36 @@ def forks_in_place(
         piece = board.piece_at(square)
         if piece is None or piece.color != colour:
             continue
-        mine = _VALUE[piece.piece_type]
-        hits = [
-            t
-            for t in board.attacks(square)
-            if (o := board.piece_at(t))
-            and o.color != colour
-            and (o.piece_type == chess.KING or square in exchange.capturers(board, colour, t))
-            and (
-                o.piece_type == chess.KING
-                or _VALUE[o.piece_type] > mine
-                or not exchange.defenders(board, not colour, t)
-            )
-        ]
-        safe = motifs.is_safe(board, square)
-        if len(hits) >= 2 and safe:
+        hits = fork_hits(board, square)
+        if len(hits) >= 2 and motifs.is_safe(board, square):
             out.append(
                 (square, sorted(hits, key=lambda t: -_VALUE[board.piece_type_at(t) or chess.PAWN]))
             )
     out.sort(key=lambda x: -sum(_VALUE[board.piece_type_at(t) or chess.PAWN] for t in x[1]))
     return out
+
+
+def fork_hits(board: chess.Board, square: chess.Square) -> list[chess.Square]:
+    """The enemy units the piece on `square` could win: the king, or one it can legally take
+    that is worth more than itself or that nothing defends. The one fork rule, which the
+    inventory states and the draft check (`claims`) holds the coach to."""
+    piece = board.piece_at(square)
+    if piece is None:
+        return []
+    colour = piece.color
+    mine = _VALUE[piece.piece_type]
+    return [
+        t
+        for t in board.attacks(square)
+        if (o := board.piece_at(t))
+        and o.color != colour
+        and (o.piece_type == chess.KING or square in exchange.capturers(board, colour, t))
+        and (
+            o.piece_type == chess.KING
+            or _VALUE[o.piece_type] > mine
+            or not exchange.defenders(board, not colour, t)
+        )
+    ]
 
 
 def _pieces(board: chess.Board, colour: chess.Color) -> list[chess.Square]:

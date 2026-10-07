@@ -128,7 +128,12 @@ Every draft is checked before it is shown (`Speaker`):
   `draft_check` in `cli.py`); "illegal" said of a legal move; the verdict word or cost for the
   move just played against the assessment; an earlier moment of the game it invents. A refused
   draft is sent back once with the problems named; a second failure is replaced by the
-  template, so the player never hears a false claim and never hears nothing. `draft_claims.py`
+  template, so the player never hears a false claim and never hears nothing. Only what the
+  draft asserts is a claim: a question asserts nothing, and a state, a file or a passed pawn
+  said on a condition, in a plan or of a later move is not said of these boards; every claim
+  holds when it holds on the board now or on a board along the line the coach was given. A
+  pin, a fork and a skewer are judged by the inventory's own rules, the ones the fact sheet
+  states (2026-10-07). `draft_claims.py`
   (a model lists the draft's claims, python-chess decides them) is built but not wired: the app
   passes no `claim_reader`, so it stays off (Tai, 2026-09-26).
 - **Logged** (`Speaker._leaks`, from `disclosure.leak_check`): what the reply gives away of the

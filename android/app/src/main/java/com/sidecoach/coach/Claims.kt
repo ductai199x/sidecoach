@@ -18,9 +18,7 @@ import com.sidecoach.chess.SanFailure
 import com.sidecoach.chess.WHITE
 import com.sidecoach.chess.parseSquare
 import com.sidecoach.chess.square
-import com.sidecoach.chess.squareFile
 import com.sidecoach.chess.squareName
-import com.sidecoach.chess.squareRank
 import com.sidecoach.chess.squaresOf
 import com.sidecoach.events.Line
 import com.sidecoach.llm.ChatMessage
@@ -1041,8 +1039,12 @@ private val PIECE_ON = Regex(
         "(?<square>[a-h][1-8])\\b",
     RegexOption.IGNORE_CASE,
 )
+// Not a move named by where it goes: "the c5 pawn break is Black's main idea" was refused as "c5
+// is empty" (the audit, 2026-10-07).
 private val SQUARE_PIECE = Regex(
-    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?(?<square>[a-h][1-8])[- ](?<piece>$PIECE_WORD)\\b",
+    "\\b(?:(?<colour>$COLOUR_WORDS)\\s+)?(?<square>[a-h][1-8])[- ](?<piece>$PIECE_WORD)\\b" +
+        "(?!\\s+(?:break|push|lever|thrust|storm|sortie|jump|outpost|route)(?:s|es)?\\b" +
+        "|\\s+advance\\b)",
     RegexOption.IGNORE_CASE,
 )
 
@@ -1056,12 +1058,15 @@ private val CASTLE = Regex("(?<![A-Za-z0-9-])(O-O-O|O-O|0-0-0|0-0)[+#]?(?![A-Za-
 
 // A tactical adjective claimed of a piece on a square: "the bishop on b3 is pinned", "your
 // rook on d1 is hanging". The coach must not assert these unless the board bears them out.
+// The state is a whole word ("safe", never "safely"); and said without "is", a pin or a trap
+// that takes an object is what the piece does, not its state: "the bishop on b5 pinned the
+// knight" says nothing of the bishop being pinned (the audit, 2026-10-07).
 private val TACTIC = Regex(
     "(?:(?<colour>$COLOUR_WORDS)\\s+)?(?<piece>$PIECE_WORD)s?\\s+(?:on|at)\\s+" +
         "(?<square>[a-h][1-8])\\s+" +
-        "(?:(?:is|was|are|were)\\s+(?:now\\s+)?|,\\s*(?:which\\s+)?(?:is|was)\\s+|now\\s+)?" +
+        "(?:(?<copula>(?:is|was|are|were)\\s+(?:now\\s+)?|,\\s*(?:which\\s+)?(?:is|was)\\s+)|now\\s+)?" +
         "(?<state>pinned|hanging|undefended|unprotected|loose|en\\s*prise|trapped|safe|" +
-        "forks?|forking|skewers?|skewering)",
+        "forks?|forking|skewers?|skewering)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -1073,117 +1078,25 @@ private val STATE_FIRST = Regex(
     RegexOption.IGNORE_CASE,
 )
 
-private val SLIDERS = intArrayOf(BISHOP, ROOK, QUEEN)
+// What follows a verb that takes an object: an article, an owner, a piece or a square.
+private val OBJECT_NEXT = Regex(
+    "\\s+(?:the|a|an|your|their|his|its|white's|black's|both|two|(?:$PIECE_WORD)s?|" +
+        "[a-h][1-8])\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+// Verbs whose past is also the state: "pinned", "trapped".
+private val DEEDS = setOf("pinned", "trapped")
 
 /**
- * The friendly piece a piece on `square` shields, or null if it shields nothing.
- *
- * A pin, absolute or relative, by the inventory's rule ([pinTarget]), so a pin the coach was
- * told about is not called false: an enemy slider that can legally take the piece on `square`
- * attacks it along a line, and the next piece past it on that line is a friendly piece worth
- * more that the slider would win once the front one moved -- the king, or a piece the capture
- * wins (worth more than the slider, or undefended). A knight in front of a defended rook pins
- * nothing.
+ * Whether a [TACTIC] match is what the piece did to another ("the bishop on b5 pinned the
+ * knight"), not a state of its own: a pin or trap with no "is" before it and an object after
+ * it. `_a_deed`.
  */
-private fun pinLine(board: Board, square: Int): Int? {
-    val piece = board.pieceAt(square) ?: return null
-    if (piece.pieceType == KING) return null
-    for (attacker in Exchange.capturers(board, !piece.colour, square)) {
-        if (board.pieceTypeAt(attacker) !in SLIDERS) continue
-        val behind = beyond(board, attacker, square)
-        val occupant = if (behind != null) board.pieceAt(behind) else null
-        if (behind != null &&
-            occupant != null &&
-            occupant.colour == piece.colour &&
-            VALUE[occupant.pieceType] > VALUE[piece.pieceType] &&
-            wins(board, attacker, behind, without = square)
-        ) {
-            return behind
-        }
-    }
-    return null
-}
-
-private fun sign(n: Int): Int = if (n > 0) 1 else if (n < 0) -1 else 0
-
-/** The first occupied square past `through` on the line from `frm`, or null. */
-private fun beyond(board: Board, frm: Int, through: Int): Int? {
-    val df = sign(squareFile(through) - squareFile(frm))
-    val dr = sign(squareRank(through) - squareRank(frm))
-    if (df == 0 && dr == 0) return null
-    var file = squareFile(through) + df
-    var rank = squareRank(through) + dr
-    while (file in 0..7 && rank in 0..7) {
-        val sq = square(file, rank)
-        if (board.pieceAt(sq) != null) return sq
-        file += df
-        rank += dr
-    }
-    return null
-}
-
-/**
- * Whether the piece on `frm` wins the piece on `target` by taking it, with the piece on
- * `without` stepped off the line: the target is the king, or the capture is legal and nets
- * material once the recaptures are played out ([Exchange.exchange]).
- */
-private fun wins(board: Board, frm: Int, target: Int, without: Int? = null): Boolean {
-    if (board.pieceTypeAt(target) == KING) return true
-    val colour = board.colourAt(frm) ?: return false
-    var probe = board.copy(withStack = false)
-    if (without != null) probe.removePieceAt(without)
-    probe = toMove(probe, colour)
-    var capture: Move? = null
-    probe.generateLegalMoves(BB_SQUARES[frm], BB_SQUARES[target]) { if (capture == null) capture = it }
-    val found = capture ?: return false
-    return Exchange.exchange(probe, found) > 0
-}
-
-/**
- * Enemy pieces a fork on `square` would win, by the inventory's rule ([forksInPlace]): the king
- * it checks, or a piece it can legally take that can be won -- worth more than the forker, or
- * not defended well enough. A pinned knight takes nothing, so it forks nothing.
- */
-private fun forkTargets(board: Board, square: Int): List<Int> {
-    val piece = board.pieceAt(square) ?: return emptyList()
-    val targets = ArrayList<Int>()
-    for (target in board.attacks(square)) {
-        val other = board.pieceAt(target)
-        if (other == null || other.colour == piece.colour) continue
-        if (other.pieceType == KING ||
-            (square in Exchange.capturers(board, piece.colour, target) && Exchange.canBeWon(board, target))
-        ) {
-            targets.add(target)
-        }
-    }
-    return targets
-}
-
-/**
- * Whether the slider on `square` skewers, by the inventory's rule ([skewerTarget]): it attacks
- * an enemy piece that must step aside -- the king, or one it can legally take and win (worth
- * more than the slider, or undefended) -- and past it on the same line stands a less valuable
- * enemy piece the slider then wins.
- */
-private fun skewers(board: Board, square: Int): Boolean {
-    val piece = board.pieceAt(square) ?: return false
-    if (piece.pieceType !in SLIDERS) return false
-    for (front in board.attacks(square)) {
-        val target = board.pieceAt(front)
-        if (target == null || target.colour == piece.colour || !wins(board, square, front)) continue
-        val behind = beyond(board, square, front)
-        val occupant = if (behind != null) board.pieceAt(behind) else null
-        if (behind != null &&
-            occupant != null &&
-            occupant.colour != piece.colour &&
-            VALUE[occupant.pieceType] < VALUE[target.pieceType] &&
-            wins(board, square, behind, without = front)
-        ) {
-            return true
-        }
-    }
-    return false
-}
+private fun aDeed(text: String, match: MatchResult): Boolean =
+    match.groups["copula"] == null &&
+        match.groups["state"]!!.value.lowercase() in DEEDS &&
+        OBJECT_NEXT.matchAt(text, match.range.last + 1) != null
 
 /**
  * Whether the board bears out a tactic claimed of a piece; null when it does or might.
@@ -1191,7 +1104,10 @@ private fun skewers(board: Board, square: Int): Boolean {
  * Only plainly false claims are faulted: a pin that is not there (to any piece, not only the
  * king), a piece called loose that is defended, a piece called safe that can be won, a fork or
  * skewer the piece does not make. Attack and defence are legal moves: a piece pinned to its
- * king neither takes nor takes back, and a king takes back only where it may.
+ * king neither takes nor takes back, and a king takes back only where it may. A pin, a fork and
+ * a skewer are the inventory's ([pinTarget], [forkHits], [skewerTarget]): the rule the facts
+ * sheet states is the rule the coach is held to, so a pin the sheet tells the model of is never
+ * refused when the model says it (the audit, 2026-10-07: a mutual pin).
  */
 private fun tacticProblem(board: Board, squareName: String, rawState: String): String? {
     val square = parseSquare(squareName.lowercase())
@@ -1200,7 +1116,7 @@ private fun tacticProblem(board: Board, squareName: String, rawState: String): S
     val state = rawState.lowercase().replace(" ", "").trimEnd('s')
     when {
         state == "pinned" ->
-            if (pinLine(board, square) == null) return "the $name on $squareName is not pinned"
+            if (pinTarget(board, square) == null) return "the $name on $squareName is not pinned"
         state == "hanging" || state == "enprise" -> {
             if (Exchange.capturers(board, !piece.colour, square).isEmpty()) {
                 if (board.attackers(!piece.colour, square).isNotEmpty()) {
@@ -1224,7 +1140,7 @@ private fun tacticProblem(board: Board, squareName: String, rawState: String): S
         state == "trapped" && board.attackers(!piece.colour, square).isEmpty() ->
             return "nothing is attacking the $name on $squareName"
         state == "fork" || state == "forking" -> {
-            if (forkTargets(board, square).size < 2) {
+            if (forkHits(board, square).size < 2) {
                 if (board.isPinned(piece.colour, square)) {
                     return "the $name on $squareName is pinned, so it forks nothing"
                 }
@@ -1234,25 +1150,12 @@ private fun tacticProblem(board: Board, squareName: String, rawState: String): S
                 return "the $name on $squareName can be taken for profit, so it forks nothing"
             }
         }
-        (state == "skewer" || state == "skewering") && !skewers(board, square) ->
+        (state == "skewer" || state == "skewering") && skewerTarget(board, square) == null ->
             return "the $name on $squareName does not skewer anything"
     }
     return null
 }
 
-/**
- * Everything concrete in a coach draft that the board contradicts. Empty means clean.
- *
- * A "<piece> on <square>" phrase must match the board, colour word included ("your" is [us],
- * the player being coached, the side to move when not given: on the opponent's turn "your
- * knight on f3" is the player's, and read as the side to move's it was flagged false -- the
- * code review, 2026-09-26). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
- * skewer) must hold on the board, or on one of the [after] positions, which are the boards
- * along the best line: a fork the best move creates is real even though the current board
- * does not show it yet. A move must be playable on one of the frames: legal now, legal
- * for the opponent after a pass (a coach may name a threat), or legal further along the
- * line the coach was given. Bare squares are never flagged; a coach may point at one.
- */
 // A relation said of a piece in the present: "your knight on f6 attacks their queen on d1", "the
 // queen on g5 forks your knight on e5 and the pawn on g2", "the bishop on c4 pins the pawn on f7".
 // Never checked before: the deep prompt review (2026-10-01) let these through. `claims._RELATION`.
@@ -1287,13 +1190,19 @@ private val CLAUSE_END = Regex(
     RegexOption.IGNORE_CASE,
 )
 
-// What makes a sentence about a moment that is not on the board, or about a line: a plan, a hope,
-// a condition, a future ("once", "after", "would", "will"), an x-ray ("through").
+// What puts a claim at a moment that is not on the board: a plan, a hope, a condition, a future,
+// a later move ("once", "after", "would", "will", "then").
+private const val OTHER_MOMENT_WORDS =
+    "would|could|might|may|will|shall|won't|wouldn't|if|once|after|when|whenever|until|" +
+        "unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|trying|soon|later|" +
+        "eventually|next|then|imagine|suppose|afterwards|about to|going to|set to"
+private val OTHER_MOMENT = Regex("\\b(?:$OTHER_MOMENT_WORDS)\\b", RegexOption.IGNORE_CASE)
+
+// And for a relation, what makes it about a line or a possibility rather than what a piece does
+// now: an x-ray ("through", "behind"), a line, what a piece can or should do.
 private val NOT_PRESENT = Regex(
-    "\\b(?:would|could|might|may|will|shall|should|can|cannot|can't|won't|wouldn't|if|once|" +
-        "after|when|whenever|until|unless|aim|aims|aiming|want|wants|plan|plans|hope|try|tries|" +
-        "trying|soon|later|eventually|next|then|imagine|suppose|once|through|x-ray|x-rays|behind|" +
-        "line|lines|afterwards|ready|about to|going to|set to)\\b",
+    "\\b(?:$OTHER_MOMENT_WORDS|should|can|cannot|can't|through|x-ray|x-rays|behind|line|" +
+        "lines|ready)\\b",
     RegexOption.IGNORE_CASE,
 )
 
@@ -1316,7 +1225,6 @@ private val NOT_NOW = Regex(
         "follow\\w*|before|instead|missed|was|were|had)\\b",
     RegexOption.IGNORE_CASE,
 )
-private val RELATION_SENTENCE = Regex("(?<=[.!?;])\\s+")
 private val JOIN_OBJECTS = Regex("\\s*(?:,\\s*(?:and\\s+)?|and\\s+|as\\s+well\\s+as\\s+)", RegexOption.IGNORE_CASE)
 private val PIN_TO = Regex("\\bto\\b")
 private val BARE_DEFENDED = Regex("^\\s*(?:the\\s+)?([a-h][1-8])\\b(?!\\s*-)")
@@ -1326,27 +1234,20 @@ private data class Said(val colour: String?, val piece: String, val square: Stri
 private fun on(frame: Board, colour: String?, piece: String, square: String, us: Boolean): Boolean =
     placementProblem(frame, colour, piece, square, us) == null
 
-/**
- * Whether the slider on `attacker` pins the piece on `front`, by [pinLine]'s rule: the piece
- * behind, on the same line, is its side's and worth more, and would be won. `_pins_it`.
- */
-private fun pinsIt(board: Board, attacker: Int, front: Int): Boolean {
-    if (board.pieceTypeAt(attacker) !in SLIDERS || front !in board.attacks(attacker)) return false
-    val piece = board.pieceAt(front) ?: return false
-    val behind = beyond(board, attacker, front) ?: return false
-    val occupant = board.pieceAt(behind) ?: return false
-    return occupant.colour == piece.colour &&
-        piece.colour != board.colourAt(attacker) &&
-        VALUE[occupant.pieceType] > VALUE[piece.pieceType] &&
-        wins(board, attacker, behind, without = front)
-}
-
 private fun relationHolds(board: Board, kind: String, subject: Int, objects: List<Int>): Boolean {
-    if (kind == "pin") return objects.all { pinsIt(board, subject, it) }
+    // The inventory's pin rule ([pinnedTo]), the one the facts sheet states.
+    if (kind == "pin") return objects.all { pinnedTo(board, subject, it) != null }
     // Attack and defence as python-chess has them: the squares the piece bears on, a pinned
-    // piece's included (a coach says a pinned knight still defends).
+    // piece's included (a coach says a pinned knight still defends). A piece defends its own
+    // side's pieces and attacks the other side's: "your knight on f3 defends the pawn on e5" of
+    // Black's pawn passed (the audit, 2026-10-07). An empty square is covered either way.
     val attacked = board.attacks(subject)
-    return objects.all { it in attacked }
+    val colour = board.colourAt(subject)
+    return objects.all { square ->
+        if (square !in attacked) return@all false
+        val held = board.colourAt(square) ?: return@all true
+        (held == colour) == (kind == "defend")
+    }
 }
 
 private fun verbKind(verb: String): String {
@@ -1380,16 +1281,22 @@ private fun objectsFirst(given: String): List<Said> {
 /**
  * Relations said of pieces in the present that no frame bears out: an attack, a defence, a pin
  * or a fork. Only a sentence about the present is read (no plan, condition, future, line or
- * x-ray), only pieces named with their squares, and only where some frame has every named piece
- * on its square: elsewhere the placement check speaks. `_relation_problems`.
+ * x-ray), never a question, only pieces named with their squares, and only where some frame has
+ * every named piece on its square: elsewhere the placement check speaks. `_relation_problems`.
  */
-private fun relationProblems(text: String, frames: List<Board>, us: Boolean): List<Pair<String, String>> {
+private fun relationProblems(
+    text: String,
+    frames: List<Board>,
+    us: Boolean,
+    questions: List<IntRange> = emptyList(),
+): List<Pair<String, String>> {
     val problems = ArrayList<Pair<String, String>>()
-    for (sentence in RELATION_SENTENCE.split(text)) {
+    for ((offset, sentence) in sentences(text)) {
         // (phrase, kind, the subject, the objects)
         val relations = ArrayList<Triple<String, String, Pair<Said, List<Said>>>>()
         for (match in RELATION.findAll(sentence)) {
             val objectsGroup = match.groups["objects"]!!
+            if (asked(questions, offset + match.range.first)) continue
             if (NOT_PRESENT.containsMatchIn(sentence.substring(0, match.range.first)) ||
                 NOT_PRESENT.containsMatchIn(sentence.substring(match.range.first, objectsGroup.range.first))
             ) {
@@ -1413,7 +1320,11 @@ private fun relationProblems(text: String, frames: List<Board>, us: Boolean): Li
             relations.add(Triple(match.value.trim(), kind, subject to objects))
         }
         for (match in RELATION_BY.findAll(sentence)) {
-            if (NOT_PRESENT.containsMatchIn(sentence.substring(0, match.range.first))) continue
+            if (asked(questions, offset + match.range.first) ||
+                NOT_PRESENT.containsMatchIn(sentence.substring(0, match.range.first))
+            ) {
+                continue
+            }
             val kind = verbKind(match.groups["verb"]!!.value)
             val subject = Said(match.groups["bycolour"]?.value, match.groups["bypiece"]!!.value, match.groups["bysquare"]!!.value)
             val target = Said(match.groups["colour"]?.value, match.groups["piece"]!!.value, match.groups["square"]!!.value)
@@ -1460,14 +1371,19 @@ private fun hasMateInOne(board: Board): Boolean {
  * A move said to be mate that mates on no frame where it can be played, and "mate in one" where
  * no frame has one for either side. Only a sentence about the present: a mate named in a line, a
  * threat or a plan ("stops Qxg2#", "after Kf7, Ra7 is mate") is about a later moment. A mate on
- * a "#" token is not checked: in the stored replies it was always a later moment.
- * `_mate_problems`.
+ * a "#" token is not checked: in the stored replies it was always a later moment. A question
+ * ("Is Qxf7 mate?") says neither. `_mate_problems`.
  */
-private fun mateProblems(text: String, frames: List<Board>): List<Pair<String, String>> {
+private fun mateProblems(
+    text: String,
+    frames: List<Board>,
+    questions: List<IntRange> = emptyList(),
+): List<Pair<String, String>> {
     val problems = ArrayList<Pair<String, String>>()
-    for (sentence in RELATION_SENTENCE.split(text)) {
+    for ((offset, sentence) in sentences(text)) {
         if (NOT_PRESENT.containsMatchIn(sentence) || NOT_NOW.containsMatchIn(sentence)) continue
         for (match in MATE_SAID.findAll(sentence)) {
+            if (asked(questions, offset + match.range.first)) continue
             val san = match.groups["san"]?.value ?: match.groups["san2"]!!.value
             val core = TRAILING_MARKS.replace(san, "")
             var played = false
@@ -1483,7 +1399,7 @@ private fun mateProblems(text: String, frames: List<Board>): List<Pair<String, S
             }
             if (played && !mates) problems.add(match.value to "$core is not mate")
         }
-        val said = MATE_IN_ONE.find(sentence)
+        val said = MATE_IN_ONE.find(sentence)?.takeUnless { asked(questions, offset + it.range.first) }
         if (said != null && frames.none { f -> bothSides(f).any { hasMateInOne(it) } }) {
             problems.add(said.value to "no mate in one is on the board")
         }
@@ -1511,14 +1427,95 @@ private val CASTLING_SAID = Regex("\\bcastl\\w*|O-O", RegexOption.IGNORE_CASE)
  * rook, castling's). `_elsewhere`.
  */
 private fun elsewhere(text: String, at: Int, piece: String = ""): Boolean {
-    val stops = listOf(". ", "! ", "? ", "; ")
-    val start = stops.maxOf { text.lastIndexOf(it, at - 1).let { i -> if (at == 0) -1 else i } } + 1
-    val ends = stops.map { text.indexOf(it, at) }.filter { it >= 0 }
-    val sentence = text.substring(start, ends.minOrNull() ?: text.length)
+    val (start, end) = sentenceBounds(text, at)
+    val sentence = text.substring(start, end)
     if (piece.lowercase() in setOf("king", "rook") && CASTLING_SAID.containsMatchIn(sentence)) return true
     return ELSEWHERE.containsMatchIn(sentence)
 }
 
+private val SENTENCE_STOPS = listOf(". ", "! ", "? ", "; ")
+
+/** Where the sentence holding position `at` of `text` starts and ends. `_sentence_bounds`. */
+private fun sentenceBounds(text: String, at: Int): Pair<Int, Int> {
+    val start = SENTENCE_STOPS.maxOf { text.lastIndexOf(it, at - 1).let { i -> if (at == 0) -1 else i } } + 1
+    val ends = SENTENCE_STOPS.map { text.indexOf(it, at) }.filter { it >= 0 }
+    return start to (ends.minOrNull() ?: text.length)
+}
+
+// Where a clause ends, for the question a clause can be: a full stop, an exclamation, a question,
+// a semicolon, a colon or a dash.
+private val CLAUSE_STOPS = listOf(".", "!", "?", ";", ":", "—", "--")
+
+// A question mark, but not one stuck to another mark of a move ("Nxe5!?", "Qh4??").
+private val QUESTION_MARK = Regex("(?<![!?])\\?(?![!?])")
+
+/**
+ * The spans of `text` that ask rather than say: each clause that ends in a question mark, from
+ * the stop before it. A question asserts nothing ("Is the knight on c6 pinned?", "Which check
+ * comes first?"), so no claim is read in one (the audit, 2026-10-07). "The knight on c6 is
+ * pinned: how do you use it?" still asserts the pin, before the colon. `_questions`.
+ */
+private fun questions(text: String): List<IntRange> =
+    QUESTION_MARK.findAll(text).map { mark ->
+        var start = 0
+        for (stop in CLAUSE_STOPS) {
+            val from = mark.range.first - stop.length
+            val found = if (from < 0) -1 else text.lastIndexOf(stop, from)
+            if (found >= 0) start = maxOf(start, found + stop.length)
+        }
+        start until mark.range.last + 1
+    }.toList()
+
+private fun asked(questions: List<IntRange>, at: Int): Boolean = questions.any { at in it }
+
+/**
+ * Whether the words at `at` assert something of the board as it stands: not asked, and nothing
+ * earlier in their sentence puts them at another moment -- a condition, a plan, a future, a later
+ * move ([OTHER_MOMENT]: "if", "once", "after", "would", "then"). The board claims (a state, a
+ * file, a passed pawn) are read only where this holds, the way the relations and mates always
+ * were. `_said_now`.
+ */
+private fun saidNow(text: String, at: Int, questions: List<IntRange>): Boolean {
+    if (asked(questions, at)) return false
+    val (start, _) = sentenceBounds(text, at)
+    return !OTHER_MOMENT.containsMatchIn(text.substring(start, at))
+}
+
+private val SENTENCE_GAPS = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
+/** The sentences of `text`, each with where it starts. `_sentences`. */
+private fun sentences(text: String, stops: String = ".!?;"): List<Pair<Int, String>> {
+    val gaps = SENTENCE_GAPS.getOrPut(stops) {
+        Regex("(?<=[${stops.map { "\\$it" }.joinToString("")}])\\s+")
+    }
+    val out = ArrayList<Pair<Int, String>>()
+    var start = 0
+    for (gap in gaps.findAll(text)) {
+        out.add(start to text.substring(start, gap.range.first))
+        start = gap.range.last + 1
+    }
+    out.add(start to text.substring(start))
+    return out
+}
+
+/**
+ * Everything concrete in a coach draft that the board contradicts. Empty means clean.
+ *
+ * A "<piece> on <square>" phrase must match the board, colour word included ("your" is [us],
+ * the player being coached, the side to move when not given: on the opponent's turn "your
+ * knight on f3" is the player's, and read as the side to move's it was flagged false -- the
+ * code review, 2026-09-26). A tactic claimed of such a piece (pinned, hanging, safe, a fork, a
+ * skewer) must hold on the board, or on one of the [after] positions, which are the boards
+ * along the best line: a fork the best move creates is real even though the current board
+ * does not show it yet. A move must be playable on one of the frames: legal now, legal
+ * for the opponent after a pass (a coach may name a threat), or legal further along the
+ * line the coach was given. Bare squares are never flagged; a coach may point at one.
+ *
+ * Only what the draft asserts is a claim (Tai: false claims about the board refuse a draft, and
+ * nothing else may). A question asserts nothing ([questions]); a claim about another moment -- a
+ * condition, a plan, a later move -- is not one about these boards ([saidNow]). A piece or a move
+ * a question names must still be real: the placement and move checks read every sentence.
+ */
 fun checkDraft(
     text: String,
     board: Board,
@@ -1532,6 +1529,7 @@ fun checkDraft(
     val seen = HashSet<String>()
     val frames = listOf(board) + after
     val us = us ?: board.turn
+    val questions = questions(text)
 
     fun add(phrase: String, reason: String) {
         if (seen.add(phrase)) problems.add(DraftProblem(text = phrase, reason = reason))
@@ -1558,7 +1556,16 @@ fun checkDraft(
         }
     }
 
-    for (match in TACTIC.findAll(text) + STATE_FIRST.findAll(text)) {
+    for ((match, predicate) in TACTIC.findAll(text).map { it to true } + STATE_FIRST.findAll(text).map { it to false }) {
+        // A state said of a piece ("the knight on c6 is pinned") is read only where it is said
+        // of the board now; a state that names the piece ("your undefended rook on c2")
+        // describes it as it stands whatever the sentence does with it ("could exploit"), like
+        // a placement, and only a question leaves it unsaid.
+        if (predicate) {
+            if (!saidNow(text, match.range.first, questions) || aDeed(text, match)) continue
+        } else if (asked(questions, match.range.first)) {
+            continue
+        }
         val square = match.groups["square"]!!.value
         val state = match.groups["state"]!!.value
         val present = frames.map {
@@ -1584,25 +1591,28 @@ fun checkDraft(
         val reasons = frames.map { moveProblem(it, san) }
         if (reasons.all { it != null }) add(match.value, reasons[0] ?: "")
     }
-    for ((phrase, reason) in strategicProblems(text, board, us)) add(phrase, reason)
-    for ((phrase, reason) in lineProblems(text, frames, us)) add(phrase, reason)
-    for ((phrase, reason) in relationProblems(text, frames, us)) add(phrase, reason)
-    for ((phrase, reason) in mateProblems(text, frames)) add(phrase, reason)
+    for ((phrase, reason) in strategicProblems(text, frames, us, questions)) add(phrase, reason)
+    for ((phrase, reason) in lineProblems(text, frames, us, questions)) add(phrase, reason)
+    for ((phrase, reason) in relationProblems(text, frames, us, questions)) add(phrase, reason)
+    for ((phrase, reason) in mateProblems(text, frames, questions)) add(phrase, reason)
     return problems
 }
 
 // What a move is said to force: the king away, or a piece onto a square. "The check forced the
 // King away" where a block was legal, "the check on d6 forces your rook onto f7" where other
 // moves were: 2 of the 5 false claims the bench's labellers found (2026-09-25).
+// "Force" says the piece has no other move. "Drive" says the piece is made to move and goes there:
+// true when it had no other move, or when the line the coach was given plays it ("a3 drives the
+// knight back to c6" with ...Nc6 in the line was refused: the audit, 2026-10-07).
 private val FORCE_KING = Regex(
-    "\\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
+    "\\b(?<verb>forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
         "(?<colour>your|their|the|his|white's|black's)\\s+king\\s+" +
         "(?:away|back|out|off|to\\s+move|to\\s+step\\s+aside|to\\s+(?<square>[a-h][1-8]))\\b" +
         "|\\b(?<colour2>your|their)\\s+king\\s+(?:has\\s+to|must|is\\s+forced\\s+to)\\s+move\\b",
     RegexOption.IGNORE_CASE,
 )
 private val FORCE_ONTO = Regex(
-    "\\b(?:forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
+    "\\b(?<verb>forc(?:e|es|ed|ing)|driv(?:e|es|ing)|drove)\\s+" +
         "(?<colour>your|their|the|his|white's|black's)\\s+" +
         "(?<piece>queen|rook|bishop|knight|pawn)\\s+(?:back\\s+)?(?:onto|to|into)\\s+" +
         "(?<square>[a-h][1-8])\\b",
@@ -1659,7 +1669,6 @@ private val ONLY_MOVE = Regex(
 private val SAN_CHECK = Regex(
     "\\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8])(?:=[QRBN])?\\+",
 )
-private val SENTENCE_BREAK = Regex("(?<=[.!?])\\s+")
 private val FILE_LETTER = Regex("\\b([a-h])-")
 
 /** [text] with curly apostrophes and quotes made straight. `claims.straight_quotes`. */
@@ -1703,63 +1712,88 @@ private fun checkedFrames(text: String, frames: List<Board>, side: Boolean?): Li
     return out
 }
 
+/** Whether [move] takes a piece of [kind] to [target] (anywhere, when null). `claims._goes`. */
+private fun goes(frame: Board, move: Move, kind: Int?, target: Int?): Boolean =
+    frame.pieceTypeAt(move.from) == kind && (target == null || move.to == target)
+
+/**
+ * Whether the line the coach was given plays, from [frame], a piece of [kind] to [target]
+ * ([goes]): the board after the move is one of the frames ([keys]). `claims._line_plays`.
+ */
+private fun linePlays(frame: Board, keys: Set<Pair<String, Boolean>>, kind: Int?, target: Int?): Boolean {
+    for (move in frame.legalMoves()) {
+        if (!goes(frame, move, kind, target)) continue
+        val after = frame.copy(withStack = false)
+        after.push(move)
+        if ((after.boardFen() to after.turn) in keys) return true
+    }
+    return false
+}
+
 /**
  * What a line is said to force, or to keep open, that none of the frames bears out. A claim no
  * frame applies to -- no check on the board or the line for that side -- is left alone: it is
- * about some other moment of the game. `claims._line_problems`.
+ * about some other moment of the game. A question claims nothing. `claims._line_problems`.
  */
-private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<Pair<String, String>> {
+private fun lineProblems(
+    text: String,
+    frames: List<Board>,
+    us: Boolean,
+    questions: List<IntRange> = emptyList(),
+): List<Pair<String, String>> {
     val problems = ArrayList<Pair<String, String>>()
-    for (sentenceText in text.split(SENTENCE_BREAK)) {
+    val keys = frames.map { it.boardFen() to it.turn }.toSet()
+    for ((offset, sentenceText) in sentences(text, ".!?")) {
         for (match in FORCE_KING.findAll(sentenceText)) {
+            if (asked(questions, offset + match.range.first)) continue
             val side = sideOf(match.groups["colour"]?.value ?: match.groups["colour2"]?.value, us)
             val checked = checkedFrames(sentenceText, frames, side)
             if (checked.isEmpty()) continue
+            val drives = (match.groups["verb"]?.value ?: "").lowercase().let {
+                it.startsWith("driv") || it.startsWith("drov")
+            }
             val to = match.groups["square"]?.value
-            val reason: String
-            if (to == null) {
-                if (checked.any { f ->
-                        val legal = f.legalMoves()
-                        legal.isNotEmpty() && legal.all { f.pieceTypeAt(it.from) == KING }
-                    }
-                ) {
-                    continue
+            val target = to?.let { parseSquare(it.lowercase()) }
+            if (checked.any { f ->
+                    val legal = f.legalMoves()
+                    legal.isNotEmpty() && legal.all { goes(f, it, KING, target) }
                 }
-                reason = "the check does not force the king to move: it can be blocked " +
+            ) {
+                continue
+            }
+            if (drives && checked.any { f -> linePlays(f, keys, KING, target) }) continue
+            val reason = if (to == null) {
+                "the check does not force the king to move: it can be blocked " +
                     "or the checking piece taken"
             } else {
                 // "Forces the King to h6" where Kf6 was legal too (the test audit).
-                val target = parseSquare(to.lowercase())
-                if (checked.any { f ->
-                        val legal = f.legalMoves()
-                        legal.isNotEmpty() &&
-                            legal.all { f.pieceTypeAt(it.from) == KING && it.to == target }
-                    }
-                ) {
-                    continue
-                }
-                reason = "nothing forces the king to ${to.lowercase()}: other moves are legal there"
+                "nothing forces the king to ${to.lowercase()}: other moves are legal there"
             }
             problems.add(match.value to reason)
         }
         for (match in FORCE_ONTO.findAll(sentenceText)) {
+            if (asked(questions, offset + match.range.first)) continue
             val side = sideOf(match.groups["colour"]?.value, us)
             val piece = match.groups["piece"]!!.value.lowercase()
             val squareText = match.groups["square"]!!.value.lowercase()
             val kind = PIECE_WORDS[piece]
             val square = parseSquare(squareText)
-            fun lands(f: Board, m: Move): Boolean = m.to == square && f.pieceTypeAt(m.from) == kind
+            val drives = match.groups["verb"]!!.value.lowercase().let {
+                it.startsWith("driv") || it.startsWith("drov")
+            }
             val candidates = (frames + checkedFrames(sentenceText, frames, side)).filter { f ->
-                (side == null || f.turn == side) && f.legalMoves().any { lands(f, it) }
+                (side == null || f.turn == side) && f.legalMoves().any { goes(f, it, kind, square) }
             }
             if (candidates.isEmpty()) continue
-            if (candidates.any { f -> f.legalMoves().all { lands(f, it) } }) continue
+            if (candidates.any { f -> f.legalMoves().all { goes(f, it, kind, square) } }) continue
+            if (drives && candidates.any { f -> linePlays(f, keys, kind, square) }) continue
             problems.add(
                 match.value to "nothing forces the $piece to $squareText: other moves are legal there",
             )
         }
     }
     for (match in OWNED.findAll(text)) {
+        if (asked(questions, match.range.first)) continue
         val side = sideOf(match.groups["colour"]?.value, us)
         val piece = match.groups["piece"]!!.value.lowercase()
         val kind = PIECE_WORDS[piece]
@@ -1769,6 +1803,7 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
         problems.add(match.value to "$whose no $piece")
     }
     for (match in ONLY_MOVE.findAll(text)) {
+        if (asked(questions, match.range.first)) continue
         val san = match.groups["san"]!!.value
         val kingOnly = !match.groups["king"]?.value.isNullOrEmpty()
         val where = frames.filter { legalSan(it, san) }
@@ -1779,24 +1814,34 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
             return moves.size == 1
         }
         if (where.any { alone(it) }) continue
-        val kind = if (kingOnly) "king move" else "move"
-        problems.add(match.value to "$san is not the only $kind: others are legal")
+        val what = if (kingOnly) "king move" else "move"
+        problems.add(match.value to "$san is not the only $what: others are legal")
     }
     for (match in ALLOWS.findAll(text)) {
+        if (asked(questions, match.range.first)) continue
         val first = match.groups["first"]!!.value
         val reply = match.groups["reply"]!!.value
-        val playedOn = ArrayList<Board>()
+        val playedOn = ArrayList<Pair<Board, Board>>()
         for (frame in frames) {
             val move = frame.parseSan(first) ?: continue
             val after = frame.copy(withStack = false)
             after.push(move)
-            playedOn.add(after)
+            playedOn.add(frame to after)
         }
         if (playedOn.isEmpty()) continue // a move of some other moment: the move check has it
-        if (playedOn.any { legalSan(it, reply) }) continue
+        // What a move allows is the opponent's reply, or a next move of the mover's own that it
+        // makes possible: "Bc4 allows O-O next" clears f1 for castling (the audit, 2026-10-07).
+        if (playedOn.any { (frame, after) ->
+                legalSan(after, reply) ||
+                    (!after.isCheck() && !legalSan(frame, reply) && legalSan(bothSides(after).last(), reply))
+            }
+        ) {
+            continue
+        }
         problems.add(match.value to "$reply cannot be played after $first: it does not allow it")
     }
     for (match in FILE_EMPTY.findAll(text)) {
+        if (!saidNow(text, match.range.first, questions)) continue
         val letter = match.groups["file"]!!.value.lowercase()
         val index = letter[0] - 'a'
         if (frames.none { f -> fileSquares(index).all { f.pieceTypeAt(it) != PAWN } }) {
@@ -1804,6 +1849,7 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
         }
     }
     for (match in FILES_OPEN.findAll(text)) {
+        if (!saidNow(text, match.range.first, questions)) continue
         val body = match.groups["body"]?.value ?: match.groups["body2"]?.value ?: ""
         for (letter in FILE_LETTER.findAll(body.lowercase()).map { it.groupValues[1] }.distinct()) {
             val index = letter[0] - 'a'
@@ -1815,83 +1861,116 @@ private fun lineProblems(text: String, frames: List<Board>, us: Boolean): List<P
     return problems
 }
 
-// A file called open or half-open, in either word order ("the open e-file", "the e-file is
-// open"). A pawn called passed, by square or by file, in either order.
+// A file called open, half-open or semi-open, in either word order ("the open e-file", "the
+// e-file is open", "the semi-open c-file": once read as an open file and refused, the audit of
+// 2026-10-07). A pawn called passed, by square or by file, in either order; a file's pawn is
+// written with its hyphen ("the c-pawn"), so the article in "a pawn is passed when..." is never
+// the a-pawn.
 private val OPEN_FILE = Regex(
-    "\\b(?:(?<k1>open|half[-\\s]?open)\\s+(?<f1>[a-h])[-\\s]?file" +
+    "\\b(?:(?<k1>(?:half|semi)[-\\s]?open|open)\\s+(?<f1>[a-h])[-\\s]?file" +
         "|(?<f2>[a-h])[-\\s]?file\\s+(?:is|are|remains?)\\s+(?:now\\s+)?" +
-        "(?<k2>open|half[-\\s]?open))\\b",
+        "(?<k2>(?:half|semi)[-\\s]?open|open))\\b",
     RegexOption.IGNORE_CASE,
 )
 private val PASSED = Regex(
     "\\bpassed\\s+pawn\\s+on\\s+(?<sq1>[a-h][1-8])" +
         "|\\bpawn\\s+on\\s+(?<sq2>[a-h][1-8])\\s+(?:is|are)\\s+(?:a\\s+|now\\s+)*passed" +
-        "|\\bpassed\\s+(?<file1>[a-h])[-\\s]?pawn" +
-        "|\\b(?<file2>[a-h])[-\\s]?pawn\\s+(?:is|are)\\s+(?:a\\s+|now\\s+)*passed",
+        "|\\bpassed\\s+(?<file1>[a-h])-pawn" +
+        "|\\b(?<file2>[a-h])-pawn\\s+(?:is|are)\\s+(?:a\\s+|now\\s+)*passed",
     RegexOption.IGNORE_CASE,
 )
 
+/** Whose half-open file the sentence says of the file: theirs, or the player's. */
+private val FOR_THEM = Regex("\\bfor\\s+them\\b|\\b(?:their|opponent's)\\s+(?:half|semi)")
+private val FOR_YOU = Regex("\\bfor\\s+you\\b|\\byour\\s+(?:half|semi)")
+
 private fun fileSquares(fileIndex: Int): List<Int> = (0..7).map { square(fileIndex, it) }
 
-/** Whose half-open file the sentence says: theirs, or the player's. */
-private val THEIRS_SAID = Regex("\\bopponent|\\btheir\\b|\\bfor them\\b")
-private val YOURS_SAID = Regex("\\byour?\\b|\\bfor you\\b")
+/**
+ * Why the file is not what it was called on [board] ("open", or "halfopen" for [whose]: "them",
+ * "you" or "either"), or null when it is. `claims._file_problem`.
+ */
+private fun fileProblem(board: Board, letter: String, kind: String, whose: String, us: Boolean): String? {
+    val pawns = fileSquares(letter[0] - 'a').map { board.pieceAt(it) }
+    val ours = pawns.any { it != null && it.pieceType == PAWN && it.colour == us }
+    val theirs = pawns.any { it != null && it.pieceType == PAWN && it.colour != us }
+    if (kind == "open") return if (ours || theirs) "the $letter-file is not open; a pawn stands on it" else null
+    if (whose == "them") {
+        return if (theirs) "the $letter-file is not half-open for them; they have a pawn there" else null
+    }
+    if (whose == "you") {
+        return if (ours) "the $letter-file is not half-open for you; you have a pawn there" else null
+    }
+    if (ours && theirs) return "the $letter-file is not half-open for either side: both have a pawn there"
+    return null
+}
 
 /**
- * Concrete strategic claims the board contradicts: a file said open that has pawns, a pawn
- * said passed that an enemy pawn still holds up. Only clear, checkable contradictions are
- * flagged; a fuzzy claim (space, king safety, activity) is left alone.
+ * Whether the pawn called passed is passed on [board], with why not; null when [board] has no such
+ * pawn to judge. `claims._passed_verdict`.
  */
-private fun strategicProblems(text: String, board: Board, us: Boolean? = null): List<Pair<String, String>> {
-    val us = us ?: board.turn
+private fun passedVerdict(board: Board, squareText: String?, letter: String?, us: Boolean): Pair<Boolean?, String> {
+    if (squareText != null) {
+        val square = parseSquare(squareText.lowercase())
+        if (board.pieceTypeAt(square) != PAWN) return null to ""
+        return isPassed(board, square) to "the pawn on ${squareText.lowercase()} is not passed"
+    }
+    val ours = fileSquares((letter ?: "a").lowercase()[0] - 'a').filter {
+        board.pieceTypeAt(it) == PAWN && board.colourAt(it) == us
+    }
+    if (ours.isEmpty()) return null to ""
+    val passed = ours.any { isPassed(board, it) }
+    return passed to "your ${(letter ?: "").lowercase()}-pawn is not a passed pawn"
+}
+
+/**
+ * Concrete strategic claims the boards contradict: a file said open that has pawns, a pawn said
+ * passed that an enemy pawn still holds up. Only clear, checkable contradictions are flagged; a
+ * fuzzy claim (space, king safety, activity) is left alone. Like the placements, a claim is false
+ * only when it is false on every frame (the board now and along the line the coach was given),
+ * and it is read only where the draft says it of the board as it stands ([saidNow]): not in a
+ * question, a condition or a plan. `claims._strategic_problems`.
+ */
+private fun strategicProblems(
+    text: String,
+    frames: List<Board>,
+    us: Boolean,
+    questions: List<IntRange> = emptyList(),
+): List<Pair<String, String>> {
     val problems = ArrayList<Pair<String, String>>()
     for (match in OPEN_FILE.findAll(text)) {
-        val kind = (match.groups["k1"]?.value ?: match.groups["k2"]!!.value)
-            .lowercase().replace(" ", "").replace("-", "")
+        if (!saidNow(text, match.range.first, questions)) continue
+        val said = (match.groups["k1"]?.value ?: match.groups["k2"]!!.value).lowercase()
+        val kind = if (said == "open") "open" else "halfopen"
         val letter = (match.groups["f1"]?.value ?: match.groups["f2"]!!.value).lowercase()
-        val pawns = fileSquares(letter[0] - 'a').map { board.pieceAt(it) }
-        val ours = pawns.any { it != null && it.pieceType == PAWN && it.colour == us }
-        val theirs = pawns.any { it != null && it.pieceType == PAWN && it.colour != us }
-        if (kind == "open" && (ours || theirs)) {
-            problems.add(match.value to "the $letter-file is not open; a pawn stands on it")
-        } else if (kind == "halfopen") {
-            // Whose file it is, as the sentence says: "for you" or "your" is the player's, "their"
-            // or "the opponent's" theirs ("your opponent takes the half-open f-file": round 2
-            // refused two good replies read as the player's); unsaid, either side's.
-            val window = text.substring(
-                maxOf(0, match.range.first - 60),
-                minOf(text.length, match.range.last + 1 + 20),
-            ).lowercase()
-            val (wrong, whose) = if (THEIRS_SAID.containsMatchIn(window)) {
-                theirs to "for them; they have a pawn there"
-            } else if (YOURS_SAID.containsMatchIn(window)) {
-                ours to "for you; you have a pawn there"
-            } else {
-                (ours && theirs) to "for either side: both have a pawn there"
-            }
-            if (wrong) problems.add(match.value to "the $letter-file is not half-open $whose")
+        // Whose file it is, only where the sentence says so of the file: "for you", "your half-open
+        // file" is the player's, "for them", "their half-open file" theirs; else either side's. A
+        // "your" or an "opponent" anywhere near was read as the owner: "your opponent takes the
+        // half-open f-file" (round 2), and "...along the half-open d-file. Your opponent must..."
+        // from the next sentence (the audit, 2026-10-07).
+        val (start, end) = sentenceBounds(text, match.range.first)
+        val window = text.substring(
+            maxOf(start, match.range.first - 20),
+            minOf(end, match.range.last + 1 + 20),
+        ).lowercase()
+        val whose = when {
+            FOR_THEM.containsMatchIn(window) -> "them"
+            FOR_YOU.containsMatchIn(window) -> "you"
+            else -> "either"
         }
+        val reasons = frames.map { fileProblem(it, letter, kind, whose, us) }
+        if (reasons.all { it != null }) problems.add(match.value to (reasons[0] ?: ""))
     }
     for (match in PASSED.findAll(text)) {
+        if (!saidNow(text, match.range.first, questions)) continue
         val squareText = match.groups["sq1"]?.value ?: match.groups["sq2"]?.value
         val letter = match.groups["file1"]?.value ?: match.groups["file2"]?.value
-        if (squareText != null) {
-            val square = parseSquare(squareText.lowercase())
-            val piece = board.pieceAt(square)
-            if (piece != null && piece.pieceType == PAWN && !isPassed(board, square)) {
-                problems.add(
-                    match.value to "the pawn on ${squareText.lowercase()} is not passed"
-                )
-            }
-        } else if (letter != null) {
-            val ours = fileSquares(letter.lowercase()[0] - 'a').filter {
-                board.pieceTypeAt(it) == PAWN && board.colourAt(it) == us
-            }
-            if (ours.isNotEmpty() && ours.none { isPassed(board, it) }) {
-                problems.add(
-                    match.value to "your ${letter.lowercase()}-pawn is not a passed pawn"
-                )
-            }
+        val verdicts = frames.map { passedVerdict(it, squareText, letter, us) }
+        // False where some frame shows the pawn not passed and none shows it passed; a frame
+        // without the pawn says nothing.
+        val held = verdicts.mapNotNull { it.first }
+        if (held.isNotEmpty() && held.none { it }) {
+            problems.add(match.value to verdicts.first { it.first == false }.second)
         }
     }
     return problems

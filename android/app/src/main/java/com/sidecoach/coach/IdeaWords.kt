@@ -597,6 +597,10 @@ object IdeaWords {
         return first.from in ahead || (board.isCapture(first) && first.to in ahead)
     }
 
+    /** A first move that is no check, by what it is: "which quiet move threatens a mate...". */
+    val QUIET_START: Map<String, String> =
+        mapOf("quiet" to "quiet move", "capture" to "capture", "promotion" to "promotion")
+
     /** A promotion whose first move is no clearing: the pawn needs a piece's help, not a road. */
     const val PROMOTE_HELP_QUESTION =
         "What does your pawn need to get through, and which of your pieces can give it?"
@@ -618,6 +622,16 @@ object IdeaWords {
         }
         if (idea.goal == "mate") {
             if (idea.mateIn == 1) return "Which check leaves their king no square at all?"
+            if (!idea.checksFirst) {
+                // A mate that starts with no check: the question points at what the first move
+                // does, never at the checks (the audit, 2026-10-07: "Go through your checks" for a
+                // mate in two that starts quietly). The move, its square and its piece stay unsaid.
+                if (idea.startsWith == "sacrifice") {
+                    return "What could you give up so that the mate that follows cannot be stopped?"
+                }
+                val noun = QUIET_START[idea.startsWith] ?: "move"
+                return "Which $noun leaves them no defence against mate?"
+            }
             if (idea.startsWith == "sacrifice" || idea.sacrifices.isNotEmpty()) {
                 return "Go through your checks, the ones that give up material too: after which " +
                     "does their king run out of squares?"
@@ -634,6 +648,7 @@ object IdeaWords {
             if (idea.startsWith == "sacrifice" || idea.sacrifices.isNotEmpty()) {
                 return "Which sacrifice tears open the cover around their king?"
             }
+            if (!idea.checksFirst) return "Which move opens the way to their king?"
             return "Which check drives their king into the open?"
         }
         if (idea.goal == "win") return "Which of their pieces is loose or attacked more times than it is defended?"
@@ -655,13 +670,18 @@ object IdeaWords {
     /** The focus rung's question: the one that leads from the target to the move. */
     fun nudge(idea: Idea, board: Board? = null): String? {
         val name = idea.blow?.name
-        if (idea.goal == "mate") return if (idea.mateIn == 1) "Which check is it?" else "Which check comes first?"
+        if (idea.goal == "mate") {
+            if (idea.mateIn == 1) return "Which check is it?"
+            if (!idea.checksFirst) return "Which move threatens a mate they cannot meet?"
+            return "Which check comes first?"
+        }
         if (idea.goal == "draw") return if (idea.draw == "perpetual") "Which check starts it?" else "Which move is it?"
         if (idea.goal == "convert") return "Which trade is it?"
         if (idea.goal == "king") return "Which square does it take from theirs?"
         if (idea.goal == "breakthrough") return "Which pawn goes first?"
         if (idea.goal == "attack") {
-            return if (idea.sacrifices.isNotEmpty()) "Which sacrifice opens it?" else "Which check comes first?"
+            if (idea.sacrifices.isNotEmpty()) return "Which sacrifice opens it?"
+            return if (idea.checksFirst) "Which check comes first?" else "Which move starts it?"
         }
         if (idea.goal == "promote") {
             if (board != null && !clearsPath(idea, board)) return PROMOTE_HELP_NUDGE
@@ -688,8 +708,9 @@ object IdeaWords {
                 free.size == 1 -> "whose only free square is ${free[0]}"
                 else -> "with free squares on " + free.dropLast(1).joinToString(", ") + " and ${free.last()}"
             }
-            // How many checks there are, while the number narrows the search.
-            val checks = if (idea.checks in 1..4) {
+            // How many checks there are, while the number narrows the search -- only when the line
+            // starts with one: before a quiet first move it sends the search the wrong way.
+            val checks = if (idea.checks in 1..4 && idea.checksFirst) {
                 "; you have ${NUMBER[idea.checks] ?: idea.checks.toString()} check" +
                     if (idea.checks != 1) "s" else ""
             } else {

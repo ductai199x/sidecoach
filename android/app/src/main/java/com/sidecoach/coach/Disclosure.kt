@@ -693,10 +693,12 @@ private fun movesIn(text: String): List<String> {
 /**
  * Whether [text] names the move [move]: its letters as a whole move, not inside another ("e4" is
  * not named by "Nxe4" or "Qe4", "O-O" not by "O-O-O"), its check, mate and comment marks
- * aside. `disclosure._names_move`. The coach's [names] reads a bare square as a square, and a
- * pawn move like "e4" was rated a MOVE whenever a reply named a piece going to e4.
+ * aside. `disclosure.names_move`. The coach's [names] reads a bare square as a square, and a
+ * pawn move like "e4" was rated a MOVE whenever a reply named a piece going to e4. The coach's
+ * "move already given" reads it too: a substring test took "They threaten Be5" for the move e5
+ * given, and the model was told to say it again (the audit, 2026-10-07).
  */
-private fun namesMove(text: String, move: String): Boolean {
+internal fun namesMove(text: String, move: String): Boolean {
     val core = trailingMarksOff(move)
     if (core.isEmpty()) return false
     val pattern = if (core.startsWith("O-O")) {

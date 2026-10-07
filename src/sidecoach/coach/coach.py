@@ -51,6 +51,7 @@ from sidecoach.coach.disclosure import (
     PositionFacts,
     Unlock,
     leak_check,
+    names_move,
     said_level,
     squares_in,
     visible_facts,
@@ -5536,7 +5537,7 @@ class Coach:
             elif level >= DisclosureLevel.MOVE:
                 best_san = facts.candidates[0] if facts.candidates else ""
                 given = bool(best_san) and any(
-                    best_san.rstrip("+#") in s for s in self._said_since_move()
+                    names_move(s, best_san) for s in self._said_since_move()
                 )
                 # Asked again once the move was given, "The next hint is the answer" said
                 # it was still to come (the deep prompt review, 2026-10-01).
@@ -5654,7 +5655,7 @@ class Coach:
                 "question."
             )
             given = [m.rstrip("+#") for m in facts.line[:3]]
-            if any(all(m in s for m in given) for s in self._said_since_move()):
+            if any(all(names_move(s, m) for m in given) for s in self._said_since_move()):
                 # Given once already, the line asked for again is what comes after it: "ok and
                 # after that?" got the same line back (Tai's puzzle, 2026-09-28). The engine's
                 # word on its end is put before the model (`_speak`).
@@ -6022,13 +6023,13 @@ class Coach:
         )
         if worse:
             out += f" Clearly worse here, and what goes wrong with them: {worse_text(worse)}."
-        if best and any(best.rstrip("+#") in s for s in spoken):
+        if best and any(names_move(s, best) for s in spoken):
             out += AI_MOVE_GIVEN.format(move=best)
         if best.startswith("O-O"):
             out += f" {FOCUS_KING}"
         if facts.line:
             given = [m.rstrip("+#") for m in facts.line[:3]]
-            if any(all(m in s for m in given) for s in spoken):
+            if any(all(names_move(s, m) for m in given) for s in spoken):
                 out += f" {LINE_GIVEN}"
         out += (
             " When the engine does not rate a move they name, say it is not the strongest and, "

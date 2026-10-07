@@ -890,7 +890,9 @@ object Situation {
         } else {
             "${NUMBER[room] ?: room.toString()} free squares"
         }
-        val checks = idea.checks
+        // The checks are counted only for a line that starts with one: before a quiet first move
+        // the count sends the search the wrong way (the audit, 2026-10-07).
+        val checks = if (idea.checksFirst) idea.checks else 0
         val said = if (checks > 1) {
             ", and you have ${NUMBER[checks] ?: checks.toString()} checks"
         } else if (checks == 1) {

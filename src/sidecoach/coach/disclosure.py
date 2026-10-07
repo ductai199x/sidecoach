@@ -478,7 +478,11 @@ def leak_check(
     return leaks
 
 
-def _names_move(text: str, move: str) -> bool:
+def names_move(text: str, move: str) -> bool:
+    """Whether `text` names `move` as a move, its own token: e5 is not named by "Be5" or
+    "dxe5". The coach's "move already given" reads it too: a substring test took "They
+    threaten Be5" for the move e5 given, and the model was told to say it again (the audit,
+    2026-10-07)."""
     core = _TRAILING_MARKS.sub("", move)
     if not core:
         return False
@@ -535,10 +539,10 @@ def said_level(text: str, facts: PositionFacts) -> DisclosureLevel:
     what it answers (Tai, 2026-10-02)."""
     moves_text = _NUMBERED_MOVE.sub(" ", text)
     line = [m for m in facts.line if m]
-    if len(line) >= 2 and _names_move(moves_text, line[0]) and _names_move(moves_text, line[1]):
+    if len(line) >= 2 and names_move(moves_text, line[0]) and names_move(moves_text, line[1]):
         return DisclosureLevel.LINE
     answers = [*facts.candidates, *line[:1]]
-    if any(_names_move(moves_text, m) for m in answers):
+    if any(names_move(moves_text, m) for m in answers):
         return DisclosureLevel.MOVE
     squares = squares_in(text)
     named = _things_named(text)
@@ -562,7 +566,7 @@ def said_level(text: str, facts: PositionFacts) -> DisclosureLevel:
     if (
         squares & squares_in(idea)
         or named & _things_named(idea)
-        or any(_names_move(moves_text, m) for m in [*facts.threats, *_moves_in(idea)])
+        or any(names_move(moves_text, m) for m in [*facts.threats, *_moves_in(idea)])
     ):
         return DisclosureLevel.IDEA
     return DisclosureLevel.SILENT
