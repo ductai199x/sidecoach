@@ -1150,8 +1150,13 @@ object Motifs : Tagger {
      * This move gives up at least two points to the opponent's reply, and the line still
      * wins. The judgement is about the move played, not about the line it leads to: the
      * balance is read after the move and the opponent's answer to it. Two points, so a pawn
-     * gambit does not count; the deficit must survive the mover's own next move as well; and
-     * "still wins" is a mate for the mover, or the material back by the end of the line.
+     * gambit does not count; the mover must still be behind after its own next move (a knight
+     * given for two pawns is a piece sacrificed: Tai's puzzle, 2026-10-06, Nxg5 hxg5 Bxg5);
+     * and "still wins" is a mate for the mover, or the material back by the end of the line.
+     *
+     * Or the material is offered and the line declines it ([offered]): chess.com's
+     * brilliant, a piece left to be taken whether or not it is (after Nxg5 the engine's
+     * line declines the knight, hxg5 being a mistake). `_sacrifice`.
      */
     private fun sacrifice(
         boards: List<Board>,
@@ -1159,14 +1164,61 @@ object Motifs : Tagger {
         mover: Boolean,
         mateIn: Int?,
     ): MotifTag? {
-        if (played.size < 2) return null
+        if (played.isEmpty()) return null
         val start = balance(boards[0], mover)
-        val answered = if (boards.size > 2) balance(boards[2], mover) else balance(boards.last(), mover)
-        if (start - answered < SACRIFICE_THRESHOLD) return null
-        if (boards.size > 3 && start - balance(boards[3], mover) < SACRIFICE_THRESHOLD) return null
         val mating = mateIn != null && mateIn > 0
         if (!mating && balance(boards.last(), mover) < start) return null
-        return tag("sacrifice", listOf(played[0].from, played[0].to, played[1].to), played[0])
+        if (givenInLine(boards, played, mover, start)) {
+            return tag("sacrifice", listOf(played[0].from, played[0].to, played[1].to), played[0])
+        }
+        val offered = offered(boards[0], boards[1], played[0], mover) ?: return null
+        return tag("sacrifice", listOf(played[0].from, played[0].to, offered), played[0])
+    }
+
+    /**
+     * The line takes what the move gives ([sacrifice]): two points down after the reply,
+     * still behind after the mover's next move, and the reply's capture a gain once the
+     * recaptures on its square are played out. `_given_in_line`.
+     */
+    private fun givenInLine(boards: List<Board>, played: List<Move>, mover: Boolean, start: Int): Boolean {
+        if (played.size < 2) return false
+        val answered = balance(boards[2], mover)
+        if (start - answered < SACRIFICE_THRESHOLD) return false
+        if (boards.size > 3 && balance(boards[3], mover) >= start) return false
+        // The reply's capture wins it, the recaptures on its square played out: a knight taken
+        // and taken back is a trade, however the line orders it (O-O Bxf3 Bb5+ Nc6 Bxc6+ bxc6
+        // Qxf3, a check before the recapture, read as castling giving up a knight).
+        return Exchange.exchange(boards[1], played[1]) >= SACRIFICE_THRESHOLD
+    }
+
+    /**
+     * The square of a piece of [mover]'s the move left to be won ([sacrifice]): a piece, not a
+     * pawn, the opponent could take for more than the move itself took -- the mover a point or
+     * more down once the recaptures are played out -- and for more than the same piece could
+     * have been won before the move. A capture taken back is a trade (Bxc3 bxc3); a knight
+     * for two pawns is not (Nxg5 hxg5 Bxg5). Each piece against itself: a move that answers
+     * one threat may offer something else at once. Null when the move offers nothing.
+     * `_offered`.
+     */
+    private fun offered(before: Board, after: Board, move: Move, mover: Boolean): Int? {
+        val took = if (before.isEnPassant(move)) {
+            Exchange.VALUE[PAWN]
+        } else {
+            val taken = before.pieceTypeAt(move.to)
+            if (taken != 0) Exchange.VALUE[taken] else 0
+        }
+        val mine = after.occupiedCo[if (mover) 1 else 0] and after.kings.inv() and after.pawns.inv()
+        for (square in 0 until 64) {
+            if (mine and BB_SQUARES[square] == BB_EMPTY) continue
+            val won = Exchange.bestCapture(after, !mover, square)
+            val kind = after.pieceTypeAt(square).let { if (it == 0) PAWN else it }
+            if (won - took < 1 || Exchange.VALUE[kind] < MINOR) continue
+            val was = if (square == move.to) move.from else square
+            if (before.pieceAt(was) == null || Exchange.bestCapture(before, !mover, was) < won) {
+                return square
+            }
+        }
+        return null
     }
 
     /**
