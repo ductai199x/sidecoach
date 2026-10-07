@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The brand's amber (docs/app.md, "The logo"): the capture notification's accent.
+         The icon's tile is ic_launcher_background; the mark itself is generated from
+         desktop/brand/logo.svg by tools/sync_brand.py. -->
+    <color name="amber">#F2B441</color>
+    <!-- What shows before the page first paints: the splash card's ground on a launch, the
+         header's colour (desktop/src/lib/styles/panel.css) when the app is already warm. -->
+    <color name="splash_ground">#1C1A18</color>
+    <color name="panel">#262522</color>
+</resources>

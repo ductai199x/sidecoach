@@ -1,0 +1,43 @@
+Piece sets shipped with Sidecoach
+
+The pieces directly in this folder are Sidecoach's own (2026-09-30), made for Sidecoach and
+distributed with it under the same terms as the rest of Sidecoach. How they were made:
+tools/pieces/README.md (concept sheets generated with OpenAI's gpt-image-2.5 from our own
+brief, traced to SVG). They follow the Staunton pattern of 1849, in the public domain.
+
+Each folder below holds an unmodified copy of a set from the Lichess repository
+(https://github.com/lichess-org/lila, public/piece/<set>/), under the licence its author gave
+it, as Lichess's COPYING.md lists it. These licences cover those piece files only.
+
+  cburnett     Colin M.L. Burnett            GPLv2 or later   https://www.gnu.org/licenses/gpl-2.0.html
+  merida       Armando Hernandez Marroquin   GPLv2 or later   https://www.gnu.org/licenses/gpl-2.0.html
+  mpchess      Maxime Chupin                 GPLv3 or later   https://www.gnu.org/licenses/gpl-3.0.html
+  pirouetti    pirouetti                     AGPLv3 or later  https://www.gnu.org/licenses/agpl-3.0.html
+  pixel        therealqtpi                   AGPLv3 or later  https://www.gnu.org/licenses/agpl-3.0.html
+  letter       usolando                      AGPLv3 or later  https://www.gnu.org/licenses/agpl-3.0.html
+  chessnut     Alexis Luengas                Apache 2.0       https://www.apache.org/licenses/LICENSE-2.0
+  celtic       Maurizio Monge                MIT              https://opensource.org/license/mit
+  fantasy      Maurizio Monge                MIT              https://opensource.org/license/mit
+  spatial      Maurizio Monge                MIT              https://opensource.org/license/mit
+  rhosgfx      RhosGFX                       CC0 1.0          https://creativecommons.org/publicdomain/zero/1.0/
+  firi         James Faure                   CC BY 4.0        https://creativecommons.org/licenses/by/4.0/
+  kiwen-suwi   neverRare                     CC BY 4.0        https://creativecommons.org/licenses/by/4.0/
+  papercut     Nikolay Anzarov               CC BY 4.0        https://creativecommons.org/licenses/by/4.0/
+  totoy        Kosal Sen                     CC BY 4.0        https://creativecommons.org/licenses/by/4.0/
+  shapes       flugsio                       CC BY-SA 4.0     https://creativecommons.org/licenses/by-sa/4.0/
+
+The MIT licence's notice for celtic, fantasy and spatial: Copyright (c) Maurizio Monge.
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+and associated documentation files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions: The above copyright
+notice and this permission notice shall be included in all copies or substantial portions of
+the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED.
+
+No set with a non-commercial clause, or whose terms are unclear, is included. A player's own
+piece images (Settings > Board > Your own pieces) are theirs: they stay in their data folder
+and are never shipped or shared.
+
+The board colours are plain colour pairs and carry no third-party assets.

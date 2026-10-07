@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Screen capture runs in a foreground service the system shows a chip for: the
+         person always knows the screen is being read, and the service is killed with
+         the app. Nothing here reads the network. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The coach hears what is said to it: asked for when listening is first turned on, and
+         held by the session's service (the microphone type) so it hears over the game. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- The engine's network is fetched once, as the desktop fetches the engine. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The setup's downloads go on with the app in the background, in a service Android
+         shows a notification for while a download runs (setup/SetupService.kt). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- The captions: the coach's words in a box over other apps, allowed by the user. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- The chess apps whose declared permissions Start reads, to say which of them can be
+         told they are being recorded (capture/RecordingNotice.kt): since Android 11 an app
+         sees only the packages it names. -->
+    <queries>
+        <package android:name="com.chess" />
+        <package android:name="org.lichess.mobileapp" />
+        <package android:name="org.lichess.mobileV2" />
+        <package android:name="com.chesskid" />
+    </queries>
+
+    <application
+        android:name=".SidecoachApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Sidecoach">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|fontScale|density|layoutDirection|locale"
+            android:resizeableActivity="true"
+            android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+            android:theme="@style/Theme.Sidecoach">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The test board (debug.BoardActivity) is the debug build's alone: its own
+             manifest, src/debug/AndroidManifest.xml. -->
+
+        <service
+            android:name=".capture.CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|microphone" />
+
+        <service
+            android:name=".setup.SetupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+</manifest>

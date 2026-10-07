@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark, as the panel is. The window's ground and the system splash are the splash
+         card's colour and nothing else, so the launch reads as the card arriving and the
+         knight appears once, on the page's own splash. -->
+    <style name="Theme.Sidecoach" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/splash_ground</item>
+        <item name="android:colorAccent">@color/amber</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_ground</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_blank</item>
+    </style>
+</resources>

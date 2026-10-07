@@ -1,0 +1,1 @@
+import{i as e}from"./qIQzFdht.js";import{t}from"./ioBG9XOO.js";var n;(function(e){e.Nsis=`nsis`,e.Msi=`msi`,e.Deb=`deb`,e.Rpm=`rpm`,e.AppImage=`appimage`,e.App=`app`})(n||={});async function r(){return e(`plugin:app|version`)}async function i(){return e(`plugin:app|default_window_icon`).then(e=>e?new t(e):null)}export{i as defaultWindowIcon,r as getVersion};

@@ -1,0 +1,265 @@
+package com.sidecoach.ui
+
+import android.graphics.Rect
+import android.os.SystemClock
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * The setting that keeps the caption box on screen (Tai, 2026-09-24: "the caption box is
+ * always on screen if true and if false then fade away after some time"). Off, the box fades
+ * [Captions.HIDE_AFTER_MS] after the words are out; on, it stays, steps aside while Sidecoach's
+ * own panel is in front, and comes back with the words when the panel goes; turned off again, it
+ * fades.
+ *
+ * The box's time is the test's ([StepClock]): the fade is checked at its shipped five seconds to
+ * the millisecond from the words read through -- up a millisecond before, fading at it -- and
+ * "still up long after" is eight
+ * seconds of that clock, none of them waited. What is waited for is the window itself: a box put
+ * up or taken down, on the main thread and in the window manager, a state with a deadline that is
+ * only a safety net.
+ */
+@RunWith(AndroidJUnit4::class)
+class CaptionsKeepTest {
+
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val app = instrumentation.targetContext
+    private val automation = instrumentation.uiAutomation
+
+    private fun box(): Rect? {
+        var at: Rect? = null
+        instrumentation.runOnMainSync { at = Captions.windowAt() }
+        return at
+    }
+
+    private fun <T> onMain(read: () -> T): T {
+        var got: T? = null
+        instrumentation.runOnMainSync { got = read() }
+        @Suppress("UNCHECKED_CAST")
+        return got as T
+    }
+
+    /** Whether [what] comes true; the deadline is a safety net, never a bound on how soon. */
+    private fun waitFor(what: () -> Boolean): Boolean {
+        val until = SystemClock.uptimeMillis() + SAFETY_MS
+        while (SystemClock.uptimeMillis() < until) {
+            if (what()) return true
+            SystemClock.sleep(20)
+        }
+        return what()
+    }
+
+    /** What the main thread was given is done: a posted show, keep or panel change has run. */
+    private fun settle() = instrumentation.waitForIdleSync()
+
+    /**
+     * The fade, at its time: up and not fading a millisecond before [Captions.HIDE_AFTER_MS] on
+     * [clock], fading at it, gone once the fade-out is over.
+     */
+    private fun fadesAtItsTime(clock: StepClock, what: String) {
+        readThrough(clock, what)
+        clock.advance(Captions.HIDE_AFTER_MS - 1)
+        assertNotNull("$what: gone before its time", box())
+        assertEquals("$what: fading before its time", false, onMain { Captions.fading() })
+        clock.advance(1)
+        assertTrue("$what: did not fade at its time", waitFor { box() == null })
+    }
+
+    /**
+     * The box's words read through at the reading pace, on the box's clock: the fade's five
+     * seconds count from then (a line longer than the box is gone through first, main's reading
+     * pace of 2026-10-02). The clock stops at the step the reading ended on.
+     */
+    private fun readThrough(clock: StepClock, what: String) {
+        assertNotNull("$what: never read through", clock.advanceUntil(READ_BOUND_MS) { onMain { Captions.readThrough() } != false })
+    }
+
+    private fun fresh(): StepClock {
+        automation.executeShellCommand("appops set ${app.packageName} SYSTEM_ALERT_WINDOW allow").close()
+        Launcher.inFront(instrumentation)
+        app.getSharedPreferences("captions", 0).edit().clear().commit()
+        // A fresh start: a test before this one may have closed the panel (Captions.quit).
+        Captions.reset()
+        settle()
+        return StepClock(instrumentation).also { Captions.clock = it }
+    }
+
+    @Test
+    fun theBoxFadesUnlessTheSettingKeepsItOnScreen() {
+        val clock = fresh()
+        Captions.configure(app, true)
+        try {
+            // Off: the words, then the fade.
+            Captions.keep(false)
+            Captions.show("Spot on -- rooks belong on open files.")
+            assertTrue("no caption box", waitFor { box() != null })
+            fadesAtItsTime(clock, "the words")
+
+            // Each message on a line of its own; a reply's later sentences run on (Tai,
+            // 2026-09-29: "the text do not have any new lines what so ever").
+            Captions.keep(true)
+            Captions.show("Nice move.")
+            Captions.show("Your bishop is loose.")
+            Captions.show("What defends it?", continues = true)
+            var lines: String? = null
+            assertTrue("the messages did not keep lines of their own: $lines", waitFor {
+                lines = onMain { Captions.wordsShown() }
+                lines?.endsWith("Nice move.\nYour bishop is loose. What defends it?") == true
+            })
+            Captions.keep(false)
+            fadesAtItsTime(clock, "the box let go")
+
+            // On: still up long after the fade would have come.
+            Captions.keep(true)
+            Captions.show("Their knight on e4 attacks your queen on d6.")
+            assertTrue("no caption box", waitFor { box() != null })
+            clock.advance(KEPT_MS)
+            assertNotNull("the kept box faded", box())
+
+            // Always on screen means always (Tai, 2026-09-29: "is it always on screen or
+            // not????"): over Sidecoach's own panel too, and an answer asked for there shows in
+            // it at once -- it used to step aside and drop the words, and he saw nothing.
+            Captions.panelInFront(true)
+            settle()
+            assertNotNull("the kept box left for the panel", box())
+            Captions.show("Play Be3+. Your bishop from f4 checks the king.")
+            var words: String? = null
+            assertTrue("the kept box did not show the answer: $words", waitFor {
+                words = onMain { Captions.wordsShown() }
+                words?.endsWith("Play Be3+. Your bishop from f4 checks the king.") == true
+            })
+            Captions.panelInFront(false)
+            settle()
+            assertNotNull("the kept box went when the panel did", box())
+
+            // Sidecoach quit: the kept box goes, and a line said after does not bring it back;
+            // the panel opened again, it is back (Tai, 2026-09-29: "the live caption box doesn't automatically disappear/close when I quit the app on mobile").
+            Captions.quit()
+            assertTrue("the kept box stayed after Sidecoach quit", waitFor { box() == null })
+            Captions.show("Their rook takes on e1.")
+            settle()
+            assertNull("a line brought the box back after Sidecoach quit", box())
+            Captions.panelInFront(true)
+            assertTrue("the kept box did not come back with the panel", waitFor { box() != null })
+            Captions.panelInFront(false)
+
+            // Captions turned on with the box kept: up at once, before the coach says anything.
+            Captions.configure(app, false)
+            assertTrue("the box stayed with captions off", waitFor { box() == null })
+            Captions.configure(app, true)
+            assertTrue("the kept box did not come up with captions", waitFor { box() != null })
+
+            // Turned off again: it fades as before.
+            Captions.keep(false)
+            fadesAtItsTime(clock, "the setting turned off")
+        } finally {
+            Captions.keep(false)
+            Captions.configure(app, false)
+            Captions.reset()
+        }
+    }
+
+    /**
+     * A box kept on screen is never replaced by the sample line: it comes up touchable the moment
+     * captions are on, and a new look shows on it (Tai, 2026-10-02: the CC button brought up an
+     * untouchable sample that stayed seconds before the real box). Not kept, a real line after a
+     * sample does not run on from it; a line that comes while the box fades gets a box; a held
+     * word said later brings the faded box back (voice findings 3, 8 and 20).
+     */
+    @Test
+    fun theSampleLineNeverHidesAKeptBoxAndALineDuringTheFadeIsShown() {
+        val clock = fresh()
+        Captions.keep(true)
+        try {
+            // Turned on, kept on screen: the box itself, at once, touchable.
+            Captions.configure(app, true)
+            assertTrue("no kept box", waitFor { box() != null })
+            assertEquals("the kept box takes no touches", true, onMain { Captions.touchable() })
+            Captions.show("Nice move.")
+            assertTrue(waitFor { onMain { Captions.wordsShown() } == "Nice move." })
+            // A look changed: the same box, its words, still touchable; no sample in its place.
+            Captions.preview()
+            settle()
+            var words: String? = onMain { Captions.wordsShown() }
+            assertEquals("the sample replaced the kept box's words", "Nice move.", words)
+            assertEquals("the kept box stopped taking touches", true, onMain { Captions.touchable() })
+            // Not kept: a real line straight after a sample, and the sample is not above it.
+            Captions.keep(false)
+            Captions.preview()
+            Captions.show("Nice move.") // posted after the sample: its order, not a wait
+            assertTrue("the line did not show", waitFor {
+                words = onMain { Captions.wordsShown() }
+                words == "Nice move."
+            })
+            assertEquals("the line's box is untouchable", true, onMain { Captions.touchable() })
+            // Not kept: a line that comes while the box fades out is shown.
+            Captions.keep(false)
+            Captions.show("Your bishop is loose.")
+            assertTrue(waitFor { box() != null })
+            // Read through first: a box fades only once its words have been read.
+            readThrough(clock, "the line before the fade")
+            // The fade begun and a line given in one step on the main thread: by the box's
+            // state, not a sleep timed into the 350 ms fade (round 3 audit, 2026-10-02).
+            var fading = false
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+                Captions.showNow("What defends it?")
+            }
+            assertTrue("the box was not fading", fading)
+            var shownNow: String? = null
+            instrumentation.runOnMainSync { shownNow = Captions.wordsShown() }
+            assertTrue("the line during the fade was not shown: $shownNow", shownNow?.endsWith("What defends it?") == true)
+            instrumentation.runOnMainSync { fading = Captions.fadingNow() }
+            assertTrue("the line's box is the fading one", !fading)
+            assertNotNull("the line during the fade went with the box", box())
+            fadesAtItsTime(clock, "the line during the fade")
+            // A held word said now: the box comes back with the words.
+            Captions.again()
+            assertTrue("the faded box did not come back", waitFor { box() != null })
+            // The voice still speaking: the box waits for it, and fades once it is done (voice
+            // finding 9: a flat five seconds faded it under a long line still being said).
+            val voice = object : com.sidecoach.voice.TtsProvider {
+                override val name = "speaking"
+                @Volatile override var busy = true
+                override fun healthcheck() = true to "fake"
+                override fun say(text: String, voice: String?, owner: String) = Unit
+                override fun stop(owner: String?) = Unit
+            }
+            PanelVoice.speaker = voice
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+            }
+            assertTrue("the box faded while the voice spoke", !fading)
+            voice.busy = false
+            instrumentation.runOnMainSync {
+                Captions.fadeNow()
+                fading = Captions.fadingNow()
+            }
+            assertTrue("the box did not fade once the voice was done", fading)
+        } finally {
+            PanelVoice.speaker = null
+            Captions.keep(false)
+            Captions.configure(app, false)
+            Captions.reset()
+        }
+    }
+
+    private companion object {
+        /** Long after the fade would have come: the eight seconds this test used to wait. */
+        const val KEPT_MS = 8000L
+
+        /** The box's own time a line may take to be read through: a bound, never the expected path. */
+        const val READ_BOUND_MS = 60_000L
+
+        /** A state's safety net: an emulator starved by its host answered seconds late. */
+        const val SAFETY_MS = 10_000L
+    }
+}

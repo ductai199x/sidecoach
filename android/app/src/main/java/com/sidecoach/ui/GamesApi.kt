@@ -1,0 +1,189 @@
+package com.sidecoach.ui
+
+import com.sidecoach.profile.Library
+import com.sidecoach.profile.LibraryRow
+import com.sidecoach.profile.Store
+import com.sidecoach.voice.Py
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.IOException
+
+/**
+ * Your games (`server._library`, `server._import`, the DELETE route): the games Game Review
+ * can open, imported and watched, and bringing more in -- a pasted PGN, the player's recent
+ * games on chess.com or Lichess by the usernames in the settings.
+ *
+ * The phone reviews a game when the player asks (Tai, 2026-09-30: no background review, as
+ * chess.com has none), so the list has no background reviewer's progress: `backlog` is null,
+ * as on a desktop panel started without one.
+ */
+class GamesApi(private val files: File, private val settings: SettingsStore) {
+
+    private fun <T> withStore(use: (Store) -> T): T {
+        val store = Store(File(files, "profile.sqlite"))
+        try {
+            return use(store)
+        } finally {
+            store.close()
+        }
+    }
+
+    /**
+     * The usernames, without spaces around them -- one saved before a save trimmed them too, as
+     * the desktop's settings are trimmed when they are read (`ProfileSettings._trimmed`; the
+     * settings review, 2026-10-01).
+     */
+    private fun users(): Pair<String, String> {
+        val profile = settings.section("profile")
+        return Py.strip(profile.optString("chesscom_user", "")) to Py.strip(profile.optString("lichess_user", ""))
+    }
+
+    /**
+     * The games Game Review can open, the latest played first -- imported and watched, a
+     * watched game its import stands for once, as the import -- each with its review's
+     * accuracies when it has one, and the player's usernames. `_library`.
+     */
+    fun list(): JSONObject {
+        val games = JSONArray()
+        withStore { store ->
+            Library.refresh(store, users().toList())
+            val twins = Library.reconcile(store)
+            ReviewRoom.carryTwins(store, twins) // a pair's review goes with the import that stands for it
+            val watched = Library.fromWatched(store).filter { it.key !in twins }
+            val rows = (store.library() + watched).sortedByDescending { it.playedAt?.takeIf { p -> p != 0.0 } ?: it.addedAt }
+            val stoodFor = HashMap<String, MutableList<String>>() // an import -> the watched games it stands for
+            for ((was, imported) in twins) stoodFor.getOrPut(imported) { ArrayList() }.add(was)
+            for (row in rows) {
+                val review = store.bestReview(row.key)
+                // An import not reviewed yet whose watched game was: that review's accuracies
+                // until the import has its own (the review of 2026-10-01: pairing a record that
+                // differs from its import took the game's accuracy away). Not reviewed for that.
+                val shown = review ?: stoodFor[row.key].orEmpty().mapNotNull { store.bestReview(it) }.maxByOrNull { it.reviewedAt }
+                val summary = shown?.summary?.takeIf { it.isNotEmpty() }?.let { JSONObject(it) }
+                games.put(
+                    rowJson(row).apply {
+                        put("pgn", JSONObject.NULL) // the page lists games; a review reads its own PGN
+                        put("reviewed", review != null)
+                        put("accuracy", summary?.let { s -> sides { s.optJSONObject(it)?.opt("accuracy") } } ?: JSONObject.NULL)
+                        put(
+                            "performance",
+                            summary?.let { s -> sides { s.optJSONObject(it)?.optJSONObject("performance")?.opt("rating") } }
+                                ?: JSONObject.NULL,
+                        )
+                    },
+                )
+            }
+        }
+        val (chesscom, lichess) = users()
+        return JSONObject()
+            .put("games", games)
+            .put("users", JSONObject().put("chesscom", chesscom).put("lichess", lichess))
+            .put("backlog", JSONObject.NULL)
+    }
+
+    private fun sides(value: (String) -> Any?): JSONObject =
+        JSONObject().put("white", value("white") ?: JSONObject.NULL).put("black", value("black") ?: JSONObject.NULL)
+
+    /**
+     * Games into the library: a pasted PGN, or the player's recent games on chess.com or
+     * Lichess (their usernames from the settings). What came in says how many are new and how
+     * many were there already; a failure says what to do, and names the setting when the
+     * username is at fault (`field`: the page links to it). `_import`.
+     */
+    fun import(body: JSONObject): JSONObject {
+        val source = body.getString("source")
+        val (chesscomUser, lichessUser) = users()
+        val names = listOf(chesscomUser, lichessUser).filter { it.isNotEmpty() }
+        val site = mapOf("chesscom" to "chess.com", "lichess" to "Lichess")[source] ?: ""
+        val field = if (site.isNotEmpty()) "profile.${source}_user" else null
+        fun failed(error: String, field: String? = null) =
+            JSONObject().put("ok", false).put("error", error).apply { if (field != null) put("field", field) }
+        val rows: List<LibraryRow> = try {
+            when (source) {
+                "pgn" -> Library.fromPgn(body.optString("text", ""), names)
+                "chesscom" -> {
+                    if (chesscomUser.isEmpty()) return failed("Add your chess.com username first.", field)
+                    Library.fromChesscom(chesscomUser, months = maxOf(1, body.optInt("months", 3)))
+                }
+                "lichess" -> {
+                    if (lichessUser.isEmpty()) return failed("Add your Lichess username first.", field)
+                    Library.fromLichess(lichessUser)
+                }
+                else -> return failed("no source $source")
+            }
+        } catch (exc: Library.NoPlayer) {
+            return failed("${exc.message} Check the spelling.", field)
+        } catch (_: IOException) {
+            return failed("Could not reach $site. Check the connection and try again.")
+        } catch (exc: Exception) { // anything else is said, never raised
+            return failed("Could not bring the games in: ${exc.message ?: exc}")
+        }
+        // A site's games leave out the ones the player removed; a game pasted by hand comes back.
+        val done = withStore { store ->
+            val out = if (source == "pgn") {
+                store.unremove(rows.map { it.key })
+                emptySet()
+            } else {
+                Library.leftOut(store, rows)
+            }
+            val kept = rows.filter { it.key !in out }
+            val new = kept.filter { store.libraryGame(it.key) == null }
+            for (row in kept) store.addLibraryGame(row)
+            // A game Sidecoach watched, now imported, or kept already in another copy (a pasted
+            // game, now brought in from the site): one game. A copy is not new; the keys are the
+            // games' that stand for them.
+            val twins = Library.reconcile(store)
+            Imported(kept.map { twins[it.key] ?: it.key }, kept.size, out.size, new.count { it.key !in twins })
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("added", done.added)
+            .put("already", done.kept - done.added)
+            .put("left_out", done.leftOut)
+            .put("keys", JSONArray(done.keys))
+    }
+
+    /** What an import brought in: the keys of the games that stand for it, how many, how many left out, how many new. */
+    private class Imported(val keys: List<String>, val kept: Int, val leftOut: Int, val added: Int)
+
+    /**
+     * Games out of the player's record, the ones selected in Your games, each with the game it
+     * is paired with; Undo puts them back for a while. `games_remove`.
+     */
+    fun remove(body: JSONObject): JSONObject {
+        val keys = keysOf(body)
+        val removed = withStore { store -> keys.flatMap { store.removeGame(it) } }
+        return JSONObject().put("ok", true).put("removed", JSONArray(removed))
+    }
+
+    /** Games removed moments ago, put back. `games_restore`. */
+    fun restore(body: JSONObject): JSONObject {
+        val keys = keysOf(body)
+        val restored = withStore { store -> keys.flatMap { store.restoreGame(it) } }
+        if (restored.isEmpty()) {
+            return JSONObject().put("ok", false).put("error", "Those games were removed too long ago to put back.")
+        }
+        return JSONObject().put("ok", true).put("restored", JSONArray(restored))
+    }
+
+    private fun keysOf(body: JSONObject): List<String> =
+        body.optJSONArray("keys")?.let { k -> (0 until k.length()).map { k.getString(it) } } ?: emptyList()
+
+    companion object {
+        /** A row as the page reads it: `row.__dict__`, its fields in their order. */
+        fun rowJson(row: LibraryRow): JSONObject = JSONObject()
+            .put("key", row.key)
+            .put("source", row.source)
+            .put("added_at", row.addedAt)
+            .put("pgn", row.pgn)
+            .put("played_at", row.playedAt ?: JSONObject.NULL)
+            .put("white", row.white ?: JSONObject.NULL)
+            .put("black", row.black ?: JSONObject.NULL)
+            .put("white_elo", row.whiteElo ?: JSONObject.NULL)
+            .put("black_elo", row.blackElo ?: JSONObject.NULL)
+            .put("result", row.result ?: JSONObject.NULL)
+            .put("time_class", row.timeClass ?: JSONObject.NULL)
+            .put("user_side", row.userSide ?: JSONObject.NULL)
+    }
+}

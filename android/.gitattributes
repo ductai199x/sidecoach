@@ -1,0 +1,11 @@
+* text=auto
+
+# The panel page is the desktop build, byte for byte: no line-ending translation.
+app/src/main/assets/web/** -text
+
+# Fixture data is what the Python read, byte for byte: no line-ending translation.
+app/src/androidTest/assets/** -text
+
+# espeak-ng's data, byte for byte as the desktop's espeakng_loader ships it: its voice
+# and language files are parsed line by line, and a CRLF checkout would change them.
+app/src/main/assets/espeak-ng-data/** -text

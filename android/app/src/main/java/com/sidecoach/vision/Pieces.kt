@@ -1,0 +1,327 @@
+package com.sidecoach.vision
+
+/**
+ * Per-theme piece recognition bootstrapped from the start position: the constants and the
+ * types of `sidecoach/vision/pieces.py`, ported line for line.
+ *
+ * Every game starts from a known position, which hands us labelled examples of all twelve
+ * piece kinds on whatever theme is on screen. Recognition then works on silhouettes:
+ *
+ * 1. Each cell's own background colour is the median of a ring just inside its border, so
+ *    highlights need no special handling and the thin hover outline chess.com draws around
+ *    the square under the cursor is skipped. A piece rarely reaches that ring.
+ * 2. Foreground is every pixel far from that background, with enclosed pockets filled (a
+ *    white piece on a light square differs from the square mostly by its outline) and a
+ *    small opening applied so labels and anti-aliasing do not count.
+ * 3. A frozen pretrained net names the cell: the 64 cells of the start position embedded
+ *    once, a cell named by its nearest one. No threshold on the foreground at all, so a
+ *    shaded set and thin detail read like any other. Whether the piece has landed is the
+ *    phase correlation of the cell against that piece's start-position crop.
+ * 4. What sits on top of the board is told apart by geometry, never by colour: a tint
+ *    shifts the ring and the deeper corners the same way; a hover outline or an edge
+ *    shifts the ring while the corners stay clean; a cover is an overlay confirmed by the
+ *    neighbours; a drawing is saturated colour off every line between the square's colour
+ *    and the set's.
+ *
+ * The net is the only matcher, on the desktop as here since desktop e0ea564; without it no
+ * set is learned.
+ */
+object Pieces {
+
+    const val INNER = 0.08
+    const val RING_SKIP = 0.05
+    const val RING_BAND = 0.07
+
+    /**
+     * The four corner blocks between these insets sample the background deeper than the
+     * ring: a piece is round-ish and covers at most one or two of them partially, a badge
+     * one. Deeper is not an option: on the recorded games rooks and bishops reach blocks
+     * at 12% and beyond.
+     */
+    val CORNER_INSET = 0.10 to 0.20
+
+    const val BG_TOLERANCE = 25.0
+
+    /**
+     * Once the set's fills are known, a piece whose fill has little contrast against its
+     * square is read again with a tolerance of half that contrast, within these bounds: a
+     * dark shaded set on a dark board, a greyish white on a pale one, had half of every
+     * piece within 25 of the square and read as two shapes. Only that piece's own fill
+     * counts: a lower tolerance for every piece let a label's anti-aliasing join a rook.
+     */
+    const val BG_TOLERANCE_MIN = 8.0
+    const val BG_CONTRAST_SHARE = 0.5
+    const val POCKET_TOLERANCE = 8.0
+    const val HIGHLIGHT_TOLERANCE = 30.0
+
+    /**
+     * A tint shifts the ring and the corners the same way; an outline or an edge does not.
+     * Each corner pixel is read on its own: clean (at the square colour), shifted like the
+     * ring, or something else (a piece, a badge, a label), and a cell is foreign when a
+     * quarter of the corner pixels that are one or the other are clean, or when too few
+     * are either.
+     */
+    const val TINT_MIN_COSINE = 0.9
+    const val TINT_MIN_CORNER_SHIFT = HIGHLIGHT_TOLERANCE / 2
+    const val CORNER_CLEAN_MAX = 0.25
+    const val CORNER_MIN_KNOWN = 0.2
+
+    /**
+     * Something drawn over a square -- an arrow, a mark's edge -- is saturated colour far
+     * from the square's own colour and from every colour of the piece set. The smoothed
+     * edge of a dark piece on a bright highlight is chromatic too, but it lies on the line
+     * from the square's colour to the piece's; a drawing is off every such line by more
+     * than [OVERLAY_OFF_LINE]. A cell with more than [OVERLAY_MAX] of its inner pixels
+     * like that cannot be read, so no move commits through it.
+     */
+    const val OVERLAY_DISTANCE = 60.0
+    const val OVERLAY_CHROMA = 70.0
+    const val OVERLAY_OFF_LINE = 40.0
+    const val OVERLAY_MAX = 0.03
+
+    /**
+     * The move-classification badge sits on the top-right corner; a quarter-disc of this
+     * radius (as a share of the cell) around that corner is not measured for drawings.
+     */
+    const val OVERLAY_BADGE_RADIUS = 0.4
+
+    const val EMPTY_MAX_FRACTION = 0.04
+
+    /**
+     * Chess.com's legal-move hint dots cover about a tenth of a cell; the smallest piece,
+     * a pawn, covers a third. Anything in between is reported as unknown, which carries no
+     * evidence.
+     */
+    const val PIECE_MIN_FRACTION = 0.16
+
+    /**
+     * The brightness votes for a piece's side when it lies within one side's exemplars'
+     * range of brightness, widened by this much, and not the other's ([ThemeModel]'s side
+     * vote).
+     */
+    const val SIDE_MARGIN = 0.05
+
+    /** Of the patch: a component within one corner's box is no part of a piece. */
+    const val CORNER_BOX = 0.3
+
+    /** A tone mask smaller than this share of the full mask, or of the patch, is no tone. */
+    const val TONE_MIN_SHARE = 0.2
+    const val TONE_MIN_AREA = 0.08
+
+    /**
+     * The embedder sees every cell at this resolution, whatever the board's size: the crop
+     * brought down to CANONICAL_PX a side and back ([canonical]). A board drawn larger carries
+     * more detail, and the embeddings of a board resized away from the one its set was learned
+     * at drifted (bishops read as knights after a board was enlarged half again: the parity
+     * audit's sweep, 2026-09-26); at one resolution every size looks alike. 40 px, from the
+     * desktop's scale benchmark (44 sets, learned at one of 32-128 px and read at another):
+     * identity errors 161 -> 13, where 24 px lost the detail that tells some sets' pieces apart
+     * (a pirouetti queen read as a bishop). Landing is not brought down to it: a piece in
+     * flight read as landed (see [LANDING_SAME_SIZE] for how it meets a resize).
+     */
+    const val CANONICAL_PX = 40
+
+    const val SETTLED_TOLERANCE = 0.08  // of a cell; a dragged piece follows the cursor
+    const val SETTLED_FLOOR_PX = 3.0    // source pixels: the lock is only good to about one
+
+    /**
+     * The embedding votes for a piece's side only when its nearest white and nearest black
+     * piece lie at least this far apart ([ThemeModel]'s side vote).
+     */
+    const val COLOUR_TIE = 0.05
+
+    /**
+     * Where a piece sits: the phase correlation of the cell against the named piece's
+     * start-position crop, which measures the shift itself (at 0.03, 0.06, 0.1 and 0.2 of a
+     * cell off it read 0.031, 0.062, 0.098 and 0.199 over eight sets, three sizes, both square
+     * colours, highlighted or not, and 0.033 at rest with a pixel of lock jitter; unmoved by a
+     * badge, the check glow, a hint ring, an arrow, a tint or a label).
+     *
+     * After a resize the cell and its reference are each a cell of another size blown up to
+     * the working size, and the correlation's peak was lost in the detail one has and the
+     * other has not: a rook at rest, learned at 40 px and read at 34, measured 0.15 of a cell
+     * off and never landed; a pawn three quarters of the way to its square, read at 36,
+     * measured 0.08 from the square it passed and was committed there (the desktop's geometry
+     * sweep, 2026-09-27). So a board read at a size more than this share of a cell from the
+     * one its set was learned at is also compared brought down to the coarser of the two
+     * sizes, and the surer correlation (the higher peak) gives the shift
+     * (`ThemeModel.phaseShift`). Brought down alone it failed at the learned size itself: a
+     * cell brought down to the size it was drawn at is at the edge of what its pixels hold,
+     * and a rook on a labelled corner square measured half a cell off -- every cold read of a
+     * flat set at 44 px was refused (the stress sweep). The desktop's scale benchmark (44
+     * sets, 20 pairs of learned and read sizes, same-size pairs among them, coordinates drawn,
+     * the lock a pixel either way): resting pieces read as not landed 486 -> 102 of 79096,
+     * pieces in flight read as landed 38 -> 26 of 15840; at the learned size nothing changes.
+     * `pieces.LANDING_SAME_SIZE`: a lock's pitch is good to a fraction of a pixel.
+     */
+    const val LANDING_SAME_SIZE = 0.02
+
+    /** The fill read under the exemplar's mask (`_fill_side`). */
+    const val FILL_SIDE_ERODE = 2
+    const val FILL_SIDE_MIN_PIXELS = 30
+    const val FILL_SIDE_RATIO = 1.5
+
+    /** A white outline over a light square differs from it by only about 50 levels. */
+    const val HOVER_TOLERANCE = 30.0
+
+    /** The outer band an outline starts in, as a share of the cell. */
+    const val HOVER_BAND = 0.05
+    const val HOVER_LINE_FILL = 0.9
+    const val HOVER_EDGE = 0.04
+    const val HOVER_CORNER = 0.2
+    const val HOVER_STEP = 10.0
+
+    const val COVER_TOLERANCE = 12.0
+    const val TINT_MIN_ALPHA = 0.2
+    const val TINT_ALPHA_SPREAD = 0.15
+    const val TINT_MIN_CELLS = 6
+    const val TINT_BLOCK_FILL = 0.8
+    const val THEME_MIN_TINTED = 32
+    const val OVERLAY_SIDE_FILL = 0.9
+    const val OVERLAY_BLOCK_FILL = 0.85
+    const val COVER_BODY_SHIFT = 20.0
+    const val COVER_BODY_FILL = 0.8
+
+    /**
+     * The landing tolerance as a share of the cell: [SETTLED_TOLERANCE], but never less than a
+     * few source pixels, so a small cell does not turn lock jitter into a piece in flight
+     * (`pieces.settle_tolerance`).
+     */
+    fun settleTolerance(cellPx: Double?): Double {
+        if (cellPx == null || cellPx == 0.0) return SETTLED_TOLERANCE
+        return maxOf(SETTLED_TOLERANCE, SETTLED_FLOOR_PX / cellPx)
+    }
+
+    /**
+     * A cell's crop as the embedder sees it: brought down to [CANONICAL_PX] a side
+     * (`INTER_AREA`) and back (`INTER_LINEAR`), so a board of any size shows the embedder the
+     * same detail. Only the embedding goes through it; silhouettes, outlines, tints and landing
+     * keep the full-detail crop. `pieces.canonical`. The caller releases what it returns.
+     */
+    fun canonical(crop: org.opencv.core.Mat): org.opencv.core.Mat {
+        val size = crop.rows().toDouble()
+        val small = org.opencv.core.Mat()
+        org.opencv.imgproc.Imgproc.resize(
+            crop, small, org.opencv.core.Size(CANONICAL_PX.toDouble(), CANONICAL_PX.toDouble()),
+            0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_AREA,
+        )
+        val back = org.opencv.core.Mat()
+        org.opencv.imgproc.Imgproc.resize(
+            small, back, org.opencv.core.Size(size, size), 0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_LINEAR,
+        )
+        small.release()
+        return back
+    }
+
+    /** What a cell holds, as `pieces.Kind`. */
+    enum class Kind { EMPTY, PIECE, UNKNOWN }
+
+    /** Whether a shifted background is a readable tint, as `pieces.TintKind`. */
+    enum class TintKind { NONE, TINT, FOREIGN }
+
+    /** One cell, read: `pieces.CellReading`. */
+    data class CellReading(
+        val kind: Kind,
+        val symbol: String? = null,
+        val colour: Side? = null,
+        val confidence: Double = 0.0,
+        val fgFraction: Double = 0.0,
+        val luminance: Double = 0.0,
+        val highlighted: Boolean = false,
+        val background: DoubleArray = doubleArrayOf(0.0, 0.0, 0.0),
+        val brightness: Double = 0.0,
+        /**
+         * Whether the piece sits where a settled piece of its kind sits. The default is
+         * true so a reading built by hand counts as landed; every branch of the classifier
+         * decides it explicitly.
+         */
+        val settled: Boolean = true,
+        val hover: Boolean = false,
+        val offset: Double = 0.0,
+        /** Best symbol even when not confident enough to assert it. */
+        val guess: String? = null,
+        /** An opaque overlay confirmed by the neighbours hides this cell. */
+        val covered: Boolean = false,
+        /** The hue of a translucent tint: "yellow", "red", "other", or null. */
+        val tint: String? = null,
+        /** Something drawn over the square: no move commits through it. */
+        val drawn: Boolean = false,
+    ) {
+        /** The square's content named: empty, or a piece of a known kind. */
+        val exact: Boolean get() = kind == Kind.EMPTY || (kind == Kind.PIECE && symbol != null)
+
+        /** A piece not where a piece at rest sits: dragged, in flight, or under a mark. */
+        val unsettled: Boolean get() = kind == Kind.PIECE && !settled
+
+        /** What a badge or a ring leaves: an unsettled piece, or a piece of no known kind. */
+        val junk: Boolean get() = kind == Kind.PIECE && (!settled || symbol == null)
+
+        /**
+         * Equal field by field, as the desktop's frozen dataclass is: the background too, by
+         * its values (a data class would compare the array by identity).
+         */
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is CellReading) return false
+            return kind == other.kind && symbol == other.symbol && colour == other.colour &&
+                confidence == other.confidence && fgFraction == other.fgFraction &&
+                luminance == other.luminance && highlighted == other.highlighted &&
+                background.contentEquals(other.background) && brightness == other.brightness &&
+                settled == other.settled && hover == other.hover && offset == other.offset &&
+                guess == other.guess && covered == other.covered && tint == other.tint &&
+                drawn == other.drawn
+        }
+
+        override fun hashCode(): Int {
+            var h = kind.hashCode()
+            h = 31 * h + (symbol?.hashCode() ?: 0)
+            h = 31 * h + (colour?.hashCode() ?: 0)
+            h = 31 * h + confidence.hashCode()
+            h = 31 * h + fgFraction.hashCode()
+            h = 31 * h + luminance.hashCode()
+            h = 31 * h + highlighted.hashCode()
+            h = 31 * h + background.contentHashCode()
+            h = 31 * h + brightness.hashCode()
+            h = 31 * h + settled.hashCode()
+            h = 31 * h + hover.hashCode()
+            h = 31 * h + offset.hashCode()
+            h = 31 * h + (guess?.hashCode() ?: 0)
+            h = 31 * h + covered.hashCode()
+            h = 31 * h + (tint?.hashCode() ?: 0)
+            h = 31 * h + drawn.hashCode()
+            return h
+        }
+    }
+
+    /**
+     * `pieces.mark_on_empty`: a little drawn on an empty square and nothing more -- a
+     * legal-move dot, a label -- less than the smallest piece covers, no arrow over it, no drag
+     * outline on it, nothing hiding it. It is no evidence while pieces move (a dot is read as
+     * unknown for that: see [ThemeModel.classify]), but a board read on the player's word
+     * counts it as the empty square it is: a piece left selected put dots on five squares, and
+     * "Re-read the screen" failed every time (Tai's desktop, 2026-09-24, dump
+     * 20260924-165745).
+     */
+    fun markOnEmpty(reading: CellReading): Boolean =
+        reading.kind == Kind.UNKNOWN &&
+            !reading.drawn &&
+            !reading.hover &&
+            !reading.covered &&
+            reading.fgFraction < PIECE_MIN_FRACTION
+
+    /** Which side a piece belongs to, as `sidecoach.events.Side`. */
+    enum class Side {
+        WHITE,
+        BLACK;
+
+        /** The side as the chess module's colour (`WHITE` is true): `Side.color`. */
+        val color: Boolean get() = this == WHITE
+
+        val other: Side get() = if (this == WHITE) BLACK else WHITE
+
+        companion object {
+            /** The side of a chess colour: `Side.of`. */
+            fun of(color: Boolean): Side = if (color) WHITE else BLACK
+        }
+    }
+}

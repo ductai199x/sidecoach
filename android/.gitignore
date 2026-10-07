@@ -1,0 +1,22 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+*.apk
+*.aab
+/app/build/
+/libcore-json/build/
+
+# Scratch: emulator logs, screenshots, spike logs pulled off a device.
+/data/
+# Rendered by tools/make_game.py for the on-device replay.
+app/src/debug/assets/game/
+# Fetched by tools/fetch_stockfish.py: the engine's source and its network.
+third_party/
+.kotlin/

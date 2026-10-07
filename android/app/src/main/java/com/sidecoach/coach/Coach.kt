@@ -1,0 +1,2612 @@
+package com.sidecoach.coach
+
+import com.sidecoach.analysis.Exchange
+import com.sidecoach.chess.Board
+import com.sidecoach.chess.KING
+import com.sidecoach.chess.Move
+import com.sidecoach.chess.PAWN
+import com.sidecoach.chess.STARTING_FEN
+import com.sidecoach.chess.squareName
+import com.sidecoach.chess.squaresOf
+import com.sidecoach.events.Analysis
+import com.sidecoach.events.Annotation
+import com.sidecoach.events.ClockObservation
+import com.sidecoach.events.CoachMessage
+import com.sidecoach.events.DisclosureLevel
+import com.sidecoach.events.Event
+import com.sidecoach.events.GameEnded
+import com.sidecoach.events.GameReview
+import com.sidecoach.events.GameStarted
+import com.sidecoach.events.Label
+import com.sidecoach.events.MoveAssessment
+import com.sidecoach.events.MovePlayed
+import com.sidecoach.events.ProfileSnapshot
+import com.sidecoach.events.PuzzleOutcome
+import com.sidecoach.events.Recommendation
+import com.sidecoach.events.Resync
+import com.sidecoach.events.ScreenState
+import com.sidecoach.events.ScreenStateChanged
+import com.sidecoach.events.Severity
+import com.sidecoach.events.Takeback
+import com.sidecoach.events.Trigger
+import com.sidecoach.llm.ChatMessage
+import com.sidecoach.llm.Completion
+import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.OfflineProvider
+import com.sidecoach.llm.StreamCallback
+import com.sidecoach.llm.StreamingProvider
+import com.sidecoach.llm.ToolRound
+import com.sidecoach.llm.ToolsProvider
+import com.sidecoach.llm.refusedForGood
+import com.sidecoach.vision.Pieces
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.random.Random
+
+/**
+ * The coach: what to say, when, from which facts, checked before it is shown.
+ * `coach/coach.py`.
+ *
+ * Three things keep it honest. The model sees everything -- the engine lines, the legal moves,
+ * the facts past the current level -- so its hints can be precise and true, and the disclosure
+ * level says what it may say (Tai, 2026-09-26). The level only ever moves through the
+ * deterministic unlocks in [Disclosure], driven by what the user did or asked, never by the
+ * model's own judgement. And every draft is checked before it is shown for claims about the
+ * board that the board contradicts, a verdict against the record, and the form the task asks
+ * for; a draft that fails is regenerated once with the problem named, and then replaced by a
+ * template, so the user never sees a false claim and never sees nothing. What a reply gives
+ * away of the answer is logged ([Speaker.leaks]), never a reason to refuse it.
+ *
+ * The model is slow, a second or three, so it runs on a worker thread; the capture loop
+ * hands in events and polls for messages, exactly as it does with the engine.
+ */
+
+const val MAX_TOKENS = 220
+
+/** The top of the rating band below which the templates say no term of art ([JARGON]). */
+const val PLAIN_BELOW = 1400
+
+/** The bottom of the rating band from which the templates add no textbook rule to a lesson. */
+const val STRONG_FROM = 1800
+
+/**
+ * The word on a move by its label (Tai, 2026-09-20). LOCAL: written from the board, no
+ * model -- theory, the engine's own move, and an excellent one (as strong as the best).
+ * EXCITING: great and brilliant, the model at its full effort with some delight, since they
+ * are rare and worth a real sentence (Tai, 2026-09-26: they go through the API). A good move
+ * was a little behind the best, and the model names the better one.
+ */
+val LOCAL = setOf("book", "best", "excellent")
+val EXCITING = setOf("great", "brilliant")
+
+internal fun isLocal(label: Label?): Boolean = label != null && label.name.lowercase() in LOCAL
+
+internal fun isExciting(label: Label?): Boolean =
+    label != null && label.name.lowercase() in EXCITING
+
+/**
+ * Why a move is great (score.label_move), from the sheet of the position it was played in: the
+ * only move there, or the best reply to the opponent's error. Offered both, the model called a
+ * punished error "the one move that keeps the advantage" (dev audit, 2026-09-26).
+ * `coach._great_meaning`.
+ */
+internal fun greatMeaning(facts: PositionFacts): String {
+    if (facts.onlyMove) return "the only good move: every other move lost a lot"
+    return "the chance taken: their last move was an error, and this is the best reply to it"
+}
+
+/**
+ * How many of the last lessons a sound move's word may not teach again ([lesson]): "develop
+ * first" after every developing move of an opening is a lecture, not a lesson.
+ */
+const val TAUGHT_MEMORY = 3
+
+/*
+ * The templates said without a model are the coach on a phone with no model, and the floor the
+ * model must rise above (Tai, 2026-09-23: "the template coach must be good already"). Each rung
+ * says something true about this position that helps to find the answer: the idea (the goal,
+ * the pattern and why it works), the focus (the target and the piece), the move (played out,
+ * correct by construction). Nothing here could be said of any position: the stock questions it
+ * replaces -- "what is your opponent's most dangerous idea?", "look at the whole board" -- were
+ * said on a mate in one.
+ */
+
+/**
+ * The word on a move a little behind the best, and the start of the lesson on one that cost
+ * something; "{best}" is the better move. Without the move played in them, the same better
+ * move twice running gave the same sentence twice (the offline sweep, 2026-09-23).
+ */
+val FINE_TIGHTER = listOf(
+    "Fine, but {best} was a little tighter",
+    "That works, though {best} was a touch better",
+    "Playable -- {best} was a little more precise",
+)
+val COST_YOU = listOf(
+    "There was a stronger move here: {best}",
+    "{best} was the better choice here",
+    "{best} would have kept more",
+)
+
+/**
+ * One bag per severity: "that cost you something" undersold a blunder (the facts audit,
+ * 2026-10-01). A mistake keeps COST_YOU. Said as a coach teaching, never a verdict on the
+ * player: "That one hurts", "Not that one" read as scolding (Tai, 2026-10-02).
+ */
+val COST_BY_SEVERITY = mapOf(
+    "inaccuracy" to listOf(
+        "A small slip: {best} was a little better",
+        "Close, but {best} was more precise",
+        "That gave a little away -- {best} was better",
+    ),
+    "mistake" to COST_YOU,
+    "blunder" to listOf(
+        "This was a big moment: {best} was much stronger",
+        "This one gave away a lot -- {best} was the move to find",
+        "A costly one, and a good one to learn from: {best} was the move",
+    ),
+)
+
+/** The cost bag a missed best move draws from. */
+fun costKind(severity: Severity, label: String): String = when {
+    severity == Severity.BLUNDER || label == "blunder" -> "blunder"
+    severity == Severity.INACCURACY || label == "inaccuracy" -> "inaccuracy"
+    else -> "mistake"
+}
+
+/**
+ * The pattern to keep, said after a mistake that missed it: the rule of thumb, not the
+ * position. Keyed by the pattern's name as the fact sheet gives it.
+ */
+val PATTERN_LESSONS: Map<String, String> = linkedMapOf(
+    "a fork" to "when two of their pieces can be hit from one square, look for the move that " +
+        "gets there",
+    "a skewer" to "a check or an attack on a line with something bigger behind it wins what is " +
+        "behind",
+    "a pin" to "a pinned piece cannot run, so hit it again",
+    "a discovered attack" to "when one of your pieces blocks another's line, moving it with a " +
+        "threat makes two threats at once",
+    "a double check" to "against a double check the king must move, whatever else is attacked",
+    "a trapped piece" to "a piece with no safe square is lost once it is attacked",
+    "removing the defender" to "take the guard first, and what it guarded falls",
+    "a deflection" to "a piece guarding two things guards neither once one is attacked",
+    "a decoy" to "a sacrifice can drag a piece onto the square where it gets hit",
+    "a loose piece" to "before every move, look at what they have left undefended",
+    "a mating attack" to "when their king is short of squares, look at every check, the " +
+        "sacrifices too",
+)
+private val MATES = listOf("mate", "Boden's")
+
+/** Before the facts of the position have landed: an honest word, not a stock question. */
+const val STILL_READING = "Give me a moment: I am still reading this position."
+
+/** `re.match`: anchored at the start only. */
+private val PAWN_MOVE = Regex("^[a-h](x[a-h])?[1-8]")
+
+/** `text` as a sentence: a capital first, a stop last. */
+internal fun templateSentence(raw: String): String {
+    var text = raw.trim()
+    if (text.isEmpty()) return ""
+    if (!PAWN_MOVE.containsMatchIn(text)) {  // "f7+ forces mate", never "F7+"
+        text = text[0].uppercaseChar() + text.substring(1)
+    }
+    return if (text.last() in ".!?") text else "$text."
+}
+
+/**
+ * The first hint, without a model: the situation as a short lesson on the position -- what is
+ * at stake, the key fact named on the board, the principle behind it, the trap ([Situation]).
+ * Never the move.
+ */
+fun ideaTemplate(facts: PositionFacts): String {
+    if (!facts.situation.isNullOrEmpty()) return facts.situation
+    val parts = ArrayList<String>()
+    if (!facts.goal.isNullOrEmpty()) parts.add(templateSentence(facts.goal))
+    if (!facts.question.isNullOrEmpty()) parts.add(facts.question)
+    return if (parts.isNotEmpty()) parts.joinToString(" ") else STILL_READING
+}
+
+/**
+ * The second hint, without a model: the piece that does it, and the question that leads from
+ * there to the move. The target was the first hint's.
+ */
+fun focusTemplate(facts: PositionFacts): String {
+    val parts = ArrayList<String>()
+    if (!facts.target.isNullOrEmpty() &&
+        facts.target.startsWith("their king on") &&
+        !facts.goal.isNullOrEmpty() &&
+        ("mate" in facts.goal || "attack" in facts.goal)
+    ) {
+        // A mate's or an attack's squares, held back from the first hint: one may be where the
+        // check lands.
+        parts.add(templateSentence("look at ${facts.target}"))
+    }
+    if (!facts.piece.isNullOrEmpty()) parts.add(templateSentence("use ${facts.piece}"))
+    if (!facts.nudge.isNullOrEmpty()) {
+        parts.add(facts.nudge)
+    } else if (!facts.question.isNullOrEmpty() && parts.isNotEmpty() && facts.question !in Situation.ANY_POSITION) {
+        // Questions that fit any position narrow nothing: never the second hint's.
+        parts.add(facts.question)
+    }
+    return if (parts.isNotEmpty()) parts.joinToString(" ") else ideaTemplate(facts)
+}
+
+/** The move rung, without a model: the move, played out and explained. */
+fun moveTemplate(facts: PositionFacts): String {
+    if (!facts.why.isNullOrEmpty()) return templateSentence(facts.why)
+    if (facts.candidates.isEmpty()) return "I have no move for this yet."
+    if (!facts.plan.isNullOrEmpty()) return templateSentence("the move is ${facts.candidates[0]}: ${facts.plan}")
+    return "The move is ${facts.candidates[0]}."
+}
+
+/**
+ * What the opponent threatens when it is their move: their best move now and what it does on the
+ * board, read from the position as it stands (no pass: they are to move). `coach.their_move_now`.
+ */
+fun theirMoveNow(board: Board, facts: PositionFacts): String {
+    if (facts.candidates.isEmpty()) return "It's their move; I have no read on it yet."
+    val san = facts.candidates[0]
+    val move = board.parseSan(san) ?: return "It's their move; I have no read on it yet."
+    val does = effectsText(board, move, hazards = false)
+    if (does.isNotEmpty()) return "It's their move, and their best is $san ($does)."
+    return "It's their move, and their best is a quiet one, $san: it takes nothing at once."
+}
+
+/**
+ * The line asked for on the opponent's move: from their best move on, each move with whose it is
+ * and what it does ([lineSpoken]). Only their next move was said: Tai, a puzzle solved on his
+ * Rb6+ and a mate in two left to see, asked for the line and heard "their best is a quiet one,
+ * Kd5" (2026-10-03). `coach.their_line_now`.
+ */
+fun theirLineNow(board: Board, facts: PositionFacts, player: Boolean): String {
+    if (facts.line.isEmpty()) return theirMoveNow(board, facts)
+    val spoken = lineSpoken(board, facts.line, player = player)
+    if (spoken.isEmpty()) return theirMoveNow(board, facts)
+    return "It's their move, and the line runs $spoken."
+}
+
+/**
+ * What the opponent threatens when the player is in check: the check, and what else the
+ * checking piece can win, read from the board ("their queen on e6 gives check, and it also
+ * attacks your pawn on c6"). `coach.in_check_threat`.
+ */
+fun inCheckThreat(board: Board): String {
+    val us = board.turn
+
+    fun kind(square: Int): Int = board.pieceTypeAt(square).let { if (it == 0) PAWN else it }
+
+    fun name(square: Int): String = "${COACH_PIECE_NAMES[kind(square)]} on ${squareName(square)}"
+
+    val checkers = squaresOf(board.checkersMask())
+    if (checkers.isEmpty()) return "Nothing is threatened right now: no move of theirs wins anything."
+    var text = "Their ${checkers.joinToString(" and ") { name(it) }} "
+    text += if (checkers.size == 1) "gives check" else "give check"
+    if (checkers.size == 1) {
+        // What it can win next, besides the king: undefended, or worth more than it.
+        val worth = Exchange.VALUE[kind(checkers[0])]
+        val hit = squaresOf(board.attacksMask(checkers[0]) and board.occupiedCo[if (us) 1 else 0])
+            .filter {
+                kind(it) != KING &&
+                    (Exchange.defenders(board, us, it).isEmpty() || Exchange.VALUE[kind(it)] > worth)
+            }
+            .sortedWith(compareBy({ -Exchange.VALUE[kind(it)] }, { it }))
+        if (hit.isNotEmpty()) {
+            text += ", and it also attacks " + hit.take(2).joinToString(" and ") { "your ${name(it)}" }
+        }
+    }
+    return "$text."
+}
+
+/**
+ * The line, and why its first move works. With the [board] the facts describe, each move with
+ * what it does, computed ([lineSpoken]): the answer to "show me the line", exact where the
+ * model's explanations went wrong a third of the time.
+ */
+fun lineTemplate(facts: PositionFacts, board: Board? = null): String {
+    if (facts.line.isEmpty()) return "I have no line for this yet."
+    val spoken = if (board != null) lineSpoken(board, facts.line) else ""
+    val text = if (spoken.isNotEmpty()) "The line runs $spoken." else "The line is ${facts.line.joinToString(" ")}."
+    return if (!facts.why.isNullOrEmpty()) "$text ${templateSentence(facts.why)}" else text
+}
+
+/** The template for a hint at `level`: two hints, then the answer. */
+fun hintTemplate(facts: PositionFacts, level: DisclosureLevel, board: Board? = null): String {
+    if (level.value >= DisclosureLevel.LINE.value) return lineTemplate(facts, board)
+    if (level.value >= DisclosureLevel.MOVE.value) return moveTemplate(facts)
+    if (level.value >= DisclosureLevel.FOCUS.value) return focusTemplate(facts)
+    return ideaTemplate(facts)
+}
+
+/** The verbs a move's "why" goes on with after its move: said of the move, they take "it". */
+private val WHY_VERBS = listOf(
+    "is ",
+    "forces ",
+    "stops ",
+    "starts ",
+    "holds ",
+    "takes ",
+    "goes ",
+    "meets ",
+    "puts ",
+    "threatens ",
+    "doubles ",
+    "brings ",
+    "rolls ",
+    "pushes ",
+    "gains ",
+)
+
+/** A "why" that names its move a sacrifice first: "a queen sacrifice, and after Qxf7, ...". */
+private val SACRIFICE = Regex("^(an? [a-z]+ sacrifice), (.+)", RegexOption.DOT_MATCHES_ALL)
+
+/**
+ * When the player made the right capture with the other piece: "take back with the rook on e1,
+ * not the one on a1" (13.Raxd1 for Rexd1 was told "you win their queen", which the player had
+ * just done, Tai's game, 2026-09-24). `coach._recapture`.
+ */
+private fun recapture(board: Board?, best: String, played: String?): String? {
+    if (board == null || played == null) return null
+    val good = board.parseSan(best) ?: return null
+    val done = Move.fromUciOrNull(played) ?: return null
+    if (good.to != done.to ||
+        good.from == done.from ||
+        !board.isCapture(good) ||
+        !board.isCapture(done)
+    ) {
+        return null
+    }
+    val piece = board.pieceAt(good.from) ?: return null
+    val other = board.pieceAt(done.from) ?: return null
+    val mine = COACH_PIECE_NAMES[piece.pieceType]
+    val theirs = if (other.pieceType == piece.pieceType) "the one" else "the ${COACH_PIECE_NAMES[other.pieceType]}"
+    return "take with the $mine on ${squareName(good.from)}, not $theirs on ${squareName(done.from)}"
+}
+
+const val RECAPTURE_RULE = "when two pieces can take, ask which you want to keep where it is"
+
+/**
+ * The rule of thumb [lessonTemplate] would add after the move, when there is one that is the
+ * mistake's own: the recapture's, or the pattern of the tactic missed ([PATTERN_LESSONS], a
+ * mating attack's for a mate). A plan's mechanism is not: "pieces still at home take no part in
+ * the game" was said of a move that let Qxg7 in, where the lesson was the threat (Tai's phone,
+ * 2026-09-27). The coach holds a rule back while it is cooling down ([Coach.ruleOk]).
+ * `coach.rule_of`.
+ */
+fun ruleOf(facts: PositionFacts, best: String, board: Board? = null, played: String? = null): String? {
+    if (recapture(board, best, played) != null) return RECAPTURE_RULE
+    val theme = facts.theme ?: ""
+    var keep = PATTERN_LESSONS[theme]
+    if (keep == null && MATES.any { it in theme }) keep = PATTERN_LESSONS.getValue("a mating attack")
+    return keep
+}
+
+/**
+ * After a move that cost something: the better move, what it does, what the move made allowed,
+ * and the rule of thumb. `opener` is the rotated "That one cost you: {best} was better";
+ * `board` and `played` (UCI) are the position the player faced and the move made, `allowed`
+ * what it let the opponent do ([IdeaWords.allowed]), when known. The rule is said as a sentence of
+ * its own, never announced: "Keep this one:", "Worth remembering:" and three more rotated before
+ * it, and nagged (Tai, 2026-09-27). [withRule] false leaves it out (it was said lately:
+ * [Coach.ruleOk]), and so does `strong` (a player of 1800 and up): the concrete point is the
+ * lesson.
+ */
+fun lessonTemplate(
+    facts: PositionFacts,
+    best: String,
+    opener: String,
+    board: Board? = null,
+    played: String? = null,
+    allowed: String? = null,
+    withRule: Boolean = true,
+    strong: Boolean = false,
+): String {
+    var text = opener
+    val why = facts.why ?: ""
+    val rule = if (withRule && !strong) ruleOf(facts, best, board = board, played = played) else null
+    val otherPiece = recapture(board, best, played)
+    if (otherPiece != null) {
+        text += " -- $otherPiece"
+        if (!allowed.isNullOrEmpty()) text = templateSentence(text) + " " + allowed
+        if (rule == null) return templateSentence(text)
+        return templateSentence(text) + " " + templateSentence(rule)
+    }
+    if (why.startsWith(best)) {
+        var rest = why.substring(best.length).trimStart(' ', ',', ':', ';')
+        if (rest.startsWith("and ") && !rest.startsWith("and after")) {
+            rest = why  // "Rfc8 and Qc6 double your rooks": the plan, said whole
+        } else {
+            rest = if (rest.startsWith("and ")) rest.substring(4) else rest
+            val sacrifice = SACRIFICE.find(rest)
+            if (sacrifice != null) {
+                // "axb3, a knight sacrifice, stops bxc2": "-- it is a knight sacrifice, and it
+                // stops bxc2" (the master games, Sokolov-Dreev, 2026-09-24).
+                val named = sacrifice.groupValues[1]
+                var tail = sacrifice.groupValues[2]
+                if (WHY_VERBS.any { tail.startsWith(it) }) tail = "it $tail"
+                rest = "it is $named, " + if (tail.startsWith("and ")) tail else "and $tail"
+            } else if (WHY_VERBS.any { rest.startsWith(it) }) {
+                rest = "it $rest"  // "Nf2# was better -- it is mate", "-- it stops Nxd3"
+            }
+        }
+        if (rest.isNotEmpty() && stale(rest, played)) rest = ""
+        if (rest.isNotEmpty()) text += " -- $rest"
+    }
+    text = templateSentence(text)
+    if (!allowed.isNullOrEmpty()) text += " " + templateSentence(allowed)
+    if (rule != null && !said(rule, text)) text += " " + templateSentence(rule)
+    return text
+}
+
+/**
+ * `coach._with_line`: an answer to "why was that bad?" with the engine's line when it would name
+ * nothing but the better move: "g6 was better." alone answered nothing (13 of 95 answers in the
+ * desktop's offline sweep of bot games, 2026-09-27). The line is the concrete reason, and the
+ * position the move was played from withholds nothing.
+ */
+internal fun withLine(text: String, opener: String, best: String, facts: PositionFacts?): String {
+    val line = facts?.line ?: emptyList()
+    if (facts == null || text.trimEnd('.') != opener || line.isEmpty() || line[0] != best) return text
+    return templateSentence("$opener -- the line runs ${line.take(5).joinToString(" ")}")
+}
+
+/** [text] with [sentence] taken out, the spaces closed up. `coach._without`. */
+internal fun without(text: String, sentence: String): String =
+    com.sidecoach.voice.Py.split(text.replace(sentence, " ")).joinToString(" ")
+
+/**
+ * `coach._stale`: whether a lesson's reason, read off the position the player faced, names a
+ * piece on a square their move then left or landed on -- the position before it, not the one
+ * now: "d4 was a little more precise -- your bishop on c1 is still shut in behind the pawn on d2"
+ * after 4.d3, which had just let it out (Nova bot games, 2026-09-25). A line ("after Qg2, Rdg1,
+ * the queen on g2 is trapped") is about the moves to come, and stands.
+ */
+internal fun stale(reason: String, played: String?): Boolean {
+    if (played == null || reason.startsWith("after ")) return false
+    val move = Move.fromUciOrNull(played) ?: return false
+    val squares = listOf(squareName(move.from), squareName(move.to))
+    return squares.any { sq -> Regex("\\bon $sq\\b").containsMatchIn(reason) }
+}
+
+/**
+ * A rule of thumb -- "a rule to take with you: ...", "rooks belong on open files" -- is not said
+ * again for this many of the coach's messages, across games and puzzles alike, and no two rules
+ * come within [RULE_SPACING] messages of each other (Tai, 2026-09-27, after a run of puzzles: "it
+ * keeps on nagging me ... there has to be a cooldown of some number of messages before it can
+ * appear again"). A puzzle is a new game, so a memory per game started over at every one. Thirty
+ * messages and four apart still nagged -- a rule in one message of ten, on fine moves and
+ * mistakes alike (Tai's phone, 2026-09-27: "the coach is a teacher, not a nagging annoying
+ * bot"): a rule once a session, and one in ten messages at most.
+ */
+const val RULE_COOLDOWN = 200
+const val RULE_SPACING = 10
+
+/**
+ * The model's word while a rule is cooling down: the concrete point, no rule of thumb. Every held
+ * wording carries [RULE_HELD_MARK], which the desktop's rubric reads (tools/eval/rubric.py:
+ * "transfer" is not asked of a reply told to leave the rule out).
+ */
+const val RULE_HELD_MARK = "No rule of thumb this time"
+const val RULE_HELD = "$RULE_HELD_MARK: only what this position shows."
+
+/** `fresh`'s own split: `re.split(r"(?<=[.?!])\\s+", ...)`. */
+private val LESSON_SENTENCES = Regex("(?<=[.?!])\\s+")
+
+/**
+ * `coach.fresh`: [text] without what the coach said lately ([recent], lower case): the reason
+ * after " -- " in the first sentence. The verdict and the better move always stay: that is news.
+ * [opener] is what the first sentence opens with, the verdict and the better move; the reason is
+ * what follows it. (A rule of thumb said lately is [Coach.ruleOk]'s to hold.)
+ */
+fun fresh(text: String, recent: String, opener: String? = null): String {
+    val said = recent.lowercase()
+    val sentences = text.trim().split(LESSON_SENTENCES)
+    if (sentences.isEmpty()) return text
+    var first = sentences[0]
+    val rest = sentences.drop(1)
+    var head = first
+    var reason = ""
+    if (opener != null) {
+        // An opener may carry its own " -- " ("Not that one -- Ng3 was better"): with no reason
+        // after it, the better move was taken for one and dropped when the same move had just
+        // been said (Nova bot games, 2026-09-25).
+        if (first.lowercase().startsWith(opener.lowercase() + " -- ")) {
+            head = first.substring(0, opener.length)
+            reason = first.substring(opener.length + 4)
+        }
+    } else if (" -- " in first) {
+        // The last clause ("Playable -- d4 was a little more precise -- your bishop on c1 is
+        // still shut in ...").
+        head = first.substringBeforeLast(" -- ")
+        reason = first.substringAfterLast(" -- ")
+    }
+    if (reason.isNotEmpty() && reason.trimEnd('.').lowercase() in said) first = head.trimEnd('.') + "."
+    return (listOf(first) + rest).joinToString(" ")
+}
+
+private val WORDS = Regex("[a-z']+")
+
+/** Whether `text` already says `keep`: four of its words in a row. `coach._said`. */
+fun said(keep: String, text: String): Boolean {
+    val words = WORDS.findAll(keep.lowercase()).map { it.value }.toList()
+    val said = WORDS.findAll(text.lowercase()).joinToString(" ") { it.value }
+    return (0 until words.size - 3).any { j -> words.subList(j, j + 4).joinToString(" ") in said }
+}
+
+/**
+ * Verbalized sampling: how many candidate replies to ask for, and the room and warmth to
+ * give the distribution. Warmer than a single reply on purpose, since a check filters them.
+ */
+const val VS_CANDIDATES = 4
+
+/**
+ * An answer to the player's own question is wanted fast, and it is checked like any other;
+ * two candidates halve the wait and still leave a spare for the checks to reject.
+ */
+const val VS_ASK_CANDIDATES = 2
+
+/** A word on a fine move is one short sentence; two candidates keep the call short. */
+const val VS_ROUTINE_CANDIDATES = 2
+const val VS_MAX_TOKENS = 2048
+
+/**
+ * Cold. The candidates are already a distribution the model verbalizes (their p= marks);
+ * hot sampling on top of that is where the invented sentence came from.
+ */
+const val VS_TEMPERATURE = 0.1
+
+private val NUMBER_WORDS = mapOf(2 to "TWO", 3 to "THREE", 4 to "FOUR", 5 to "FIVE")
+
+/**
+ * No figures unless the player asks: the record says what a move cost in expected score and
+ * the model quoted it in every note ("costing 0.03"; Tai, 2026-09-19), and a hint said "ahead
+ * by about 1.2 pawns". The code notes a figure where a directive carries this
+ * ([Speaker.notes]), so every directive that forbids one says so in these words.
+ */
+const val NO_FIGURES =
+    "No figures -- no percentage, no score, no move number: say how a move rates, and what it " +
+        "cost, in words; the numbers are for when the player asks. Name moves bare."
+
+/**
+ * The player has just played the move and sees it on the board: naming it, or saying what it
+ * plainly did ("Nxd5 -- the knight taking the pawn on d5"), tells them nothing (Tai,
+ * 2026-09-23: "we want the coach to be instructive, always find a moment to teach something,
+ * not just a dumb bot").
+ */
+const val NOT_THE_MOVE =
+    "They see their own move on the board, so naming it or saying what it plainly did -- the " +
+        "capture, the check, the castling, the promotion -- tells them nothing: do not open with " +
+        "it. Say what it means instead: the idea behind it and the pattern to keep and, when there " +
+        "was a better move, that move and why."
+
+/**
+ * While a rule cools down: the same, without the pattern to keep. Told to hold the rule back at
+ * the end of a directive that still asked for "the pattern to keep", the local model gave one
+ * anyway in 2 of 17 lessons (the free check, 2026-09-27). `coach.NOT_THE_MOVE_HELD`.
+ */
+val NOT_THE_MOVE_HELD = NOT_THE_MOVE.replace("the idea behind it and the pattern to keep", "the idea behind it")
+
+/** [directive] with its ask for a rule to keep taken out, and [RULE_HELD] said. `coach._hold_rule`. */
+internal fun holdRule(directive: String): String {
+    var out = directive
+    for ((asked, held) in listOf(
+        NOT_THE_MOVE to NOT_THE_MOVE_HELD,
+        " -- as a pattern to remember." to ".",
+        "as a pattern to remember, in" to "in",
+        " as a lesson to keep" to "",
+    )) {
+        out = out.replace(asked, held)
+    }
+    return "$out $RULE_HELD"
+}
+
+/**
+ * What a lesson's template says that the sheet does not, as facts for the model: which piece
+ * should have taken, and the rule of thumb that fits the mistake, when one may be said. The
+ * template's finished lesson, handed over as the least a reply says, came back word for word in
+ * two lessons of three (the prompt audit, 2026-09-28). `coach._lesson_data`.
+ */
+internal fun lessonData(board: Board?, best: String, played: String?, rule: String?): String {
+    var out = ""
+    val other = recapture(board, best, played)
+    if (other != null) out += " The right capture: $other."
+    if (rule != null) out += " A rule of thumb that fits, if you give one: $rule."
+    return out
+}
+
+/**
+ * What the first hint may say, as the Task's level line states it: the key fact is named on the
+ * board (Tai, 2026-09-24), and only the answer is kept back (Tai, 2026-09-26: a vague coach is
+ * worse than one that says a little too much).
+ */
+const val IDEA_LEVEL_WORDS =
+    "the idea: what is at stake and the key fact, with every piece, square and move of the " +
+        "opponent's the sheet names, the target's square included. Keep back only the answer: " +
+        "the player's move, the square it goes to (unless the target stands there), and which of " +
+        "the player's pieces makes it"
+const val SEE_ALL_WORDS =
+    "You see the answer so that the hint can be precise and true; a hint that gives a little " +
+        "too much is a lesser fault than a vague one."
+
+/** What each rung of the ladder may say, as the level line states it. `RUNG_WORDS`. */
+fun rungWords(level: DisclosureLevel): String = when (level) {
+    DisclosureLevel.SILENT -> "nothing about the position"
+    DisclosureLevel.IDEA -> IDEA_LEVEL_WORDS
+    DisclosureLevel.FOCUS -> "the idea, the target and the piece; not the move"
+    DisclosureLevel.MOVE -> "the move and why it works; not the whole line"
+    DisclosureLevel.LINE -> "everything, the line included"
+}
+
+/** What has been said, up to each rung, for the AI coach's task ([CoachSession.ladderWords]). `SAID_WORDS`. */
+fun saidWords(level: DisclosureLevel): String = when (level) {
+    DisclosureLevel.SILENT -> "nothing yet"
+    DisclosureLevel.IDEA -> "the idea"
+    DisclosureLevel.FOCUS -> "the idea, the target and the piece"
+    DisclosureLevel.MOVE -> "the move"
+    DisclosureLevel.LINE -> "the move and the line"
+}
+
+/**
+ * What the AI coach is told of a question of the player's: guidelines, not rules. The model reads
+ * what the words ask, from the conversation and the sheet, and decides what to say and how much;
+ * no keyword picks the directive or the rung (Tai, 2026-10-02). The offline coach's keyword
+ * branches stay in `instruction` for its templates and the fallback. `AI_GUIDELINES`.
+ */
+const val AI_GUIDELINES =
+    "Answer them as their coach. What they ask is yours to read from their words, the " +
+        "conversation above and the position; all of the sheet is yours to use -- every engine " +
+        "line with its score, the candidate moves, the facts, the last move of each side with " +
+        "its verdict. Some guidelines, not rules:\n" +
+        "- First, what the words refer to. Some can mean two things here: which move \"that\" or " +
+        "\"it\" is (their move, the opponent's reply, a move withdrawn, one of several named " +
+        "above), a move now or one instead of the move they just played, this position or the " +
+        "whole game. Let the conversation and the position decide -- what was just said or " +
+        "named, whose move it is, which move was the mistake -- and when they do, answer that " +
+        "reading and say in a few words which it is. When they do not -- \"that\" when their " +
+        "move and the reply both went wrong, \"it\" after several moves were named -- and the " +
+        "readings would get different answers, do not guess: reply with one short question " +
+        "that names the readings (\"Instead of Bc4, which you just played, or as your next " +
+        "move?\") and nothing else. Never ask when every reading gets the same answer.\n" +
+        "- A hint: one rung up the ladder above, said once, never lower than one already " +
+        "said.\n" +
+        "- The move -- \"what should I play\", \"the play here\", \"the move\": give it plainly, and " +
+        "why it works, from the sheet's why and pattern. Several moves about as good: say so " +
+        "and name them.\n" +
+        "- Which moves are best, good or fine, or whether another move works too: read all of " +
+        "the engine lines, name every move about level with the best, and say which are " +
+        "clearly worse and what goes wrong with them. On the opponent's move the player has " +
+        "just moved, so 'any other good moves?', 'is X also good?' or 'what else could I have " +
+        "played?' are about what they could have played instead of their last move, not about " +
+        "the opponent's options: answer from the position they faced before it -- the moves " +
+        "about as good there and the clearly worse ones, given below -- and say how their move " +
+        "compares. The opponent's best move or plan is another question, asked of the " +
+        "opponent.\n" +
+        "- The line, or what happens next: the engine's line move by move, and the idea behind " +
+        "it; once given, what comes after its end.\n" +
+        "- A move, square or piece they name: whether it holds up and what it does or allows, " +
+        "from the engine's word on it where given above -- theirs to hear in full: the score " +
+        "after it, how far behind the best, the reply, what the move does.\n" +
+        "- \"That\", \"it\" or \"that move\" may mean their own last move or the opponent's reply. " +
+        "The sheet gives both positions -- the one they faced before their move and the one " +
+        "after the reply -- and says how long the reply took when that is known.\n" +
+        "- The opponent's move or threat: from the last move and its verdict and the threats " +
+        "the facts list. When it is the opponent's move there is no move of theirs to find: " +
+        "say what they threaten and what to be ready for.\n" +
+        "- How they stand, the material, the opening: from the Standing, the material and the " +
+        "record -- the opening by the name the record gives it -- never counted or guessed " +
+        "yourself. How they did overall: from the verdicts and the tally in the record, " +
+        "nothing inferred from the position on the board.\n" +
+        "- A move they already played: its verdict is in the record and all of it may be said " +
+        "-- what it missed or allowed, and the better move -- from the sheet of the position " +
+        "they faced, inventing no fault in a sound move.\n" +
+        "- What they state or take for granted: take it as they meant it, say what in it is " +
+        "right as plainly as what is wrong, and credit them with nothing they did not say -- a " +
+        "question states nothing to agree with. What you already said in this position is " +
+        "under 'Said here': do not say it again in other words; give them something it did " +
+        "not.\n" +
+        "Say it in words: no percentages, scores or move numbers unless they ask for the " +
+        "number. Name moves bare. Two or three sentences, then, if you like, one question."
+
+/** Said of what the coach has said since the last move, so a follow-up gets only what it asks. `AI_FOLLOW_UP`. */
+const val AI_FOLLOW_UP =
+    " You have spoken since the last move already (your turns above): do not repeat the " +
+        "verdict or the better move you told them; answer only what they ask now."
+
+/** The coach's last turn ended with a question. `AI_ANSWERING`. */
+const val AI_ANSWERING =
+    " Your last turn above ended with a question: if their words answer it, say first, " +
+        "plainly and from the facts, whether they have it right, and give the answer yourself " +
+        "in a sentence when they do not; that closes the question, so ask nothing more. If it " +
+        "asked which of two things they meant, their words pick one: answer their earlier " +
+        "question on that reading."
+
+/**
+ * A hint asked after the move was given: the move again, with why it beats clearly worse moves
+ * (Tai, 2026-09-30), as a guideline to the AI; the offline coach keeps its template
+ * ([MOVE_GIVEN_WHY]). `AI_MOVE_GIVEN`: `{move}` the move.
+ */
+const val AI_MOVE_GIVEN =
+    " The move has been given already, in your turns above: it is {move}. If they ask for " +
+        "it again, or for another hint, say it again plainly, with what it does from the fact " +
+        "sheet's why, in other words than before -- and why it is the move to play instead of " +
+        "something that looks as good but is clearly worse: name one or two of the clearly worse " +
+        "moves listed here, with what goes wrong with them as the board says it, and nothing " +
+        "more of them."
+
+/*
+ * What the model is asked to do on each rung before the player moves: the facts the rung's
+ * template is built from, said the model's own way, sharper for this position (Tai, 2026-09-23:
+ * "AI is supposed to elevate good to great"). What the rung may give away is the level line's
+ * to say (the coach's levelLine), once. The parts it names are not to be said back: "The key
+ * fact is that ...; the principle here is ..." was in 41% of the local model's hints (the
+ * prompt audit's baseline, 2026-09-28).
+ */
+const val IDEA_DIRECTIVE =
+    "Give the first hint as a short lesson on this position, from what the sheet says a first " +
+        "hint rests on: what is at stake (how many moves hold and what the next best costs; or the " +
+        "goal, or the nature, where it gives no stakes), then the key fact on the board, named as " +
+        "the sheet names it -- the target, their threat, the plan or the pattern -- and what it " +
+        "threatens or allows, with the principle behind it, so they know what to look for; and the " +
+        "trap when the sheet has one. Those are what the lesson covers, not words to say: give the " +
+        "fact itself, never its name. The sheet's words are facts to teach from, not a script: " +
+        "every sentence yours, and true only of this board. Two or three sentences, then, if you " +
+        "like, one question."
+
+/**
+ * The game so far, used: an earlier moment of the same idea is the coach's best material, and the
+ * excellence rubric found it used in half the lessons that had one (2026-09-25). The coach finds
+ * those moments itself ([Conversation.sameIdea]) and lists them: told to find its own in the
+ * record, the model misremembered one ("as after 9...a6, when Bc4 saved your bishop": neither
+ * happened) and copied the directive's own example move as a link (quality rounds 2 and 3,
+ * 2026-09-25). TIE_TO_THE_GAME marks the directives a link belongs in; the coach's speak puts the
+ * rule for the moments listed, or for none, in its place.
+ */
+const val TIE_TO_THE_GAME = "Tie this lesson to the game only through the earlier moments listed."
+const val TIE_LISTED =
+    "Under 'Earlier in this game' are the player's earlier moves played with the very same " +
+        "idea as this one. Tie this lesson to the one that fits best, in a clause -- naming its " +
+        "move bare, as the list does -- and say of it only what the list says. Speak of no other " +
+        "earlier moment."
+const val NO_EARLIER = "Speak of no earlier moment of the game: none had the same idea."
+
+/**
+ * Asked with no game watched (the panel's Stop, or no Start yet): a note in the record, once a
+ * spell, so the AI coach knows (Tai, 2026-10-02). Nothing of a last game is built for it: what
+ * the record holds is what it has. `coach.NOT_WATCHING`.
+ */
+const val NOT_WATCHING =
+    "No game is being watched now: the player has not pressed Start, or has pressed Stop. " +
+        "The board is not being read; anything above is from before."
+
+/** A question with no position read: the task, and why there is no board. `coach.NO_BOARD_TASK`. */
+const val NO_BOARD_TASK =
+    "Answer the player's last question as their coach. There is no position to talk about: " +
+        "{why} If the question needs a game or a position, say so plainly; otherwise answer it."
+const val NO_BOARD_YET = "the board has not been read yet."
+const val NO_BOARD_UNWATCHED = "no game is being watched (Start is not pressed)."
+
+/** A line asked for once it was given: what they want is what comes after it. */
+const val LINE_GIVEN =
+    "You have given them this line already, in your turns above: they want what comes after " +
+        "its end -- the next moves and the idea behind them."
+
+const val FOCUS_DIRECTIVE =
+    "Name the piece to use and what it goes after -- the target -- as the fact sheet names " +
+        "them, with the principle behind it in a clause, and ask the one question that leads from " +
+        "there to the move. Do not name the move. One or two sentences."
+const val MOVE_DIRECTIVE =
+    "The next hint is the answer: give the move and explain it correctly from the fact " +
+        "sheet's why -- what it does and what it leads to -- and the pattern to keep. One or two " +
+        "sentences, no question."
+const val MOVE_GIVEN =
+    "They asked for another hint, and the move has been given already: it is {move}. Say so " +
+        "plainly, with what it does from the fact sheet's why, in other words than before. One or " +
+        "two sentences, no question."
+const val FOCUS_KING =
+    "Here the move is castling: the piece is the king, and what it goes after is its own " +
+        "safety and the rook's way into the game, as the sheet gives them -- never a piece of " +
+        "theirs."
+
+/**
+ * Asked again once the move was given, the answer is the move once more with its reason against
+ * the others: why it is the move to play instead of something clearly worse, from what the board
+ * says of those ([worseMoves]); said in words, true of the board, nothing invented.
+ * `MOVE_GIVEN_WHY`: `%1$s` the move, `%2$s` the worse moves with what goes wrong.
+ */
+const val MOVE_GIVEN_WHY =
+    "They asked for another hint, and the move has been given already: it is %1\$s. Say so " +
+        "plainly, with what it does from the fact sheet's why, in other words than before -- and " +
+        "why it is the move to play instead of something that looks as good but is clearly worse: " +
+        "name one or two of the moves below and what goes wrong with them, as the board says it, " +
+        "and nothing more of them. Clearly worse here, and what goes wrong: %2\$s. Two or three " +
+        "sentences, no question."
+
+/**
+ * The moves besides the best one, asked for: all that are about as good, named, and the clearly
+ * worse ones with what goes wrong with them. The engine's lines list them all; line 1 is only
+ * the first. `ALTERNATIVES_READ`.
+ */
+const val ALTERNATIVES_READ =
+    "Read the engine lines above, all of them and not only line 1: each line's first move is a " +
+        "candidate, with its score, and the weaker lines say how far behind the best they are."
+
+fun vsDirective(candidates: Int = VS_CANDIDATES): String {
+    val count = NUMBER_WORDS[candidates] ?: candidates.toString()
+    return "\n\nInstead of one reply, give $count different ways you could say this, varied in " +
+        "wording and in the angle each takes, sampled from your full range rather than the " +
+        "single most obvious phrasing. Put each on its own line as: [p=0.30] then the reply, " +
+        "the replies in a random order, not the likeliest first. " +
+        "Each reply obeys every rule above and keeps to the length asked, on that one line. " +
+        "The p values are how likely you would be to choose each; they need not sum to one."
+}
+
+private val VS_MARKER = Regex("\\[\\s*p?\\s*=?\\s*([0-9]*\\.?[0-9]+)\\s*\\]\\s*", RegexOption.IGNORE_CASE)
+
+/** A marker fragment left in a candidate's text: a whole one, or one cut off mid-way. */
+private val STRAY_MARKER = Regex("\\s*\\[\\s*p\\s*=\\s*[0-9.]*\\]?\\s*")
+private val THINK_BLOCK = Regex("<think>.*?</think>", RegexOption.DOT_MATCHES_ALL)
+
+/**
+ * Where a reply's last complete sentence ends: terminal punctuation, then any closing quote
+ * or bracket. What follows the last of these is a sentence the model never finished. A move
+ * number's stop ("after 6. d3", "12. Bxc6+") ends no sentence: a bare number of up to three
+ * digits, at the start or after a space, before the stop.
+ */
+private val SENTENCE_END = Regex(
+    "(?<!(?<![\\w.])\\d)(?<!(?<![\\w.])\\d\\d)(?<!(?<![\\w.])\\d\\d\\d)" +
+        "[.!?\u2026][\"'\u201d\u2019)\\]]*(?=\\s|\$)"
+)
+
+private val PIECE_WORD = mapOf(
+    'K' to "king", 'Q' to "queen", 'R' to "rook", 'B' to "bishop", 'N' to "knight",
+)
+
+/**
+ * A reply may run this many sentences past the number its directive gives before it is
+ * faulted: the length is reasonable, not strict.
+ */
+const val LENGTH_SLACK = 2
+
+private val WORD_NUMBERS =
+    mapOf("one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5, "six" to 6)
+
+private val SAYS_BEST = Regex(
+    "\\b(?:the |your )?(?:best|strongest|top|engine's) (?:move|choice)\\b|\\bwas best\\b|" +
+        "\\bis best\\b",
+    RegexOption.IGNORE_CASE,
+)
+private val SAYS_SLIP =
+    Regex("\\b(?:blunder|mistake|inaccuracy|a miss)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * A figure after "cost": a share of the game (0.10, 10%), never a count of moves or pawns
+ * ("lost the pawn on e4 2 moves ago" gave a cost of 2).
+ */
+private val SAYS_COST = Regex(
+    "\\b(?:cost|costing|costs|lost|losing)\\b[^.;]{0,30}?(?<![A-Za-z0-9])(\\d+(?:\\.\\d+)?)" +
+        "(?![.\\d]*[A-Za-z])(?!\\s*(?:moves?|plies|pawns?|pieces?|tempi|tempo|points?)\\b)" +
+        "\\s*(%|percent)?",
+    RegexOption.IGNORE_CASE,
+)
+
+private val LIMIT_WORDS = Regex(
+    "\\b(?:(?:at most|no more than) (one|two|three|four|five|six) sentences?" +
+        "|(one|two|three|four|five|six)(?: or (one|two|three|four|five|six))? (?:short )?sentences?" +
+        "|(one|two|three|four|five|six) sentences? at most" +
+        "|(?:fifteen|twenty) words at most)\\b",
+    RegexOption.IGNORE_CASE,
+)
+
+private val JSON_OBJECT = Regex("\\{.*\\}", RegexOption.DOT_MATCHES_ALL)
+
+internal val SAN = Regex("\\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)\\b")
+
+private val ILLEGAL_CLAIM = Regex(
+    "\\b(O-O(?:-O)?|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?)[+#]? (?:is|was) " +
+        "(?:not (?:a )?legal|illegal)",
+)
+private val CLAUSE_END = Regex("(?<=[.!?;])\\s+")
+
+/**
+ * A move the reply calls illegal that is legal for the side to move on the board it is about.
+ * The AI said "O-O is not legal here because your opponent's bishop is still on e2", "Qxf7+ is
+ * illegal here" and "Kf7 is illegal because f7 is controlled by the King on e8" of legal moves
+ * (its own sessions, checked against the boards, 2026-09-26). A claim inside a line ("after
+ * 22...Bxg5, 23.Bxg5 is illegal") is about a later position and is left alone, as is a move of
+ * the side not to move. `coach.false_illegal`.
+ */
+fun falseIllegal(text: String, board: Board): List<String> {
+    val out = ArrayList<String>()
+    for (sentence in text.split(CLAUSE_END)) {
+        for (found in ILLEGAL_CLAIM.findAll(sentence)) {
+            if ("after" in sentence.substring(0, found.range.first).lowercase()) continue
+            val san = found.groupValues[1]
+            if (board.parseSan(san) == null) continue
+            out.add("$san: called illegal, but it is a legal move here")
+        }
+    }
+    return out
+}
+
+/** A reply's clauses: a sentence, or the halves of one joined by " -- " or ", but / though". */
+private val CLAUSE = Regex("(?<=[.;:!?])\\s+|\\s+--\\s+|,\\s+(?:but|though|while)\\s+")
+
+/** A clause about the move just played without naming it: "That was ...", "It cost ...". */
+private val ABOUT_IT = Regex("^\\W*(?:that|it|this|your (?:last )?move)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * Such a clause calling the move something: "That was a blunder", "It is the best move", "it's
+ * not the strongest" -- not "It is best to ...", "It avoids the mistake of ...".
+ */
+private val CALLED_IT = Regex(
+    "^\\W*(?:that|it|this|your (?:last )?move)(?:'s|\\s+(?:was|is|were))\\s+(?:not\\s+)?" +
+        "(?:(?:just|really|clearly|simply|actually|definitely|probably|also|still|truly)\\s+)*" +
+        "(?:(?:a|an|the|your)\\s+)?(?:(?:big|small|real|clear|serious|slight|costly|tiny|minor|" +
+        "bad|huge)\\s+)?(?:blunder|mistake|inaccuracy|miss|best|strongest|top|engine's)\\b" +
+        "(?!\\s+to\\b)",
+    RegexOption.IGNORE_CASE,
+)
+
+/** `re.split`: the pieces between the matches, empty ones kept. */
+private fun splitClauses(text: String): List<String> = text.split(CLAUSE)
+
+/**
+ * Faults in what a reply says of the move just assessed: a "best" that was not, a slip word
+ * for a sound move, a cost that is not the recorded one -- clause by clause, where the clause is
+ * about that move (it names it, or opens with "that" or "it"). Every lesson names the better
+ * move too, and skipping any reply that did let "That was a blunder: a3 was better" through for a
+ * good move (the runtime audit, 2026-09-25).
+ */
+internal fun verdictProblems(text: String, request: CoachRequest): List<String> {
+    val a = request.assessment ?: return emptyList()
+    val played = request.playedSan
+    if (played.isNullOrEmpty()) return emptyList()
+    val core = played.trimEnd('+', '#')
+    val namesIt = Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])")
+    val label = a.label?.name?.lowercase() ?: a.severity.name.lowercase()
+    // A move that cost nothing is as good as the best: "the best move on the board" for a great
+    // move the engine chose itself is true.
+    val bestOk = label == "best" || label == "excellent" || a.expectedLoss < 0.005
+    val problems = ArrayList<String>()
+    for (clause in splitClauses(text)) {
+        val named = namesIt.containsMatchIn(clause)
+        if (!(named || ABOUT_IT.containsMatchIn(clause))) continue
+        // Unnamed, the clause speaks of the move only where it calls it so: "It avoids the mistake
+        // of ..." and "It is best to develop" were refused (the deep prompt review, 2026-10-01).
+        val saidOfIt = named || CALLED_IT.containsMatchIn(clause)
+        val others = SAN.findAll(clause).map { it.groupValues[1] }
+            .filter { it.trimEnd('+', '#') != core }
+            .toList()
+        if (others.isEmpty() && saidOfIt && !bestOk && SAYS_BEST.containsMatchIn(clause) &&
+            !Regex(
+                "\\bnot (?:the )?(?:best|strongest)\\b|\\bwas better\\b|\\bwas stronger\\b",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(clause)
+        ) {
+            problems.add("called $played the best move; its verdict is $label")
+        }
+        if (a.severity == Severity.NONE && saidOfIt && SAYS_SLIP.containsMatchIn(clause) &&
+            !Regex(
+                "\\bnot (?:a )?(?:blunder|mistake)\\b|\\bno (?:blunder|mistake)\\b",
+                RegexOption.IGNORE_CASE,
+            ).containsMatchIn(clause)
+        ) {
+            problems.add("called $played a slip; its verdict is $label")
+        }
+        for (found in SAYS_COST.findAll(clause)) {
+            var value = found.groupValues[1].toDouble()
+            if (found.groupValues[2].isNotEmpty() || value > 1.0) value /= 100.0
+            if (kotlin.math.abs(value - a.expectedLoss) > maxOf(0.02, 0.35 * a.expectedLoss)) {
+                problems.add(
+                    "gave the cost of $played as ${found.groupValues[1]}; it was " +
+                        formatted(a.expectedLoss, 2)
+                )
+            }
+        }
+    }
+    return problems.distinct()
+}
+
+/**
+ * The length the directive states, in sentences, and whether it asks for a closing question
+ * (true), forbids one (false) or says nothing (null).
+ */
+fun directiveLimits(directive: String): Pair<Int?, Boolean?> {
+    var limit: Int? = null
+    for (m in LIMIT_WORDS.findAll(directive)) {
+        val n = if (m.value.lowercase().endsWith("words at most")) {
+            1
+        } else {
+            m.groupValues.drop(1).filter { it.isNotEmpty() }
+                .maxOf { WORD_NUMBERS.getValue(it.lowercase()) }
+        }
+        limit = if (limit == null) n else maxOf(limit, n)
+    }
+    val low = directive.lowercase()
+    var question: Boolean? = null
+    if (Regex("\\bask one (?:orienting )?question\\b").containsMatchIn(low)) question = true
+    if (Regex("\\bthen, if you like, one question\\b").containsMatchIn(low)) {
+        // A question offered on top of the sentences: one more is allowed, none required.
+        limit = limit?.plus(1)
+    } else if (Regex("\\bthen one question\\b").containsMatchIn(low)) {
+        // A question asked for on top of the sentences: one more is allowed.
+        question = true
+        limit = limit?.plus(1)
+    } else if (Regex("\\bending with (?:one |a )?question\\b").containsMatchIn(low)) {
+        question = true
+    }
+    if (Regex("\\bno question\\b|\\bdo not answer with a question\\b").containsMatchIn(low)) {
+        question = false
+    }
+    return limit to question
+}
+
+/**
+ * The first [limit] complete sentences of [text]; the closing question kept in place of the
+ * last one when the directive asks for a question and the text ends with one.
+ */
+fun trimToLimit(text: String, limit: Int, wantsQuestion: Boolean?): String {
+    val ends = SENTENCE_END.findAll(text).map { it.range.last + 1 }.toList()
+    if (ends.size <= limit) return text
+    val starts = listOf(0) + ends.dropLast(1)
+    val sentences = starts.zip(ends).map { (a, b) -> text.substring(a, b).trim() }
+    val kept = if (wantsQuestion == true && sentences.last().endsWith("?") && limit >= 2) {
+        sentences.take(limit - 1) + sentences.last()
+    } else {
+        sentences.take(limit)
+    }
+    return kept.joinToString(" ")
+}
+
+internal fun sentenceTotal(text: String): Int = SENTENCE_END.findAll(text).count()
+
+/** Append the verbalized-sampling directive to the final user turn; none for one reply. */
+internal fun vsWrap(messages: List<ChatMessage>, candidates: Int = VS_CANDIDATES): List<ChatMessage> {
+    if (messages.isEmpty() || candidates <= 1) return messages
+    val wrapped = messages.toMutableList()
+    val last = wrapped.last()
+    wrapped[wrapped.size - 1] = ChatMessage(last.role, last.content + vsDirective(candidates))
+    return wrapped
+}
+
+/**
+ * The text up to the end of its last complete sentence; empty if it has none.
+ *
+ * A reply the token budget cut off ends mid-sentence -- "...is spot-on. Given" -- and in the
+ * first live game a one-word stump like "Given" was the candidate that passed every check
+ * and got spoken. A stump is not a reply, so it is trimmed away or, alone, dropped.
+ */
+fun completeSentences(text: String): String {
+    val ends = SENTENCE_END.findAll(text).toList()
+    return if (ends.isNotEmpty()) text.substring(0, ends.last().range.last + 1).trim() else ""
+}
+
+/**
+ * Markdown the model writes around words ("**Rc1**", "`e4`", "__now__") and at the start of a
+ * line ("# ", "- ", "* "): the reply is spoken and shown as it is, and "?**" at its end failed the
+ * closing-question check (the parity pilot, 2026-09-25).
+ */
+private val EMPHASIS = Regex("\\*\\*|__|`")
+private val LINE_MARK = Regex("^\\s*(?:#{1,6}\\s+|[-*]\\s+(?=\\S))", RegexOption.MULTILINE)
+
+/** [text] without markdown: the emphasis marks and the line marks go, the words stay. `coach.plain`. */
+fun plain(text: String): String = LINE_MARK.replace(EMPHASIS.replace(text, ""), "")
+
+private const val QUOTES = "\"“”"
+
+/** A quote closing a sentence: after its stop, before a space or the end. */
+private val CLOSING_QUOTE = Regex("[.!?…]([\"“”])(?=\\s|$)")
+
+/**
+ * A reply the model wrapped in quotation marks, without them: `"Solid block, but Qe2 was
+ * stronger."` was shown and said with its quotes (the tone check of 2026-10-02). Whole, only a
+ * reply that opens on a quote with no other quote in it but the one closing it after its last
+ * stop: a quoted name at the start of a longer reply ("Italian" setups ...) stays. [streaming]:
+ * a reply still being written, which grows by its end, so its opening quote goes whatever comes
+ * after it -- the sentences already given are counted from it -- and so does a closing one left
+ * unmatched after a stop, wherever the stream has got to. `coach.unquoted`.
+ */
+fun unquoted(text: String, streaming: Boolean = false): String {
+    val whole = text.trim()
+    if (whole.isEmpty() || whole[0] !in QUOTES) return whole
+    var inner = whole.substring(1)
+    if (streaming) {
+        if (inner.count { it in QUOTES } % 2 == 1) {
+            val closing = CLOSING_QUOTE.findAll(inner).lastOrNull()
+            if (closing != null) {
+                val at = closing.groups[1]!!.range.first
+                inner = inner.removeRange(at, at + 1)
+            }
+        }
+        return inner.trim()
+    }
+    if (inner.length >= 2 && inner.last() in QUOTES && inner[inner.length - 2] in ".!?…") {
+        inner = inner.dropLast(1)
+    }
+    return if (inner.any { it in QUOTES }) whole else inner.trim()
+}
+
+/**
+ * The verbalized replies as (probability, text). A reply with no markers is one candidate.
+ *
+ * The text of each candidate runs from its marker to the next, so a reply that wraps onto
+ * another line is kept whole. A model that ignores the format still yields one usable reply.
+ * Every candidate is cut back to its last complete sentence.
+ */
+internal fun parseCandidates(raw: String): List<Pair<Double, String>> {
+    var cleaned = plain(THINK_BLOCK.replace(raw, "")).trim()
+    val markers = VS_MARKER.findAll(cleaned).toList()
+    if (markers.isEmpty()) {
+        cleaned = unquoted(completeSentences(STRAY_MARKER.replace(cleaned, "").trim()))
+        return if (cleaned.isNotEmpty()) listOf(1.0 to cleaned) else emptyList()
+    }
+    val out = ArrayList<Pair<Double, String>>()
+    for ((index, marker) in markers.withIndex()) {
+        val start = marker.range.last + 1
+        val end = if (index + 1 < markers.size) markers[index + 1].range.first else cleaned.length
+        // A reply cut off by the token budget can end in a half-written next marker
+        // ("...move? [p=0.2" with no closing bracket); no fragment may reach the user.
+        val text = unquoted(
+            completeSentences(STRAY_MARKER.replace(cleaned.substring(start, end), "").trim())
+        )
+        if (text.isEmpty()) continue
+        val prob = marker.groupValues[1].toDoubleOrNull() ?: 0.0
+        out.add(prob to text)
+    }
+    return out
+}
+
+/**
+ * The first JSON object in a model's answer, or null: `json.loads` of the span, strict as
+ * Python's (the parity audit cc-05). `coach._json_object`.
+ */
+internal fun jsonObject(text: String): Any? {
+    val m = JSON_OBJECT.find(text) ?: return null
+    return pyJsonOr(m.value, null)
+}
+
+/** Sample one reply, weighted by its stated likelihood; ties and zeros still get a chance. */
+internal fun sampleReply(passed: List<Pair<Double, String>>): String {
+    val weights = passed.map { maxOf(it.first, 0.01) }
+    val total = weights.sum()
+    var mark = Random.nextDouble() * total
+    for ((index, weight) in weights.withIndex()) {
+        mark -= weight
+        if (mark <= 0.0) return passed[index].second
+    }
+    return passed.last().second
+}
+
+internal fun formatted(value: Double, places: Int): String =
+    BigDecimal(value).setScale(places, RoundingMode.HALF_EVEN).toPlainString()
+
+/** `f"{value:.0%}"`: the float scaled by a hundred, rounded half to even, with the sign. */
+internal fun percent(value: Double): String =
+    BigDecimal(value * 100.0).setScale(0, RoundingMode.HALF_EVEN).toPlainString() + "%"
+
+/**
+ * Reads the first verbalized candidate off the model's stream and hands it to a sink
+ * sentence by sentence. Each new complete sentence is checked ([Speaker.problemsOf]: what it
+ * gets wrong) before it goes; a fault stops the stream with what was said so far kept. The
+ * stream is stopped once the candidate is complete -- the second marker seen -- so the other
+ * candidates are never written. A reply with no marker at all is one candidate.
+ */
+class FirstCandidate(
+    private val sink: (String) -> Boolean,
+    private val check: (String) -> List<String>,
+    /**
+     * The task's length: the stream is closed there (an eight-sentence homily went out whole
+     * with the voice on: the runtime audit).
+     */
+    private val limit: Int? = null,
+) {
+    private var buffer = ""
+
+    /** What the sink has been given. */
+    var spoken = ""
+        private set
+    var problems: List<String> = emptyList()
+        private set
+
+    /** The candidate is complete, or the stream stopped: nothing more is read. */
+    var done = false
+        private set
+
+    /** The sink refused the first sentence: the voice is not wanted. */
+    var declined = false
+        private set
+
+    /** The first candidate's text so far, and whether it is complete. */
+    private fun candidate(): Pair<String, Boolean> {
+        val cleaned = plain(THINK_BLOCK.replace(buffer, ""))
+        val markers = VS_MARKER.findAll(cleaned).toList()
+        if (markers.isEmpty()) {
+            // No marker yet: the model may be writing one, or writing a bare reply.
+            if (cleaned.trimStart().startsWith("[") || cleaned.length < 12) return "" to false
+            return cleaned to false
+        }
+        val start = markers[0].range.last + 1
+        if (markers.size > 1) return cleaned.substring(start, markers[1].range.first) to true
+        return cleaned.substring(start) to false
+    }
+
+    /**
+     * Hand the sink the complete sentences of [text] not yet given. False to stop.
+     *
+     * A sentence has ended only once the space after its full stop has arrived: at the
+     * buffer's end "costing 0." is the start of "costing 0.02", and a cost read as 0 failed
+     * the check and stopped the stream. A chunk without letters ("6.", a move number the
+     * model put first) waits for the sentence it introduces.
+     */
+    private fun offer(text: String, final: Boolean = false): Boolean {
+        val cleaned = unquoted(STRAY_MARKER.replace(text, ""), streaming = true)
+        var ends = SENTENCE_END.findAll(cleaned)
+            .filter { final || it.range.last + 1 < cleaned.length }.toList()
+        if (limit != null) {
+            // Cut at the task's length before anything is said, however large the chunk.
+            ends = ends.take(limit + LENGTH_SLACK)
+        }
+        val complete = if (ends.isNotEmpty()) {
+            cleaned.substring(0, ends.last().range.last + 1).trim()
+        } else {
+            ""
+        }
+        if (complete.length <= spoken.length) return true
+        val fresh = complete.substring(spoken.length).trim()
+        if (fresh.count { it.isLetter() } < 2) {
+            return true // a number and a stop: the sentence it begins is still coming
+        }
+        val faults = if (fresh.isNotEmpty()) check(fresh) else emptyList()
+        if (faults.isNotEmpty()) {
+            problems = faults
+            return false
+        }
+        if (!sink(fresh)) {
+            declined = true
+            return false
+        }
+        spoken = complete
+        // As long as the task allows: the rest is not said.
+        return limit == null || sentenceTotal(spoken) < limit + LENGTH_SLACK
+    }
+
+    fun feed(delta: String): Boolean {
+        if (done) return false
+        buffer += delta
+        val (text, complete) = candidate()
+        // A complete candidate (its successor's marker seen) ends on its last stop, with
+        // nothing after: that stop counts.
+        if (!offer(text, final = complete)) {
+            done = true
+            return false
+        }
+        if (complete) {
+            done = true
+            return false
+        }
+        return true
+    }
+
+    /** The stream ended: whatever complete sentences remain go out. */
+    fun finish() {
+        if (done) return
+        done = true
+        val (text, _) = candidate()
+        if (text.isNotEmpty()) offer(text, final = true)
+    }
+
+    /**
+     * The model called the engine, and writes its reply again from the start: the next round's
+     * text is read from its own start. Sliced with the last round's spoken length, the voice
+     * said "ith the queen is mate" (the deep prompt review, 2026-10-01). A round that already
+     * spoke ends the reading: what was said stands. `_FirstCandidate.new_round`.
+     */
+    fun newRound() {
+        buffer = ""
+        if (spoken.isNotEmpty()) done = true
+    }
+}
+
+/**
+ * A tool round's text held back from the voice: a model calling the engine writes a preamble
+ * first ("Let me check that with the engine."), in the same turn as its calls, and it was
+ * spoken. The text goes on once a candidate's marker is seen -- a preamble has none -- or whole
+ * at the round's end when the round calls nothing; a round that calls the engine is dropped,
+ * and the reader starts over ([FirstCandidate.newRound]). `_RoundGate`.
+ */
+class RoundGate(private val onDelta: (String) -> Boolean) {
+    private var held = ""
+    private var open = false
+
+    fun feed(delta: String): Boolean {
+        if (open) return onDelta(delta)
+        held += delta
+        if (VS_MARKER.containsMatchIn(THINK_BLOCK.replace(held, ""))) {
+            open = true
+            return onDelta(held)
+        }
+        return true
+    }
+
+    /** The round is over; [called]: it called the engine. */
+    fun end(called: Boolean) {
+        if (!called && !open && held.isNotEmpty()) onDelta(held)
+    }
+}
+
+/**
+ * One call to the model: the turn it was given (the last user message: memory, fact sheet,
+ * instruction), what it wrote, what the server said about the call (finish reason, tokens,
+ * seconds), and how the candidates fared. The debug log's answer to "why did the coach say
+ * that?".
+ */
+class ModelCall(
+    val raw: String,
+    val stats: Map<String, Any?>,
+    val candidates: Int,
+    val passed: Int,
+    val prompt: String = "",
+)
+
+/** One coach message, with what it was checked against, for the log. */
+class Spoken(
+    val message: CoachMessage,
+    val level: DisclosureLevel,
+    val problems: List<String>,
+    val attempts: Int,
+    val calls: List<ModelCall> = emptyList(),
+    /**
+     * Already a turn of the conversation (a quick answer recorded before the model was
+     * asked to build on it), so polling it must not record it again.
+     */
+    val recorded: Boolean = false,
+    /**
+     * The reply went out through the request's sink as it was written: the voice has had
+     * it, sentence by sentence, and nothing is to be spoken again.
+     */
+    val streamed: Boolean = false,
+    /**
+     * What the verifier found, when one runs: per candidate the statements the messages do
+     * not support, and whether the reply spoken was a repair of the best candidate.
+     */
+    val verified: List<List<String>> = emptyList(),
+    val repaired: Boolean = false,
+    /**
+     * What the model's reply gave away of the answer the level withholds ([Speaker.leaks]), and
+     * what it did against the form asked of it ([Speaker.notes]): logged for debugging, never a
+     * reason the reply was refused.
+     */
+    val leaks: List<String> = emptyList(),
+    val notes: List<String> = emptyList(),
+    /**
+     * The moment of the game it was asked for ([Coach.epoch]): one that lands after a new game,
+     * a takeback or a re-read is shown all the same, in its place (Tai, 2026-10-02: no reply is
+     * dropped), but is no turn of the moment now (it is not recorded in the conversation), and
+     * the voice does not say it.
+     */
+    val epoch: Int = 0,
+    /**
+     * How many moves of the player's own the game had when it was asked for
+     * ([CoachSession.ownMoves]): a reply that lands after they moved again is not spoken either.
+     */
+    val ownMoves: Int = 0,
+    /**
+     * The rung of the ladder the reply actually said, from its words ([saidLevel]), for an AI
+     * coach's answer to a question; null for any other message.
+     */
+    val rung: DisclosureLevel? = null,
+    /**
+     * A hint said unasked that a question came behind while it waited ([Speaker.submit]): shown
+     * first, in its place, and not spoken -- the voice goes to the answer (Tai, 2026-10-02).
+     * `Spoken.unvoiced`.
+     */
+    val unvoiced: Boolean = false,
+) {
+    /**
+     * Set by [CoachSession.poll]: the moment it was asked for is over (the epoch or the player's
+     * moves have moved on), so it is shown, not spoken, and no turn of the conversation now.
+     * `Spoken.late`.
+     */
+    var late: Boolean = false
+
+    /** This reply as the log keeps it once it is old: its words and checks, not the prompts. */
+    fun withoutPrompts(): Spoken {
+        if (calls.all { it.prompt.isEmpty() }) return this
+        val lighter = Spoken(
+            message, level, problems, attempts,
+            calls.map { ModelCall(it.raw, it.stats, it.candidates, it.passed, "") },
+            recorded, streamed, verified, repaired, leaks, notes, epoch, ownMoves, rung,
+            unvoiced,
+        )
+        lighter.late = late
+        return lighter
+    }
+}
+
+class CoachPosition(
+    val ply: Int,
+    val board: Board,
+    var analysis: Analysis? = null,
+    var facts: PositionFacts? = null,
+    val disclosure: Disclosure = Disclosure(),
+    val lastMove: String? = null,
+) {
+    /**
+     * The first hint's wordings, peeked from the coach's bags as the facts were written and taken
+     * from them when the hint is said ([Bags]).
+     */
+    var leads: Map<String, String> = emptyMap()
+}
+
+/**
+ * The board after [event], carrying the moves that led to it: the idea reader reads an exchange
+ * in progress from them ([IdeaReader.exchangeOwed]), and a board rebuilt from the FEN alone read
+ * 20...Nxh5 Qxh5 as "you can win a knight" (Tai's puzzles, 2026-09-26). The move goes onto
+ * [board] when that is where it was played from, else onto the position it was played from; a
+ * board whose FEN is not the event's own (the analysis is matched on it) is the event's FEN,
+ * without moves. `coach.board_after`.
+ */
+fun boardAfter(board: Board, event: MovePlayed): Board {
+    for (start in listOf(board, Board(event.fenBefore))) {
+        if (start.fen() != event.fenBefore) continue
+        val move = Move.fromUciOrNull(event.uci) ?: break
+        if (!start.isLegal(move)) break
+        val after = start.copy()
+        after.push(move)
+        if (after.fen() == event.fenAfter) return after
+        break
+    }
+    return Board(event.fenAfter)
+}
+
+/** The board taken back to [fen], keeping the moves before it when they reach it. `coach.board_back`. */
+fun boardBack(board: Board, fen: String): Board {
+    val back = board.copy()
+    while (back.moveStack.isNotEmpty() && back.fen() != fen) back.pop()
+    return if (back.fen() == fen) back else Board(fen)
+}
+
+/**
+ * The game's pace: the user's last few think times. Under [FAST_PACE_S] a move, the game is
+ * fast -- a model reply (two to five seconds) would land after the next move, and a spoken
+ * sentence (three to five) would be talked over the next two. So a fast game gets the
+ * coach's templates, written from the board at once, and gets them as text; the voice
+ * resumes when the player slows down and for what they ask (Tai, 2026-09-22: "the coach has
+ * to be able to keep up with the game"). The pace is the game's own: carried over, the quick
+ * last moves of one puzzle -- a line found and played out -- made the next one fast, and a
+ * find after two minutes' thought was only shown (Tai's puzzles, 2026-09-27: "sometimes it's
+ * just completely muted").
+ */
+const val FAST_PACE_S = 6.0
+const val PACE_MOVES = 4
+
+/**
+ * The hints said unasked: a question asked while one waits unstarted goes after it, not ahead.
+ * The hint was said first -- the ladder and the policy count it already -- and the answer, at
+ * the next rung, is the higher one: ahead of it, the hint came after it, a lower rung after a
+ * higher (Tai, 2026-09-29: "if the level higher was said then the lower one can't be said").
+ */
+internal val UNASKED_HINTS = setOf(Trigger.STUCK, Trigger.DECISIVE_QUESTION)
+
+/**
+ * Said for a question whose reply failed and whose template is empty: a failed reply to the
+ * player never ends in silence (Tai, 2026-10-02). `NOT_ANSWERED`.
+ */
+const val NOT_ANSWERED = "I could not put an answer together just now; ask me again in a moment."
+
+/**
+ * What is said when the model's reply failed: the template, or for a question with none, a short
+ * honest line. `coach._said_for`.
+ */
+internal fun saidFor(request: CoachRequest): String =
+    if (request.fallback.isEmpty() && request.trigger == Trigger.USER_ASK) NOT_ANSWERED else request.fallback
+
+/** How many plies back the coach keeps a position and its facts. */
+const val POSITIONS_KEPT = 40
+
+/**
+ * The moment a reply was asked for: the epoch (a new game, a takeback or a re-read start
+ * another), the game it was about, and how many moves of their own the player had played.
+ * `Moment`.
+ */
+data class Moment(val epoch: Int, val gameId: String?, val ownMoves: Int)
+
+/**
+ * The replies the log keeps the prompts of ([CoachSession.lighten]), and the claim readings the
+ * speaker keeps. `SPOKEN_PROMPTS_KEPT`, `CLAIMS_KEPT`.
+ */
+const val SPOKEN_PROMPTS_KEPT = 20
+const val CLAIMS_KEPT = 200
+
+/**
+ * How long the lesson on a mistake waits for the analysis of the position the move left: the
+ * verdict comes first, from the best line alone, and the analysis about a second after it --
+ * without it the lesson had no "what your move allowed" (the parity audit, 2026-09-25).
+ */
+const val LESSON_WAIT_S = 1.5
+
+class CoachRequest(
+    val trigger: Trigger,
+    val level: DisclosureLevel,
+    val system: String,
+    var messages: List<ChatMessage>,
+    val facts: PositionFacts,
+    val board: Board,
+    val fallback: String,
+    val ply: Int,
+    val gameId: String,
+    /**
+     * What the user said this turn, if anything. A square, piece or move the user named is
+     * not a leak for the coach to repeat back: confirming it reveals nothing they did not
+     * say.
+     */
+    val userText: String? = null,
+    /**
+     * What the directive itself disclosed this turn -- the engine's word on the move or
+     * line the player asked about -- which the coach may therefore repeat.
+     */
+    val disclosed: String = "",
+    /** Board marks built from the same filtered facts the model sees. */
+    val annotations: List<Annotation> = emptyList(),
+    /** How many replies to ask the model for; fewer for an answer the player is waiting on. */
+    val candidates: Int = VS_CANDIDATES,
+    /**
+     * The moves of the record (SAN): those played so far, and those the verdicts named as
+     * better. A reply about the game as it went may name either; the board checker must not
+     * fault "Rg6" from move 30 as unplayable now, nor the leak check count it.
+     */
+    val played: Set<String> = emptySet(),
+    /**
+     * The move just assessed and its assessment, when the turn is about it: what the reply
+     * says of its verdict and cost is checked against them.
+     */
+    val playedSan: String? = null,
+    val assessment: MoveAssessment? = null,
+    /**
+     * Where to send the reply sentence by sentence as the model writes it (the panel's
+     * voice), or null for a reply that goes out whole once checked. The sink returns false
+     * to stop the stream: the board has moved on, or the voice is not wanted.
+     */
+    var streamTo: ((String) -> Boolean)? = null,
+    /**
+     * A mundane reply -- a word on a fine move -- which the Speaker's routine model writes
+     * (the same model at less reasoning, by default none: the first sound comes in under a
+     * second instead of three).
+     */
+    val routine: Boolean = false,
+    /**
+     * A fast game: the fallback -- the template written from the board -- is the reply, and
+     * the model is not called (it could not keep up).
+     */
+    val templateOnly: Boolean = false,
+    /**
+     * What a reply must name, one of: the better move the lesson's template names, or a square
+     * the hint's template names. The template is the floor; a true reply that says less than it
+     * was a loss the checks let through (parity pass, 2026-09-25).
+     */
+    val mustName: List<String> = emptyList(),
+    /**
+     * More boards a statement may be true on: after the move the player just made, and along the
+     * engine's line from there -- the board the model is shown for a lesson after a move.
+     */
+    val frames: List<Board> = emptyList(),
+    /**
+     * When the reply is about a position already moved from and the player is to move again: the
+     * answer there (its best move and line), which the reply must not give away -- a late
+     * verdict's lesson said "and now Qxf7# is mate" (the runtime audit, 2026-09-25).
+     */
+    val nowAnswer: List<String> = emptyList(),
+    /** The game's moves as the record numbers them ("17. Rh1"): said so, they are history. */
+    val record: Set<String> = emptySet(),
+    /**
+     * For a directive a link belongs in ([TIE_TO_THE_GAME]): the earlier moves of the game the
+     * reply may not name -- all but those the list of earlier moments and the sheets give. Null
+     * when the directive has no place for a link.
+     */
+    val unlisted: Set<String>? = null,
+    /**
+     * The engine at the model's call while it answers (a question of the player's), when the
+     * coach has an engine and the model takes tools.
+     */
+    val tools: EngineTools? = null,
+    /** The moment of the game the request was built in ([CoachSession.epoch], [CoachSession.ownMoves]). */
+    val epoch: Int = 0,
+    val ownMoves: Int = 0,
+    /**
+     * An AI coach's answer to a question: the model decides what the words ask, so the rung the
+     * reply carries, and the marks on the board, follow what it said ([saidLevel]).
+     */
+    val rungByReply: Boolean = false,
+) {
+    /**
+     * Set by [Speaker.submit] on a hint said unasked when a question is queued behind it: its text
+     * comes first, as it was said first, and the voice does not say it ([Spoken.unvoiced]).
+     * `_Request.unvoiced`.
+     */
+    @Volatile
+    var unvoiced: Boolean = false
+}
+
+/**
+ * The boards along the engine's line, so what the line does reads as real.
+ *
+ * A fork or pin the recommended move creates is not on the board in front of the player; the
+ * draft checker is handed the frames after each move of the line so it does not fault the
+ * coach for naming a piece on the square a move will put it on, or -- when asked for the
+ * line and reciting it -- for a move that is only playable further along it.
+ */
+internal fun afterBest(request: CoachRequest): List<Board> {
+    val line = request.facts.line.ifEmpty { request.facts.candidates.take(1) }
+    val frames = ArrayList<Board>()
+    var board = request.board.copy(withStack = false)
+    for (san in line) {
+        val move = board.parseSan(san) ?: break
+        board = board.copy(withStack = false)
+        board.push(move)
+        frames.add(board)
+    }
+    // And along what the directive disclosed: the line the player asked about, examined; and
+    // the boards the model's own calls to the engine went through.
+    if (request.disclosed.isNotEmpty()) {
+        frames.addAll(disclosedFrames(request.board, request.disclosed.split("\n")))
+    }
+    return frames + request.frames + (request.tools?.frames ?: emptyList())
+}
+
+private val SQUARE_ITEM = Regex("[a-h][1-8]")
+
+/** Whether [text] names [item]: a square, or a move in SAN (with or without its mark). `coach._names`. */
+internal fun names(text: String, item: String): Boolean {
+    if (SQUARE_ITEM.matches(item)) return item in squaresIn(text)
+    val core = item.trimEnd('+', '#')
+    if (core.startsWith("O-O")) {
+        // Castling: "O-O" is not named by "O-O-O" (the recheck of round 3's replies).
+        val pattern = "(?<![-A-Za-z0-9])" + Regex.escape(core) + "(?!-O)[+#]?(?![A-Za-z0-9])"
+        return Regex(pattern).containsMatchIn(text)
+    }
+    return Regex("(?<![A-Za-z])" + Regex.escape(core) + "[+#]?(?![A-Za-z0-9])").containsMatchIn(text)
+}
+
+private val ENGINE_NAMED = Regex("\\b(?:stockfish|the engine|engine's|an engine)\\b", RegexOption.IGNORE_CASE)
+private val ENGINE_ASKED = Regex("stockfish|engine", RegexOption.IGNORE_CASE)
+
+private val ORDINAL = Regex("\\b\\d+(?:st|nd|rd|th)\\b|\\b[A-E]\\d\\d\\b")
+private val DIGIT = Regex("\\d")
+
+/**
+ * Whether [text] quotes a figure: any digit outside a move, a square or an ordinal ("the 7th
+ * rank") -- "ahead by about 1.2 pawns" went through a check for percentages alone.
+ * `coach.figure_said`.
+ */
+fun figureSaid(text: String): Boolean {
+    var rest = SAN.replace(text, " ")
+    rest = ORDINAL.replace(rest, " ")
+    return DIGIT.containsMatchIn(rest)
+}
+
+private val PLAIN_PIECE = mapOf(
+    com.sidecoach.chess.PAWN to "pawn",
+    com.sidecoach.chess.KNIGHT to "knight",
+    com.sidecoach.chess.BISHOP to "bishop",
+    com.sidecoach.chess.ROOK to "rook",
+    com.sidecoach.chess.QUEEN to "queen",
+)
+private val SAYS_CHECK = Regex("\\b(?:with|gives?|gave|giving) (?:a )?check\\b", RegexOption.IGNORE_CASE)
+private val YOU_GAVE = Regex("^\\W*you (?:just )?(?:gave|give|played|put)\\b", RegexOption.IGNORE_CASE)
+
+/**
+ * What a word after the player's move says that they see on the board (Tai, 2026-09-23):
+ * opening with the move just played, what it plainly did -- the capture, the check, the
+ * castling, the promotion -- unless the better move does the same. The templates never do; the
+ * model could, and nothing checked it (the eval audit, 2026-09-25). A figure in it is
+ * [NO_FIGURES]' note ([Speaker.notes]). `coach.restated`.
+ */
+internal fun restated(text: String, request: CoachRequest): List<String> {
+    val playedSan = request.playedSan
+    if ((request.trigger != Trigger.POST_MOVE && request.trigger != Trigger.POST_MISTAKE) ||
+        playedSan.isNullOrEmpty()
+    ) {
+        return emptyList()
+    }
+    val played = playedSan.trimEnd('+', '#')
+    val faults = ArrayList<String>()
+    if (Regex("^\\W*" + Regex.escape(played) + "(?![A-Za-z0-9])").containsMatchIn(text)) {
+        faults.add("opens with $played, the move just played")
+    }
+    val board = request.board
+    val move = board.parseSan(playedSan) ?: return faults
+    val assessment = request.assessment
+    val better = if (assessment != null && assessment.best.isNotEmpty()) {
+        Move.fromUciOrNull(assessment.best[0])
+    } else {
+        null
+    }
+    val low = text.lowercase()
+    val victim = board.pieceAt(move.to)
+    if (victim != null && victim.pieceType in PLAIN_PIECE) {
+        val square = squareName(move.to)
+        val name = PLAIN_PIECE.getValue(victim.pieceType)
+        val verb = "\\b(?:takes|taking|took|take|captures?|capturing|grabs?|grabbing|wins?|winning|won)"
+        val took = "$verb\\s+(?:the|their|a|that)\\s+(?:$name\\s+on\\s+$square|$square\\s+$name)\\b" +
+            "|\\b(?:takes|taking|took|take)\\s+on\\s+$square\\b"
+        if (Regex(took).containsMatchIn(low) && !(better != null && better.to == move.to)) {
+            faults.add("says what $played plainly did: the capture on $square")
+        }
+    }
+    // What the better move does as well is the lesson, not a restatement.
+    val legal = better != null && board.isLegal(better)
+    val betterCastles = legal && board.isCastling(better!!)
+    val betterChecks = legal && board.givesCheck(better!!)
+    val betterPromotes = better != null && better.promotion != 0
+    if (board.isCastling(move) && "castl" in low && !betterCastles) {
+        faults.add("says what $played plainly did: castling")
+    }
+    // The check said of the move just played: in a clause about it -- one that names it or opens
+    // with "that", "it", "your move", "you gave" -- and names no other move. "After Bg4 your
+    // knight jumps in with check" is the better line's check, and was faulted as the played
+    // move's (the benchmark's smoke run, 2026-09-25).
+    val namesPlayed = Regex("(?<![A-Za-z])" + Regex.escape(played) + "[+#]?(?![A-Za-z0-9])")
+    val saysCheck = splitClauses(text).any { clause ->
+        SAYS_CHECK.containsMatchIn(clause) &&
+            (
+                namesPlayed.containsMatchIn(clause) || ABOUT_IT.containsMatchIn(clause) ||
+                    YOU_GAVE.containsMatchIn(clause)
+                ) &&
+            SAN.findAll(clause).none { it.groupValues[1].trimEnd('+', '#') != played }
+    }
+    if (board.givesCheck(move) && saysCheck && !betterChecks) {
+        faults.add("says what $played plainly did: the check")
+    }
+    if (move.promotion != 0 && "promot" in low && !betterPromotes) {
+        faults.add("says what $played plainly did: the promotion")
+    }
+    return faults
+}
+
+/**
+ * The game's history in a request, up to the next section: the moves that stand only there are
+ * the earlier moments ([unlistedLinks]).
+ */
+internal val GAME_SO_FAR = Regex("# Game so far\\n.*?(?=\\n# )", RegexOption.DOT_MATCHES_ALL)
+
+/** A move with its number in front: "after 9...a6", "12. Qc2". */
+private val MOVE_NUMBER = Regex("\\b\\d+\\s*\\.(?:\\s*\\.\\.)?\\s*(?:O-O|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8])")
+
+/**
+ * What a lesson says of an earlier moment the coach did not list: a move of the game before the
+ * position taught that neither the list of earlier moments nor the sheets give, and any move with
+ * its number -- "the same safety lesson as after 9...a6, when Bc4 saved your bishop" named a
+ * moment that never happened (quality round 3, 2026-09-25). `coach.unlisted_links`.
+ */
+fun unlistedLinks(text: String, unlisted: Set<String>): List<String> {
+    val faults = unlisted.sorted().filter { names(text, it) }
+        .map { "names $it, an earlier moment not listed: tie only to the moments listed" }
+        .toMutableList()
+    if (MOVE_NUMBER.containsMatchIn(text)) faults.add("a move with its number: name moves bare")
+    return faults
+}
+
+/**
+ * The fault when [text] names none of [mustName]; null when it names one, or there is nothing
+ * it must name. `coach.omitted`.
+ */
+fun omitted(text: String, mustName: List<String>): String? {
+    if (mustName.isEmpty() || mustName.any { names(text, it) }) return null
+    if (mustName.size == 1) return "left out ${mustName[0]}: the reply must name it"
+    return "left out the key fact: the reply must name one of ${mustName.joinToString(", ")}"
+}
+
+const val VERIFY_SYSTEM =
+    "You check a chess coach's reply against the messages the coach was given: the game so " +
+        "far, the engine's verdicts (the label, the cost, the move the engine preferred, what " +
+        "the moves do), the lines, the facts (the nature of the position, the theme, the plan, " +
+        "the threats, the ideas), the tally, and the directive. A statement is supported when a " +
+        "message states it, or restates it in other words, or it follows directly from the move " +
+        "itself (a capture takes the piece on that square, a check makes the king answer, a move " +
+        "lands where it lands), or it is a plain inference the messages make obvious, or " +
+        "ordinary chess usage of a stated fact (a rook on an open file 'active', a king on e1 " +
+        "'in the centre'). Approximate or hedged wording of a supported fact is supported. " +
+        "Unsupported is only what is specific and absent: what a piece attacks, defends, pins " +
+        "or threatens when no message says so; a plan, weakness, structure or evaluation no " +
+        "message gives; a reason for a move no message gives; a move, win or loss that did not " +
+        "happen; a habit the record does not show. A question is not a statement. Quote each " +
+        "unsupported statement in the reply's own words; when in doubt, it is supported. " +
+        "Answer in JSON only: {\"unsupported\": [str]}"
+
+const val REPAIR_SYSTEM =
+    "You edit a chess coach's reply. Remove or reword only the statements listed as " +
+        "unsupported, so that what remains is supported by the messages the coach was given. " +
+        "Change nothing else: every other sentence stays exactly as it is -- in particular keep " +
+        "every fact about the move that the messages give (its label, what it cost, the move " +
+        "the engine preferred, the idea) -- the form stays (a closing question stays a closing " +
+        "question), the voice stays; add nothing. Answer in JSON only: {\"reply\": str}"
+
+/**
+ * The board check over a draft: the text, the board, the boards along the best line, and the
+ * player's colour (whose "your"); the problems, one line each. `claims.checkDraft` over them.
+ */
+fun interface DraftCheck {
+    fun check(text: String, board: Board, after: List<Board>, us: Boolean?): List<String>
+}
+
+/** The side the coach speaks to, from the facts: whose "your" a draft means. `coach._player`. */
+internal fun player(facts: PositionFacts): Boolean? {
+    val side = facts.userSide ?: return null
+    return Pieces.Side.valueOf(side.uppercase()).color
+}
+
+/**
+ * The wait before a rate-limited call is asked again when the server named none (no
+ * Retry-After): the server's own word wins whenever it gives one. `coach.py` RATE_BACKOFF_S.
+ */
+@Volatile
+var RATE_BACKOFF_S = 2.0
+
+/**
+ * How long to wait before asking again after a failed call, or null to give up: only a rate
+ * limit (429) is worth another call; a timeout spent the time, a refused key or a bad request
+ * will fail the same way, and each would be paid or wasted twice. A rate limit waits as long
+ * as the server's Retry-After says, and is asked again as often as the provider's timeout,
+ * counted from the first call, leaves room for (Tai, 2026-10-02); a provider with no timeout
+ * is not asked again. `coach.py` `_retry_wait`.
+ */
+internal fun retryWait(exc: Exception, provider: LLMProvider, elapsedS: Double): Double? {
+    if (!(exc.message ?: "").startsWith("429")) return null
+    val wait = (exc as? com.sidecoach.llm.ProviderError)?.retryAfterS ?: RATE_BACKOFF_S
+    val budget = (provider as? com.sidecoach.llm.OpenAICompatProvider)?.timeoutS ?: return null
+    if (elapsedS + wait >= budget) return null
+    return wait
+}
+
+/**
+ * Runs the model on a worker thread and checks what it says.
+ *
+ * A draft with a false claim about the board or against the record is sent back once with the
+ * problem named; a second failure is replaced by the template, and the failure counted. What a
+ * reply gives away of the answer, and what it does against the form asked of it, are logged,
+ * not refused. With a
+ * [verifier], every candidate that passes those checks is also read against the messages by
+ * a second model, the clean ones are sampled from, and when none is clean the likeliest is
+ * repaired once: test-time verification, on top of the demonstrations in C.
+ *
+ * The desktop's claim reader (`Speaker.claim_reader`, `draft_claims.py`: a second model call
+ * that reads each draft's claims for the board to check) is not ported: it is off on the
+ * desktop too, nothing there passes one, as it doubled the cost of every reply.
+ */
+class Speaker(
+    var provider: LLMProvider,
+    val draftCheck: DraftCheck? = null,
+    var verifier: LLMProvider? = null,
+    routineProvider: LLMProvider? = null,
+    /** Which of the passing candidates is spoken; injected so a test can fix the draw. */
+    val sample: (List<Pair<Double, String>>) -> String = ::sampleReply,
+) {
+    /**
+     * The model for a mundane reply (a word on a fine move), where nothing is at stake and
+     * the first sound matters: the same model at less reasoning (Tai: low at most; none is
+     * what makes it fast, low reasons as long as medium). Everything else -- a mistake, a
+     * decisive moment, a nudge, a question of the player's -- keeps [provider] at its effort.
+     */
+    var routineProvider: LLMProvider = routineProvider ?: provider
+
+    var failures = 0
+        internal set
+    var fallbacks = 0
+        internal set
+
+    var lastError: String? = null
+
+    private val requests = LinkedBlockingQueue<Any>()
+    private val results = ConcurrentLinkedQueue<Spoken>()
+    private var thread: Thread? = null
+
+    @Volatile
+    private var busy = false
+
+    private object Stop
+
+    /**
+     * The providers replaced mid-session: their calls still count (`Speaker._retired`).
+     */
+    private val retired = ArrayList<LLMProvider>()
+
+    /** Every provider this Speaker has used, each once. */
+    private fun providers(): List<LLMProvider> =
+        (listOfNotNull(provider, routineProvider, verifier) + synchronized(retired) { retired.toList() })
+            .distinctBy { System.identityHashCode(it) }
+
+    /**
+     * A new model mid-game: the next call goes to it; the old ones are kept, for what they
+     * were paid. `Speaker.replace_providers`.
+     */
+    fun replaceProviders(provider: LLMProvider, routineProvider: LLMProvider? = null, verifier: LLMProvider? = null) {
+        synchronized(retired) { retired.addAll(providers()) }
+        this.provider = provider
+        this.routineProvider = routineProvider ?: provider
+        this.verifier = verifier
+    }
+
+    /**
+     * The model-call ledgers of every provider used, each once: the spend before a model
+     * change, and a verifier's on another endpoint, included. `Speaker.usages`.
+     */
+    fun usages(): List<com.sidecoach.llm.Usage> =
+        providers().mapNotNull { com.sidecoach.llm.usageOf(it) }.distinctBy { System.identityHashCode(it) }
+
+    /** Counted down when the Speaker closes: a rate limit's wait ends with it. */
+    private val closed = java.util.concurrent.CountDownLatch(1)
+
+    /** Time, for the wait before a rate-limited call is asked again: a test drives both. */
+    var clockNs: () -> Long = System::nanoTime
+
+    /** Waits [seconds]; true when the Speaker was closed meanwhile. */
+    var pause: (Double) -> Boolean = { seconds ->
+        closed.await((seconds * 1000).toLong(), TimeUnit.MILLISECONDS)
+    }
+
+    /** Returns once the Speaker is closing (for a test to know `close` has begun). */
+    internal fun awaitClosing() = closed.await()
+
+    val pending: Int get() = requests.size + (if (busy) 1 else 0)
+
+    fun start() {
+        if (thread == null) {
+            thread = Thread({ run() }, "sidecoach-coach").apply {
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
+    /**
+     * Stop: what is queued is dropped unasked (the session is gone; nobody would hear it, and
+     * each would be paid), and a call in flight is not asked again.
+     */
+    fun close(timeoutMs: Long = 10000) {
+        closed.countDown()
+        requests.clear()
+        val running = thread
+        thread = null
+        if (running != null) {
+            requests.put(Stop)
+            running.join(timeoutMs)
+        }
+    }
+
+    /**
+     * Something the coach does for the model's sake failed (a summary, the engine on a move they
+     * named, the work of a question): counted and kept for the log, as a failed call is -- a bare
+     * `lastError` was never read until the next failure. `Speaker.note_failure`.
+     */
+    fun noteFailure(what: String, exc: Exception) {
+        failures += 1
+        lastError = "$what: ${exc::class.java.simpleName}: ${exc.message}"
+    }
+
+    /**
+     * Queue a request. An ask goes ahead of a word on a move, a lesson and the review still
+     * waiting: the player is waiting for this one, and they wait for the answer and go after it.
+     * Nothing is dropped (Tai, 2026-10-02: "no need to drop any replies, the text message should
+     * come out in the same correct order"): a remark dropped here was never seen, and a lesson
+     * dropped took the rule it was charged against with it. A hint said unasked keeps its place ahead of the ask
+     * ([UNASKED_HINTS]), and is not spoken: the voice goes to the answer (Tai, 2026-10-02: "the
+     * stuck hint does not need to be voiced but the order should still be preserved").
+     */
+    fun submit(request: CoachRequest) {
+        if (request.trigger != Trigger.USER_ASK) {
+            requests.put(request)
+            return
+        }
+        val waiting = ArrayList<Any>()
+        while (true) waiting.add(requests.poll() ?: break)
+        val ahead = ArrayList<Any>() // said already, the asks before this one, the hints
+        val behind = ArrayList<Any>()
+        for (item in waiting) {
+            if (item is CoachRequest && item.trigger in UNASKED_HINTS) item.unvoiced = true
+            if (item !is CoachRequest || item.trigger == Trigger.USER_ASK ||
+                item.trigger in UNASKED_HINTS
+            ) {
+                ahead.add(item)
+            } else {
+                behind.add(item)
+            }
+        }
+        for (item in ahead + request + behind) requests.put(item)
+    }
+
+    /**
+     * A message that is already final; it goes out through the same queue, in order -- or,
+     * with [now], straight to the results, ahead of whatever the model is writing: the quick
+     * answer to a button press must not wait behind a post-move remark.
+     */
+    fun submitReady(spoken: Spoken, now: Boolean = false) {
+        if (now) results.add(spoken) else requests.put(spoken)
+    }
+
+    /** Answer every queued request on the calling thread: for tests and for replay. */
+    fun runPending() {
+        while (true) {
+            val request = requests.poll() ?: return
+            when (request) {
+                is Spoken -> results.add(request)
+                is CoachRequest -> results.add(answer(request))
+                else -> return
+            }
+        }
+    }
+
+    /**
+     * [speakNow], and when it breaks -- not the model's call, which [speakNow] handles, but
+     * anything else in building the reply -- the failure counted and the request's template said
+     * instead: the player's question was left with no answer at all, and the failure with no
+     * mark. `Speaker.answer`.
+     */
+    fun answer(request: CoachRequest): Spoken {
+        try {
+            return speakNow(request)
+        } catch (exc: Exception) {
+            noteFailure("reply", exc)
+            val said = saidFor(request)
+            val shaped = shaped(request, said)
+            return Spoken(
+                message = CoachMessage(
+                    text = said,
+                    level = shaped.level,
+                    trigger = request.trigger,
+                    gameId = request.gameId,
+                    ply = request.ply,
+                    fen = request.board.fen(),
+                    annotations = shaped.marks,
+                ),
+                level = shaped.level,
+                problems = listOf("the reply failed: ${exc::class.java.simpleName}: ${exc.message}"),
+                attempts = 0,
+                epoch = request.epoch,
+                ownMoves = request.ownMoves,
+                rung = shaped.rung,
+                unvoiced = request.unvoiced,
+            )
+        }
+    }
+
+    /** The level a reply is logged at, the rung it said, and the marks on the board for it. */
+    internal class Shaped(val level: DisclosureLevel, val rung: DisclosureLevel?, val marks: List<Annotation>)
+
+    /**
+     * The reply's own level, rung and marks. An AI coach's answer to a question follows its words
+     * ([saidLevel]), so the marks and the ladder show what was said, not what the question's
+     * words were guessed to mean; any other message is at the level it was asked for.
+     * `Speaker._shaped`.
+     */
+    internal fun shaped(request: CoachRequest, text: String): Shaped {
+        if (!request.rungByReply) {
+            return Shaped(request.level, null, request.annotations + mentionsIn(text, request.board))
+        }
+        // Only what the reply names climbs the ladder: an answer to "am I winning?" that names
+        // nothing of the idea moves nothing, and the stuck hint after it is still the idea (Tai,
+        // 2026-10-02: an answer raised the ladder to the idea whatever it said).
+        var level = saidLevel(text, request.facts)
+        if (request.level.value >= DisclosureLevel.LINE.value) level = request.level // a game that is over withholds nothing
+        val base = annotationsFor(request.facts, level, request.board, request.trigger)
+        return Shaped(level, level, base + mentionsIn(text, request.board))
+    }
+
+    fun poll(): List<Spoken> {
+        val out = ArrayList<Spoken>()
+        while (true) {
+            out.add(results.poll() ?: return out)
+        }
+    }
+
+    /**
+     * Verbalized sampling: ask for several replies, keep a checked one, vary the voice.
+     *
+     * A single reply collapses onto the one most typical phrasing, which is why the coach
+     * repeated itself. Asking the model to verbalize a small distribution of replies (arxiv
+     * 2510.01171) recovers its range; the board and form checks then filter that set, and a
+     * reply is sampled by its own stated likelihood from those that pass. Because several
+     * are offered at once, a clean one is usually among them, so the template is rarely
+     * needed.
+     */
+    fun speakNow(request: CoachRequest): Spoken {
+        val began = clockNs()
+        var messages = vsWrap(request.messages, request.candidates)
+        var problems: List<String> = emptyList()
+        var text = ""
+        var attempts = 0
+        val calls = ArrayList<ModelCall>()
+        var verified: List<List<String>> = emptyList()
+        var repaired = false
+        var streamed = false
+        val provider = if (request.routine) routineProvider else this.provider
+        if (provider is OfflineProvider || request.templateOnly) {
+            // No model (llm.provider none), or no time for one (a fast game): the request's
+            // fallback is the reply -- the verdict from the board, the lesson or hint
+            // template, the review's own sentences -- or silence when there is none. Free
+            // and offline.
+            fallbacks += 1
+            text = request.fallback
+            return Spoken(
+                message = CoachMessage(
+                    text = text,
+                    level = request.level,
+                    trigger = request.trigger,
+                    gameId = request.gameId,
+                    ply = request.ply,
+                    fen = request.board.fen(),
+                    annotations = request.annotations + mentionsIn(text, request.board),
+                ),
+                level = request.level,
+                problems = emptyList(),
+                attempts = 0,
+                epoch = request.epoch,
+                ownMoves = request.ownMoves,
+                unvoiced = request.unvoiced,
+            )
+        }
+        val streamTo = request.streamTo
+        while (attempts < 2 && !(attempts > 0 && closed.count == 0L)) {
+            attempts += 1
+            var stats: MutableMap<String, Any?> = LinkedHashMap()
+            var reader: FirstCandidate? = null
+            val streaming = provider as? StreamingProvider
+            if (streamTo != null && attempts == 1 && verifier == null && streaming != null) {
+                // The first candidate goes to the voice sentence by sentence as it is
+                // written, each sentence checked before it is said; the stream is
+                // closed once that candidate is complete, the others unwritten.
+                val (limit, _) = directiveLimits(request.messages.last().content.substringAfterLast("# Task"))
+                reader = FirstCandidate(streamTo, { t -> problemsOf(t, request) }, limit = limit)
+            }
+            var raw: String
+            var failed: Exception? = null
+            try {
+                val completion = complete(
+                    provider,
+                    request,
+                    messages,
+                    reader?.let { it::feed },
+                    reader?.let { it::newRound },
+                )
+                raw = completion.text
+                stats = LinkedHashMap(completion.stats)
+            } catch (exc: Exception) {
+                failures += 1
+                lastError = "${exc::class.java.simpleName}: ${exc.message}"
+                raw = ""
+                failed = exc
+            }
+            if (reader != null) {
+                reader.finish()
+                if (reader.spoken.isNotEmpty()) {
+                    // Said already, in part at least: the record keeps what was said and
+                    // what, if anything, was wrong with the rest; no template follows a
+                    // voice that has spoken.
+                    text = reader.spoken
+                    problems = reader.problems
+                    streamed = true
+                    val given = messages.takeLast(2).joinToString("\n\n---\n\n") { it.content }
+                    calls.add(ModelCall(raw, stats, 1, if (problems.isEmpty()) 1 else 0, given))
+                    break
+                }
+                // Nothing said: the first candidate failed its first sentence, or the voice
+                // declined. The reply is read whole from here, as without a sink; what
+                // stopped the stream goes in the call's stats for the log.
+                stats["stream_problems"] = reader.problems.ifEmpty {
+                    if (reader.declined) listOf("the voice declined") else listOf("the stream ended early")
+                }
+            }
+            if (failed != null) {
+                // A failed call is not a draft: no complaint, no second paid call for a
+                // timeout or a refused key. A rate limit is waited out as the server asks,
+                // inside the provider's timeout counted from the first call; the call is the
+                // same one again, so it spends no attempt.
+                problems = listOf("the call failed: $lastError")
+                val wait = retryWait(failed, provider, (clockNs() - began) / 1e9) ?: break
+                if (pause(wait)) break
+                attempts -= 1
+                continue
+            }
+            // Declined, the stream was closed in the first candidate's first sentence: that
+            // candidate is cut off, and it went out as the text (the deep prompt review,
+            // 2026-10-01). Only candidates the stream finished are read.
+            val parsed = parseCandidates(raw).let {
+                if (reader != null && reader.declined) it.dropLast(1) else it
+            }
+            val scored = parsed.map { (prob, candidate) ->
+                Triple(prob, candidate, problemsOf(candidate, request))
+            }
+            var passed = scored.filter { it.third.isEmpty() }.map { it.first to it.second }
+            val given = messages.takeLast(2).joinToString("\n\n---\n\n") { it.content }
+            calls.add(ModelCall(raw, stats, scored.size, passed.size, given))
+            if (passed.isNotEmpty() && verifier != null) {
+                val outcome = verify(passed, request)
+                passed = outcome.first
+                verified = outcome.second
+                repaired = outcome.third
+            }
+            if (passed.isNotEmpty()) {
+                text = sample(passed)
+                problems = emptyList()
+                break
+            }
+            problems = if (scored.isNotEmpty()) scored[0].third else listOf("empty reply")
+            if (reader != null && reader.declined) {
+                // The voice declined the reply (the board had moved on, or the voice was
+                // busy): a second call about that moment would be paid for nothing. What the
+                // stream gave is not clean, so the template stands.
+                break
+            }
+            // The second try carries the complaint inside the directive: appending the
+            // failed attempt and the complaint as two more messages doubled the prompt on a
+            // long game (131k tokens became 276k, past the model's context).
+            val rejected = problems.joinToString("; ")
+            val shown = raw.trim().take(600).ifEmpty { "(no reply)" }
+            val last = messages.last()
+            val retry = ChatMessage(
+                last.role,
+                last.content +
+                    "\n\nYour first attempt was:\n$shown\n\nThose replies are not allowed: " +
+                    "$rejected. Give " +
+                    (
+                        if (request.candidates <= 1) {
+                            "a fresh reply that avoids those"
+                        } else {
+                            "${NUMBER_WORDS[request.candidates] ?: request.candidates} " +
+                                "fresh, varied replies that avoid those"
+                        }
+                        ) +
+                    ", keeping to what the sections above say."
+            )
+            messages = messages.dropLast(1) + retry
+        }
+        val leaks: List<String>
+        val notes: List<String>
+        if (problems.isNotEmpty() && !streamed) {
+            fallbacks += 1
+            text = saidFor(request)
+            leaks = emptyList()
+            notes = emptyList()
+        } else {
+            notes = notes(text, request)
+            text = trimmed(text, request)
+            leaks = leaks(text, request)
+        }
+        val shaped = shaped(request, text)
+        val message = CoachMessage(
+            text = text,
+            level = shaped.level,
+            trigger = request.trigger,
+            gameId = request.gameId,
+            ply = request.ply,
+            fen = request.board.fen(),
+            annotations = shaped.marks,
+        )
+        return Spoken(
+            message = message,
+            level = shaped.level,
+            problems = problems,
+            attempts = attempts,
+            calls = calls,
+            verified = verified,
+            repaired = repaired,
+            streamed = streamed,
+            leaks = leaks,
+            notes = notes,
+            epoch = request.epoch,
+            ownMoves = request.ownMoves,
+            rung = shaped.rung,
+            unvoiced = request.unvoiced,
+        )
+    }
+
+    /**
+     * The model's reply, streamed to [onDelta] when given. With engine tools on the request and
+     * a model that takes them, the engine calls it makes are answered and it is asked again,
+     * [TOOL_ROUNDS] times at most, the last time to answer with what it has; the calls go in the
+     * stats, for the log. A server that refuses the tools is asked again without them, and the
+     * refusal goes in the stats: on chat completions Luna with a reasoning effort took no tools,
+     * and the coach said nothing at all -- and then, asked without them, the log still listed the
+     * calls as if they had been answered. `Speaker._complete`.
+     */
+    private fun complete(
+        provider: LLMProvider,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+        newRound: (() -> Unit)? = null,
+    ): Completion {
+        val tools = request.tools
+        var refused = ""
+        val completion = if (tools != null && provider is ToolsProvider) {
+            try {
+                withTools(provider, tools, request, messages, onDelta, newRound)
+            } catch (e: Exception) {
+                if (!refusedForGood(e)) throw e
+                refused = (e.message ?: "").take(200)
+                plainly(provider, request, messages, onDelta)
+            }
+        } else {
+            plainly(provider, request, messages, onDelta)
+        }
+        var stats = completion.stats
+        if (tools != null && tools.log.isNotEmpty()) stats = stats + ("tools" to tools.log.toList())
+        if (refused.isNotEmpty()) stats = stats + ("tools_refused" to refused)
+        return completion.copy(stats = stats)
+    }
+
+    private fun plainly(
+        provider: LLMProvider,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+    ): Completion =
+        if (onDelta != null && provider is StreamingProvider) {
+            provider.chatStream(
+                request.system,
+                messages,
+                maxTokens = VS_MAX_TOKENS,
+                temperature = VS_TEMPERATURE,
+                onDelta = onDelta,
+            )
+        } else {
+            provider.chat(request.system, messages, maxTokens = VS_MAX_TOKENS, temperature = VS_TEMPERATURE)
+        }
+
+    private fun withTools(
+        provider: ToolsProvider,
+        tools: EngineTools,
+        request: CoachRequest,
+        messages: List<ChatMessage>,
+        onDelta: StreamCallback?,
+        newRound: (() -> Unit)? = null,
+    ): Completion {
+        var turns = emptyList<ToolRound>()
+        var round = 0
+        while (true) {
+            // A round that may call the engine goes through a gate (`_RoundGate`).
+            val gate = if (onDelta != null && round < TOOL_ROUNDS) RoundGate(onDelta) else null
+            val completion = provider.chatTools(
+                request.system,
+                messages,
+                tools = tools.specs,
+                turns = turns,
+                maxTokens = VS_MAX_TOKENS,
+                temperature = VS_TEMPERATURE,
+                toolChoice = if (round == TOOL_ROUNDS) "none" else null,
+                onDelta = gate?.let { it::feed } ?: onDelta,
+            )
+            val calling = completion.toolCalls.isNotEmpty() && round < TOOL_ROUNDS
+            gate?.end(calling)
+            if (calling) newRound?.invoke()
+            if (completion.toolCalls.isEmpty() || round == TOOL_ROUNDS) return completion
+            val results = completion.toolCalls.map { tools.run(it.name, it.arguments) }
+            turns = turns + ToolRound(completion, results)
+            round += 1
+        }
+    }
+
+    /**
+     * [text] cut to its directive's length and the slack past it: the sentences beyond are not
+     * said (the voice reads every one while the player is playing). `Speaker._trimmed`.
+     */
+    private fun trimmed(text: String, request: CoachRequest): String {
+        val directive = if (request.messages.isNotEmpty()) {
+            request.messages.last().content.substringAfterLast("# Task")
+        } else {
+            ""
+        }
+        val (limit, wantsQuestion) = directiveLimits(directive)
+        if (limit == null || sentenceTotal(text) <= limit + LENGTH_SLACK) return text
+        return trimToLimit(text, limit + LENGTH_SLACK, wantsQuestion)
+    }
+
+    /**
+     * The candidates read against the messages by the verifier: those with nothing
+     * unsupported stay; when none does, the likeliest is repaired once and kept if the
+     * repair passes the deterministic checks. Returns the candidates to sample from, what
+     * the verifier found per candidate, and whether a repair was used.
+     */
+    private fun verify(
+        passed: List<Pair<Double, String>>,
+        request: CoachRequest,
+    ): Triple<List<Pair<Double, String>>, List<List<String>>, Boolean> {
+        val judge = verifier!!
+        // The latest messages: the position the player faces, the one they moved from, the
+        // dialogue since, the directive -- the facts a reply may draw on are in these.
+        val context = request.messages.takeLast(5).joinToString("\n\n") { it.content }
+
+        fun check(candidate: String): List<String> {
+            val content = "The messages the coach was given (the latest):\n\n" + context +
+                "\n\nThe coach's reply:\n\"\"\"\n" + candidate + "\n\"\"\"\n\nJSON only."
+            val completion = try {
+                judge.chat(
+                    VERIFY_SYSTEM,
+                    listOf(ChatMessage("user", content)),
+                    maxTokens = 400,
+                    temperature = 0.0,
+                )
+            } catch (_: Exception) {
+                return emptyList() // the verifier failed: the candidate is not held against it
+            }
+            val found = jsonObject(completion.text)
+            val items = (found as? Map<*, *>)?.get("unsupported")
+            if (items !is List<*>) return emptyList()
+            return pyIter(items).map { pyStr(it) }.filter { it.trim().isNotEmpty() }
+        }
+
+        val pool = Executors.newFixedThreadPool(maxOf(1, passed.size))
+        val verified: List<List<String>> = try {
+            pool.invokeAll(passed.map { (_, candidate) -> java.util.concurrent.Callable { check(candidate) } })
+                .map { it.get() }
+        } finally {
+            pool.shutdown()
+            pool.awaitTermination(1, TimeUnit.MINUTES)
+        }
+        val clean = passed.zip(verified).filter { it.second.isEmpty() }.map { it.first }
+        if (clean.isNotEmpty()) return Triple(clean, verified, false)
+        val pick = passed.zip(verified).maxByOrNull { it.first.first }!!.first
+        val (prob, best) = pick
+        var faults = verified[passed.indexOfFirst { it.second == best }]
+        // Two tries at the repair: the second is also told what the deterministic checks
+        // found wrong with the first.
+        var note = ""
+        repeat(2) {
+            val content = "The messages the coach was given (the latest):\n\n" + context +
+                "\n\nThe reply:\n\"\"\"\n" + best + "\n\"\"\"\n\nUnsupported statements: " +
+                faults.joinToString("; ") + note + "\n\nJSON only."
+            val completion = try {
+                judge.chat(
+                    REPAIR_SYSTEM,
+                    listOf(ChatMessage("user", content)),
+                    maxTokens = 500,
+                    temperature = 0.0,
+                )
+            } catch (_: Exception) {
+                return Triple(emptyList(), verified, false)
+            }
+            val found = jsonObject(completion.text)
+            // `str(found.get("reply") or "")`: a null reply is none, not the word "null".
+            val reply = (found as? Map<*, *>)?.get("reply")
+            val mended = (if (pyTruthy(reply)) pyStr(reply) else "").trim()
+            if (mended.isEmpty()) return Triple(emptyList(), verified, false)
+            val faultsNow = problemsOf(mended, request)
+            if (faultsNow.isEmpty()) return Triple(listOf(prob to mended), verified, true)
+            note = "\n\nYour previous edit was rejected for: " + faultsNow.joinToString("; ") + "."
+        }
+        return Triple(emptyList(), verified, false)
+    }
+
+    /**
+     * What stops a draft: what it gets wrong -- a false claim about the board, a verdict or cost
+     * against the record, an earlier moment of the game it invents. Its form is not among them:
+     * that is noted ([notes]), never a reason to refuse a reply (Tai, 2026-09-28: "we don't need
+     * to throw anything out ... we just need good prompt engineering"), and neither is a leak
+     * ([leaks]; Tai, 2026-09-26: "it should be used as a debugging tool and not something used to
+     * reject response"). `Speaker._problems`.
+     */
+    internal fun problemsOf(text: String, request: CoachRequest): List<String> {
+        val found = ArrayList<String>()
+        // The verdict word and the cost the reply gives for the move just played must be the
+        // assessment's own: "best" for an excellent move, "cost 0.10" for a 0.05 loss, were
+        // the judge's commonest remaining faults, and the coach holds the facts.
+        found.addAll(verdictProblems(text, request))
+        val unlisted = request.unlisted
+        if (unlisted != null) {
+            // An earlier moment named that the coach did not list is one it made up ("as after
+            // 9...a6, when Bc4 saved your bishop"); a move number is only form.
+            found.addAll(unlistedLinks(text, unlisted).filter { !it.startsWith("a move with") })
+        }
+        if (draftCheck != null) {
+            for (problem in draftCheck.check(text, request.board, afterBest(request), player(request.facts))) {
+                val san = problem.substringBefore(":").trim()
+                if (san in request.played) continue // a move of the game's history, named as such
+                found.add(problem)
+            }
+        }
+        found.addAll(falseIllegal(text, request.board))
+        return found.distinct()
+    }
+
+    /**
+     * What a reply does against the form its directive asks for, or the owner's rules of form:
+     * logged with the reply, like a leak, and never a reason to refuse it -- the prompt asks for
+     * the form, and a slip of it is minor (Tai, 2026-09-28). A reply past its length is still cut
+     * there ([trimmed]). `Speaker._notes`.
+     */
+    internal fun notes(text: String, request: CoachRequest): List<String> {
+        val found = ArrayList<String>()
+        val directive = if (request.messages.isNotEmpty()) {
+            request.messages.last().content.substringAfterLast("# Task")
+        } else {
+            ""
+        }
+        val (limit, wantsQuestion) = directiveLimits(directive)
+        if (limit != null && sentenceTotal(text) > limit + LENGTH_SLACK) {
+            found.add("too long: ${sentenceTotal(text)} sentences, $limit asked for")
+        }
+        if (wantsQuestion == true && !text.trimEnd().endsWith("?")) found.add("no closing question")
+        if (wantsQuestion == false && text.trimEnd().endsWith("?")) {
+            found.add("a question where the task allows none")
+        }
+        val leftOut = omitted(text, request.mustName)
+        if (leftOut != null) found.add(leftOut)
+        found.addAll(restated(text, request))
+        if (request.unlisted != null && MOVE_NUMBER.containsMatchIn(text)) {
+            found.add("a move with its number: name moves bare")
+        }
+        // A figure where the directive keeps the figures for when the player asks -- "46...Rh5
+        // was excellent, costing only 0.01" (quality round 3, 2026-09-25).
+        if (NO_FIGURES in directive && figureSaid(text)) {
+            found.add("a figure in a remark nobody asked for: say it in words")
+        }
+        // RULES 7: the coach speaks as the one who saw the game -- "Stockfish gives White about
+        // 0.8 pawns" came in seven of the pilot's answers.
+        val askedEngine = ENGINE_ASKED.containsMatchIn(request.userText ?: "")
+        if (ENGINE_NAMED.containsMatchIn(text) && !askedEngine) {
+            found.add("named the engine: say it as the coach who saw the game")
+        }
+        return found.distinct()
+    }
+
+    /**
+     * What [text] gives away of the answer the level withholds, for the log: the move to find,
+     * its square, the piece that makes it. A debugging signal, never a reason to refuse the
+     * reply (see [problemsOf]). `Speaker._leaks`.
+     */
+    internal fun leaks(text: String, request: CoachRequest): List<String> {
+        // What the user said this turn, what the directive itself disclosed (the engine on
+        // what they asked about) and the moves of the game so far are not leaks: a move
+        // already played may be discussed in full, whatever the level in force. The piece a
+        // played move moved may be named too: "your opponent's rook took on c6" about a move
+        // of the record is no hint, but the word "rook" was a leak whenever the withheld
+        // piece happened to be a rook as well.
+        // What the user said and what the directive disclosed are theirs already. The moves of
+        // the game are no exemption: only the answer is withheld ([leakCheck]), and exempting
+        // the record's moves, squares and pieces had let the answer through.
+        val said = listOfNotNull(request.userText, request.disclosed)
+            .filter { it.isNotEmpty() }.joinToString(" ")
+        // What the sheet says the threats do ("Ne6 (uncovers an attack on the pawn on d2)") is
+        // shown to the model: a piece named there is the threat, not the hint.
+        val shownThreats = visibleFacts(request.facts, request.level)["threats"]
+        val threatWords = if (shownThreats is List<*> && shownThreats.isNotEmpty()) {
+            request.facts.threats.joinToString(" ") { Conversation.threatWords(request.board, it) }
+        } else {
+            ""
+        }
+        val found = ArrayList<String>()
+        for (item in leakCheck(
+            text,
+            request.facts,
+            request.level,
+            said = said.ifEmpty { null },
+            record = request.record,
+            shown = threatWords,
+        )) {
+            found.add("withheld $item")
+        }
+        for (move in request.nowAnswer) {
+            if (names(text, move)) found.add("gives away $move in the position they face now")
+        }
+        return found.distinct()
+    }
+
+    private fun run() {
+        while (true) {
+            val request = requests.take()
+            if (request === Stop || closed.count == 0L) return
+            busy = true
+            try {
+                when (request) {
+                    is Spoken -> results.add(request)
+                    is CoachRequest -> results.add(answer(request))
+                }
+            } catch (exc: Exception) {
+                noteFailure("worker", exc)
+            } finally {
+                busy = false
+            }
+        }
+    }
+}
