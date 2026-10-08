@@ -33,8 +33,16 @@ function mateFor(e: Eval | null | undefined, side: "white" | "black"): number | 
 
 /** The line for `m`; `before` is the move played just before it (null for the first), and
  *  `reveal` whether a move the player could retry may name the better one (as the card's own
- *  sentence: off while the best move's arrow is off). Null for a move with no label. */
+ *  sentence: off while the best move's arrow is off). Null for a move with no label. The
+ *  label is not said again: the headline above says it (Tai, 2026-10-08: "drop the prefix"). */
 export function why(m: ReviewMove, before: ReviewMove | null, reveal: boolean): string | null {
+  const line = labelled(m, before, reveal);
+  if (line === null) return null;
+  const reason = line.slice(line.indexOf(": ") + 2);
+  return reason.charAt(0).toUpperCase() + reason.slice(1);
+}
+
+function labelled(m: ReviewMove, before: ReviewMove | null, reveal: boolean): string | null {
   const label = m.label ?? "";
   const name = NAMES[label];
   if (!name) return null;
