@@ -2249,6 +2249,24 @@ class PanelEngine:
         kind = "recordings" if live and self._recording_wanted() else "sessions"
         return self.settings.data_dir / kind / stamp
 
+    def _unbuilt(
+        self, cap: Any, recorder: Any, events_log: IO[str] | None, store: Any, coaching: Any
+    ) -> None:
+        """A session that failed while `_run` built it: what it had opened is closed, and the
+        panel stopped as the end of `_run` stops it."""
+        if coaching is not None and coaching.coach is not None:
+            coaching.coach.pause(time.monotonic())
+            coaching.coach.profile_ask = None
+        self._profiler = None
+        for one in (store, recorder, events_log, cap):
+            if one is not None:
+                with contextlib.suppress(Exception):
+                    one.close()
+        self._record_failed = False
+        self._set(running=False, status="stopped", recording_dir=None)
+        self._emit("sys", "info", "engine stopped")
+        self._log.close()
+
     def _run(self) -> None:
         import chess
 
@@ -2277,161 +2295,174 @@ class PanelEngine:
         def ensure_recording() -> None:  # a live capture replaces this below
             return None
 
-        # Where the captured monitor sits on the screen, for the board's place there (the
-        # captions keep off it); a replay has no screen.
-        screen_origin: tuple[int, int] | None = None
-        if live:
-            from sidecoach.capture.loop import capture_loop
-            from sidecoach.capture.wgc_backend import make_capture
-            from sidecoach.cli import _monitor_region
-            from sidecoach.replay.recording import ChangeGate, Recorder
-
-            cap = make_capture(self.settings.capture.backend)
-            monitor, region = _monitor_region(cap, self.monitor)
-            screen_origin = (region.x, region.y)
-            self._emit(
-                "sys",
-                "info",
-                f"capturing monitor {monitor}, {region.w}x{region.h} at {self.fps} fps "
-                f"({getattr(cap, 'name', 'capture')})",
-            )
-            gate = ChangeGate(keyframe_interval_s=1.0)
-            first_folder: Path | None = session  # the launch flags' recording goes to the session
-
-            def _ensure_recording() -> None:
-                """Start or stop recording as the setting says, every tick."""
-                nonlocal recorder, events_log, first_folder
-                want = self._recording_wanted() and not self._record_failed
-                if want and recorder is None:
-                    folder = first_folder or (
-                        self.settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
-                    )
-                    first_folder = None
-                    folder.mkdir(parents=True, exist_ok=True)
-                    recorder = Recorder(
-                        folder,
-                        monitor=monitor,
-                        region=region,
-                        fps=self.fps,
-                        keyframe_interval_s=1.0,
-                    )
-                    events_log = (folder / "events.jsonl").open("w", encoding="utf-8")
-                    self._log.attach(folder / "debug.jsonl")  # with everything logged so far
-                    self._set(recording_dir=str(folder))
-                    self._emit("sys", "info", f"recording to {folder}")
-                elif not want and recorder is not None:
-                    stored, mb = recorder.stored, recorder.size_bytes() / 1e6
-                    recorder.close()
-                    recorder = None
-                    if events_log is not None:
-                        events_log.close()
-                        events_log = None
-                    if not self.persist:
-                        self._log.detach()
-                    with self._lock:
-                        folder_name = self._state.get("recording_dir")
-                    self._set(recording_dir=None)
-                    self._emit(
-                        "sys",
-                        "info",
-                        f"recording stopped: {stored} frames, {mb:.0f} MB in {folder_name}",
-                    )
-
-            ensure_recording = _ensure_recording
-            ensure_recording()
-            if recorder is None:
-                self._emit("sys", "info", "not recording")
-
-            def capture_rate() -> float:
-                """Read after every frame: a saved capture.fps applies at once, and the frame
-                that confirms a move just seen comes early (CONFIRM_INTERVAL_S)."""
-                if pipe.awaiting_confirmation:
-                    return 1.0 / CONFIRM_INTERVAL_S
-                return float(self.settings.capture.fps)
-
-            frames: Iterable[Frame] = capture_loop(cap, region, capture_rate)
-        else:
-            frames = self.frame_source or ()
-            self._emit("sys", "info", "replaying a recording (not recorded again)")
-
-        cache = None
+        # What the session holds by the time anything fails while it is built ([_unbuilt]).
+        store: Any = None
+        coaching: Any = None
         try:
-            from sidecoach.vision.theme_cache import ThemeCache
+            # Where the captured monitor sits on the screen, for the board's place there (the
+            # captions keep off it); a replay has no screen.
+            screen_origin: tuple[int, int] | None = None
+            if live:
+                from sidecoach.capture.loop import capture_loop
+                from sidecoach.capture.wgc_backend import make_capture
+                from sidecoach.cli import _monitor_region
+                from sidecoach.replay.recording import ChangeGate, Recorder
 
-            cache = ThemeCache(self.settings.data_dir / "themes")
-        except Exception as exc:  # noqa: BLE001 - a cache is a nicety; the panel runs without it
-            self._emit("sys", "warn", f"theme cache unavailable: {exc}")
-        from sidecoach.vision.ownboard import is_own_board
-        from sidecoach.vision.tracker import BoardTracker
+                cap = make_capture(self.settings.capture.backend)
+                monitor, region = _monitor_region(cap, self.monitor)
+                screen_origin = (region.x, region.y)
+                self._emit(
+                    "sys",
+                    "info",
+                    f"capturing monitor {monitor}, {region.w}x{region.h} at {self.fps} fps "
+                    f"({getattr(cap, 'name', 'capture')})",
+                )
+                gate = ChangeGate(keyframe_interval_s=1.0)
+                # The launch flags' recording goes to the session.
+                first_folder: Path | None = session
 
-        # The vision must never lock onto the panel's own board: it carries a signature
-        # (vision.ownboard) the tracker vetoes, on top of the screen-rectangle mask.
-        pipe = GamePipeline(
-            clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
-        )
-        # A side chosen with Flip was for the last session's board, as the new pipeline's is
-        # none: kept, it overrode the labels of the next board's Re-read (the parity audit,
-        # 2026-09-29; the phone's is per session too).
-        self._forced_bottom = None
-        # The engine, the coach and the models were built when the app opened (`warm`);
-        # a Start that comes before that is done waits for it. Without a warm-up (the
-        # CLI's replay, the tests) they are built here, once, and kept.
-        if not self._warm_done.is_set() and self._warm_lock.locked():
-            self._set(status="loading the models")
-            self._warm_done.wait(timeout=120.0)
-        with self._warm_lock:
-            if self._assessing is None or self._coaching is None or self._engine_stale:
-                from sidecoach.vision.pieces import embedder
+                def _ensure_recording() -> None:
+                    """Start or stop recording as the setting says, every tick."""
+                    nonlocal recorder, events_log, first_folder
+                    want = self._recording_wanted() and not self._record_failed
+                    if want and recorder is None:
+                        folder = first_folder or (
+                            self.settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
+                        )
+                        first_folder = None
+                        folder.mkdir(parents=True, exist_ok=True)
+                        recorder = Recorder(
+                            folder,
+                            monitor=monitor,
+                            region=region,
+                            fps=self.fps,
+                            keyframe_interval_s=1.0,
+                        )
+                        events_log = (folder / "events.jsonl").open("w", encoding="utf-8")
+                        self._log.attach(folder / "debug.jsonl")  # with everything logged so far
+                        self._set(recording_dir=str(folder))
+                        self._emit("sys", "info", f"recording to {folder}")
+                    elif not want and recorder is not None:
+                        stored, mb = recorder.stored, recorder.size_bytes() / 1e6
+                        recorder.close()
+                        recorder = None
+                        if events_log is not None:
+                            events_log.close()
+                            events_log = None
+                        if not self.persist:
+                            self._log.detach()
+                        with self._lock:
+                            folder_name = self._state.get("recording_dir")
+                        self._set(recording_dir=None)
+                        self._emit(
+                            "sys",
+                            "info",
+                            f"recording stopped: {stored} frames, {mb:.0f} MB in {folder_name}",
+                        )
 
-                net = embedder()
-                if net is not None and self._assessing is None:
-                    self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
-            assessing, coaching = self._prepare_stages()
-        self.fps = self.settings.capture.fps
-        # The player model: a live session teaches the profile on disk, a replay a copy
-        # in memory that is forgotten with it.
-        from sidecoach.profile.profiler import Profiler
-        from sidecoach.profile.store import Store
+                ensure_recording = _ensure_recording
+                ensure_recording()
+                if recorder is None:
+                    self._emit("sys", "info", "not recording")
 
-        store = Store(self.settings.data_dir / "profile.sqlite" if live else None)
-        puzzles = None
-        try:
-            from sidecoach.profile.puzzles import open_store
+                def capture_rate() -> float:
+                    """Read after every frame: a saved capture.fps applies at once, and the frame
+                    that confirms a move just seen comes early (CONFIRM_INTERVAL_S)."""
+                    if pipe.awaiting_confirmation:
+                        return 1.0 / CONFIRM_INTERVAL_S
+                    return float(self.settings.capture.fps)
 
-            puzzles = open_store(self.settings.data_dir)
-        except Exception as exc:  # noqa: BLE001 - practice is a nicety; the panel runs without
-            self._emit("sys", "warn", f"puzzles unavailable: {exc}")
-        profiler = Profiler(store, ts=time.time(), puzzles=puzzles)
-        self._profiler = profiler
-        self._emit("sys", "info", f"profile: {store.path or 'in memory (replay)'}")
-        if puzzles is not None:
-            self._emit(
-                "sys",
-                "info",
-                f"puzzles: {puzzles.count()} from {puzzles.path}, level {profiler.puzzle_level()}",
+                frames: Iterable[Frame] = capture_loop(cap, region, capture_rate)
+            else:
+                frames = self.frame_source or ()
+                self._emit("sys", "info", "replaying a recording (not recorded again)")
+
+            cache = None
+            try:
+                from sidecoach.vision.theme_cache import ThemeCache
+
+                cache = ThemeCache(self.settings.data_dir / "themes")
+            except Exception as exc:  # noqa: BLE001 - a cache is a nicety; the panel runs without it
+                self._emit("sys", "warn", f"theme cache unavailable: {exc}")
+            from sidecoach.vision.ownboard import is_own_board
+            from sidecoach.vision.tracker import BoardTracker
+
+            # The vision must never lock onto the panel's own board: it carries a signature
+            # (vision.ownboard) the tracker vetoes, on top of the screen-rectangle mask.
+            pipe = GamePipeline(
+                clock=ClockReader(), cache=cache, tracker=BoardTracker(reject=is_own_board)
             )
-        else:
-            self._emit(
-                "sys",
-                "warn",
-                "puzzles: none (get them in Set up, for practice after a game)",
-            )
-        first_snapshot = profiler.snapshot()
-        self._set(profile=self._profile_state(first_snapshot))
-        coaching.events([first_snapshot], time.monotonic())
-        if coaching.coach is not None:
-            coaching.coach.watching = True  # until this session's Stop (`Coach.pause`)
-            # A question about the player over their games: the coach's model writes the
-            # queries itself (profile/ask.py), read-only over this store.
-            from sidecoach.profile import ask as profile_ask
+            # A side chosen with Flip was for the last session's board, as the new pipeline's is
+            # none: kept, it overrode the labels of the next board's Re-read (the parity audit,
+            # 2026-09-29; the phone's is per session too).
+            self._forced_bottom = None
+            # The engine, the coach and the models were built when the app opened (`warm`);
+            # a Start that comes before that is done waits for it. Without a warm-up (the
+            # CLI's replay, the tests) they are built here, once, and kept.
+            if not self._warm_done.is_set() and self._warm_lock.locked():
+                self._set(status="loading the models")
+                self._warm_done.wait(timeout=120.0)
+            with self._warm_lock:
+                if self._assessing is None or self._coaching is None or self._engine_stale:
+                    from sidecoach.vision.pieces import embedder
 
-            # The provider as it is when asked: a model changed on Save answers at once.
-            coaching.coach.profile_ask = lambda q: profile_ask.answer(
-                q, store, coaching.coach.speaker.provider
-            )
-        if not self._warm_done.is_set():  # no warm-up loaded the voice (replay, tests)
-            threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
-        self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
+                    net = embedder()
+                    if net is not None and self._assessing is None:
+                        self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
+                assessing, coaching = self._prepare_stages()
+            self.fps = self.settings.capture.fps
+            # The player model: a live session teaches the profile on disk, a replay a copy
+            # in memory that is forgotten with it.
+            from sidecoach.profile.profiler import Profiler
+            from sidecoach.profile.store import Store
+
+            store = Store(self.settings.data_dir / "profile.sqlite" if live else None)
+            puzzles = None
+            try:
+                from sidecoach.profile.puzzles import open_store
+
+                puzzles = open_store(self.settings.data_dir)
+            except Exception as exc:  # noqa: BLE001 - practice is a nicety; the panel runs without
+                self._emit("sys", "warn", f"puzzles unavailable: {exc}")
+            profiler = Profiler(store, ts=time.time(), puzzles=puzzles)
+            self._profiler = profiler
+            self._emit("sys", "info", f"profile: {store.path or 'in memory (replay)'}")
+            if puzzles is not None:
+                self._emit(
+                    "sys",
+                    "info",
+                    f"puzzles: {puzzles.count()} from {puzzles.path}, "
+                    f"level {profiler.puzzle_level()}",
+                )
+            else:
+                self._emit(
+                    "sys",
+                    "warn",
+                    "puzzles: none (get them in Set up, for practice after a game)",
+                )
+            first_snapshot = profiler.snapshot()
+            self._set(profile=self._profile_state(first_snapshot))
+            coaching.events([first_snapshot], time.monotonic())
+            if coaching.coach is not None:
+                coaching.coach.watching = True  # until this session's Stop (`Coach.pause`)
+                # A question about the player over their games: the coach's model writes the
+                # queries itself (profile/ask.py), read-only over this store.
+                from sidecoach.profile import ask as profile_ask
+
+                # The provider as it is when asked: a model changed on Save answers at once.
+                coaching.coach.profile_ask = lambda q: profile_ask.answer(
+                    q, store, coaching.coach.speaker.provider
+                )
+            if not self._warm_done.is_set():  # no warm-up loaded the voice (replay, tests)
+                threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
+            self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
+        except Exception as exc:  # noqa: BLE001 - report and shut down cleanly, as the loop does
+            # A session that could not be built (the stages, the capture, the profile) ends
+            # as one whose loop failed: said, and the panel stopped. It killed this thread
+            # silently, and the panel stayed on "running" (the audit of 2026-10-07).
+            self._emit("sys", "error", f"engine stopped: {exc!r}")
+            self._unbuilt(cap, recorder, events_log, store, coaching)
+            return
 
         latest: Any = None
         latest_geom: Any = None

@@ -476,6 +476,43 @@ def test_a_start_without_a_warm_up_builds_the_stages_once(
     engine.close()
 
 
+def test_a_session_that_cannot_be_built_is_said_and_stopped(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure while the session is built (the stages, the capture, the profile) ends it as
+    a failure in the loop does: "engine stopped: {exc!r}" in the log and the panel stopped, as
+    after a Stop. It killed the engine thread silently, and the panel stayed on "running"
+    (the audit of 2026-10-07; the phone crashed)."""
+    from sidecoach.vision import pieces
+
+    monkeypatch.setattr(pieces, "embedder", lambda: None)
+    engine = make_panel(record=False)
+
+    def broken() -> tuple[object, object]:
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr(engine, "_prepare_stages", broken)
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+    snap = engine.poll(0)
+    assert snap["state"]["running"] is False
+    assert snap["state"]["status"] == "stopped"
+    texts = [(ln["level"], ln["text"]) for ln in snap["lines"] if ln["chan"] == "sys"]
+    assert ("error", "engine stopped: RuntimeError('no engine')") in texts
+    assert texts[-1] == ("info", "engine stopped")
+    # A Start after it runs a session as any other.
+    monkeypatch.undo()
+    monkeypatch.setattr(pieces, "embedder", lambda: None)
+    engine.start()
+    engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+    assert engine.poll(0)["state"]["running"] is False
+    assert engine._assessing is not None
+    engine.close()
+
+
 def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
     make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
