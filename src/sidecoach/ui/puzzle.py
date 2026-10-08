@@ -96,10 +96,16 @@ class PuzzleSession:
         if not self.done and text.strip().lower() in ASSISTS:
             self.assisted = True
 
-    def recorded_as(self, solved: bool, before: int, level: int) -> None:
-        """The outcome the profile took: solved or not, the puzzle level after it and how far
-        it moved from `before` (the step is cut short at the ends of the range)."""
-        self.result = {"solved": solved, "level": level, "change": level - before}
+    def recorded_as(self, solved: bool, before: int, level: int, provisional: bool) -> None:
+        """The outcome the profile took: solved or not, the puzzle rating after it as Lichess
+        shows it, how far that moved from `before` (Lichess's change: the difference of the
+        ratings shown), and whether the rating is still provisional (Lichess writes "1500?")."""
+        self.result = {
+            "solved": solved,
+            "level": level,
+            "change": level - before,
+            "provisional": provisional,
+        }
 
     def legal(self) -> dict[str, list[str]]:
         """Where each of the solver's pieces may go, for the page's dots: sent with the

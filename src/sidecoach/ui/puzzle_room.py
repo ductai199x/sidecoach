@@ -27,6 +27,7 @@ from sidecoach.profile.puzzles import (
     PuzzleStore,
     angle_for,
     puzzle_level,
+    puzzle_perf,
     record_attempt,
 )
 from sidecoach.ui.log import DebugLog, elide
@@ -247,6 +248,7 @@ class PuzzleRoom:
             return
         session.recorded = True
         try:
+            now = time.time()
             before = puzzle_level(self.store)
             outcome = record_attempt(
                 self.store,
@@ -254,17 +256,18 @@ class PuzzleRoom:
                 session.motif,
                 solved,
                 list(session.sans),
-                time.time(),
+                now,
                 # The page names the motif ("Puzzle · fork"), as Lichess's themed training
                 # names its theme: the result is weighed as that theme's (glicko.theme_weight).
                 theme=angle_for(session.motif) if session.motif else None,
                 rated=not session.assisted,
             )
+            provisional = puzzle_perf(self.store, int(now * 1000)).glicko.provisional
         except Exception as exc:  # noqa: BLE001 - the record must not break the puzzle
             self._emit("sys", "error", f"profile error: {exc!r}")
             return
         with self._lock:
-            session.recorded_as(outcome.solved, before, outcome.level)
+            session.recorded_as(outcome.solved, before, outcome.level, provisional)
         self._emit(
             "game",
             "info",

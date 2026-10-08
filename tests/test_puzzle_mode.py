@@ -104,8 +104,13 @@ def test_a_mate_puzzle_and_giving_up_on_it() -> None:
     assert [e.san for e in events] == ["Ra8#"] and s.status == "solved" and not s.failed
     # The result line's numbers come once the room has recorded the outcome.
     assert s.state()["result"] is None
-    s.recorded_as(True, 1100, 1125)
-    assert s.state()["result"] == {"solved": True, "level": 1125, "change": 25}
+    s.recorded_as(True, 1500, 1712, True)
+    assert s.state()["result"] == {
+        "solved": True,
+        "level": 1712,
+        "change": 212,
+        "provisional": True,
+    }
     # Any mate counts where the line's move mates; a non-mating move does not.
     t = PuzzleSession(MATE, "mate")
     assert t._mates(chess.Move.from_uci("a1a8"))
@@ -229,7 +234,14 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     assert store.setting("puzzle_level") is None, "the old level is neither read nor written"
     # The page's result line reads the outcome as the profile took it: a miss is not a solve.
     result = client.get(f"/api/puzzle/{FORK.id}/poll").json()["state"]["result"]
-    assert result == {"solved": False, "level": first, "change": first - 1500}
+    # A new player's rating is provisional after one puzzle (Lichess: a deviation of 110 or
+    # more), so the line shows it with a "?".
+    assert result == {
+        "solved": False,
+        "level": first,
+        "change": first - 1500,
+        "provisional": True,
+    }
     # The user's question reaches the room. Its coach is off here: the room says so, as the
     # panel does, or the page's typing dots waited for an answer for good.
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
@@ -256,7 +268,12 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     assert second < first, "a give-up is a loss"
     store.close()
     result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
-    assert result == {"solved": False, "level": second, "change": second - first}
+    assert result == {
+        "solved": False,
+        "level": second,
+        "change": second - first,
+        "provisional": True,
+    }
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
@@ -282,7 +299,7 @@ def test_a_solved_puzzle_shows_the_rating_it_moved_to(
     # This room's line alone: a room another test closed may still log its own outcome.
     signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level {won}")
     result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
-    assert result == {"solved": True, "level": won, "change": won - 1500}
+    assert result == {"solved": True, "level": won, "change": won - 1500, "provisional": True}
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
@@ -459,7 +476,12 @@ def test_a_puzzle_solved_after_a_hint_leaves_the_rating_as_it_was(
         assert puzzle_level(store) == 1500, "unrated: the rating stays"
         assert [(pid, ok) for pid, _, ok in store.attempts()] == [(FORK.id, True)], "kept"
         store.close()
-        assert room.state()["result"] == {"solved": True, "level": 1500, "change": 0}
+        assert room.state()["result"] == {
+            "solved": True,
+            "level": 1500,
+            "change": 0,
+            "provisional": True,
+        }
     finally:
         room.command("close")
         assert signals.ended(FORK.id).wait(HANG_S)
@@ -497,3 +519,40 @@ def test_a_puzzle_closed_before_any_wrong_move_records_nothing(
     assert [(pid, ok) for pid, _, ok in store.attempts()] == [(MATE.id, False)]
     assert puzzle_level(store) < 1500
     store.close()
+
+
+def test_an_established_rating_shows_without_the_question_mark(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Lichess writes a rating with a "?" while its deviation is 110 or more; a player with a
+    # settled rating (here 1600 / 60) gets the number alone, and a small change.
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile.puzzles import PERF_KEY
+    from sidecoach.profile.store import Store
+    from sidecoach.ui.server import build_app
+
+    signals = _RoomSignals(monkeypatch)
+    _csv(tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    store.set_setting(PERF_KEY, '{"r": 1600.0, "d": 60.0, "v": 0.06, "nb": 500, "la": null}')
+    store.close()
+    settled = glicko.Perf(glicko.Glicko(1600, 60, 0.06), nb=500)
+    won = glicko.finish(settled, glicko.Glicko(900, 70, 0.09), True, 0).glicko
+    assert not won.provisional
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
+    done = client.post(f"/api/puzzle/{MATE.id}/move", json={"uci": "a1a8"}).json()["state"]
+    assert done["status"] == "solved"
+    signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level {won.int_rating}")
+    result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
+    assert result == {
+        "solved": True,
+        "level": won.int_rating,
+        "change": won.int_rating - 1600,
+        "provisional": False,
+    }
+    assert 0 <= result["change"] < 5, "a settled rating barely moves for a far weaker puzzle"
+    client.post(f"/api/puzzle/{MATE.id}/close")
+    assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"

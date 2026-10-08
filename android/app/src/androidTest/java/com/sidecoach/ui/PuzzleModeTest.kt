@@ -121,8 +121,8 @@ class PuzzleModeTest {
         assertTrue(events.map { it.san } == listOf("Ra8#") && s.status == "solved" && !s.failed)
         // The result line's numbers come once the room has recorded the outcome.
         assertEquals(null, s.state()["result"])
-        s.recordedAs(true, 1100, 1125)
-        assertEquals(mapOf("solved" to true, "level" to 1125, "change" to 25), s.state()["result"])
+        s.recordedAs(true, 1500, 1712, true)
+        assertEquals(mapOf("solved" to true, "level" to 1712, "change" to 212, "provisional" to true), s.state()["result"])
         // Any mate counts where the line's move mates; a non-mating move does not.
         val t = PuzzleSession(mate, "mate")
         assertTrue(t.mates(Move.fromUci("a1a8")))
@@ -358,6 +358,38 @@ class PuzzleModeTest {
         }
     }
 
+    /**
+     * Lichess writes a rating with a "?" while its deviation is 110 or more; a player with a settled
+     * rating (here 1600 / 60) gets the number alone, and a small change.
+     * `test_an_established_rating_shows_without_the_question_mark`.
+     */
+    @Test
+    fun anEstablishedRatingShowsWithoutTheQuestionMark() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val store = Store(File(tmp, "profile.sqlite"))
+            store.setSetting(Puzzles.PERF_KEY, """{"r": 1600.0, "d": 60.0, "v": 0.06, "nb": 500, "la": null}""")
+            store.close()
+            val settled = Glicko.Perf(Glicko.Rating(1600.0, 60.0, 0.06), nb = 500)
+            val won = Glicko.finish(settled, Glicko.Rating(900.0, 70.0, 0.09), true, 0L).glicko
+            assertFalse(won.provisional)
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
+            val done = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a8"}""").getJSONObject("state")
+            assertEquals("solved", done.getString("status"))
+            outcome(api, mate.id, "puzzle ${mate.id} solved")
+            assertEquals(result(true, won.intRating, won.intRating - 1600, false), polledResult(api, mate.id))
+            assertTrue("a settled rating barely moves for a far weaker puzzle", won.intRating - 1600 in 0..4)
+            val mateRoom = rooms.get(mate.id)!!
+            call(api, "POST", "/api/puzzle/${mate.id}/close")
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------
 
     private fun tempDir(): File =
@@ -442,11 +474,12 @@ class PuzzleModeTest {
     /** The result the page's poll serves, as plain values. */
     private fun polledResult(api: PanelApi, id: String): Map<String, Any?> {
         val r = call(api, "GET", "/api/puzzle/$id/poll").getJSONObject("state").getJSONObject("result")
-        return result(r.getBoolean("solved"), r.getInt("level"), r.getInt("change"))
+        return result(r.getBoolean("solved"), r.getInt("level"), r.getInt("change"), r.getBoolean("provisional"))
     }
 
-    private fun result(solved: Boolean, level: Int, change: Int): Map<String, Any?> =
-        mapOf("solved" to solved, "level" to level, "change" to change)
+    /** A result line's numbers; a new player's rating is provisional after a puzzle or two. */
+    private fun result(solved: Boolean, level: Int, change: Int, provisional: Boolean = true): Map<String, Any?> =
+        mapOf("solved" to solved, "level" to level, "change" to change, "provisional" to provisional)
 
     @Suppress("UNCHECKED_CAST")
     private fun legal(state: Map<String, Any?>) = state["legal"] as Map<String, List<String>>

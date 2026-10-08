@@ -141,8 +141,8 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
      * The outcome the profile took: solved or not, the puzzle level after it and how far it
      * moved from [before] (the step is cut short at the ends of the range).
      */
-    fun recordedAs(solved: Boolean, before: Int, level: Int) {
-        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before)
+    fun recordedAs(solved: Boolean, before: Int, level: Int, provisional: Boolean) {
+        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before, "provisional" to provisional)
     }
 
     /**

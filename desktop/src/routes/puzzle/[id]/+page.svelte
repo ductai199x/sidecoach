@@ -371,7 +371,8 @@
   const remaining = $derived(room ? (room.status === "playing" ? `${room.remaining} move${room.remaining === 1 ? "" : "s"} to find` : room.status.replace("_", " ")) : "");
   const misses = $derived(room?.misses ? `${room.misses} miss${room.misses === 1 ? "" : "es"}` : "");
   // Once the puzzle has ended and the room recorded it, one result line as Lichess shows it:
-  // solved or not, the puzzle level the outcome moved to and by how much. The strip grows by
+  // solved or not, the puzzle rating the outcome moved to ("?" while provisional, as Lichess
+  // writes it) and by how much. The strip grows by
   // that line, so the board is fitted again (as for a solution given up).
   const result = $derived(room && room.status !== "playing" && room.result ? room.result : null);
   const resultChange = $derived(result?.change ? (result.change > 0 ? `+${result.change}` : `−${-result.change}`) : "");
@@ -558,7 +559,7 @@
         {#if nextIds.length}<a class="pz-link" class:ready={room && room.status !== "playing"} href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
       </span>
       {#if result}
-        <span class="pz-result">{result.solved ? "Solved" : "Not solved"} · your puzzle level <b>{result.level}</b>{#if resultChange}&nbsp;<span class={result.change > 0 ? "up" : "down"}>({resultChange})</span>{/if}</span>
+        <span class="pz-result">{result.solved ? "Solved" : "Not solved"} · your puzzle rating <b>{result.level}{result.provisional ? "?" : ""}</b>{#if resultChange}&nbsp;<span class={result.change > 0 ? "up" : "down"}>({resultChange})</span>{/if}</span>
       {/if}
     </div>
   </section>
