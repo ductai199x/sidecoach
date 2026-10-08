@@ -161,7 +161,9 @@ object Puzzles {
      * solved, the first attempt at a puzzle only; the puzzle's rating is not changed. Shared by the profiler (a puzzle followed on
      * the screen) and the puzzle page (one solved on its own board). [theme] is the training theme
      * the player was told (Lichess's themed training keeps only part of the change), null for a
-     * puzzle served as Lichess serves a mixed one. [ts] is the time in epoch seconds.
+     * puzzle served as Lichess serves a mixed one. [rated] false: help was used (the page's
+     * Hint, Best move or Line), and the rating stays, as Lichess's does after a hint. [ts] is the
+     * time in epoch seconds.
      */
     fun recordAttempt(
         store: Store,
@@ -171,13 +173,14 @@ object Puzzles {
         moves: List<String>,
         ts: Double,
         theme: String? = null,
+        rated: Boolean = true,
     ): PuzzleOutcome {
         val nowMs = (ts * 1000).toLong()
         val before = puzzlePerf(store, nowMs)
         var after = before
         // Only the first attempt at a puzzle is rated, as on Lichess (PuzzleFinisher: a puzzle with
         // a round already is a replay); every attempt is kept beside the motif all the same.
-        if (!store.attempted(puzzle.id)) {
+        if (rated && !store.attempted(puzzle.id)) {
             val opponent = Glicko.Rating(puzzle.rating.toDouble(), puzzle.deviation.toDouble(), Glicko.DEFAULT_VOLATILITY)
             after = Glicko.finish(before, opponent, solved, nowMs, theme)
             store.setSetting(PERF_KEY, perfJson(Glicko.stored(after, nowMs)))

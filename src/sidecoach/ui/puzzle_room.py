@@ -175,6 +175,10 @@ class PuzzleRoom:
             # gets a fresh room rather than this one on its way out.
             self.closing = True
         with self._lock:
+            if name == "ask" and self._coaching.on:
+                # Help asked for is marked as the page asks, with the position as it stands
+                # then: a last move played before the loop's next tick must not outrun it.
+                self.session.asked(str(payload))
             self._commands.append((name, payload))
 
     # ---- the loop ----------------------------------------------------------------------------
@@ -252,6 +256,7 @@ class PuzzleRoom:
                 # The page names the motif ("Puzzle · fork"), as Lichess's themed training
                 # names its theme: the result is weighed as that theme's (glicko.theme_weight).
                 theme=angle_for(session.motif) if session.motif else None,
+                rated=not session.assisted,
             )
         except Exception as exc:  # noqa: BLE001 - the record must not break the puzzle
             self._emit("sys", "error", f"profile error: {exc!r}")

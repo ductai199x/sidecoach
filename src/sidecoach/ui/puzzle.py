@@ -23,6 +23,10 @@ import chess
 from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
 
+# What the puzzle page's chips send (Hint, Best move, Line: routes/puzzle/[id]/+page.svelte).
+# One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint does.
+ASSISTS = frozenset({"hint", "what should i play", "show me the line"})
+
 
 class PuzzleSession:
     def __init__(self, puzzle: Puzzle, motif: str | None) -> None:
@@ -48,6 +52,8 @@ class PuzzleSession:
         self.status = "playing"  # playing | solved | given_up
         self.message = "Your move."
         self.recorded = False  # the outcome given to the profile (the panel sets it)
+        # Hint, Best move or Line used while the puzzle was played: the attempt is unrated.
+        self.assisted = False
         # The outcome as the profile took it, for the page's result line once the puzzle has
         # ended (as Lichess shows it): None until the room has recorded it.
         self.result: dict[str, Any] | None = None
@@ -83,6 +89,12 @@ class PuzzleSession:
             "remaining": max(0, (len(self.puzzle.moves) - self.index + 1) // 2),
             "result": self.result,
         }
+
+    def asked(self, text: str) -> None:
+        """The coach was asked `text`: one of the page's chips while the puzzle is played makes
+        the attempt unrated (Lichess: a hint shown, the round is not rated)."""
+        if not self.done and text.strip().lower() in ASSISTS:
+            self.assisted = True
 
     def recorded_as(self, solved: bool, before: int, level: int) -> None:
         """The outcome the profile took: solved or not, the puzzle level after it and how far

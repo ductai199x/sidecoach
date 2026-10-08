@@ -382,13 +382,16 @@ def record_attempt(
     ts: float,
     *,
     theme: str | None = None,
+    rated: bool = True,
 ) -> PuzzleOutcome:
     """An attempt into the profile store: kept beside the motif, and the puzzle rating moved
     as Lichess moves it (profile/glicko.py): a game against the puzzle's own rating and
     deviation, won when solved, the first attempt at a puzzle only; the puzzle's rating is
     not changed. `theme` is the training
     theme the player was told (Lichess's themed training keeps only part of the change), None
-    for a puzzle served as Lichess serves a mixed one. Shared by the profiler (a puzzle
+    for a puzzle served as Lichess serves a mixed one. `rated` False: help was used (the
+    page's Hint, Best move or Line), and the rating stays, as Lichess's does after a hint.
+    Shared by the profiler (a puzzle
     followed on the screen) and the puzzle page (one solved on its own board). `ts` is the
     time in epoch seconds."""
     now_ms = int(ts * 1000)
@@ -396,7 +399,7 @@ def record_attempt(
     after = before
     # Only the first attempt at a puzzle is rated, as on Lichess (PuzzleFinisher: a puzzle with
     # a round already is a replay); every attempt is kept beside the motif all the same.
-    if not store.attempted(puzzle.id):
+    if rated and not store.attempted(puzzle.id):
         opponent = glicko.Glicko(puzzle.rating, puzzle.deviation, glicko.DEFAULT_VOLATILITY)
         after = glicko.finish(before, opponent, solved, now_ms, theme=theme)
         store.set_setting(PERF_KEY, perf_json(glicko.stored(after, now_ms)))

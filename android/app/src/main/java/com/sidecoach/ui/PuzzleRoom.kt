@@ -188,7 +188,14 @@ class PuzzleRoom(
             // fresh room rather than this one on its way out.
             closing = true
         }
-        synchronized(lock) { commands.add(name to payload) }
+        synchronized(lock) {
+            if (name == "ask" && coaching.on) {
+                // Help asked for is marked as the page asks, with the position as it stands then:
+                // a last move played before the loop's next tick must not outrun it.
+                session.asked(payload.toString())
+            }
+            commands.add(name to payload)
+        }
     }
 
     // ---- the loop ------------------------------------------------------------------------
@@ -286,6 +293,7 @@ class PuzzleRoom(
                 // The page names the motif ("Puzzle · fork"), as Lichess's themed training names
                 // its theme: the result is weighed as that theme's (Glicko.themeWeight).
                 theme = session.motif?.let { Puzzles.angleFor(it) },
+                rated = !session.assisted,
             )
         } catch (exc: Exception) { // the record must not break the puzzle
             emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")

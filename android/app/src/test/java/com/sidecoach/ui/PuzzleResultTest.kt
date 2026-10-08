@@ -46,4 +46,24 @@ class PuzzleResultTest {
         val result = JSONObject(s.state()).getJSONObject("result")
         assertEquals("""{"solved":false,"level":1075,"change":-25}""", result.toString())
     }
+
+    /**
+     * Lichess: a hint shown, the round is not rated. The page's chips send these words; a question
+     * of the player's own words does not count, nor a chip once the puzzle is over
+     * (`test_hint_best_move_or_line_while_playing_makes_the_attempt_unrated`).
+     */
+    @Test
+    fun hintBestMoveOrLineWhilePlayingMakesTheAttemptUnrated() {
+        for (chip in listOf("hint", "what should I play", "show me the line", "  Hint ")) {
+            val s = PuzzleSession(mate, "mate")
+            s.asked(chip)
+            assertTrue(chip, s.assisted)
+        }
+        val s = PuzzleSession(mate, "mate")
+        s.asked("why does the rook go there?")
+        assertTrue(!s.assisted)
+        assertTrue(s.move("a1a8").isNotEmpty() && s.done)
+        s.asked("hint")
+        assertTrue("after the end: a review, not help", !s.assisted)
+    }
 }

@@ -387,3 +387,79 @@ def test_a_room_closes_with_its_page_never_for_being_left_alone(
     assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"]
     assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
     assert client.get(f"/api/puzzle/{FORK.id}/poll").json()["closed"]
+
+
+def test_hint_best_move_or_line_while_playing_makes_the_attempt_unrated() -> None:
+    # Lichess: a hint shown, the round is not rated. The page's chips send these words; a
+    # question of the player's own words does not count, nor a chip once the puzzle is over.
+    for chip in ("hint", "what should I play", "show me the line", "  Hint "):
+        s = PuzzleSession(FORK, "fork")
+        s.asked(chip)
+        assert s.assisted, chip
+    s = PuzzleSession(FORK, "fork")
+    s.asked("why does the knight go there?")
+    assert not s.assisted
+    s.move("d4e2")
+    s.move("e2c3")
+    assert s.done
+    s.asked("hint")
+    assert not s.assisted, "after the end: a review, not help"
+
+
+class _Coached:
+    """A room's coach that is on and takes questions (a real one needs Stockfish)."""
+
+    on = True
+    coach = None
+    detail = "on"
+    sink = None
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def ask(self, text: str, ts: float) -> None:
+        self.asked.append(text)
+
+    def events(self, events: Any, ts: float) -> None:
+        pass
+
+    def tick(self, ts: float) -> None:
+        pass
+
+    def drain(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_a_puzzle_solved_after_a_hint_leaves_the_rating_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sidecoach.config import Settings
+    from sidecoach.profile.store import Store
+
+    signals = _RoomSignals(monkeypatch)
+    settings = Settings(data_dir=tmp_path)
+    room = PuzzleRoom(
+        settings, FORK, "fork", store_path=tmp_path / "profile.sqlite", analysis=False, coach=False
+    )
+    coached = _Coached()
+    room._coaching = coached  # type: ignore[assignment]
+    try:
+        room.command("ask", "hint")
+        room.move("d4e2")
+        done = room.move("e2c3")
+        assert done["status"] == "solved"
+        # This room's outcome line: a room another test closed may still log its own.
+        while not signals.outcomes.get(timeout=HANG_S)[1].startswith(f"puzzle {FORK.id} solved"):
+            pass
+        assert coached.asked == ["hint"]
+        store = Store(tmp_path / "profile.sqlite")
+        assert puzzle_level(store) == 1500, "unrated: the rating stays"
+        assert [(pid, ok) for pid, _, ok in store.attempts()] == [(FORK.id, True)], "kept"
+        store.close()
+        assert room.state()["result"] == {"solved": True, "level": 1500, "change": 0}
+    finally:
+        room.command("close")
+        assert signals.ended(FORK.id).wait(HANG_S)
