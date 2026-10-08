@@ -1072,8 +1072,14 @@ class Reconciler:
         each move back in turn, and a frame catches the plies between at their move's slide
         only: a queen caught on c2 sliding b3-d1 back was read as two moves played from the
         ply before (the quick takebacks, 2026-10-06)."""
+        # One copy of the game, taken back a ply at a time, draws each ply as `_shown` does: a
+        # copy of the whole game for every ply made each frame of a long game cost the square
+        # of its length (200 plies: 40 ms a frame, 112 with a stray cell; the audit, 2026-10-07).
+        earlier = game.copy()
         for ply in range(min(shown, len(game.move_stack) - 1), -1, -1):
-            flight = self._in_flight(replace(base, view=ply), search, obs)
+            while len(earlier.move_stack) > ply:
+                earlier.pop()
+            flight = self._in_flight(replace(base, view=ply), search, obs, earlier)
             if flight is None:
                 continue
             # The piece on its way is the one the move from the ply moves, off its square and
@@ -1272,7 +1278,13 @@ class Reconciler:
                 found.append(replace(root, flight=flight))
         return [s for s in found if self._decorations_hold(s, obs)]
 
-    def _in_flight(self, story: Story, search: Search, obs: Observation) -> int | None:
+    def _in_flight(
+        self,
+        story: Story,
+        search: Search,
+        obs: Observation,
+        picture: chess.Board | None = None,
+    ) -> int | None:
         """The square of the frame's one piece of `story` on its way: off its square, which
         reads empty, and read on a square in a straight line from it that the story has empty
         -- every site slides a moved piece in a straight line, and a frame can catch it centred
@@ -1281,8 +1293,10 @@ class Reconciler:
         piece centred on one square in two frames running: read so in the frame before as well,
         it has stopped there, and is on its way no longer. Off centre it is moving, however
         many frames catch it near one square (a rook sliding a7-c7, caught near b7 twice, was
-        told as Rb7: the stress sweep, 2026-10-06, seed 16)."""
-        picture = self._shown(story)
+        told as Rb7: the stress sweep, 2026-10-06, seed 16). `picture`, when given, is what
+        `_shown` draws of `story`."""
+        if picture is None:
+            picture = self._shown(story)
         wrong = search.wrong(picture)
         left = [sq for sq in wrong if picture.piece_at(sq) is not None and obs[sq].kind == "empty"]
         if len(left) != 1 or len(wrong) > 2:

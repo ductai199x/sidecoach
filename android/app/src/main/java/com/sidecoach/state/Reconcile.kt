@@ -1197,8 +1197,13 @@ class Reconciler(
         search: Search,
         obs: Observation,
     ): Pair<Int?, Int?> {
+        // One copy of the game, taken back a ply at a time, draws each ply as [shown] does: a
+        // copy of the whole game for every ply made each frame of a long game cost the square of
+        // its length (200 plies: 40 ms a frame, 112 with a stray cell; the audit, 2026-10-07).
+        val earlier = game.copy()
         for (ply in minOf(shown, game.moveStack.size - 1) downTo 0) {
-            val flight = inFlight(base.copy(view = ply), search, obs) ?: continue
+            while (earlier.moveStack.size > ply) earlier.pop()
+            val flight = inFlight(base.copy(view = ply), search, obs, earlier) ?: continue
             // The piece on its way is the one the move from the ply moves, off its square and
             // short of the other end: read on either, it is the ply or the next one at rest.
             val move = game.moveStack[ply]
@@ -1411,10 +1416,14 @@ class Reconciler(
      * on one square in two frames running: read so in the frame before as well, it has stopped
      * there, and is on its way no longer. Off centre it is moving, however many frames catch it
      * near one square (a rook sliding a7-c7, caught near b7 twice, was told as Rb7: the stress
-     * sweep, 2026-10-06, seed 16).
+     * sweep, 2026-10-06, seed 16). [picture], when given, is what [shown] draws of [story].
      */
-    private fun inFlight(story: Story, search: Search, obs: Observation): Int? {
-        val picture = shown(story)
+    private fun inFlight(
+        story: Story,
+        search: Search,
+        obs: Observation,
+        picture: Board = shown(story),
+    ): Int? {
         val wrong = search.wrong(picture)
         val left = wrong.filter { picture.pieceAt(it) != null && obs.getValue(it).kind == Kind.EMPTY }
         if (left.size != 1 || wrong.size > 2) return null
