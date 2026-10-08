@@ -60,6 +60,31 @@ class SetupPuzzlesTest {
             assertTrue(target.readText(Charsets.UTF_8).startsWith("$header\r\n"))
             // The bar moves in the item's bytes, never past its size, and ends on it.
             assertEquals(listOf(item.size / 2 to item.size, item.size to item.size), seen)
+            assertFalse("put in place whole, nothing left beside it", File(dir, "puzzles/sample.csv.part").exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * A write cut short left half a sample.csv that Setup took as done for good (audit
+     * 2026-10-07, S4): it is written beside and put in place whole. The write is made to fail
+     * here by a folder where the file beside would go. `test_a_sample_written_half_is_not_taken_as_done`.
+     */
+    @Test
+    fun aSampleWrittenHalfIsNotTakenAsDone() {
+        val lines = listOf(header, row(0, "fork"), row(1, "fork"))
+        val blob = Zstd.compress((lines.joinToString("\n") + "\n").toByteArray(Charsets.UTF_8))
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = File(app.cacheDir, "setup-puzzles-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val target = File(dir, "puzzles/sample.csv")
+            File(dir, "puzzles/sample.csv.part").mkdirs()
+            val failed = runCatching {
+                fetchPuzzles(target, { _, _ -> }, source = { ByteArrayInputStream(blob) }, themes = listOf("fork"), perTheme = 2, maxScan = 10)
+            }
+            assertTrue(failed.isFailure)
+            assertFalse("half a sample is not the sample", target.exists())
         } finally {
             dir.deleteRecursively()
         }

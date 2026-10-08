@@ -53,6 +53,17 @@ val KOKORO_FILES: Map<String, Pair<String, Long>> = linkedMapOf(
             28_214_398L
         ),
 )
+
+/**
+ * Each voice file's sha256 (`KOKORO_SHA256`): a body of the right length that is not the file was
+ * kept as the voice (audit 2026-10-07). The q8 model's is its Hugging Face LFS hash; the voices'
+ * the desktop's, hashed 2026-10-08 from a fresh download.
+ */
+val KOKORO_SHA256: Map<String, String> = mapOf(
+    "kokoro-v1.0-q8.onnx" to "2033de0f4b93381bb55f6ffb4187f01c305bacfa193be9b920eba386f0699942",
+    "voices-v1.0.bin" to "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+)
+
 /**
  * Speech recognition's files, folder -> name -> (url, bytes): what `onnx_asr.load_model` and
  * `load_vad("silero")` fetch through the hub, for the phone's recogniser -- NVIDIA's Parakeet
@@ -232,7 +243,13 @@ fun items(context: Context): List<Item> {
                         continue
                     }
                     val at = base
-                    download(url, File(kokoroDir, name), { done, _ -> progress(at + done, null) }, expectSize = size)
+                    download(
+                        url,
+                        File(kokoroDir, name),
+                        { done, _ -> progress(at + done, null) },
+                        expectSha256 = KOKORO_SHA256.getValue(name),
+                        expectSize = size,
+                    )
                     base += size
                 }
             },
@@ -355,10 +372,14 @@ fun fetchPuzzles(
     val unique = LinkedHashMap<String, List<String>>()
     for (rows in kept.values) for (row in rows) unique[row[0]] = row
     target.parentFile?.mkdirs()
-    target.bufferedWriter(Charsets.UTF_8).use { out ->
+    // Written beside and put in place whole, as the downloads are: a write cut short left half a
+    // sample.csv that Setup took as done for good (audit 2026-10-07).
+    val part = File(target.path + ".part")
+    part.bufferedWriter(Charsets.UTF_8).use { out ->
         out.write(csvLine(header))
         for (row in unique.values) out.write(csvLine(row))
     }
+    if (!part.renameTo(target)) throw IOException("could not move ${part.name} into place")
 }
 
 /** Lichess's puzzle file, as it comes; closing it ends the connection. */

@@ -41,6 +41,14 @@ KOKORO_FILES = {
         28_214_398,
     ),
 }
+# Each voice file's sha256, checked as the speech models' are: a body of the right length that
+# is not the file was kept as the voice (audit 2026-10-07). Hashed 2026-10-08 from a fresh
+# download, and the same in the installed app's copies of 2026-09-21 (GitHub's release lists
+# no digest for these assets).
+KOKORO_SHA256 = {
+    "kokoro-v1.0.onnx": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+    "voices-v1.0.bin": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+}
 # The release the app takes, pinned as the phone (tools/fetch_stockfish.py) and the tests
 # are: "latest" moved under them, a renamed asset broke new installs, and the API that
 # named it is rate-limited for anonymous callers. The download URL needs no API call.
@@ -349,6 +357,7 @@ def items(settings: Settings) -> list[Item]:
                 url,
                 kokoro_dir / name,
                 lambda d, t, b=base: progress(b + d, None),
+                expect_sha256=KOKORO_SHA256[name],
                 expect_size=size,
             )
             base += size
@@ -475,10 +484,14 @@ def items(settings: Settings) -> list[Item]:
                     break
         unique = {row[0]: row for rows_ in kept.values() for row in rows_}
         puzzles_csv.parent.mkdir(parents=True, exist_ok=True)
-        with puzzles_csv.open("w", encoding="utf-8", newline="") as fh:
+        # Written beside and put in place whole, as the downloads are: a write cut short
+        # left half a sample.csv that Setup took as done for good (audit 2026-10-07).
+        part = puzzles_csv.with_suffix(puzzles_csv.suffix + ".part")
+        with part.open("w", encoding="utf-8", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(header)
             writer.writerows(unique.values())
+        part.replace(puzzles_csv)
 
     out.append(
         Item(

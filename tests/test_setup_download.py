@@ -153,6 +153,37 @@ def test_kokoro_is_present_only_at_its_full_size(tmp_path: Path) -> None:
     assert not kokoro.present()
 
 
+def test_a_voice_file_that_came_wrong_is_not_taken(
+    monkeypatch: pytest.MonkeyPatch, serve: Callable[[Handler], str], tmp_path: Path
+) -> None:
+    """The voice's files were checked by their size alone: a body of the right length that
+    is not the file (a proxy's page, a corrupted transfer) was kept as the voice, and Setup
+    never fetched it again (audit 2026-10-07, S4). They are checked against their sha256 as
+    the speech models are: such a body is refused and never becomes the file."""
+    import hashlib
+
+    wrong = bytes(reversed(FULL))  # the right size, not the file
+    url = serve(ranged(wrong))
+    monkeypatch.setattr(setup_mod, "KOKORO_FILES", {"voices-v1.0.bin": (f"{url}/v", len(FULL))})
+    monkeypatch.setattr(
+        setup_mod,
+        "KOKORO_SHA256",
+        {"voices-v1.0.bin": hashlib.sha256(FULL).hexdigest()},
+        raising=False,
+    )
+    settings = Settings(data_dir=tmp_path, tools_dir=tmp_path / "tools")
+    kokoro = next(i for i in setup_mod.items(settings) if i.id == "kokoro")
+    with pytest.raises(RuntimeError, match="checksum"):
+        kokoro.fetch(lambda done, total: None)
+    assert not (settings.voice_model_dir() / "voices-v1.0.bin").exists()
+    assert not kokoro.present()
+
+
+def test_every_voice_file_has_its_checksum() -> None:
+    assert set(setup_mod.KOKORO_SHA256) == set(setup_mod.KOKORO_FILES)
+    assert all(len(h) == 64 for h in setup_mod.KOKORO_SHA256.values())
+
+
 HANG_S = 60.0  # a safety net for a thread's signal, never the expected path
 
 

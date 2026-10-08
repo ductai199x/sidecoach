@@ -56,3 +56,59 @@ def test_the_sample_keeps_a_few_per_theme_and_reports_in_bytes(
     assert [line.split(",")[0] for line in written[1:]] == ["p00000", "p00002", "p00003", "p00001"]
     # The bar moves in the item's bytes, never past its size, and ends on it.
     assert seen == [(item.size // 2, item.size), (item.size, item.size)]
+
+
+def test_a_sample_written_half_is_not_taken_as_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sample was written straight into sample.csv: a write cut short (the disk full, the
+    app closed) left half a file that Setup took as done for good (audit 2026-10-07, S4). It
+    is written beside and put in place whole, as the downloads are."""
+    import csv
+
+    import zstandard
+
+    import sidecoach.setup as setup
+    from sidecoach.config import Settings
+
+    lines = [PUZZLE_HEADER, _row(0, "fork"), _row(1, "fork")]
+    blob = zstandard.ZstdCompressor().compress(("\n".join(lines) + "\n").encode("utf-8"))
+
+    class Response(io.BytesIO):
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self.close()
+
+    real_writer = csv.writer
+
+    class CutShort:
+        """A writer whose disk fills after the header."""
+
+        def __init__(self, fh: object) -> None:
+            self.inner = real_writer(fh)  # type: ignore[arg-type]
+
+        def writerow(self, row: list[str]) -> None:
+            self.inner.writerow(row)
+
+        def writerows(self, rows: object) -> None:
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(setup.urllib.request, "urlopen", lambda *a, **k: Response(blob))
+    monkeypatch.setattr(setup, "PUZZLE_THEMES", ["fork"])
+    monkeypatch.setattr(setup, "PUZZLES_PER_THEME", 2)
+    monkeypatch.setattr(setup.csv, "writer", CutShort)
+
+    item = next(i for i in setup.items(Settings(data_dir=tmp_path)) if i.id == "puzzles")
+    with pytest.raises(OSError):
+        item.fetch(lambda done, total: None)
+    assert not item.present(), "half a sample is not the sample"
+    assert not (tmp_path / "puzzles" / "sample.csv").exists()
+
+    monkeypatch.setattr(setup.csv, "writer", real_writer)
+    item.fetch(lambda done, total: None)
+    assert item.present()
+    written = (tmp_path / "puzzles" / "sample.csv").read_text(encoding="utf-8").splitlines()
+    assert [line.split(",")[0] for line in written[1:]] == ["p00000", "p00001"]
+    assert sorted(p.name for p in (tmp_path / "puzzles").iterdir()) == ["sample.csv"]
