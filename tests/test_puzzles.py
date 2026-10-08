@@ -425,3 +425,20 @@ def test_the_puzzle_rating_starts_fresh_and_moves_as_lichess_moves_it(tmp_path: 
     # Something saved that is no rating starts over as a new player; nothing raises.
     store.set_setting(PERF_KEY, "not json")
     assert puzzle_level(store) == 1500
+
+
+def test_a_rating_outside_the_stores_band_is_searched_at_its_nearest_end(tmp_path: Path) -> None:
+    # Lichess's rating has a floor of 400 and no ceiling; the store keeps 600-2000. Past either
+    # end the search is made around that end (WINDOW of it), and the rating is not changed.
+    store = _store(tmp_path)
+    low = ROWS[2].replace("fork1", "low01", 1).replace(",1000,80,", ",700,80,")
+    store.import_csv(puzzle_file(tmp_path / "low.csv", [low]))
+    assert [p.id for p in store.pick("fork", 2300)] == ["hi999"], "searched around 2000"
+    assert [p.id for p in store.pick("fork", 450)] == ["low01"], "searched around 600"
+    assert [p.id for p in store.pick("fork", 2000)] == ["hi999"]
+    # The recommendation still names the rating the player has.
+    profiler_store = Store(None)
+    profiler_store.set_setting(
+        PERF_KEY, '{"r": 2300.5, "d": 60.0, "v": 0.06, "nb": 300, "la": null}'
+    )
+    assert puzzle_level(profiler_store) == 2300

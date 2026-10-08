@@ -260,6 +260,27 @@ class PuzzlesTest {
         again.close()
     }
 
+    /**
+     * Lichess's rating has a floor of 400 and no ceiling; the store keeps 600-2000. Past either end
+     * the search is made around that end, and the rating is not changed
+     * (`test_a_rating_outside_the_stores_band_is_searched_at_its_nearest_end`).
+     */
+    @Test
+    fun aRatingOutsideTheStoresBandIsSearchedAtItsNearestEnd() {
+        val store = PuzzleStore(null)
+        store.importCsv(csv(dir("band")))
+        val low = ROWS[2].replaceFirst("fork1", "low01").replace(",1000,80,", ",700,80,")
+        store.importCsv(File(dir("band-low"), "low.csv").apply { writeText(HEADER + "\n" + low + "\n") })
+        assertEquals("searched around 2000", listOf("hi999"), store.pick("fork", 2300).map { it.id })
+        assertEquals("searched around 600", listOf("low01"), store.pick("fork", 450).map { it.id })
+        assertEquals(listOf("hi999"), store.pick("fork", 2000).map { it.id })
+        val profile = Store(null)
+        profile.setSetting(Puzzles.PERF_KEY, """{"r": 2300.5, "d": 60.0, "v": 0.06, "nb": 300, "la": null}""")
+        assertEquals(2300, Puzzles.puzzleLevel(profile))
+        profile.close()
+        store.close()
+    }
+
     private companion object {
         val Py = com.sidecoach.voice.Py
 

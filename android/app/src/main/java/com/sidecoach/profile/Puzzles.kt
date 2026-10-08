@@ -587,12 +587,15 @@ class PuzzleStore(val path: File?) {
         first: List<String> = emptyList(),
         shuffle: (MutableList<Puzzle>) -> Unit = { it.shuffle() },
     ): List<Puzzle> {
+        // A rating outside the store's band (Lichess's floor is 400, and it has no ceiling) is
+        // searched around the band's nearest end; the rating itself is not changed.
+        val around = level.coerceIn(Puzzles.RATING_MIN, Puzzles.RATING_MAX)
         val themes = Puzzles.themesFor(motif)
         val clauses = themes.joinToString(" OR ") { "(' ' || themes || ' ') LIKE ?" }
         val params = themes.map { "% $it %" }.toTypedArray()
         val rows = puzzles(
-            "SELECT * FROM puzzles WHERE ($clauses) AND rating BETWEEN ${level - Puzzles.WINDOW}" +
-                " AND ${level + Puzzles.WINDOW} ORDER BY plays DESC LIMIT 400",
+            "SELECT * FROM puzzles WHERE ($clauses) AND rating BETWEEN ${around - Puzzles.WINDOW}" +
+                " AND ${around + Puzzles.WINDOW} ORDER BY plays DESC LIMIT 400",
             params,
         )
         val pool = rows.filter { it.id !in exclude }

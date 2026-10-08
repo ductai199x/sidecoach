@@ -302,8 +302,11 @@ class PuzzleStore:
     ) -> list[Puzzle]:
         """`count` puzzles of the motif's themes within WINDOW of `level`: the ids in
         `first` (failed lately, due again) ahead of a random draw among the rest, none in
-        `exclude` (solved lately), the more played the better."""
+        `exclude` (solved lately), the more played the better. A rating outside the store's
+        band (RATING_MIN to RATING_MAX: Lichess's floor is 400, and it has no ceiling) is
+        searched around the band's nearest end; the rating itself is not changed."""
         rng = rng or random.Random()
+        level = min(max(level, RATING_MIN), RATING_MAX)
         themes = themes_for(motif)
         clauses = " OR ".join("(' ' || themes || ' ') LIKE ?" for _ in themes)
         params: list[object] = [f"% {t} %" for t in themes]
