@@ -160,6 +160,11 @@
 </div>
 
 <style>
+  /* The bar on a phone (360 px): the title beside the back arrow and the logo, its line under
+     it wrapping, rather than the bar going wider than the screen. */
+  #bar .group { flex-wrap: nowrap; }
+  #bar .group > div { min-width: 0; }
+  .rv-sub { white-space: normal; }
   .setup { max-width: 720px; margin: 0 auto; padding: 18px 16px 32px; overflow-y: auto; }
   .items { list-style: none; padding: 0; margin: 16px 0; }
   .items li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel); }
