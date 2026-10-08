@@ -101,7 +101,7 @@ class PuzzlesTest {
     }
 
     @Test
-    fun aWrongMoveOnAPuzzleOnTheScreenFailsItAndTheLevelStepsBack() {
+    fun aWrongMoveOnAPuzzleOnTheScreenFailsItAndTheRatingGoesDown() {
         val puzzles = PuzzleStore(null)
         puzzles.importCsv(csv(dir("screen")))
         val store = Store(null)
@@ -115,7 +115,9 @@ class PuzzlesTest {
         val out = profiler.onEvent(played("q", shown, "Nc3"), 4.0)
         val outcome = out.filterIsInstance<PuzzleOutcome>().single()
         assertTrue(!outcome.solved && outcome.puzzleId == "pin01")
-        assertEquals(Puzzles.LEVEL_START - Puzzles.LEVEL_STEP, outcome.level)
+        // A new player's first puzzle, lost against pin01's 1200 / 80: the rating as Lichess moves it.
+        val lost = Glicko.finish(Glicko.Perf(), Glicko.Rating(1200.0, 80.0, 0.09), false, 4000L)
+        assertEquals(lost.glicko.intRating, outcome.level)
         assertNull("not one the profile recommended", outcome.motif)
         // A position that is no puzzle of the store is left alone.
         val start = com.sidecoach.chess.STARTING_FEN

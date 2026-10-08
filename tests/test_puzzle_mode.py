@@ -15,7 +15,8 @@ import chess
 import pytest
 
 from sidecoach.events import GameStarted, MovePlayed, Side
-from sidecoach.profile.puzzles import Puzzle
+from sidecoach.profile import glicko
+from sidecoach.profile.puzzles import Puzzle, puzzle_level
 from sidecoach.ui.panel import PanelEngine
 from sidecoach.ui.puzzle import PuzzleSession
 from sidecoach.ui.puzzle_room import PuzzleRoom
@@ -217,10 +218,14 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     signals.logged(client, FORK.id, f"puzzle {FORK.id} failed (fork)")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
-    assert store.setting("puzzle_level") == "1075"
+    # The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76.
+    lost = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), False, 0)
+    first = lost.glicko.int_rating
+    assert puzzle_level(store) == first < 1500
+    assert store.setting("puzzle_level") is None, "the old level is neither read nor written"
     # The page's result line reads the outcome as the profile took it: a miss is not a solve.
     result = client.get(f"/api/puzzle/{FORK.id}/poll").json()["state"]["result"]
-    assert result == {"solved": False, "level": 1075, "change": -25}
+    assert result == {"solved": False, "level": first, "change": first - 1500}
     # The user's question reaches the room. Its coach is off here: the room says so, as the
     # panel does, or the page's typing dots waited for an answer for good.
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
@@ -243,38 +248,37 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     signals.logged(client, MATE.id, f"puzzle {MATE.id} failed")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [MATE.id, FORK.id]
-    assert store.setting("puzzle_level") == "1050"
+    second = puzzle_level(store)
+    assert second < first, "a give-up is a loss"
     store.close()
     result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
-    assert result == {"solved": False, "level": 1050, "change": -25}
+    assert result == {"solved": False, "level": second, "change": second - first}
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
 
-def test_a_solved_puzzle_shows_the_level_it_moved_to(
+def test_a_solved_puzzle_shows_the_rating_it_moved_to(
     make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The result line after a solve: the level after it and the change it really made (near
-    # the top of the range the step is cut short, so the change is not always LEVEL_STEP).
+    # The result line after a solve: the puzzle rating after it and the change Lichess shows
+    # (the difference of the two ratings as shown, truncated).
     from fastapi.testclient import TestClient
 
-    from sidecoach.profile.store import Store
     from sidecoach.ui.server import build_app
 
     signals = _RoomSignals(monkeypatch)
     _csv(tmp_path)
-    store = Store(tmp_path / "profile.sqlite")
-    store.set_setting("puzzle_level", "1990")
-    store.close()
+    won = glicko.finish(glicko.Perf(), glicko.Glicko(900, 70, 0.09), True, 0).glicko.int_rating
+    assert 1500 < won < 1600, "a solve against a much weaker puzzle: a small gain"
     engine = make_panel()
     client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
     assert client.post(f"/api/puzzle/{MATE.id}/open").json()["state"]["result"] is None
     done = client.post(f"/api/puzzle/{MATE.id}/move", json={"uci": "a1a8"}).json()["state"]
     assert done["status"] == "solved"
     # This room's line alone: a room another test closed may still log its own outcome.
-    signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level 2000")
+    signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level {won}")
     result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
-    assert result == {"solved": True, "level": 2000, "change": 10}
+    assert result == {"solved": True, "level": won, "change": won - 1500}
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
@@ -288,13 +292,9 @@ def test_a_puzzle_stats_offers_for_an_area_opens_with_its_motif(
     from fastapi.testclient import TestClient
 
     from sidecoach.profile import stats as stat_sums
-    from sidecoach.profile.store import Store
     from sidecoach.ui.server import build_app
 
-    _csv(tmp_path)
-    store = Store(tmp_path / "profile.sqlite")
-    store.set_setting("puzzle_level", str(FORK.rating))
-    store.close()
+    _csv(tmp_path)  # FORK's 1547 is within 150 of a new player's puzzle rating, 1500
     real = stat_sums.stats
 
     def with_fork_to_work_on(store: Any, f: Any) -> dict[str, Any]:

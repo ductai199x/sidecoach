@@ -20,15 +20,18 @@ from sidecoach.events import (
     Resync,
     Side,
 )
+from sidecoach.profile import glicko
 from sidecoach.profile.profiler import Profiler
 from sidecoach.profile.puzzles import (
-    LEVEL_START,
-    LEVEL_STEP,
+    PERF_KEY,
     Attempt,
     Puzzle,
     PuzzleStore,
     open_store,
     position_key,
+    puzzle_level,
+    puzzle_perf,
+    record_attempt,
 )
 from sidecoach.profile.store import Store
 from tests.coaching import drain, scripted_coach
@@ -148,9 +151,10 @@ def test_a_review_brings_a_recommendation_for_the_weak_motif(tmp_path: Path) -> 
     f.play("Qxf7#", label=Label.BEST)
     got = f.end("1-0", "game over on board")
     rec = next(e for e in got if isinstance(e, Recommendation))
-    assert rec.motif == "fork" and rec.motif_words == "fork" and rec.level == LEVEL_START
+    # Around a new player's puzzle rating, 1500: the fork puzzles within 150 of it.
+    assert rec.motif == "fork" and rec.motif_words == "fork" and rec.level == 1500
     assert "turning point" in rec.reason, "one game: the turning point's motif, not a cell yet"
-    assert rec.puzzles and {p.id for p in rec.puzzles} <= {"000rO", "fork1"}
+    assert [p.id for p in rec.puzzles] == ["000Pw"]
     assert all(p.url.startswith("https://lichess.org/training/") for p in rec.puzzles)
     _, rows = f.store.query("SELECT puzzle_ids FROM recommendations")
     assert str(rows[0][0]).split() == [p.id for p in rec.puzzles]
@@ -229,15 +233,19 @@ def test_a_recommended_puzzle_opened_on_the_screen_is_scored(tmp_path: Path) -> 
     out = profiler.on_event(_played("p", shown, "Nxe5"), 2.0)
     outcome = next(e for e in out if isinstance(e, PuzzleOutcome))
     assert outcome.solved and outcome.puzzle_id == "fork1" and outcome.motif == "fork"
-    assert outcome.level == LEVEL_START + LEVEL_STEP and profiler.puzzle_level() == outcome.level
+    # The rating as Lichess moves it: a new player's first puzzle, won against fork1's 1000 / 80.
+    won = glicko.finish(glicko.Perf(), glicko.Glicko(1000, 80, 0.09), True, 2000)
+    assert outcome.level == won.glicko.int_rating and profiler.puzzle_level() == outcome.level
+    assert outcome.level > 1500
     assert store.attempts() == [("fork1", 2.0, True)]
-    # A wrong move on the next one fails it and the level steps back.
+    # A wrong move on the next one fails it and the rating goes down.
     shown = _faced(puzzles, "pin01")
     started = GameStarted(game_id="q", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
     profiler.on_event(started, 3.0)
     out = profiler.on_event(_played("q", shown, "Nc3"), 4.0)
     outcome = next(e for e in out if isinstance(e, PuzzleOutcome))
-    assert not outcome.solved and outcome.level == LEVEL_START
+    lost = glicko.finish(glicko.read(won, 4000), glicko.Glicko(1200, 80, 0.09), False, 4000)
+    assert not outcome.solved and outcome.level == lost.glicko.int_rating < won.glicko.int_rating
     assert outcome.motif is None, "not one the profile recommended"
     # A position that is no puzzle of the store is left alone.
     plain = GameStarted(
@@ -388,3 +396,32 @@ def test_without_its_csv_an_old_store_keeps_the_fallback_until_the_csv_comes(
     store = open_store(data)
     assert store is not None and store.version() == 1 and store.get("fork1").deviation == 80  # type: ignore[union-attr]
     store.close()
+
+
+def test_the_puzzle_rating_starts_fresh_and_moves_as_lichess_moves_it(tmp_path: Path) -> None:
+    # Tai, 2026-10-08: "start fresh". Everyone starts as Lichess's new player, 1500 / 500 /
+    # 0.09; the old level is left as it was beside the new rating, never read again.
+    store = Store(None)
+    store.set_setting("puzzle_level", "1125")
+    assert puzzle_level(store) == 1500 and puzzle_perf(store, 0) == glicko.Perf()
+    fork = _store(tmp_path).get("000Pw")
+    assert fork is not None and (fork.rating, fork.deviation) == (1547, 76)
+    day = 24 * 3600
+    outcome = record_attempt(store, fork, "fork", True, ["Ne2+"], 10 * day)
+    want = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), True, 10 * day * 1000)
+    assert outcome.level == want.glicko.int_rating == puzzle_level(store)
+    assert puzzle_perf(store, 10 * day * 1000) == want
+    assert store.setting("puzzle_level") == "1125", "the old level untouched"
+    assert store.setting(PERF_KEY) is not None
+    # A month away: the deviation grows before the next puzzle, as Lichess reads it.
+    later = puzzle_perf(store, 40 * day * 1000)
+    assert later.glicko.rating == want.glicko.rating
+    assert later.glicko.deviation > want.glicko.deviation
+    lost = record_attempt(store, fork, "fork", False, ["Nc2"], 40 * day)
+    expect = glicko.finish(later, glicko.Glicko(1547, 76, 0.09), False, 40 * day * 1000)
+    assert lost.level == expect.glicko.int_rating
+    # The puzzle's own rating is not changed (Lichess changes it; a copy of its ratings here).
+    assert _store(tmp_path).get("000Pw").rating == 1547  # type: ignore[union-attr]
+    # Something saved that is no rating starts over as a new player; nothing raises.
+    store.set_setting(PERF_KEY, "not json")
+    assert puzzle_level(store) == 1500

@@ -580,8 +580,8 @@ class Profiler(
      * An outcome judged elsewhere (a puzzle solved on the puzzle page's board): kept beside the
      * motif, the level moved; the event for the coach and the panel.
      */
-    fun recordPuzzle(puzzleId: String, motif: String?, solved: Boolean, moves: List<String>, ts: Double): List<Event> =
-        listOf(Puzzles.recordAttempt(store, puzzleId, motif, solved, moves, ts))
+    fun recordPuzzle(puzzle: Puzzle, motif: String?, solved: Boolean, moves: List<String>, ts: Double): List<Event> =
+        listOf(Puzzles.recordAttempt(store, puzzle, motif, solved, moves, ts))
 
     /** The puzzle whose solver's position this is, a recommended one first. */
     private fun puzzleAt(fen: String): Attempt? {
@@ -601,7 +601,7 @@ class Profiler(
         val attempt = attempt ?: return emptyList()
         val outcome = attempt.move(event.uci, byUser = event.byUser) ?: return emptyList()
         this.attempt = null
-        return recordPuzzle(attempt.puzzle.id, attempt.motif, outcome == "solved", attempt.played, ts)
+        return recordPuzzle(attempt.puzzle, attempt.motif, outcome == "solved", attempt.played, ts)
     }
 
     /** Time passing: a finished game whose verdicts never came is reviewed as it is. */

@@ -278,7 +278,7 @@ class PuzzleRoom(
             before = Puzzles.puzzleLevel(store)
             Puzzles.recordAttempt(
                 store,
-                session.puzzle.id,
+                session.puzzle,
                 session.motif,
                 solved,
                 session.sans.toList(),

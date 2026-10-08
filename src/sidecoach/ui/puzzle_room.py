@@ -238,7 +238,7 @@ class PuzzleRoom:
             before = puzzle_level(self.store)
             outcome = record_attempt(
                 self.store,
-                session.puzzle.id,
+                session.puzzle,
                 session.motif,
                 solved,
                 list(session.sans),

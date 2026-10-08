@@ -540,7 +540,7 @@ class PuzzleOutcome(Event):
     puzzle_id: str
     motif: str | None = None
     solved: bool
-    level: int  # the player's puzzle level after this outcome
+    level: int  # the player's puzzle rating after this outcome, as Lichess shows it (truncated)
 
 
 class ProfileSnapshot(Event):

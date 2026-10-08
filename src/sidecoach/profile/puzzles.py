@@ -6,10 +6,10 @@ themes Lichess tagged it with -- the same names our tagger uses for the tactics
 (`analysis/motifs.py`), so a weak cell of the profile names the puzzles to practise.
 
 A recommendation is made after a game's review from the profile's worst motif: a few
-puzzles of that theme near the player's puzzle level, none of them solved lately, a
-failed one back first (spaced repetition of the plainest kind). The player's level moves
-with the outcomes, a step up on a solve and down on a fail, from a start of 1100 for a
-chess.com player around 1200.
+puzzles of that theme near the player's puzzle rating, none of them solved lately, a
+failed one back first (spaced repetition of the plainest kind). The player's puzzle rating
+moves with the outcomes exactly as Lichess's does (profile/glicko.py: Glicko-2 against the
+puzzle's own rating and deviation), from Lichess's new player's 1500.
 
 The outcome is read off the screen like everything else: a puzzle opened on Lichess is
 a position the pipeline joins (GameStarted of kind "position"); its placement and side
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import json
 import random
 import sqlite3
 import threading
@@ -32,6 +33,7 @@ from typing import Any
 import chess
 
 from sidecoach.events import PuzzleOutcome, PuzzleRef
+from sidecoach.profile import glicko
 
 # The ratings a puzzle may have to be kept at all: the band the coach serves (chess.com
 # 800-1600, DESIGN) with room to grow either way.
@@ -39,9 +41,11 @@ RATING_MIN = 600
 RATING_MAX = 2000
 # The window around the player's level a recommended puzzle comes from.
 WINDOW = 150
-# The level starts here for a new player and moves this much per outcome.
-LEVEL_START = 1100
-LEVEL_STEP = 25
+# The profile setting the player's puzzle rating is kept under, as Lichess keeps it (Glicko-2:
+# rating, deviation, volatility, how many rated puzzles, the last one's time). Every player
+# starts as Lichess's new player (Tai, 2026-10-08: "start fresh"); the level of before, under
+# "puzzle_level", is left as it was and no longer read.
+PERF_KEY = "puzzle_perf"
 # How many puzzles a recommendation carries.
 COUNT = 3
 # A puzzle's rating deviation where the CSV gives none (or the store predates the column): the
@@ -317,24 +321,67 @@ class PuzzleStore:
         return chosen
 
 
+def perf_json(perf: glicko.Perf) -> str:
+    """A puzzle rating as it is saved under PERF_KEY, in Lichess's own field names."""
+    return json.dumps(
+        {
+            "r": perf.glicko.rating,
+            "d": perf.glicko.deviation,
+            "v": perf.glicko.volatility,
+            "nb": perf.nb,
+            "la": perf.latest,
+        }
+    )
+
+
+def parse_perf(value: str | None) -> glicko.Perf:
+    """A puzzle rating saved by `perf_json`; a new player's (1500 / 500 / 0.09) when there is
+    none, or what is there is not one (a value only ever written here: corrected, as invalid)."""
+    if not value:
+        return glicko.Perf()
+    try:
+        raw = json.loads(value)
+        perf = glicko.Perf(
+            glicko.Glicko(float(raw["r"]), float(raw["d"]), float(raw["v"])),
+            nb=int(raw["nb"]),
+            latest=None if raw.get("la") is None else int(raw["la"]),
+        )
+    except (ValueError, TypeError, KeyError):
+        return glicko.Perf()
+    return perf if perf.glicko.sanity_check() else glicko.Perf()
+
+
+def puzzle_perf(store: Any, now_ms: int) -> glicko.Perf:
+    """The player's puzzle rating as Lichess reads it: the deviation as of `now_ms`."""
+    return glicko.read(parse_perf(store.setting(PERF_KEY)), now_ms)
+
+
 def puzzle_level(store: Any) -> int:
-    """The player's puzzle level from the profile store (LEVEL_START to begin with)."""
-    value = store.setting("puzzle_level")
-    return int(value) if value else LEVEL_START
+    """The player's puzzle rating as Lichess shows it (truncated): what the puzzles are picked
+    around. 1500 for a new player."""
+    return parse_perf(store.setting(PERF_KEY)).glicko.int_rating
 
 
 def record_attempt(
-    store: Any, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
+    store: Any, puzzle: Puzzle, motif: str | None, solved: bool, moves: list[str], ts: float
 ) -> PuzzleOutcome:
-    """An attempt into the profile store: kept beside the motif, the level moved a step
-    up on a solve and down on a fail. Shared by the profiler (a puzzle followed on the
-    screen) and the puzzle page (one solved on its own board)."""
-    step = LEVEL_STEP if solved else -LEVEL_STEP
-    level = max(RATING_MIN, min(RATING_MAX, puzzle_level(store) + step))
-    store.set_setting("puzzle_level", str(level))
-    store.add_attempt(puzzle_id, ts, motif, solved, moves)
+    """An attempt into the profile store: kept beside the motif, and the puzzle rating moved
+    as Lichess moves it (profile/glicko.py): a game against the puzzle's own rating and
+    deviation, won when solved; the puzzle's rating is not changed. Shared by the profiler (a
+    puzzle followed on the screen) and the puzzle page (one solved on its own board). `ts` is
+    the time in epoch seconds."""
+    now_ms = int(ts * 1000)
+    before = puzzle_perf(store, now_ms)
+    opponent = glicko.Glicko(puzzle.rating, puzzle.deviation, glicko.DEFAULT_VOLATILITY)
+    after = glicko.finish(before, opponent, solved, now_ms)
+    store.set_setting(PERF_KEY, perf_json(glicko.stored(after, now_ms)))
+    store.add_attempt(puzzle.id, ts, motif, solved, moves)
     return PuzzleOutcome(
-        game_id=f"puzzle-{puzzle_id}", puzzle_id=puzzle_id, motif=motif, solved=solved, level=level
+        game_id=f"puzzle-{puzzle.id}",
+        puzzle_id=puzzle.id,
+        motif=motif,
+        solved=solved,
+        level=after.glicko.int_rating,
     )
 
 

@@ -18,9 +18,10 @@ import kotlin.concurrent.withLock
  * names the puzzles to practise.
  *
  * A recommendation is made after a game's review from the profile's worst motif: a few puzzles
- * of that theme near the player's puzzle level, none of them solved lately, a failed one back
- * first (spaced repetition of the plainest kind). The player's level moves with the outcomes,
- * a step up on a solve and down on a fail, from a start of 1100.
+ * of that theme near the player's puzzle rating, none of them solved lately, a failed one back
+ * first (spaced repetition of the plainest kind). The player's puzzle rating moves with the
+ * outcomes exactly as Lichess's does (Glicko: Glicko-2 against the puzzle's own rating and
+ * deviation), from Lichess's new player's 1500.
  *
  * The outcome is read off the screen like everything else: a puzzle opened on Lichess is a
  * position the pipeline joins (GameStarted of kind "position"); its placement and side to move
@@ -36,9 +37,13 @@ object Puzzles {
     /** The window around the player's level a recommended puzzle comes from. */
     const val WINDOW = 150
 
-    /** The level starts here for a new player and moves this much per outcome. */
-    const val LEVEL_START = 1100
-    const val LEVEL_STEP = 25
+    /**
+     * The profile setting the player's puzzle rating is kept under, as Lichess keeps it (Glicko-2:
+     * rating, deviation, volatility, how many rated puzzles, the last one's time). Every player
+     * starts as Lichess's new player (Tai, 2026-10-08: "start fresh"); the level of before, under
+     * "puzzle_level", is left as it was and no longer read.
+     */
+    const val PERF_KEY = "puzzle_perf"
 
     /** How many puzzles a recommendation carries. */
     const val COUNT = 3
@@ -103,20 +108,59 @@ object Puzzles {
         return store
     }
 
-    /** The player's puzzle level from the profile store ([LEVEL_START] to begin with). */
-    fun puzzleLevel(store: Store): Int = store.setting("puzzle_level")?.takeIf { it.isNotEmpty() }?.toInt() ?: LEVEL_START
+    /** A puzzle rating as it is saved under [PERF_KEY], in Lichess's own field names. */
+    fun perfJson(perf: Glicko.Perf): String =
+        org.json.JSONObject()
+            .put("r", perf.glicko.rating)
+            .put("d", perf.glicko.deviation)
+            .put("v", perf.glicko.volatility)
+            .put("nb", perf.nb)
+            .put("la", perf.latest ?: org.json.JSONObject.NULL)
+            .toString()
 
     /**
-     * An attempt into the profile store: kept beside the motif, the level moved a step up on a
-     * solve and down on a fail. Shared by the profiler (a puzzle followed on the screen) and
-     * the puzzle page (one solved on its own board).
+     * A puzzle rating saved by [perfJson]; a new player's (1500 / 500 / 0.09) when there is none,
+     * or what is there is not one (a value only ever written here: corrected, as invalid).
      */
-    fun recordAttempt(store: Store, puzzleId: String, motif: String?, solved: Boolean, moves: List<String>, ts: Double): PuzzleOutcome {
-        val step = if (solved) LEVEL_STEP else -LEVEL_STEP
-        val level = maxOf(RATING_MIN, minOf(RATING_MAX, puzzleLevel(store) + step))
-        store.setSetting("puzzle_level", level.toString())
-        store.addAttempt(puzzleId, ts, motif, solved, moves)
-        return PuzzleOutcome(gameId = "puzzle-$puzzleId", puzzleId = puzzleId, motif = motif, solved = solved, level = level)
+    fun parsePerf(value: String?): Glicko.Perf {
+        if (value.isNullOrEmpty()) return Glicko.Perf()
+        val perf = try {
+            val raw = org.json.JSONObject(value)
+            Glicko.Perf(
+                Glicko.Rating(raw.getDouble("r"), raw.getDouble("d"), raw.getDouble("v")),
+                nb = raw.getInt("nb"),
+                latest = if (raw.isNull("la")) null else raw.getLong("la"),
+            )
+        } catch (_: org.json.JSONException) {
+            return Glicko.Perf()
+        }
+        return if (perf.glicko.sanityCheck()) perf else Glicko.Perf()
+    }
+
+    /** The player's puzzle rating as Lichess reads it: the deviation as of [nowMs]. */
+    fun puzzlePerf(store: Store, nowMs: Long): Glicko.Perf = Glicko.read(parsePerf(store.setting(PERF_KEY)), nowMs)
+
+    /**
+     * The player's puzzle rating as Lichess shows it (truncated): what the puzzles are picked
+     * around. 1500 for a new player.
+     */
+    fun puzzleLevel(store: Store): Int = parsePerf(store.setting(PERF_KEY)).glicko.intRating
+
+    /**
+     * An attempt into the profile store: kept beside the motif, and the puzzle rating moved as
+     * Lichess moves it (Glicko): a game against the puzzle's own rating and deviation, won when
+     * solved; the puzzle's rating is not changed. Shared by the profiler (a puzzle followed on
+     * the screen) and the puzzle page (one solved on its own board). [ts] is the time in epoch
+     * seconds.
+     */
+    fun recordAttempt(store: Store, puzzle: Puzzle, motif: String?, solved: Boolean, moves: List<String>, ts: Double): PuzzleOutcome {
+        val nowMs = (ts * 1000).toLong()
+        val before = puzzlePerf(store, nowMs)
+        val opponent = Glicko.Rating(puzzle.rating.toDouble(), puzzle.deviation.toDouble(), Glicko.DEFAULT_VOLATILITY)
+        val after = Glicko.finish(before, opponent, solved, nowMs)
+        store.setSetting(PERF_KEY, perfJson(Glicko.stored(after, nowMs)))
+        store.addAttempt(puzzle.id, ts, motif, solved, moves)
+        return PuzzleOutcome(gameId = "puzzle-${puzzle.id}", puzzleId = puzzle.id, motif = motif, solved = solved, level = after.glicko.intRating)
     }
 
     /** The records of a CSV text as `list(csv.reader(io.StringIO(text, newline="")))` reads them. */

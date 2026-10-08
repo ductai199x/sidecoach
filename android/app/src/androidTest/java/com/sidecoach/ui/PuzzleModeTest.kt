@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.GameStarted
+import com.sidecoach.profile.Glicko
 import com.sidecoach.profile.Puzzle
 import com.sidecoach.profile.Puzzles
 import com.sidecoach.profile.Store
@@ -166,9 +167,12 @@ class PuzzleModeTest {
             outcome(api, fork.id, "puzzle ${fork.id} failed (fork)")
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
-            assertEquals("1075", store.setting("puzzle_level"))
+            // The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76.
+            val first = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), false, 0L).glicko.intRating
+            assertTrue(Puzzles.puzzleLevel(store) == first && first < 1500)
+            assertEquals("the old level is neither read nor written", null, store.setting("puzzle_level"))
             // The page's result line reads the outcome as the profile took it: a miss is not a solve.
-            assertEquals(result(false, 1075, -25), polledResult(api, fork.id))
+            assertEquals(result(false, first, first - 1500), polledResult(api, fork.id))
             // The user's question reaches the room. Its coach is off here: the room says so, as
             // the panel does, or the page's typing dots waited for an answer for good.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/ask", """{"text": "hint"}""").getBoolean("ok"))
@@ -197,9 +201,10 @@ class PuzzleModeTest {
             outcome(api, mate.id, "puzzle ${mate.id} failed")
             store = Store(File(tmp, "profile.sqlite"))
             assertEquals(listOf(mate.id, fork.id), store.attempts().map { it.first })
-            assertEquals("1050", store.setting("puzzle_level"))
+            val second = Puzzles.puzzleLevel(store)
+            assertTrue("a give-up is a loss", second < first)
             store.close()
-            assertEquals(result(false, 1050, -25), polledResult(api, mate.id))
+            assertEquals(result(false, second, second - first), polledResult(api, mate.id))
             val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
             mateRoom.join(HANG_MS)
@@ -213,24 +218,24 @@ class PuzzleModeTest {
     }
 
     /**
-     * The result line after a solve: the level after it and the change it really made (near the
-     * top of the range the step is cut short). `test_a_solved_puzzle_shows_the_level_it_moved_to`.
+     * The result line after a solve: the puzzle rating after it and the change Lichess shows (the
+     * difference of the two ratings as shown, truncated).
+     * `test_a_solved_puzzle_shows_the_rating_it_moved_to`.
      */
     @Test
-    fun aSolvedPuzzleShowsTheLevelItMovedTo() {
+    fun aSolvedPuzzleShowsTheRatingItMovedTo() {
         val tmp = tempDir()
         try {
             csv(tmp)
-            val store = Store(File(tmp, "profile.sqlite"))
-            store.setSetting("puzzle_level", "1990")
-            store.close()
+            val won = Glicko.finish(Glicko.Perf(), Glicko.Rating(900.0, 70.0, 0.09), true, 0L).glicko.intRating
+            assertTrue("a solve against a much weaker puzzle: a small gain", won in 1501..1599)
             val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
             val opened = call(api, "POST", "/api/puzzle/${mate.id}/open")
             assertTrue(opened.getJSONObject("state").isNull("result"))
             val done = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a8"}""").getJSONObject("state")
             assertEquals("solved", done.getString("status"))
             outcome(api, mate.id, "puzzle ${mate.id} solved")
-            assertEquals(result(true, 2000, 10), polledResult(api, mate.id))
+            assertEquals(result(true, won, won - 1500), polledResult(api, mate.id))
             val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
             mateRoom.join(HANG_MS)
