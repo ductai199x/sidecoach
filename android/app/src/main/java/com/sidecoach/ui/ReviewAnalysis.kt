@@ -1,6 +1,7 @@
 package com.sidecoach.ui
 
 import com.sidecoach.analysis.Engine
+import com.sidecoach.analysis.Interrupted
 import com.sidecoach.analysis.WholeSearcher
 import com.sidecoach.analysis.Strength
 import com.sidecoach.analysis.positionScore
@@ -121,21 +122,61 @@ object ReviewAnalysis {
             .put("lines", lines)
     }
 
+    /** A position's lines no longer wanted: another position was asked for since. `Superseded`. */
+    class Superseded : RuntimeException("another position was asked for")
+
     /**
      * The engine's best lines for the positions the analysis board shows: one engine, made on
      * the first position asked of it and closed with the room; one position at a time, measured
      * whole the one-line way ([WholeSearcher]) -- three lines to the review's depth at once
      * exploded on decided and forcing positions, a minute and more for one position. `Lines`.
+     *
+     * The last position asked for is the board's: a search for one asked before it is stopped,
+     * and one still waiting its turn is never made ([Superseded]). Every position the player
+     * stepped through was searched to its end, one after another, and the lines of the one they
+     * stopped on came only after all of them (the audit of 2026-10-07: ten seconds for ten steps).
      */
     class Lines(private val strength: Strength, private val makeEngine: EngineMaker) {
-        private var searcher: WholeSearcher? = null
+        @Volatile private var searcher: WholeSearcher? = null
         private val lock = Any()
+
+        // How many positions have been asked for: a search goes on only while its own is the
+        // last. Taken under [asking], never across a search.
+        @Volatile private var asked = 0
+        private val asking = Any()
 
         /** The best LINES lines from [fen] at the review's depth, each from White's side and played out. */
         fun lines(fen: String): JSONObject {
             val board = Board(fen)
-            val found = synchronized(lock) { ready().analyse(board) }
-            return linesJson(board, found)
+            return linesJson(board, search(board))
+        }
+
+        /**
+         * [board]'s best LINES lines at the review's depth. [Superseded] when another position
+         * is asked for before they are found: the search under way is stopped for it. `search`.
+         */
+        fun search(board: Board): List<Line> {
+            val ask: Int
+            val running: WholeSearcher?
+            synchronized(asking) {
+                asked += 1
+                ask = asked
+                running = searcher
+            }
+            running?.engine?.interrupt() // the position asked before: stopped, not finished
+            synchronized(lock) {
+                val ready = ready()
+                return ready.engine.interruptible {
+                    // Asked again after this search began to listen for a stop (its own stop
+                    // cleared as it began): the stop above may have come before, and was lost.
+                    if (ask != asked) throw Superseded()
+                    try {
+                        ready.analyse(board)
+                    } catch (_: Interrupted) {
+                        throw Superseded()
+                    }
+                }
+            }
         }
 
         fun close() {

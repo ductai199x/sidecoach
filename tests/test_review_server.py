@@ -267,6 +267,65 @@ def test_the_analysis_board_plays_any_move_reads_the_engine_and_the_players_game
     assert "saved" not in plain
 
 
+def test_the_lines_of_the_position_on_the_board_never_wait_for_one_stepped_past(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stepping through the analysis board asks the engine's lines of each position it passes;
+    the position the player stops on is answered as soon as its own search is done. A search
+    for a position the board has left is stopped, never finished first: every one was searched
+    to its end, one after another, and the lines of the one on the board came ten seconds after
+    ten steps (the audit of 2026-10-07)."""
+    import threading
+
+    import chess
+
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.ui import review_analysis
+    from tests.fakes import GatedEngine
+
+    left = chess.Board()
+    left.push_uci("e2e4")
+    here = left.copy()
+    here.push_uci("e7e5")
+    engine = GatedEngine(gated=[left.fen()])
+    monkeypatch.setattr(review_analysis, "find_stockfish", lambda _settings: Path("stockfish"))
+    lines = review_analysis.Lines(
+        Settings(data_dir=tmp_path), STRENGTHS["fast"], lambda **_: engine
+    )
+    answers: dict[str, Any] = {}
+
+    def ask(fen: str) -> None:
+        try:
+            answers[fen] = lines.lines(fen)
+        except (RuntimeError, AssertionError) as exc:  # stopped; or a search never let go
+            answers[fen] = exc
+
+    before = threading.Thread(target=ask, args=(left.fen(),), daemon=True)
+    now = threading.Thread(target=ask, args=(here.fen(),), daemon=True)
+    before.start()
+    try:
+        assert engine.entered[left.fen()].wait(HANG_S), "the first search never began"
+        now.start()  # the player stepped on while the position left was being searched
+        now.join(HANG_S)
+        # Answered with the search of the position left never let go: stopped for it.
+        assert engine.stopped == [left.fen()], "the board's lines waited for a position left"
+        before.join(HANG_S)
+    finally:
+        engine.release(left.fen())
+        before.join(HANG_S)
+        now.join(HANG_S)
+
+    shown = answers[here.fen()]
+    assert shown["fen"] == here.fen() and shown["depth"] == STRENGTHS["fast"].depth
+    assert len(shown["lines"]) == 1 and shown["lines"][0]["steps"], "the same lines as ever"
+    assert isinstance(answers[left.fen()], review_analysis.Superseded)
+    # The stop holds for that search alone: the position asked again is answered whole.
+    again = lines.lines(left.fen())
+    assert again["fen"] == left.fen() and again["depth"] == STRENGTHS["fast"].depth
+    lines.close()
+
+
 class RecordingVoice:
     """The panel's voice, keeping what it was told."""
 

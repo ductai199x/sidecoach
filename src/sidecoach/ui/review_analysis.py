@@ -21,7 +21,7 @@ import chess
 import chess.pgn
 
 from sidecoach.analysis.annotator import WholeSearcher
-from sidecoach.analysis.engine import Engine
+from sidecoach.analysis.engine import Engine, Interrupted
 from sidecoach.analysis.game_review import Strength
 from sidecoach.analysis.score import position_score
 from sidecoach.config import Settings, find_stockfish
@@ -127,11 +127,24 @@ def white_eval(board: chess.Board, line: Any) -> dict[str, int | None]:
     return {"cp": sign * (line.score_cp or 0), "mate": None}
 
 
+class Superseded(RuntimeError):
+    """A position's lines no longer wanted: another position was asked for since."""
+
+    def __init__(self) -> None:
+        super().__init__("another position was asked for")
+
+
 class Lines:
     """The engine's best lines for the positions the analysis board shows: one engine, made on
     the first position asked of it and closed with the room; one position at a time, measured
     whole the one-line way (`WholeSearcher`) -- three lines to the review's depth at once
-    exploded on decided and forcing positions, a minute and more for one position."""
+    exploded on decided and forcing positions, a minute and more for one position.
+
+    The last position asked for is the board's: a search for one asked before it is stopped,
+    and one still waiting its turn is never made (`Superseded`). Every position the player
+    stepped through was searched to its end, one after another, and the lines of the one they
+    stopped on came only after all of them (the audit of 2026-10-07: ten seconds for ten steps).
+    """
 
     def __init__(
         self,
@@ -144,6 +157,10 @@ class Lines:
         self._make_engine = make_engine
         self._searcher: WholeSearcher | None = None
         self._lock = threading.Lock()
+        # How many positions have been asked for: a search goes on only while its own is the
+        # last. Taken under `_asking`, never across a search.
+        self._asked = 0
+        self._asking = threading.Lock()
 
     def lines(self, fen: str) -> dict[str, Any]:
         """The best LINES lines from `fen` at the review's depth, each from White's side and
@@ -152,9 +169,25 @@ class Lines:
         return self.render(board, self.search(board))
 
     def search(self, board: chess.Board) -> list[Line]:
-        """`board`'s best LINES lines at the review's depth."""
+        """`board`'s best LINES lines at the review's depth. `Superseded` when another position
+        is asked for before they are found: the search under way is stopped for it."""
+        with self._asking:
+            self._asked += 1
+            ask = self._asked
+            running = self._searcher
+        if running is not None:
+            running.engine.interrupt()  # the position asked before: stopped, not finished
         with self._lock:
-            return self._ready().analyse(board)
+            searcher = self._ready()
+            with searcher.engine.interruptible():
+                # Asked again after this search began to listen for a stop (its own stop
+                # cleared as it began): the stop above may have come before, and was lost.
+                if ask != self._asked:
+                    raise Superseded
+                try:
+                    return searcher.analyse(board)
+                except Interrupted:
+                    raise Superseded from None
 
     @staticmethod
     def render(board: chess.Board, found: list[Line]) -> dict[str, Any]:
