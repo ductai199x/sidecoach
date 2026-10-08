@@ -390,6 +390,36 @@
     messageClass = "";
   }
 
+  // The puzzle not opened: said in plain words with what to do, the coach's controls off (there
+  // is no puzzle to ask about), and Try again when the request itself failed.
+  let unopened = $state(false);
+  let openFailed = $state(false);
+  async function openRoom(): Promise<void> {
+    unopened = false;
+    openFailed = false;
+    message = "…";
+    messageClass = "";
+    let opened: Awaited<ReturnType<typeof api.open>>;
+    try {
+      await connect();
+      opened = await api.open();
+    } catch (e) {
+      message = `Couldn't open the puzzle. ${failureText(e)}`;
+      messageClass = "bad";
+      unopened = openFailed = true;
+      return;
+    }
+    if (!opened.ok) {
+      message = "Couldn't open the puzzle: Sidecoach has no puzzle by this name. Open another from Stats or the panel.";
+      messageClass = "bad";
+      unopened = true;
+      return;
+    }
+    nextIds = opened.next || [];
+    if (opened.state) render(opened.state);
+    poll();
+  }
+
   onMount(() => {
     document.body.classList.add("puzzle-page");
     fitBoard();
@@ -409,21 +439,7 @@
     // that quiet for a page that vanished.
     const onVisibility = () => { if (document.hidden && !closed) void api.poll(cursor, true).catch(() => {}); };
     document.addEventListener("visibilitychange", onVisibility);
-    (async () => {
-      let opened: Awaited<ReturnType<typeof api.open>>;
-      try {
-        await connect();
-        opened = await api.open();
-      } catch (e) {
-        message = `Couldn't open the puzzle. ${failureText(e)}`;
-        messageClass = "bad";
-        return;
-      }
-      if (!opened.ok) { message = opened.error || "no such puzzle"; return; }
-      nextIds = opened.next || [];
-      if (opened.state) render(opened.state);
-      poll();
-    })();
+    void openRoom();
     return () => {
       closed = true;
       document.body.classList.remove("puzzle-page");
@@ -447,12 +463,12 @@
     <img class="pz-mark" src="/logo.svg" alt="" draggable="false" />
     <div class="pz-head">
       <div class="pz-name">Puzzle{room?.motif ? " · " + motifWords(room.motif) : ""}</div>
-      <div class="pz-sub">{room ? `Rated ${room.rating} · You play ${capital(room.bottom)}` : "…"}</div>
+      <div class="pz-sub">{room ? `Rated ${room.rating} · You play ${capital(room.bottom)}` : unopened ? "" : "…"}</div>
     </div>
   </div>
   <div class="group controls">
     {#if room?.voice_ready !== false}
-      <button id="voice" class="iconbtn" aria-pressed={!!room?.voice} title="The coach's answers aloud" aria-label="The coach's voice" onclick={() => { if (room) { const on = !room.voice; room.voice = on; api.voice(on).catch(() => { if (room) room.voice = !on; }); } }}>
+      <button id="voice" class="iconbtn" aria-pressed={!!room?.voice} disabled={unopened} title="The coach's answers aloud" aria-label="The coach's voice" onclick={() => { if (room) { const on = !room.voice; room.voice = on; api.voice(on).catch(() => { if (room) room.voice = !on; }); } }}>
         <svg class="ic-on" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>
         <svg class="ic-off" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
       </button>
@@ -531,6 +547,7 @@
         <span class="pz-left">{[room?.status === "playing" ? remaining : "", misses].filter(Boolean).join(" · ")}</span>
       {/if}
       <span class="pz-links">
+        {#if openFailed}<button type="button" class="pz-link ready" onclick={() => void openRoom()}>Try again</button>{/if}
         {#if nextIds.length}<a class="pz-link" class:ready={room && room.status !== "playing"} href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
       </span>
     </div>
@@ -539,7 +556,7 @@
   <section id="right">
     <div class="panel-title">Coach</div>
     <div class="coach" bind:this={coachEl} use:stickToBottom>
-      {#if !messages.length && !pending}
+      {#if !messages.length && !pending && !unopened}
         <div class="coach-empty"><b>Find the best move.</b><span>Stuck? Press Hint, or ask the coach anything below.</span></div>
       {/if}
       {#each messages as m, i (m.id)}
@@ -549,8 +566,8 @@
     </div>
     <div class="composer">
       <div class="box">
-        <input type="text" placeholder="Ask the coach…" autocomplete="off" spellcheck="false" bind:value={text} oninput={() => (notSent = null)} onkeydown={(e) => { if (e.key === "Enter") void send(); }} />
-        <button class="sendbtn" data-state={text.trim() && !sending ? "send" : "quiet"} disabled={sending} title="Send (Enter)" aria-label="Send" onclick={() => void send()}>
+        <input type="text" placeholder="Ask the coach…" autocomplete="off" spellcheck="false" disabled={unopened} bind:value={text} oninput={() => (notSent = null)} onkeydown={(e) => { if (e.key === "Enter") void send(); }} />
+        <button class="sendbtn" data-state={text.trim() && !sending ? "send" : "quiet"} disabled={sending || unopened} title="Send (Enter)" aria-label="Send" onclick={() => void send()}>
           <svg class="ic ic-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l7 7-1.4 1.4L13 7.8V20h-2V7.8l-4.6 4.6L5 11z"/></svg>
         </button>
       </div>
@@ -558,9 +575,9 @@
         <div class="not-sent" role="alert">Not sent — <button onclick={retrySend}>Retry</button></div>
       {/if}
       <div class="chips-row">
-        <button class="qchip" title="A nudge at the current disclosure level" onclick={() => quick("hint")}>Hint</button>
-        <button class="qchip" title="The engine's move, then why" onclick={() => quick("what should I play")}>Best move</button>
-        <button class="qchip" title="The engine's line" onclick={() => quick("show me the line")}>Line</button>
+        <button class="qchip" title="A nudge at the current disclosure level" disabled={unopened} onclick={() => quick("hint")}>Hint</button>
+        <button class="qchip" title="The engine's move, then why" disabled={unopened} onclick={() => quick("what should I play")}>Best move</button>
+        <button class="qchip" title="The engine's line" disabled={unopened} onclick={() => quick("show me the line")}>Line</button>
       </div>
     </div>
   </section>

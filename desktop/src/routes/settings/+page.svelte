@@ -7,7 +7,7 @@
   // and the field lights up. Every change is saved as it is made -- no Save button -- and the
   // save tells the other windows; what another window saved comes in here too.
   import { onDestroy, onMount, tick } from "svelte";
-  import { SLOW_MS, connect, del, get, post, put } from "$lib/api";
+  import { SLOW_MS, connect, del, failureText, get, post, put } from "$lib/api";
   import { announce, inShell, onAnnounce, openWindow, setShellSettings, shellSettings, type ShellSettings } from "$lib/shell.svelte";
   import { voiceLabel } from "$lib/voices";
   import { keyFromEvent, keyFromMouse, keyName as hotkeyName, typesText } from "$lib/hotkey";
@@ -323,6 +323,27 @@
     box.classList.add("flash");
   }
 
+  // The settings read when the page opens, and by Try again when that failed: said in the
+  // page's place of "Loading…".
+  let loadError = $state("");
+  async function firstLoad(): Promise<void> {
+    loadError = "";
+    let got: Described;
+    try {
+      await connect();
+      got = await get<Described>("/api/settings");
+    } catch (e) {
+      loadError = `Couldn't load your settings. ${failureText(e)}`;
+      return;
+    }
+    data = got;
+    values = structuredClone($state.snapshot(data).settings);
+    saved = structuredClone($state.snapshot(data).settings);
+    shell = await shellSettings();
+    shellSaved = structuredClone($state.snapshot(shell));
+    await reveal();
+  }
+
   onMount(() => {
     void pollGpu();
     gpuTimer = setInterval(() => void pollGpu(), 5000);
@@ -342,15 +363,7 @@
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onLeave);
     window.addEventListener("beforeunload", onLeave);
-    (async () => {
-      await connect();
-      data = await get<Described>("/api/settings");
-      values = structuredClone($state.snapshot(data).settings);
-      saved = structuredClone($state.snapshot(data).settings);
-      shell = await shellSettings();
-      shellSaved = structuredClone($state.snapshot(shell));
-      await reveal();
-    })();
+    void firstLoad();
     return () => {
       stop();
       window.removeEventListener("focus", onFocus);
@@ -834,7 +847,9 @@
   </nav>
 
   <div class="secbody">
-    {#if !data}
+    {#if !data && loadError}
+      <p role="alert"><span class="err">{loadError}</span> <button type="button" class="link" onclick={() => void firstLoad()}>Try again</button></p>
+    {:else if !data}
       <p class="muted">Loading…</p>
     {:else if section === "app"}
       <h2>App</h2>

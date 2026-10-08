@@ -37,6 +37,7 @@ a.iconbtn { text-decoration: none; }
 .pz-link { color: var(--muted); font-size: 14px; font-weight: 600; text-decoration: none; padding: 6px 2px; }
 .pz-link:hover, .pz-link:active { color: var(--ink); }
 .pz-link.ready { color: var(--accent); }
+button.pz-link { background: none; border: 0; font-family: inherit; cursor: pointer; }
 /* A solution given up: the review's line controls (lib/review/LineControls) in this page's
    colours, with targets a finger hits. */
 .pz-foot:has(.pz-solution) { grid-template-rows: 22px 44px; }
