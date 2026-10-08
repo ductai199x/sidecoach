@@ -1207,6 +1207,8 @@ def test_material_is_always_from_the_users_side_and_the_review_draws_on_the_tall
     coach.ask("what do I keep missing?", 10.0)
     out = drain(coach)
     assert "1 of your 3 moves" in out[-1].text and "2. Qh5 (inaccuracy)" in out[-1].text
+    # One of them: "was", not "were" (the audit, 2026-10-07: grammar in the templates).
+    assert out[-1].text.startswith("1 of your 3 moves was best."), out[-1].text
 
 
 def test_a_bare_hint_is_asked_as_a_hint_and_one_the_model_fails_twice_is_the_template() -> None:

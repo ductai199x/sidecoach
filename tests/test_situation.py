@@ -230,6 +230,16 @@ def test_their_idea_is_said_only_when_it_changes_something() -> None:
     )
 
 
+def test_the_least_active_piece_is_counted_in_words_and_in_the_singular() -> None:
+    """Polugaevsky-Nezhmetdinov, 16...Bg7: "it reaches only 1 squares" (the audit, 2026-10-07:
+    figures and grammar in the templates)."""
+    board = chess.Board("r1b2rk1/ppp4p/2np3b/3Nn1p1/2P1Pp1q/1P1B1P2/PB2N1PP/R2Q1RK1 b - - 1 16")
+    said = situation.positional_key(
+        board, chess.Move.from_uci("h6g7"), "activate", None, "middlegame"
+    )
+    assert said == "Your bishop on h6 is your least active piece: it reaches only one square"
+
+
 def test_the_first_hint_does_not_name_the_answers_square_as_their_idea() -> None:
     """Wiel-Vaganian, 11...Qh4+ the best move: the first hint was "If you let them, their best
     is h4." -- the square of the answer, named at the first rung (the audit, 2026-10-07; Tai: a

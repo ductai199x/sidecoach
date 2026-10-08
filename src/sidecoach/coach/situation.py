@@ -781,9 +781,9 @@ def positional_key(
             return f"Your {_named(board, home)} is still shut in behind the pawn on {_sq(pawn)}"
         if kind == "activate":
             reach = chess.popcount(board.attacks_mask(best.from_square) & ~board.occupied_co[us])
-            return (
-                f"Your {name} on {frm} is your least active piece: it reaches only {reach} squares"
-            )
+            # "it reaches only 1 squares" (the audit, 2026-10-07): in words, and agreeing.
+            squares = "one square" if reach == 1 else f"{idea_words.in_words(reach)} squares"
+            return f"Your {name} on {frm} is your least active piece: it reaches only {squares}"
         if kind == "space" and piece.piece_type == chess.PAWN and phase != "endgame":
             # Where, not which pawn: 14.Qe1 in Johner-Nimzowitsch, a4 "White's last chance to
             # make a fight of it".

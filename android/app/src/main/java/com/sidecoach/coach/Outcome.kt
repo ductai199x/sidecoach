@@ -54,7 +54,8 @@ private fun amount(diff: Int): String {
     if (n == 1) return "a pawn"
     if (n == 2) return "two pawns"
     if (n == 3) return "a piece's worth of material"
-    return "material worth $n pawns"
+    // In words, as the coach says its counts: "material worth 8 pawns" (the audit, 2026-10-07).
+    return "material worth ${IdeaWords.inWords(n)} pawns"
 }
 
 private val OUTCOME_ORDER = intArrayOf(QUEEN, ROOK, BISHOP, KNIGHT, PAWN)

@@ -43,3 +43,13 @@ def test_a_plain_win_names_the_pieces_and_a_promotion_keeps_the_sum() -> None:
     # A pawn made a queen: the pieces no longer add up, the pawns' worth (9 - 1) stands.
     said, gain = _gain(chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"), "a8=Q+")
     assert "player" in gain and re.search(r"\b(8|eight)\b", gain), said
+
+
+def test_a_sum_in_pawns_is_said_in_words() -> None:
+    """ "material worth 8 pawns" (the audit, 2026-10-07: figures in the templates): the coach
+    says its counts in words, as "two pawns" and "a piece's worth" already were."""
+    said, _ = _gain(chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1"), "a8=Q+")
+    assert "material worth eight pawns" in said, said
+    # Past eight too: a queen made with a pawn taken on the way.
+    said, _ = _gain(chess.Board("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1"), "axb8=Q+")
+    assert "material worth eleven pawns" in said, said

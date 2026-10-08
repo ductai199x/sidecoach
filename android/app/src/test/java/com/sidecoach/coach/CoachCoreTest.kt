@@ -826,7 +826,8 @@ class CoachCoreTest {
         messages(coach)
         judgedAtScholar(coach, "Qxf7#", 0.0, Severity.NONE, Label.BEST, 10.0)
         coach.ask("how did I do overall?", 12.0)
-        assertTrue(messages(coach).last().text.startsWith("1 of your 1 moves were best."))
+        // Not "1 of your 1 moves were best." (the audit, 2026-10-07: grammar in the templates).
+        assertTrue(messages(coach).last().text.startsWith("Your one move was best."))
     }
 
     // 3. A combination is a forcing sequence or one plan, not any run of best moves

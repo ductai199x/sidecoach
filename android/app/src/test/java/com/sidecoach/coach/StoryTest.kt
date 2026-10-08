@@ -275,4 +275,31 @@ class StoryTest {
         said = Story.effects(board, board.parseSan("Kf7")!!, null).map { it.said }
         assertTrue(said.toString(), said.none { it.startsWith("attacks") })
     }
+
+    /**
+     * A bot game (1300 v 1300, 40...Kh5, mate in 11 with the b-pawn queening): the first hint said
+     * "Your pawn on b7 is 6 squares from queening" (the audit, 2026-10-07: figures in the
+     * templates; `test_a_pawn_far_from_queening_is_counted_in_words`).
+     */
+    @Test
+    fun aPawnFarFromQueeningIsCountedInWords() {
+        val fen = "8/pp4pp/6k1/8/1r5P/7K/2b5/8 b - - 1 40"
+        val lines = listOf(
+            "g6h5 h3g2 c2f5 g2f3 b4c4 f3g2 b7b5 g2f2 b5b4 f2f3 b4b3 f3g3 b3b2 g3f2 b2b1q",
+            "b4c4 h4h5 g6g5 h3g3 b7b5 g3f3 c2f5 f3g3 b5b4 g3f3",
+            "c2f5 h3g3 g6h5 g3f3 b4c4 f3g2 b7b5 g2f2 b5b4 f2f3",
+            "b7b5 h4h5 g6g5 h3g3 c2f5 g3f3 b4c4 f3g3 b5b4 g3f3",
+        ).map { Line(moves = it.split(" "), depth = 18, expectedScore = 1.0, mate = 11) }
+        val analysis = Analysis(
+            gameId = "",
+            fen = fen,
+            ply = 79,
+            lines = lines,
+            decisive = false,
+            onlyMove = false,
+            threats = listOf("h4h5"),
+        )
+        val said = ideaTemplate(factsFromAnalysis(Board(fen), analysis, user = false))
+        assertTrue(said, "Your pawn on b7 is six squares from queening" in said)
+    }
 }

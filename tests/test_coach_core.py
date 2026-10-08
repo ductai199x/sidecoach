@@ -745,7 +745,8 @@ def test_the_review_sentence_names_every_label_it_counts() -> None:
     coach.on_event(mate_analysis(6), 7.0)
     drain(coach)
     mate_played(coach)  # a best move
-    assert coach._review_template().startswith("1 of your 1 moves were best.")
+    # Not "1 of your 1 moves were best." (the audit, 2026-10-07: grammar in the templates).
+    assert coach._review_template().startswith("Your one move was best.")
 
 
 # 3. A combination is a forcing sequence or one plan, not any run of best moves

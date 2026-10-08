@@ -4409,7 +4409,11 @@ class Coach:
         # held the great and the brilliant moves too said less than it counted.
         named = [k for k in strong if counts.get(k)] or ["best", "excellent"]
         said = named[0] if len(named) == 1 else f"{', '.join(named[:-1])} or {named[-1]}"
-        text = f"{good} of your {len(judged)} moves were {said}."
+        # Agreeing with the count: "1 of your 1 moves were best" (the audit, 2026-10-07).
+        if len(judged) == 1:
+            text = f"Your one move was {'' if good else 'not '}{said}."
+        else:
+            text = f"{good} of your {len(judged)} moves {'was' if good == 1 else 'were'} {said}."
         # The one thing to work on, from the session's causes, before the game has a review:
         # a skill to practise, not a tally of the times it went wrong.
         kept = [(n, cause) for cause, n in self._causes_seen.items() if n >= 2 and cause in HABIT]

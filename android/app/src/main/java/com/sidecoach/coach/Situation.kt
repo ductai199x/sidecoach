@@ -747,7 +747,9 @@ object Situation {
             if (kind == "activate") {
                 val own = if (us) 1 else 0
                 val reach = popcount(board.attacksMask(best.from) and board.occupiedCo[own].inv())
-                return "Your $name on $frm is your least active piece: it reaches only $reach squares"
+                // "it reaches only 1 squares" (the audit, 2026-10-07): in words, and agreeing.
+                val squares = if (reach == 1) "one square" else "${IdeaWords.inWords(reach)} squares"
+                return "Your $name on $frm is your least active piece: it reaches only $squares"
             }
             if (kind == "space" && piece.pieceType == PAWN && phase != "endgame") {
                 // Where, not which pawn: 14.Qe1 in Johner-Nimzowitsch, a4 "White's last chance to

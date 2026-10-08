@@ -2209,7 +2209,12 @@ class Coach(
         // held the great and the brilliant moves too said less than it counted.
         val named = strong.filter { (counts[it] ?: 0) > 0 }.ifEmpty { listOf("best", "excellent") }
         val labels = if (named.size == 1) named[0] else "${named.dropLast(1).joinToString(", ")} or ${named.last()}"
-        var text = "$good of your ${judged.size} moves were $labels."
+        // Agreeing with the count: "1 of your 1 moves were best" (the audit, 2026-10-07).
+        var text = if (judged.size == 1) {
+            "Your one move was ${if (good > 0) "" else "not "}$labels."
+        } else {
+            "$good of your ${judged.size} moves ${if (good == 1) "was" else "were"} $labels."
+        }
         // The one thing to work on, from the session's causes, before the game has a review:
         // a skill to practise, not a tally of the times it went wrong.
         val kept = causesSeen.entries

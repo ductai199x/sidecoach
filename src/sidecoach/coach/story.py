@@ -345,9 +345,9 @@ def queening(board: chess.Board, idea: Idea) -> str | None:
             return None
         rank = chess.square_rank(start)
         to_go = 7 - rank if us == chess.WHITE else rank
-        return (
-            f"Your pawn on {_sq(start)} is {_NUMBER.get(to_go, f'{to_go} squares')} from queening"
-        )
+        # In words past four too: "6 squares from queening" (the audit, 2026-10-07).
+        away = _NUMBER.get(to_go, f"{idea_words.in_words(to_go)} squares")
+        return f"Your pawn on {_sq(start)} is {away} from queening"
     return None
 
 

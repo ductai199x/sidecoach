@@ -117,6 +117,19 @@ class SituationTest {
     }
 
     /**
+     * Polugaevsky-Nezhmetdinov, 16...Bg7: "it reaches only 1 squares" (the audit, 2026-10-07:
+     * figures and grammar; `test_the_least_active_piece_is_counted_in_words_and_in_the_singular`).
+     */
+    @Test
+    fun theLeastActivePieceIsCountedInWordsAndInTheSingular() {
+        val board = Board("r1b2rk1/ppp4p/2np3b/3Nn1p1/2P1Pp1q/1P1B1P2/PB2N1PP/R2Q1RK1 b - - 1 16")
+        assertEquals(
+            "Your bishop on h6 is your least active piece: it reaches only one square",
+            Situation.positionalKey(board, Move.fromUci("h6g7"), "activate", null, "middlegame"),
+        )
+    }
+
+    /**
      * Wiel-Vaganian, 11...Qh4+ the best move: the first hint was "If you let them, their best is
      * h4." -- the square of the answer, named at the first rung (the audit, 2026-10-07). Their
      * idea is not said when it names the answer's square

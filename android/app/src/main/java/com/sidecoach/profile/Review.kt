@@ -200,10 +200,12 @@ object Review {
         val how = if (!reason.isNullOrEmpty()) HOW_IT_ENDED[reason] ?: " by $reason" else ""
         val colour = review.userSide.name.lowercase()
         val outcome = outcome(review.result, review.userSide)
+        // "1 move", not "1 moves" (the audit, 2026-10-07).
+        val moves = "$fullmoves move${if (fullmoves == 1) "" else "s"}"
         if (review.result != "1-0" && review.result != "0-1" && review.result != "1/2-1/2") {
-            out.add("You played $colour for $fullmoves moves; I did not see how it ended.")
+            out.add("You played $colour for $moves; I did not see how it ended.")
         } else {
-            out.add("You played $colour and $outcome$how in $fullmoves moves.")
+            out.add("You played $colour and $outcome$how in $moves.")
         }
         if (!review.opening.isNullOrEmpty()) out.add("The opening was the ${review.opening}.")
         if (review.moves != 0) {

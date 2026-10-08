@@ -375,7 +375,9 @@ object Story {
             if (start == null || board.pieceTypeAt(start) != PAWN) return null
             val rank = squareRank(start)
             val toGo = if (us == WHITE) 7 - rank else rank
-            return "Your pawn on ${sq(start)} is ${NUMBER[toGo] ?: "$toGo squares"} from queening"
+            // In words past four too: "6 squares from queening" (the audit, 2026-10-07).
+            val away = NUMBER[toGo] ?: "${IdeaWords.inWords(toGo)} squares"
+            return "Your pawn on ${sq(start)} is $away from queening"
         }
         return null
     }

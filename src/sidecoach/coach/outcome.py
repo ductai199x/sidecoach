@@ -11,6 +11,7 @@ from __future__ import annotations
 import chess
 
 from sidecoach.analysis.positional import is_passed
+from sidecoach.coach import idea_words
 
 _VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
 _FILES = "abcdefgh"
@@ -43,7 +44,8 @@ def _amount(diff: int) -> str:
         return "two pawns"
     if n == 3:
         return "a piece's worth of material"
-    return f"material worth {n} pawns"
+    # In words, as the coach says its counts: "material worth 8 pawns" (the audit, 2026-10-07).
+    return f"material worth {idea_words.in_words(n)} pawns"
 
 
 _ORDER = (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)

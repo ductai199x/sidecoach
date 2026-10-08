@@ -339,3 +339,46 @@ def test_attacks_only_what_the_moved_piece_can_take() -> None:
     board = chess.Board("1r2R1k1/p5p1/2p4p/2PpQ3/2nP4/B3PP1P/P5PK/4q3 b - - 10 34")
     said = [e.said for e in story.effects(board, board.parse_san("Kf7"), None)]
     assert not any(s.startswith("attacks") for s in said)
+
+
+def test_a_pawn_far_from_queening_is_counted_in_words() -> None:
+    """A bot game (1300 v 1300, 40...Kh5, mate in 11 with the b-pawn queening): the first hint
+    said "Your pawn on b7 is 6 squares from queening" (the audit, 2026-10-07: figures in the
+    templates); two to four squares were already words."""
+    fen = "8/pp4pp/6k1/8/1r5P/7K/2b5/8 b - - 1 40"
+    best = [
+        "g6h5",
+        "h3g2",
+        "c2f5",
+        "g2f3",
+        "b4c4",
+        "f3g2",
+        "b7b5",
+        "g2f2",
+        "b5b4",
+        "f2f3",
+        "b4b3",
+        "f3g3",
+        "b3b2",
+        "g3f2",
+        "b2b1q",
+    ]
+    others = (
+        ["b4c4", "h4h5", "g6g5", "h3g3", "b7b5", "g3f3", "c2f5", "f3g3", "b5b4", "g3f3"],
+        ["c2f5", "h3g3", "g6h5", "g3f3", "b4c4", "f3g2", "b7b5", "g2f2", "b5b4", "f2f3"],
+        ["b7b5", "h4h5", "g6g5", "h3g3", "c2f5", "g3f3", "b4c4", "f3g3", "b5b4", "g3f3"],
+    )
+    analysis = Analysis(
+        game_id="",
+        fen=fen,
+        ply=79,
+        lines=[
+            Line(moves=moves, depth=18, expected_score=1.0, mate=11) for moves in (best, *others)
+        ],
+        decisive=False,
+        only_move=False,
+        threats=["h4h5"],
+    )
+    board = chess.Board(fen)
+    said = idea_template(facts_from_analysis(board, analysis, user=chess.BLACK))
+    assert "Your pawn on b7 is six squares from queening" in said, said

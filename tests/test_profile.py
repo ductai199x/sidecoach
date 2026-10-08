@@ -1261,6 +1261,11 @@ def test_the_review_says_how_the_game_ended_in_plain_words() -> None:
     )
     assert first("1-0", "checkmate") == "You played white and won by checkmate in 17 moves."
     assert first("1/2-1/2", "draw agreed") == "You played white and drew by agreement in 17 moves."
+    # One move is "1 move" (the audit, 2026-10-07: "1 moves", grammar in the templates).
+    mated = GameReview(game_id="g", user_side=Side.WHITE, result="1-0", reason="checkmate")
+    assert lines_for(mated, 1)[0] == "You played white and won by checkmate in 1 move."
+    unknown = GameReview(game_id="g", user_side=Side.WHITE, result="*", reason=None)
+    assert lines_for(unknown, 1)[0] == "You played white for 1 move; I did not see how it ended."
 
 
 def test_a_query_answering_infinity_is_shown_not_a_crash() -> None:

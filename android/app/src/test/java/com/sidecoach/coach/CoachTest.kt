@@ -2072,7 +2072,8 @@ class CoachTest {
         provider.replies.addAll(listOf("", ""))
         coach.ask("what do I keep missing?", 10.0)
         assertEquals(
-            "1 of your 3 moves were best. You lost the most ground at 2. Qh5 (inaccuracy).",
+            // One of them: "was", not "were" (the audit, 2026-10-07: grammar in the templates).
+            "1 of your 3 moves was best. You lost the most ground at 2. Qh5 (inaccuracy).",
             messages(coach).last().text,
         )
     }

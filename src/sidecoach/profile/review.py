@@ -174,10 +174,12 @@ def lines_for(review: GameReview, fullmoves: int) -> list[str]:
     how = HOW_IT_ENDED.get(review.reason, f" by {review.reason}") if review.reason else ""
     colour = review.user_side.value
     outcome = _outcome(review.result, review.user_side)
+    # "1 move", not "1 moves" (the audit, 2026-10-07).
+    moves = f"{fullmoves} move{'' if fullmoves == 1 else 's'}"
     if review.result not in ("1-0", "0-1", "1/2-1/2"):
-        out.append(f"You played {colour} for {fullmoves} moves; I did not see how it ended.")
+        out.append(f"You played {colour} for {moves}; I did not see how it ended.")
     else:
-        out.append(f"You played {colour} and {outcome}{how} in {fullmoves} moves.")
+        out.append(f"You played {colour} and {outcome}{how} in {moves}.")
     if review.opening:
         out.append(f"The opening was the {review.opening}.")
     if review.moves:

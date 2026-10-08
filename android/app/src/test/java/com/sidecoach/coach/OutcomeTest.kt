@@ -40,6 +40,11 @@ class OutcomeTest {
         assertTrue(won, won.startsWith("the player wins a pawn"))
         val queening = Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
         val said = lineOutcome(queening, uci(queening, "a8=Q+"), WHITE)
-        assertTrue(said, said.startsWith("the player wins material worth 8 pawns"))
+        // In words (the audit, 2026-10-07: figures in the templates; `test_a_sum_in_pawns_is_said_in_words`).
+        assertTrue(said, said.startsWith("the player wins material worth eight pawns"))
+        // Past eight too: a queen made with a pawn taken on the way.
+        val taking = Board("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+        val more = lineOutcome(taking, uci(taking, "axb8=Q+"), WHITE)
+        assertTrue(more, "material worth eleven pawns" in more)
     }
 }
