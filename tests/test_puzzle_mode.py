@@ -463,3 +463,37 @@ def test_a_puzzle_solved_after_a_hint_leaves_the_rating_as_it_was(
     finally:
         room.command("close")
         assert signals.ended(FORK.id).wait(HANG_S)
+
+
+def test_a_puzzle_closed_before_any_wrong_move_records_nothing(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Lichess records a puzzle's result at its first wrong move or at its end; one left before
+    # either is not played. One closed after a wrong move is the fail it already was.
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile.store import Store
+    from sidecoach.ui.server import build_app
+
+    signals = _RoomSignals(monkeypatch)
+    _csv(tmp_path)
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    assert client.post(f"/api/puzzle/{FORK.id}/open").json()["ok"]
+    right = client.post(f"/api/puzzle/{FORK.id}/move", json={"uci": "d4e2"}).json()["state"]
+    assert right["moves"] == ["Ne2+", "Kf1"], "one right move, then left"
+    assert client.post(f"/api/puzzle/{FORK.id}/close").json()["ok"]
+    assert signals.ended(FORK.id).wait(HANG_S), "the room never finished"
+    store = Store(tmp_path / "profile.sqlite")
+    assert store.attempts() == [] and puzzle_level(store) == 1500
+    store.close()
+    # A wrong move, then closed: the fail is recorded.
+    assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
+    wrong = client.post(f"/api/puzzle/{MATE.id}/move", json={"uci": "a1a7"}).json()["state"]
+    assert wrong["wrong"] == "a1a7"
+    assert client.post(f"/api/puzzle/{MATE.id}/close").json()["ok"]
+    assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
+    store = Store(tmp_path / "profile.sqlite")
+    assert [(pid, ok) for pid, _, ok in store.attempts()] == [(MATE.id, False)]
+    assert puzzle_level(store) < 1500
+    store.close()

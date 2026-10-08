@@ -320,6 +320,44 @@ class PuzzleModeTest {
         }
     }
 
+    /**
+     * Lichess records a puzzle's result at its first wrong move or at its end; one left before
+     * either is not played. One closed after a wrong move is the fail it already was.
+     * `test_a_puzzle_closed_before_any_wrong_move_records_nothing`.
+     */
+    @Test
+    fun aPuzzleClosedBeforeAnyWrongMoveRecordsNothing() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/open").getBoolean("ok"))
+            val right = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4e2"}""").getJSONObject("state")
+            assertEquals("one right move, then left", listOf("Ne2+", "Kf1"), strings(right, "moves"))
+            val forkRoom = rooms.get(fork.id)!!
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
+            forkRoom.join(HANG_MS)
+            assertTrue("the room never finished", forkRoom.closed)
+            var store = Store(File(tmp, "profile.sqlite"))
+            assertTrue(store.attempts().isEmpty() && Puzzles.puzzleLevel(store) == 1500)
+            store.close()
+            // A wrong move, then closed: the fail is recorded.
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
+            val wrong = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a7"}""").getJSONObject("state")
+            assertEquals("a1a7", wrong.getString("wrong"))
+            val mateRoom = rooms.get(mate.id)!!
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/close").getBoolean("ok"))
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
+            store = Store(File(tmp, "profile.sqlite"))
+            assertEquals(listOf(mate.id to false), store.attempts().map { it.first to it.third })
+            assertTrue(Puzzles.puzzleLevel(store) < 1500)
+            store.close()
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
     // ---- helpers -------------------------------------------------------------------------
 
     private fun tempDir(): File =

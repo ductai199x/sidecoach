@@ -228,7 +228,9 @@ class PuzzleRoom:
                 if not self.voice and self._stop_speaking is not None:
                     self._stop_speaking()
             elif name == "close":
-                if not self.session.done:
+                # Left unfinished: a fail once a wrong move was played (Lichess sends the loss
+                # at the first wrong move); before any, nothing is recorded, as on Lichess.
+                if not self.session.done and self.session.misses > 0:
                     self._record(solved=False)
                 self._stop.set()
 

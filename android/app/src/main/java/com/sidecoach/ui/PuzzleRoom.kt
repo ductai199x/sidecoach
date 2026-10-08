@@ -256,7 +256,9 @@ class PuzzleRoom(
                     if (!voice) stopSpeaking?.invoke()
                 }
                 "close" -> {
-                    if (!session.done) record(solved = false)
+                    // Left unfinished: a fail once a wrong move was played (Lichess sends the loss
+                    // at the first wrong move); before any, nothing is recorded, as on Lichess.
+                    if (!session.done && session.misses > 0) record(solved = false)
                     stop.countDown()
                 }
             }
