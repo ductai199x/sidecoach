@@ -1544,6 +1544,30 @@ class CoachTest {
     }
 
     /**
+     * Round 5's student answered the hint with a move and got the hint back word for word, three
+     * times (desktop adc4b26). Answering a question asked twice must not bring that back: a guess
+     * or a plain reply to the hint still gets nothing the hint already said
+     * (`test_offline_an_answer_to_the_hint_does_not_get_the_hint_back`).
+     */
+    @Test
+    fun offlineAnAnswerToTheHintDoesNotGetTheHintBack() {
+        for (reply in listOf(
+            "Is it d4?", "maybe Nc3?", "I think the knight should go to c3", "ok", "hmm I'm not sure", "I don't see it",
+        )) {
+            val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+            italian(offline)
+            offline.ask("hint", 7.0)
+            val hint = messages(offline).map { it.text }
+            assertTrue(hint.isNotEmpty())
+            for (ts in listOf(8.0, 9.0)) {
+                offline.ask(reply, ts)
+                val again = messages(offline).map { it.text }
+                assertTrue("$reply: $again", again.intersect(hint.toSet()).isEmpty())
+            }
+        }
+    }
+
+    /**
      * Offline, the same question asked again got no reply at all: its answer, already said since
      * the last move, was blanked (the audit, 2026-10-07). A question is always answered (Tai,
      * 2026-10-02: no dropped replies): the second time with the coach's same answer. (A statement

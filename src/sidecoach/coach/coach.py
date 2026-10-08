@@ -45,7 +45,14 @@ from sidecoach.coach.alternatives import (
 )
 from sidecoach.coach.annotations import annotations_for, mentions_in
 from sidecoach.coach.bag import Bags
-from sidecoach.coach.conversation import Conversation, PlyRecord, hands, harness_problem, ways
+from sidecoach.coach.conversation import (
+    Conversation,
+    Entry,
+    PlyRecord,
+    hands,
+    harness_problem,
+    ways,
+)
 from sidecoach.coach.disclosure import (
     Disclosure,
     PositionFacts,
@@ -2501,6 +2508,22 @@ _ASK_PROFILE = re.compile(
 # Offline, a question about the record when the record says nothing of the player yet: the
 # words `profile/ask.py` says when the rows came back empty.
 RECORD_EMPTY = "The record has nothing on that yet."
+
+
+def _asked_words(body: str) -> str:
+    """The player's words of an "ask" entry (`Conversation.user_said`): quoted, and followed by
+    the claims checked in them when there were any."""
+    if body.startswith('"'):
+        end = body.find('" -- ')
+        return body[1:end] if end >= 0 else body[1:].removesuffix('"')
+    return body
+
+
+def _same_words(text: str) -> str:
+    """Words compared as the same question: case, spacing and the closing mark aside."""
+    return " ".join(text.casefold().split()).rstrip("?!. ")
+
+
 # Questions about facts that are never withheld: the material, the opening, who stands better.
 _ASK_MATERIAL = re.compile(
     r"\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|"
@@ -4167,6 +4190,26 @@ class Coach:
                 out.append(entry.text)
         return out
 
+    def _answered_before(self, asked: str, answer: str) -> bool:
+        """Whether the player's same words were asked since the position now was reached and
+        `answer` was the reply to them: then it is the answer again, not a hint said back to
+        what they answered it with (round 5)."""
+        with self._lock:
+            entries = list(self.conversation.entries)
+        since: list[Entry] = []
+        for entry in reversed(entries):
+            if entry.kind in ("ply", "takeback", "resync"):
+                break
+            since.append(entry)
+        same = _same_words(asked)
+        last: str | None = None
+        for entry in reversed(since):  # in the order said
+            if entry.kind == "ask":
+                last = _same_words(_asked_words(entry.text))
+            elif entry.kind == "coach" and not entry.past and entry.text == answer and last == same:
+                return True
+        return False
+
     def _following_up(self, said: str) -> bool:
         """Whether the player's words follow up what the coach has said since the last move,
         not an answer to its question: the verdict and the better move were told already,
@@ -4600,9 +4643,20 @@ class Coach:
         must_name = self._must_name(
             trigger, position, level, fallback, assessment, played, user_text
         )
-        # Offline, where the template is the answer, a question asked again is answered again,
-        # even word for word: blanked as "said already", the same question twice got no reply
-        # at all (the audit, 2026-10-07; Tai, 2026-10-02: no dropped replies).
+        if (
+            self._offline
+            and trigger is Trigger.USER_ASK
+            and fallback
+            and fallback in self._said_since_move()
+            and not self._answered_before(user_text or "", fallback)
+        ):
+            # Offline, where the template is the answer, nothing the coach said since the last
+            # move is said again word for word: a student's answer to the hint got the same hint
+            # back, three times (round 5). Only the same words asked again get the answer they
+            # got before: blanked, the same question twice got no reply at all (the audit,
+            # 2026-10-07). With the AI on the fallback is said only when the reply failed, and
+            # then it stands: a failed reply never ends in silence (Tai, 2026-10-02).
+            fallback = ""
         # A reply about a position already moved from -- the lesson on a move, an answer
         # about it -- is rendered at the level of the position on the board now, and must not
         # give away the answer there (a verdict can land after the opponent has replied).

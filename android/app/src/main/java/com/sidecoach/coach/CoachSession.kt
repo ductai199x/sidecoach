@@ -107,6 +107,20 @@ private val ASK_PROFILE = Regex(
  */
 const val RECORD_EMPTY = "The record has nothing on that yet."
 
+/**
+ * The player's words of an "ask" entry ([Conversation.userSaid]): quoted, and followed by the
+ * claims checked in them when there were any. `_asked_words`.
+ */
+internal fun askedWords(body: String): String {
+    if (!body.startsWith("\"")) return body
+    val end = body.indexOf("\" -- ")
+    return if (end >= 0) body.substring(1, end) else body.substring(1).removeSuffix("\"")
+}
+
+/** Words compared as the same question: case, spacing and the closing mark aside. `_same_words`. */
+internal fun sameWords(text: String): String =
+    text.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").trimEnd('?', '!', '.', ' ')
+
 /** Questions about facts that are never withheld: the material, the opening, who is better. */
 private val ASK_MATERIAL = Regex(
     "\\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|" +
@@ -2014,6 +2028,30 @@ class Coach(
      * What the coach has said since the position now was reached: the last move, or a takeback or
      * a re-read of the board (what was said of a withdrawn move is not). `_said_since_move`.
      */
+    /**
+     * Whether the player's same words were asked since the position now was reached and `answer`
+     * was the reply to them: then it is the answer again, not a hint said back to what they
+     * answered it with (round 5). `_answered_before`.
+     */
+    internal fun answeredBefore(asked: String, answer: String): Boolean {
+        val entries = synchronized(lock) { conversation.entries.toList() }
+        val since = ArrayList<Entry>()
+        for (entry in entries.asReversed()) {
+            if (entry.kind == "ply" || entry.kind == "takeback" || entry.kind == "resync") break
+            since.add(entry)
+        }
+        val same = sameWords(asked)
+        var last: String? = null
+        for (entry in since.asReversed()) { // in the order said
+            if (entry.kind == "ask") {
+                last = sameWords(askedWords(entry.text))
+            } else if (entry.kind == "coach" && !entry.past && entry.text == answer && last == same) {
+                return true
+            }
+        }
+        return false
+    }
+
     internal fun saidSinceMove(): List<String> {
         val entries = synchronized(lock) { conversation.entries.toList() }
         val out = ArrayList<String>()
@@ -2480,9 +2518,17 @@ class Coach(
         )
         takeLeads(position, fallback)
         val mustName = mustName(trigger, position, level, fallback, assessment, played, userText)
-        // Offline, where the template is the answer, a question asked again is answered again,
-        // even word for word: blanked as "said already", the same question twice got no reply
-        // at all (the audit, 2026-10-07; Tai, 2026-10-02: no dropped replies).
+        if (offline && trigger == Trigger.USER_ASK && fallback.isNotEmpty() && fallback in saidSinceMove() &&
+            !answeredBefore(userText ?: "", fallback)
+        ) {
+            // Offline, where the template is the answer, nothing the coach said since the last
+            // move is said again word for word: a student's answer to the hint got the same hint
+            // back, three times (round 5). Only the same words asked again get the answer they got
+            // before: blanked, the same question twice got no reply at all (the audit,
+            // 2026-10-07). With the AI on the fallback is said only when the reply failed, and then
+            // it stands: a failed reply never ends in silence (Tai, 2026-10-02).
+            fallback = ""
+        }
         // A reply about a position already moved from -- the lesson on a move, an answer about it
         // -- is rendered at the level of the position on the board now, and must not give away
         // the answer there (a verdict can land after the opponent has replied).

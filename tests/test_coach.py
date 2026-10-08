@@ -1490,6 +1490,30 @@ def test_a_move_proposed_in_a_statement_is_examined_and_nothing_is_said_twice() 
     assert first and not set(again) & set(first)
 
 
+def test_offline_an_answer_to_the_hint_does_not_get_the_hint_back() -> None:
+    """Round 5's student answered the hint with a move ("I'll play Qd1, blocking the check")
+    and got the hint back word for word, three times (adc4b26). Answering a question asked
+    twice (the test below) must not bring that back: a guess or a plain reply to the hint
+    still gets nothing the hint already said, however often it comes."""
+    for reply in (
+        "Is it d4?",
+        "maybe Nc3?",
+        "I think the knight should go to c3",
+        "ok",
+        "hmm I'm not sure",
+        "I don't see it",
+    ):
+        coach = offline_coach()
+        _italian(coach)
+        coach.ask("hint", 7.0)
+        hint = [m.text for m in drain(coach)]
+        assert hint
+        for ts in (8.0, 9.0):
+            coach.ask(reply, ts)
+            again = [m.text for m in drain(coach)]
+            assert not set(again) & set(hint), (reply, again)
+
+
 def test_offline_the_same_question_asked_twice_is_answered_twice() -> None:
     """Offline, the same question asked again got no reply at all: its answer, already said
     since the last move, was blanked (the audit, 2026-10-07). A question is always answered
