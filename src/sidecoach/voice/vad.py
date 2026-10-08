@@ -32,6 +32,8 @@ class SileroGate:
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._context = np.zeros(CONTEXT, dtype=np.float32)
         self._failed: str | None = None
+        # The failure was the file not downloaded yet: looked for again at the next load.
+        self._missing = False
         self._lock = threading.Lock()
 
     def healthcheck(self) -> tuple[bool, str]:
@@ -43,7 +45,10 @@ class SileroGate:
         with self._lock:
             if self._session is not None:
                 return True
-            if self._failed:
+            # A model not downloaded yet is looked for again (a quick, offline miss), as
+            # Parakeet's is: Setup fetches it, and voice mode stayed push-to-talk until a
+            # restart (audit 2026-10-07). Any other failure stands.
+            if self._failed and not self._missing:
                 return False
             try:
                 import onnx_asr  # type: ignore[reportMissingImports]
@@ -56,9 +61,15 @@ class SileroGate:
                 )
                 # onnx-asr keeps the InferenceSession it made on `_model`; drive it per frame.
                 self._session = getattr(vad, "_model")  # noqa: B009
+                self._failed = None
+                self._missing = False
                 return True
             except Exception as exc:  # noqa: BLE001 - no VAD means push-to-talk only
                 self._failed = f"{type(exc).__name__}: {exc}"
+                # The app keeps the hub offline: the model is fetched by the setup only.
+                self._missing = "LocalEntryNotFound" in type(exc).__name__ or (
+                    "outgoing traffic" in str(exc)
+                )
                 log.warning("Silero VAD unavailable: %s", exc)
                 return False
 

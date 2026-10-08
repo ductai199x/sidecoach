@@ -200,6 +200,68 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
         listener.set_mode("off")
 
 
+def test_voice_mode_comes_once_setup_has_the_silero_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Listening asked for before Setup fetched the Silero file falls back to push-to-talk; once
+    the file is there, voice mode is asked for again (Setup's end does) and it comes, without a
+    restart, as Parakeet's does. It stayed push-to-talk for good (audit 2026-10-07, S1). A
+    failure of any other kind still stands: the model is not loaded again and again."""
+    import importlib.machinery
+    import sys
+    import types
+
+    from sidecoach.voice.mic import Listener
+    from sidecoach.voice.vad import SileroGate
+    from tests.fakes import SteppedMic
+
+    class LocalEntryNotFoundError(FileNotFoundError):
+        """As huggingface_hub names it: the hub kept offline, the file not in its cache."""
+
+    calls: list[str] = []
+    there = {"file": False, "broken": False}
+
+    def load_vad(name: str, **_: object) -> object:
+        calls.append(name)
+        if there["broken"]:
+            raise RuntimeError("bad graph")
+        if not there["file"]:
+            raise LocalEntryNotFoundError(
+                "Cannot find an appropriate cached snapshot folder for the specified revision "
+                "on the local disk and outgoing traffic has been disabled."
+            )
+        return types.SimpleNamespace(_model=object())
+
+    fake = types.ModuleType("onnx_asr")
+    fake.load_vad = load_vad  # type: ignore[attr-defined]
+    fake.__spec__ = importlib.machinery.ModuleSpec("onnx_asr", None)
+    monkeypatch.setitem(sys.modules, "onnx_asr", fake)
+
+    warned: list[str] = []
+    mic = SteppedMic()
+    gate = SileroGate()
+    listener = Listener(
+        mic,  # type: ignore[arg-type]
+        gate,
+        on_utterance=lambda audio, seconds: None,
+        on_event=lambda level, text: warned.append(text),
+    )
+    try:
+        listener.set_mode("vad")
+        assert listener.mode == "ptt" and len(warned) == 1, "no file yet: push-to-talk, said"
+        there["file"] = True  # Setup fetched it
+        listener.set_mode("vad")
+        assert listener.mode == "vad", "the file came: voice mode, without a restart"
+        assert gate.healthcheck() == (True, "silero vad, cpu")
+    finally:
+        mic.steps.free()
+        listener.set_mode("off")
+
+    broken = SileroGate()
+    there["broken"] = True
+    calls.clear()
+    assert not broken.load() and not broken.load()
+    assert calls == ["silero"], "a failure that is not a missing file stands"
+
+
 class _LevelGate(_ScriptedGate):
     """A voice gate that reads a frame's own value as its speech probability, and counts the
     frames it was asked about."""

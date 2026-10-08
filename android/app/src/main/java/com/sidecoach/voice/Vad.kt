@@ -30,6 +30,9 @@ class SileroGate(private val model: File) : VoiceGate {
     private var state = FloatArray(2 * 1 * 128)
     private var context = FloatArray(CONTEXT)
     private var failed: String? = null
+
+    /** The failure was the file not downloaded yet: looked for again at the next load. */
+    private var missing = false
     private val lock = Any()
     private val env = OrtEnvironment.getEnvironment()
 
@@ -42,13 +45,20 @@ class SileroGate(private val model: File) : VoiceGate {
     override fun load(): Boolean {
         synchronized(lock) {
             if (session != null) return true
-            if (failed != null) return false
+            // A model not downloaded yet is looked for again, as Parakeet's is: Setup fetches
+            // it, and voice mode stayed push-to-talk until a restart (audit 2026-10-07). Any
+            // other failure stands.
+            if (failed != null && !missing) return false
             return try {
                 val options = OrtSession.SessionOptions().apply { setIntraOpNumThreads(1) }
                 session = env.createSession(model.path, options)
+                failed = null
+                missing = false
                 true
             } catch (exc: Exception) { // no VAD means push-to-talk only
                 failed = "${exc::class.java.simpleName}: ${exc.message}"
+                // The file comes from Setup only.
+                missing = !model.exists()
                 VoiceLog.warn("Silero VAD unavailable: ${VoiceLog.said(exc)}")
                 false
             }
