@@ -2473,7 +2473,11 @@ _ASK_REVIEW = re.compile(
 )
 # A question about the player over their games, not about this position: the record
 # answers it, the coach writing its own queries (profile/ask.py). "This game" and "the
-# last move" stay with the game's own paths above.
+# last move" stay with the game's own paths above. The record is about the player over
+# time -- how often (always, usually, keep doing), a trend (getting better), their games,
+# their weaknesses -- never about the state now: "do I keep my bishop", "am I better",
+# "why am I losing", "what tactics do I have", "the main weakness", "focus on" here are the
+# position's (the audit, 2026-10-07: "Do I keep my bishop or trade it?" went to the record).
 _ASK_PROFILE = re.compile(
     r"\b(?:my (?:games|history|record|profile|stats|statistics|weakness(?:es)?|"
     r"strengths?|habits?|pattern|trend|progress|results?|last (?:few |\d+ )?games)|"
@@ -2481,14 +2485,17 @@ _ASK_PROFILE = re.compile(
     r"(?:games|days|weeks|months|sessions)|"
     r"(?:all|previous|earlier|other|past|recent) (?:games|sessions)|last session|"
     r"(?:across|between|over) (?:games|sessions)|how many games|"
-    r"(?:do|am|have) i (?:always|usually|often|tend to|keep|generally|typically|normally)|"
-    r"why (?:do|am) i (?:always|usually|often|keep|so|bad|weak|losing|blundering)|"
-    r"(?:am|are) i (?:getting )?(?:better|worse|improving)|"
-    r"(?:what|which) (?:openings?|tactics?|motifs?|phase) (?:do|am|have) i|"
-    r"(?:my|the) (?:biggest|worst|most common|main|recurring) "
+    r"(?:do|am|have) i (?:always|usually|often|tend to|keep \w+ing|generally|typically|"
+    r"normally)|"
+    r"why (?:do|am) i (?:always|usually|often|keep \w+ing|(?:so )?(?:bad|weak))|"
+    r"(?:am|are) i (?:getting (?:better|worse)|improving)|"
+    r"(?:what|which) (?:openings?|tactics?|motifs?|phases?) "
+    r"(?:do i (?!have\b)|have i|am i (?!in\b))|"
+    r"my (?:biggest|worst|most common|main|recurring) "
     r"(?:weakness|problem|mistake|cost|leak)s?|"
-    r"what should i (?:study|practise|practice|train|focus on|"
-    r"work on (?:in general|next|overall)))\b",
+    r"the (?:most common|recurring) (?:weakness|problem|mistake|cost|leak)s?|"
+    r"what should i (?:study|practise|practice|train|"
+    r"focus on (?:in general|overall)|work on (?:in general|next|overall)))\b",
     re.IGNORECASE,
 )
 # Offline, a question about the record when the record says nothing of the player yet: the

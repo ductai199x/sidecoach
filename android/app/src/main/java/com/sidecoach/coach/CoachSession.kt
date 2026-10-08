@@ -74,7 +74,11 @@ internal val ASK_REVIEW = Regex(
 /**
  * A question about the player over their games, not about this position: the record answers
  * it, the coach writing its own queries. "This game" and "the last move" stay with the
- * game's own paths above.
+ * game's own paths above. The record is about the player over time -- how often (always,
+ * usually, keep doing), a trend (getting better), their games, their weaknesses -- never about
+ * the state now: "do I keep my bishop", "am I better", "why am I losing", "what tactics do I
+ * have", "the main weakness", "focus on" here are the position's (the audit, 2026-10-07: "Do I
+ * keep my bishop or trade it?" went to the record).
  */
 private val ASK_PROFILE = Regex(
     "\\b(?:my (?:games|history|record|profile|stats|statistics|weakness(?:es)?|" +
@@ -83,14 +87,17 @@ private val ASK_PROFILE = Regex(
         "(?:games|days|weeks|months|sessions)|" +
         "(?:all|previous|earlier|other|past|recent) (?:games|sessions)|last session|" +
         "(?:across|between|over) (?:games|sessions)|how many games|" +
-        "(?:do|am|have) i (?:always|usually|often|tend to|keep|generally|typically|normally)|" +
-        "why (?:do|am) i (?:always|usually|often|keep|so|bad|weak|losing|blundering)|" +
-        "(?:am|are) i (?:getting )?(?:better|worse|improving)|" +
-        "(?:what|which) (?:openings?|tactics?|motifs?|phase) (?:do|am|have) i|" +
-        "(?:my|the) (?:biggest|worst|most common|main|recurring) " +
+        "(?:do|am|have) i (?:always|usually|often|tend to|keep \\w+ing|generally|typically|" +
+        "normally)|" +
+        "why (?:do|am) i (?:always|usually|often|keep \\w+ing|(?:so )?(?:bad|weak))|" +
+        "(?:am|are) i (?:getting (?:better|worse)|improving)|" +
+        "(?:what|which) (?:openings?|tactics?|motifs?|phases?) " +
+        "(?:do i (?!have\\b)|have i|am i (?!in\\b))|" +
+        "my (?:biggest|worst|most common|main|recurring) " +
         "(?:weakness|problem|mistake|cost|leak)s?|" +
-        "what should i (?:study|practise|practice|train|focus on|" +
-        "work on (?:in general|next|overall)))\\b",
+        "the (?:most common|recurring) (?:weakness|problem|mistake|cost|leak)s?|" +
+        "what should i (?:study|practise|practice|train|" +
+        "focus on (?:in general|overall)|work on (?:in general|next|overall)))\\b",
     RegexOption.IGNORE_CASE,
 )
 

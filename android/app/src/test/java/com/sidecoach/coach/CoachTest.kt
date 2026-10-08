@@ -2164,6 +2164,51 @@ class CoachTest {
     }
 
     /**
+     * "Do I keep my bishop or trade it?" went to the cross-game record, as did "Am I better
+     * here?" and "What tactics do I have?" (the audit, 2026-10-07): words of the position now
+     * were read as words of a habit. The record is asked only about the player over time
+     * (`test_a_question_about_the_position_is_answered_about_the_position`).
+     */
+    @Test
+    fun aQuestionAboutThePositionIsAnsweredAboutThePosition() {
+        val aboutTheBoard = listOf(
+            "Do I keep my bishop or trade it?", "Do I keep the queens on?", "Should I keep my knight on f3?",
+            "Am I better here?", "Am I worse after that?", "Am I better or worse in this endgame?",
+            "Why am I losing?", "Why am I so far behind?", "Why am I losing this game?",
+            "What tactics do I have?", "Which tactic do I have here?",
+            "What's the biggest problem in this position?", "What is the main weakness in their camp?",
+            "What is the worst piece I have?", "What should I focus on here?", "Do I have time to castle?",
+            "Am I winning?", "Do I take the pawn?", "Which phase am I in?",
+        )
+        val aboutTheRecord = listOf(
+            "What do I usually miss?", "Why do I keep losing in the endgame?", "Why do I keep hanging pieces?",
+            "Do I always blunder when short of time?", "Do I tend to trade too early?", "What are my weaknesses?",
+            "Am I getting better?", "Am I improving?", "How did I do over the last 10 games?",
+            "Which openings do I play worst?", "What tactics do I miss most often?", "What's my most common mistake?",
+            "What is the most common mistake I make?", "What should I study?", "What should I work on overall?",
+            "Why am I so bad at endgames?", "How many games have I played?", "How were my last few games?",
+            "What is my biggest weakness?", "Why am I always losing in the middlegame?",
+        )
+
+        fun routed(asked: String): Boolean {
+            val (coach, _) = coach(emptyList())
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 6.5)
+            val looked = java.util.Collections.synchronizedList(ArrayList<String>())
+            coach.profileAsk = { question ->
+                looked.add(question)
+                ProfileAnswer(text = "From the record.", exchanges = emptyList(), calls = 1)
+            }
+            coach.ask(asked, 7.0)
+            joinThreads("profile-ask")
+            return looked.isNotEmpty()
+        }
+
+        assertEquals(emptyList<String>(), aboutTheBoard.filter { routed(it) })
+        assertEquals(emptyList<String>(), aboutTheRecord.filter { !routed(it) })
+    }
+
+    /**
      * Offline, "what do I usually miss?" answered "I could not read the record just now; ask me
      * again in a moment." every time: no model writes the queries, so the moment never came (the
      * audit, 2026-10-07). The offline coach answers with what the record already says of the

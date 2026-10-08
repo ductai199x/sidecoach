@@ -1688,6 +1688,75 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     assert asked == ["why am I always losing in the middlegame?"]
 
 
+ABOUT_THE_BOARD = (
+    "Do I keep my bishop or trade it?",
+    "Do I keep the queens on?",
+    "Should I keep my knight on f3?",
+    "Am I better here?",
+    "Am I worse after that?",
+    "Am I better or worse in this endgame?",
+    "Why am I losing?",
+    "Why am I so far behind?",
+    "Why am I losing this game?",
+    "What tactics do I have?",
+    "Which tactic do I have here?",
+    "What's the biggest problem in this position?",
+    "What is the main weakness in their camp?",
+    "What is the worst piece I have?",
+    "What should I focus on here?",
+    "Do I have time to castle?",
+    "Am I winning?",
+    "Do I take the pawn?",
+    "Which phase am I in?",
+)
+ABOUT_THE_RECORD = (
+    "What do I usually miss?",
+    "Why do I keep losing in the endgame?",
+    "Why do I keep hanging pieces?",
+    "Do I always blunder when short of time?",
+    "Do I tend to trade too early?",
+    "What are my weaknesses?",
+    "Am I getting better?",
+    "Am I improving?",
+    "How did I do over the last 10 games?",
+    "Which openings do I play worst?",
+    "What tactics do I miss most often?",
+    "What's my most common mistake?",
+    "What is the most common mistake I make?",
+    "What should I study?",
+    "What should I work on overall?",
+    "Why am I so bad at endgames?",
+    "How many games have I played?",
+    "How were my last few games?",
+    "What is my biggest weakness?",
+    "Why am I always losing in the middlegame?",
+)
+
+
+def test_a_question_about_the_position_is_answered_about_the_position() -> None:
+    """ "Do I keep my bishop or trade it?" went to the cross-game record, as did "Am I better
+    here?" and "What tactics do I have?" (the audit, 2026-10-07): words of the position now
+    -- "keep" a piece, "am I better", "do I have", "the main weakness" -- were read as words
+    of a habit. The record is asked only about the player over time: how often (always,
+    usually, keep doing), a trend (getting better), their games, their weaknesses."""
+    from collections.abc import Callable
+
+    from sidecoach.profile.ask import Answer
+
+    def routed(asked: str) -> bool:
+        coach, _ = scripted_coach([])
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 6.5)
+        coach.profile_ask = lambda q: Answer(text="From the record.")
+        spawned: list[tuple[Callable[[], None], str]] = []
+        coach.spawn = lambda work, name: spawned.append((work, name))
+        coach.ask(asked, 7.0)
+        return "profile-ask" in [name for _, name in spawned]
+
+    assert [q for q in ABOUT_THE_BOARD if routed(q)] == []
+    assert [q for q in ABOUT_THE_RECORD if not routed(q)] == []
+
+
 def test_offline_a_question_about_the_record_gets_what_the_record_says() -> None:
     """Offline, "what do I usually miss?" answered "I could not read the record just now; ask
     me again in a moment." every time: no model writes the queries, so the moment never came
