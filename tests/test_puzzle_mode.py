@@ -101,6 +101,10 @@ def test_a_mate_puzzle_and_giving_up_on_it() -> None:
     assert s.side is Side.WHITE and s.board.turn == chess.WHITE
     events = s.move("a1a8")
     assert [e.san for e in events] == ["Ra8#"] and s.status == "solved" and not s.failed
+    # The result line's numbers come once the room has recorded the outcome.
+    assert s.state()["result"] is None
+    s.recorded_as(True, 1100, 1125)
+    assert s.state()["result"] == {"solved": True, "level": 1125, "change": 25}
     # Any mate counts where the line's move mates; a non-mating move does not.
     t = PuzzleSession(MATE, "mate")
     assert t._mates(chess.Move.from_uci("a1a8"))
@@ -196,6 +200,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     state = opened["state"]
     assert state["id"] == FORK.id and state["motif"] == "fork" and state["bottom"] == "black"
     assert state["your_move"] and not state["closed"]
+    assert state["result"] is None, "no result line while the puzzle is played"
     assert state["legal"]["d4"] == ["b3", "b5", "c2", "c6", "e2", "f3", "f5"]
     # Each move is answered with the state it leaves, at once. A wrong move shows, then is
     # taken back.
@@ -213,6 +218,9 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
     assert store.setting("puzzle_level") == "1075"
+    # The page's result line reads the outcome as the profile took it: a miss is not a solve.
+    result = client.get(f"/api/puzzle/{FORK.id}/poll").json()["state"]["result"]
+    assert result == {"solved": False, "level": 1075, "change": -25}
     # The user's question reaches the room. Its coach is off here: the room says so, as the
     # panel does, or the page's typing dots waited for an answer for good.
     assert client.post(f"/api/puzzle/{FORK.id}/ask", json={"text": "hint"}).json()["ok"]
@@ -237,6 +245,36 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     assert [a[0] for a in store.attempts()] == [MATE.id, FORK.id]
     assert store.setting("puzzle_level") == "1050"
     store.close()
+    result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
+    assert result == {"solved": False, "level": 1050, "change": -25}
+    client.post(f"/api/puzzle/{MATE.id}/close")
+    assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
+
+
+def test_a_solved_puzzle_shows_the_level_it_moved_to(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The result line after a solve: the level after it and the change it really made (near
+    # the top of the range the step is cut short, so the change is not always LEVEL_STEP).
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile.store import Store
+    from sidecoach.ui.server import build_app
+
+    signals = _RoomSignals(monkeypatch)
+    _csv(tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    store.set_setting("puzzle_level", "1990")
+    store.close()
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    assert client.post(f"/api/puzzle/{MATE.id}/open").json()["state"]["result"] is None
+    done = client.post(f"/api/puzzle/{MATE.id}/move", json={"uci": "a1a8"}).json()["state"]
+    assert done["status"] == "solved"
+    # This room's line alone: a room another test closed may still log its own outcome.
+    signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level 2000")
+    result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
+    assert result == {"solved": True, "level": 2000, "change": 10}
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 

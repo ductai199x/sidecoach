@@ -69,6 +69,13 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
     /** The outcome given to the profile (the room sets it). */
     var recorded = false
 
+    /**
+     * The outcome as the profile took it, for the page's result line once the puzzle has ended
+     * (as Lichess shows it): null until the room has recorded it.
+     */
+    var result: Map<String, Any?>? = null
+        private set
+
     init {
         // The opponent's move: the position shown. `push_uci` refuses a move that is not legal.
         val first = Move.fromUci(puzzle.moves[0])
@@ -105,7 +112,16 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
             "wrong" to wrong,
             "misses" to misses,
             "remaining" to maxOf(0, (puzzle.moves.size - index + 1) / 2),
+            "result" to result,
         )
+    }
+
+    /**
+     * The outcome the profile took: solved or not, the puzzle level after it and how far it
+     * moved from [before] (the step is cut short at the ends of the range).
+     */
+    fun recordedAs(solved: Boolean, before: Int, level: Int) {
+        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before)
     }
 
     /**

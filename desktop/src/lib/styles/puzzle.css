@@ -46,6 +46,14 @@ button.pz-link { background: none; border: 0; font-family: inherit; cursor: poin
   --line-pair-bg: var(--panel2); --line-hover-bg: var(--panel3); --line-ink: var(--ink); --line-muted: var(--muted);
   --line-btn-w: 44px; --line-btn-h: 38px;
 }
+/* The puzzle ended: one result line under the rest (as Lichess shows it), the level the outcome
+   moved and by how much; nothing above it moves. */
+.pz-foot:has(.pz-result) { grid-template-rows: 22px 30px 22px; grid-template-areas: "say say" "left links" "result result"; }
+.pz-foot:has(.pz-solution):has(.pz-result) { grid-template-rows: 22px 44px 22px; }
+.pz-result { grid-area: result; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
+.pz-result b { color: var(--ink); font-weight: 600; }
+.pz-result .up { color: var(--accent); }
+.pz-result .down { color: var(--error); }
 /* A phone: the knight and the Lichess link give way to the title. */
 @media (max-width: 420px) {
   .pz-mark, .puzzle-page #bar .controls a.iconbtn { display: none; }

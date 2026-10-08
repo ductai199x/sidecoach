@@ -235,6 +235,7 @@ class PuzzleRoom:
             return
         session.recorded = True
         try:
+            before = puzzle_level(self.store)
             outcome = record_attempt(
                 self.store,
                 session.puzzle.id,
@@ -246,6 +247,8 @@ class PuzzleRoom:
         except Exception as exc:  # noqa: BLE001 - the record must not break the puzzle
             self._emit("sys", "error", f"profile error: {exc!r}")
             return
+        with self._lock:
+            session.recorded_as(outcome.solved, before, outcome.level)
         self._emit(
             "game",
             "info",

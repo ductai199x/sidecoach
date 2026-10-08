@@ -118,6 +118,10 @@ class PuzzleModeTest {
         assertTrue(s.side == Pieces.Side.WHITE && s.board.turn == WHITE)
         val events = s.move("a1a8")
         assertTrue(events.map { it.san } == listOf("Ra8#") && s.status == "solved" && !s.failed)
+        // The result line's numbers come once the room has recorded the outcome.
+        assertEquals(null, s.state()["result"])
+        s.recordedAs(true, 1100, 1125)
+        assertEquals(mapOf("solved" to true, "level" to 1125, "change" to 25), s.state()["result"])
         // Any mate counts where the line's move mates; a non-mating move does not.
         val t = PuzzleSession(mate, "mate")
         assertTrue(t.mates(Move.fromUci("a1a8")))
@@ -145,6 +149,7 @@ class PuzzleModeTest {
             val state = opened.getJSONObject("state")
             assertTrue(state.getString("id") == fork.id && state.getString("motif") == "fork" && state.getString("bottom") == "black")
             assertTrue(state.getBoolean("your_move") && !state.getBoolean("closed"))
+            assertTrue("no result line while the puzzle is played", state.isNull("result"))
             assertEquals(listOf("b3", "b5", "c2", "c6", "e2", "f3", "f5"), strings(state.getJSONObject("legal"), "d4"))
             // Each move is answered with the state it leaves, at once. A wrong move shows, then
             // is taken back.
@@ -162,6 +167,8 @@ class PuzzleModeTest {
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
             assertEquals("1075", store.setting("puzzle_level"))
+            // The page's result line reads the outcome as the profile took it: a miss is not a solve.
+            assertEquals(result(false, 1075, -25), polledResult(api, fork.id))
             // The user's question reaches the room. Its coach is off here: the room says so, as
             // the panel does, or the page's typing dots waited for an answer for good.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/ask", """{"text": "hint"}""").getBoolean("ok"))
@@ -192,6 +199,7 @@ class PuzzleModeTest {
             assertEquals(listOf(mate.id, fork.id), store.attempts().map { it.first })
             assertEquals("1050", store.setting("puzzle_level"))
             store.close()
+            assertEquals(result(false, 1050, -25), polledResult(api, mate.id))
             val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
             mateRoom.join(HANG_MS)
@@ -200,6 +208,34 @@ class PuzzleModeTest {
         } finally {
             PanelEngine.puzzleMotifs.clear()
             PanelEngine.practiceIds = emptyList()
+            tmp.deleteRecursively()
+        }
+    }
+
+    /**
+     * The result line after a solve: the level after it and the change it really made (near the
+     * top of the range the step is cut short). `test_a_solved_puzzle_shows_the_level_it_moved_to`.
+     */
+    @Test
+    fun aSolvedPuzzleShowsTheLevelItMovedTo() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val store = Store(File(tmp, "profile.sqlite"))
+            store.setSetting("puzzle_level", "1990")
+            store.close()
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
+            val opened = call(api, "POST", "/api/puzzle/${mate.id}/open")
+            assertTrue(opened.getJSONObject("state").isNull("result"))
+            val done = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a8"}""").getJSONObject("state")
+            assertEquals("solved", done.getString("status"))
+            outcome(api, mate.id, "puzzle ${mate.id} solved")
+            assertEquals(result(true, 2000, 10), polledResult(api, mate.id))
+            val mateRoom = rooms.get(mate.id)!!
+            call(api, "POST", "/api/puzzle/${mate.id}/close")
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
+        } finally {
             tmp.deleteRecursively()
         }
     }
@@ -357,6 +393,15 @@ class PuzzleModeTest {
         val all = call(api, "GET", "/api/puzzle/$id/poll").getJSONArray("lines")
         return (0 until all.length()).map { all.getJSONObject(it).getString("text") }
     }
+
+    /** The result the page's poll serves, as plain values. */
+    private fun polledResult(api: PanelApi, id: String): Map<String, Any?> {
+        val r = call(api, "GET", "/api/puzzle/$id/poll").getJSONObject("state").getJSONObject("result")
+        return result(r.getBoolean("solved"), r.getInt("level"), r.getInt("change"))
+    }
+
+    private fun result(solved: Boolean, level: Int, change: Int): Map<String, Any?> =
+        mapOf("solved" to solved, "level" to level, "change" to change)
 
     @Suppress("UNCHECKED_CAST")
     private fun legal(state: Map<String, Any?>) = state["legal"] as Map<String, List<String>>

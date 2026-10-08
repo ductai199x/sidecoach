@@ -48,6 +48,9 @@ class PuzzleSession:
         self.status = "playing"  # playing | solved | given_up
         self.message = "Your move."
         self.recorded = False  # the outcome given to the profile (the panel sets it)
+        # The outcome as the profile took it, for the page's result line once the puzzle has
+        # ended (as Lichess shows it): None until the room has recorded it.
+        self.result: dict[str, Any] | None = None
 
     # ---- what the page shows -------------------------------------------------------------
 
@@ -78,7 +81,13 @@ class PuzzleSession:
             "wrong": self.wrong,
             "misses": self.misses,
             "remaining": max(0, (len(self.puzzle.moves) - self.index + 1) // 2),
+            "result": self.result,
         }
+
+    def recorded_as(self, solved: bool, before: int, level: int) -> None:
+        """The outcome the profile took: solved or not, the puzzle level after it and how far
+        it moved from `before` (the step is cut short at the ends of the range)."""
+        self.result = {"solved": solved, "level": level, "change": level - before}
 
     def legal(self) -> dict[str, list[str]]:
         """Where each of the solver's pieces may go, for the page's dots: sent with the

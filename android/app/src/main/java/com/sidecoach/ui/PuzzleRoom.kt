@@ -273,7 +273,9 @@ class PuzzleRoom(
     private fun record(solved: Boolean) {
         if (session.recorded) return
         session.recorded = true
+        var before = 0
         val outcome = try {
+            before = Puzzles.puzzleLevel(store)
             Puzzles.recordAttempt(
                 store,
                 session.puzzle.id,
@@ -286,6 +288,7 @@ class PuzzleRoom(
             emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")
             return
         }
+        synchronized(lock) { session.recordedAs(outcome.solved, before, outcome.level) }
         emit(
             "game",
             "info",

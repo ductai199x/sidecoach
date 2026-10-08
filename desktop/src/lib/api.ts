@@ -708,4 +708,7 @@ export type PuzzleState = {
   voice_ready?: boolean;
   closed?: boolean;
   llm?: { calls: number; prompt: number; completion: number; cost: number | null } | null;
+  /** The outcome as the profile took it, once the puzzle has ended and the room recorded it:
+   * solved or not, the puzzle level after it and how far it moved. */
+  result?: { solved: boolean; level: number; change: number } | null;
 };
