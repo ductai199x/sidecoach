@@ -11,7 +11,8 @@ profile/), so a refit reaches the phone together with the fixture that holds it 
   kind, label, phase, structure, theme, endgame, clock, result, termination, opening); watched
   games an import stands for; reviews with and without facts; the player's puzzle level.
 - `rows`: what the store then holds -- `stat_games()`, `stat_moves()` of every key,
-  `reviews_without_stats()`.
+  `reviews_without_stats()`, and the coach's worked queries over the games Stats counts
+  (`ask_queries`: `ask.EXAMPLES` that read `reviewed_games` and `reviewed_moves`).
 - `stats`: `/api/stats`'s body (the route's `_filter` and `_drills`) under many filters -- time
   class, the last so many days, opponents -- with "now" fixed (`now`). The puzzles each area to
   work on gets are a random draw, so each area's whole pool (`pools`: id -> rating) is recorded.
@@ -45,7 +46,7 @@ sys.path.insert(0, str(DESKTOP / "src"))
 import chess  # noqa: E402
 
 from sidecoach.events import Analysis, MotifTag, ReviewedGame  # noqa: E402
-from sidecoach.profile import library, performance, stat_facts, stats  # noqa: E402
+from sidecoach.profile import ask, library, performance, stat_facts, stats  # noqa: E402
 from sidecoach.profile.puzzles import open_store, puzzle_level  # noqa: E402
 from sidecoach.profile.store import WATCHED, LibraryRow, Store  # noqa: E402
 from sidecoach.ui import server  # noqa: E402
@@ -632,6 +633,11 @@ def unit_cases(rng: random.Random, reviewed: list[ReviewedGame]) -> dict[str, An
     }
 
 
+def _asked(store: Store, sql: str) -> dict[str, Any]:
+    columns, rows_ = store.query(sql)
+    return {"sql": sql, "columns": columns, "rows": [list(r) for r in rows_]}
+
+
 def main() -> None:
     MODELS.mkdir(parents=True, exist_ok=True)
     for name in ("categories.json", "peers.json"):
@@ -655,6 +661,9 @@ def main() -> None:
             "stat_moves": store.stat_moves(keys),
             "keys": keys,
             "reviews_without_stats": [dataclasses.asdict(r) for r in store.reviews_without_stats()],
+            # The coach's worked queries over the games Stats counts (ask.EXAMPLES; the views
+            # reviewed_games and reviewed_moves: the audit of 2026-10-07).
+            "ask_queries": [_asked(store, sql) for _, sql in ask.EXAMPLES if "reviewed_" in sql],
         }
         store.close()
         stats_cases = [stats_case(path, data_dir, q) for q in stats_queries()]

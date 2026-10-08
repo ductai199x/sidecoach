@@ -44,6 +44,15 @@ class StatsParityTest {
             val want = rows.getJSONArray("reviews_without_stats").let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
                 .sortedBy { it.getString("key") + "|" + it.getString("strength") }
             same("reviews_without_stats", JSONArray(pending), JSONArray(want), failures)
+            // The coach's worked queries over the games Stats counts (the views reviewed_games
+            // and reviewed_moves: the audit of 2026-10-07).
+            val asked = rows.getJSONArray("ask_queries")
+            for (i in 0 until asked.length()) {
+                val q = asked.getJSONObject(i)
+                val (columns, found) = store.query(q.getString("sql"))
+                same("ask_queries[$i] columns", JSONArray(columns), q.getJSONArray("columns"), failures)
+                same("ask_queries[$i] rows", JSONArray(found.map { JSONArray(it) }), q.getJSONArray("rows"), failures)
+            }
         } finally {
             store.close()
         }

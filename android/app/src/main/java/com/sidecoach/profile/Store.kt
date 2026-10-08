@@ -1116,6 +1116,14 @@ class Store(val path: File?) {
         /** A string literal ('it''s'), which is data, not a name: blanked before [PRAGMA_FUNCTION] looks. */
         private val STRING_LITERAL = Regex("'(?:[^']|'')*'")
 
+        /**
+         * The record's tables; then `reviewed_games` and `reviewed_moves`, the games Stats counts
+         * ([statGames]) for the coach's own SQL (Ask.kt): every reviewed game, watched or
+         * imported, once, whose player's side is known, with the player's points; and their
+         * moves. The coach's SQL read only the watched games while Stats counted the imported
+         * ones too (the audit of 2026-10-07). Views of this connection only (TEMP): nothing is
+         * added to the file. `SCHEMA`.
+         */
         const val SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     game_id TEXT PRIMARY KEY,
@@ -1298,7 +1306,27 @@ CREATE TABLE IF NOT EXISTS review_progress (
 );
 CREATE INDEX IF NOT EXISTS moves_game ON moves (game_id, withdrawn);
 CREATE INDEX IF NOT EXISTS evidence_game ON evidence (game_id);
-CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts)
+CREATE INDEX IF NOT EXISTS attempts_puzzle ON puzzle_attempts (puzzle_id, ts);
+CREATE TEMP VIEW IF NOT EXISTS reviewed_games AS
+SELECT key, source, played_at, time_class, user_side, bot, result,
+    CASE WHEN result = '1/2-1/2' THEN 0.5
+        WHEN result IN ('1-0', '0-1') THEN
+            CASE WHEN (result = '1-0') = (user_side = 'white') THEN 1.0 ELSE 0.0 END
+    END AS score,
+    opening, termination
+FROM (
+    SELECT s.key, s.source, s.played_at, COALESCE(l.time_class, s.time_class) AS time_class,
+        COALESCE(l.user_side, s.user_side) AS user_side, s.bot, s.result, s.opening,
+        s.termination
+    FROM stat_games s LEFT JOIN library l ON l.key = s.key
+    WHERE s.key NOT IN (SELECT t.watched FROM twins t JOIN stat_games i ON i.key = t.imported)
+)
+WHERE user_side IN ('white', 'black');
+CREATE TEMP VIEW IF NOT EXISTS reviewed_moves AS
+SELECT m.key, m.ply, m.side, m.side = g.user_side AS by_user, m.fen, m.uci, m.san, m.phase,
+    m.loss, m.label, m.accuracy, m.score AS score_before, m.chance, m.found, m.allowed,
+    m.structure, m.themes, m.endgame, m.spent_ms, m.clock_ms
+FROM stat_moves m JOIN reviewed_games g ON g.key = m.key
 """
 
         /**

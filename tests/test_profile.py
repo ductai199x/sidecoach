@@ -31,7 +31,7 @@ from sidecoach.profile import causes
 from sidecoach.profile.insights import insights, motif_words
 from sidecoach.profile.profiler import Profiler
 from sidecoach.profile.review import UserMove, build_review
-from sidecoach.profile.store import CellRow, Store
+from sidecoach.profile.store import CellRow, LibraryRow, Store
 from tests.fakes import ScriptedProvider
 from tests.profiling import Feed
 
@@ -944,7 +944,77 @@ def test_every_worked_query_in_the_schema_doc_runs() -> None:
         block = SCHEMA_DOC.split(f"TABLE {table}", 1)[1].split("\nTABLE ", 1)[0]
         for name in names:
             assert re.search(rf"\b{name}\b", block), f"{table}.{name} is not documented"
+    for view in ("reviewed_games", "reviewed_moves"):
+        names, _ = store.query(f"SELECT * FROM {view} LIMIT 0")
+        block = SCHEMA_DOC.split(f"VIEW {view}", 1)[1].split("\nVIEW ", 1)[0].split("\nTABLE ")[0]
+        for name in names:
+            assert re.search(rf"\b{name}\b", block), f"{view}.{name} is not documented"
     assert "json_each" in system_message()
+
+
+def test_the_coach_queries_the_games_stats_counts() -> None:
+    """The coach's SQL read only the games Sidecoach watched while Stats counts imported ones
+    too (the audit of 2026-10-07): "how many games have I played?" got the watched games'
+    count. The worked query for it now reads the games Stats counts -- every reviewed game,
+    watched or imported, a watched game its import stands for once -- and gets Stats' numbers."""
+    from sidecoach.profile.ask import EXAMPLES, answer
+    from sidecoach.profile.stats import Filter, stats
+    from tests.test_stats import _game, _move
+
+    store = _played_store()  # one watched game, "g", in the live record
+    for key, result in (
+        ("watched:g", "1-0"),
+        ("chesscom:1", "0-1"),
+        ("lichess:2", "1/2-1/2"),
+        ("watched:h", "1-0"),  # watched, then imported as chesscom:3: counted once
+        ("chesscom:3", "1-0"),
+    ):
+        if not key.startswith("watched:"):
+            store.add_library_game(LibraryRow(key, key.split(":")[0], 0.0, "*"))
+        store.save_stats("standard", _game(key, result=result), [_move(1, "white")])
+    store.add_twin("watched:h", "chesscom:3")
+    overview = stats(store, Filter())["overview"]
+    assert overview["games"] == 4 and store.games_count() == 1
+    question, sql = EXAMPLES[0]
+    assert question.startswith("How many games")
+    provider = ScriptedProvider([f"```sql\n{sql}\n```", "You have played four games."])
+    got = answer(question, store, provider)  # type: ignore[arg-type]
+    row = dict(zip(got.exchanges[0].columns, got.exchanges[0].rows[0], strict=True))
+    assert row["games"] == overview["games"]
+    points = overview["wins"] + overview["draws"] / 2
+    assert row["score"] == pytest.approx(points / overview["games"], abs=0.01)  # ROUND(.., 2)
+
+
+def test_the_schema_doc_names_how_a_watched_game_can_end() -> None:
+    """The reasons a watched game is kept with, as the doc gives them to the model: every one
+    the code writes (state/reconcile.py, state/pipeline.py, ui/panel.py, profile/profiler.py),
+    so a query on them matches the data (the audit of 2026-10-07: the doc listed a few and
+    "..."). And the `opponent` column says it holds nothing."""
+    import re
+
+    from sidecoach.profile.ask import SCHEMA_DOC
+
+    block = SCHEMA_DOC.split("TABLE games", 1)[1].split("\nTABLE ", 1)[0]
+    for reason in (
+        "checkmate",
+        "stalemate",
+        "insufficient material",
+        "repetition",
+        "fifty-move rule",
+        "resignation",
+        "lost on time",
+        "user resigned or lost on time",
+        "opponent resigned or lost on time",
+        "draw agreed",
+        "abandoned by the user",
+        "game over on board",
+        "new game started",
+        "board re-read",
+        "board reoriented",
+        "the end was not seen",
+    ):
+        assert f"'{reason}'" in block, reason
+    assert re.search(r"opponent TEXT\s+always NULL", block)
 
 
 def test_the_record_carries_what_a_question_needs() -> None:
