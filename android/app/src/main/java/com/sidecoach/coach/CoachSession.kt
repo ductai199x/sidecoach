@@ -94,6 +94,12 @@ private val ASK_PROFILE = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/**
+ * Offline, a question about the record when the record says nothing of the player yet: the
+ * words `profile/Ask.kt` says when the rows came back empty.
+ */
+const val RECORD_EMPTY = "The record has nothing on that yet."
+
 /** Questions about facts that are never withheld: the material, the opening, who is better. */
 private val ASK_MATERIAL = Regex(
     "\\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|" +
@@ -1139,6 +1145,21 @@ class Coach(
     private fun askProfile(text: String, ts: Double, moment: Moment) {
         val ask = profileAsk!!
         synchronized(lock) { conversation.userSaid(text) }
+        if (offline) {
+            // No model writes the queries offline: "ask me again in a moment" came every time
+            // (the audit, 2026-10-07). The answer is what the record already says of the player
+            // -- the profile's insights, the lines the AI is given of earlier games -- or, with
+            // nothing there yet, that plainly.
+            val said = profile?.insights?.joinToString(" ") ?: ""
+            queuePlain(
+                Trigger.USER_ASK,
+                said.ifEmpty { RECORD_EMPTY },
+                ts,
+                recordNow = true,
+                moment = moment,
+            )
+            return
+        }
 
         fun run() {
             val answer = try {

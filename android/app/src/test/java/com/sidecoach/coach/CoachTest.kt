@@ -2164,6 +2164,32 @@ class CoachTest {
     }
 
     /**
+     * Offline, "what do I usually miss?" answered "I could not read the record just now; ask me
+     * again in a moment." every time: no model writes the queries, so the moment never came (the
+     * audit, 2026-10-07). The offline coach answers with what the record already says of the
+     * player (the profile's insights); with nothing there yet, it says so plainly
+     * (`test_offline_a_question_about_the_record_gets_what_the_record_says`).
+     */
+    @Test
+    fun offlineAQuestionAboutTheRecordGetsWhatTheRecordSays() {
+        val insights = listOf(
+            "The thing to work on most over 12 games: forks you missed, which came up in 9 moves.",
+            "Worth practising: the fork. You found it 3 of the 8 times you had one.",
+        )
+        for ((given, expected) in listOf(insights to insights.joinToString(" "), emptyList<String>() to RECORD_EMPTY)) {
+            val coach = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+            playToScholar(coach)
+            coach.onEvent(mateAnalysis(6), 6.5)
+            coach.onEvent(com.sidecoach.events.ProfileSnapshot(games = 12, insights = given), 6.6)
+            // As the app wires it, the record's answerer fails with no model to call.
+            coach.profileAsk = { _ -> throw IllegalStateException("no model: llm.provider is none") }
+            coach.ask("what do I usually miss?", 7.0)
+            joinThreads("profile-ask")
+            assertEquals(listOf(expected), messages(coach).map { it.text })
+        }
+    }
+
+    /**
      * "What were you expecting that move to do?" ended every third lesson, for the profile's
      * record; after a mistake it reads as a challenge (Tai, 2026-10-02: "very rude and super
      * unwelcoming"). Neither the model's instruction nor the template asks it, however many

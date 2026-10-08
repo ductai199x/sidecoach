@@ -2491,6 +2491,9 @@ _ASK_PROFILE = re.compile(
     r"work on (?:in general|next|overall)))\b",
     re.IGNORECASE,
 )
+# Offline, a question about the record when the record says nothing of the player yet: the
+# words `profile/ask.py` says when the rows came back empty.
+RECORD_EMPTY = "The record has nothing on that yet."
 # Questions about facts that are never withheld: the material, the opening, who stands better.
 _ASK_MATERIAL = re.compile(
     r"\b(?:material|(?:how many|what) (?:pieces|pawns)|(?:am|are) i up|who'?s up|up material|"
@@ -3319,6 +3322,20 @@ class Coach:
         assert self.profile_ask is not None
         with self._lock:
             self.conversation.user_said(text)
+        if self._offline:
+            # No model writes the queries offline: "ask me again in a moment" came every time
+            # (the audit, 2026-10-07). The answer is what the record already says of the
+            # player -- the profile's insights, the lines the AI is given of earlier games --
+            # or, with nothing there yet, that plainly.
+            said = " ".join(self.profile.insights) if self.profile is not None else ""
+            self._queue_plain(
+                Trigger.USER_ASK,
+                said or RECORD_EMPTY,
+                ts,
+                record_now=True,
+                moment=moment,
+            )
+            return
         ask = self.profile_ask
 
         def run() -> None:

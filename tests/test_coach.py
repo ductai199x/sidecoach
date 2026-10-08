@@ -1688,6 +1688,40 @@ def test_a_question_about_the_player_over_their_games_goes_to_the_record() -> No
     assert asked == ["why am I always losing in the middlegame?"]
 
 
+def test_offline_a_question_about_the_record_gets_what_the_record_says() -> None:
+    """Offline, "what do I usually miss?" answered "I could not read the record just now; ask
+    me again in a moment." every time: no model writes the queries, so the moment never came
+    (the audit, 2026-10-07). The offline coach answers with what the record already says of
+    the player (the profile's insights, the lines the AI is given about earlier games); with
+    nothing there yet, it says so plainly."""
+    from collections.abc import Callable
+
+    from sidecoach.events import ProfileSnapshot
+    from sidecoach.profile import ask as profile_ask
+
+    insights = [
+        "The thing to work on most over 12 games: forks you missed, which came up in 9 moves.",
+        "Worth practising: the fork. You found it 3 of the 8 times you had one.",
+    ]
+    for given, expected in (
+        (insights, " ".join(insights)),
+        ([], "The record has nothing on that yet."),
+    ):
+        coach = offline_coach()
+        play_to_scholar(coach)
+        coach.on_event(mate_analysis(6), 6.5)
+        coach.on_event(ProfileSnapshot(games=12, insights=given), 6.6)
+        # As the app wires it: the record's answerer with the coach's own (offline) provider.
+        coach.profile_ask = lambda q, c=coach: profile_ask.answer(q, None, c.speaker.provider)  # type: ignore[arg-type]
+        spawned: list[tuple[Callable[[], None], str]] = []
+        coach.spawn = lambda work, name, kept=spawned: kept.append((work, name))
+        coach.ask("what do I usually miss?", 7.0)
+        while spawned:
+            spawned.pop()[0]()
+        said = [m.text for m in drain(coach)]
+        assert said == [expected], said
+
+
 def test_no_lesson_on_a_mistake_asks_what_the_player_expected() -> None:
     """ "What were you expecting that move to do?" ended every third lesson, for the profile's
     record; after a mistake it reads as a challenge (Tai, 2026-10-02: "very rude and super
