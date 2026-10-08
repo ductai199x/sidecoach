@@ -22,7 +22,13 @@ from typing import Any
 
 from sidecoach.config import Settings
 from sidecoach.events import MovePlayed, Trigger
-from sidecoach.profile.puzzles import Puzzle, PuzzleStore, puzzle_level, record_attempt
+from sidecoach.profile.puzzles import (
+    Puzzle,
+    PuzzleStore,
+    angle_for,
+    puzzle_level,
+    record_attempt,
+)
 from sidecoach.ui.log import DebugLog, elide
 from sidecoach.ui.puzzle import PuzzleSession
 
@@ -243,6 +249,9 @@ class PuzzleRoom:
                 solved,
                 list(session.sans),
                 time.time(),
+                # The page names the motif ("Puzzle · fork"), as Lichess's themed training
+                # names its theme: the result is weighed as that theme's (glicko.theme_weight).
+                theme=angle_for(session.motif) if session.motif else None,
             )
         except Exception as exc:  # noqa: BLE001 - the record must not break the puzzle
             self._emit("sys", "error", f"profile error: {exc!r}")

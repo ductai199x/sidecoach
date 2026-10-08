@@ -167,8 +167,10 @@ class PuzzleModeTest {
             outcome(api, fork.id, "puzzle ${fork.id} failed (fork)")
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
-            // The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76.
-            val first = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), false, 0L).glicko.intRating
+            // The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76,
+            // opened as a fork puzzle (the page says "Puzzle · fork"): Lichess's themed training keeps
+            // 0.7 of a loss on a theme that hints at the solution.
+            val first = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), false, 0L, "fork").glicko.intRating
             assertTrue(Puzzles.puzzleLevel(store) == first && first < 1500)
             assertEquals("the old level is neither read nor written", null, store.setting("puzzle_level"))
             // The page's result line reads the outcome as the profile took it: a miss is not a solve.

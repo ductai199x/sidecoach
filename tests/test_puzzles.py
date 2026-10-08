@@ -27,6 +27,7 @@ from sidecoach.profile.puzzles import (
     Attempt,
     Puzzle,
     PuzzleStore,
+    angle_for,
     open_store,
     position_key,
     puzzle_level,
@@ -227,6 +228,8 @@ def test_a_recommended_puzzle_opened_on_the_screen_is_scored(tmp_path: Path) -> 
     store = Store(None)
     profiler = Profiler(store, session_id="s", ts=0.0, puzzles=puzzles)
     profiler._recommended_for["fork1"] = "fork"
+    # Opened on Lichess by its link: Lichess serves it as a mixed puzzle (app/controllers/
+    # Puzzle.scala, PuzzleAngle.mix), so the result keeps its full weight.
     shown = _faced(puzzles, "fork1")
     started = GameStarted(game_id="p", user_side=Side.WHITE, start_fen=shown.fen(), kind="position")
     assert profiler.on_event(started, 1.0) == []
@@ -442,3 +445,21 @@ def test_a_rating_outside_the_stores_band_is_searched_at_its_nearest_end(tmp_pat
         PERF_KEY, '{"r": 2300.5, "d": 60.0, "v": 0.06, "nb": 300, "la": null}'
     )
     assert puzzle_level(profiler_store) == 2300
+
+
+def test_a_puzzle_the_page_names_a_motif_for_moves_the_rating_as_lichess_themed_training(
+    tmp_path: Path,
+) -> None:
+    # Lichess weighs a themed puzzle's result (PuzzleFinisher.ponder): a fork solve keeps 0.2 of
+    # the change, a mate-in-one's 0.1, a mixed puzzle all of it. The motif is named in Lichess's
+    # theme names (absolutePin trains as "pin").
+    puzzles = _store(tmp_path)
+    fork = puzzles.get("000Pw")
+    assert fork is not None
+    mixed, themed = Store(None), Store(None)
+    full = record_attempt(mixed, fork, "fork", True, [], 100.0)
+    part = record_attempt(themed, fork, "fork", True, [], 100.0, theme=angle_for("fork"))
+    want = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), True, 100_000, theme="fork")
+    assert part.level == want.glicko.int_rating
+    assert 1500 < part.level < full.level
+    assert angle_for("absolutePin") == "pin" and angle_for("mate") == "mate"

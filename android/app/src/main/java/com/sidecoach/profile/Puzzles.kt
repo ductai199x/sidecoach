@@ -88,6 +88,15 @@ object Puzzles {
     fun themesFor(motif: String): List<String> = THEME_FOR_MOTIF[motif] ?: listOf(motif)
 
     /**
+     * The Lichess training theme (its puzzle "angle") a motif's puzzles stand for, where the names
+     * differ: what weighs a themed puzzle's result (Glicko.themeWeight). Lichess has a "mate" theme.
+     */
+    val ANGLE_FOR_MOTIF: Map<String, String> = mapOf("absolutePin" to "pin")
+
+    /** The Lichess training theme a motif's puzzles are practised under. */
+    fun angleFor(motif: String): String = ANGLE_FOR_MOTIF[motif] ?: motif
+
+    /**
      * The puzzle store in the app's files, filled once from the Lichess CSV beside it
      * (the CSV files in `puzzles/`, the sample Setup writes) when it is empty; null when there are no
      * puzzles to be had. A store made before the puzzles kept their rating deviation gets them
@@ -150,14 +159,23 @@ object Puzzles {
      * An attempt into the profile store: kept beside the motif, and the puzzle rating moved as
      * Lichess moves it (Glicko): a game against the puzzle's own rating and deviation, won when
      * solved; the puzzle's rating is not changed. Shared by the profiler (a puzzle followed on
-     * the screen) and the puzzle page (one solved on its own board). [ts] is the time in epoch
-     * seconds.
+     * the screen) and the puzzle page (one solved on its own board). [theme] is the training theme
+     * the player was told (Lichess's themed training keeps only part of the change), null for a
+     * puzzle served as Lichess serves a mixed one. [ts] is the time in epoch seconds.
      */
-    fun recordAttempt(store: Store, puzzle: Puzzle, motif: String?, solved: Boolean, moves: List<String>, ts: Double): PuzzleOutcome {
+    fun recordAttempt(
+        store: Store,
+        puzzle: Puzzle,
+        motif: String?,
+        solved: Boolean,
+        moves: List<String>,
+        ts: Double,
+        theme: String? = null,
+    ): PuzzleOutcome {
         val nowMs = (ts * 1000).toLong()
         val before = puzzlePerf(store, nowMs)
         val opponent = Glicko.Rating(puzzle.rating.toDouble(), puzzle.deviation.toDouble(), Glicko.DEFAULT_VOLATILITY)
-        val after = Glicko.finish(before, opponent, solved, nowMs)
+        val after = Glicko.finish(before, opponent, solved, nowMs, theme)
         store.setSetting(PERF_KEY, perfJson(Glicko.stored(after, nowMs)))
         store.addAttempt(puzzle.id, ts, motif, solved, moves)
         return PuzzleOutcome(gameId = "puzzle-${puzzle.id}", puzzleId = puzzle.id, motif = motif, solved = solved, level = after.glicko.intRating)

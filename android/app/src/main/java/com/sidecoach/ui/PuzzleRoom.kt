@@ -283,6 +283,9 @@ class PuzzleRoom(
                 solved,
                 session.sans.toList(),
                 System.currentTimeMillis() / 1000.0,
+                // The page names the motif ("Puzzle · fork"), as Lichess's themed training names
+                // its theme: the result is weighed as that theme's (Glicko.themeWeight).
+                theme = session.motif?.let { Puzzles.angleFor(it) },
             )
         } catch (exc: Exception) { // the record must not break the puzzle
             emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")

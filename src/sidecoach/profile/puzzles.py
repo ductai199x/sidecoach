@@ -57,6 +57,9 @@ THEME_FOR_MOTIF: dict[str, list[str]] = {
     "mate": ["mateIn1", "mateIn2", "mateIn3"],
     "absolutePin": ["pin"],
 }
+# The Lichess training theme (its puzzle "angle") a motif's puzzles stand for, where the names
+# differ: what weighs a themed puzzle's result (glicko.theme_weight). Lichess has a "mate" theme.
+ANGLE_FOR_MOTIF: dict[str, str] = {"absolutePin": "pin"}
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS puzzles (
@@ -365,18 +368,32 @@ def puzzle_level(store: Any) -> int:
     return parse_perf(store.setting(PERF_KEY)).glicko.int_rating
 
 
+def angle_for(motif: str) -> str:
+    """The Lichess training theme a motif's puzzles are practised under."""
+    return ANGLE_FOR_MOTIF.get(motif, motif)
+
+
 def record_attempt(
-    store: Any, puzzle: Puzzle, motif: str | None, solved: bool, moves: list[str], ts: float
+    store: Any,
+    puzzle: Puzzle,
+    motif: str | None,
+    solved: bool,
+    moves: list[str],
+    ts: float,
+    *,
+    theme: str | None = None,
 ) -> PuzzleOutcome:
     """An attempt into the profile store: kept beside the motif, and the puzzle rating moved
     as Lichess moves it (profile/glicko.py): a game against the puzzle's own rating and
-    deviation, won when solved; the puzzle's rating is not changed. Shared by the profiler (a
-    puzzle followed on the screen) and the puzzle page (one solved on its own board). `ts` is
-    the time in epoch seconds."""
+    deviation, won when solved; the puzzle's rating is not changed. `theme` is the training
+    theme the player was told (Lichess's themed training keeps only part of the change), None
+    for a puzzle served as Lichess serves a mixed one. Shared by the profiler (a puzzle
+    followed on the screen) and the puzzle page (one solved on its own board). `ts` is the
+    time in epoch seconds."""
     now_ms = int(ts * 1000)
     before = puzzle_perf(store, now_ms)
     opponent = glicko.Glicko(puzzle.rating, puzzle.deviation, glicko.DEFAULT_VOLATILITY)
-    after = glicko.finish(before, opponent, solved, now_ms)
+    after = glicko.finish(before, opponent, solved, now_ms, theme=theme)
     store.set_setting(PERF_KEY, perf_json(glicko.stored(after, now_ms)))
     store.add_attempt(puzzle.id, ts, motif, solved, moves)
     return PuzzleOutcome(

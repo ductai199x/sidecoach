@@ -281,6 +281,26 @@ class PuzzlesTest {
         store.close()
     }
 
+    /** `test_a_puzzle_the_page_names_a_motif_for_moves_the_rating_as_lichess_themed_training`. */
+    @Test
+    fun aPuzzleThePageNamesAMotifForMovesTheRatingAsLichessThemedTraining() {
+        val puzzles = PuzzleStore(null)
+        puzzles.importCsv(csv(dir("themed")))
+        val fork = puzzles.get("000Pw")!!
+        val mixed = Store(null)
+        val themed = Store(null)
+        val full = Puzzles.recordAttempt(mixed, fork, "fork", true, emptyList(), 100.0)
+        val part = Puzzles.recordAttempt(themed, fork, "fork", true, emptyList(), 100.0, theme = Puzzles.angleFor("fork"))
+        val want = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), true, 100_000L, "fork")
+        assertEquals(want.glicko.intRating, part.level)
+        assertTrue(part.level in 1501 until full.level)
+        assertEquals("pin", Puzzles.angleFor("absolutePin"))
+        assertEquals("mate", Puzzles.angleFor("mate"))
+        mixed.close()
+        themed.close()
+        puzzles.close()
+    }
+
     private companion object {
         val Py = com.sidecoach.voice.Py
 

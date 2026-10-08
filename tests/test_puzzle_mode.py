@@ -218,8 +218,12 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     signals.logged(client, FORK.id, f"puzzle {FORK.id} failed (fork)")
     store = Store(tmp_path / "profile.sqlite")
     assert [a[0] for a in store.attempts()] == [FORK.id] and not store.attempts()[0][2]
-    # The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76.
-    lost = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), False, 0)
+    # The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76,
+    # opened as a fork puzzle (the page says "Puzzle · fork"): Lichess's themed training keeps
+    # 0.7 of a loss on a theme that hints at the solution.
+    lost = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), False, 0, theme="fork")
+    full = glicko.finish(glicko.Perf(), glicko.Glicko(1547, 76, 0.09), False, 0)
+    assert full.glicko.int_rating < lost.glicko.int_rating
     first = lost.glicko.int_rating
     assert puzzle_level(store) == first < 1500
     assert store.setting("puzzle_level") is None, "the old level is neither read nor written"
