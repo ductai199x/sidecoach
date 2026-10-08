@@ -201,8 +201,17 @@ class CaptureService : Service() {
             // engine and the coach are shared, and its close resets them.
             retiring?.join(RETIRE_WAIT_MS)
             retiring = null
-            val (net, engine, coach) = PanelWarm.forSession(this)
-            vision = GameWatcher(this, File(filesDir, "themes"), net, engine, coach)
+            vision = builtOrSaid(
+                build = {
+                    val (net, engine, coach) = PanelWarm.forSession(this)
+                    GameWatcher(this, File(filesDir, "themes"), net, engine, coach)
+                },
+                failed = { exc ->
+                    Log.w(TAG, "the session could not be built: $exc")
+                    PanelEngine.emit("sys", "error", "engine stopped: ${PanelEngine.pyRepr(exc)}")
+                    stopSelf()
+                },
+            )
         }
         // The window's numbers go to a file in a developer's build only (debug, and the phone's
         // build, which was a debug build until 2026-10-01): a release saves nothing of a session
@@ -604,6 +613,20 @@ class CaptureService : Service() {
 
         /** Half the screen in each direction (a quarter of the pixels). */
         private const val SCALE = 2
+
+        /**
+         * The session's stages built by [build], or null with the failure handed to [failed]:
+         * `panel._run`'s "engine stopped: {exc!r}" and a shut-down session. Thrown on the
+         * vision thread, it took the whole app down (the audit of 2026-10-07). Only a VM's
+         * own failure (memory) still goes up.
+         */
+        internal fun <T> builtOrSaid(build: () -> T, failed: (Throwable) -> Unit): T? = try {
+            build()
+        } catch (exc: Throwable) {
+            if (exc is VirtualMachineError) throw exc
+            failed(exc)
+            null
+        }
 
         /**
          * The plane's bytes as a whole [rowStride] by [height] block, the size the bitmap they
