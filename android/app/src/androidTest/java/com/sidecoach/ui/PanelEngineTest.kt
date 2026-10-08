@@ -517,6 +517,25 @@ class PanelEngineTest {
      * phone's own rule rides on it: the microphone is open while the panel is in front or a
      * session holds it.
      */
+    /**
+     * `test_the_board_reading_model_missing_is_said_and_only_then`: a session with no
+     * board-reading model says so in the status line, and keeps saying it (the loop has nothing
+     * to read with); with the model, the usual "waiting for a board".
+     */
+    @Test
+    fun theBoardReadingModelMissingIsSaidAndOnlyThen() {
+        GameWatcher(app, null, null, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
+            .use { watcher ->
+                assertEquals(NO_BOARD_MODEL, state().getString("status"))
+                watcher.coachTick(1.0)
+                assertEquals(NO_BOARD_MODEL, state().getString("status"))
+            }
+        CellEmbedder.load(app, threads = TestNets.THREADS).use { net ->
+            GameWatcher(app, null, net, Assessing(null, "off"), CoachRunner(SettingsStore(app), enabled = false), profilePath = null)
+                .use { assertEquals("waiting for a board", state().getString("status")) }
+        }
+    }
+
     @Test
     fun listeningOutlivesASession() {
         InstrumentationRegistry.getInstrumentation().uiAutomation

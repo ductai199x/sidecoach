@@ -83,6 +83,17 @@ private val BOARD_UNREAD = mapOf(
 )
 
 /**
+ * What the person is told when there is no board-reading model (the embedding net missing, or a
+ * load that failed: `PanelWarm.forSession`), in the status line. `panel.NO_BOARD_MODEL`: the
+ * app ships the model; Setup does not fetch it.
+ */
+const val NO_BOARD_MODEL = "The board-reading model is missing or could not load: reinstall Sidecoach."
+
+/** The status line as a session begins: `panel._run`'s, with [NO_BOARD_MODEL] when there is no model. */
+internal fun waitingStatus(noBoardModel: Boolean): String =
+    if (noBoardModel) NO_BOARD_MODEL else "waiting for a board"
+
+/**
  * What the person is told when the game's board has stayed unexplained a long while
  * ([Unexplained.told]): the reader sees something no move of the game leads to. `panel.LOST_TRACK`.
  */

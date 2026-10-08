@@ -513,6 +513,61 @@ def test_a_session_that_cannot_be_built_is_said_and_stopped(
     engine.close()
 
 
+@pytest.mark.parametrize("model", ["missing", "unloadable", "there"])
+def test_the_board_reading_model_missing_is_said_and_only_then(
+    make_panel: Callable[..., PanelEngine], monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """With no board-reading model (its file missing, or a load that fails), the status line
+    and the unread-board note say so, and to reinstall: "waiting for a start" and "show me the
+    starting position" cannot help (the audit of 2026-10-07). With the model, nothing of it."""
+    from types import SimpleNamespace
+
+    import chess
+    import numpy as np
+
+    from sidecoach.events import BoardUnread
+    from sidecoach.ui.panel import BOARD_UNREAD, NO_BOARD_MODEL
+    from sidecoach.vision import pieces
+
+    def unloadable() -> object:
+        raise RuntimeError("the model file is damaged")
+
+    there = SimpleNamespace(device=SimpleNamespace(detail="a test net"))
+    found = {"missing": lambda: None, "unloadable": unloadable, "there": lambda: there}[model]
+    monkeypatch.setattr(pieces, "embedder", found)
+    blank = np.zeros((360, 640, 3), dtype=np.uint8)  # no board on it: the net is never run
+    engine = make_panel(record=False, frame_source=[(i, i * 0.1, blank) for i in range(3)])
+    statuses: list[str] = []
+    setter = engine._set
+
+    def seen(**kw: object) -> None:
+        if "status" in kw:
+            statuses.append(str(kw["status"]))
+        setter(**kw)
+
+    monkeypatch.setattr(engine, "_set", seen)
+    engine.start()
+    assert engine._thread is not None
+    engine._thread.join(timeout=30)
+    assert not engine._thread.is_alive()
+
+    class Glue:
+        def submit(self, event: object) -> None:
+            pass
+
+    engine._dispatch_game(BoardUnread(reason="unlearned"), Glue(), chess)
+    said = [r["data"]["full"] for r in engine._log.since(0) if r.get("chan") == "coach"]
+    if model == "there":
+        assert NO_BOARD_MODEL not in statuses
+        assert "waiting for a board" in statuses and "waiting for a start" in statuses
+        assert said == [BOARD_UNREAD["unlearned"]]
+    else:
+        assert NO_BOARD_MODEL in statuses
+        assert "waiting for a board" not in statuses and "waiting for a start" not in statuses
+        assert said == [NO_BOARD_MODEL]
+    engine.close()
+
+
 def test_an_engine_installed_after_the_warm_up_is_built_at_the_next_start(
     make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -138,7 +138,13 @@ class GameWatcher(
         // itself (profile/Ask), read-only over this store.
         coaching.useRecord(profileStore)
         coaching.coach?.watching = true // until this session's Stop (`CoachSession.pause`)
-        PanelEngine.set("status" to "waiting for a board", "coach_on" to coaching.on, "analysis_on" to assessing.on)
+        // With no board-reading model the session reads nothing ([read] has no pipeline): the
+        // status line says so, where "waiting for a board" stayed for ever (the audit of 2026-10-07).
+        PanelEngine.set(
+            "status" to com.sidecoach.ui.waitingStatus(noBoardModel = embedder == null),
+            "coach_on" to coaching.on,
+            "analysis_on" to assessing.on,
+        )
     }
 
     /**

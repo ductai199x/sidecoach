@@ -233,6 +233,22 @@ BOARD_UNREAD = {
 }
 
 
+# What the person is told when there is no board-reading model (the embedding net's file
+# missing, or a load that failed): in the status line, and in place of BOARD_UNREAD, which
+# asks for a start position that cannot help. The app ships the model; Setup does not fetch it.
+NO_BOARD_MODEL = "The board-reading model is missing or could not load: reinstall Sidecoach."
+
+
+def board_model_missing() -> bool:
+    """Whether the board-reading model is missing or could not load (`pieces.embedder`)."""
+    from sidecoach.vision.pieces import embedder
+
+    try:
+        return embedder() is None
+    except Exception:  # noqa: BLE001 - a model that does not load reads no board either
+        return True
+
+
 # What the person is told when the game's board has stayed unexplained a long while
 # (`Unexplained.told`): the reader sees something no move of the game leads to.
 LOST_TRACK = (
@@ -317,6 +333,8 @@ class PanelEngine:
     _listener: Listener = field(default=None, init=False)  # type: ignore[assignment]
     _hotkey: GlobalPushToTalk = field(default=None, init=False)  # type: ignore[assignment]
     _forced_bottom: Any = field(default=None, init=False)  # a Side chosen by the flip button
+    # This session has no board-reading model (`board_model_missing`): it says so (NO_BOARD_MODEL).
+    _no_board_model: bool = field(default=False, init=False)
     _view_flip: bool = field(default=False, init=False)  # the panel's board shown turned around
     _fen_before: dict[int, str] = field(default_factory=dict, init=False)  # ply -> fen before
     # Whether the person has been told the board is lost track of, since it was last read.
@@ -2403,10 +2421,11 @@ class PanelEngine:
                 self._set(status="loading the models")
                 self._warm_done.wait(timeout=120.0)
             with self._warm_lock:
+                self._no_board_model = board_model_missing()
                 if self._assessing is None or self._coaching is None or self._engine_stale:
                     from sidecoach.vision.pieces import embedder
 
-                    net = embedder()
+                    net = None if self._no_board_model else embedder()
                     if net is not None and self._assessing is None:
                         self._emit("sys", "info", f"pieces: embedding net on {net.device.detail}")
                 assessing, coaching = self._prepare_stages()
@@ -2455,7 +2474,11 @@ class PanelEngine:
                 )
             if not self._warm_done.is_set():  # no warm-up loaded the voice (replay, tests)
                 threading.Thread(target=self._warm_voice, name="voice-load", daemon=True).start()
-            self._set(status="waiting for a board", coach_on=coaching.on, analysis_on=assessing.on)
+            self._set(
+                status=NO_BOARD_MODEL if self._no_board_model else "waiting for a board",
+                coach_on=coaching.on,
+                analysis_on=assessing.on,
+            )
         except Exception as exc:  # noqa: BLE001 - report and shut down cleanly, as the loop does
             # A session that could not be built (the stages, the capture, the profile) ends
             # as one whose loop failed: said, and the panel stopped. It killed this thread
@@ -2929,8 +2952,9 @@ class PanelEngine:
                 self.caption(LOST_TRACK)
         elif isinstance(event, BoardUnread):
             # A board up and nothing read from it: said in the coach's pane, where the
-            # person looks, as "Press Start first" is.
-            text = BOARD_UNREAD[event.reason]
+            # person looks, as "Press Start first" is. With no model to read it with, no
+            # board can be: that is what is said (not a start position, which cannot help).
+            text = NO_BOARD_MODEL if self._no_board_model else BOARD_UNREAD[event.reason]
             self._emit(
                 "coach",
                 "info",
@@ -3544,7 +3568,9 @@ class PanelEngine:
             following=pipe.model is not None,
             bottom=pipe.bottom.value if pipe.bottom else None,
             status=(
-                "waiting for a start"
+                NO_BOARD_MODEL
+                if pipe.model is None and self._no_board_model
+                else "waiting for a start"
                 if pipe.model is None
                 else f"game over {rec.result or ''} · waiting for the next game".replace("  ", " ")
                 if rec is not None and rec.finished
