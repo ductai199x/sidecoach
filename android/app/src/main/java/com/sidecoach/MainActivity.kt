@@ -23,6 +23,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
@@ -305,17 +306,14 @@ class MainActivity : ComponentActivity() {
 
         // Back walks the page's own history -- out of the settings, back to the panel --
         // and leaves the app only when there is nowhere left to go.
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                val page = web
-                if (page != null && page.canGoBack()) {
-                    page.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                }
-            }
-        })
+        onBackPressedDispatcher.addCallback(
+            this,
+            PageBack(
+                canGoBack = { web?.canGoBack() == true },
+                goBack = { web?.goBack() },
+                dispatcher = { onBackPressedDispatcher },
+            ),
+        )
     }
 
     /**
@@ -433,5 +431,31 @@ class MainActivity : ComponentActivity() {
 
         /** Where the panel's port is kept between launches. */
         private const val PORT_KEY = "port"
+    }
+}
+
+/**
+ * Back walks the page's own history -- out of the settings, back to the panel -- and leaves
+ * the app only when there is nowhere left to go. Every time: the callback steps aside for the
+ * one press that leaves and is back at once. Left off, it stayed off -- Android keeps the
+ * activity when Back leaves it -- and after a return Back left the app from the settings
+ * (the audit of 2026-10-07).
+ */
+internal class PageBack(
+    private val canGoBack: () -> Boolean,
+    private val goBack: () -> Unit,
+    private val dispatcher: () -> OnBackPressedDispatcher,
+) : OnBackPressedCallback(true) {
+    override fun handleOnBackPressed() {
+        if (canGoBack()) {
+            goBack()
+        } else {
+            isEnabled = false
+            try {
+                dispatcher().onBackPressed()
+            } finally {
+                isEnabled = true
+            }
+        }
     }
 }
