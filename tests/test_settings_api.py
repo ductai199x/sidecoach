@@ -45,6 +45,27 @@ def test_the_schema_carries_the_marks_the_page_reads(
     assert "OPENAI_API_KEY" in got["secrets"]
 
 
+def test_the_move_judging_settings_say_what_they_do(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two settings described what does not happen (the audit of 2026-10-07): the coach never
+    asks the player to slow down at a decisive moment (it is silent until stuck), and a decided
+    game takes no lesson away; what each does is in analysis/score.py (`is_decisive`, the Great
+    label and Stats' tactic chances; `verdict`'s lost position). The phone shows the same
+    words, from its copy of the schema (android/tools/sync_settings.py)."""
+    import json
+
+    client, _ = _client(tmp_path, monkeypatch)
+    coach = client.get("/api/settings").json()["schema"]["$defs"]["CoachSettings"]["properties"]
+    gap, decided = coach["decisive_gap"]["description"], coach["decided"]["description"]
+    assert "slow down" not in gap and "Great" in gap
+    assert "lesson" not in decided and "Great" in decided
+    phone = Path(__file__).parents[1] / "android/app/src/main/assets/settings/schema.json"
+    phone_coach = json.loads(phone.read_text(encoding="utf-8"))["$defs"]["CoachSettings"]
+    assert phone_coach["properties"]["decisive_gap"]["description"] == gap
+    assert phone_coach["properties"]["decided"]["description"] == decided
+
+
 def test_a_new_service_does_not_take_the_old_ones_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

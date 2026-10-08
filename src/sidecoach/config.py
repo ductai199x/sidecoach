@@ -503,8 +503,9 @@ class CoachSettings(_Settings):
         default=0.10,
         ge=0.0,
         le=1.0,
-        description="When the best move is better than the next by this much, the moment is "
-        "decisive and the coach asks you to slow down before you move.",
+        description="When the best move is better than the next best by this much, the moment "
+        "counts as decisive: finding the move can earn Great, Stats can count it as a tactic "
+        "chance, and the coach is told the move matters.",
         json_schema_extra=_extra(
             applies="now",
             advanced=True,
@@ -538,8 +539,9 @@ class CoachSettings(_Settings):
         default=0.90,
         ge=0.5,
         le=1.0,
-        description="Beyond this winning chance (0.9 is 90%) the game is decided, and small "
-        "losses no longer earn a lesson.",
+        description="A side whose winning chance is at or below 1 minus this (0.9: 10% or less) "
+        "counts as lost: none of its moves earns Great, and walking into a mate is judged only "
+        "by what it costs.",
         json_schema_extra=_extra(
             applies="now",
             advanced=True,
