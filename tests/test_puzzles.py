@@ -308,3 +308,83 @@ def test_a_row_too_short_for_a_rating_or_moves_is_skipped(tmp_path: Path) -> Non
         tmp_path / "short.csv", [ROWS[0], "short1,8/8/8/8/8/8/8/K6k w - - 0 1", "short2"]
     )
     assert PuzzleStore(None).import_csv(path) == 1
+
+
+# The puzzles table as it was before the puzzles kept their rating deviation.
+OLD_SCHEMA = """
+CREATE TABLE puzzles (
+    id TEXT PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL,
+    popularity INTEGER NOT NULL DEFAULT 0, plays INTEGER NOT NULL DEFAULT 0,
+    themes TEXT NOT NULL, position TEXT NOT NULL
+);
+"""
+
+
+def test_a_puzzle_keeps_the_rating_deviation_lichess_gives_it(tmp_path: Path) -> None:
+    # The player's rating is computed against the puzzle's own rating and deviation, as
+    # Lichess's PuzzleFinisher does: the import keeps the CSV's RatingDeviation, 75 where a
+    # row has none or not a number.
+    store = _store(tmp_path)
+    assert [store.get(i).deviation for i in ("000Pw", "000rO", "mate1")] == [76, 82, 70]  # type: ignore[union-attr]
+    odd = ROWS[2].replace(",1000,80,", ",1000,,").replace("fork1", "none1", 1)
+    bad = ROWS[3].replace(",1200,80,", ",1200,x,").replace("pin01", "bad01", 1)
+    path = puzzle_file(tmp_path / "odd.csv", [odd, bad])
+    assert store.import_csv(path) == 2
+    assert store.get("none1").deviation == 75 and store.get("bad01").deviation == 75  # type: ignore[union-attr]
+    assert Puzzle("x", chess.STARTING_FEN, ("e2e4", "e7e5"), 1000, 0, 0, ()).deviation == 75
+
+
+def test_a_store_from_before_the_deviations_gets_them_from_its_csv_once(tmp_path: Path) -> None:
+    import sqlite3
+
+    data = tmp_path / "data"
+    puzzle_file(data / "puzzles" / "sample.csv", ROWS)
+    old = sqlite3.connect(data / "puzzles.sqlite")
+    old.executescript(OLD_SCHEMA)
+    old.execute(
+        "INSERT INTO puzzles VALUES ('fork1', ?, 'g8f6 f3e5 c6e5', 1000, 80, 500, 'fork', 'k')",
+        ("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",),
+    )
+    old.execute(
+        "INSERT INTO puzzles VALUES ('gone1', ?, 'g8f6 f3e5', 1000, 80, 500, 'fork', 'k')",
+        ("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",),
+    )
+    old.commit()
+    old.close()
+    store = open_store(data)
+    assert store is not None and store.version() == 1
+    assert store.count() == 2, "the puzzles stay; only their deviations are filled in"
+    assert store.get("fork1").deviation == 80, "from the CSV"  # type: ignore[union-attr]
+    assert store.get("gone1").deviation == 75, "none in the CSV: the fallback"  # type: ignore[union-attr]
+    store.close()
+    # Once: a CSV changed afterwards is not read again.
+    puzzle_file(
+        data / "puzzles" / "sample.csv", [r.replace(",1000,80,", ",1000,99,") for r in ROWS]
+    )
+    store = open_store(data)
+    assert store is not None and store.get("fork1").deviation == 80  # type: ignore[union-attr]
+    store.close()
+
+
+def test_without_its_csv_an_old_store_keeps_the_fallback_until_the_csv_comes(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    data = tmp_path / "data"
+    data.mkdir()
+    old = sqlite3.connect(data / "puzzles.sqlite")
+    old.executescript(OLD_SCHEMA)
+    old.execute(
+        "INSERT INTO puzzles VALUES ('fork1', ?, 'g8f6 f3e5 c6e5', 1000, 80, 500, 'fork', 'k')",
+        ("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",),
+    )
+    old.commit()
+    old.close()
+    store = open_store(data)
+    assert store is not None and store.version() == 0 and store.get("fork1").deviation == 75  # type: ignore[union-attr]
+    store.close()
+    puzzle_file(data / "puzzles" / "sample.csv", ROWS)
+    store = open_store(data)
+    assert store is not None and store.version() == 1 and store.get("fork1").deviation == 80  # type: ignore[union-attr]
+    store.close()

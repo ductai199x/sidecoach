@@ -184,6 +184,80 @@ class PuzzlesTest {
 
     private fun strings(a: JSONArray): List<String> = (0 until a.length()).map { a.getString(it) }
 
+    /**
+     * The player's rating is computed against the puzzle's own rating and deviation, as Lichess's
+     * PuzzleFinisher does: the import keeps the CSV's RatingDeviation, 75 where a row has none or
+     * not a number (`test_a_puzzle_keeps_the_rating_deviation_lichess_gives_it`).
+     */
+    @Test
+    fun aPuzzleKeepsTheRatingDeviationLichessGivesIt() {
+        val store = PuzzleStore(null)
+        store.importCsv(csv(dir("deviation")))
+        assertEquals(listOf(76, 82, 70), listOf("000Pw", "000rO", "mate1").map { store.get(it)!!.deviation })
+        val odd = ROWS[2].replace(",1000,80,", ",1000,,").replaceFirst("fork1", "none1")
+        val bad = ROWS[3].replace(",1200,80,", ",1200,x,").replaceFirst("pin01", "bad01")
+        val file = File(dir("odd"), "odd.csv").apply { writeText(listOf(HEADER, odd, bad).joinToString("\n") + "\n") }
+        assertEquals(2, store.importCsv(file))
+        assertEquals(75, store.get("none1")!!.deviation)
+        assertEquals(75, store.get("bad01")!!.deviation)
+        assertEquals(75, Puzzle("x", com.sidecoach.chess.STARTING_FEN, listOf("e2e4", "e7e5"), 1000, 0, 0, emptyList()).deviation)
+        store.close()
+    }
+
+    /** A store from before the puzzles kept their deviation, as an older app left it. */
+    private fun oldStore(files: File, ids: List<String>) {
+        val db = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(File(files, "puzzles.sqlite"), null)
+        db.execSQL(
+            "CREATE TABLE puzzles (id TEXT PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL," +
+                " popularity INTEGER NOT NULL DEFAULT 0, plays INTEGER NOT NULL DEFAULT 0, themes TEXT NOT NULL," +
+                " position TEXT NOT NULL)",
+        )
+        for (id in ids) {
+            db.execSQL(
+                "INSERT INTO puzzles VALUES (?, ?, 'g8f6 f3e5 c6e5', 1000, 80, 500, 'fork', 'k')",
+                arrayOf(id, "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"),
+            )
+        }
+        db.close()
+    }
+
+    /** `test_a_store_from_before_the_deviations_gets_them_from_its_csv_once`. */
+    @Test
+    fun aStoreFromBeforeTheDeviationsGetsThemFromItsCsvOnce() {
+        val files = dir("old")
+        csv(File(files, "puzzles").apply { mkdirs() })
+        oldStore(files, listOf("fork1", "gone1"))
+        val store = Puzzles.openStore(files)!!
+        assertEquals(1, store.version())
+        assertEquals("the puzzles stay; only their deviations are filled in", 2, store.count())
+        assertEquals("from the CSV", 80, store.get("fork1")!!.deviation)
+        assertEquals("none in the CSV: the fallback", 75, store.get("gone1")!!.deviation)
+        store.close()
+        // Once: a CSV changed afterwards is not read again.
+        File(File(files, "puzzles"), "sample.csv").writeText(
+            HEADER + "\n" + ROWS.joinToString("\n") { it.replace(",1000,80,", ",1000,99,") } + "\n",
+        )
+        val again = Puzzles.openStore(files)!!
+        assertEquals(80, again.get("fork1")!!.deviation)
+        again.close()
+    }
+
+    /** `test_without_its_csv_an_old_store_keeps_the_fallback_until_the_csv_comes`. */
+    @Test
+    fun withoutItsCsvAnOldStoreKeepsTheFallbackUntilTheCsvComes() {
+        val files = dir("nocsv")
+        oldStore(files, listOf("fork1"))
+        val store = Puzzles.openStore(files)!!
+        assertEquals(0, store.version())
+        assertEquals(75, store.get("fork1")!!.deviation)
+        store.close()
+        csv(File(files, "puzzles").apply { mkdirs() })
+        val again = Puzzles.openStore(files)!!
+        assertEquals(1, again.version())
+        assertEquals(80, again.get("fork1")!!.deviation)
+        again.close()
+    }
+
     private companion object {
         val Py = com.sidecoach.voice.Py
 

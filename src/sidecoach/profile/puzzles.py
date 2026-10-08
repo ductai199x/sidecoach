@@ -44,6 +44,9 @@ LEVEL_START = 1100
 LEVEL_STEP = 25
 # How many puzzles a recommendation carries.
 COUNT = 3
+# A puzzle's rating deviation where the CSV gives none (or the store predates the column): the
+# opponent's deviation in the player's rating update (profile/glicko.py).
+DEVIATION_FALLBACK = 75
 # Themes that are tactics, in Lichess's names; the profile's motif names are the same but
 # for the mates, which Lichess splits by length.
 THEME_FOR_MOTIF: dict[str, list[str]] = {
@@ -51,7 +54,7 @@ THEME_FOR_MOTIF: dict[str, list[str]] = {
     "absolutePin": ["pin"],
 }
 
-SCHEMA = """
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS puzzles (
     id TEXT PRIMARY KEY,
     fen TEXT NOT NULL,
@@ -60,11 +63,16 @@ CREATE TABLE IF NOT EXISTS puzzles (
     popularity INTEGER NOT NULL DEFAULT 0,
     plays INTEGER NOT NULL DEFAULT 0,
     themes TEXT NOT NULL,
-    position TEXT NOT NULL
+    position TEXT NOT NULL,
+    deviation INTEGER NOT NULL DEFAULT {DEVIATION_FALLBACK}
 );
 CREATE INDEX IF NOT EXISTS puzzles_rating ON puzzles (rating);
 CREATE INDEX IF NOT EXISTS puzzles_position ON puzzles (position);
 """
+# The store's version (SQLite's user_version): 1 once every puzzle has the deviation the CSV
+# gives it. A store made before the column (version 0) gets the column with the fallback, then
+# its deviations from the CSV beside it, once (`fill_deviations`).
+DEVIATIONS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,7 @@ class Puzzle:
     popularity: int
     plays: int
     themes: tuple[str, ...]
+    deviation: int = DEVIATION_FALLBACK  # the rating's deviation, as Lichess holds it
 
     @property
     def url(self) -> str:
@@ -99,11 +108,15 @@ class Puzzle:
 def open_store(data_dir: Path) -> PuzzleStore | None:
     """The puzzle store under the data directory, filled once from the Lichess CSV
     beside it (data/puzzles/*.csv, the sample `tools/puzzles/fetch.py` writes or the
-    whole database) when it is empty; None when there are no puzzles to be had."""
+    whole database) when it is empty; None when there are no puzzles to be had. A store
+    made before the puzzles kept their rating deviation gets them from the same CSV, once."""
     store = PuzzleStore(data_dir / "puzzles.sqlite")
+    csv_paths = sorted((data_dir / "puzzles").glob("*.csv"))
     if store.count() == 0:
-        for csv_path in sorted((data_dir / "puzzles").glob("*.csv")):
+        for csv_path in csv_paths:
             store.import_csv(csv_path)
+    elif store.version() < DEVIATIONS_VERSION:
+        store.fill_deviations(csv_paths)
     if store.count() == 0:
         store.close()
         return None
@@ -116,6 +129,14 @@ def position_key(fen: str, first_move: str | None = None) -> str:
     if first_move:
         board.push_uci(first_move)
     return f"{board.board_fen()} {'w' if board.turn else 'b'}"
+
+
+def _deviation(text: str | None) -> int:
+    """A CSV row's RatingDeviation, or DEVIATION_FALLBACK where it has none or not a number."""
+    try:
+        return int(text) if text else DEVIATION_FALLBACK
+    except ValueError:
+        return DEVIATION_FALLBACK
 
 
 def themes_for(motif: str) -> list[str]:
@@ -135,8 +156,52 @@ class PuzzleStore:
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         with self._lock:
+            columns = self._columns()
             self._db.executescript(SCHEMA)
+            if not columns:
+                # A new store: whatever is imported into it carries its deviation.
+                self._db.execute(f"PRAGMA user_version = {DEVIATIONS_VERSION}")
+            elif "deviation" not in columns:
+                # A store from before the column: the fallback until `fill_deviations`.
+                with contextlib.suppress(sqlite3.OperationalError):  # another opener added it
+                    self._db.execute(
+                        "ALTER TABLE puzzles ADD COLUMN deviation INTEGER NOT NULL"
+                        f" DEFAULT {DEVIATION_FALLBACK}"
+                    )
             self._db.commit()
+
+    def _columns(self) -> set[str]:
+        return {r["name"] for r in self._db.execute("PRAGMA table_info(puzzles)").fetchall()}
+
+    def version(self) -> int:
+        with self._lock:
+            return int(self._db.execute("PRAGMA user_version").fetchone()[0])
+
+    def fill_deviations(self, paths: list[Path]) -> int:
+        """Each puzzle's rating deviation from the Lichess CSVs it was imported from, in one
+        transaction with the store's version: a store from before the column gets them once,
+        and one interrupted on the way is filled again at the next open. Returns how many
+        puzzles got one; with no CSV to read, nothing changes (the fallback stays)."""
+        if not paths:
+            return 0
+        filled = 0
+        with self._lock:
+            try:
+                self._db.execute("BEGIN")
+                for path in paths:
+                    with path.open(encoding="utf-8", newline="") as handle:
+                        for row in csv.DictReader(handle):
+                            cursor = self._db.execute(
+                                "UPDATE puzzles SET deviation = ? WHERE id = ?",
+                                (_deviation(row.get("RatingDeviation")), row.get("PuzzleId")),
+                            )
+                            filled += cursor.rowcount
+                self._db.execute(f"PRAGMA user_version = {DEVIATIONS_VERSION}")
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return filled
 
     def close(self) -> None:
         with self._lock:
@@ -177,8 +242,8 @@ class PuzzleStore:
                     continue
                 cursor = self._db.execute(
                     "INSERT OR IGNORE INTO puzzles"
-                    " (id, fen, moves, rating, popularity, plays, themes, position)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    " (id, fen, moves, rating, popularity, plays, themes, position, deviation)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         row["PuzzleId"],
                         row["FEN"],
@@ -188,6 +253,7 @@ class PuzzleStore:
                         int(row.get("NbPlays") or 0),
                         row.get("Themes") or "",
                         position,
+                        _deviation(row.get("RatingDeviation")),
                     ),
                 )
                 added += cursor.rowcount
@@ -206,6 +272,7 @@ class PuzzleStore:
             popularity=int(row["popularity"]),
             plays=int(row["plays"]),
             themes=tuple(row["themes"].split()),
+            deviation=int(row["deviation"]),
         )
 
     def get(self, puzzle_id: str) -> Puzzle | None:

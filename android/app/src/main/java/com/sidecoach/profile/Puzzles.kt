@@ -44,6 +44,23 @@ object Puzzles {
     const val COUNT = 3
 
     /**
+     * A puzzle's rating deviation where the CSV gives none (or the store predates the column):
+     * the opponent's deviation in the player's rating update (Glicko).
+     */
+    const val DEVIATION_FALLBACK = 75
+
+    /**
+     * The store's version (SQLite's user_version): 1 once every puzzle has the deviation the CSV
+     * gives it. A store made before the column (version 0) gets the column with the fallback,
+     * then its deviations from the CSV beside it, once ([PuzzleStore.fillDeviations]).
+     */
+    const val DEVIATIONS_VERSION = 1
+
+    /** A CSV row's RatingDeviation, or [DEVIATION_FALLBACK] where it has none or not a number. */
+    fun deviation(text: String?): Int =
+        if (text.isNullOrEmpty()) DEVIATION_FALLBACK else pyInt(text)?.toInt() ?: DEVIATION_FALLBACK
+
+    /**
      * Themes that are tactics, in Lichess's names; the profile's motif names are the same but
      * for the mates, which Lichess splits by length.
      */
@@ -68,13 +85,16 @@ object Puzzles {
     /**
      * The puzzle store in the app's files, filled once from the Lichess CSV beside it
      * (the CSV files in `puzzles/`, the sample Setup writes) when it is empty; null when there are no
-     * puzzles to be had.
+     * puzzles to be had. A store made before the puzzles kept their rating deviation gets them
+     * from the same CSV, once.
      */
     fun openStore(files: File): PuzzleStore? {
         val store = PuzzleStore(File(files, "puzzles.sqlite"))
+        val csvs = File(files, "puzzles").listFiles { f: File -> f.name.endsWith(".csv") }?.sortedBy { it.name }.orEmpty()
         if (store.count() == 0) {
-            val csvs = File(files, "puzzles").listFiles { f: File -> f.name.endsWith(".csv") }?.sortedBy { it.name }.orEmpty()
             for (csv in csvs) store.importCsv(csv)
+        } else if (store.version() < DEVIATIONS_VERSION) {
+            store.fillDeviations(csvs)
         }
         if (store.count() == 0) {
             store.close()
@@ -299,6 +319,8 @@ data class Puzzle(
     val popularity: Int,
     val plays: Int,
     val themes: List<String>,
+    /** The rating's deviation, as Lichess holds it. */
+    val deviation: Int = Puzzles.DEVIATION_FALLBACK,
 ) {
     val url: String get() = "https://lichess.org/training/$id"
 
@@ -324,14 +346,80 @@ class PuzzleStore(val path: File?) {
         path?.parentFile?.mkdirs()
         db = if (path != null) SQLiteDatabase.openOrCreateDatabase(path, null) else SQLiteDatabase.create(null)
         lock.withLock {
+            val columns = columns()
             db.execSQL(
                 "CREATE TABLE IF NOT EXISTS puzzles (id TEXT PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL," +
                     " rating INTEGER NOT NULL, popularity INTEGER NOT NULL DEFAULT 0, plays INTEGER NOT NULL DEFAULT 0," +
-                    " themes TEXT NOT NULL, position TEXT NOT NULL)",
+                    " themes TEXT NOT NULL, position TEXT NOT NULL," +
+                    " deviation INTEGER NOT NULL DEFAULT ${Puzzles.DEVIATION_FALLBACK})",
             )
             db.execSQL("CREATE INDEX IF NOT EXISTS puzzles_rating ON puzzles (rating)")
             db.execSQL("CREATE INDEX IF NOT EXISTS puzzles_position ON puzzles (position)")
+            if (columns.isEmpty()) {
+                // A new store: whatever is imported into it carries its deviation.
+                db.execSQL("PRAGMA user_version = ${Puzzles.DEVIATIONS_VERSION}")
+            } else if ("deviation" !in columns) {
+                // A store from before the column: the fallback until fillDeviations.
+                try {
+                    db.execSQL(
+                        "ALTER TABLE puzzles ADD COLUMN deviation INTEGER NOT NULL DEFAULT ${Puzzles.DEVIATION_FALLBACK}",
+                    )
+                } catch (_: android.database.sqlite.SQLiteException) {
+                    // another opener added it
+                }
+            }
         }
+    }
+
+    private fun columns(): Set<String> =
+        db.rawQuery("PRAGMA table_info(puzzles)", null).use { c ->
+            val out = HashSet<String>()
+            while (c.moveToNext()) out.add(c.getString(c.getColumnIndexOrThrow("name")))
+            out
+        }
+
+    fun version(): Int = lock.withLock {
+        db.rawQuery("PRAGMA user_version", null).use { it.moveToFirst(); it.getInt(0) }
+    }
+
+    /**
+     * Each puzzle's rating deviation from the Lichess CSVs it was imported from, in one
+     * transaction with the store's version: a store from before the column gets them once, and
+     * one interrupted on the way is filled again at the next open. Returns how many puzzles got
+     * one; with no CSV to read, nothing changes (the fallback stays).
+     */
+    fun fillDeviations(files: List<File>): Int {
+        if (files.isEmpty()) return 0
+        var filled = 0
+        lock.withLock {
+            db.beginTransaction()
+            try {
+                val update = db.compileStatement("UPDATE puzzles SET deviation = ? WHERE id = ?")
+                for (file in files) {
+                    file.bufferedReader(Charsets.UTF_8).use { text ->
+                        val records = CsvReader(text)
+                        val header = records.next() ?: return@use
+                        while (true) {
+                            val values = records.next() ?: break
+                            if (values.isEmpty()) continue
+                            val row = HashMap<String, String?>()
+                            for ((i, name) in header.withIndex()) row[name] = values.getOrNull(i)
+                            update.clearBindings()
+                            update.bindLong(1, Puzzles.deviation(row["RatingDeviation"]).toLong())
+                            val id = row["PuzzleId"]
+                            if (id == null) update.bindNull(2) else update.bindString(2, id)
+                            filled += update.executeUpdateDelete()
+                        }
+                    }
+                }
+                update.close()
+                db.execSQL("PRAGMA user_version = ${Puzzles.DEVIATIONS_VERSION}")
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+        return filled
     }
 
     fun close() {
@@ -366,8 +454,8 @@ class PuzzleStore(val path: File?) {
                 db.beginTransaction()
                 try {
                     val insert = db.compileStatement(
-                        "INSERT OR IGNORE INTO puzzles (id, fen, moves, rating, popularity, plays, themes, position)" +
-                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO puzzles (id, fen, moves, rating, popularity, plays, themes, position, deviation)" +
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     )
                     while (true) {
                         var values = records.next() ?: break
@@ -395,6 +483,7 @@ class PuzzleStore(val path: File?) {
                         insert.bindLong(6, count(row["NbPlays"]))
                         insert.bindString(7, row["Themes"] ?: "")
                         insert.bindString(8, position)
+                        insert.bindLong(9, Puzzles.deviation(row["RatingDeviation"]).toLong())
                         added += insert.executeUpdateDelete()
                         if (limit != null && added >= limit) break
                     }
@@ -427,6 +516,7 @@ class PuzzleStore(val path: File?) {
                         popularity = c.getInt(c.getColumnIndexOrThrow("popularity")),
                         plays = c.getInt(c.getColumnIndexOrThrow("plays")),
                         themes = c.getString(c.getColumnIndexOrThrow("themes")).split(Regex("\\s+")).filter { it.isNotEmpty() },
+                        deviation = c.getInt(c.getColumnIndexOrThrow("deviation")),
                     ),
                 )
             }
