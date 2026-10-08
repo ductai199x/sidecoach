@@ -516,20 +516,30 @@ class Setup:
     def status(self) -> dict[str, Any]:
         """Every item with whether it is present, and the run in progress if any."""
         rows = []
+        # A check that raises shows its item as not there, with the error in the line the page
+        # shows a fetch's error in: skipped, the item was hidden and Setup said it was ready
+        # without it (audit 2026-10-07).
+        failed: dict[str, str] = {}
         for item in items(self.settings):
-            with contextlib.suppress(Exception):
-                rows.append(
-                    {
-                        "id": item.id,
-                        "title": item.title,
-                        "size": item.size,
-                        "present": item.present(),
-                        "optional": item.optional,
-                        "detail": item.detail,
-                    }
-                )
+            try:
+                present = item.present()
+            except Exception as exc:  # noqa: BLE001 - shown on the item
+                present = False
+                failed[item.id] = f"{type(exc).__name__}: {exc}"
+            rows.append(
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "size": item.size,
+                    "present": present,
+                    "optional": item.optional,
+                    "detail": item.detail,
+                }
+            )
         with self._lock:
             run = dict(self._state)
+            if failed:
+                run["errors"] = {**failed, **run.get("errors", {})}
         needed = [r for r in rows if not r["present"] and not r["optional"]]
         return {
             "items": rows,

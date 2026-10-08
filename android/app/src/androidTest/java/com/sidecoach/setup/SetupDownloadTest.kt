@@ -261,6 +261,35 @@ class SetupDownloadTest {
         assertTrue(setup.runState().getJSONObject("errors").getString("big").contains("free space"))
     }
 
+    /**
+     * A check that raises hid its item, and Setup said it was ready without it (audit
+     * 2026-10-07, S2): it is shown as not there, its error in the line the page shows a fetch's
+     * error in, and Setup is not ready. `test_an_item_whose_check_fails_is_shown_not_ready_with_its_error`.
+     */
+    @Test
+    fun anItemWhoseCheckFailsIsShownNotReadyWithItsError() {
+        val setup = Setup(
+            app,
+            itemsOf = {
+                listOf(
+                    Item("kokoro", "The coach's voice", 10, { throw SecurityException("denied: models") }, { }),
+                    Item("openings", "The opening names", 10, { true }, { }),
+                )
+            },
+        )
+        val status = setup.status()
+        val rows = status.getJSONArray("items")
+        assertEquals("the item whose check failed is shown", 2, rows.length())
+        assertEquals("kokoro", rows.getJSONObject(0).getString("id"))
+        assertFalse(rows.getJSONObject(0).getBoolean("present"))
+        assertTrue(rows.getJSONObject(1).getBoolean("present"))
+        assertFalse(status.getBoolean("ready"))
+        assertEquals(
+            "SecurityException: denied: models",
+            status.getJSONObject("run").getJSONObject("errors").getString("kokoro"),
+        )
+    }
+
     private companion object {
         // A safety net for a thread's signal, never the expected path.
         const val HANG_MS = 60_000L

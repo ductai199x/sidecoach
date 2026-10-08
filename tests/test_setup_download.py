@@ -269,6 +269,33 @@ def test_too_little_disk_is_an_error_not_a_fetch(
     assert "free space" in s.run_state()["errors"]["big"]
 
 
+def test_an_item_whose_check_fails_is_shown_not_ready_with_its_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A check that raises (a folder the system refuses to read) hid its item, and Setup said
+    it was ready without it (audit 2026-10-07, S2). It is shown as not there, its error in the
+    line the page shows a fetch's error in, and Setup is not ready."""
+
+    def refused() -> bool:
+        raise PermissionError("[WinError 5] Access is denied: 'models'")
+
+    def items(settings: Settings) -> list[Any]:
+        return [
+            setup_mod.Item("kokoro", "The coach's voice", 10, refused, lambda p: None),
+            setup_mod.Item("openings", "The opening names", 10, lambda: True, lambda p: None),
+        ]
+
+    monkeypatch.setattr(setup_mod, "items", items)
+    status = setup_mod.Setup(Settings(data_dir=tmp_path)).status()
+    rows = {row["id"]: row for row in status["items"]}
+    assert set(rows) == {"kokoro", "openings"}, "the item whose check failed is shown"
+    assert rows["kokoro"]["present"] is False and rows["openings"]["present"] is True
+    assert status["ready"] is False
+    assert status["run"]["errors"] == {
+        "kokoro": "PermissionError: [WinError 5] Access is denied: 'models'"
+    }
+
+
 def test_stockfish_is_the_pinned_release_unpacked_aside(
     serve: Callable[[Handler], str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

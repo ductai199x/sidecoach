@@ -443,23 +443,37 @@ class Setup(
     fun status(): JSONObject {
         val rows = JSONArray()
         var needed = 0
+        // A check that raises shows its item as not there, with the error in the line the page
+        // shows a fetch's error in: skipped, the item was hidden and Setup said it was ready
+        // without it (audit 2026-10-07).
+        val failed = LinkedHashMap<String, String>()
         for (item in itemsOf(context)) {
-            runCatching {
-                val present = item.present()
-                rows.put(
-                    JSONObject().apply {
-                        put("id", item.id)
-                        put("title", item.title)
-                        put("size", item.size)
-                        put("present", present)
-                        put("optional", item.optional)
-                        put("detail", item.detail())
-                    },
-                )
-                if (!present && !item.optional) needed++
+            val present = try {
+                item.present()
+            } catch (exc: Exception) {
+                failed[item.id] = "${exc::class.java.simpleName}: ${exc.message}"
+                false
             }
+            rows.put(
+                JSONObject().apply {
+                    put("id", item.id)
+                    put("title", item.title)
+                    put("size", item.size)
+                    put("present", present)
+                    put("optional", item.optional)
+                    put("detail", runCatching { item.detail() }.getOrDefault(""))
+                },
+            )
+            if (!present && !item.optional) needed++
         }
         val run = synchronized(lock) { JSONObject(state.toString()) }
+        if (failed.isNotEmpty()) {
+            val errors = JSONObject()
+            for ((id, error) in failed) errors.put(id, error)
+            val ran = run.optJSONObject("errors")
+            if (ran != null) for (id in ran.keys()) errors.put(id, ran.get(id))
+            run.put("errors", errors)
+        }
         return JSONObject().apply {
             put("items", rows)
             put("ready", needed == 0)
