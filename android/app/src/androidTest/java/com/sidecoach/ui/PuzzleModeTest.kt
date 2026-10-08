@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.sidecoach.chess.Move
 import com.sidecoach.chess.WHITE
 import com.sidecoach.events.GameStarted
+import com.sidecoach.profile.Glicko
 import com.sidecoach.profile.Puzzle
 import com.sidecoach.profile.Puzzles
 import com.sidecoach.profile.Store
@@ -120,8 +121,8 @@ class PuzzleModeTest {
         assertTrue(events.map { it.san } == listOf("Ra8#") && s.status == "solved" && !s.failed)
         // The result line's numbers come once the room has recorded the outcome.
         assertEquals(null, s.state()["result"])
-        s.recordedAs(true, 1100, 1125)
-        assertEquals(mapOf("solved" to true, "level" to 1125, "change" to 25), s.state()["result"])
+        s.recordedAs(true, 1500, 1712, true)
+        assertEquals(mapOf("solved" to true, "level" to 1712, "change" to 212, "provisional" to true), s.state()["result"])
         // Any mate counts where the line's move mates; a non-mating move does not.
         val t = PuzzleSession(mate, "mate")
         assertTrue(t.mates(Move.fromUci("a1a8")))
@@ -166,9 +167,14 @@ class PuzzleModeTest {
             outcome(api, fork.id, "puzzle ${fork.id} failed (fork)")
             var store = Store(File(tmp, "profile.sqlite"))
             assertTrue(store.attempts().map { it.first } == listOf(fork.id) && !store.attempts()[0].third)
-            assertEquals("1075", store.setting("puzzle_level"))
+            // The puzzle rating as Lichess moves it: a new player (1500) loses to the puzzle's 1547 / 76,
+            // opened as a fork puzzle (the page says "Puzzle · fork"): Lichess's themed training keeps
+            // 0.7 of a loss on a theme that hints at the solution.
+            val first = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), false, 0L, "fork").glicko.intRating
+            assertTrue(Puzzles.puzzleLevel(store) == first && first < 1500)
+            assertEquals("the old level is neither read nor written", null, store.setting("puzzle_level"))
             // The page's result line reads the outcome as the profile took it: a miss is not a solve.
-            assertEquals(result(false, 1075, -25), polledResult(api, fork.id))
+            assertEquals(result(false, first, first - 1500), polledResult(api, fork.id))
             // The user's question reaches the room. Its coach is off here: the room says so, as
             // the panel does, or the page's typing dots waited for an answer for good.
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/ask", """{"text": "hint"}""").getBoolean("ok"))
@@ -197,9 +203,10 @@ class PuzzleModeTest {
             outcome(api, mate.id, "puzzle ${mate.id} failed")
             store = Store(File(tmp, "profile.sqlite"))
             assertEquals(listOf(mate.id, fork.id), store.attempts().map { it.first })
-            assertEquals("1050", store.setting("puzzle_level"))
+            val second = Puzzles.puzzleLevel(store)
+            assertTrue("a give-up is a loss", second < first)
             store.close()
-            assertEquals(result(false, 1050, -25), polledResult(api, mate.id))
+            assertEquals(result(false, second, second - first), polledResult(api, mate.id))
             val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
             mateRoom.join(HANG_MS)
@@ -213,24 +220,24 @@ class PuzzleModeTest {
     }
 
     /**
-     * The result line after a solve: the level after it and the change it really made (near the
-     * top of the range the step is cut short). `test_a_solved_puzzle_shows_the_level_it_moved_to`.
+     * The result line after a solve: the puzzle rating after it and the change Lichess shows (the
+     * difference of the two ratings as shown, truncated).
+     * `test_a_solved_puzzle_shows_the_rating_it_moved_to`.
      */
     @Test
-    fun aSolvedPuzzleShowsTheLevelItMovedTo() {
+    fun aSolvedPuzzleShowsTheRatingItMovedTo() {
         val tmp = tempDir()
         try {
             csv(tmp)
-            val store = Store(File(tmp, "profile.sqlite"))
-            store.setSetting("puzzle_level", "1990")
-            store.close()
+            val won = Glicko.finish(Glicko.Perf(), Glicko.Rating(900.0, 70.0, 0.09), true, 0L).glicko.intRating
+            assertTrue("a solve against a much weaker puzzle: a small gain", won in 1501..1599)
             val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
             val opened = call(api, "POST", "/api/puzzle/${mate.id}/open")
             assertTrue(opened.getJSONObject("state").isNull("result"))
             val done = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a8"}""").getJSONObject("state")
             assertEquals("solved", done.getString("status"))
             outcome(api, mate.id, "puzzle ${mate.id} solved")
-            assertEquals(result(true, 2000, 10), polledResult(api, mate.id))
+            assertEquals(result(true, won, won - 1500), polledResult(api, mate.id))
             val mateRoom = rooms.get(mate.id)!!
             call(api, "POST", "/api/puzzle/${mate.id}/close")
             mateRoom.join(HANG_MS)
@@ -308,6 +315,76 @@ class PuzzleModeTest {
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/open").getBoolean("ok"))
             assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
             assertTrue(call(api, "GET", "/api/puzzle/${fork.id}/poll").getBoolean("closed"))
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    /**
+     * Lichess records a puzzle's result at its first wrong move or at its end; one left before
+     * either is not played. One closed after a wrong move is the fail it already was.
+     * `test_a_puzzle_closed_before_any_wrong_move_records_nothing`.
+     */
+    @Test
+    fun aPuzzleClosedBeforeAnyWrongMoveRecordsNothing() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/open").getBoolean("ok"))
+            val right = call(api, "POST", "/api/puzzle/${fork.id}/move", """{"uci": "d4e2"}""").getJSONObject("state")
+            assertEquals("one right move, then left", listOf("Ne2+", "Kf1"), strings(right, "moves"))
+            val forkRoom = rooms.get(fork.id)!!
+            assertTrue(call(api, "POST", "/api/puzzle/${fork.id}/close").getBoolean("ok"))
+            forkRoom.join(HANG_MS)
+            assertTrue("the room never finished", forkRoom.closed)
+            var store = Store(File(tmp, "profile.sqlite"))
+            assertTrue(store.attempts().isEmpty() && Puzzles.puzzleLevel(store) == 1500)
+            store.close()
+            // A wrong move, then closed: the fail is recorded.
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
+            val wrong = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a7"}""").getJSONObject("state")
+            assertEquals("a1a7", wrong.getString("wrong"))
+            val mateRoom = rooms.get(mate.id)!!
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/close").getBoolean("ok"))
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
+            store = Store(File(tmp, "profile.sqlite"))
+            assertEquals(listOf(mate.id to false), store.attempts().map { it.first to it.third })
+            assertTrue(Puzzles.puzzleLevel(store) < 1500)
+            store.close()
+        } finally {
+            tmp.deleteRecursively()
+        }
+    }
+
+    /**
+     * Lichess writes a rating with a "?" while its deviation is 110 or more; a player with a settled
+     * rating (here 1600 / 60) gets the number alone, and a small change.
+     * `test_an_established_rating_shows_without_the_question_mark`.
+     */
+    @Test
+    fun anEstablishedRatingShowsWithoutTheQuestionMark() {
+        val tmp = tempDir()
+        try {
+            csv(tmp)
+            val store = Store(File(tmp, "profile.sqlite"))
+            store.setSetting(Puzzles.PERF_KEY, """{"r": 1600.0, "d": 60.0, "v": 0.06, "nb": 500, "la": null}""")
+            store.close()
+            val settled = Glicko.Perf(Glicko.Rating(1600.0, 60.0, 0.06), nb = 500)
+            val won = Glicko.finish(settled, Glicko.Rating(900.0, 70.0, 0.09), true, 0L).glicko
+            assertFalse(won.provisional)
+            val (api, rooms) = api(tmp, Puzzles.openStore(tmp))
+            assertTrue(call(api, "POST", "/api/puzzle/${mate.id}/open").getBoolean("ok"))
+            val done = call(api, "POST", "/api/puzzle/${mate.id}/move", """{"uci": "a1a8"}""").getJSONObject("state")
+            assertEquals("solved", done.getString("status"))
+            outcome(api, mate.id, "puzzle ${mate.id} solved")
+            assertEquals(result(true, won.intRating, won.intRating - 1600, false), polledResult(api, mate.id))
+            assertTrue("a settled rating barely moves for a far weaker puzzle", won.intRating - 1600 in 0..4)
+            val mateRoom = rooms.get(mate.id)!!
+            call(api, "POST", "/api/puzzle/${mate.id}/close")
+            mateRoom.join(HANG_MS)
+            assertTrue("the room never finished", mateRoom.closed)
         } finally {
             tmp.deleteRecursively()
         }
@@ -397,11 +474,12 @@ class PuzzleModeTest {
     /** The result the page's poll serves, as plain values. */
     private fun polledResult(api: PanelApi, id: String): Map<String, Any?> {
         val r = call(api, "GET", "/api/puzzle/$id/poll").getJSONObject("state").getJSONObject("result")
-        return result(r.getBoolean("solved"), r.getInt("level"), r.getInt("change"))
+        return result(r.getBoolean("solved"), r.getInt("level"), r.getInt("change"), r.getBoolean("provisional"))
     }
 
-    private fun result(solved: Boolean, level: Int, change: Int): Map<String, Any?> =
-        mapOf("solved" to solved, "level" to level, "change" to change)
+    /** A result line's numbers; a new player's rating is provisional after a puzzle or two. */
+    private fun result(solved: Boolean, level: Int, change: Int, provisional: Boolean = true): Map<String, Any?> =
+        mapOf("solved" to solved, "level" to level, "change" to change, "provisional" to provisional)
 
     @Suppress("UNCHECKED_CAST")
     private fun legal(state: Map<String, Any?>) = state["legal"] as Map<String, List<String>>

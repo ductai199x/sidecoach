@@ -714,6 +714,7 @@ export type PuzzleState = {
   closed?: boolean;
   llm?: { calls: number; prompt: number; completion: number; cost: number | null } | null;
   /** The outcome as the profile took it, once the puzzle has ended and the room recorded it:
-   * solved or not, the puzzle level after it and how far it moved. */
-  result?: { solved: boolean; level: number; change: number } | null;
+   * solved or not, the puzzle rating after it as Lichess shows it, how far it moved, and whether
+   * it is still provisional (Lichess writes "1500?"). */
+  result?: { solved: boolean; level: number; change: number; provisional: boolean } | null;
 };

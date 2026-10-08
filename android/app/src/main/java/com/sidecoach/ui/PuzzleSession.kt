@@ -26,6 +26,15 @@ import com.sidecoach.vision.Pieces
  * room reads it for the page.
  */
 class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
+    companion object {
+        /**
+         * What the puzzle page's chips send (Hint, Best move, Line: routes/puzzle/[id]/+page.svelte).
+         * One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint
+         * does.
+         */
+        val ASSISTS: Set<String> = setOf("hint", "what should i play", "show me the line")
+    }
+
     val gameId = "puzzle-${puzzle.id}"
     val board = Board(puzzle.fen)
     val solver: Boolean
@@ -68,6 +77,18 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
 
     /** The outcome given to the profile (the room sets it). */
     var recorded = false
+
+    /** Hint, Best move or Line used while the puzzle was played: the attempt is unrated. */
+    var assisted = false
+        private set
+
+    /**
+     * The coach was asked [text]: one of the page's chips while the puzzle is played makes the
+     * attempt unrated (Lichess: a hint shown, the round is not rated).
+     */
+    fun asked(text: String) {
+        if (!done && com.sidecoach.voice.Py.strip(text).lowercase() in ASSISTS) assisted = true
+    }
 
     /**
      * The outcome as the profile took it, for the page's result line once the puzzle has ended
@@ -120,8 +141,8 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
      * The outcome the profile took: solved or not, the puzzle level after it and how far it
      * moved from [before] (the step is cut short at the ends of the range).
      */
-    fun recordedAs(solved: Boolean, before: Int, level: Int) {
-        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before)
+    fun recordedAs(solved: Boolean, before: Int, level: Int, provisional: Boolean) {
+        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before, "provisional" to provisional)
     }
 
     /**

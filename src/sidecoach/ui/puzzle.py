@@ -23,6 +23,10 @@ import chess
 from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
 
+# What the puzzle page's chips send (Hint, Best move, Line: routes/puzzle/[id]/+page.svelte).
+# One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint does.
+ASSISTS = frozenset({"hint", "what should i play", "show me the line"})
+
 
 class PuzzleSession:
     def __init__(self, puzzle: Puzzle, motif: str | None) -> None:
@@ -48,6 +52,8 @@ class PuzzleSession:
         self.status = "playing"  # playing | solved | given_up
         self.message = "Your move."
         self.recorded = False  # the outcome given to the profile (the panel sets it)
+        # Hint, Best move or Line used while the puzzle was played: the attempt is unrated.
+        self.assisted = False
         # The outcome as the profile took it, for the page's result line once the puzzle has
         # ended (as Lichess shows it): None until the room has recorded it.
         self.result: dict[str, Any] | None = None
@@ -84,10 +90,22 @@ class PuzzleSession:
             "result": self.result,
         }
 
-    def recorded_as(self, solved: bool, before: int, level: int) -> None:
-        """The outcome the profile took: solved or not, the puzzle level after it and how far
-        it moved from `before` (the step is cut short at the ends of the range)."""
-        self.result = {"solved": solved, "level": level, "change": level - before}
+    def asked(self, text: str) -> None:
+        """The coach was asked `text`: one of the page's chips while the puzzle is played makes
+        the attempt unrated (Lichess: a hint shown, the round is not rated)."""
+        if not self.done and text.strip().lower() in ASSISTS:
+            self.assisted = True
+
+    def recorded_as(self, solved: bool, before: int, level: int, provisional: bool) -> None:
+        """The outcome the profile took: solved or not, the puzzle rating after it as Lichess
+        shows it, how far that moved from `before` (Lichess's change: the difference of the
+        ratings shown), and whether the rating is still provisional (Lichess writes "1500?")."""
+        self.result = {
+            "solved": solved,
+            "level": level,
+            "change": level - before,
+            "provisional": provisional,
+        }
 
     def legal(self) -> dict[str, list[str]]:
         """Where each of the solver's pieces may go, for the page's dots: sent with the

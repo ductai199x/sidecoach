@@ -101,7 +101,7 @@ class PuzzlesTest {
     }
 
     @Test
-    fun aWrongMoveOnAPuzzleOnTheScreenFailsItAndTheLevelStepsBack() {
+    fun aWrongMoveOnAPuzzleOnTheScreenFailsItAndTheRatingGoesDown() {
         val puzzles = PuzzleStore(null)
         puzzles.importCsv(csv(dir("screen")))
         val store = Store(null)
@@ -115,7 +115,9 @@ class PuzzlesTest {
         val out = profiler.onEvent(played("q", shown, "Nc3"), 4.0)
         val outcome = out.filterIsInstance<PuzzleOutcome>().single()
         assertTrue(!outcome.solved && outcome.puzzleId == "pin01")
-        assertEquals(Puzzles.LEVEL_START - Puzzles.LEVEL_STEP, outcome.level)
+        // A new player's first puzzle, lost against pin01's 1200 / 80: the rating as Lichess moves it.
+        val lost = Glicko.finish(Glicko.Perf(), Glicko.Rating(1200.0, 80.0, 0.09), false, 4000L)
+        assertEquals(lost.glicko.intRating, outcome.level)
         assertNull("not one the profile recommended", outcome.motif)
         // A position that is no puzzle of the store is left alone.
         val start = com.sidecoach.chess.STARTING_FEN
@@ -183,6 +185,144 @@ class PuzzlesTest {
     }
 
     private fun strings(a: JSONArray): List<String> = (0 until a.length()).map { a.getString(it) }
+
+    /**
+     * The player's rating is computed against the puzzle's own rating and deviation, as Lichess's
+     * PuzzleFinisher does: the import keeps the CSV's RatingDeviation, 75 where a row has none or
+     * not a number (`test_a_puzzle_keeps_the_rating_deviation_lichess_gives_it`).
+     */
+    @Test
+    fun aPuzzleKeepsTheRatingDeviationLichessGivesIt() {
+        val store = PuzzleStore(null)
+        store.importCsv(csv(dir("deviation")))
+        assertEquals(listOf(76, 82, 70), listOf("000Pw", "000rO", "mate1").map { store.get(it)!!.deviation })
+        val odd = ROWS[2].replace(",1000,80,", ",1000,,").replaceFirst("fork1", "none1")
+        val bad = ROWS[3].replace(",1200,80,", ",1200,x,").replaceFirst("pin01", "bad01")
+        val file = File(dir("odd"), "odd.csv").apply { writeText(listOf(HEADER, odd, bad).joinToString("\n") + "\n") }
+        assertEquals(2, store.importCsv(file))
+        assertEquals(75, store.get("none1")!!.deviation)
+        assertEquals(75, store.get("bad01")!!.deviation)
+        assertEquals(75, Puzzle("x", com.sidecoach.chess.STARTING_FEN, listOf("e2e4", "e7e5"), 1000, 0, 0, emptyList()).deviation)
+        store.close()
+    }
+
+    /** A store from before the puzzles kept their deviation, as an older app left it. */
+    private fun oldStore(files: File, ids: List<String>) {
+        val db = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(File(files, "puzzles.sqlite"), null)
+        db.execSQL(
+            "CREATE TABLE puzzles (id TEXT PRIMARY KEY, fen TEXT NOT NULL, moves TEXT NOT NULL, rating INTEGER NOT NULL," +
+                " popularity INTEGER NOT NULL DEFAULT 0, plays INTEGER NOT NULL DEFAULT 0, themes TEXT NOT NULL," +
+                " position TEXT NOT NULL)",
+        )
+        for (id in ids) {
+            db.execSQL(
+                "INSERT INTO puzzles VALUES (?, ?, 'g8f6 f3e5 c6e5', 1000, 80, 500, 'fork', 'k')",
+                arrayOf(id, "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"),
+            )
+        }
+        db.close()
+    }
+
+    /** `test_a_store_from_before_the_deviations_gets_them_from_its_csv_once`. */
+    @Test
+    fun aStoreFromBeforeTheDeviationsGetsThemFromItsCsvOnce() {
+        val files = dir("old")
+        csv(File(files, "puzzles").apply { mkdirs() })
+        oldStore(files, listOf("fork1", "gone1"))
+        val store = Puzzles.openStore(files)!!
+        assertEquals(1, store.version())
+        assertEquals("the puzzles stay; only their deviations are filled in", 2, store.count())
+        assertEquals("from the CSV", 80, store.get("fork1")!!.deviation)
+        assertEquals("none in the CSV: the fallback", 75, store.get("gone1")!!.deviation)
+        store.close()
+        // Once: a CSV changed afterwards is not read again.
+        File(File(files, "puzzles"), "sample.csv").writeText(
+            HEADER + "\n" + ROWS.joinToString("\n") { it.replace(",1000,80,", ",1000,99,") } + "\n",
+        )
+        val again = Puzzles.openStore(files)!!
+        assertEquals(80, again.get("fork1")!!.deviation)
+        again.close()
+    }
+
+    /** `test_without_its_csv_an_old_store_keeps_the_fallback_until_the_csv_comes`. */
+    @Test
+    fun withoutItsCsvAnOldStoreKeepsTheFallbackUntilTheCsvComes() {
+        val files = dir("nocsv")
+        oldStore(files, listOf("fork1"))
+        val store = Puzzles.openStore(files)!!
+        assertEquals(0, store.version())
+        assertEquals(75, store.get("fork1")!!.deviation)
+        store.close()
+        csv(File(files, "puzzles").apply { mkdirs() })
+        val again = Puzzles.openStore(files)!!
+        assertEquals(1, again.version())
+        assertEquals(80, again.get("fork1")!!.deviation)
+        again.close()
+    }
+
+    /**
+     * Lichess's rating has a floor of 400 and no ceiling; the store keeps 600-2000. Past either end
+     * the search is made around that end, and the rating is not changed
+     * (`test_a_rating_outside_the_stores_band_is_searched_at_its_nearest_end`).
+     */
+    @Test
+    fun aRatingOutsideTheStoresBandIsSearchedAtItsNearestEnd() {
+        val store = PuzzleStore(null)
+        store.importCsv(csv(dir("band")))
+        val low = ROWS[2].replaceFirst("fork1", "low01").replace(",1000,80,", ",700,80,")
+        store.importCsv(File(dir("band-low"), "low.csv").apply { writeText(HEADER + "\n" + low + "\n") })
+        assertEquals("searched around 2000", listOf("hi999"), store.pick("fork", 2300).map { it.id })
+        assertEquals("searched around 600", listOf("low01"), store.pick("fork", 450).map { it.id })
+        assertEquals(listOf("hi999"), store.pick("fork", 2000).map { it.id })
+        val profile = Store(null)
+        profile.setSetting(Puzzles.PERF_KEY, """{"r": 2300.5, "d": 60.0, "v": 0.06, "nb": 300, "la": null}""")
+        assertEquals(2300, Puzzles.puzzleLevel(profile))
+        profile.close()
+        store.close()
+    }
+
+    /** `test_a_puzzle_the_page_names_a_motif_for_moves_the_rating_as_lichess_themed_training`. */
+    @Test
+    fun aPuzzleThePageNamesAMotifForMovesTheRatingAsLichessThemedTraining() {
+        val puzzles = PuzzleStore(null)
+        puzzles.importCsv(csv(dir("themed")))
+        val fork = puzzles.get("000Pw")!!
+        val mixed = Store(null)
+        val themed = Store(null)
+        val full = Puzzles.recordAttempt(mixed, fork, "fork", true, emptyList(), 100.0)
+        val part = Puzzles.recordAttempt(themed, fork, "fork", true, emptyList(), 100.0, theme = Puzzles.angleFor("fork"))
+        val want = Glicko.finish(Glicko.Perf(), Glicko.Rating(1547.0, 76.0, 0.09), true, 100_000L, "fork")
+        assertEquals(want.glicko.intRating, part.level)
+        assertTrue(part.level in 1501 until full.level)
+        assertEquals("pin", Puzzles.angleFor("absolutePin"))
+        assertEquals("mate", Puzzles.angleFor("mate"))
+        mixed.close()
+        themed.close()
+        puzzles.close()
+    }
+
+    /** `test_only_the_first_attempt_at_a_puzzle_moves_the_rating`. */
+    @Test
+    fun onlyTheFirstAttemptAtAPuzzleMovesTheRating() {
+        val puzzles = PuzzleStore(null)
+        puzzles.importCsv(csv(dir("replay")))
+        val fork = puzzles.get("000Pw")!!
+        val store = Store(null)
+        val first = Puzzles.recordAttempt(store, fork, "fork", false, listOf("Nc2"), 100.0)
+        val saved = store.setting(Puzzles.PERF_KEY)
+        assertTrue(first.level < 1500 && store.attempted("000Pw") && !store.attempted("fork1"))
+        val again = Puzzles.recordAttempt(store, fork, "fork", true, listOf("Ne2+", "Nxc3"), 200.0)
+        assertTrue(again.solved)
+        assertEquals("a replay: the rating stays", first.level, again.level)
+        assertEquals("nothing saved for it", saved, store.setting(Puzzles.PERF_KEY))
+        assertEquals(listOf("000Pw" to true, "000Pw" to false), store.attempts().map { it.first to it.third })
+        val old = Store(null)
+        old.addAttempt("000Pw", 50.0, "fork", true, emptyList())
+        assertEquals(1500, Puzzles.recordAttempt(old, fork, "fork", true, emptyList(), 100.0).level)
+        old.close()
+        store.close()
+        puzzles.close()
+    }
 
     private companion object {
         val Py = com.sidecoach.voice.Py

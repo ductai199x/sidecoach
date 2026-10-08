@@ -22,7 +22,14 @@ from typing import Any
 
 from sidecoach.config import Settings
 from sidecoach.events import MovePlayed, Trigger
-from sidecoach.profile.puzzles import Puzzle, PuzzleStore, puzzle_level, record_attempt
+from sidecoach.profile.puzzles import (
+    Puzzle,
+    PuzzleStore,
+    angle_for,
+    puzzle_level,
+    puzzle_perf,
+    record_attempt,
+)
 from sidecoach.ui.log import DebugLog, elide
 from sidecoach.ui.puzzle import PuzzleSession
 
@@ -169,6 +176,10 @@ class PuzzleRoom:
             # gets a fresh room rather than this one on its way out.
             self.closing = True
         with self._lock:
+            if name == "ask" and self._coaching.on:
+                # Help asked for is marked as the page asks, with the position as it stands
+                # then: a last move played before the loop's next tick must not outrun it.
+                self.session.asked(str(payload))
             self._commands.append((name, payload))
 
     # ---- the loop ----------------------------------------------------------------------------
@@ -218,7 +229,9 @@ class PuzzleRoom:
                 if not self.voice and self._stop_speaking is not None:
                     self._stop_speaking()
             elif name == "close":
-                if not self.session.done:
+                # Left unfinished: a fail once a wrong move was played (Lichess sends the loss
+                # at the first wrong move); before any, nothing is recorded, as on Lichess.
+                if not self.session.done and self.session.misses > 0:
                     self._record(solved=False)
                 self._stop.set()
 
@@ -235,20 +248,26 @@ class PuzzleRoom:
             return
         session.recorded = True
         try:
+            now = time.time()
             before = puzzle_level(self.store)
             outcome = record_attempt(
                 self.store,
-                session.puzzle.id,
+                session.puzzle,
                 session.motif,
                 solved,
                 list(session.sans),
-                time.time(),
+                now,
+                # The page names the motif ("Puzzle · fork"), as Lichess's themed training
+                # names its theme: the result is weighed as that theme's (glicko.theme_weight).
+                theme=angle_for(session.motif) if session.motif else None,
+                rated=not session.assisted,
             )
+            provisional = puzzle_perf(self.store, int(now * 1000)).glicko.provisional
         except Exception as exc:  # noqa: BLE001 - the record must not break the puzzle
             self._emit("sys", "error", f"profile error: {exc!r}")
             return
         with self._lock:
-            session.recorded_as(outcome.solved, before, outcome.level)
+            session.recorded_as(outcome.solved, before, outcome.level, provisional)
         self._emit(
             "game",
             "info",

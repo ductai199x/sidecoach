@@ -9,7 +9,7 @@ profile/), so a refit reaches the phone together with the fixture that holds it 
   classes, dates, ratings, sides, and headers that make a bot game, a termination, a result); a
   game's facts kept again from another review; random facts saved whole (`save_stats`: every
   kind, label, phase, structure, theme, endgame, clock, result, termination, opening); watched
-  games an import stands for; reviews with and without facts; the player's puzzle level.
+  games an import stands for; reviews with and without facts; the player's puzzle rating.
 - `rows`: what the store then holds -- `stat_games()`, `stat_moves()` of every key,
   `reviews_without_stats()`, and the coach's worked queries over the games Stats counts
   (`ask_queries`: `ask.EXAMPLES` that read `reviewed_games` and `reviewed_moves`).
@@ -46,8 +46,8 @@ sys.path.insert(0, str(DESKTOP / "src"))
 import chess  # noqa: E402
 
 from sidecoach.events import Analysis, MotifTag, ReviewedGame  # noqa: E402
-from sidecoach.profile import ask, library, performance, stat_facts, stats  # noqa: E402
-from sidecoach.profile.puzzles import open_store, puzzle_level  # noqa: E402
+from sidecoach.profile import ask, glicko, library, performance, stat_facts, stats  # noqa: E402
+from sidecoach.profile.puzzles import PERF_KEY, open_store, perf_json, puzzle_level  # noqa: E402
 from sidecoach.profile.store import WATCHED, LibraryRow, Store  # noqa: E402
 from sidecoach.ui import server  # noqa: E402
 
@@ -387,7 +387,9 @@ def build(b: Builder, reviews: list[dict[str, Any]], rng: random.Random) -> None
         shape = rng.choice([*stats.SHAPES, None])
         summary = "not json" if n == 3 else json.dumps({**sides, "shape": shape})
         b.review(key, b.strengths[key], NOW - 400 - n, summary)
-    b.setting("puzzle_level", "1300")
+    # The player's puzzle rating, as the desktop saves it (the phone reads the same text).
+    rated = glicko.Perf(glicko.Glicko(1300.6, 80.0, 0.06), nb=40, latest=int(NOW * 1000) - 86_400_000)
+    b.setting(PERF_KEY, perf_json(rated))
     # The library's classes are as the rule left them: the routes' `refresh` then leaves the rows
     # (their random classes) as they are, on both sides, whichever test reads the store first.
     b.setting(library.CLASSES_KEY, str(library.CLASSES))

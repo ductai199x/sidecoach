@@ -50,6 +50,7 @@ from sidecoach.profile import causes, stats
 from sidecoach.profile.insights import as_cells, insights, motif_rates, motif_words
 from sidecoach.profile.puzzles import (
     Attempt,
+    Puzzle,
     PuzzleStore,
     position_key,
     puzzle_level,
@@ -675,11 +676,11 @@ class Profiler:
         return None, ""
 
     def record_puzzle(
-        self, puzzle_id: str, motif: str | None, solved: bool, moves: list[str], ts: float
+        self, puzzle: Puzzle, motif: str | None, solved: bool, moves: list[str], ts: float
     ) -> list[Event]:
-        """An outcome judged elsewhere (a puzzle solved on the puzzle page's board): kept
-        beside the motif, the level moved; the event for the coach and the panel."""
-        return [record_attempt(self.store, puzzle_id, motif, solved, moves, ts)]
+        """An outcome judged on the screen: kept beside the motif, the puzzle rating moved;
+        the event for the coach and the panel."""
+        return [record_attempt(self.store, puzzle, motif, solved, moves, ts)]
 
     def _puzzle_at(self, fen: str) -> Attempt | None:
         """The puzzle whose solver's position this is, a recommended one first."""
@@ -704,7 +705,7 @@ class Profiler:
             return []
         self._attempt = None
         return self.record_puzzle(
-            attempt.puzzle.id, attempt.motif, outcome == "solved", attempt.played, ts
+            attempt.puzzle, attempt.motif, outcome == "solved", attempt.played, ts
         )
 
     def tick(self, ts: float) -> list[Event]:

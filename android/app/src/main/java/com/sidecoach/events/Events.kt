@@ -386,7 +386,7 @@ class PuzzleOutcome(
     val puzzleId: String,
     val motif: String? = null,
     val solved: Boolean,
-    /** The player's puzzle level after this outcome. */
+    /** The player's puzzle rating after this outcome, as Lichess shows it (truncated). */
     val level: Int,
 ) : Event()
 

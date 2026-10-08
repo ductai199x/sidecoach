@@ -942,6 +942,11 @@ class Store(val path: File?) {
         }
     }
 
+    /** Whether the player has an attempt at this puzzle already. */
+    fun attempted(puzzleId: String): Boolean = lock.withLock {
+        rows("SELECT 1 FROM puzzle_attempts WHERE puzzle_id = ? LIMIT 1", puzzleId) { true }.isNotEmpty()
+    }
+
     /** (puzzle_id, ts, solved) of the latest attempts, latest first. */
     fun attempts(limit: Int = 100): List<Triple<String, Double, Boolean>> = lock.withLock {
         rows("SELECT puzzle_id, ts, solved FROM puzzle_attempts ORDER BY ts DESC LIMIT $limit") {
