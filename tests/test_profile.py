@@ -993,6 +993,39 @@ def test_the_model_queries_then_answers_and_a_refused_query_goes_back_to_it() ->
     assert "Answer now in prose" in provider.prompts[2][1][-1]["content"]
 
 
+def test_a_record_question_ends_at_the_models_timeout_however_many_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit, 2026-10-07: every call of a record question had the whole timeout to
+    itself, so a question that queried four times could wait five times it. Now the timeout
+    bounds the question: the call under way when it passes raises, as a timed-out call
+    always has (the coach then says it could not read the record), and no call starts after."""
+    from sidecoach.profile import ask
+    from tests.fakes import ManualClock
+
+    clock = ManualClock()
+    monkeypatch.setattr(ask, "threading", clock.threading_module(), raising=False)
+
+    class Slow(ScriptedProvider):
+        """Each call takes 25 s of the test's clock, within a 60 s timeout of its own."""
+
+        timeout_s = 60.0
+
+        def chat(self, system: str, messages: Any, **kw: Any) -> Any:
+            clock.advance(25.0)
+            return super().chat(system, messages, **kw)
+
+    store = _played_store()
+    provider = Slow(["```sql\nSELECT COUNT(*) AS games FROM games\n```"] * 6)
+    with pytest.raises(TimeoutError):
+        ask.answer("how many games?", store, provider)  # type: ignore[arg-type]
+    assert len(provider.calls) == 3, "the third call passed the timeout; no fourth started"
+    # Within the timeout the question is answered as before.
+    quick = Slow(["```sql\nSELECT COUNT(*) AS games FROM games\n```", "One game so far."])
+    got = ask.answer("how many games?", store, quick)  # type: ignore[arg-type]
+    assert got.text == "One game so far." and got.calls == 2 and not clock.pending()
+
+
 # ---- self-reports ----------------------------------------------------------------------
 
 

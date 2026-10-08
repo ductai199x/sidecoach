@@ -1,11 +1,15 @@
 import json
+import threading
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import httpx
 import pytest
 
+from sidecoach.llm import openai_compat
 from sidecoach.llm.base import ChatMessage, Completion, ProviderError, ToolCall, ToolRound
 from sidecoach.llm.openai_compat import EMPTY_THINK_PREFILL, OpenAICompatProvider
+from tests.fakes import HANG_S, ManualClock
 
 USER: list[ChatMessage] = [{"role": "user", "content": "hi"}]
 
@@ -499,3 +503,180 @@ def test_the_responses_wire_asks_for_at_least_sixteen_tokens() -> None:
         "sys", USER, max_tokens=5, temperature=0.1, thinking=False
     )
     assert body["max_output_tokens"] == 16 and "reasoning" not in body
+
+
+# ---- the timeout bounds the whole reply --------------------------------------------------
+
+
+def _trickle(clock: ManualClock, pieces: list[bytes], gap: float) -> Iterator[bytes]:
+    """A reply that trickles in: each piece `gap` seconds after the last, on the test's
+    clock -- every piece well inside a per-read timeout."""
+    for piece in pieces:
+        yield piece
+        clock.advance(gap)
+
+
+def _clocked(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    clock = ManualClock()
+    monkeypatch.setattr(openai_compat, "threading", clock.threading_module(), raising=False)
+    return clock
+
+
+@pytest.mark.parametrize("wire", ["chat", "responses"])
+def test_a_reply_that_trickles_in_ends_at_the_timeout_not_after_it(
+    monkeypatch: pytest.MonkeyPatch, wire: str
+) -> None:
+    """The audit, 2026-10-07: the timeout bounded each read, so a reply trickling in a word a
+    second ran on for as long as it trickled -- the coach's dots with it -- whatever the
+    configured timeout. Now the timeout bounds the whole reply: the words that came within it
+    are handed on, then the call raises as a read that timed out always has (ReadTimeout,
+    billed: counted in the usage), and the coach says its template."""
+    clock = _clocked(monkeypatch)
+    if wire == "chat":
+        pieces = [
+            f"data: {json.dumps({'choices': [{'delta': {'content': f'w{i} '}}]})}\n\n".encode()
+            for i in range(100)
+        ] + [b"data: [DONE]\n\n"]
+    else:
+        pieces = [
+            _events({"type": "response.output_text.delta", "output_index": 0, "delta": f"w{i} "})
+            for i in range(100)
+        ] + [_events({"type": "response.completed", "response": {"status": "completed"}})]
+    provider = OpenAICompatProvider(
+        "x",
+        "http://h/v1",
+        "m",
+        wire=wire,  # type: ignore[arg-type]
+        timeout_s=60.0,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=_trickle(clock, pieces, 1.0))
+        ),
+    )
+    heard: list[str] = []
+    with pytest.raises(httpx.ReadTimeout):
+        provider.chat_stream("sys", USER, on_delta=lambda t: heard.append(t) or True)
+    # The pieces sent at 0 s to 59 s, and none after the timeout.
+    assert heard == [f"w{i} " for i in range(60)]
+    assert provider.usage.calls == 1 and provider.usage.estimated == 1
+
+
+def test_a_whole_reply_that_trickles_in_ends_at_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not streamed (the record question, the verifier): the body trickling in, a byte a
+    second, is cut at the timeout the same way."""
+    clock = _clocked(monkeypatch)
+    body = json.dumps({"choices": [{"message": {"content": "late"}, "finish_reason": "stop"}]})
+    pieces = [b" "] * 100 + [body.encode()]
+    provider = OpenAICompatProvider(
+        "x",
+        "http://h/v1",
+        "m",
+        timeout_s=60.0,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=_trickle(clock, pieces, 1.0))
+        ),
+    )
+    with pytest.raises(httpx.ReadTimeout):
+        provider.chat("sys", USER)
+    assert provider.usage.calls == 1
+    # Within the timeout the same reply is read as before.
+    quick = OpenAICompatProvider(
+        "x",
+        "http://h/v1",
+        "m",
+        timeout_s=60.0,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=_trickle(clock, pieces, 0.5))
+        ),
+    )
+    assert quick.chat("sys", USER).text == "late"
+
+
+def test_a_reply_that_stops_coming_ends_at_the_timeout_and_nothing_later_is_handed_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply that goes quiet mid-way, the connection open: the wait ends at the timeout
+    (the clock moved there by the test), and what the server sends after is never handed on."""
+    clock = _clocked(monkeypatch)
+    resume = threading.Event()
+    two = threading.Event()
+
+    def stalled() -> Iterator[bytes]:
+        for i in range(4):
+            if i == 2:
+                assert resume.wait(HANG_S)
+            piece = {"choices": [{"delta": {"content": f"w{i} "}}]}
+            yield f"data: {json.dumps(piece)}\n\n".encode()
+
+    provider = OpenAICompatProvider(
+        "x",
+        "http://h/v1",
+        "m",
+        timeout_s=60.0,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=stalled())),
+    )
+    heard: list[str] = []
+    failed: list[BaseException] = []
+
+    def hear(text: str) -> bool:
+        heard.append(text)
+        if len(heard) == 2:
+            two.set()
+        return True
+
+    def run() -> None:
+        try:
+            provider.chat_stream("sys", USER, on_delta=hear)
+        except BaseException as exc:  # noqa: BLE001
+            failed.append(exc)
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    assert two.wait(HANG_S)
+    clock.advance(60.0)
+    caller.join(HANG_S)
+    assert not caller.is_alive() and isinstance(failed[0], httpx.ReadTimeout)
+    resume.set()  # the server goes on: nobody hears it
+    assert heard == ["w0 ", "w1 "]
+
+
+@pytest.mark.parametrize(
+    ("reached", "raised", "billed"),
+    [(False, httpx.ConnectTimeout, 0), (True, httpx.ReadTimeout, 1)],
+)
+def test_a_timeout_before_the_request_was_sent_is_a_connect_timeout_and_not_billed(
+    monkeypatch: pytest.MonkeyPatch, reached: bool, raised: type, billed: int
+) -> None:
+    """The timeout passing before the request reached the server is a connect timeout, as
+    httpx says it, and costs nothing; once it was sent, a read timeout, counted as billed."""
+    clock = _clocked(monkeypatch)
+    waiting = threading.Event()
+    go = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if reached:
+            request.extensions["trace"]("http11.send_request_body.complete", {})
+        waiting.set()
+        assert go.wait(HANG_S)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "late"}}]})
+
+    provider = OpenAICompatProvider(
+        "x", "http://h/v1", "m", timeout_s=60.0, transport=httpx.MockTransport(handler)
+    )
+    failed: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            provider.chat("sys", USER)
+        except BaseException as exc:  # noqa: BLE001
+            failed.append(exc)
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    assert waiting.wait(HANG_S)
+    clock.advance(60.0)
+    caller.join(HANG_S)
+    go.set()
+    assert not caller.is_alive() and type(failed[0]) is raised
+    assert provider.usage.calls == billed

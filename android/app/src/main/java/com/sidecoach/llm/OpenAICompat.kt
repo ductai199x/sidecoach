@@ -7,6 +7,12 @@ import com.sidecoach.coach.pyStr
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+import java.net.SocketTimeoutException
+import java.util.concurrent.Future
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One provider for every OpenAI-compatible endpoint: LM Studio on a computer on the network,
@@ -121,6 +127,38 @@ private fun answered(turn: ToolRound): List<Pair<ToolCall, String>> {
     }
     return calls.zip(turn.results)
 }
+
+/**
+ * Runs a step after a delay, on a thread of its own, cancelled through its Future: the desktop's
+ * `threading.Timer`, which ends the wait for a reply at the timeout ([OpenAICompatProvider.timer],
+ * `Ask.answer`). The app's is [REAL]; a test hands in one on a clock it moves (the desktop's tests
+ * give the module a ManualClock's `threading`).
+ */
+fun interface ReplyTimer {
+    fun schedule(seconds: Double, run: () -> Unit): Future<*>
+
+    companion object {
+        private val pool = ScheduledThreadPoolExecutor(1) { step ->
+            Thread(step, "sidecoach-llm-timeout").apply { isDaemon = true }
+        }.apply { removeOnCancelPolicy = true }
+
+        val REAL = ReplyTimer { seconds, run ->
+            pool.schedule(run, (seconds * 1e9).toLong(), TimeUnit.NANOSECONDS)
+        }
+    }
+}
+
+// What the thread reading a reply hands over ([OpenAICompatProvider.fetch]): a line of it (or
+// the whole reply), its end, a failure to throw; and what the timer hands over when the timeout
+// has passed. `openai_compat._LINE` and the rest.
+private const val LINE = "line"
+private const val END = "end"
+private const val FAILED = "failed"
+private const val EXPIRED = "expired"
+
+/** A number of seconds as the desktop's `:g` writes it: 60.0 as "60". */
+internal fun secondsText(seconds: Double): String =
+    if (seconds == Math.floor(seconds) && !seconds.isInfinite()) seconds.toLong().toString() else seconds.toString()
 
 /**
  * Whether a failed call had reached the server, and is billed: a read that timed out or a
@@ -247,6 +285,8 @@ class OpenAICompatProvider(
     extraBody: Map<String, Any?> = emptyMap(),
     private val transport: Transport = UrlTransport(),
     usage: Usage? = null,
+    /** What ends the wait for a reply at the timeout ([fetch]); a test's moves with its clock. */
+    private val timer: ReplyTimer = ReplyTimer.REAL,
 ) : StreamingProvider, ToolsProvider {
 
     val baseUrl: String = baseUrl.trimEnd('/')
@@ -284,6 +324,7 @@ class OpenAICompatProvider(
             extraBody = extraBody,
             transport = transport,
             usage = usage,
+            timer = timer,
         )
     }
 
@@ -454,9 +495,72 @@ class OpenAICompatProvider(
         throw exc
     }
 
+    /**
+     * POST [body] and hand the reply on as it arrives: line by line to [onLine] (on this thread)
+     * when [stream], [onLine] returning false to stop, else the whole body in the reply -- all of
+     * it within the provider's timeout, counted from the call, not from each read.
+     * `OpenAICompatProvider._reply`.
+     *
+     * The connection's timeout bounds each read: a reply that trickles in, every piece inside it,
+     * ran on far past the configured timeout, the coach's typing dots with it (the audit,
+     * 2026-10-07). So the request runs on a thread of its own, and a timer set to the timeout
+     * ends the wait for it: the call then throws as a timed-out call always has -- a read
+     * timeout once the request was sent (billed, [lostAfterSending]), a connect timeout before
+     * -- and nothing after it is handed on. The thread lets go of the connection at its next
+     * line, or at the read's own timeout. A refused request comes back as the reply, its status
+     * not 200, as before.
+     */
+    private fun fetch(body: JSONObject, stream: Boolean, onLine: (String) -> Boolean): HttpReply {
+        val handoff = LinkedBlockingQueue<Pair<String, Any?>>()
+        val sent = AtomicBoolean(false) // the request reached the server
+        val done = AtomicBoolean(false) // the caller has stopped reading
+        val text = body.toString()
+        val expiry = timer.schedule(timeoutS) { handoff.put(EXPIRED to null) }
+        val reader = Thread({
+            try {
+                val got = if (stream) {
+                    transport.postLines(endpoint, headers, text, timeoutMs, { sent.set(true) }) { line ->
+                        sent.set(true)
+                        if (done.get()) {
+                            false
+                        } else {
+                            handoff.put(LINE to line)
+                            true
+                        }
+                    }
+                } else {
+                    transport.post(endpoint, headers, text, timeoutMs) { sent.set(true) }
+                }
+                sent.set(true)
+                handoff.put(END to got)
+            } catch (exc: Throwable) {
+                handoff.put(FAILED to exc) // thrown on the caller's thread
+            }
+        }, "sidecoach-llm-reply")
+        reader.isDaemon = true
+        reader.start()
+        try {
+            while (true) {
+                val (kind, value) = handoff.take()
+                when (kind) {
+                    LINE -> if (!onLine(value as String)) return HttpReply(200, "")
+                    END -> return value as HttpReply
+                    FAILED -> throw value as Throwable
+                    else -> {
+                        val late = "no whole reply within the timeout (${secondsText(timeoutS)} s)"
+                        throw SocketTimeoutException(if (sent.get()) "Read timed out: $late" else "connect timed out: $late")
+                    }
+                }
+            }
+        } finally {
+            done.set(true)
+            expiry.cancel(false)
+        }
+    }
+
     private fun send(body: JSONObject): Completion {
         val started = System.nanoTime()
-        val reply = sent(body, { 0 }) { transport.post(endpoint, headers, body.toString(), timeoutMs) }
+        val reply = sent(body, { 0 }) { fetch(body, false) { true } }
         if (reply.status != 200) {
             // The status code stays in the message: the callers' backoff keys on "429".
             throw ProviderError(reply.status, reply.text, retryAfter(reply.headers))
@@ -533,12 +637,7 @@ class OpenAICompatProvider(
         var finish: String? = null
         var stopped = false
         val reply = sent(body, { parts.length }) {
-            transport.postLines(
-                endpoint,
-                headers,
-                body.toString(),
-                timeoutMs,
-            ) line@{ line ->
+            fetch(body, true) line@{ line ->
                 if (!line.startsWith("data: ")) return@line true
                 val payload = line.substring(6).trim()
                 if (payload == "[DONE]") return@line false
@@ -633,7 +732,7 @@ class OpenAICompatProvider(
         var completed = JSONObject()
         var stopped = false
         val reply = sent(body, { parts.length }) {
-            transport.postLines(endpoint, headers, body.toString(), timeoutMs) line@{ line ->
+            fetch(body, true) line@{ line ->
                 if (!line.startsWith("data: ")) return@line true
                 val event = try {
                     JSONObject(line.substring(6))

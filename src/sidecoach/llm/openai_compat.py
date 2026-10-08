@@ -32,8 +32,11 @@ On the chat wire, reasoning text, when the server returns it, comes back in
 from __future__ import annotations
 
 import json
+import queue
+import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -61,6 +64,9 @@ MIN_OUTPUT_TOKENS = 16
 # The failures that come after the request reached the server: the call is billed. A
 # refused connection or a connect timeout never reached it, and is not.
 _SENT_LOST = (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError)
+# What the thread reading a reply hands over (`_reply`): a line of it (or the whole body),
+# its end, a failure to raise; and what the timer hands over when the timeout has passed.
+_LINE, _END, _FAILED, _EXPIRED = "line", "end", "failed", "expired"
 
 
 def chat_turns(turns: Sequence[ToolRound]) -> list[dict[str, Any]]:
@@ -326,6 +332,80 @@ class OpenAICompatProvider:
             len(str(m.get("content") or m.get("output") or m.get("arguments") or "")) for m in parts
         )
 
+    def _reply(self, body: dict[str, Any], *, stream: bool) -> Generator[str, None, None]:
+        """POST `body` and hand the reply on as it arrives: line by line when `stream`, else
+        the whole body at once -- all of it within the provider's timeout, counted from the
+        call, not from each read.
+
+        httpx's timeout bounds each read: a reply that trickles in, every piece inside it, ran
+        on far past the configured timeout, the coach's typing dots with it (the audit,
+        2026-10-07). So the request runs on a thread of its own, and a timer set to the timeout
+        ends the wait for it: the call then raises as a timed-out call always has --
+        ReadTimeout once the request was sent (billed, `_SENT_LOST`), ConnectTimeout before --
+        and nothing after it is handed on. The thread lets go of the connection at its next
+        line, or at the read's own timeout. A refused request raises ProviderError."""
+        handoff: queue.Queue[tuple[str, Any]] = queue.Queue()
+        sent = threading.Event()  # the request reached the server
+        done = threading.Event()  # the caller has stopped reading
+
+        def trace(event: str, info: dict[str, Any]) -> None:
+            if event.endswith("send_request_body.complete"):
+                sent.set()
+
+        def read() -> None:
+            try:
+                with self._client.stream(
+                    "POST", self._endpoint, json=body, extensions={"trace": trace}
+                ) as response:
+                    sent.set()
+                    if response.status_code != 200:
+                        raw = response.read()
+                        text = raw.decode("utf-8", "replace") if stream else response.text
+                        # The status code stays in the message: the callers' backoff keys on
+                        # "429".
+                        handoff.put(
+                            (
+                                _FAILED,
+                                ProviderError(
+                                    response.status_code, text, retry_after(response.headers)
+                                ),
+                            )
+                        )
+                        return
+                    if not stream:
+                        response.read()
+                        handoff.put((_LINE, response.text))
+                    else:
+                        for line in response.iter_lines():
+                            if done.is_set():
+                                return
+                            handoff.put((_LINE, line))
+                handoff.put((_END, None))
+            except Exception as exc:  # noqa: BLE001 - raised on the caller's thread
+                handoff.put((_FAILED, exc))
+
+        timer = threading.Timer(self.timeout_s, handoff.put, args=((_EXPIRED, None),))
+        timer.daemon = True
+        timer.start()
+        threading.Thread(target=read, name="sidecoach-llm-reply", daemon=True).start()
+        try:
+            while True:
+                kind, value = handoff.get()
+                if kind == _LINE:
+                    yield value
+                elif kind == _END:
+                    return
+                elif kind == _FAILED:
+                    raise value
+                else:
+                    late = f"no whole reply within the timeout ({self.timeout_s:g} s)"
+                    if sent.is_set():
+                        raise httpx.ReadTimeout(late)
+                    raise httpx.ConnectTimeout(late)
+        finally:
+            done.set()
+            timer.cancel()
+
     def healthcheck(self) -> tuple[bool, str]:
         try:
             response = self._client.get(f"{self.base_url}/models")
@@ -442,14 +522,11 @@ class OpenAICompatProvider:
         )
         started = time.perf_counter()
         try:
-            response = self._client.post(self._endpoint, json=body)
+            with closing(self._reply(body, stream=False)) as reply:
+                data = json.loads(next(reply))
         except _SENT_LOST as exc:
             self._lost(body, 0, exc)
             raise
-        if response.status_code != 200:
-            # The status code stays in the message: the callers' backoff keys on "429".
-            raise ProviderError(response.status_code, response.text, retry_after(response.headers))
-        data = response.json()
         elapsed = time.perf_counter() - started
         if self.wire == "responses":
             if data.get("status") == "failed":
@@ -553,11 +630,8 @@ class OpenAICompatProvider:
         finish: str | None = None
         stopped = False
         try:
-            with self._client.stream("POST", self._endpoint, json=body) as response:
-                if response.status_code != 200:
-                    text = response.read().decode("utf-8", "replace")
-                    raise ProviderError(response.status_code, text, retry_after(response.headers))
-                for line in response.iter_lines():
+            with closing(self._reply(body, stream=True)) as lines:
+                for line in lines:
                     if not line.startswith("data: "):
                         continue
                     payload = line[6:].strip()
@@ -642,11 +716,8 @@ class OpenAICompatProvider:
         final: dict[str, Any] = {}
         stopped = False
         try:
-            with self._client.stream("POST", self._endpoint, json=body) as response:
-                if response.status_code != 200:
-                    text = response.read().decode("utf-8", "replace")
-                    raise ProviderError(response.status_code, text, retry_after(response.headers))
-                for line in response.iter_lines():
+            with closing(self._reply(body, stream=True)) as lines:
+                for line in lines:
                     if not line.startswith("data: "):
                         continue
                     try:

@@ -2,9 +2,15 @@ package com.sidecoach.profile
 
 import com.sidecoach.coach.ProfileAnswer
 import com.sidecoach.llm.ChatMessage
+import com.sidecoach.llm.Completion
 import com.sidecoach.llm.LLMProvider
+import com.sidecoach.llm.OpenAICompatProvider
+import com.sidecoach.llm.ReplyTimer
+import com.sidecoach.llm.secondsText
 import com.sidecoach.voice.Py
 import java.math.BigDecimal
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeoutException
 
 /**
  * Ask the profile: the coach writes its own SQL over the record (DESIGN section 5.6).
@@ -73,13 +79,76 @@ object Ask {
         return lines.joinToString("\n")
     }
 
-    /** Answer the question from the record, the model writing the queries. */
+    /**
+     * The model's calls of one record question, all within the provider's timeout counted from
+     * the question: each call waited for on its own thread, and a timer set to the timeout ends
+     * the wait. Every call had the whole timeout to itself, so a question that queried the record
+     * four times could wait five times it (the audit, 2026-10-07). Past it the call throws a
+     * TimeoutException, as a call that timed out always has thrown out of [answer]; the call left
+     * running ends on its own timeout, and nothing waits for it. `ask._Run`.
+     */
+    private class Run(private val seconds: Double, timer: ReplyTimer) {
+        private val handoff = LinkedBlockingQueue<Pair<String, Any?>>()
+        private val expiry = timer.schedule(seconds) { handoff.put(EXPIRED to null) }
+
+        fun call(ask: () -> Completion): Completion {
+            val worker = Thread({
+                try {
+                    handoff.put(DONE to ask())
+                } catch (exc: Throwable) {
+                    handoff.put(FAILED to exc) // thrown on the caller's thread
+                }
+            }, "sidecoach-record-call")
+            worker.isDaemon = true
+            worker.start()
+            val (kind, value) = handoff.take()
+            if (kind == DONE) return value as Completion
+            if (kind == FAILED) throw value as Throwable
+            throw TimeoutException("the record question took longer than its timeout (${secondsText(seconds)} s)")
+        }
+
+        fun close() {
+            expiry.cancel(false)
+        }
+
+        companion object {
+            const val DONE = "done"
+            const val FAILED = "failed"
+            const val EXPIRED = "expired"
+        }
+    }
+
+    /**
+     * Answer the question from the record, the model writing the queries; the whole run within
+     * the provider's timeout when it has one ([Run]). [timer] ends the wait: the app's is the
+     * real one, a test's moves with its clock (the desktop's tests give the module a
+     * ManualClock's `threading`).
+     */
     fun answer(
         question: String,
         store: Store,
         provider: LLMProvider,
         rounds: Int = ROUNDS,
         maxTokens: Int = MAX_TOKENS,
+        timer: ReplyTimer = ReplyTimer.REAL,
+    ): ProfileAnswer {
+        val budget = (provider as? OpenAICompatProvider)?.timeoutS
+        val run = budget?.let { Run(it, timer) }
+        try {
+            return answerIn(run, question, store, provider, rounds, maxTokens)
+        } finally {
+            run?.close()
+        }
+    }
+
+    /** [answer]'s rounds, each call within [run] when there is one. `ask._answer`. */
+    private fun answerIn(
+        run: Run?,
+        question: String,
+        store: Store,
+        provider: LLMProvider,
+        rounds: Int,
+        maxTokens: Int,
     ): ProfileAnswer {
         val system = systemMessage(rounds)
         val messages = ArrayList<ChatMessage>()
@@ -87,7 +156,9 @@ object Ask {
         val exchanges = ArrayList<Exchange>()
         var calls = 0
         for (roundIndex in 0..rounds) {
-            val completion = provider.chat(system, messages, maxTokens = maxTokens, temperature = 0.2)
+            val asked = ArrayList(messages)
+            val ask = { provider.chat(system, asked, maxTokens = maxTokens, temperature = 0.2) }
+            val completion = run?.call(ask) ?: ask()
             calls++
             val reply = completion.text.trim()
             val sql = extractSql(reply)

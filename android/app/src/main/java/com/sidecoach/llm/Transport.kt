@@ -44,6 +44,29 @@ interface Transport {
         timeoutMs: Int,
         onLine: (String) -> Boolean,
     ): HttpReply
+
+    /**
+     * [post], with [sent] called once the request has gone out whole (the desktop's httpx
+     * trace, `send_request_body.complete`): a timeout after it is billed, one before it is not.
+     * A transport that cannot tell calls nothing, and the reply arriving says it.
+     */
+    fun post(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        timeoutMs: Int,
+        sent: () -> Unit,
+    ): HttpReply = post(url, headers, body, timeoutMs)
+
+    /** [postLines], with [sent] as [post] has it. */
+    fun postLines(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        timeoutMs: Int,
+        sent: () -> Unit,
+        onLine: (String) -> Boolean,
+    ): HttpReply = postLines(url, headers, body, timeoutMs, onLine)
 }
 
 class UrlTransport : Transport {
@@ -58,7 +81,15 @@ class UrlTransport : Transport {
         headers: Map<String, String>,
         body: String,
         timeoutMs: Int,
-    ): HttpReply = open(url, "POST", headers, body, timeoutMs).use { connection ->
+    ): HttpReply = post(url, headers, body, timeoutMs) {}
+
+    override fun post(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        timeoutMs: Int,
+        sent: () -> Unit,
+    ): HttpReply = open(url, "POST", headers, body, timeoutMs, sent).use { connection ->
         HttpReply(connection.responseCode, readAll(connection), headers = kept(connection))
     }
 
@@ -68,7 +99,16 @@ class UrlTransport : Transport {
         body: String,
         timeoutMs: Int,
         onLine: (String) -> Boolean,
-    ): HttpReply = open(url, "POST", headers, body, timeoutMs).use { connection ->
+    ): HttpReply = postLines(url, headers, body, timeoutMs, {}, onLine)
+
+    override fun postLines(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        timeoutMs: Int,
+        sent: () -> Unit,
+        onLine: (String) -> Boolean,
+    ): HttpReply = open(url, "POST", headers, body, timeoutMs, sent).use { connection ->
         val status = connection.responseCode
         if (status != 200) return@use HttpReply(status, readAll(connection), headers = kept(connection))
         val stream = connection.inputStream
@@ -87,6 +127,7 @@ class UrlTransport : Transport {
         headers: Map<String, String>,
         body: String?,
         timeoutMs: Int,
+        sent: () -> Unit = {},
     ): HttpURLConnection {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = method
@@ -98,6 +139,7 @@ class UrlTransport : Transport {
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setFixedLengthStreamingMode(body.toByteArray(Charsets.UTF_8).size)
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            sent()
         }
         return connection
     }

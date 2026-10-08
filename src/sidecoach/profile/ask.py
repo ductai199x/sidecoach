@@ -15,11 +15,14 @@ and their rows are kept with the answer, so what it was read from can be shown.
 from __future__ import annotations
 
 import math
+import queue
 import re
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from sidecoach.llm.base import ChatMessage, LLMProvider
+from sidecoach.llm.base import ChatMessage, Completion, LLMProvider
 from sidecoach.profile.store import QUERY_ROWS, QueryRefused, Store
 
 ROUNDS = 4
@@ -244,6 +247,42 @@ def render_rows(columns: Sequence[str], rows: Sequence[tuple[object, ...]]) -> s
     return "\n".join(lines)
 
 
+class _Run:
+    """The model's calls of one record question, all within the provider's timeout counted
+    from the question: each call waited for on its own thread, and a timer set to the timeout
+    ends the wait. Every call had the whole timeout to itself, so a question that queried the
+    record four times could wait five times it (the audit, 2026-10-07). Past it the call
+    raises TimeoutError, as a call that timed out always has raised out of `answer`; the call
+    left running ends on its own timeout, and nothing waits for it."""
+
+    _DONE, _FAILED, _EXPIRED = "done", "failed", "expired"
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self._handoff: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._timer = threading.Timer(seconds, self._handoff.put, args=((self._EXPIRED, None),))
+        self._timer.daemon = True
+        self._timer.start()
+
+    def call(self, ask: Callable[[], Completion]) -> Completion:
+        def run() -> None:
+            try:
+                self._handoff.put((self._DONE, ask()))
+            except Exception as exc:  # noqa: BLE001 - raised on the caller's thread
+                self._handoff.put((self._FAILED, exc))
+
+        threading.Thread(target=run, name="sidecoach-record-call", daemon=True).start()
+        kind, value = self._handoff.get()
+        if kind == self._DONE:
+            return value
+        if kind == self._FAILED:
+            raise value
+        raise TimeoutError(f"the record question took longer than its timeout ({self.seconds:g} s)")
+
+    def close(self) -> None:
+        self._timer.cancel()
+
+
 def answer(
     question: str,
     store: Store,
@@ -252,12 +291,35 @@ def answer(
     rounds: int = ROUNDS,
     max_tokens: int = MAX_TOKENS,
 ) -> Answer:
-    """Answer the question from the record, the model writing the queries."""
+    """Answer the question from the record, the model writing the queries; the whole run
+    within the provider's timeout when it has one (`_Run`)."""
+    budget = getattr(provider, "timeout_s", None)
+    run = _Run(float(budget)) if isinstance(budget, int | float) else None
+    try:
+        return _answer(question, store, provider, run, rounds=rounds, max_tokens=max_tokens)
+    finally:
+        if run is not None:
+            run.close()
+
+
+def _answer(
+    question: str,
+    store: Store,
+    provider: LLMProvider,
+    run: _Run | None,
+    *,
+    rounds: int,
+    max_tokens: int,
+) -> Answer:
     system = system_message(rounds)
     messages: list[ChatMessage] = [{"role": "user", "content": f"Question: {question.strip()}"}]
     result = Answer(text="")
     for round_index in range(rounds + 1):
-        completion = provider.chat(system, messages, max_tokens=max_tokens, temperature=0.2)
+
+        def ask() -> Completion:
+            return provider.chat(system, list(messages), max_tokens=max_tokens, temperature=0.2)
+
+        completion = run.call(ask) if run is not None else ask()
         result.calls += 1
         reply = (completion.text or "").strip()
         sql = extract_sql(reply)
