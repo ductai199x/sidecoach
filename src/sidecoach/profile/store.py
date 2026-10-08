@@ -973,6 +973,14 @@ class Store:
             )
             self._db.commit()
 
+    def attempted(self, puzzle_id: str) -> bool:
+        """Whether the player has an attempt at this puzzle already."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM puzzle_attempts WHERE puzzle_id = ? LIMIT 1", (puzzle_id,)
+            ).fetchone()
+        return row is not None
+
     def attempts(self, limit: int = 100) -> list[tuple[str, float, bool]]:
         """(puzzle_id, ts, solved) of the latest attempts, latest first."""
         with self._lock:

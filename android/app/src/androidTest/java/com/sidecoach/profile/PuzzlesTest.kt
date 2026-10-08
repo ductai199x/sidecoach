@@ -301,6 +301,29 @@ class PuzzlesTest {
         puzzles.close()
     }
 
+    /** `test_only_the_first_attempt_at_a_puzzle_moves_the_rating`. */
+    @Test
+    fun onlyTheFirstAttemptAtAPuzzleMovesTheRating() {
+        val puzzles = PuzzleStore(null)
+        puzzles.importCsv(csv(dir("replay")))
+        val fork = puzzles.get("000Pw")!!
+        val store = Store(null)
+        val first = Puzzles.recordAttempt(store, fork, "fork", false, listOf("Nc2"), 100.0)
+        val saved = store.setting(Puzzles.PERF_KEY)
+        assertTrue(first.level < 1500 && store.attempted("000Pw") && !store.attempted("fork1"))
+        val again = Puzzles.recordAttempt(store, fork, "fork", true, listOf("Ne2+", "Nxc3"), 200.0)
+        assertTrue(again.solved)
+        assertEquals("a replay: the rating stays", first.level, again.level)
+        assertEquals("nothing saved for it", saved, store.setting(Puzzles.PERF_KEY))
+        assertEquals(listOf("000Pw" to true, "000Pw" to false), store.attempts().map { it.first to it.third })
+        val old = Store(null)
+        old.addAttempt("000Pw", 50.0, "fork", true, emptyList())
+        assertEquals(1500, Puzzles.recordAttempt(old, fork, "fork", true, emptyList(), 100.0).level)
+        old.close()
+        store.close()
+        puzzles.close()
+    }
+
     private companion object {
         val Py = com.sidecoach.voice.Py
 

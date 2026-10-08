@@ -420,8 +420,10 @@ def test_the_puzzle_rating_starts_fresh_and_moves_as_lichess_moves_it(tmp_path: 
     later = puzzle_perf(store, 40 * day * 1000)
     assert later.glicko.rating == want.glicko.rating
     assert later.glicko.deviation > want.glicko.deviation
-    lost = record_attempt(store, fork, "fork", False, ["Nc2"], 40 * day)
-    expect = glicko.finish(later, glicko.Glicko(1547, 76, 0.09), False, 40 * day * 1000)
+    other = _store(tmp_path).get("000rO")
+    assert other is not None and (other.rating, other.deviation) == (1110, 82)
+    lost = record_attempt(store, other, "fork", False, ["Bxb4"], 40 * day)
+    expect = glicko.finish(later, glicko.Glicko(1110, 82, 0.09), False, 40 * day * 1000)
     assert lost.level == expect.glicko.int_rating
     # The puzzle's own rating is not changed (Lichess changes it; a copy of its ratings here).
     assert _store(tmp_path).get("000Pw").rating == 1547  # type: ignore[union-attr]
@@ -463,3 +465,24 @@ def test_a_puzzle_the_page_names_a_motif_for_moves_the_rating_as_lichess_themed_
     assert part.level == want.glicko.int_rating
     assert 1500 < part.level < full.level
     assert angle_for("absolutePin") == "pin" and angle_for("mate") == "mate"
+
+
+def test_only_the_first_attempt_at_a_puzzle_moves_the_rating(tmp_path: Path) -> None:
+    # Lichess rates a puzzle once: a puzzle the player has a round of already is a replay, its
+    # result kept but the rating left as it is (PuzzleFinisher: `prevRound` Some). The failed
+    # puzzle a recommendation brings back first is such a replay; it still counts for the motif.
+    puzzles = _store(tmp_path)
+    fork = puzzles.get("000Pw")
+    assert fork is not None
+    store = Store(None)
+    first = record_attempt(store, fork, "fork", False, ["Nc2"], 100.0)
+    saved = store.setting(PERF_KEY)
+    assert first.level < 1500 and store.attempted("000Pw") and not store.attempted("fork1")
+    again = record_attempt(store, fork, "fork", True, ["Ne2+", "Nxc3"], 200.0)
+    assert again.solved and again.level == first.level, "a replay: the rating stays"
+    assert store.setting(PERF_KEY) == saved, "nothing saved for it"
+    assert [(pid, ok) for pid, _, ok in store.attempts()] == [("000Pw", True), ("000Pw", False)]
+    # An attempt from before this rating existed is a round all the same.
+    old = Store(None)
+    old.add_attempt("000Pw", 50.0, "fork", True, [])
+    assert record_attempt(old, fork, "fork", True, [], 100.0).level == 1500

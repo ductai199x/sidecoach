@@ -158,7 +158,7 @@ object Puzzles {
     /**
      * An attempt into the profile store: kept beside the motif, and the puzzle rating moved as
      * Lichess moves it (Glicko): a game against the puzzle's own rating and deviation, won when
-     * solved; the puzzle's rating is not changed. Shared by the profiler (a puzzle followed on
+     * solved, the first attempt at a puzzle only; the puzzle's rating is not changed. Shared by the profiler (a puzzle followed on
      * the screen) and the puzzle page (one solved on its own board). [theme] is the training theme
      * the player was told (Lichess's themed training keeps only part of the change), null for a
      * puzzle served as Lichess serves a mixed one. [ts] is the time in epoch seconds.
@@ -174,9 +174,14 @@ object Puzzles {
     ): PuzzleOutcome {
         val nowMs = (ts * 1000).toLong()
         val before = puzzlePerf(store, nowMs)
-        val opponent = Glicko.Rating(puzzle.rating.toDouble(), puzzle.deviation.toDouble(), Glicko.DEFAULT_VOLATILITY)
-        val after = Glicko.finish(before, opponent, solved, nowMs, theme)
-        store.setSetting(PERF_KEY, perfJson(Glicko.stored(after, nowMs)))
+        var after = before
+        // Only the first attempt at a puzzle is rated, as on Lichess (PuzzleFinisher: a puzzle with
+        // a round already is a replay); every attempt is kept beside the motif all the same.
+        if (!store.attempted(puzzle.id)) {
+            val opponent = Glicko.Rating(puzzle.rating.toDouble(), puzzle.deviation.toDouble(), Glicko.DEFAULT_VOLATILITY)
+            after = Glicko.finish(before, opponent, solved, nowMs, theme)
+            store.setSetting(PERF_KEY, perfJson(Glicko.stored(after, nowMs)))
+        }
         store.addAttempt(puzzle.id, ts, motif, solved, moves)
         return PuzzleOutcome(gameId = "puzzle-${puzzle.id}", puzzleId = puzzle.id, motif = motif, solved = solved, level = after.glicko.intRating)
     }
