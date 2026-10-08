@@ -49,6 +49,25 @@ def test_the_captions_box_goes_through_a_long_line_at_a_reading_pace() -> None:
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
 
 
+def test_a_review_move_says_why_it_got_its_label() -> None:
+    """Why this label (the audit of 2026-10-07, features #1): Game Review's move card says in one
+    line what earned the move its label, from the numbers the review kept.
+    desktop/tests/why.test.mjs, on src/lib/review/why.ts alone (no packages needed)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    run = subprocess.run(
+        [node, "--test", "tests/why.test.mjs"],
+        cwd=DESKTOP,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
+
+
 def test_the_page_follows_a_restarted_sidecar() -> None:
     """The panel's Restart starts a new sidecar on another port; every other window kept
     calling the old one, dead until reopened (the round-3 UI audit, 2026-10-02)."""

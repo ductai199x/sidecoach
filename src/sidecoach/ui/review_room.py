@@ -39,7 +39,7 @@ from sidecoach.analysis.game_review import (
     review_game,
     workers_for,
 )
-from sidecoach.analysis.score import Thresholds, position_score
+from sidecoach.analysis.score import Thresholds, best_gap, position_score
 from sidecoach.coach import review_links, review_words
 from sidecoach.config import Settings, find_stockfish
 from sidecoach.events import GameSummary, Line, ReviewedGame, Side
@@ -959,8 +959,11 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
     cost, the best move and its line, what follows the move (the best line of the position it
     led to), and the position after -- its FEN, the evaluation from White's side (centipawns
     or mate) and White's expected score. A line comes as steps the board plays: each move in
-    SAN and UCI and the position it leaves."""
+    SAN and UCI and the position it leaves. `gap`: how far the next best move stood behind the
+    best in the position the move was played from (`best_gap` of its saved lines, None with
+    one line), which the card's "why this label" line says."""
     out = []
+    before_lines = reviewed.start.lines
     for move in reviewed.moves:
         before = chess.Board(move.fen_before)
         played = chess.Move.from_uci(move.assessment.uci)
@@ -969,6 +972,8 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
         best = move.assessment.best
         line = _steps(before, best[:LINE_PLIES])
         follow = move.after.lines[0].moves[:LINE_PLIES] if move.after.lines else []
+        gap = best_gap(before_lines)
+        before_lines = move.after.lines
         out.append(
             {
                 "ply": move.ply,
@@ -986,6 +991,7 @@ def move_views(reviewed: ReviewedGame) -> list[dict[str, Any]]:
                 "best_uci": best[0] if best else None,
                 "best_san": line[0]["san"] if line else None,
                 "best_line": line,
+                "gap": round(gap, 4) if gap is not None else None,
                 "follow_line": _steps(after, follow),
                 # What the move threatens: the mover's best next move were it their turn again.
                 "idea": move.after.threats[0] if move.after.threats else None,

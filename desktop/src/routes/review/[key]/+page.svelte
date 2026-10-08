@@ -25,6 +25,7 @@
   import ReviewBoard from "$lib/review/ReviewBoard.svelte";
   import LineControls from "$lib/review/LineControls.svelte";
   import { LinePlayer } from "$lib/review/lineplayer.svelte";
+  import { why } from "$lib/review/why";
   import { BAD, CLASSES, FOLDED, KEY, bestWords, className, evalSide, evalText, headline, moveLabel, moveNumber, numbered, openingName, sentence, tryWords, verdict } from "$lib/review/words";
   import { motifWords } from "$lib/chess";
 
@@ -114,6 +115,8 @@
   const graph = $derived(summary?.graph ?? []);
   const move = $derived<ReviewMove | null>(ply > 0 ? (moves[ply - 1] ?? null) : null);
   const whiteBefore = $derived(graph[ply - 1] ?? 0.5);
+  // Why the move shown got its label, in one line under its headline (lib/review/why.ts).
+  const labelWhy = $derived(move ? why(move, moves[ply - 2] ?? null, look.arrow) : null);
   // The moves the review stops at: every side's, or the one side the settings name; and the
   // last book move for both, where the game leaves known theory (Tai, 2026-09-30).
   const keyMoments = $derived(
@@ -1085,6 +1088,7 @@
                 <span>{headline(move)}</span>
                 <span class="pill {evalSide(move.eval)}">{evalText(move.eval)}</span>
               </div>
+              {#if labelWhy}<p class="rv-why">{labelWhy}</p>{/if}
               {#if aiWhy}
                 <p><AiText pieces={linksOf("why")} shown={shownLink} onmark={mark} /></p>
               {:else}

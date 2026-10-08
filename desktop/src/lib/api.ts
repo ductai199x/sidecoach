@@ -354,9 +354,14 @@ export type ReviewMove = {
   label: string | null;
   accuracy: number | null;
   loss: number;
+  /** The loss's band: none, inaccuracy, mistake or blunder (`score.severity`). */
+  severity: string;
   best_uci: string | null;
   best_san: string | null;
   best_line: LineStep[];
+  /** How far the next best move stood behind the best in the position the move was played
+   *  from, in expected score; null with a single line. */
+  gap: number | null;
   follow_line: LineStep[];
   /** What the move threatens (UCI): the mover's best next move were it their turn again. */
   idea: string | null;

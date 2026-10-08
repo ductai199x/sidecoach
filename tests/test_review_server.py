@@ -1452,6 +1452,36 @@ def _varied_review(
     return store, row
 
 
+def test_a_move_view_says_how_far_the_next_best_move_stood_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why this label (the audit of 2026-10-07, features #1): the move card says what the next
+    best move would have given away in the position the move was played from -- a great move is
+    great because every other one falls that far behind. `gap` is `score.best_gap` of that
+    position's saved lines (the game's start for its first move), None with a single line; read
+    from the review as saved, nothing made again."""
+    from sidecoach.events import Line, ReviewedGame
+    from sidecoach.ui.review_room import move_views
+
+    store, row = _varied_review(tmp_path, monkeypatch)
+    saved = store.review(row.key, "fast")
+    store.close()
+    assert saved is not None
+    reviewed = ReviewedGame.model_validate_json(saved.report)
+
+    def two(lines: list[Line], behind: float) -> list[Line]:
+        first = lines[0]
+        score = first.expected_score - behind
+        return [first, Line(moves=["a2a3"], depth=first.depth, expected_score=score)]
+
+    start = reviewed.start.model_copy(update={"lines": two(reviewed.start.lines, 0.14)})
+    moves = list(reviewed.moves)
+    after = moves[0].after.model_copy(update={"lines": two(moves[0].after.lines, 0.03)})
+    moves[0] = moves[0].model_copy(update={"after": after})
+    views = move_views(reviewed.model_copy(update={"start": start, "moves": moves}))
+    assert [v["gap"] for v in views[:3]] == [0.14, 0.03, None]
+
+
 def test_a_saved_review_relabelled_from_what_it_kept_is_labelled_as_the_review_was(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

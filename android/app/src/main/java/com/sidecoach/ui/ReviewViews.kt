@@ -1,5 +1,6 @@
 package com.sidecoach.ui
 
+import com.sidecoach.analysis.bestGap
 import com.sidecoach.analysis.positionScore
 import com.sidecoach.chess.Board
 import com.sidecoach.chess.Move
@@ -25,9 +26,14 @@ object ReviewViews {
     fun opening(reviewed: ReviewedGame): String? =
         reviewed.moves.asReversed().firstOrNull { !it.after.opening.isNullOrEmpty() }?.after?.opening
 
-    /** `move_views`: a line comes as steps the board plays -- each move in SAN and UCI and the position it leaves. */
+    /**
+     * `move_views`: a line comes as steps the board plays -- each move in SAN and UCI and the position it leaves.
+     * `gap`: how far the next best move stood behind the best in the position the move was played from
+     * ([bestGap] of its saved lines, null with one line), which the card's "why this label" line says.
+     */
     fun moveViews(reviewed: ReviewedGame): JSONArray {
         val out = JSONArray()
+        var beforeLines = reviewed.start.lines
         for (move in reviewed.moves) {
             val before = Board(move.fenBefore)
             val played = Move.fromUci(move.assessment.uci)
@@ -36,6 +42,8 @@ object ReviewViews {
             val best = move.assessment.best
             val line = steps(before, best.take(LINE_PLIES))
             val follow = if (move.after.lines.isNotEmpty()) move.after.lines[0].moves.take(LINE_PLIES) else emptyList()
+            val gap = bestGap(beforeLines)
+            beforeLines = move.after.lines
             out.put(
                 JSONObject()
                     .put("ply", move.ply)
@@ -53,6 +61,7 @@ object ReviewViews {
                     .put("best_uci", best.firstOrNull() ?: JSONObject.NULL)
                     .put("best_san", if (line.length() > 0) line.getJSONObject(0).getString("san") else JSONObject.NULL)
                     .put("best_line", line)
+                    .put("gap", gap?.let { GameSummaries.round(it, 4) } ?: JSONObject.NULL)
                     .put("follow_line", steps(after, follow))
                     // What the move threatens: the mover's best next move were it their turn again.
                     .put("idea", move.after.threats.firstOrNull() ?: JSONObject.NULL)

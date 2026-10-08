@@ -110,7 +110,10 @@ delay setting.
   `profile/game_summary.py`; the game rating from `profile/performance.py`.
 - **The review's own words** (`desktop/src/lib/review/words.ts`): a headline per kind of move and
   a sentence from the facts the review computed (the better move, what the move changed, the
-  motifs), free and instant.
+  motifs), free and instant. Under the headline, one quiet line says why the move got its label
+  (`desktop/src/lib/review/why.ts`, the audit of 2026-10-07): the loss, the next best move's gap
+  (`gap` in the move views, `score.best_gap` of the saved lines), the mate let go or allowed,
+  read off the review as saved; a bad move names the better one only when the card may.
 - **The AI words** (`coach/review_words.py`, decision 3): one call a key move, in parallel. A
   model that reasons by its effort (OpenAI's) reasons at `REVIEW_EFFORT` medium whatever the live
   coach's effort (Tai, 2026-09-30: "Reasoning none is usually not very accurate"); a local model

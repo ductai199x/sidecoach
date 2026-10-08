@@ -316,6 +316,8 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 /* Retry: the coach's hint set apart in the bubble. */
 .rv-bubble p.hint { background: #eef4fa; border-left: 3px solid var(--cls-great); border-radius: 6px; padding: 7px 10px; color: #312e2b; }
 .rv-bubble p.muted { color: #8b8987; }
+/* Why the move got its label: one quiet line under the headline (lib/review/why.ts). */
+.rv-bubble p.rv-why { margin-top: -2px; font-size: 12.5px; line-height: 1.4; color: #6f6c69; }
 
 /* The AI coach's words, asked for on the summary a game at a time: the card that asks (what it
    covers and costs; working, done, or why it cannot), then in each key move's bubble the lesson
