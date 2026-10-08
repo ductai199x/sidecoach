@@ -1077,6 +1077,77 @@ def test_words_that_say_nothing_change_nothing() -> None:
     assert causes.from_words("no time, I premoved") == causes.TIME_PRESSURE
 
 
+# What a player says that speaks of the clock, and what only uses the word "time" (or
+# "quick") about something else. android/tools/make_profile_fixtures.py replays both lists.
+CLOCK_SAID = [
+    "I was in time trouble",
+    "I was low on time",
+    "I was flagging",
+    "I rushed it",
+    "I was rushing",
+    "I was in a hurry",
+    "I played it too fast",
+    "I only had seconds left",
+    "I ran out of time",
+    "my clock was almost gone",
+    "I premoved",
+    "time pressure got me",
+    "no time to think",
+    "I was short on time",
+    "I hurried the move",
+    "I was about to flag",
+    "it was a time scramble",
+    "I moved too quickly",
+]
+CLOCK_NOT_SAID = [
+    "this time I missed the fork",
+    "every time I play this opening I lose a pawn",
+    "last time it worked",
+    "at the time it looked fine",
+    "one more time please",
+    "I thought I had time to castle",
+    "I quickly saw the knight could fork me",
+    "the first time I've seen this trap",
+    "it's time to attack",
+    "I spent a long time on that move",
+    "I took my time",
+    "in no time he had mate",
+    "a quick check would have won",
+    "sometimes I just don't see it",
+]
+
+
+def test_only_words_about_the_clock_say_time_pressure() -> None:
+    """A note like "this time I missed the fork" filed the mistake as time pressure, over the
+    engine's cause, because any "time" or "quick" counted (the audit of 2026-10-07)."""
+    said = [t for t in CLOCK_SAID if causes.from_words(t) != causes.TIME_PRESSURE]
+    not_said = [t for t in CLOCK_NOT_SAID if causes.from_words(t) == causes.TIME_PRESSURE]
+    assert said == [] and not_said == []
+    assert causes.from_words("this time I missed the fork") == causes.MISSED_THREAT
+
+
+def test_a_note_using_the_word_time_keeps_the_engines_cause() -> None:
+    from sidecoach.events import CoachMessage, DisclosureLevel, Trigger, UserUtterance
+
+    f = Feed()
+    f.play("e4")
+    f.play("e5")
+    f.play("Qh5", loss=0.12, label=Label.MISTAKE, after_tags=[FORK])
+    f.send(
+        CoachMessage(
+            text="lesson",
+            level=DisclosureLevel.LINE,
+            trigger=Trigger.POST_MISTAKE,
+            game_id="g",
+            ply=2,
+        )
+    )
+    f.send(UserUtterance(text="at the time it looked fine to me", source="voice"))
+    row = f.store.evidence("g")[0]
+    assert row.self_report == "at the time it looked fine to me"
+    assert row.cause == causes.MISSED_THREAT and not row.corrected
+
+
 def test_a_position_that_ends_early_leaves_nothing_behind() -> None:
     """A puzzle or an analysis board begins as a GameStarted of kind "position" and is
     over within a few plies: the profile keeps no game, no evidence, no review and no

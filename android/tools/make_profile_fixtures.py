@@ -564,6 +564,7 @@ def causes_tables() -> dict:
         "ok", "what should I play now?", "I completely missed it", "no time, I premoved",
         "I saw the knight coming but thought the queen was safe", "I was rushing",
         "I didn't see the queen coming to g5 at all",
+        *tp.CLOCK_SAID, *tp.CLOCK_NOT_SAID,
     ]
     motifs_ = ["hangingPiece", "mateIn2", "attackingF2F7", "xRayAttack", "fork", "mate", "backRankMate"]
     return {

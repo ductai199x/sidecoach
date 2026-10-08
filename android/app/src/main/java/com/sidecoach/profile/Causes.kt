@@ -171,9 +171,17 @@ object Causes {
 
     /** What a player says about a mistake, when it says plainly what happened. */
     private val WORDS: List<Pair<Regex, String>> = listOf(
+        // Only words that speak of the clock: a bare "time" or "quick" ("this time I missed
+        // the fork", "I quickly saw it") filed the mistake as time pressure over the engine's
+        // cause (the audit of 2026-10-07).
         Regex(
-            "\\b(?:time|clock|rush(?:ed|ing)?|hurr(?:y|ied)|in a hurry|too fast|quick(?:ly)?|" +
-                "premove[sd]?|no time)\\b",
+            "\\b(?:time (?:trouble|pressure|scramble|crunch)|(?:low|short) (?:on|of) time|" +
+                "out of time|(?:had|have) no time|no time (?:left|to think)|" +
+                "time (?:ran|was running|is running|running) (?:out|low)|time was (?:low|short)|" +
+                "lost on time|seconds (?:left|to go)|clock|flag(?:ged|ging)?|" +
+                "rush(?:ed|ing)?|hurr(?:y|ied)|in a hurry|too (?:fast|quick(?:ly)?)|" +
+                "(?:played|moved|went) (?:it |that )?(?:too )?(?:fast|quickly)|premove[sd]?|" +
+                "premoving)\\b",
             RegexOption.IGNORE_CASE,
         ) to TIME_PRESSURE,
         Regex(

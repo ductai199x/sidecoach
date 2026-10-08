@@ -186,9 +186,17 @@ def classify(
 # What a player says about a mistake, when it says plainly what happened.
 _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
+        # Only words that speak of the clock: a bare "time" or "quick" ("this time I missed
+        # the fork", "I quickly saw it") filed the mistake as time pressure over the engine's
+        # cause (the audit of 2026-10-07).
         re.compile(
-            r"\b(?:time|clock|rush(?:ed|ing)?|hurr(?:y|ied)|in a hurry|too fast|quick(?:ly)?|"
-            r"premove[sd]?|no time)\b",
+            r"\b(?:time (?:trouble|pressure|scramble|crunch)|(?:low|short) (?:on|of) time|"
+            r"out of time|(?:had|have) no time|no time (?:left|to think)|"
+            r"time (?:ran|was running|is running|running) (?:out|low)|time was (?:low|short)|"
+            r"lost on time|seconds (?:left|to go)|clock|flag(?:ged|ging)?|"
+            r"rush(?:ed|ing)?|hurr(?:y|ied)|in a hurry|too (?:fast|quick(?:ly)?)|"
+            r"(?:played|moved|went) (?:it |that )?(?:too )?(?:fast|quickly)|premove[sd]?|"
+            r"premoving)\b",
             re.I,
         ),
         TIME_PRESSURE,
