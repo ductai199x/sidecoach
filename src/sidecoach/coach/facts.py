@@ -792,7 +792,7 @@ def facts_from_analysis(
         # Nothing else named: what they would do if you let them -- the prophylactic question,
         # answered on the board.
         sharp = stakes is not None and stakes.kind in ("only", "few", "lost")
-        key = situation.their_idea_key(board, threat_move, sharp=sharp)
+        key = situation.their_idea_key(board, threat_move, sharp=sharp, best=best)
     if in_check:
         nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
         if why is None and best is not None:
@@ -1035,7 +1035,7 @@ def facts_from_analysis(
         # Nothing else to say: what they would do with a free move, or the piece doing least --
         # never a question that fits any position ("which of your pieces has no job right
         # now?" at 32...Kh8 in Carlsen-Kramnik).
-        fallback = situation.their_idea_key(board, threat_move, sharp=True)
+        fallback = situation.their_idea_key(board, threat_move, sharp=True, best=best)
         if fallback is None:
             passive = positional.worst_piece(board, us)
             fallback = passive[0].text if passive else None

@@ -116,6 +116,42 @@ class SituationTest {
         assertEquals("If you let them, their best is e5", Situation.theirIdeaKey(board, Move.fromUci("e7e5")))
     }
 
+    /**
+     * Wiel-Vaganian, 11...Qh4+ the best move: the first hint was "If you let them, their best is
+     * h4." -- the square of the answer, named at the first rung (the audit, 2026-10-07). Their
+     * idea is not said when it names the answer's square
+     * (`test_the_first_hint_does_not_name_the_answers_square_as_their_idea`).
+     */
+    @Test
+    fun theFirstHintDoesNotNameTheAnswersSquareAsTheirIdea() {
+        val fen = "r2qkb1r/ppp2ppp/1nn1p3/4P3/2PP4/2N1BP2/PP2B2P/R2QK2R b KQkq - 0 11"
+        val given = listOf(
+            Triple(listOf("d8h4", "e3f2", "h4h6", "c4c5", "b6d5", "c3d5", "e6d5", "d1b3"), 0.398, -112),
+            Triple(listOf("f8b4", "e1g1", "d8d7", "f3f4", "b4c3", "b2c3", "c6a5", "c4c5"), 0.392, -119),
+            Triple(listOf("f7f6", "f3f4", "f6e5", "f4e5", "f8e7", "e1g1", "e7g5", "e3f2"), 0.380, -133),
+            Triple(listOf("g7g6", "h2h4", "f7f6", "h4h5", "d8e7", "c3e4", "f6e5", "d4e5"), 0.348, -170),
+            Triple(listOf("c6e7", "d1d2", "e7f5", "e1c1", "f8b4", "e3f2", "b6a4", "d2c2"), 0.338, -183),
+            Triple(listOf("d8e7", "c4c5", "b6d5", "c3d5", "e6d5", "e1g1", "g7g6", "d1b3"), 0.338, -183),
+        )
+        val analysis = Analysis(
+            gameId = "g",
+            fen = fen,
+            ply = 21,
+            lines = given.map { (m, s, cp) -> Line(moves = m, depth = 14, expectedScore = s, scoreCp = cp) },
+            decisive = false,
+            onlyMove = false,
+            threats = listOf("h2h4"),
+            tags = emptyList(),
+        )
+        val board = Board(fen)
+        val text = factsFromAnalysis(board, analysis, user = false).situation ?: ""
+        assertFalse(text, "h4" in text)
+        // Their idea is still said where it names another square.
+        val threat = Move.fromUci("h2h4")
+        assertNull(Situation.theirIdeaKey(board, threat, sharp = true, best = Move.fromUci("d8h4")))
+        assertEquals("If you let them, their best is h4", Situation.theirIdeaKey(board, threat, sharp = true))
+    }
+
     @Test
     fun aFeatureIsThePointOnlyOfTheMoveThatActsOnIt() {
         val board = Board()

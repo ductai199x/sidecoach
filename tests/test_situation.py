@@ -230,6 +230,45 @@ def test_their_idea_is_said_only_when_it_changes_something() -> None:
     )
 
 
+def test_the_first_hint_does_not_name_the_answers_square_as_their_idea() -> None:
+    """Wiel-Vaganian, 11...Qh4+ the best move: the first hint was "If you let them, their best
+    is h4." -- the square of the answer, named at the first rung (the audit, 2026-10-07; Tai: a
+    hint withholds the move, its square and the piece that makes it). Their idea is not said
+    when it names the answer's square."""
+    from sidecoach.coach.facts import facts_from_analysis
+    from sidecoach.events import Analysis
+
+    fen = "r2qkb1r/ppp2ppp/1nn1p3/4P3/2PP4/2N1BP2/PP2B2P/R2QK2R b KQkq - 0 11"
+    lines = [
+        (["d8h4", "e3f2", "h4h6", "c4c5", "b6d5", "c3d5", "e6d5", "d1b3"], 0.398, -112),
+        (["f8b4", "e1g1", "d8d7", "f3f4", "b4c3", "b2c3", "c6a5", "c4c5"], 0.392, -119),
+        (["f7f6", "f3f4", "f6e5", "f4e5", "f8e7", "e1g1", "e7g5", "e3f2"], 0.380, -133),
+        (["g7g6", "h2h4", "f7f6", "h4h5", "d8e7", "c3e4", "f6e5", "d4e5"], 0.348, -170),
+        (["c6e7", "d1d2", "e7f5", "e1c1", "f8b4", "e3f2", "b6a4", "d2c2"], 0.338, -183),
+        (["d8e7", "c4c5", "b6d5", "c3d5", "e6d5", "e1g1", "g7g6", "d1b3"], 0.338, -183),
+    ]
+    event = Analysis(
+        game_id="g",
+        fen=fen,
+        ply=21,
+        lines=[Line(moves=m, depth=14, expected_score=s, score_cp=cp) for m, s, cp in lines],
+        decisive=False,
+        only_move=False,
+        threats=["h2h4"],
+        tags=[],
+    )
+    board = chess.Board(fen)
+    text = facts_from_analysis(board, event, user=chess.BLACK).situation or ""
+    assert "h4" not in text, text
+    # Their idea is still said where it names another square.
+    best = chess.Move.from_uci("d8h4")
+    threat = chess.Move.from_uci("h2h4")
+    assert situation.their_idea_key(board, threat, sharp=True, best=best) is None
+    assert (
+        situation.their_idea_key(board, threat, sharp=True) == "If you let them, their best is h4"
+    )
+
+
 def test_a_feature_is_the_point_only_of_the_move_that_acts_on_it() -> None:
     board = chess.Board()
     home = positional.PositionalFact(

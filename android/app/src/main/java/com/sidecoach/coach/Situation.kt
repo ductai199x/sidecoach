@@ -1010,9 +1010,11 @@ object Situation {
      * What they would do if you let them: the prophylactic question, answered on the board.
      * Where every other move loses (`sharp`), whatever it is; else only a move that changes
      * something -- a capture, a check, a pawn move: "if you let them, their best is Bd7" said
-     * nothing (Johner-Nimzowitsch, eight times).
+     * nothing (Johner-Nimzowitsch, eight times). Never when it names the square of the `best`
+     * move: "If you let them, their best is h4." was the first hint where 11...Qh4+ was the
+     * answer (Wiel-Vaganian; the audit, 2026-10-07: a hint withholds the move's square).
      */
-    fun theirIdeaKey(board: Board, threat: Move?, sharp: Boolean = false): String? {
+    fun theirIdeaKey(board: Board, threat: Move?, sharp: Boolean = false, best: Move? = null): String? {
         if (threat == null || board.isCheck()) return null
         val passed = board.copy(withStack = false)
         passed.push(Move.NULL)
@@ -1024,7 +1026,9 @@ object Situation {
         ) {
             return null
         }
-        return "If you let them, their best is ${passed.san(threat)}"
+        val said = passed.san(threat)
+        if (best != null && squareName(best.to) in said) return null
+        return "If you let them, their best is $said"
     }
 
     /**

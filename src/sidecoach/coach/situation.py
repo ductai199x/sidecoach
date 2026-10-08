@@ -1052,12 +1052,18 @@ def check_key(board: chess.Board, prize: chess.Square | None = None) -> str | No
 
 
 def their_idea_key(
-    board: chess.Board, threat: chess.Move | None, *, sharp: bool = False
+    board: chess.Board,
+    threat: chess.Move | None,
+    *,
+    sharp: bool = False,
+    best: chess.Move | None = None,
 ) -> str | None:
     """What they would do if you let them: the prophylactic question, answered on the board.
     Where every other move loses (`sharp`), whatever it is; else only a move that changes
     something -- a capture, a check, a pawn move: "if you let them, their best is Bd7" said
-    nothing (Johner-Nimzowitsch, eight times)."""
+    nothing (Johner-Nimzowitsch, eight times). Never when it names the square of the `best`
+    move: "If you let them, their best is h4." was the first hint where 11...Qh4+ was the
+    answer (Wiel-Vaganian; the audit, 2026-10-07: a hint withholds the move's square)."""
     if threat is None or board.is_check():
         return None
     passed = board.copy(stack=False)
@@ -1071,7 +1077,10 @@ def their_idea_key(
         or passed.piece_type_at(threat.from_square) == chess.PAWN
     ):
         return None
-    return f"If you let them, their best is {passed.san(threat)}"
+    said = passed.san(threat)
+    if best is not None and chess.square_name(best.to_square) in said:
+        return None
+    return f"If you let them, their best is {said}"
 
 
 def kings_key(board: chess.Board, best: chess.Move) -> str | None:

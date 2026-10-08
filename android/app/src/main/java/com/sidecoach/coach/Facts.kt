@@ -817,7 +817,7 @@ fun factsFromAnalysis(
         // Nothing else named: what they would do if you let them -- the prophylactic question,
         // answered on the board.
         val sharp = stakes != null && (stakes.kind == "only" || stakes.kind == "few" || stakes.kind == "lost")
-        key = Situation.theirIdeaKey(board, threatMove, sharp = sharp)
+        key = Situation.theirIdeaKey(board, threatMove, sharp = sharp, best = best)
     }
     if (inCheck) {
         nudge = "Which way out keeps you safest -- a king move, a block, or taking the checker?"
@@ -1062,7 +1062,7 @@ fun factsFromAnalysis(
         // Nothing else to say: what they would do with a free move, or the piece doing least --
         // never a question that fits any position ("which of your pieces has no job right now?"
         // at 32...Kh8 in Carlsen-Kramnik).
-        var fallback = Situation.theirIdeaKey(board, threatMove, sharp = true)
+        var fallback = Situation.theirIdeaKey(board, threatMove, sharp = true, best = best)
         if (fallback == null) {
             val passive = worstPiece(board, us)
             fallback = if (passive.isNotEmpty()) passive[0].text else null
