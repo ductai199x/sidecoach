@@ -46,7 +46,10 @@ class StatsApi(private val files: File, private val userNames: () -> List<String
             // to catch it up: the review of 2026-10-01).
             Library.refresh(store, userNames())
             ReviewRoom.keepMissingStats(store)
-            Stats.stats(store, filter(query), now).also { drills(it.getJSONArray("work"), files, store) }
+            Stats.stats(store, filter(query), now).also {
+                drills(it.getJSONArray("work"), files, store)
+                rememberDrills(it.getJSONArray("work"), PanelEngine.puzzleMotifs)
+            }
         }
         return JSONObject().put("ok", true).put("stats", numbers).put("backlog", JSONObject.NULL)
     }
@@ -81,6 +84,21 @@ class StatsApi(private val files: File, private val userNames: () -> List<String
                 }
             } finally {
                 puzzles?.close()
+            }
+        }
+
+        /**
+         * Each puzzle Stats offers for an area ("Puzzles on it") remembered with the area's
+         * motif, as the session's recommendations are: the room it opens in records the attempt
+         * beside that motif, so the drill counts for it. `_remember_drills`.
+         */
+        fun rememberDrills(work: JSONArray, motifs: MutableMap<String, String>) {
+            for (i in 0 until work.length()) {
+                val w = work.getJSONObject(i)
+                val motif = if (w.isNull("motif")) "" else w.optString("motif")
+                if (motif.isEmpty()) continue
+                val puzzles = w.optJSONArray("puzzles") ?: continue
+                for (j in 0 until puzzles.length()) motifs[puzzles.getJSONObject(j).getString("id")] = motif
             }
         }
     }
