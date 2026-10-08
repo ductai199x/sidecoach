@@ -2145,7 +2145,7 @@ wheels = [
 
 [[package]]
 name = "sidecoach"
-version = "0.1.85"
+version = "0.1.87"
 source = { editable = "." }
 dependencies = [
     { name = "chess" },
