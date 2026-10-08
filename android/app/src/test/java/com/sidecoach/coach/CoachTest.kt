@@ -1544,6 +1544,25 @@ class CoachTest {
     }
 
     /**
+     * Offline, the same question asked again got no reply at all: its answer, already said since
+     * the last move, was blanked (the audit, 2026-10-07). A question is always answered (Tai,
+     * 2026-10-02: no dropped replies): the second time with the coach's same answer. (A statement
+     * that asks nothing, a nod, still gets nothing the second time: the test above.)
+     */
+    @Test
+    fun offlineTheSameQuestionAskedTwiceIsAnsweredTwice() {
+        for (asked in listOf("who is better?", "what should I do?", "what is their threat?")) {
+            val offline = Coach(OfflineProvider(), policy = InterjectionPolicy(PolicySettings(stuckSeconds = 10.0)))
+            italian(offline)
+            offline.ask(asked, 7.0)
+            val first = messages(offline).map { it.text }
+            offline.ask(asked, 8.0)
+            val again = messages(offline).map { it.text }
+            assertTrue("$asked: $first / $again", first.isNotEmpty() && again == first)
+        }
+    }
+
+    /**
      * Each lesson taught its own moment and a principle of its own, and the threat-blind
      * student's notebook held five unrelated rules (the simulated students, 2026-09-26): the
      * third mistake of one cause in the session says the pattern once, with its habit. Said the

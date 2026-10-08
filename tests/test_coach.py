@@ -1490,6 +1490,21 @@ def test_a_move_proposed_in_a_statement_is_examined_and_nothing_is_said_twice() 
     assert first and not set(again) & set(first)
 
 
+def test_offline_the_same_question_asked_twice_is_answered_twice() -> None:
+    """Offline, the same question asked again got no reply at all: its answer, already said
+    since the last move, was blanked (the audit, 2026-10-07). A question is always answered
+    (Tai, 2026-10-02: no dropped replies): the second time with the coach's same answer. (A
+    statement that asks nothing, a nod, still gets nothing the second time: the test above.)"""
+    for asked in ("who is better?", "what should I do?", "what is their threat?"):
+        coach = offline_coach()
+        _italian(coach)
+        coach.ask(asked, 7.0)
+        first = [m.text for m in drain(coach)]
+        coach.ask(asked, 8.0)
+        again = [m.text for m in drain(coach)]
+        assert first and again == first, (asked, first, again)
+
+
 def test_a_cause_that_comes_back_is_named_once_with_the_habit_that_fixes_it() -> None:
     """Each lesson taught its own moment and a principle of its own, and the threat-blind
     student's notebook held five unrelated rules (the simulated students, 2026-09-26): the

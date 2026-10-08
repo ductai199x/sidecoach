@@ -4600,18 +4600,9 @@ class Coach:
         must_name = self._must_name(
             trigger, position, level, fallback, assessment, played, user_text
         )
-        if (
-            self._offline
-            and trigger is Trigger.USER_ASK
-            and fallback
-            and fallback in self._said_since_move()
-        ):
-            # Offline, where the template is the answer, nothing the coach said since the last
-            # move is said again word for word: a student's answer to the hint got the same hint
-            # back, three times (round 5). With the AI on the fallback is said only when the
-            # reply failed, and then it stands: a failed reply never ends in silence (Tai,
-            # 2026-10-02).
-            fallback = ""
+        # Offline, where the template is the answer, a question asked again is answered again,
+        # even word for word: blanked as "said already", the same question twice got no reply
+        # at all (the audit, 2026-10-07; Tai, 2026-10-02: no dropped replies).
         # A reply about a position already moved from -- the lesson on a move, an answer
         # about it -- is rendered at the level of the position on the board now, and must not
         # give away the answer there (a verdict can land after the opponent has replied).
