@@ -66,6 +66,13 @@ def copy_data() -> None:
         shutil.copy2(source / name, ASSETS / name)
     for sub in DATA_DIRS:
         shutil.copytree(source / sub, ASSETS / sub)
+        # The package ships some voice files with CRLF; the repo holds no Windows line endings
+        # (Tai, 2026-10-08). Text files only: a file with a NUL byte is binary and kept whole.
+        for path in (ASSETS / sub).rglob("*"):
+            if path.is_file():
+                data = path.read_bytes()
+                if b"\0" not in data and b"\r\n" in data:
+                    path.write_bytes(data.replace(b"\r\n", b"\n"))
     size = sum(p.stat().st_size for p in ASSETS.rglob("*") if p.is_file())
     count = sum(1 for p in ASSETS.rglob("*") if p.is_file())
     print(f"data: {count} files, {size / 1e6:.1f} MB -> {ASSETS}")

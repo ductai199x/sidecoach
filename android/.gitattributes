@@ -1,11 +1,15 @@
-* text=auto
+* text=auto eol=lf
 
-# The panel page is the desktop build, byte for byte: no line-ending translation.
-app/src/main/assets/web/** -text
+# The panel page is the desktop build, and the fixture data what the Python read: LF in the repo
+# and in every checkout, as every text file of this repo (Tai, 2026-10-08: "Do not have any
+# windows line ending anywhere in this repo"). Text by type, the rest binary, never guessed.
+app/src/main/assets/web/** text eol=lf
+app/src/androidTest/assets/** text eol=lf
+app/src/main/assets/web/**/*.png binary
+app/src/androidTest/assets/**/*.png binary
+app/src/androidTest/assets/**/*.bin binary
+app/src/androidTest/assets/**/*.wav binary
 
-# Fixture data is what the Python read, byte for byte: no line-ending translation.
-app/src/androidTest/assets/** -text
-
-# espeak-ng's data, byte for byte as the desktop's espeakng_loader ships it: its voice
-# and language files are parsed line by line, and a CRLF checkout would change them.
+# espeak-ng's data, byte for byte as tools/fetch_espeak.py writes it (its dictionaries are
+# binary; the voice and language files it writes with LF): no translation either way.
 app/src/main/assets/espeak-ng-data/** -text

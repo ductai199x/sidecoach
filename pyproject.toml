@@ -100,7 +100,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "tools/engine/build_report.py" = ["E501"]
 
 [tool.ruff.format]
-line-ending = "native"
+line-ending = "lf"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
