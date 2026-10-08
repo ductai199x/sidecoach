@@ -616,6 +616,10 @@
     stopLine();
     const opened = await api.open(strength).catch(() => null);
     if (!opened?.ok || !opened.state) return;
+    // A retry of the old review ends with it (its position and Hint/Show stayed over the new
+    // review's summary), as on going back to the summary.
+    if (desk.now) desk.close();
+    desk.error = "";
     room = null;
     view = "summary";
     ply = 0;

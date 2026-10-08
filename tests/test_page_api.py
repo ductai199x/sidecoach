@@ -70,6 +70,13 @@ def test_an_error_answer_or_none_in_time_is_not_success() -> None:
     _node_test("api_errors.test.mjs")
 
 
+def test_an_analysis_error_goes_once_the_analysis_answers_again() -> None:
+    """Game Review's Analysis kept an error on screen after the analysis answered again (the
+    2026-10-07 audit): what it says now belongs to the position asked
+    (desktop/tests/analysis_error.test.mjs; TypeScript from the page's packages)."""
+    _node_test("analysis_error.test.mjs")
+
+
 def test_a_line_is_stepped_never_run_by_itself() -> None:
     """Give up played a puzzle's solution itself, a move every 400 ms (the 2026-10-07 audit,
     #8). The review's line stepper is now one module the puzzle shares: its first move, then

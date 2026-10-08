@@ -202,6 +202,9 @@ export class AnalysisDesk {
     const ask = ++this.asked;
     const fen = n.fen;
     const still = () => ask === this.asked;
+    // What was said failed belongs to the position asked before: asked again, it goes (it
+    // stayed on screen after the analysis answered, the 2026-10-07 audit).
+    this.error = "";
     if (position) {
       this.here = null;
       void this.api.position(fen).then((p) => {
