@@ -49,13 +49,15 @@ export const PANES: { id: "board" | "moves" | "strip"; name: string; hint: strin
   { id: "strip", name: "Status strip", hint: "Frame rate, timings and memory, for reporting a problem" },
 ];
 
+/** What Reset layout forgets: the remembered sizes (the panel's board, move list and terminal,
+ * the phone's board, the review's boards) and which panes show and whether the terminal is
+ * open. Only those: Stats' filters and section, the review's choices (arrows, voice) and the
+ * update check are the player's own and stay. */
+export const LAYOUT_KEYS = ["board", "mboard", "moves", "term", "reviewBoard", "reviewMboard", "view.board", "view.moves", "view.strip", "fold"];
+
 /** The View menu's Reset layout: every remembered size and pane back to its default. */
 export function resetLayout(): void {
-  try {
-    for (const k of Object.keys(localStorage)) if (k.startsWith("sidecoach.")) localStorage.removeItem(k);
-  } catch {
-    /* private mode */
-  }
+  for (const k of LAYOUT_KEYS) prefs.setStr(k, null);
   location.reload();
 }
 

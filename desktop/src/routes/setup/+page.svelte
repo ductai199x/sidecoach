@@ -5,7 +5,7 @@
   // sample, the CUDA pack when this machine's GPU can use it) start ticked and can be
   // left out. Re-runnable from the menu's Setup; nothing already present is fetched again.
   import { onMount } from "svelte";
-  import { connect, get, post } from "$lib/api";
+  import { connect, failureText, get, post } from "$lib/api";
   import { inShell } from "$lib/shell.svelte";
   import "$lib/styles/review.css";
 
@@ -43,11 +43,16 @@
   });
   const rate = (bps: number) => (bps >= 1e6 ? (bps / 1e6).toFixed(1) + " MB/s" : Math.round(bps / 1e3) + " KB/s");
 
+  // A read that failed before any came: said in place of "Loading…" (the reads go on, and the
+  // first that answers takes its place), with Try again.
+  let loadError = $state("");
   async function refresh() {
     try {
       await read();
-    } catch {
+      loadError = "";
+    } catch (e) {
       /* a missed read: the next one tries again */
+      if (!status) loadError = `Couldn't load Setup. ${failureText(e)}`;
     }
     // One loop only: a refresh started while another waited replaces its timer.
     if (timer) clearTimeout(timer);
@@ -70,6 +75,16 @@
       speed = 0;
     }
   }
+  // The page's first read, and Try again's: the sidecar found, then the reads begin.
+  async function firstLoad() {
+    try {
+      await connect();
+    } catch (e) {
+      loadError = `Couldn't load Setup. ${failureText(e)}`;
+      return;
+    }
+    await refresh();
+  }
   async function start() {
     await post("/api/setup/start", { ids: chosen.map((i) => i.id) }).catch(() => {});
     await refresh();
@@ -86,7 +101,7 @@
   }
 
   onMount(() => {
-    connect().then(refresh, () => {});
+    void firstLoad();
     return () => { gone = true; if (timer) clearTimeout(timer); };
   });
 </script>
@@ -107,7 +122,9 @@
 </header>
 
 <div class="setup">
-  {#if !status}
+  {#if !status && loadError}
+    <p class="failed" role="alert">{loadError} <button type="button" class="gm-link" onclick={() => void firstLoad()}>Try again</button></p>
+  {:else if !status}
     <p class="muted">Loading…</p>
   {:else}
     <ul class="items">
@@ -143,6 +160,11 @@
 </div>
 
 <style>
+  /* The bar on a phone (360 px): the title beside the back arrow and the logo, its line under
+     it wrapping, rather than the bar going wider than the screen. */
+  #bar .group { flex-wrap: nowrap; }
+  #bar .group > div { min-width: 0; }
+  .rv-sub { white-space: normal; }
   .setup { max-width: 720px; margin: 0 auto; padding: 18px 16px 32px; overflow-y: auto; }
   .items { list-style: none; padding: 0; margin: 16px 0; }
   .items li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel); }
@@ -155,6 +177,7 @@
   .desc { margin: 4px 0 0 26px; color: var(--muted); font-size: 12px; }
   .desc.error { color: var(--error); }
   .muted { color: var(--muted); font-size: 12px; }
+  .failed { color: var(--error); font-size: 13px; }
   .ok { color: var(--accent); font-weight: 600; }
   .bar { height: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 12px 0 6px; }
   .fill { height: 100%; background: var(--accent); transition: width 0.4s; }

@@ -10,7 +10,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import "$lib/styles/review.css";
-  import { beacon, connect, review as reviewApi, type AiLink, type AiPiece, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
+  import { beacon, connect, failureText, review as reviewApi, type AiLink, type AiPiece, type LineStep, type ReviewMove, type ReviewState } from "$lib/api";
   import { inShell, openSetting, openWindow } from "$lib/shell.svelte";
   import { placement } from "$lib/chess";
   import { boardHandle, layoutMode, splitter } from "$lib/layout";
@@ -589,10 +589,22 @@
     }
   }
 
+  // The review not opened: said in plain words with what to do, and Try again when the request
+  // itself failed (Sidecoach not answering); a game the library does not hold stays unopened.
+  let openFailed = $state(false);
   async function open(): Promise<void> {
-    const opened = await connect().then(() => api.open()).catch(() => null);
-    if (!opened) { failure = "The game could not be opened."; return; }
-    if (!opened.ok) { failure = opened.error || "There is no such game."; return; }
+    failure = "";
+    openFailed = false;
+    let opened: Awaited<ReturnType<typeof api.open>>;
+    try {
+      await connect();
+      opened = await api.open();
+    } catch (e) {
+      failure = `Couldn't open the review. ${failureText(e)}`;
+      openFailed = true;
+      return;
+    }
+    if (!opened.ok) { failure = "This game is not in your library. Open it from Your games."; return; }
     voiceReady = !!opened.voice;
     if (opened.state) take(opened.state);
     poll();
@@ -604,6 +616,10 @@
     stopLine();
     const opened = await api.open(strength).catch(() => null);
     if (!opened?.ok || !opened.state) return;
+    // A retry of the old review ends with it (its position and Hint/Show stayed over the new
+    // review's summary), as on going back to the summary.
+    if (desk.now) desk.close();
+    desk.error = "";
     room = null;
     view = "summary";
     ply = 0;
@@ -685,7 +701,7 @@
   const sub = $derived(
     game
       ? [game.result && game.result !== "*" ? game.result.replaceAll("1/2", "½") : null, game.time_class, game.played_at ? new Date(game.played_at * 1000).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : null].filter(Boolean).join(" · ")
-      : "…",
+      : failure ? "" : "…",
   );
   const top = $derived(bottom === "white" ? "black" : "white");
 
@@ -813,11 +829,11 @@
         <svg class="ic-off" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12a7 7 0 0 1-1.6 4.4l1.5 1.5A9 9 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1A7 7 0 0 1 19 12zM4.3 3L3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3a7 7 0 0 1-2.3 1.2v2.1a9 9 0 0 0 3.7-1.8l2 2L21 19.7 4.3 3zM12 4L9.9 6.1 12 8.2V4z"/></svg>
       </button>
     {/if}
-    <button class="iconbtn small" aria-label="Flip the board" title="Flip the board (F)" onclick={() => (bottom = top)}>
+    <button class="iconbtn small" aria-label="Flip the board" title="Flip the board (F)" disabled={!room && !!failure} onclick={() => (bottom = top)}>
       <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path fill="currentColor" d="M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3 5 6.99h3V14h2V6.99h3L9 3z"/></svg>
     </button>
     <div class="rv-set">
-      <button class="iconbtn small" aria-expanded={settingsOpen} aria-label="Review settings" title="Review settings" onclick={() => (settingsOpen = !settingsOpen)}>
+      <button class="iconbtn small" aria-expanded={settingsOpen} aria-label="Review settings" title="Review settings" disabled={!room && !!failure} onclick={() => (settingsOpen = !settingsOpen)}>
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7 7 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54a7 7 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.66 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.61.22l2.39-.96c.5.39 1.05.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54a7 7 0 0 0 1.63-.94l2.39.96c.22.08.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
       </button>
       {#if settingsOpen}
@@ -934,7 +950,7 @@
     </div>
 
     {#if failure || room?.status === "failed"}
-      <div class="rv-scroll"><div class="rv-failed">{failure || room?.error || "The review failed."}</div></div>
+      <div class="rv-scroll"><div class="rv-failed" role="alert">{failure || room?.error || "The review failed."}{#if openFailed}{" "}<button type="button" class="gm-link" onclick={() => void open()}>Try again</button>{/if}</div></div>
     {:else if !room || room.status !== "ready" || !summary}
       <div class="rv-scroll">
         <!-- As chess.com's: the percent large over a thick bar, which goes with the board as it

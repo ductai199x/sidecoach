@@ -8,13 +8,14 @@
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import "$lib/styles/review.css";
-  import { connect, get, games as gamesApi, jobs as jobsApi, type Backlog, type LibraryGame } from "$lib/api";
+  import { connect, failureText, get, games as gamesApi, jobs as jobsApi, type Backlog, type LibraryGame } from "$lib/api";
   import { announce, inShell, onAnnounce, openSetting, openWindow } from "$lib/shell.svelte";
 
   let list = $state<LibraryGame[]>([]);
   let users = $state({ chesscom: "", lichess: "" });
   let backlog = $state<Backlog>(null);
   let loaded = $state(false);
+  let loadError = $state("");
   let source = $state<"chesscom" | "lichess" | "pgn">("chesscom");
   let months = $state(3);
   let pgn = $state("");
@@ -44,9 +45,13 @@
   let loadSeq = 0;
   async function load(): Promise<void> {
     const mine = ++loadSeq;
-    const res = await gamesApi.list().catch(() => null);
+    let failed = "";
+    const res = await gamesApi.list().catch((e) => { failed = failureText(e); return null; });
     if (mine !== loadSeq) return;
-    if (!res) return;
+    // Not loaded (never yet): said in the list's place, with Try again. A later reload that
+    // fails keeps the list shown.
+    if (!res) { if (!loaded) loadError = failed; return; }
+    loadError = "";
     const reviewedBefore = list.filter((g) => g.reviewed).length;
     // A username changed in Settings: what was said of the old one goes with it.
     if (loaded && (res.users.chesscom !== users.chesscom || res.users.lichess !== users.lichess)) {
@@ -67,6 +72,17 @@
     const working = backlog?.status === "reviewing";
     if (working) expectUntil = 0;
     following = working || Date.now() < expectUntil ? setTimeout(load, working ? FOLLOW_MS : 1000) : null;
+  }
+
+  // The page's first load, and Try again's: the sidecar found, then the list.
+  async function firstLoad(): Promise<void> {
+    try {
+      await connect();
+    } catch (e) {
+      loadError = failureText(e);
+      return;
+    }
+    await load();
   }
 
   // The job's card follows the reviewer closely (a light ask, not the whole list).
@@ -350,7 +366,7 @@
 
   onMount(() => {
     document.body.classList.add("games-page");
-    (async () => { await connect(); await load(); })();
+    void firstLoad();
     const jobTimer = setInterval(() => void followJob(), JOB_MS);
     // A username saved in Settings, games brought in or reviewed elsewhere: shown at once.
     const stops = [onAnnounce("settings", () => void load()), onAnnounce("games", () => void load())];
@@ -392,7 +408,7 @@
     <img class="gm-mark" src="/logo.svg" alt="" draggable="false" />
     <div class="gm-head">
       <div class="gm-name">Your games</div>
-      <div class="gm-sub">{loaded ? `${list.length} game${list.length === 1 ? "" : "s"} · review any of them move by move` : "…"}</div>
+      <div class="gm-sub">{loaded ? `${list.length} game${list.length === 1 ? "" : "s"} · review any of them move by move` : loadError ? "" : "…"}</div>
     </div>
   </div>
 </header>
@@ -426,7 +442,7 @@
           {/if}
           <button class="primary" disabled={busy} onclick={bringIn}>Bring them in</button>
         </div>
-      {:else}
+      {:else if loaded}
         <div class="gm-row">
           <span class="gm-as">Your {SITE[source]} username is not set.</span>
           <button class="ghost" onclick={() => toUsername(source as "chesscom" | "lichess")}>Set it in Settings</button>
@@ -522,6 +538,9 @@
           {/if}
         </small>
       </div>
+    {/if}
+    {#if loadError && !loaded}
+      <div class="gm-empty gm-said bad" role="alert">Couldn't load your games. {loadError} <button type="button" class="gm-link" onclick={() => void firstLoad()}>Try again</button></div>
     {/if}
     {#if loaded && !shown.length}
       <div class="gm-empty">{list.length ? "No game matches." : "No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN."}</div>

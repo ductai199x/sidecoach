@@ -749,6 +749,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             library.refresh(store, _user_names(engine))
             numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
             _drills(numbers["work"], engine.settings.data_dir, store)
+            _remember_drills(numbers["work"], engine.puzzle_motifs)
         finally:
             store.close()
         return {"ok": True, "stats": numbers, "backlog": backlog and backlog.state()}
@@ -1056,6 +1057,16 @@ def _drills(work: list[dict[str, Any]], data_dir: Path, store: Any) -> None:
     finally:
         if puzzles is not None:
             puzzles.close()
+
+
+def _remember_drills(work: list[dict[str, Any]], motifs: dict[str, str]) -> None:
+    """Each puzzle Stats offers for an area ("Puzzles on it") remembered with the area's motif,
+    as the session's recommendations are: the room it opens in records the attempt beside that
+    motif, so the drill counts for it."""
+    for w in work:
+        if w.get("motif"):
+            for p in w.get("puzzles", []):
+                motifs[p["id"]] = w["motif"]
 
 
 def _rooms_for(engine: PanelEngine) -> Any:

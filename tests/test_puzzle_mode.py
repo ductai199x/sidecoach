@@ -241,6 +241,39 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
 
+def test_a_puzzle_stats_offers_for_an_area_opens_with_its_motif(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Stats' "Puzzles on it": a puzzle picked for an area to work on opens with that area's
+    # motif, so its attempt counts for the motif (on 0.1.85 it opened with none: the rooms knew
+    # only the motifs of the live session's recommendations).
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile import stats as stat_sums
+    from sidecoach.profile.store import Store
+    from sidecoach.ui.server import build_app
+
+    _csv(tmp_path)
+    store = Store(tmp_path / "profile.sqlite")
+    store.set_setting("puzzle_level", str(FORK.rating))
+    store.close()
+    real = stat_sums.stats
+
+    def with_fork_to_work_on(store: Any, f: Any) -> dict[str, Any]:
+        numbers = real(store, f)
+        numbers["work"] = [{"area": "tactic.fork", "motif": "fork"}]
+        return numbers
+
+    monkeypatch.setattr(stat_sums, "stats", with_fork_to_work_on)
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    work = client.get("/api/stats").json()["stats"]["work"]
+    assert [p["id"] for p in work[0]["puzzles"]] == [FORK.id]
+    opened = client.post(f"/api/puzzle/{FORK.id}/open").json()
+    assert opened["ok"] and opened["state"]["motif"] == "fork"
+    client.post(f"/api/puzzle/{FORK.id}/close")
+
+
 def test_puzzles_fetched_after_the_server_started_open_in_a_room(
     make_panel: Callable[..., PanelEngine], tmp_path: Path
 ) -> None:
