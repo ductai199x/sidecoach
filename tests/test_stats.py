@@ -326,6 +326,36 @@ def test_names_are_read_as_players_read_them() -> None:
     assert termination_kind("Game drawn by repetition") == "repetition"
 
 
+def test_a_timeout_against_insufficient_material_is_counted_as_the_draw_it_is(
+    tmp_path: Path,
+) -> None:
+    """A flag fall against a side that cannot mate is a draw by the rules: chess.com writes
+    "Game drawn by timeout vs insufficient material", Lichess "Time forfeit" with a drawn
+    result. Stats filed it under "time" in How your games ended (the audit of 2026-10-07)."""
+    assert termination_kind("Game drawn by timeout vs insufficient material") == (
+        "insufficient material"
+    )
+    assert termination_kind("Time forfeit", "1/2-1/2") == "insufficient material"
+    assert termination_kind("Time forfeit", "0-1") == "time"
+    store = Store(tmp_path / "profile.sqlite")
+    endings = {
+        "a": ("Game drawn by timeout vs insufficient material", "1/2-1/2"),
+        "b": ("Time forfeit", "1/2-1/2"),
+        "c": ("opponent won on time", "0-1"),
+    }
+    _listed(store, *endings)
+    for key, (termination, result) in endings.items():
+        store.save_stats(
+            "standard",
+            _game(key, termination=termination, result=result),
+            [_move(1, "white")],
+        )
+    got = stats(store, Filter())
+    assert got["results"]["insufficient material"] == {"won": 0, "drawn": 2, "lost": 0}
+    assert got["results"]["time"] == {"won": 0, "drawn": 0, "lost": 1}
+    assert got["time"]["lost_on_time"] == 1
+
+
 def test_stats_read_the_store_in_a_few_queries(tmp_path: Path) -> None:
     """Stats took 1.4 s, and each area's positions 0.64 s more, at a thousand games (the review of
     2026-10-01): a library row read a game for its ratings, a review a game for its shape, every

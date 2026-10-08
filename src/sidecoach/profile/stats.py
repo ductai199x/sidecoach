@@ -721,7 +721,7 @@ def _results(d: _Data) -> dict[str, Any]:
         if score is None:
             continue
         outcome = "won" if score == 1.0 else "drawn" if score == 0.5 else "lost"
-        out[termination_kind(g["termination"])][outcome] += 1
+        out[termination_kind(g["termination"], g["result"])][outcome] += 1
     return dict(out)
 
 

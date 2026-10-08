@@ -115,11 +115,19 @@ object Stats {
 
     private val ECO = Regex("^[A-E]\\d\\d\\s+")
 
-    /** How a game ended, from chess.com's and Lichess's Termination header. `termination_kind`. */
-    fun terminationKind(text: String?): String {
+    /**
+     * How a game ended, from chess.com's and Lichess's Termination header (and the result). A
+     * flag fall against a side that cannot mate is a draw by the rules: chess.com's "Game drawn by
+     * timeout vs insufficient material", Lichess's "Time forfeit" with a drawn result. Both were
+     * filed as a time ending (the audit of 2026-10-07). `termination_kind`.
+     */
+    fun terminationKind(text: String?, result: String? = null): String {
         val t = (text ?: "").lowercase(java.util.Locale.ROOT)
         for ((word, kind) in TERMINATIONS) {
-            if (word in t) return kind
+            if (word in t) {
+                if (kind == "time" && result == "1/2-1/2") return "insufficient material"
+                return kind
+            }
         }
         return "other"
     }
@@ -127,6 +135,7 @@ object Stats {
     private val TERMINATIONS = listOf(
         "checkmate" to "checkmate",
         "resign" to "resignation",
+        "insufficient" to "insufficient material",
         "on time" to "time",
         "time forfeit" to "time",
         "timeout" to "time",
@@ -134,7 +143,6 @@ object Stats {
         "agreement" to "agreement",
         "repetition" to "repetition",
         "stalemate" to "stalemate",
-        "insufficient" to "insufficient material",
         "50" to "fifty moves",
     )
 
@@ -783,7 +791,7 @@ object Stats {
         for (g in d.games) {
             val score = score(g.result, g.userSide) ?: continue
             val outcome = if (score == 1.0) 0 else if (score == 0.5) 1 else 2
-            out.getOrPut(terminationKind(g.termination)) { IntArray(3) }[outcome] += 1
+            out.getOrPut(terminationKind(g.termination, g.result)) { IntArray(3) }[outcome] += 1
         }
         return JSONObject().apply {
             for ((kind, counts) in out) put(kind, JSONObject().put("won", counts[0]).put("drawn", counts[1]).put("lost", counts[2]))

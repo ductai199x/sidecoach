@@ -138,6 +138,13 @@ class StatsParityTest {
         for ((text, want) in pairs(units.getJSONArray("termination_kind"))) {
             check("termination_kind $text", Stats.terminationKind(text as? String), want)
         }
+        val withResult = units.getJSONArray("termination_kind_result")
+        for (i in 0 until withResult.length()) {
+            val c = withResult.getJSONArray(i)
+            val text = if (c.isNull(0)) null else c.getString(0)
+            val result = if (c.isNull(1)) null else c.getString(1)
+            check("termination_kind $text $result", Stats.terminationKind(text, result), c.getString(2))
+        }
         val grades = units.getJSONArray("grade")
         for (i in 0 until grades.length()) {
             val g = grades.getJSONArray(i)

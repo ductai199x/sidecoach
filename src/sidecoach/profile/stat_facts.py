@@ -201,12 +201,16 @@ def bot_game(headers: dict[str, str]) -> bool:
     return False
 
 
-def termination_kind(text: str | None) -> str:
-    """How a game ended, from chess.com's and Lichess's Termination header."""
+def termination_kind(text: str | None, result: str | None = None) -> str:
+    """How a game ended, from chess.com's and Lichess's Termination header (and the result). A
+    flag fall against a side that cannot mate is a draw by the rules: chess.com's "Game drawn by
+    timeout vs insufficient material", Lichess's "Time forfeit" with a drawn result. Both were
+    filed as a time ending (the audit of 2026-10-07)."""
     t = (text or "").lower()
     for word, kind in (
         ("checkmate", "checkmate"),
         ("resign", "resignation"),
+        ("insufficient", "insufficient material"),
         ("on time", "time"),
         ("time forfeit", "time"),
         ("timeout", "time"),
@@ -214,10 +218,11 @@ def termination_kind(text: str | None) -> str:
         ("agreement", "agreement"),
         ("repetition", "repetition"),
         ("stalemate", "stalemate"),
-        ("insufficient", "insufficient material"),
         ("50", "fifty moves"),
     ):
         if word in t:
+            if kind == "time" and result == "1/2-1/2":
+                return "insufficient material"
             return kind
     return "other"
 

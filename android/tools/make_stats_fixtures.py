@@ -619,6 +619,13 @@ def unit_cases(rng: random.Random, reviewed: list[ReviewedGame]) -> dict[str, An
         "bot_game": [[h, stat_facts.bot_game(h)] for h in BOT_HEADERS],
         "family": [[o, stats.family(o)] for o in (*OPENINGS, "E99 King's Indian Defense: Orthodox Variation, Classical System", "F00 Not an ECO: thing", "C5 short", "  Italian Game : x", "D00\tQueen's Pawn Game: Mason Attack", "A00Polish")],
         "termination_kind": [[t, stats.termination_kind(t)] for t in (*TERMINATIONS, "", "TIMEOUT", "won by Resignation", "Checkmated", "Stalemate", "Insufficient Material")],
+        # With the result: a flag fall drawn is a draw by insufficient material (the audit of
+        # 2026-10-07).
+        "termination_kind_result": [
+            [t, r, stats.termination_kind(t, r)]
+            for t in (*TERMINATIONS, "Game drawn by timeout vs insufficient material", "TIMEOUT")
+            for r in ("1-0", "0-1", "1/2-1/2", "*", None)
+        ],
         "grade": grades,
         "lichess": [[r, performance.lichess(r)] for r in (100, 500, 815, 900, 1000, 1200, 1500, 1800, 2000, 2430, 2500, 3000)],
         "fmean": means,
