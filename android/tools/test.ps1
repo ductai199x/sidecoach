@@ -163,6 +163,11 @@ function Push-Missing($dir, $held, $which) {
         & $adb -s $Serial push $local "$dir/push/$($paths[$i])" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "the push of $($paths[$i]) failed" }
     }
+    # The folders and files are the shell's (mode 2770, group ext_data_rw), which the app is not
+    # in: its listener saw an empty folder, moved nothing, and on a fresh device every test that
+    # needs one of these files skipped or failed (2026-10-09, a new API 34 emulator). Opened to
+    # the app, which reads them and removes each once it is moved.
+    & $adb -s $Serial shell "if [ -d $dir/push ]; then chmod -R a+rwX $dir/push; fi"
 }
 Push-Missing $outside $held { param($path) $true }
 # The apart processes' copies of the app get the engine's network (their app-lane classes review
