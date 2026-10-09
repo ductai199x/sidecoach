@@ -46,11 +46,12 @@ test("a great move says every other move fell behind, or that it answered a blun
 test("brilliant, best, excellent, good and book", () => {
   assert.equal(why(move({ san: "Nf3", uci: "g1f3", label: "brilliant" }), null, false), "A sound piece sacrifice, the engine's first choice; no other move was winning.");
   assert.equal(why(move({ label: "brilliant", loss: 0.0025 }), null, false), "A sound piece sacrifice, nearly the engine's first choice; no other move was winning.");
-  assert.equal(why(move({ san: "Nf3", uci: "g1f3" }), null, false), "The engine's first choice.");
+  // Best and book: the card's own sentence already says it, so no line (the walk of 2026-10-09).
+  assert.equal(why(move({ san: "Nf3", uci: "g1f3" }), null, false), null);
   assert.equal(why(move({ label: "excellent", loss: 0.0044 }), null, false), "Less than 0.01 behind the best move, Nf3.");
   assert.equal(why(move({ label: "excellent", loss: 0.011 }), null, false), "0.01 behind the best move, Nf3.");
   assert.equal(why(move({ label: "good", loss: 0.0404 }), null, false), "0.04 behind the best move, Nf3.");
-  assert.equal(why(move({ label: "book", loss: 0.0175 }), null, false), "A standard move of this opening.");
+  assert.equal(why(move({ label: "book", loss: 0.0175 }), null, false), null);
 });
 
 test("a miss names the mate let go, or the chance", () => {

@@ -36,6 +36,9 @@ function mateFor(e: Eval | null | undefined, side: "white" | "black"): number | 
  *  sentence: off while the best move's arrow is off). Null for a move with no label. The
  *  label is not said again: the headline above says it (Tai, 2026-10-08: "drop the prefix"). */
 export function why(m: ReviewMove, before: ReviewMove | null, reveal: boolean): string | null {
+  // Best and book: the card's own sentence already says it ("The engine's first choice.", "A
+  // known move of the ..."): the line said it twice (the release walk of 2026-10-09).
+  if (m.label === "best" || m.label === "book") return null;
   const line = labelled(m, before, reveal);
   if (line === null) return null;
   const reason = line.slice(line.indexOf(": ") + 2);
