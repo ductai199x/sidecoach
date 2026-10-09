@@ -21,3 +21,4 @@ Vision-first chess coaching companion. Watches the screen, finds the board, reco
 - `tools/eval/` is the coach's evaluation and ICR tooling (committed); `docs/eval-results.md` holds the method, the numbers and the decisions; `data/eval/README.md` the data layout. Every paid model call goes through `judge.Ledger`.
 - The LLM sits behind `sidecoach.llm`: the default preset is OpenAI's gpt-5.6-luna (Responses API, reasoning effort none); the local server on `http://localhost:1234` and `none` (offline templates) are the others. Keep providers swappable.
 - Move labels follow chess.com's published definitions: `docs/move-classification.md`.
+- LF line endings everywhere in the repo, no CR bytes (Tai, 2026-10-08); check with `git grep -I -l $'\r' HEAD`.

@@ -18,6 +18,11 @@ by proving less. This file adds what is particular to the phone. How the suite i
   a test that is skipped in every whole run is a bug.
 - Tests run only on the emulator (`emulator-5556`, `tools\test.ps1`'s default), never on the
   phone in use.
+- A fresh emulator works: `test.ps1` opens the folders it pushes the engine's network and the
+  voice models into to the app (`chmod -R a+rwX`, a5bb278d). Before that, on a new API 34 image
+  the shell owned them, the app read nothing, and a whole run skipped 54 tests and failed three
+  for reasons outside the app (the 0.1.88 gate, 2026-10-09). On 2026-10-09: 360 device tests
+  run, 0 failed, 8 skipped (benches, DumpReplay, TrapCost), and 468 host tests.
 - While developing, run the classes you changed (`tools\test.ps1 -Class <class>`, `gradlew.bat
   :app:testPhoneUnitTest --tests <class>`); the whole suite only when asked (the desktop's agent
   guard wants `FULL_SUITE_ASKED=1` for it).

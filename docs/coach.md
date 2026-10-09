@@ -69,6 +69,12 @@ IDEA, FOCUS, MOVE, LINE. Two hints, then the answer (Tai, 2026-09-23):
 | MOVE | the move, played out and explained | the third hint, asking for the move, or naming it |
 | LINE | the whole line | asking for the line, or after the move is played |
 
+The first hint withholds the move, its square and the piece that makes it: what they would do
+if let (`situation.their_idea_key`, given `best=`) is not said when its words would name the
+best move's square ("If you let them, their best is h4." where 11...Qh4+ was the answer,
+Wiel-Vaganian; the only such first hint in 15,003 over the 199 master games, 2026-10-08); the
+hint then falls to the one with no key fact.
+
 Each level is said once per combination, and never a lower one after a higher (Tai,
 2026-09-29). `Coach._ladder` walks back through the player's positions while the move they
 played was the engine's best and the position continues the same combination
@@ -109,9 +115,29 @@ in blitz). A good move goes to the model, which names the better one; a great or
 goes to the model at full effort, told to show some delight, the board's sentence standing in
 if the reply fails (Tai, 2026-09-26).
 
+Offline, nothing said since the last move is said again word for word, with one exception: the
+player's same words asked again (case, spacing and the closing mark aside) get the answer they
+got before (`Coach._answered_before`). So "who is better?" asked twice is answered twice (it
+had been blanked as a repeat, though no reply is ever dropped), while a player who answers the
+hint ("Is it Bc1?", "I don't see it") does not get the whole hint back (round 5's slip,
+2026-10-08). A nod that asks nothing still gets nothing the second time.
+
+The templates say counts in words and agree in number (`idea_words.in_words`): "it reaches
+only one square", "Your one move was best.", "1 of your 3 moves was best.", "six squares from
+queening", "material worth eight pawns", "in 1 move" (2026-10-08).
+
 A question about the player over their games ("my weaknesses", "over the last games") is
 answered by `profile/ask.py`: the model writes read-only SQL over the profile record
-(DESIGN.md section 5.6).
+(DESIGN.md section 5.6), over the views of the games Stats counts ([stats.md](stats.md)). Only
+questions about the player over time go there (`_ASK_PROFILE`, the same with the AI on and
+offline): how often ("do I usually", "keep" + doing), a trend ("am I improving"), their games
+and sessions, "my" weaknesses and mistakes, the most common mistake, what to study. A question
+about the board now ("Do I keep my bishop or trade it?", "Am I better here?", "What tactics do
+I have?") is about the position; 14 of 19 such everyday questions had gone to the record
+(the audit of 2026-10-07). Offline no model writes the queries, so the answer is what the record
+already says of the player, the profile's insights, the lines the AI is given of earlier games,
+or `RECORD_EMPTY`, "The record has nothing on that yet."; it had said "ask me again in a
+moment" every time.
 
 ## What the model sees
 
@@ -251,7 +277,12 @@ Keys come from the environment (`OPENAI_API_KEY`, `DASHSCOPE_API_KEY`, `CUSTOM_A
 from the settings file. `llm.reasoning_effort` defaults to `none` (Tai, 2026-10-04: latency
 first) and `llm.routine_effort` (a word on a fine move) to `none`; the coach was evaluated at
 medium. Game Review's words always reason at medium ([game-review.md](game-review.md)).
-`llm.timeout_s` (60 s) bounds a call; past it the coach speaks from the board. `llm/usage.py`
+`llm.timeout_s` (60 s) bounds the whole reply, not each read (`llm/openai_compat.py`: the
+request runs on a thread of its own and a timer ends the wait, raising the timeout a call always
+raised); past it the coach speaks from the board, and nothing that arrives later is handed on. A
+reply that trickled in had run as long as it trickled. A record question's calls share one
+timer from the question (`profile/ask.py`); its up to five calls had each had the whole
+timeout (2026-10-08). `llm/usage.py`
 counts tokens per endpoint and, with the prices set, the session's cost. `provider_from_spec`
 gives the tools a short form (`openai:gpt-5.6-luna@medium`, `flash`). Paid calls in
 `tools/eval/` go through `judge.Ledger`.

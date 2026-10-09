@@ -34,6 +34,12 @@ version is [android/docs/testing.md](../android/docs/testing.md).
   command that names no test file or node (`tests/` alone counts as the whole suite) unless the
   command carries `FULL_SUITE_ASKED=1`; the phone's `tools\test.ps1` without `-Class` is
   stopped the same way.
+- **The phone's device tests on a fresh emulator.** `android\tools\test.ps1` pushes the files
+  the device tests need (the engine's network, Silero, Parakeet, Kokoro) and then opens the push
+  folder to the app (`chmod -R a+rwX`): on a new emulator that folder is the shell's (mode 2770,
+  group `ext_data_rw`), the app's listener saw it empty, and the 0.1.88 gate skipped 54 device
+  tests and failed three that needed a file without saying so (2026-10-09). A device that kept
+  the files from an earlier install never showed it.
 - **Workers.** `pyproject.toml` runs `-m 'not slow' -n auto --dist loadgroup -p no:cacheprovider`.
   `-n auto` is `int(cpus * 0.70 / 2)` workers (8 on a 24-thread machine), except that a run
   naming only test files, three files or fewer (`FEW_FILES`), gets no workers and runs in one

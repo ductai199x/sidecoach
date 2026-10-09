@@ -127,6 +127,30 @@ installs only after a yes.
 calls do nothing. The phone's server marks the document `data-app="phone"`, which the page
 reads as `onPhone()`.
 
+What the page does at every size (fixed after the audit of 2026-10-07 and Tai's walks of
+2026-10-08/09):
+
+- **Stacked** (the board over the coach), the board's side is at most the main area's height
+  less what shares the first screen with it, measured: the rows under the board, the moves'
+  line, the ask box, the chips and the coach at its minimum height (`lib/layout.ts`
+  `mobileBoard`; the puzzle page shares it). At 720x900, Tai's panel window, the ask box and
+  the Hint / Best move / Line chips had sat under the fold. Where the whole width fits (a
+  phone at 360 or 412, every side-by-side window) nothing is set; a dragged size is used
+  wherever it fits and the saved value is never written.
+- **A screen whose first request fails** (a review, a puzzle, Your games, Settings, Setup) says
+  so in its own content area, with `api.ts`'s `failureText` and Try again; a review of a game
+  not in the library and a puzzle the store does not have say what to open instead, their
+  controls disabled. A reload that fails after a first success keeps what is shown.
+- **Setup** fits 360 px: its title line wraps under the back arrow and logo.
+- **The offline banner** sits 8 px below `--inset-top`, clear of the phone's status bar.
+- **Reset layout** (the drawer) forgets only the layout, `LAYOUT_KEYS` in `shell.svelte.ts`
+  (the remembered sizes, which panes show, the terminal's fold); Stats' filters, Game Review's
+  choices and the update check stay.
+- **Your games** says what its filters hide: "N games hidden by your filters." and Clear
+  filters under a cut list, the same link after "No game matches." and after an import whose
+  new games the filters hide (`lib/gamefilters.ts`). Clear filters puts back the page's
+  starting filters and search, on the player's press only.
+
 `npm run build:web` builds the page and copies it into `src/sidecoach/ui/web/`
 (`desktop/sync-web.mjs`). That copy is committed: the browser flow and the server tests serve
 it, the phone copies it from there, and CI fails when it differs from a fresh build.
@@ -157,6 +181,15 @@ uses the same command with its defaults (port 8765, no token, a session folder k
   and a paid provider is never called. `/api/health` reports the stages as `warm` (pieces,
   voice, stt, mic, vision, engine, coach, ready). Stop keeps Stockfish and the coach for the
   next Start; only the exit closes them.
+- **A session that cannot be built** (the stages, the capture, the profile, in `panel._run`)
+  ends as a failure in the loop does: "engine stopped: {exc!r}" in the log, what the build had
+  opened closed (`_unbuilt`), the panel back to stopped. It had been left on "running" with
+  nothing said.
+- **No board-reading model** (the embedding net missing, or its load raising): the status
+  line and the coach pane's unread-board note say `panel.NO_BOARD_MODEL`, "The board-reading
+  model is missing or could not load: reinstall Sidecoach.", in place of "waiting for a start"
+  and "Show me the starting position", which cannot help. The app ships the model; Setup does
+  not fetch it.
 - **The GPU pack** is activated (`setup/gpu.py`, `activate`) before onnxruntime is first
   imported.
 - **Settings.** `GET/PUT /api/settings`. The settings page is generated from the pydantic
@@ -213,16 +246,24 @@ window with one progress bar, through `/api/setup/status`, `start` and `cancel`:
 
 | Item | Source | Notes |
 |---|---|---|
-| The voice (Kokoro) | the kokoro-onnx GitHub release | about 350 MB, size-checked |
+| The voice (Kokoro) | the kokoro-onnx GitHub release | about 350 MB, SHA-256-checked as it comes (`KOKORO_SHA256`; files already on disk are not re-checked) |
 | Stockfish | the official release, pinned to `sf_19` | the `universal` build for the platform; unpacked in a staging folder and moved in only when an executable came out |
 | The opening names | lichess-org/chess-openings | five TSV files |
 | Speech recognition | Hugging Face, Parakeet TDT 0.6B v3 and Silero VAD at pinned commits | file by file, size- and SHA-256-checked, into the hub cache's layout |
-| Puzzles (optional) | the Lichess puzzle database, streamed | 200 per theme over 27 themes |
+| Puzzles (optional) | the Lichess puzzle database, streamed | 200 per theme over 27 themes; written to `sample.csv.part` and renamed whole |
 | The CUDA pack (optional) | PyPI | offered only when an eligible GPU is found |
 
 Every download resumes from its `.part`, is verified, and stops at the next chunk on Cancel.
 A free-space check runs before each item. Inside the app the Hugging Face hub is set offline
 (`HF_HUB_OFFLINE=1`): nothing downloads behind the player's back, only the setup does.
+
+Since the audit of 2026-10-07 (fixed 2026-10-08, both platforms): an item whose presence check
+raises (a folder the system refuses to read) is listed as not there with the error in its own
+line (`Setup.status`, `run.errors`), and Setup is not ready; it had been left out, and Setup
+said everything was in place. Voice mode asked for before Setup had fetched the Silero file
+comes as soon as the file is there, without a restart: the gate (`voice/vad.py`) looks again
+when its failure was the file missing, and any other failure stands. A download that did not
+finish is never taken as done: the voice by its SHA-256, the puzzle sample by its `.part`.
 
 ### The CUDA pack
 
@@ -319,6 +360,11 @@ way.
 - **Settings** are one JSON document in app storage over defaults shipped from `config.py` by
   `tools/sync_settings.py`, with the schema trimmed to what the phone honours. The API key is
   kept apart from it.
+- **Back** walks the page's own history (out of the settings, back to the panel) and leaves
+  the app only when there is nowhere left to go, every time (`PageBack` in
+  `MainActivity.kt`): the callback steps aside for the one press that leaves and is back at
+  once. Until 2026-10-08 it stayed off after the first exit, and after a return Back left the
+  app from the settings.
 
 **The contract.** The page is one program with two servers. Any change to what a page sends
 (a route, a body's shape, a whole document against a partial one, a new field) must be made in
@@ -336,6 +382,13 @@ projection and mirrors the display into an `ImageReader`. The person can stop it
 status-bar chip; the system stops it on the lock screen. Before a session the app names any
 installed chess app that can detect screen recording (`RecordingNotice`). Some chess apps
 block capture of live games (`FLAG_SECURE`); nothing can read those.
+
+Start builds the session's stages (the net, Stockfish, the coach, the watcher) on the vision
+thread. A build that throws is caught (`CaptureService.builtOrSaid`), said in the panel's log
+as the desktop says it ("engine stopped: {exc!r}"), and the service stops as after a refused
+screen share; uncaught on that thread, it had taken the whole app down. With no board-reading
+model, or one whose load failed, the status line says `PanelEngine.NO_BOARD_MODEL`, the
+desktop's words, in place of "waiting for a board".
 
 ### Engine and voice
 
@@ -364,7 +417,11 @@ learned sets); backups are off. First-run downloads run in a `dataSync` foregrou
 (`SetupService`) with the same item model as the desktop's setup. The phone reviews a game only
 when the player asks (Tai, 2026-09-30: no background review, as chess.com has none); a review
 stopped part way resumes. Debug > Dump writes to the app's external files (`dumps/`), where
-`adb pull` reaches it.
+`adb pull` reaches it. The profile holds the same text as the desktop's: the puzzle rating
+(`puzzle_perf`, DESIGN section 5.7) is written through `pyJsonDumps` in `json.dumps`'s exact
+form, `{"r": 1637.3, ...}`, Python's separators and float repr in the same key order
+(`Puzzles.perfJson`; org.json's compact text had failed the release gate's `ProfileTest`).
+Either form is read.
 
 ## Building and releasing
 
@@ -428,6 +485,23 @@ and a device where `CaptureService` is running (a live session; `-Force` overrid
 serial is always named. `-Voice` also pushes the fast Kokoro graph from the desktop's
 `data/models/kokoro`. Before a phone release, check that the APK has
 `lib/arm64-v8a/libsidecoach_espeak.so`.
+
+The phone's tests run through `android\tools\test.ps1` (android/README.md). It pushes the
+files the tests need (the engine's network, Silero, Parakeet, Kokoro) under the app's external
+files, then opens the push folder to the app (`chmod -R a+rwX`): on a fresh emulator the
+folders are the shell's (mode 2770, group `ext_data_rw`), the app's listener saw them empty,
+and in the 0.1.88 gate 54 device tests skipped and three failed for want of a file (2026-10-09).
+A device that had the files from an earlier install never showed it.
+
+### Line endings
+
+LF everywhere in the repo, no CR byte in any committed text file (Tai, 2026-10-08: "Do not have
+any windows line ending anywhere in this repo"). `.gitattributes` has `* text=auto eol=lf`, so
+every checkout is LF whatever `core.autocrlf` says; `android/.gitattributes` makes the page's
+copy and the parity fixtures `text eol=lf` and their png, bin and wav binary, never guessed, and
+keeps `espeak-ng-data` byte for byte (`-text`), which `tools/fetch_espeak.py` writes with LF;
+ruff formats with `line-ending = "lf"`. Check with
+`git grep -I -l $'\r' HEAD` (nothing found is the pass).
 
 ### Moving shared things to the phone
 

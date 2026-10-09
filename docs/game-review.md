@@ -59,10 +59,12 @@ The letters are the ones the code's comments use.
 - **C. Step-through**: the move's squares tinted in its class colour and its badge on the
   destination; the arrows the settings turn on (gold the best move, red the reply that punishes
   a bad move, blue what a sound move threatens); the eval bar (beside the board on the desktop,
-  across the top on the phone); the coach's card with the move's words. Actions: Retry, Best,
-  Follow-up, Next. Next goes to the next key move -- a brilliant, great, inaccuracy, mistake,
-  miss or blunder (`KEY_LABELS`), or the last book move -- playing the moves between, a third
-  slower than at first (Tai, 2026-09-30). The voice reads the summary's line and each card.
+  across the top on the phone); the coach's card with the move's words. The phone's one-line
+  move strip keeps the move shown in view when its own size changes, a turn of the phone
+  included (`desktop/src/lib/follow.ts` `followOnResize`; the panel's Moves strip too).
+  Actions: Retry, Best, Follow-up, Next. Next goes to the next key move -- a brilliant, great,
+  inaccuracy, mistake, miss or blunder (`KEY_LABELS`), or the last book move -- playing the
+  moves between, a third slower than at first (Tai, 2026-09-30). The voice reads the summary's line and each card.
 - **D. Retry** (`ui/review_retry.py`, `lib/review/retry.svelte.ts`): the player plays another move
   in the position a move of the game was played from, graded by the same annotator and
   thresholds, the game's own measurements adopted; the coach's hints as in play; a wrong move
@@ -74,7 +76,13 @@ The letters are the ones the code's comments use.
   moves from any position, kept as a tree; the engine's best lines for the board's position; the
   explorer (the moves the player's own games went on with from it); the game's details and its
   PGN, with the review's verdicts and the side lines, to copy or save; charts of the score, the
-  time each move took, and the themes.
+  time each move took, and the themes. The page asks for the lines 250 ms after each step; a
+  request supersedes the one before it (`review_analysis.Lines`): a search still running is
+  stopped and one waiting its turn never made, both answering `Superseded`, so the position the
+  player stopped on comes in 0.9-1.8 s, not after every one stepped past (9-10 s on 0.1.85,
+  ten steps at 250 ms). An analysis error shows only while the position on the board has
+  failed: each request clears it. A depth changed in Review settings ends an open Retry, as
+  going back to the summary does.
 - **G. Library**: every watched or imported game (`routes/games`), with filters, accuracy and
   Review; the insights across games are the Stats window ([stats.md](stats.md)).
 - **H. Review settings**, kept for the next review: the best-move arrow, the threat and idea
@@ -105,7 +113,12 @@ delay setting.
   thresholds change (`rederive`, keyed on `derived_stamp`: `DERIVED` and the thresholds; a
   Settings change starts it too), without an engine; the AI words are never touched. A review
   made today, made again with today's thresholds, is itself (the seven real reviews of the
-  phone's fixtures, 158 moves).
+  phone's fixtures, 158 moves). At the panel's start, the saved reviews due are re-derived in a
+  Python process of its own (`server._rederive_elsewhere`, gone within 2 s of the panel:
+  `_watch_parent`), so the panel's requests stay fast: on the same thread, the interpreter lock
+  made Your games take 5.5-8.1 s for the 78 s the pass took over Tai's 135 reviews; in a child,
+  0.2-0.4 s (2026-10-09). If the child cannot start, the pass runs in the panel as before. The
+  phone's pass is a JVM thread, which has no such lock.
 - **Numbers**: labels and accuracy from `analysis/score.py`; the summary from
   `profile/game_summary.py`; the game rating from `profile/performance.py`.
 - **The review's own words** (`desktop/src/lib/review/words.ts`): a headline per kind of move and
@@ -113,7 +126,12 @@ delay setting.
   motifs), free and instant. Under the headline, one quiet line says why the move got its label
   (`desktop/src/lib/review/why.ts`, the audit of 2026-10-07): the loss, the next best move's gap
   (`gap` in the move views, `score.best_gap` of the saved lines), the mate let go or allowed,
-  read off the review as saved; a bad move names the better one only when the card may.
+  read off the review as saved; a bad move names the better one only when the card may. The
+  reason alone, the label not said again ("It punishes the blunder; the next best move gives
+  away 0.15."; Tai, 2026-10-08: "drop the prefix"), and none for best and book, whose card
+  sentence already says it (the release walk of 2026-10-09). Numbers are expected score, cut to
+  two places rather than rounded (`why.points`), so a loss of 0.097 never reads as the next
+  label's 0.10.
 - **The AI words** (`coach/review_words.py`, decision 3): one call a key move, in parallel. A
   model that reasons by its effort (OpenAI's) reasons at `REVIEW_EFFORT` medium whatever the live
   coach's effort (Tai, 2026-09-30: "Reasoning none is usually not very accurate"); a local model

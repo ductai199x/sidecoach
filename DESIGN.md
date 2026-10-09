@@ -478,13 +478,40 @@ up, beside the same figures for real players of the player's rating.
 Puzzles (`profile/puzzles.py`): the Lichess puzzle database (CC0), filtered to 600-2000 into
 `data/puzzles.sqlite` (`sidecoach puzzles`), keyed by the solver's position, which is what a
 cold read of the screen gives. After a review the profiler recommends three puzzles of the
-motif that costs the player most, within 150 of their puzzle level (1100 to begin with, 25 a
-step per outcome), none solved in the last fortnight, a failed one back first. A puzzle
+motif that costs the player most, within 150 of their puzzle rating, none solved in the last
+fortnight, a failed one back first. A rating outside the store's 600-2000 is searched within
+150 of the nearest end; the rating itself is left as it is (`PuzzleStore.pick`). A puzzle
 opened on Lichess is a position the pipeline joins; the store names it and the player's
 moves are checked against the solution (any mate where the line mates). Or it is solved in a
 room of its own (`/puzzle/<id>`, `ui/puzzle.py`, `ui/puzzle_room.py`, the page
 `desktop/src/routes/puzzle/[id]/+page.svelte`) with its own quiet coach and engine, while the
 panel keeps watching the screen. The outcome is recorded once, beside the motif.
+
+The puzzle rating is exactly Lichess's (Tai, 2026-10-08: "Ofc we want to stick to how lichess
+does it and we want to match exactly"). `profile/glicko.py` (Kotlin twin `Glicko.kt`) ports
+scalachess's Glicko-2 and lila's bounds and `PuzzleFinisher` line for line: an attempt is a
+game against the puzzle's own rating and deviation (kept from the CSV, 75 where it has none),
+won when solved; the puzzle's own rating is not changed. Everyone started fresh at Lichess's
+new player, 1500 / 500 / 0.09 ("start fresh"), kept under the setting `puzzle_perf` in
+Lichess's field names; the old `puzzle_level` setting is kept as it was, unread. The rules
+are Lichess's (`puzzles.record_attempt`, `PuzzleRoom._record`): a puzzle opened with a motif
+(the page reads "Puzzle · fork") is weighted as Lichess's themed training weighs that theme,
+one with none, or followed on lichess.org, keeps the whole change; only the first attempt at
+a puzzle is rated (`Store.attempted`), later ones are kept beside the motif only; Hint, Best
+move or Line pressed (or a chip's exact words typed) while the puzzle is played makes the
+attempt unrated (`PuzzleSession.asked`); a solve after a miss counts as a miss; a puzzle
+closed before any wrong move records nothing, one closed after a wrong move is the fail it
+was.
+
+Once the puzzle has ended the page shows one result line, as Lichess does: "Solved",
+"Counted as a miss", "Not solved", or "Not rated: you used a hint" / "you asked for the best
+move" / "you asked for the line" / "you've tried this one before", then "· your puzzle
+rating 1712? (+212)" (Lichess's display: truncated, "?" while the deviation is 110 or more,
+the change the difference of the shown ratings; an unrated one shows "· rating 1225?" and no
+change). Next puzzle is there after the end however the puzzle was opened (Lichess always
+has a next one; `puzzle_room.following`): the ones after it in the list Stats offered for its
+area (remembered, as its motif is), else the session's recommended ones not tried, else a
+fresh one of its motif at the player's rating. Nothing follows by itself.
 
 A chess.com lesson catalogue was planned and is not started (section 10).
 

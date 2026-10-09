@@ -1,33 +1,34 @@
 # Known issues
 
-What we know is wrong today (0.1.84, 2026-10-07), desktop and phone alike (the phone is a 1:1
-port), each with how it shows and where it was found. Fixed items leave this list. The
-2026-10-07 audit found more rough edges than are listed here; this list holds the ones a player
-can meet.
+What we know is wrong today (0.1.88, 2026-10-09), desktop and
+phone alike (the phone is a 1:1 port), each with how it shows and where it was found. Fixed
+items leave this list. The 2026-10-07 audit found more rough edges than are listed here; this
+list holds the ones a player can meet.
 
-## The release gate (sweeps, 0.1.84)
+## The release gate (sweeps, 0.1.88)
 
 | Sweep | Result | Failing seeds |
 |---|---|---|
 | `tests/test_premove_sweep.py --seeds 1000` | 997/1000 | 742 is wrong for one ply, then right; 70 and 956 repeat an earlier position by the same move and hold it as a ply shown |
-| `tests/test_stress.py` criteria, 1000 seeds | 997/1000 | 543 (a knight under a result badge), 604 and 817 (the board is never picked up) |
+| `tests/test_stress.py -k followed --seeds 1000` | 995/1000 | 454, 543, 604, 695, 817 (543 a knight under a result badge; 604 and 817 the board never picked up) |
+| `tests/test_stress.py -k ends_on_screen --seeds 1000` | 905/1000 | 95 seeds: the game's end not read on screen |
 | `tests/test_flow_matrix.py --seeds 20` | 319/320 | seed 20, puzzle with takebacks, look-backs and premoves |
 
-All of them also failed before the 2026-10-05 reconciler rewrite. How to run them:
-[testing.md](testing.md).
+0.1.85 fails exactly the same seeds in all four (measured seed by seed on 2026-10-09); the
+premove, followed and flow failures also predate the 2026-10-05 reconciler rewrite. How to
+run them: [testing.md](testing.md).
 
 ## Game state
 
-- **A correction mid-game cuts the record.** A flip, a fixed misread or a recovery by the
-  last-move mark adopts the position afresh (`_set_position`), so `GameEnded.pgn` and the
-  review hold only the moves after it; before ply 10 the game leaves the library
-  (`profile/library.py`). Found by the 2026-10-07 audit.
+- **A flip after moves, or a board the mark or a re-read adopts, splits the record.** These
+  cannot replay the moves before them, so `GameEnded.pgn` starts at the board corrected (its
+  SetUp/FEN given); the library keeps the longer of the moves recorded up to the first re-read
+  and the game kept to the end (`library.watched_row`), so the shorter part is not in it. A
+  misread piece corrected mid-game keeps the whole game (0d3ec983). Found by the 2026-10-07
+  audit.
 - **The player is taken to be the side at the bottom.** A site set to "White always on the
   bottom" while playing Black coaches the wrong side (`pipeline.py`, `Reconciler(user_side=
-  bottom)`).
-- **The move-list check grows with the game.** `_browsed_in_flight` copies the board for every
-  ply on every frame that disagrees with the record: about 40 ms a frame at 120 plies, 110 ms
-  at 200 (2026-10-07 audit, desktop CPU).
+  bottom)`). Won't fix (Tai, 2026-10-08: "no one ever turns it on so leave it alone").
 
 ## Move labels, reviews and Stats
 

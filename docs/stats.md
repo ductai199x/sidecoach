@@ -103,8 +103,16 @@ Ours, as chess.com publishes none; each is shown on the page.
 - **Opening**: named by position (transpositions come out right), grouped by family.
 - **Time pressure** is three things in the code, not one: Stats uses the time left by time
   control (under 10 s in bullet, 20 s in blitz, 60 s in rapid: `stats.PRESSURE_MS`); the cause of
-  a mistake uses under 10 s whatever the control (`causes.TIME_PRESSURE_MS`); and the profile's
-  SQL examples for the coach group by under 30 s (`ask.py`).
+  a mistake uses under 10 s whatever the control (`causes.TIME_PRESSURE_MS`), or the player's own
+  words about it, and only words that speak of the clock ("time trouble", "low on time",
+  "flagging", "rushed", "premoved"...; `causes._WORDS`): a bare "time" or "quick" ("this time I
+  missed the fork") filed the mistake as time pressure until 2026-10-08 (the audit of
+  2026-10-07); and the profile's SQL examples for the coach group by under 30 s (`ask.py`).
+- **How a game ended** (`stat_facts.termination_kind`, from the Termination header and the
+  result): a flag fall against a side that cannot mate is the draw it is by the rules, so
+  chess.com's "Game drawn by timeout vs insufficient material" and Lichess's "Time forfeit" with a
+  drawn result count as insufficient material, not on the time row (since 2026-10-08). "Lost on
+  time" never counted them.
 
 ## Peers, grades and category ratings
 
@@ -155,9 +163,21 @@ mistake, miss or blunder, a tactic handed over (by kind), the endgame's (by kind
 or a quiet position's. Each area's cost is the expected score its moves lost, a game, with its
 peers'. The three dearest (`WORK`) are named once there are 3 games (`WORK_GAMES`) and the area
 has 3 moves (`WORK_MOVES`), each with its positions and three puzzles of its motif at the
-player's puzzle level (`server._drills`). Areas are named as skills to work on, never as a list
-of failures (Tai, 2026-10-02: "you missed" on every row read as a charge sheet). The coach's
-"biggest cost" names the same first area (`biggest_cost`).
+player's puzzle rating (`server._drills`; the rating is Lichess's, DESIGN section 5.7). Each
+puzzle "Puzzles on it" offers is remembered with its area's motif and list
+(`server._remember_drills`): it opens as "Puzzle · fork", its attempt is recorded beside the
+area's motif so the drill counts for it, and the page's Next puzzle goes down the area's list
+once the puzzle has ended. Until 2026-10-08 they opened with no motif and never counted. Areas are
+named as skills to work on, never as a list of failures (Tai, 2026-10-02: "you missed" on every
+row read as a charge sheet). The coach's "biggest cost" names the same first area
+(`biggest_cost`).
+
+The coach's answers about the record (with the AI on, `profile/ask.py`) read the same games: its
+SQL is pointed at two TEMP views each store connection makes (`store.py`), `reviewed_games` (the
+games Stats counts: every reviewed game, watched or imported, once, the player's side known, with
+their points) and `reviewed_moves` (their moves); the watched-game tables stay for the causes,
+the coach's words and takebacks. Until 2026-10-08 it read only the watched games and said "1
+game" where Stats said 4.
 
 ## Not built
 
