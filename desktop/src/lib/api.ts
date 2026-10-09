@@ -267,7 +267,9 @@ export const panel = {
 export const puzzle = (id: string) => {
   const p = `/api/puzzle/${encodeURIComponent(id)}`;
   return {
-    open: () => post<{ ok: boolean; error?: string; next?: string[]; state?: PuzzleState }>(`${p}/open`, {}, { timeout: SLOW_MS }),
+    /** `next`: the session's recommended puzzles but this one (Next while it is played);
+     * `after`: where Next goes once it has ended, however it was opened. */
+    open: () => post<{ ok: boolean; error?: string; next?: string[]; after?: string[]; state?: PuzzleState }>(`${p}/open`, {}, { timeout: SLOW_MS }),
     /** `hidden`: the page is out of view, so the room does not take its quiet for its end. */
     poll: (since: number, hidden = false) =>
       get<{ ok: boolean; closed?: boolean; state?: PuzzleState; lines?: LogLine[]; cursor?: number }>(

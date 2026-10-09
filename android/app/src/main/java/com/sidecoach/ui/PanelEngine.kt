@@ -1109,6 +1109,12 @@ object PanelEngine {
     @Volatile var practiceIds: List<String> = emptyList()
     val puzzleMotifs: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
 
+    /**
+     * The list each puzzle Stats offered was in (its area's "Puzzles on it"), by puzzle: the
+     * page's Next, once the puzzle has ended, goes on down that list. `panel.puzzle_lists`.
+     */
+    val puzzleLists: MutableMap<String, List<String>> = java.util.concurrent.ConcurrentHashMap()
+
     /** `panel._profile_state`: what the page shows of the player model. */
     fun profileState(snapshot: ProfileSnapshot): Map<String, Any?> = mapOf(
         "games" to snapshot.games,
@@ -1259,6 +1265,7 @@ object PanelEngine {
         }
         practiceIds = emptyList()
         puzzleMotifs.clear()
+        puzzleLists.clear()
         emit("user", "warn", "profile reset: $path is empty")
         return path.path
     }

@@ -37,6 +37,9 @@
   let room = $state<PuzzleState | null>(null);
   let bottom = $state("white");
   let nextIds = $state<string[]>([]);
+  // Where Next goes once the puzzle has ended, however it was opened (Stats' list for its area,
+  // the session's recommendation, or a fresh one: PuzzleRooms.after).
+  let afterIds = $state<string[]>([]);
   let message = $state("…");
   let messageClass = $state("");
   let cursor = 0;
@@ -84,6 +87,7 @@
     const next = room.positions[at];
     if (!next) return;
     shown = at;
+    coachMarks = null; // drawn for a position the board has left
     // A step on slides the piece that moved; a step back or a jump puts the pieces as they are.
     renderPieces(next.fen, i === solutionShown + 1 ? next.uci : null);
     solutionShown = i;
@@ -184,6 +188,7 @@
   async function play(uci: string): Promise<void> {
     if (room) sound(room.positions[shown].fen, uci);
     optimistic = uci;
+    coachMarks = null; // the coach's arrows were for the position before the move
     inFlight = room?.version ?? null;
     // A failed request must not leave the board waiting on it: the polls are heard again.
     const res = await api.move(uci).catch(() => null);
@@ -193,7 +198,10 @@
   }
 
   // ---- the coach and the log ------------------------------------------------------------------
-  type Msg = { id: number; you: boolean; meta: string; text: string; marks: Mark[] | null };
+  // `fen`: the position the coach's marks were drawn for; they show only while it is on the board.
+  type Msg = { id: number; you: boolean; meta: string; text: string; marks: Mark[] | null; fen: string | null };
+  const placed = (fen: string) => fen.split(" ").slice(0, 2).join(" ");
+  const onBoard = (fen: string | null) => !fen || !position || placed(fen) === placed(position.fen);
   let messages = $state<Msg[]>([]);
   let pending = $state(false);
   let text = $state("");
@@ -213,8 +221,9 @@
     // no bubble of theirs (as on the panel).
     if (you && !line.text.startsWith("you: ")) return;
     const marks: Mark[] | null = !you && d.annotations && d.annotations.length ? d.annotations : null;
-    messages.push({ id: nextId++, you, meta: you ? "you" : String(d.trigger || "coach").replace("_", " "), text: you ? line.text.replace(/^you: /, "") : d.full || line.text, marks });
-    if (marks) coachMarks = marks;
+    const fen = !you && typeof d.fen === "string" ? d.fen : null;
+    messages.push({ id: nextId++, you, meta: you ? "you" : String(d.trigger || "coach").replace("_", " "), text: you ? line.text.replace(/^you: /, "") : d.full || line.text, marks, fen });
+    if (marks && onBoard(fen)) coachMarks = marks;
     tick().then(() => { if (coachEl) coachEl.scrollTop = coachEl.scrollHeight; });
   }
   /** Asked; true once the room took it. When it did not (no answer, an error, no such room), the
@@ -260,6 +269,8 @@
     if (room && s.version < room.version) return; // an answer older than the one shown
     if (inFlight !== null && s.version <= inFlight) return; // a poll from before the move
     const first = room === null;
+    // The puzzle ending (solved, given up): the coach's arrows and highlights go with it.
+    if (room?.status === "playing" && s.status !== "playing") coachMarks = null;
     room = s;
     if (first) {
       bottom = s.bottom;
@@ -307,6 +318,7 @@
     const step = () => {
       stepping = null;
       shown += 1;
+      coachMarks = null; // drawn for a position the board has left
       if (mine) optimistic = null;
       else if (next.uci) sound(before, next.uci); // the solver's own was heard as it went down
       renderPieces(next.fen, next.uci);
@@ -379,13 +391,19 @@
   const resulted = $derived(!!result);
   $effect(() => { if (resulted) tick().then(fitBoard); });
 
-  // The next recommended puzzle, loaded in this page's place: a page of its own, so this
+  // The next puzzle: while this one is played, the session's next recommended one, as before;
+  // once it has ended, the one `after` names (there is always one where the store has any, as
+  // Lichess always has a next puzzle). Never followed by itself.
+  const ended = $derived(!!room && room.status !== "playing");
+  const nextPuzzle = $derived((ended ? (afterIds[0] ?? nextIds[0]) : nextIds[0]) ?? null);
+
+  // The next puzzle, loaded in this page's place: a page of its own, so this
   // room closes as the page goes (its beacon) and the next opens fresh, and a tab opened
   // for the first puzzle can still be closed by script.
   function next(e: MouseEvent): void {
-    if (!nextIds.length || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    if (!nextPuzzle || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
     e.preventDefault();
-    location.replace("/puzzle/" + encodeURIComponent(nextIds[0]));
+    location.replace("/puzzle/" + encodeURIComponent(nextPuzzle));
   }
 
   // Close the room, then leave: a window or a tab of its own closes; a page with the panel
@@ -424,6 +442,7 @@
       return;
     }
     nextIds = opened.next || [];
+    afterIds = opened.after || [];
     if (opened.state) render(opened.state);
     poll();
   }
@@ -556,7 +575,7 @@
       {/if}
       <span class="pz-links">
         {#if openFailed}<button type="button" class="pz-link ready" onclick={() => void openRoom()}>Try again</button>{/if}
-        {#if nextIds.length}<a class="pz-link" class:ready={room && room.status !== "playing"} href="/puzzle/{encodeURIComponent(nextIds[0])}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
+        {#if nextPuzzle}<a class="pz-link" class:ready={ended} href="/puzzle/{encodeURIComponent(nextPuzzle)}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
       </span>
       {#if result}
         <span class="pz-result">{result.solved ? "Solved" : "Not solved"} · your puzzle rating <b>{result.level}{result.provisional ? "?" : ""}</b>{#if resultChange}&nbsp;<span class={result.change > 0 ? "up" : "down"}>({resultChange})</span>{/if}</span>
@@ -567,11 +586,12 @@
   <section id="right">
     <div class="panel-title">Coach</div>
     <div class="coach" bind:this={coachEl} use:stickToBottom>
-      {#if !messages.length && !pending && !unopened}
+      <!-- What to do, while there is a move to find; once the puzzle has ended, nothing. -->
+      {#if !messages.length && !pending && !unopened && !ended}
         <div class="coach-empty"><b>Find the best move.</b><span>Stuck? Press Hint, or ask the coach anything below.</span></div>
       {/if}
       {#each messages as m, i (m.id)}
-        <div class="msg" class:you={m.you} class:tail={pending && i === messages.length - 1 ? m.you : messages[i + 1]?.you !== m.you} role="note" title={m.meta} onmouseenter={() => { if (m.marks) coachMarks = m.marks; }}>{m.text.replaceAll(" -- ", " — ")}</div>
+        <div class="msg" class:you={m.you} class:tail={pending && i === messages.length - 1 ? m.you : messages[i + 1]?.you !== m.you} role="note" title={m.meta} onmouseenter={() => { if (m.marks && onBoard(m.fen)) coachMarks = m.marks; }}>{m.text.replaceAll(" -- ", " — ")}</div>
       {/each}
       {#if pending}<div class="msg typing tail" role="status" aria-label="The coach is writing"><span></span><span></span><span></span></div>{/if}
     </div>

@@ -490,6 +490,33 @@ class PuzzleRooms(
         }
     }
 
+    /**
+     * The puzzles the page's Next leads to once this one has ended ([following]): [offered] is
+     * the list Stats offered it in, if any, [practice] the session's recommendation; the fresh one
+     * is of the puzzle's motif (any, without one) at the player's puzzle rating, none tried
+     * before. Empty when there is nothing to offer. `PuzzleRooms.after`.
+     */
+    fun after(puzzleId: String, offered: List<String>?, practice: List<String>): List<String> {
+        var store: Store? = null
+        return try {
+            val open = Store(storePath).also { store = it }
+            val fresh = {
+                val puzzles = puzzles
+                if (puzzles == null) {
+                    emptyList()
+                } else {
+                    val tried = open.attempts(limit = TRIED).map { it.first }.toSet() + puzzleId
+                    puzzles.pick(motifs[puzzleId], Puzzles.puzzleLevel(open), count = 1, exclude = tried).map { it.id }
+                }
+            }
+            following(puzzleId, offered, practice.toList(), { open.attempted(it) }, fresh)
+        } catch (exc: Exception) { // Next must never stop the puzzle opening
+            emptyList()
+        } finally {
+            store?.close()
+        }
+    }
+
     /** The model-call ledgers of the rooms, open or closed, for the panel's strip. */
     fun usages(): List<Usage> {
         val (all, before) = synchronized(lock) { rooms.values.toList() to spent.toList() }
@@ -502,6 +529,34 @@ class PuzzleRooms(
     }
 
     companion object {
+        /** The latest attempts read for the puzzles already tried, so Next's fresh puzzle is a new one. */
+        const val TRIED = 10_000
+
+        /**
+         * Where the page's Next goes once the puzzle has ended, as Lichess always has a next
+         * puzzle: the ones after it in the list it was offered in (Stats' "Puzzles on it" for an
+         * area, else the session's recommendation), not tried yet; else the session's recommended
+         * ones not tried yet; else [fresh], a new one picked as the app picks them.
+         * `puzzle_room.following`.
+         */
+        fun following(
+            puzzleId: String,
+            offered: List<String>?,
+            practice: List<String>,
+            tried: (String) -> Boolean,
+            fresh: () -> List<String>,
+        ): List<String> {
+            for (ids in listOf(offered.orEmpty(), practice)) {
+                val at = ids.indexOf(puzzleId)
+                if (at >= 0) {
+                    val rest = ids.drop(at + 1).filter { !tried(it) }
+                    if (rest.isNotEmpty()) return rest
+                }
+            }
+            val rest = practice.filter { it != puzzleId && !tried(it) }
+            return rest.ifEmpty { fresh() }
+        }
+
         @Volatile private var shared: PuzzleRooms? = null
 
         /** The app's rooms if any were made, without making them. */

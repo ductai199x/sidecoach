@@ -360,6 +360,9 @@ class PanelEngine:
     # page (ui/puzzle_room.py) opens them in a tab of their own, with Next in that order.
     practice_ids: list[str] = field(default_factory=list, init=False)
     puzzle_motifs: dict[str, str] = field(default_factory=dict, init=False)
+    # The list each puzzle Stats offered was in (its area's "Puzzles on it"), by puzzle: the
+    # page's Next, once the puzzle has ended, goes on down that list.
+    puzzle_lists: dict[str, list[str]] = field(default_factory=dict, init=False)
     # Latency, amortised over the session (see _health): when each move was committed
     # (ply -> monotonic), the reply's first sentence waiting for its audio (the line ->
     # the move's time), and the running (count, total, last) of move-to-first-sound and
@@ -1295,6 +1298,7 @@ class PanelEngine:
             self._set(profile=self._profile_state(profiler.snapshot()), review=None, practice=None)
         self.practice_ids = []
         self.puzzle_motifs.clear()
+        self.puzzle_lists.clear()
         self._emit("user", "warn", f"profile reset: {path} is empty")
         return str(path)
 

@@ -339,10 +339,13 @@ class PanelApi(
                 val room = rooms.open(id)
                     ?: return ok(JSONObject().put("ok", false).put("error", "no puzzle $id in the store"))
                 val following = PanelEngine.practiceIds.filter { it != id }
+                // Next once the puzzle has ended, however it was opened (`PuzzleRooms.after`).
+                val after = rooms.after(id, PanelEngine.puzzleLists[id], PanelEngine.practiceIds)
                 ok(
                     JSONObject()
                         .put("ok", true)
                         .put("next", JSONArray(following))
+                        .put("after", JSONArray(after))
                         .put("state", room.poll(0).getJSONObject("state"))
                 )
             }

@@ -49,6 +49,28 @@ TICK_S = 0.25
 # last said it was in view and has not polled for this long is gone. A page out of view
 # (its timers slowed or stopped) is never closed by it.
 VANISHED_S = 60.0
+# The latest attempts read for the puzzles already tried, so Next's fresh puzzle is a new one.
+TRIED = 10_000
+
+
+def following(
+    puzzle_id: str,
+    offered: list[str] | None,
+    practice: list[str],
+    tried: Callable[[str], bool],
+    fresh: Callable[[], list[str]],
+) -> list[str]:
+    """Where the page's Next goes once the puzzle has ended, as Lichess always has a next
+    puzzle: the ones after it in the list it was offered in (Stats' "Puzzles on it" for an area,
+    else the session's recommendation), not tried yet; else the session's recommended ones not
+    tried yet; else `fresh()`, a new one picked as the app picks them."""
+    for ids in (offered or [], practice):
+        if puzzle_id in ids:
+            rest = [p for p in ids[ids.index(puzzle_id) + 1 :] if not tried(p)]
+            if rest:
+                return rest
+    rest = [p for p in practice if p != puzzle_id and not tried(p)]
+    return rest or fresh()
 
 
 class PuzzleRoom:
@@ -411,6 +433,34 @@ class PuzzleRooms:
             with self._lock:
                 self._opening.pop(puzzle_id, None)
             making.set()
+
+    def after(self, puzzle_id: str, offered: list[str] | None, practice: list[str]) -> list[str]:
+        """The puzzles the page's Next leads to once this one has ended (`following`): `offered`
+        is the list Stats offered it in, if any, `practice` the session's recommendation; the
+        fresh one is of the puzzle's motif (any, without one) at the player's puzzle rating,
+        none tried before. Empty when there is nothing to offer."""
+        from sidecoach.profile.store import Store
+
+        store = None
+        try:
+            store = Store(self.store_path)
+
+            def fresh() -> list[str]:
+                if self.puzzles is None or store is None:
+                    return []
+                tried = {pid for pid, _, _ in store.attempts(limit=TRIED)} | {puzzle_id}
+                level = puzzle_level(store)
+                picked = self.puzzles.pick(
+                    self.motifs.get(puzzle_id), level, count=1, exclude=tried
+                )
+                return [p.id for p in picked]
+
+            return following(puzzle_id, offered, list(practice), store.attempted, fresh)
+        except Exception:  # noqa: BLE001 - Next must never stop the puzzle opening
+            return []
+        finally:
+            if store is not None:
+                store.close()
 
     def usages(self) -> list[Any]:
         """The model-call ledgers of the rooms, open or closed, for the panel's strip."""

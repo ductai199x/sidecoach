@@ -295,7 +295,7 @@ class PuzzleStore:
 
     def pick(
         self,
-        motif: str,
+        motif: str | None,
         level: int,
         *,
         count: int = COUNT,
@@ -307,11 +307,12 @@ class PuzzleStore:
         `first` (failed lately, due again) ahead of a random draw among the rest, none in
         `exclude` (solved lately), the more played the better. A rating outside the store's
         band (RATING_MIN to RATING_MAX: Lichess's floor is 400, and it has no ceiling) is
-        searched around the band's nearest end; the rating itself is not changed."""
+        searched around the band's nearest end; the rating itself is not changed. With no motif
+        (a puzzle opened with none), puzzles of any theme, as Lichess's mix."""
         rng = rng or random.Random()
         level = min(max(level, RATING_MIN), RATING_MAX)
-        themes = themes_for(motif)
-        clauses = " OR ".join("(' ' || themes || ' ') LIKE ?" for _ in themes)
+        themes = themes_for(motif) if motif else []
+        clauses = " OR ".join("(' ' || themes || ' ') LIKE ?" for _ in themes) or "1"
         params: list[object] = [f"% {t} %" for t in themes]
         with self._lock:
             rows = self._db.execute(

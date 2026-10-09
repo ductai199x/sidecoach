@@ -603,10 +603,11 @@ class PuzzleStore(val path: File?) {
      * [count] puzzles of the motif's themes within WINDOW of [level]: the ids in [first]
      * (failed lately, due again) ahead of a draw among the rest, none in [exclude] (solved
      * lately), the more played the better. [shuffle] is the draw: Python's
-     * `random.Random().shuffle`, injected so a test can fix it.
+     * `random.Random().shuffle`, injected so a test can fix it. With no motif (a puzzle opened
+     * with none), puzzles of any theme, as Lichess's mix.
      */
     fun pick(
-        motif: String,
+        motif: String?,
         level: Int,
         count: Int = Puzzles.COUNT,
         exclude: Set<String> = emptySet(),
@@ -616,8 +617,8 @@ class PuzzleStore(val path: File?) {
         // A rating outside the store's band (Lichess's floor is 400, and it has no ceiling) is
         // searched around the band's nearest end; the rating itself is not changed.
         val around = level.coerceIn(Puzzles.RATING_MIN, Puzzles.RATING_MAX)
-        val themes = Puzzles.themesFor(motif)
-        val clauses = themes.joinToString(" OR ") { "(' ' || themes || ' ') LIKE ?" }
+        val themes = if (!motif.isNullOrEmpty()) Puzzles.themesFor(motif) else emptyList()
+        val clauses = themes.joinToString(" OR ") { "(' ' || themes || ' ') LIKE ?" }.ifEmpty { "1" }
         val params = themes.map { "% $it %" }.toTypedArray()
         val rows = puzzles(
             "SELECT * FROM puzzles WHERE ($clauses) AND rating BETWEEN ${around - Puzzles.WINDOW}" +

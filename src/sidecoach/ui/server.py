@@ -456,7 +456,9 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         if room is None:
             return {"ok": False, "error": f"no puzzle {puzzle_id} in the store"}
         following = [pid for pid in engine.practice_ids if pid != puzzle_id]
-        return {"ok": True, "next": following, "state": room.poll(0)["state"]}
+        # Next once the puzzle has ended, however it was opened (`PuzzleRooms.after`).
+        after = rooms.after(puzzle_id, engine.puzzle_lists.get(puzzle_id), engine.practice_ids)
+        return {"ok": True, "next": following, "after": after, "state": room.poll(0)["state"]}
 
     @app.get("/api/puzzle/{puzzle_id}/poll")
     def puzzle_poll(puzzle_id: str, since: int = 0, hidden: bool = False) -> dict[str, Any]:
@@ -752,7 +754,7 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
             library.refresh(store, _user_names(engine))
             numbers = stat_sums.stats(store, _filter(time_class, days, opponents))
             _drills(numbers["work"], engine.settings.data_dir, store)
-            _remember_drills(numbers["work"], engine.puzzle_motifs)
+            _remember_drills(numbers["work"], engine.puzzle_motifs, engine.puzzle_lists)
         finally:
             store.close()
         return {"ok": True, "stats": numbers, "backlog": backlog and backlog.state()}
@@ -1130,14 +1132,19 @@ def _drills(work: list[dict[str, Any]], data_dir: Path, store: Any) -> None:
             puzzles.close()
 
 
-def _remember_drills(work: list[dict[str, Any]], motifs: dict[str, str]) -> None:
+def _remember_drills(
+    work: list[dict[str, Any]], motifs: dict[str, str], lists: dict[str, list[str]]
+) -> None:
     """Each puzzle Stats offers for an area ("Puzzles on it") remembered with the area's motif,
     as the session's recommendations are: the room it opens in records the attempt beside that
-    motif, so the drill counts for it."""
+    motif, so the drill counts for it. And with the area's list, for the page's Next once the
+    puzzle has ended."""
     for w in work:
         if w.get("motif"):
-            for p in w.get("puzzles", []):
-                motifs[p["id"]] = w["motif"]
+            ids = [p["id"] for p in w.get("puzzles", [])]
+            for pid in ids:
+                motifs[pid] = w["motif"]
+                lists[pid] = ids
 
 
 def _rooms_for(engine: PanelEngine) -> Any:

@@ -333,6 +333,69 @@ def test_a_puzzle_stats_offers_for_an_area_opens_with_its_motif(
     client.post(f"/api/puzzle/{FORK.id}/close")
 
 
+def test_a_puzzle_has_a_next_once_it_ends_however_it_was_opened(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Tai's walk (2026-10-09): a puzzle opened from Stats' "Puzzles on it" had no Next puzzle,
+    # only back, so each puzzle meant a trip back to Stats; Next existed only beside the
+    # session's recommendation. Once a puzzle has ended, Next goes on down the list Stats
+    # offered for its area, then to a fresh puzzle, as Lichess always has a next one.
+    from fastapi.testclient import TestClient
+
+    from sidecoach.profile import stats as stat_sums
+    from sidecoach.ui.server import build_app
+
+    forks = [FORK.id, "frk02", "frk03"]  # three fork puzzles within 150 of 1500
+    rows = [
+        f"{pid},{FORK.fen},{' '.join(FORK.moves)},{FORK.rating},76,92,629,fork endgame,u,"
+        for pid in forks
+    ]
+    rows.append(f"{MATE.id},{MATE.fen},{' '.join(MATE.moves)},{MATE.rating},70,95,900,mateIn1,u,")
+    puzzle_file(tmp_path / "puzzles" / "sample.csv", rows)
+    real = stat_sums.stats
+
+    def with_fork_to_work_on(store: Any, f: Any) -> dict[str, Any]:
+        numbers = real(store, f)
+        numbers["work"] = [{"area": "tactic.fork", "motif": "fork"}]
+        return numbers
+
+    monkeypatch.setattr(stat_sums, "stats", with_fork_to_work_on)
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    offered = [p["id"] for p in client.get("/api/stats").json()["stats"]["work"][0]["puzzles"]]
+    assert sorted(offered) == sorted(forks)
+    opened = client.post(f"/api/puzzle/{offered[0]}/open").json()
+    assert opened["next"] == [], "no recommendation this session: nothing while it is played"
+    assert opened["after"] == offered[1:], "down the area's list"
+    client.post(f"/api/puzzle/{offered[0]}/close")
+    # The list's last: a fresh puzzle of the area's motif, never this one.
+    last = client.post(f"/api/puzzle/{offered[-1]}/open").json()
+    assert len(last["after"]) == 1 and last["after"][0] in offered[:-1]
+    client.post(f"/api/puzzle/{offered[-1]}/close")
+    # A puzzle opened with no list and no motif (a link, a review's): a fresh one of any theme
+    # near the player's puzzle rating (the mate's 900 is not near 1500).
+    mate = client.post(f"/api/puzzle/{MATE.id}/open").json()
+    assert len(mate["after"]) == 1 and mate["after"][0] in forks
+    client.post(f"/api/puzzle/{MATE.id}/close")
+
+
+def test_next_goes_down_its_list_then_the_recommendation_then_a_fresh_puzzle() -> None:
+    # `following`: the ones after it in the list it was offered in, not tried yet; else the
+    # session's recommended ones not tried yet; else a fresh one.
+    from sidecoach.ui.puzzle_room import following
+
+    def fresh() -> list[str]:
+        return ["new"]
+
+    b_tried = {"b"}.__contains__
+    assert following("a", ["a", "b", "c"], [], b_tried, fresh) == ["c"], "b was tried: passed"
+    assert following("c", ["a", "b", "c"], ["p1", "p2"], b_tried, fresh) == ["p1", "p2"]
+    assert following("p1", None, ["p1", "p2", "p3"], b_tried, fresh) == ["p2", "p3"]
+    assert following("p3", None, ["p1", "p2", "p3"], {"p1"}.__contains__, fresh) == ["p2"]
+    assert following("x", None, [], b_tried, fresh) == ["new"]
+    assert following("x", ["x"], ["x"], b_tried, lambda: []) == [], "nothing to offer"
+
+
 def test_puzzles_fetched_after_the_server_started_open_in_a_room(
     make_panel: Callable[..., PanelEngine], tmp_path: Path
 ) -> None:

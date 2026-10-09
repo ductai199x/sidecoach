@@ -48,7 +48,7 @@ class StatsApi(private val files: File, private val userNames: () -> List<String
             ReviewRoom.keepMissingStats(store)
             Stats.stats(store, filter(query), now).also {
                 drills(it.getJSONArray("work"), files, store)
-                rememberDrills(it.getJSONArray("work"), PanelEngine.puzzleMotifs)
+                rememberDrills(it.getJSONArray("work"), PanelEngine.puzzleMotifs, PanelEngine.puzzleLists)
             }
         }
         return JSONObject().put("ok", true).put("stats", numbers).put("backlog", JSONObject.NULL)
@@ -90,15 +90,20 @@ class StatsApi(private val files: File, private val userNames: () -> List<String
         /**
          * Each puzzle Stats offers for an area ("Puzzles on it") remembered with the area's
          * motif, as the session's recommendations are: the room it opens in records the attempt
-         * beside that motif, so the drill counts for it. `_remember_drills`.
+         * beside that motif, so the drill counts for it. And with the area's list, for the page's
+         * Next once the puzzle has ended. `_remember_drills`.
          */
-        fun rememberDrills(work: JSONArray, motifs: MutableMap<String, String>) {
+        fun rememberDrills(work: JSONArray, motifs: MutableMap<String, String>, lists: MutableMap<String, List<String>>) {
             for (i in 0 until work.length()) {
                 val w = work.getJSONObject(i)
                 val motif = if (w.isNull("motif")) "" else w.optString("motif")
                 if (motif.isEmpty()) continue
-                val puzzles = w.optJSONArray("puzzles") ?: continue
-                for (j in 0 until puzzles.length()) motifs[puzzles.getJSONObject(j).getString("id")] = motif
+                val puzzles = w.optJSONArray("puzzles") ?: JSONArray()
+                val ids = (0 until puzzles.length()).map { puzzles.getJSONObject(it).getString("id") }
+                for (id in ids) {
+                    motifs[id] = motif
+                    lists[id] = ids
+                }
             }
         }
     }
