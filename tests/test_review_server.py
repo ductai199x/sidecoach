@@ -1403,6 +1403,136 @@ def test_saved_reviews_are_summed_up_again_when_the_rule_changes(
     store.close()
 
 
+def _stale_review(path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A store at `path` with one saved review whose summary an older rule made (the stamp of
+    rule 1): what `rederive` makes again. Its key and the summary made again (`summarize`)."""
+    from sidecoach.analysis.game_review import STRENGTHS
+    from sidecoach.config import Settings
+    from sidecoach.events import ReviewedGame
+    from sidecoach.profile import library
+    from sidecoach.profile.game_summary import summarize
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room
+
+    monkeypatch.setattr(review_room, "find_stockfish", lambda _settings: Path("stockfish"))
+    store = Store(path)
+    row = library.from_pgn(GAME, user_names=["nosegazm"])[0]
+    store.add_library_game(row)
+    made = review_room.review_row(
+        Settings(data_dir=path.parent),
+        row,
+        store,
+        STRENGTHS["fast"],
+        workers=1,
+        make_engine=lambda **_: FakeEngine(),
+    )
+    assert made is not None
+    saved = store.review(row.key, "fast")
+    assert saved is not None
+    fresh = summarize(ReviewedGame.model_validate_json(saved.report))
+    store.set_review_summary(
+        row.key, "fast", fresh.model_copy(update={"shape": "old"}).model_dump_json()
+    )
+    store.set_setting(review_room.DERIVED_KEY, "1")
+    store.close()
+    return row.key, fresh.model_dump_json()
+
+
+def _rederive_thread_ended() -> None:
+    """Waits for the panel's start-up re-derive (`build_app`'s thread named "rederive")."""
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name == "rederive":
+            thread.join()
+
+
+def test_saved_reviews_are_made_again_outside_the_panels_process(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-09: on a thread of the panel's process the start-up re-derive held the
+    interpreter's lock from every request -- Your games took 5-8 s instead of 0.2 s for the 78 s
+    it spent on 135 saved reviews. Saved reviews to make again go to a process of their own
+    (`_rederive_elsewhere`, given the store and the settings as they are), nothing of the work
+    done here; with none to make again (no review saved), the stamp alone is written here."""
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.config import Settings
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room, server
+    from sidecoach.ui.server import build_app
+
+    path = tmp_path / "profile.sqlite"
+    _stale_review(path, monkeypatch)
+    relabelled: list[Any] = []
+    real_relabel = review_room.relabel
+
+    def relabel(*a: Any, **k: Any) -> Any:
+        relabelled.append(a[0])
+        return real_relabel(*a, **k)
+
+    monkeypatch.setattr(review_room, "relabel", relabel)
+    sent: list[tuple[Path, Any]] = []
+    monkeypatch.setattr(
+        server, "_rederive_elsewhere", lambda p, s: sent.append((p, s)), raising=False
+    )
+    engine = make_panel()
+    build_app(engine)
+    _rederive_thread_ended()
+    assert relabelled == [], "no review made again in the panel's own process"
+    assert sent == [(path, engine.settings)]
+    store = Store(path)
+    assert store.setting(review_room.DERIVED_KEY) == "1", "left to the other process"
+    store.close()
+
+    # Nothing saved to make again: the stamp, here, and no process started.
+    sent.clear()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    build_app(make_panel(Settings(data_dir=empty)))
+    _rederive_thread_ended()
+    assert sent == []
+    store = Store(empty / "profile.sqlite")
+    assert store.setting(review_room.DERIVED_KEY) == review_room.derived_stamp(Thresholds())
+    store.close()
+
+
+def test_the_process_of_its_own_makes_the_reviews_again_as_rederive_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_rederive_elsewhere` starts a real child process from its orders (the store, the data
+    folder and the coach's thresholds, not the defaults here) and waits for it: the saved review
+    comes out byte for byte as `rederive` in this process makes it, and stamped the same."""
+    import shutil
+
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.cli import _load_book, _load_tagger
+    from sidecoach.config import Settings
+    from sidecoach.profile.store import Store
+    from sidecoach.ui import review_room, server
+
+    (tmp_path / "here").mkdir()
+    (tmp_path / "there").mkdir()
+    here, there = tmp_path / "here" / "profile.sqlite", tmp_path / "there" / "profile.sqlite"
+    key, fresh = _stale_review(here, monkeypatch)
+    shutil.copyfile(here, there)
+    settings = Settings(data_dir=tmp_path / "there")
+    settings.coach.mistake = 0.125  # the child must be given the settings' thresholds
+    thresholds = Thresholds.from_settings(settings.coach)
+
+    store = Store(here)
+    assert review_room.rederive(store, thresholds, _load_book(settings), _load_tagger()) == 1
+    want = store.review(key, "fast")
+    store.close()
+    server._rederive_elsewhere(there, settings)
+    store = Store(there)
+    got = store.review(key, "fast")
+    stamp = store.setting(review_room.DERIVED_KEY)
+    store.close()
+    assert want is not None and got is not None
+    assert (got.report, got.summary, got.words) == (want.report, want.summary, want.words)
+    assert stamp == review_room.derived_stamp(thresholds) != review_room.derived_stamp(Thresholds())
+
+
 class _VariedEngine(FakeEngine):
     """An engine whose word on a position is a function of it: its first legal move (by UCI)
     as the best, and a score from the FEN's CRC -- a game of best moves, slips, mistakes and

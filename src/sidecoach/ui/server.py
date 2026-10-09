@@ -517,24 +517,27 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     def rederive_saved() -> None:
         """The saved reviews' labels, severities, motifs, openings, summaries and Stats made
         again when their rule or the thresholds in Settings changed (`derived_stamp`), one pass
-        at a time: a pass reads the settings as they are when it starts."""
+        at a time: a pass reads the settings as they are when it starts. The reviews are made
+        again in a process of their own (`_rederive_elsewhere`), this thread waiting for it:
+        on a thread of this process the work held the interpreter's lock from every request,
+        and Your games took 5-8 s instead of 0.2 s for the 78 s a start over 135 saved reviews
+        spent on it (measured 2026-10-09). Nothing to make again: the stamp alone, here."""
         from sidecoach.analysis.score import Thresholds
-        from sidecoach.cli import _load_book, _load_tagger
         from sidecoach.profile.store import Store
         from sidecoach.ui.review_room import rederive
 
         with rederiving, contextlib.suppress(Exception):  # never in the way of the panel
+            settings = engine.settings
+            thresholds = Thresholds.from_settings(settings.coach)
             store = Store(store_path)
             try:
-                settings = engine.settings
-                rederive(
-                    store,
-                    Thresholds.from_settings(settings.coach),
-                    _load_book(settings),
-                    _load_tagger(),
-                )
+                elsewhere = _rederive_due(store, thresholds)
+                if not elsewhere:
+                    rederive(store, thresholds)
             finally:
                 store.close()
+            if elsewhere:
+                _rederive_elsewhere(store_path, settings)
 
     def rederive_in_background() -> None:
         threading.Thread(target=rederive_saved, name="rederive", daemon=True).start()
@@ -909,6 +912,74 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
     # Everything else is the static web UI; html=True serves index.html at /.
     app.mount("/", StaticFiles(directory=str(WEB), html=True), name="web")
     return app
+
+
+def _rederive_due(store: Any, thresholds: Any) -> bool:
+    """Whether `rederive` has saved reviews to make again: they were made with another rule or
+    other thresholds (`derived_stamp`), and there is one."""
+    from sidecoach.ui.review_room import DERIVED_KEY, derived_stamp
+
+    return store.setting(DERIVED_KEY) != derived_stamp(thresholds) and bool(store.saved_reviews())
+
+
+def _rederive_elsewhere(store_path: Path, settings: Settings) -> None:
+    """`rederive` over the saved reviews at `store_path`, by `settings` (their data folder and
+    coach section: the thresholds and the opening book), in a Python process of its own, and
+    waited for. Its own interpreter has its own lock: pure-Python work on a thread here held
+    this one's from every request (the GIL; measured 2026-10-09, a thread spinning with no
+    database at all slowed Your games as much). The orders go on stdin; the child ends with
+    this process (`_rederive_child`). One that cannot be started does the work here, as before."""
+    import subprocess
+
+    orders = json.dumps(
+        {
+            "parent": os.getpid(),
+            "store": str(store_path),
+            "settings": settings.model_dump_json(include={"data_dir", "coach"}),
+        }
+    )
+    command = [
+        sys.executable,
+        "-c",
+        "from sidecoach.ui.server import _rederive_child; _rederive_child()",
+    ]
+    try:
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # the shell reads this process's stdout
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except OSError:
+        _rederive_child(orders)
+        return
+    child.communicate(orders.encode("utf-8"))
+
+
+def _rederive_child(orders: str | None = None) -> None:
+    """The process `_rederive_elsewhere` starts: its orders read from stdin (or given), the
+    saved reviews made again as `rederive` makes them, and gone when the panel that started it
+    is (`_watch_parent`)."""
+    from sidecoach.analysis.score import Thresholds
+    from sidecoach.cli import _load_book, _load_tagger
+    from sidecoach.profile.store import Store
+    from sidecoach.ui.review_room import rederive
+
+    given = orders is not None
+    told = json.loads(orders if given else sys.stdin.read())
+    if not given:
+        _watch_parent(int(told["parent"]), lambda: None)
+    settings = Settings.model_validate_json(told["settings"])
+    store = Store(Path(told["store"]))
+    try:
+        rederive(
+            store,
+            Thresholds.from_settings(settings.coach),
+            _load_book(settings),
+            _load_tagger(),
+        )
+    finally:
+        store.close()
 
 
 def _user_names(engine: PanelEngine) -> list[str]:
