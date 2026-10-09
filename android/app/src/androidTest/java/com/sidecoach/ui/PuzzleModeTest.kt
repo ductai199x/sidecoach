@@ -122,7 +122,10 @@ class PuzzleModeTest {
         // The result line's numbers come once the room has recorded the outcome.
         assertEquals(null, s.state()["result"])
         s.recordedAs(true, 1500, 1712, true)
-        assertEquals(mapOf("solved" to true, "level" to 1712, "change" to 212, "provisional" to true), s.state()["result"])
+        assertEquals(
+            mapOf("solved" to true, "level" to 1712, "change" to 212, "provisional" to true, "unrated" to null),
+            s.state()["result"],
+        )
         // Any mate counts where the line's move mates; a non-mating move does not.
         val t = PuzzleSession(mate, "mate")
         assertTrue(t.mates(Move.fromUci("a1a8")))
