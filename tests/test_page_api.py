@@ -135,6 +135,26 @@ def test_a_line_is_stepped_never_run_by_itself() -> None:
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
 
 
+def test_the_move_strip_keeps_the_move_shown_when_its_size_changes() -> None:
+    """Game Review's one-line strip on a phone showed moves 1-4 with the board on move 9 (a user
+    walk, 2026-10-08): the strip followed each new move, not a change of its own size (a phone
+    turned and back dropped its scroll to 0). desktop/tests/follow.test.mjs, on src/lib/follow.ts
+    alone (no packages needed)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    run = subprocess.run(
+        [node, "--test", "tests/follow.test.mjs"],
+        cwd=DESKTOP,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
+
+
 def _function(source: str, name: str) -> str:
     """The body of `function name(...)` (async or not) in a page's script: up to the next
     function at the same indentation."""

@@ -14,6 +14,7 @@
   import { inShell, openSetting, openWindow } from "$lib/shell.svelte";
   import { placement } from "$lib/chess";
   import { boardHandle, layoutMode, splitter } from "$lib/layout";
+  import { followOnResize, keepInView } from "$lib/follow";
   import { prefs } from "$lib/panel.svelte";
   import { captureSound, moveSound } from "$lib/sounds";
   import AiText from "$lib/review/AiText.svelte";
@@ -516,20 +517,18 @@
 
   // The move shown stays in view in the list, as the arrows step past its edge: out of view,
   // or at the very edge, it goes to the middle, so the moves around it show too -- down the
-  // list side by side, along the one line stacked.
+  // list side by side, along the one line stacked (lib/follow). The strip follows it too when
+  // its own size changes (a phone turned and back left it on move 1).
   let listEl = $state<HTMLDivElement | null>(null);
+  function followMove(): void {
+    const el = listEl?.querySelector(".mv.at") as HTMLElement | null;
+    if (listEl && el) keepInView(listEl, el);
+  }
   $effect(() => {
     void ply;
-    const box = listEl;
-    const el = listEl?.querySelector(".mv.at") as HTMLElement | null;
-    if (!box || !el) return;
-    const b = box.getBoundingClientRect(), r = el.getBoundingClientRect();
-    if (box.scrollWidth > box.clientWidth) {
-      if (r.left < b.left + r.width || r.right > b.right - r.width) box.scrollLeft += r.left + r.width / 2 - (b.left + b.width / 2);
-    } else if (box.scrollHeight > box.clientHeight) {
-      if (r.top < b.top + r.height || r.bottom > b.bottom - r.height) box.scrollTop += r.top + r.height / 2 - (b.top + b.height / 2);
-    }
+    followMove();
   });
+  $effect(() => (listEl ? followOnResize(listEl, followMove) : undefined));
 
   // ---- the move list: two columns ----
   const rows = $derived.by(() => {

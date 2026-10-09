@@ -7,6 +7,7 @@
   import Badge from "$lib/Badge.svelte";
   import { store } from "./panel.svelte";
   import { stacked } from "./layout";
+  import { followOnResize, keepInView } from "./follow";
   import { tick } from "svelte";
 
   let { oneline = false }: { oneline?: boolean } = $props();
@@ -54,6 +55,17 @@
     tick().then(() => {
       const el = wrap?.querySelector(".mv.view") as HTMLElement | null;
       el?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+    });
+  });
+  // The strip's own size changed (a phone turned and back, the window resized): the move shown,
+  // or the newest, back in view in the strip (lib/follow), as the two follows above leave it.
+  $effect(() => {
+    const el = wrap;
+    if (!el) return;
+    return followOnResize(el, () => {
+      const at = el.querySelector(".mv.view") as HTMLElement | null;
+      if (at) keepInView(el, at);
+      else if (store.pinnedPly === null) el.scrollLeft = el.scrollWidth;
     });
   });
   // A mouse wheel turns the line, as it scrolls the list.
