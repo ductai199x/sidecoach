@@ -68,6 +68,26 @@ def test_a_review_move_says_why_it_got_its_label() -> None:
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
 
 
+def test_a_game_the_filters_hide_is_said_with_clear_filters() -> None:
+    """Your games: a PGN pasted while Lost + Rapid were on said "1 game brought in. Press Review
+    on one" with the game hidden, and "No game matches." had no way back (Tai's walk,
+    2026-10-09). The import line and the list now say what the filters hide, with Clear filters.
+    desktop/tests/gamefilters.test.mjs, on src/lib/gamefilters.ts alone (no packages needed)."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    run = subprocess.run(
+        [node, "--test", "tests/gamefilters.test.mjs"],
+        cwd=DESKTOP,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
+
+
 def test_the_page_follows_a_restarted_sidecar() -> None:
     """The panel's Restart starts a new sidecar on another port; every other window kept
     calling the old one, dead until reopened (the round-3 UI audit, 2026-10-02)."""

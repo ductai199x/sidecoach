@@ -10,6 +10,7 @@
   import "$lib/styles/review.css";
   import { connect, failureText, get, games as gamesApi, jobs as jobsApi, type Backlog, type LibraryGame } from "$lib/api";
   import { announce, inShell, onAnnounce, openSetting, openWindow } from "$lib/shell.svelte";
+  import { NO_FILTERS, broughtInWords, hiddenWords, seenOf, outcomeOf, passes, playedAt, type Filters } from "$lib/gamefilters";
 
   let list = $state<LibraryGame[]>([]);
   let users = $state({ chesscom: "", lichess: "" });
@@ -24,10 +25,13 @@
   let saidBad = $state(false);
   // The setting to fix when the site knows no such player ("profile.chesscom_user").
   let saidField = $state<string | null>(null);
-  let show = $state<"all" | LibraryGame["source"]>("all");
-  let outcome = $state<"all" | "won" | "lost" | "drawn">("all");
-  let speed = $state("all");
-  let since = $state(0);
+  let show = $state<Filters["show"]>(NO_FILTERS.show);
+  let outcome = $state<Filters["outcome"]>(NO_FILTERS.outcome);
+  let speed = $state(NO_FILTERS.speed);
+  let since = $state(NO_FILTERS.since);
+  // The last import's new games and its line's parts, while its line stands: the line says
+  // when the filters hide them (lib/gamefilters.ts).
+  let brought = $state<{ keys: string[]; added: number; extras: string; next: string } | null>(null);
 
   const SOURCES: Record<LibraryGame["source"], string> = { watched: "watched", chesscom: "chess.com", lichess: "Lichess", pgn: "PGN" };
   const SITE = { chesscom: "chess.com", lichess: "Lichess" } as const;
@@ -57,6 +61,7 @@
     if (loaded && (res.users.chesscom !== users.chesscom || res.users.lichess !== users.lichess)) {
       said = "";
       saidField = null;
+      brought = null;
     }
     list = res.games;
     // A game picked that is gone (removed in another window) is no longer picked.
@@ -109,6 +114,7 @@
     said = source === "pgn" ? "Reading the PGN…" : `Asking ${SITE[source]} for your games…`;
     saidBad = false;
     saidField = null;
+    brought = null;
     const res = await gamesApi.bringIn(source, pgn, months).catch(() => ({ ok: false, error: "Sidecoach did not answer. Try again in a moment." }) as Awaited<ReturnType<typeof gamesApi.bringIn>>);
     busy = false;
     if (!res.ok) {
@@ -131,7 +137,11 @@
         : backlog.paused_by_you
           ? "The background review is paused: resume it below to review them."
           : "They are reviewed in the background; each shows its accuracy when done.";
-      said = `${games(added)} brought in${already ? ` · ${already} already here` : ""}${out ? ` · ${outWords}` : ""}. ${next}`;
+      const extras = `${already ? ` · ${already} already here` : ""}${out ? ` · ${outWords}` : ""}`;
+      said = `${games(added)} brought in${extras}. ${next}`;
+      // The new ones: the keys brought in that the list did not hold before.
+      const held = new Set(list.map((g) => g.key));
+      brought = { keys: (res.keys ?? []).filter((k) => !held.has(k)), added, extras, next };
     }
     if (source === "pgn" && added) pgn = "";
     if (added && backlog) expectUntil = Date.now() + EXPECT_MS;
@@ -264,6 +274,7 @@
     if (!res?.ok) {
       said = "Sidecoach did not answer: nothing was removed. Try again in a moment.";
       saidBad = true;
+      brought = null;
       return;
     }
     const gone = new Set(res.removed ?? keys);
@@ -284,6 +295,7 @@
     if (!res?.ok) {
       said = res?.error || "Sidecoach did not answer: the games stay removed.";
       saidBad = true;
+      brought = null;
     }
     await load();
     void announce("games");
@@ -300,20 +312,13 @@
     void openSetting(`profile.${site}_user`);
   }
 
-  // The game's outcome for the player, when the library knows which side was theirs.
-  function outcomeOf(g: LibraryGame): "won" | "lost" | "drawn" | null {
-    if (!g.user_side || !g.result || g.result === "*") return null;
-    if (g.result === "1/2-1/2") return "drawn";
-    return (g.result === "1-0") === (g.user_side === "white") ? "won" : "lost";
-  }
-
   // The time controls the library holds, fastest first, and how far back the list goes (days;
   // 0 every game): the plan's G, beside where from and how it went.
   const SPEEDS = ["bullet", "blitz", "rapid", "classical", "daily"];
   const speedsHeld = $derived(SPEEDS.filter((t) => list.some((g) => g.time_class === t)));
 
   // The list's search (a player's name) and order; a game with nothing to sort by goes last.
-  let query = $state("");
+  let query = $state(NO_FILTERS.query);
   type Order = "new" | "old" | "best" | "worst" | "strong";
   let order = $state<Order>("new");
   const ORDERS: [Order, string][] = [
@@ -323,7 +328,6 @@
     ["worst", "Your worst accuracy"],
     ["strong", "Strongest opponent"],
   ];
-  const playedAt = (g: LibraryGame) => g.played_at ?? g.added_at;
   const yours = (g: LibraryGame) => (g.user_side && g.accuracy ? g.accuracy[g.user_side] : null) ?? null;
   const theirElo = (g: LibraryGame) => (g.user_side === "white" ? g.black_elo : g.user_side === "black" ? g.white_elo : null) ?? null;
   function ordered(games: LibraryGame[]): LibraryGame[] {
@@ -338,19 +342,23 @@
     const key = by[order];
     return [...games].sort((a, b) => key(a) - key(b) || playedAt(b) - playedAt(a));
   }
-  const needle = $derived(query.trim().toLowerCase());
-  const shown = $derived(
-    ordered(
-      list.filter(
-        (g) =>
-          (show === "all" || g.source === show) &&
-          (outcome === "all" || outcomeOf(g) === outcome) &&
-          (speed === "all" || g.time_class === speed) &&
-          (!since || playedAt(g) >= Date.now() / 1000 - since * 86400) &&
-          (!needle || `${g.white ?? ""} ${g.black ?? ""}`.toLowerCase().includes(needle)),
-      ),
-    ),
-  );
+  const shown = $derived.by(() => {
+    const f: Filters = { show, outcome, speed, since, query };
+    const now = Date.now() / 1000;
+    return ordered(list.filter((g) => passes(g, f, now)));
+  });
+  // The games the filters and the search hide, and the last import's new games among them.
+  const hidden = $derived(list.length - shown.length);
+  const broughtLine = $derived(brought ? broughtInWords(brought.added, seenOf(brought.keys, list, shown), brought.extras, brought.next) : null);
+  /** Clear filters (the player's press): this page's filters and search as the page starts;
+   *  the order stays. */
+  function clearFilters(): void {
+    show = NO_FILTERS.show;
+    outcome = NO_FILTERS.outcome;
+    speed = NO_FILTERS.speed;
+    since = NO_FILTERS.since;
+    query = NO_FILTERS.query;
+  }
   // What the action bar acts on: the games picked that are shown.
   const pickedShown = $derived(shown.filter((g) => picked.has(g.key)));
   const allPicked = $derived(shown.length > 0 && pickedShown.length === shown.length);
@@ -451,7 +459,8 @@
     {/if}
     {#if said}
       <div class="gm-said" class:bad={saidBad} role="status">
-        {#if busy}<i class="gm-spin" aria-hidden="true"></i>{/if}{said}
+        {#if busy}<i class="gm-spin" aria-hidden="true"></i>{/if}{broughtLine ?? said}
+        {#if broughtLine}<button type="button" class="gm-link" onclick={clearFilters}>Clear filters</button>{/if}
         {#if saidField}<button type="button" class="gm-link" onclick={() => void openSetting(saidField!)}>Fix it in Settings</button>{/if}
       </div>
     {/if}
@@ -543,7 +552,11 @@
       <div class="gm-empty gm-said bad" role="alert">Couldn't load your games. {loadError} <button type="button" class="gm-link" onclick={() => void firstLoad()}>Try again</button></div>
     {/if}
     {#if loaded && !shown.length}
-      <div class="gm-empty">{list.length ? "No game matches." : "No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN."}</div>
+      {#if list.length}
+        <div class="gm-empty">No game matches. <button type="button" class="gm-link" onclick={clearFilters}>Clear filters</button></div>
+      {:else}
+        <div class="gm-empty">No games yet. Games Sidecoach watches come here on their own; bring in your chess.com or Lichess games above, or paste a PGN.</div>
+      {/if}
     {/if}
     {#snippet cells(g: LibraryGame)}
       {@const o = outcomeOf(g)}
@@ -595,6 +608,10 @@
         </li>
       {/each}
     </ol>
+    {#if shown.length && hidden}
+      <!-- The list's end, as Gmail's "no results -- clear search": what the filters hide. -->
+      <div class="gm-hidden">{hiddenWords(hidden)} <button type="button" class="gm-link" onclick={clearFilters}>Clear filters</button></div>
+    {/if}
   </section>
   {#if undo}
     <div class="gm-undo" role="status">

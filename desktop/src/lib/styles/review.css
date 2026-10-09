@@ -90,6 +90,8 @@ a.primary.linkbtn:hover { background: var(--accent-hover); }
 /* How far back the list goes, beside the filters at their size. */
 .gm-since { padding: 3px 6px; font-size: 12px; }
 .gm-empty { color: var(--muted); padding: 22px 4px; }
+/* Under a list the filters cut: how many they hide, Clear filters. */
+.gm-hidden { color: var(--muted); font-size: 13px; padding: 12px 4px; }
 .gm-games { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .gm-game {
   /* fixed columns, the buttons' too (Open review, Review): every row's result and accuracies line up */
