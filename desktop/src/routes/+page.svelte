@@ -31,7 +31,8 @@
   let splitMobile = $state<HTMLElement | null>(null);
 
   // Stacked, the board's side is the player's: the handle under it drags it, and the
-  // coach takes the room it gives up. Never so big the coach has no room, never tiny.
+  // coach takes the room it gives up. Never so big the coach, the ask box and the chips
+  // leave the first screen, never tiny.
   const mobileBoard = (wanted: number | null) => sizeMobileBoard(mainEl, wanted);
 
   // The debug area folds to its status strip (the drawer's Terminal, the strip's button).
@@ -121,6 +122,11 @@
     }) : null;
     if (barRo && bar) barRo.observe(bar);
     cleanups.push(() => barRo?.disconnect());
+    // And the rows that share the first screen with the board (the game line, the ask box and
+    // the chips): when they grow or shrink mid-game, the board is fitted to them again.
+    const sharedRo = window.ResizeObserver ? new ResizeObserver(() => mobileBoard(prefs.get("mboard"))) : null;
+    for (const el of [infoEl, right?.querySelector(".composer")]) if (sharedRo && el) sharedRo.observe(el);
+    cleanups.push(() => sharedRo?.disconnect());
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && store.pinnedPly !== null) store.showLive();

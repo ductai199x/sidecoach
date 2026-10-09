@@ -155,6 +155,15 @@ def test_the_move_strip_keeps_the_move_shown_when_its_size_changes() -> None:
     assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-2000:]
 
 
+def test_a_stacked_board_leaves_the_coach_and_the_chips_on_screen() -> None:
+    """At 720x900 (Tai's panel window) the stacked board took the whole width and pushed the ask
+    box and the Hint / Best move / Line chips under the fold, one line of the coach on screen
+    (2026-10-09). The board's side now leaves room for the coach at its least, the ask box and
+    the chips; a phone's board, and a size the player dragged that fits, are as they were
+    (desktop/tests/layout_stacked.test.mjs; TypeScript from the page's packages)."""
+    _node_test("layout_stacked.test.mjs")
+
+
 def _function(source: str, name: str) -> str:
     """The body of `function name(...)` (async or not) in a page's script: up to the next
     function at the same indentation."""

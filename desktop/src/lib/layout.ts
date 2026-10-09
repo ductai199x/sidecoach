@@ -16,13 +16,50 @@ export function layoutMode(): boolean {
 
 export const stacked = (): boolean => document.documentElement.classList.contains("stacked");
 
+/** Stacked, the most the board's side can be by height: the main area less everything that
+ * shares the first screen with it -- the rows under the board (the handle, the game line, the
+ * board's tools) and the panel under those (the moves' line, the ask box, the chips), with the
+ * coach at its least (the stylesheet's min-height). Measured, not assumed: those rows wrap
+ * with the width and the panes can be hidden. */
+function stackedHeightRoom(mainEl: HTMLElement): number {
+  const left = mainEl.querySelector<HTMLElement>("#left");
+  const wrap = left?.querySelector<HTMLElement>(".board-wrap");
+  const right = mainEl.querySelector<HTMLElement>("#right");
+  const px = (v: string) => parseFloat(v) || 0;
+  const cs = getComputedStyle(mainEl);
+  let room = mainEl.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
+  if (left && wrap) room -= left.getBoundingClientRect().height - wrap.getBoundingClientRect().height;
+  if (right && right.getBoundingClientRect().height > 0) {
+    const rs = getComputedStyle(right);
+    room -= px(cs.rowGap) + px(rs.paddingTop) + px(rs.paddingBottom) + px(rs.borderTopWidth) + px(rs.borderBottomWidth);
+    const shown = [...right.children].filter((c) => getComputedStyle(c).display !== "none") as HTMLElement[];
+    room -= px(rs.rowGap) * Math.max(0, shown.length - 1);
+    for (const c of shown) {
+      const m = getComputedStyle(c);
+      room -= px(m.marginTop) + px(m.marginBottom);
+      room -= c.classList.contains("coach") ? px(m.minHeight) : c.getBoundingClientRect().height;
+    }
+  }
+  return room;
+}
+
 /** Stacked, the board's width: the size the player dragged it to on the panel, within the
- * room the main area has; the whole width (the stylesheet's default) when none was chosen. */
+ * room the main area has; the whole width (the stylesheet's default) when none was chosen and
+ * it fits. Never so big that the coach, the ask box and the chips go under the fold. */
 export function mobileBoard(mainEl: HTMLElement | null, wanted: number | null): void {
   const root = document.documentElement;
-  if (wanted === null || !mainEl) { root.style.removeProperty("--mboard"); return; }
-  const most = Math.max(160, Math.min(mainEl.clientWidth - 20, 640, mainEl.clientHeight - 250));
-  root.style.setProperty("--mboard", Math.round(Math.max(160, Math.min(most, wanted))) + "px");
+  if (!mainEl || !stacked()) { root.style.removeProperty("--mboard"); return; }
+  const byWidth = mainEl.clientWidth - 20;
+  // A few passes: the rows under the board wrap with its width, so a narrower board can make
+  // them taller (and a wider one shorter); each pass measures them at the last pass's width.
+  for (let pass = 0; pass < 4; pass++) {
+    const most = Math.max(160, Math.min(byWidth, 640, stackedHeightRoom(mainEl)));
+    const side = wanted === null && most >= Math.min(byWidth, 640) ? null : Math.round(Math.max(160, Math.min(most, wanted ?? most)));
+    const now = root.style.getPropertyValue("--mboard");
+    if (side === null) { if (!now) return; root.style.removeProperty("--mboard"); continue; }
+    if (now === side + "px") return;
+    root.style.setProperty("--mboard", side + "px");
+  }
 }
 
 /** The board's side from the room the main area has, smaller still if the player dragged
