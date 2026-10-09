@@ -117,15 +117,21 @@ object Puzzles {
         return store
     }
 
-    /** A puzzle rating as it is saved under [PERF_KEY], in Lichess's own field names. */
+    /**
+     * A puzzle rating as it is saved under [PERF_KEY], in Lichess's own field names, written as
+     * the desktop's `json.dumps` writes it (its separators, a float as its repr): the same text
+     * in the profile on either platform.
+     */
     fun perfJson(perf: Glicko.Perf): String =
-        org.json.JSONObject()
-            .put("r", perf.glicko.rating)
-            .put("d", perf.glicko.deviation)
-            .put("v", perf.glicko.volatility)
-            .put("nb", perf.nb)
-            .put("la", perf.latest ?: org.json.JSONObject.NULL)
-            .toString()
+        com.sidecoach.coach.pyJsonDumps(
+            linkedMapOf(
+                "r" to perf.glicko.rating,
+                "d" to perf.glicko.deviation,
+                "v" to perf.glicko.volatility,
+                "nb" to perf.nb,
+                "la" to perf.latest,
+            ),
+        )
 
     /**
      * A puzzle rating saved by [perfJson]; a new player's (1500 / 500 / 0.09) when there is none,

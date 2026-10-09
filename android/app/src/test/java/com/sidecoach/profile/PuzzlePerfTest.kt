@@ -14,6 +14,9 @@ class PuzzlePerfTest {
     fun aSavedRatingReadsBackAndAnythingElseIsANewPlayer() {
         val perf = Glicko.Perf(Glicko.Rating(1612.375, 87.5, 0.0899), nb = 12, latest = 1_790_000_000_123L)
         assertEquals(perf, Puzzles.parsePerf(Puzzles.perfJson(perf)))
+        // Saved as the desktop saves it (`json.dumps`), byte for byte: one profile, either platform.
+        assertEquals("""{"r": 1612.375, "d": 87.5, "v": 0.0899, "nb": 12, "la": 1790000000123}""", Puzzles.perfJson(perf))
+        assertEquals("""{"r": 1500.0, "d": 500.0, "v": 0.09, "nb": 0, "la": null}""", Puzzles.perfJson(Glicko.Perf()))
         assertEquals(Glicko.Perf(), Puzzles.parsePerf(null))
         assertEquals(Glicko.Perf(), Puzzles.parsePerf(""))
         assertEquals(Glicko.Perf(), Puzzles.parsePerf("not json"))
