@@ -30,9 +30,11 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
         /**
          * What the puzzle page's chips send (Hint, Best move, Line: routes/puzzle/[id]/+page.svelte).
          * One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint
-         * does.
+         * does; the result line says which ([HELP]: the chip's words -> the help, as the page
+         * names it).
          */
-        val ASSISTS: Set<String> = setOf("hint", "what should i play", "show me the line")
+        val HELP: Map<String, String> = linkedMapOf("hint" to "hint", "what should i play" to "best_move", "show me the line" to "line")
+        val ASSISTS: Set<String> = HELP.keys
     }
 
     val gameId = "puzzle-${puzzle.id}"
@@ -82,12 +84,20 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
     var assisted = false
         private set
 
+    /** The first help used ([HELP]'s values), for the result line's "Not rated: ...". */
+    var help: String? = null
+        private set
+
     /**
      * The coach was asked [text]: one of the page's chips while the puzzle is played makes the
      * attempt unrated (Lichess: a hint shown, the round is not rated).
      */
     fun asked(text: String) {
-        if (!done && com.sidecoach.voice.Py.strip(text).lowercase() in ASSISTS) assisted = true
+        val chip = com.sidecoach.voice.Py.strip(text).lowercase()
+        if (!done && chip in ASSISTS) {
+            assisted = true
+            if (help == null) help = HELP[chip]
+        }
     }
 
     /**
@@ -138,11 +148,20 @@ class PuzzleSession(val puzzle: Puzzle, val motif: String?) {
     }
 
     /**
-     * The outcome the profile took: solved or not, the puzzle level after it and how far it
-     * moved from [before] (the step is cut short at the ends of the range).
+     * The outcome the profile took: solved or not, the puzzle rating after it as Lichess shows
+     * it, how far that moved from [before], whether the rating is still provisional (Lichess
+     * writes "1500?"), and why the attempt left the rating alone, if it did: the help used
+     * ("hint", "best_move", "line") or "repeat" (tried before), so the result line can say what
+     * counted.
      */
-    fun recordedAs(solved: Boolean, before: Int, level: Int, provisional: Boolean) {
-        result = linkedMapOf("solved" to solved, "level" to level, "change" to level - before, "provisional" to provisional)
+    fun recordedAs(solved: Boolean, before: Int, level: Int, provisional: Boolean, unrated: String? = null) {
+        result = linkedMapOf(
+            "solved" to solved,
+            "level" to level,
+            "change" to level - before,
+            "provisional" to provisional,
+            "unrated" to unrated,
+        )
     }
 
     /**

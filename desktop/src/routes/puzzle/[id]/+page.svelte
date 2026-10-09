@@ -388,6 +388,19 @@
   // that line, so the board is fitted again (as for a solution given up).
   const result = $derived(room && room.status !== "playing" && room.result ? room.result : null);
   const resultChange = $derived(result?.change ? (result.change > 0 ? `+${result.change}` : `−${-result.change}`) : "");
+  // What counted, in the line's first words, never at odds with the strip above it: a solve
+  // after a miss is "Solved, after a miss." there and counts as a miss here (Lichess's rule);
+  // an attempt the rating ignores says why (help used, or tried before).
+  const UNRATED: Record<string, string> = {
+    hint: "you used a hint",
+    best_move: "you asked for the best move",
+    line: "you asked for the line",
+    repeat: "you've tried this one before",
+  };
+  const resultWhy = $derived(result?.unrated ? (UNRATED[result.unrated] ?? null) : null);
+  const resultWords = $derived(
+    !result ? "" : resultWhy ? `Not rated: ${resultWhy}` : result.solved ? "Solved" : room?.status === "solved" ? "Counted as a miss" : "Not solved",
+  );
   const resulted = $derived(!!result);
   $effect(() => { if (resulted) tick().then(fitBoard); });
 
@@ -578,7 +591,7 @@
         {#if nextPuzzle}<a class="pz-link" class:ready={ended} href="/puzzle/{encodeURIComponent(nextPuzzle)}" title="The next recommended puzzle" onclick={next}>Next puzzle ›</a>{/if}
       </span>
       {#if result}
-        <span class="pz-result">{result.solved ? "Solved" : "Not solved"} · your puzzle rating <b>{result.level}{result.provisional ? "?" : ""}</b>{#if resultChange}&nbsp;<span class={result.change > 0 ? "up" : "down"}>({resultChange})</span>{/if}</span>
+        <span class="pz-result">{resultWords} · {resultWhy ? "rating" : "your puzzle rating"} <b title={result.provisional ? "Provisional: your rating is still settling" : undefined}>{result.level}{result.provisional ? "?" : ""}</b>{#if resultChange}&nbsp;<span class={result.change > 0 ? "up" : "down"}>({resultChange})</span>{/if}</span>
       {/if}
     </div>
   </section>

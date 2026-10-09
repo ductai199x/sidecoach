@@ -35,7 +35,40 @@ class PuzzleResultTest {
         assertTrue("none until the room has recorded it", JSONObject(s.state()).isNull("result"))
         s.recordedAs(true, 1500, 1712, true)
         val result = JSONObject(s.state()).getJSONObject("result")
-        assertEquals("""{"solved":true,"level":1712,"change":212,"provisional":true}""", result.toString())
+        assertEquals("""{"solved":true,"level":1712,"change":212,"provisional":true,"unrated":null}""", result.toString())
+    }
+
+    /**
+     * Why the rating stayed, for the result line ("Not rated: you used a hint"): the help used,
+     * or a puzzle tried before (`test_a_puzzle_solved_after_a_hint_leaves_the_rating_as_it_was`,
+     * `test_a_puzzle_tried_before_says_why_its_rating_stays`).
+     */
+    @Test
+    fun theResultSaysWhyTheRatingStayed() {
+        val s = PuzzleSession(mate, "mate")
+        s.asked("hint")
+        assertTrue(s.move("a1a8").isNotEmpty())
+        s.recordedAs(true, 1500, 1500, true, s.help)
+        assertEquals("""{"solved":true,"level":1500,"change":0,"provisional":true,"unrated":"hint"}""", JSONObject(s.state()).getJSONObject("result").toString())
+        val again = PuzzleSession(mate, "mate")
+        again.recordedAs(true, 1500, 1500, true, "repeat")
+        assertEquals("repeat", JSONObject(again.state()).getJSONObject("result").getString("unrated"))
+    }
+
+    /** The first help used names it (`test_the_result_names_the_first_help_used`). */
+    @Test
+    fun theResultNamesTheFirstHelpUsed() {
+        val cases = listOf(
+            listOf("hint") to "hint",
+            listOf("what should I play", "hint") to "best_move",
+            listOf("  Show me the line ") to "line",
+            listOf("why does the knight go there?") to null,
+        )
+        for ((chips, used) in cases) {
+            val s = PuzzleSession(mate, "mate")
+            for (chip in chips) s.asked(chip)
+            assertEquals(chips.toString(), used, s.help)
+        }
     }
 
     @Test
@@ -44,7 +77,7 @@ class PuzzleResultTest {
         s.giveUp()
         s.recordedAs(false, 1612, 1609, false)
         val result = JSONObject(s.state()).getJSONObject("result")
-        assertEquals("""{"solved":false,"level":1609,"change":-3,"provisional":false}""", result.toString())
+        assertEquals("""{"solved":false,"level":1609,"change":-3,"provisional":false,"unrated":null}""", result.toString())
     }
 
     /**

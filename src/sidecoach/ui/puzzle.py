@@ -24,8 +24,10 @@ from sidecoach.events import GameStarted, MovePlayed, Side
 from sidecoach.profile.puzzles import Puzzle
 
 # What the puzzle page's chips send (Hint, Best move, Line: routes/puzzle/[id]/+page.svelte).
-# One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint does.
-ASSISTS = frozenset({"hint", "what should i play", "show me the line"})
+# One of them used while the puzzle is played makes the attempt unrated, as Lichess's hint does;
+# the result line says which (`HELP`: the chip's words -> the help, as the page names it).
+HELP = {"hint": "hint", "what should i play": "best_move", "show me the line": "line"}
+ASSISTS = frozenset(HELP)
 
 
 class PuzzleSession:
@@ -54,6 +56,8 @@ class PuzzleSession:
         self.recorded = False  # the outcome given to the profile (the panel sets it)
         # Hint, Best move or Line used while the puzzle was played: the attempt is unrated.
         self.assisted = False
+        # The first help used (HELP's values), for the result line's "Not rated: ..."
+        self.help: str | None = None
         # The outcome as the profile took it, for the page's result line once the puzzle has
         # ended (as Lichess shows it): None until the room has recorded it.
         self.result: dict[str, Any] | None = None
@@ -93,18 +97,31 @@ class PuzzleSession:
     def asked(self, text: str) -> None:
         """The coach was asked `text`: one of the page's chips while the puzzle is played makes
         the attempt unrated (Lichess: a hint shown, the round is not rated)."""
-        if not self.done and text.strip().lower() in ASSISTS:
+        chip = text.strip().lower()
+        if not self.done and chip in ASSISTS:
             self.assisted = True
+            if self.help is None:
+                self.help = HELP[chip]
 
-    def recorded_as(self, solved: bool, before: int, level: int, provisional: bool) -> None:
+    def recorded_as(
+        self,
+        solved: bool,
+        before: int,
+        level: int,
+        provisional: bool,
+        unrated: str | None = None,
+    ) -> None:
         """The outcome the profile took: solved or not, the puzzle rating after it as Lichess
         shows it, how far that moved from `before` (Lichess's change: the difference of the
-        ratings shown), and whether the rating is still provisional (Lichess writes "1500?")."""
+        ratings shown), whether the rating is still provisional (Lichess writes "1500?"), and
+        why the attempt left the rating alone, if it did: the help used ("hint", "best_move",
+        "line") or "repeat" (tried before), so the result line can say what counted."""
         self.result = {
             "solved": solved,
             "level": level,
             "change": level - before,
             "provisional": provisional,
+            "unrated": unrated,
         }
 
     def legal(self) -> dict[str, list[str]]:

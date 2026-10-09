@@ -110,6 +110,7 @@ def test_a_mate_puzzle_and_giving_up_on_it() -> None:
         "level": 1712,
         "change": 212,
         "provisional": True,
+        "unrated": None,
     }
     # Any mate counts where the line's move mates; a non-mating move does not.
     t = PuzzleSession(MATE, "mate")
@@ -241,6 +242,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
         "level": first,
         "change": first - 1500,
         "provisional": True,
+        "unrated": None,
     }
     # The user's question reaches the room. Its coach is off here: the room says so, as the
     # panel does, or the page's typing dots waited for an answer for good.
@@ -273,6 +275,7 @@ def test_a_room_runs_a_puzzle_over_the_api_and_records_the_outcome_once(
         "level": second,
         "change": second - first,
         "provisional": True,
+        "unrated": None,
     }
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
@@ -299,7 +302,13 @@ def test_a_solved_puzzle_shows_the_rating_it_moved_to(
     # This room's line alone: a room another test closed may still log its own outcome.
     signals.said(client, MATE.id, f"puzzle {MATE.id} solved; puzzle level {won}")
     result = client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"]
-    assert result == {"solved": True, "level": won, "change": won - 1500, "provisional": True}
+    assert result == {
+        "solved": True,
+        "level": won,
+        "change": won - 1500,
+        "provisional": True,
+        "unrated": None,
+    }
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
 
@@ -486,6 +495,21 @@ def test_hint_best_move_or_line_while_playing_makes_the_attempt_unrated() -> Non
     assert not s.assisted, "after the end: a review, not help"
 
 
+def test_the_result_names_the_first_help_used() -> None:
+    # Tai's walk (2026-10-09): after a hint the rating did not move and nothing said why. The
+    # result line names the help that made the attempt unrated: the first chip pressed.
+    for chips, help_used in (
+        (["hint"], "hint"),
+        (["what should I play", "hint"], "best_move"),
+        (["  Show me the line "], "line"),
+        (["why does the knight go there?"], None),
+    ):
+        s = PuzzleSession(FORK, "fork")
+        for chip in chips:
+            s.asked(chip)
+        assert s.help == help_used, chips
+
+
 class _Coached:
     """A room's coach that is on and takes questions (a real one needs Stockfish)."""
 
@@ -544,6 +568,7 @@ def test_a_puzzle_solved_after_a_hint_leaves_the_rating_as_it_was(
             "level": 1500,
             "change": 0,
             "provisional": True,
+            "unrated": "hint",
         }
     finally:
         room.command("close")
@@ -615,7 +640,43 @@ def test_an_established_rating_shows_without_the_question_mark(
         "level": won.int_rating,
         "change": won.int_rating - 1600,
         "provisional": False,
+        "unrated": None,
     }
     assert 0 <= result["change"] < 5, "a settled rating barely moves for a far weaker puzzle"
     client.post(f"/api/puzzle/{MATE.id}/close")
     assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
+
+
+def test_a_puzzle_tried_before_says_why_its_rating_stays(
+    make_panel: Callable[..., PanelEngine], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Tai's walk (2026-10-09): a puzzle solved again left the rating as it was (Lichess rates the
+    # first attempt only) and nothing said why. The result names it: "repeat".
+    from fastapi.testclient import TestClient
+
+    from sidecoach.ui.server import build_app
+
+    signals = _RoomSignals(monkeypatch)
+    _csv(tmp_path)
+    engine = make_panel()
+    client = TestClient(base_url="http://127.0.0.1", app=build_app(engine))
+    levels = []
+    for _ in range(2):
+        assert client.post(f"/api/puzzle/{MATE.id}/open").json()["ok"]
+        done = client.post(f"/api/puzzle/{MATE.id}/move", json={"uci": "a1a8"}).json()["state"]
+        assert done["status"] == "solved"
+        while not signals.outcomes.get(timeout=HANG_S)[1].startswith(f"puzzle {MATE.id} solved"):
+            pass
+        levels.append(client.get(f"/api/puzzle/{MATE.id}/poll").json()["state"]["result"])
+        client.post(f"/api/puzzle/{MATE.id}/close")
+        assert signals.ended(MATE.id).wait(HANG_S), "the room never finished"
+        signals.ended(MATE.id).clear()
+    first, again = levels
+    assert first["unrated"] is None and first["change"] > 0
+    assert again == {
+        "solved": True,
+        "level": first["level"],
+        "change": 0,
+        "provisional": True,
+        "unrated": "repeat",
+    }

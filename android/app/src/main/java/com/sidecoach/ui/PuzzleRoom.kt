@@ -284,9 +284,13 @@ class PuzzleRoom(
         session.recorded = true
         var before = 0
         var provisional = true
+        var unrated: String? = null
         val outcome = try {
             val now = System.currentTimeMillis() / 1000.0
             before = Puzzles.puzzleLevel(store)
+            // Why the rating stays, if it does (recordAttempt's rules): help used, or tried before.
+            val repeat = store.attempted(session.puzzle.id)
+            unrated = if (session.assisted) session.help else if (repeat) "repeat" else null
             Puzzles.recordAttempt(
                 store,
                 session.puzzle,
@@ -303,7 +307,7 @@ class PuzzleRoom(
             emit("sys", "error", "profile error: ${PanelEngine.pyRepr(exc)}")
             return
         }
-        synchronized(lock) { session.recordedAs(outcome.solved, before, outcome.level, provisional) }
+        synchronized(lock) { session.recordedAs(outcome.solved, before, outcome.level, provisional, unrated) }
         emit(
             "game",
             "info",

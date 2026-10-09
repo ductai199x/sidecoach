@@ -717,6 +717,7 @@ export type PuzzleState = {
   llm?: { calls: number; prompt: number; completion: number; cost: number | null } | null;
   /** The outcome as the profile took it, once the puzzle has ended and the room recorded it:
    * solved or not, the puzzle rating after it as Lichess shows it, how far it moved, and whether
-   * it is still provisional (Lichess writes "1500?"). */
-  result?: { solved: boolean; level: number; change: number; provisional: boolean } | null;
+   * it is still provisional (Lichess writes "1500?"), and why the rating stayed, if it did: the
+   * help used ("hint", "best_move", "line") or "repeat" (tried before). */
+  result?: { solved: boolean; level: number; change: number; provisional: boolean; unrated?: string | null } | null;
 };

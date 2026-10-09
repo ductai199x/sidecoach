@@ -272,6 +272,9 @@ class PuzzleRoom:
         try:
             now = time.time()
             before = puzzle_level(self.store)
+            # Why the rating stays, if it does (record_attempt's rules): help used, or tried before.
+            repeat = self.store.attempted(session.puzzle.id)
+            unrated = session.help if session.assisted else "repeat" if repeat else None
             outcome = record_attempt(
                 self.store,
                 session.puzzle,
@@ -289,7 +292,7 @@ class PuzzleRoom:
             self._emit("sys", "error", f"profile error: {exc!r}")
             return
         with self._lock:
-            session.recorded_as(outcome.solved, before, outcome.level, provisional)
+            session.recorded_as(outcome.solved, before, outcome.level, provisional, unrated)
         self._emit(
             "game",
             "info",
