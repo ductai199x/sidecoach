@@ -1,0 +1,186 @@
+<!doctype html>
+<!--
+  A stand-in for "the site you play on", for the README's pictures (tools/media/record.py): a
+  plain game page of our own -- a board, the players and their clocks, the moves -- drawn with
+  Lichess's open-licensed boards and pieces (desktop/static/pieces/LICENSE.txt). It is filmed
+  frame by frame into a recording that the real pipeline then reads, as it would a screen.
+  It names no site and copies none.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Game</title>
+<style>
+  :root {
+    --page: #161512;
+    --panel: #262421;
+    --text: #bababa;
+    --strong: #e8e6e3;
+    --light: #f0d9b5;
+    --dark: #b58863;
+    --last: rgba(155, 199, 0, 0.41);
+    --clock: #3a3936;
+    --clock-on: #7f9f3f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--page); color: var(--text);
+    font: 15px/1.4 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  .top { height: 48px; display: flex; align-items: center; gap: 28px; padding: 0 28px;
+    background: #1e1c19; border-bottom: 1px solid #2f2d2a; }
+  .brand { width: 26px; height: 26px; border-radius: 6px; background: #3b3935; }
+  .nav { display: flex; gap: 22px; font-size: 14px; color: #9a9894; }
+  .nav b { color: var(--strong); font-weight: 600; }
+  .main { display: flex; gap: 28px; padding: 26px 28px; justify-content: center; }
+  .side { width: 300px; display: flex; flex-direction: column; gap: 12px; }
+  .player { display: flex; align-items: center; justify-content: space-between;
+    height: 44px; padding: 0 12px; background: var(--panel); border-radius: 4px; }
+  .name { color: var(--strong); font-weight: 600; }
+  .name small { color: #8a8884; font-weight: 400; margin-left: 6px; }
+  .clock { font: 600 26px/1 "Consolas", "Cascadia Mono", monospace; padding: 6px 12px;
+    border-radius: 4px; background: var(--clock); color: #d0d0d0; min-width: 104px;
+    text-align: right; }
+  .clock.on { background: var(--clock-on); color: #fff; }
+  .moves { flex: 1; background: var(--panel); border-radius: 4px; padding: 8px 0;
+    font-size: 15px; overflow: hidden; }
+  .row { display: grid; grid-template-columns: 44px 1fr 1fr; padding: 3px 12px; }
+  .row .n { color: #6f6d69; }
+  .row span.cur { color: #fff; background: #3d5a80; border-radius: 3px; padding: 0 6px;
+    margin-left: -6px; justify-self: start; }
+  .board-wrap { position: relative; }
+  .board { position: relative; width: var(--size); height: var(--size);
+    display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.5); }
+  .sq { position: relative; }
+  .sq.l { background: var(--light); }
+  .sq.d { background: var(--dark); }
+  .sq.last::after { content: ""; position: absolute; inset: 0; background: var(--last); }
+  .coord { position: absolute; font: 600 12px/1 "Segoe UI", sans-serif; pointer-events: none; }
+  .coord.f { right: 3px; bottom: 2px; }
+  .coord.r { left: 3px; top: 3px; }
+  .sq.l .coord { color: var(--dark); }
+  .sq.d .coord { color: var(--light); }
+  .piece { position: absolute; width: calc(var(--size) / 8); height: calc(var(--size) / 8);
+    background-size: cover; will-change: transform; z-index: 2; }
+  .piece.moving { z-index: 3; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand"></div>
+  <nav class="nav"><b>Play</b><span>Puzzles</span><span>Learn</span><span>Watch</span><span>Community</span></nav>
+</div>
+<div class="main">
+  <div class="stack">
+    <div class="player" id="p-top"><span class="name" id="n-top"></span><span class="clock" id="c-top"></span></div>
+    <div class="board-wrap"><div class="board" id="board"></div></div>
+    <div class="player" id="p-bot"><span class="name" id="n-bot"></span><span class="clock" id="c-bot"></span></div>
+  </div>
+  <div class="side"><div class="moves" id="moves"></div></div>
+</div>
+<script>
+// Driven from record.py: site.show(state) draws a position at once; site.move(...) slides a
+// piece over `ms` and resolves when it has landed, so each frame filmed is a real paint.
+const FILES = "abcdefgh";
+const board = document.getElementById("board");
+let look = { set: "cburnett", light: "#f0d9b5", dark: "#b58863", size: 512 };
+let bottomWhite = true;
+
+function sqXY(sq) {
+  const f = FILES.indexOf(sq[0]), r = Number(sq[1]) - 1;
+  const col = bottomWhite ? f : 7 - f, row = bottomWhite ? 7 - r : r;
+  const cell = look.size / 8;
+  return [col * cell, row * cell];
+}
+
+function drawSquares(last) {
+  board.innerHTML = "";
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const f = bottomWhite ? col : 7 - col, r = bottomWhite ? 7 - row : row;
+      const name = FILES[f] + (r + 1);
+      const el = document.createElement("div");
+      el.className = "sq " + ((f + r) % 2 ? "l" : "d") + (last.includes(name) ? " last" : "");
+      if (row === 7) el.insertAdjacentHTML("beforeend", `<span class="coord f">${FILES[f]}</span>`);
+      if (col === 0) el.insertAdjacentHTML("beforeend", `<span class="coord r">${r + 1}</span>`);
+      board.appendChild(el);
+    }
+  }
+}
+
+function drawPieces(pieces) {
+  for (const [sq, code] of Object.entries(pieces)) {
+    const el = document.createElement("div");
+    el.className = "piece";
+    el.dataset.sq = sq;
+    el.style.backgroundImage = `url(../../desktop/static/pieces/${look.set}/${code}.svg)`;
+    const [x, y] = sqXY(sq);
+    el.style.transform = `translate(${x}px, ${y}px)`;
+    board.appendChild(el);
+  }
+}
+
+function fmt(s) {
+  s = Math.max(0, s);
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function drawSide(st) {
+  const top = bottomWhite ? st.black : st.white, bot = bottomWhite ? st.white : st.black;
+  document.getElementById("n-top").innerHTML = `${top.name}<small>${top.rating}</small>`;
+  document.getElementById("n-bot").innerHTML = `${bot.name}<small>${bot.rating}</small>`;
+  document.getElementById("c-top").textContent = fmt(bottomWhite ? st.clocks[1] : st.clocks[0]);
+  document.getElementById("c-bot").textContent = fmt(bottomWhite ? st.clocks[0] : st.clocks[1]);
+  const whiteOn = st.turn === "w";
+  document.getElementById("c-top").classList.toggle("on", bottomWhite ? !whiteOn : whiteOn);
+  document.getElementById("c-bot").classList.toggle("on", bottomWhite ? whiteOn : !whiteOn);
+  const rows = [];
+  for (let i = 0; i < st.san.length; i += 2) {
+    const cur = (j) => (j === st.san.length - 1 ? ' class="cur"' : "");
+    rows.push(`<div class="row"><span class="n">${i / 2 + 1}.</span><span${cur(i)}>${st.san[i]}</span>` +
+      `<span${cur(i + 1)}>${st.san[i + 1] ?? ""}</span></div>`);
+  }
+  document.getElementById("moves").innerHTML = rows.slice(-22).join("");
+}
+
+window.site = {
+  setLook(next) {
+    look = { ...look, ...next };
+    document.documentElement.style.setProperty("--light", look.light);
+    document.documentElement.style.setProperty("--dark", look.dark);
+    document.documentElement.style.setProperty("--size", look.size + "px");
+  },
+  show(st) {
+    bottomWhite = st.bottom !== "b";
+    drawSquares(st.last || []);
+    drawPieces(st.pieces);
+    drawSide(st);
+  },
+  // Slide the piece from `from` to `to` over `ms`, then draw the position after the move.
+  async move(from, to, ms, after) {
+    const el = board.querySelector(`.piece[data-sq="${from}"]`);
+    if (el && ms > 0) {
+      el.classList.add("moving");
+      const [x0, y0] = sqXY(from), [x1, y1] = sqXY(to);
+      const anim = el.animate(
+        [{ transform: `translate(${x0}px, ${y0}px)` }, { transform: `translate(${x1}px, ${y1}px)` }],
+        { duration: ms, easing: "ease-out", fill: "forwards" });
+      await anim.finished;
+    }
+    this.show(after);
+  },
+  // The piece part-way, for filming a slide at a chosen fraction (0..1).
+  slide(from, to, t) {
+    const el = board.querySelector(`.piece[data-sq="${from}"]`);
+    if (!el) return;
+    el.classList.add("moving");
+    const [x0, y0] = sqXY(from), [x1, y1] = sqXY(to);
+    const e = 1 - Math.pow(1 - t, 3);
+    el.style.transform = `translate(${x0 + (x1 - x0) * e}px, ${y0 + (y1 - y0) * e}px)`;
+  },
+};
+window.site.setLook({});
+</script>
+</body>
+</html>

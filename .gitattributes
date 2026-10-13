@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.mkv binary
 *.png binary
+*.gif binary
+*.webp binary
