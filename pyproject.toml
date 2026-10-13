@@ -3,6 +3,8 @@ name = "sidecoach"
 version = "0.1.88"
 description = "Vision-first chess coaching companion: watches the screen, finds the board, coaches Socratically."
 readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "chess>=1.11",

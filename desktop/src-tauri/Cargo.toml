@@ -3,6 +3,7 @@ name = "sidecoach-desktop"
 version = "0.1.88"
 description = "Sidecoach: the chess coaching companion, as a desktop app"
 authors = ["Tai Duc Nguyen"]
+license = "AGPL-3.0-only"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

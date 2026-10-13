@@ -14,7 +14,7 @@
     "build:web": "vite build && node sync-web.mjs",
     "build:app:fast": "tauri build --no-bundle -- --profile fast"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
