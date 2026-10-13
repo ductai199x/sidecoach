@@ -18,7 +18,8 @@ import kotlin.math.abs
 /**
  * The rest of the vision held to the desktop's answers, one table per part
  * (`tools/make_vision_fixtures.py`): the change gate on runs of frames and the margin it puts
- * round a board; the result badges on the live games' crops and on rendered boards; the board
+ * round a board; the result badges on the live games' crops (drawn as the desktop's
+ * tests/scenes.py draws them; the real crops are kept locally) and on rendered boards; the board
  * detector and the tracker on small pages -- a board in place, nudged, slid, resized, under the
  * dialog, flush with the frame's corner at a half-pixel pitch, beside another board, a larger
  * checkerboard, two themes that are hard to read, nothing at all -- and the board moved as
@@ -201,8 +202,8 @@ class VisionParityTest {
      * More of the desktop's detector and tracker tests on their own pages (the parity audit,
      * 2026-09-29; `tools/make_vision_fixtures.py`'s `desk`): two boards half a cell or more apart
      * both found and closer ones refused (`test_boards_half_a_cell_or_more_apart_are_both_found`,
-     * `test_boards_closer_than_half_a_cell_read_as_one_pattern`), the real chess.com page
-     * (`test_a_real_chesscom_page_yields_its_board`), a 37 px cell at (17, 333)
+     * `test_boards_closer_than_half_a_cell_read_as_one_pattern`), a site's cluttered page
+     * (`test_a_cluttered_page_yields_its_board`), a 37 px cell at (17, 333)
      * (`test_detects_odd_cell_size_and_position`); a re-fit adopted on its boundary against a
      * better fit (`test_refit_wins_on_boundary_strength_not_on_the_fit_score`), an inverted
      * theme's palette kept through a nudge (`test_locked_fit_keeps_polarity_on_an_inverted_theme`),

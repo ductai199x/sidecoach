@@ -58,6 +58,12 @@ version is [android/docs/testing.md](../android/docs/testing.md).
 - **Markers.** `-m slow` runs the slow tests (with the default `-m` replaced: `-m slow`
   runs only them, `-m ""` runs everything). `vision` marks the synthetic vision suite, which
   runs by default.
+- **Real crops are local.** The public repo carries no site's artwork (Tai, 2026-10-13): what
+  the tests once read from crops of chess.com screens (a page, the trial game's arrows, g01,
+  a puzzle, the result badges) is drawn with lichess's open boards and the cburnett pieces
+  (`tests/scenes.py`), and the crops stay under `data/fixtures/real/`, never committed.
+  `uv run --no-sync python tools/vision/real_crops.py` runs the old checks on them, assertion
+  for assertion, and names any file missing.
 - **Durations.** `uv run pytest --store-durations` rewrites `tests/durations.json`, the order
   the workers are dealt the tests in (`tests/scheduling.py`).
 - **Caches.** `SIDECOACH_TEST_CACHE=1` (default) reads and writes the embedding net's kept

@@ -1,13 +1,12 @@
-from pathlib import Path
 from typing import Any
 
 import chess
-import cv2
 import numpy as np
 import pytest
 
 from sidecoach.events import Region, Side
 from sidecoach.vision.board_detect import detect_boards, fit_score, square_colours, to_gray
+from tests import scenes
 from tests.synth import DARK, LIGHT, bulky_start, render_board, synthetic_board, with_overlays
 
 pytestmark = pytest.mark.vision  # the synthetic vision pipeline: run with -m vision
@@ -48,15 +47,15 @@ def test_no_board_in_noise() -> None:
     assert detect_boards(frame) == []
 
 
-def test_a_real_chesscom_page_yields_its_board() -> None:
-    """A chess.com bot game as the page shows it (tests/fixtures/chesscom_page.png, a
-    1440p screenshot cropped to the page): the board among the move list, the captured
-    pieces, the coach's chat and a badge on the king's square. Only the board is found,
-    where it is, at the size it is."""
-    frame = cv2.imread(str(Path(__file__).parent / "fixtures" / "chesscom_page.png"))
-    assert frame is not None
+def test_a_cluttered_page_yields_its_board() -> None:
+    """A bot game as a site's page shows it, a 1440p screen cropped to the page
+    (`scenes.cluttered_page`, the stand-in for a chess.com crop now kept locally,
+    tools/vision/real_crops.py): the board beside a white evaluation bar, among the striped
+    move list, the captured pieces, the coach's chat and a badge on the king's square. Only
+    the board is found, where it is, at the size it is."""
+    frame = scenes.cluttered_page()
     boards = detect_boards(frame)
-    assert boards, "no board found on the real page"
+    assert boards, "no board found on the page"
     best = boards[0]
     assert best.fit >= 0.85
     assert abs(best.cell_px - 86) <= 1

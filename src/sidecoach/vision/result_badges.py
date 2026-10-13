@@ -16,7 +16,8 @@ for a disc near the corner -- a rim of one colour with a ring of other colours a
 it, and not the colour of the square it sits on -- and only then asks which colour. The
 last clause matters: a bulky piece can wall off the corner of its own square so that the
 bare corner passes for a disc of the square's colour. The measurements below come from
-the live games at 43 and 80 px squares (tests/fixtures/badges).
+the live games at 43 and 80 px squares (their crops kept locally under
+data/fixtures/real/badges, tools/vision/real_crops.py; drawn for the tests by tests/scenes.py).
 """
 
 from __future__ import annotations

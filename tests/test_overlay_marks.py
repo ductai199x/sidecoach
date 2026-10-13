@@ -9,14 +9,12 @@ a drawing is no drag, and the moves elsewhere on the board go on committing unde
 
 The first three tests are the measure on hand-made patches; the next four render arrows
 on the board -- the brown theme the game was on, and a coloured set -- and run the
-recogniser and the whole pipeline; the last reads the real frames of that game (board
-crops under tests/fixtures).
+recogniser and the whole pipeline; the last draws the frames of that game as its recording
+cropped them (tests/scenes.py; the real crops are kept locally and read by
+tools/vision/real_crops.py).
 """
 
 from __future__ import annotations
-
-import json
-from pathlib import Path
 
 import chess
 import cv2
@@ -28,11 +26,11 @@ from sidecoach.state.pipeline import GamePipeline
 from sidecoach.state.reconcile import Readings
 from sidecoach.vision.pieces import OVERLAY_MAX, CellReading, ThemeModel, silhouette
 from sidecoach.vision.squares import BoardGeometry, square_at
+from tests import scenes
 from tests.synth import synthetic_board
 
 pytestmark = pytest.mark.vision
 
-FIXTURES = Path(__file__).parent / "fixtures"
 # After 22...e5 in the trial game: the d4 pawn faces the e5 pawn, the arrow ran d4 -> e5.
 POSITION = "r2q1rk1/1b3ppp/p1nbpn2/1p2p3/3P4/1BN1PN2/PP3PPP/R2Q1RK1 w - - 0 23"
 
@@ -73,12 +71,6 @@ def test_a_badge_on_the_corner_is_not_a_drawing() -> None:
     cell = np.full((96, 96, 3), (181, 217, 240), dtype=np.uint8)  # light brown, BGR
     cv2.circle(cell, (95, 0), 20, (60, 60, 230), -1)  # a red badge on the top-right corner
     assert silhouette(cell).overlay < OVERLAY_MAX
-
-
-def _real(name: str) -> np.ndarray:
-    frame = cv2.imread(str(FIXTURES / name))
-    assert frame is not None, name
-    return frame
 
 
 def _cell(readings: Readings, name: str, bottom: Side) -> CellReading:
@@ -231,25 +223,24 @@ def test_moves_elsewhere_commit_under_a_standing_arrow() -> None:
     assert played == ["a3", "h6", "b3", "h5", "Nc3", "Nf6", "d4"], played
 
 
-def test_the_real_arrow_frames_read_the_same() -> None:
-    """The board crops of the trial game itself: the clean frame after 22...e5 and two
-    frames with the arrow on the board, the recogniser learned from the game's start."""
-    meta = json.loads((FIXTURES / "frames.json").read_text(encoding="utf-8"))
-    margin = meta["margin"]
-    start = _real("chesscom_start.png")
+def test_the_trial_games_arrow_frames_read_the_same() -> None:
+    """The trial game's frames as the recording cropped them (`scenes.arrow_scenes`, the
+    stand-ins for its chess.com crops, now kept locally: tools/vision/real_crops.py): the
+    recogniser learned by the pipeline from the game's start, then the clean frame after
+    22...e5 and two frames with arrows on the board -- two heads on the red-marked e5 pawn,
+    and a third arrow across d4."""
+    frames = scenes.arrow_scenes()
     pipe = GamePipeline()
     for i in range(4):
-        pipe.process(start, 0.1 * i)
+        pipe.process(frames["start"], 0.1 * i)
     assert pipe.model is not None and pipe.board is not None and pipe.bottom is not None
     (white_fill, _), (black_fill, _) = pipe.model.piece_colours
-    assert white_fill.min() > 200 and black_fill.max() < 80, (
-        "chess.com's pieces are white and black"
-    )
-    side = meta["chesscom_start"]["region"][2]
-    geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
-    clean = pipe.model.classify_frame(_real("chesscom_arrow_clean.png"), geometry)
+    assert white_fill.min() > 200 and black_fill.max() < 80, "the pieces are white and black"
+    side = 8 * scenes.ARROW_CELL
+    geometry = BoardGeometry(Region(scenes.MARGIN, scenes.MARGIN, side, side), side / 8)
+    clean = pipe.model.classify_frame(frames["clean"], geometry)
     assert _cell(clean, "d4", pipe.bottom).symbol == "P"
     assert _cell(clean, "e5", pipe.bottom).symbol == "p"
-    for name in ("chesscom_arrow_640.png", "chesscom_arrow_662.png"):
-        readings = pipe.model.classify_frame(_real(name), geometry)
+    for name in ("two_arrows", "three_arrows"):
+        readings = pipe.model.classify_frame(frames[name], geometry)
         _assert_arrow_reads(readings, pipe.bottom)

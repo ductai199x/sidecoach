@@ -2,19 +2,17 @@
 read for the result so that a resignation, a flag or an agreed draw -- which leave no
 trace on the squares -- end the game with its result instead of the End game menu.
 
-The real badges come from two live games as crops under tests/fixtures/badges (43 and
-80 px squares, the winner's crown, the loser's fallen king in either colour, the badge
-pushed inward on the board's edge); the rest is rendered.
+The badges of two live games come first, drawn as their crops showed them (tests/scenes.py:
+43 and 80 px squares, the winner's crown, the loser's fallen king in either colour, the
+badge pushed inward on the board's edge; the real crops are kept locally and read by
+tools/vision/real_crops.py); the rest is rendered.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import chess
-import cv2
 import numpy as np
 import pytest
 
@@ -22,13 +20,12 @@ from sidecoach.events import GameEnded, MovePlayed, Region, ScreenState, Side
 from sidecoach.state.pipeline import BADGE_FRAMES, GamePipeline
 from sidecoach.vision.result_badges import Badge, badge_at, badge_on, result_of
 from sidecoach.vision.squares import BoardGeometry
+from tests import scenes
 from tests.games import Game
 from tests.synth import THEMES, draw_result_badge, synthetic_board
 
 pytestmark = pytest.mark.vision
 
-FIXTURES = Path(__file__).parent / "fixtures" / "badges"
-MANIFEST = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))
 # The end of the sixth live game (white resigned in effect: mated on g1), and a middlegame.
 LOST = "6k1/4rnp1/6Q1/p1p4P/2P2R2/6P1/1r4q1/5RK1 w - - 3 45"
 MIDDLE = "r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R2QKB1R w KQ - 0 8"
@@ -43,18 +40,19 @@ def _frame(board: chess.Board, cell: int = 64, **kw: Any) -> np.ndarray:
     return synthetic_board(board=board, cell=cell, x0=X0, y0=Y0, width=1400, height=1200, **kw)
 
 
-# ---- the real badges ------------------------------------------------------------------
+# ---- the live games' badges --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("entry", MANIFEST, ids=[e["file"] for e in MANIFEST])
-def test_the_live_games_badges_read_as_recorded(entry: dict[str, object]) -> None:
-    crop = cv2.imread(str(FIXTURES / str(entry["file"])))
-    assert crop is not None
-    cell = float(entry["cell"])  # type: ignore[arg-type]
-    corner_x = float(entry["x0"]) + cell  # type: ignore[arg-type]
-    corner_y = float(entry["y0"])  # type: ignore[arg-type]
-    want = {"win": Badge.WIN, "loss": Badge.LOSS, "none": None}[str(entry["kind"])]
-    assert badge_at(crop, corner_x, corner_y, cell) is want
+@pytest.mark.parametrize("name", scenes.BADGE_CROPS)
+def test_the_live_games_badges_read_as_recorded(name: str) -> None:
+    """The crops round the kings of the two live games' ends, at their squares of 80.1176
+    and 43.0233 px, drawn as the crops showed them (`scenes.badge_crops`)."""
+    entry = scenes.badge_crops()[name]
+    cell = entry.cell
+    corner_x = entry.x0 + cell
+    corner_y = entry.y0
+    want = {"win": Badge.WIN, "loss": Badge.LOSS, "none": None}[entry.kind]
+    assert badge_at(entry.crop, corner_x, corner_y, cell) is want
 
 
 def read_result(frame, geometry, board: chess.Board, bottom: Side) -> str | None:  # noqa: ANN001

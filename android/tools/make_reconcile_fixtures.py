@@ -354,7 +354,7 @@ RECORDED: dict[str, list[str] | None] = {
         "test_cold_start_reads_a_rendered_mid_game_board",
         "test_asked_to_reread_a_board_with_a_piece_left_selected",
         "test_cold_start_without_coordinates_takes_the_side_it_is_told",
-        "test_cold_start_reads_the_real_frames_the_same",
+        "test_cold_start_reads_the_recorded_games_frames_the_same",
         "test_a_game_joined_from_the_middle_is_adopted_without_being_asked",
         "test_the_side_to_move_of_an_adopted_position_comes_from_the_running_clock",
         "test_a_board_mid_move_is_never_adopted_and_a_start_position_bootstraps",

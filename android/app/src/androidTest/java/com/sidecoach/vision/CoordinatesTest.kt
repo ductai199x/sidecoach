@@ -79,24 +79,26 @@ class CoordinatesTest {
     }
 
     /**
-     * `test_the_8_reads_the_side_with_nothing_learned` (desktop 495dee2), its real boards:
-     * where the 8 is, at the top of the left edge or at its foot, says which side is at the
-     * bottom with nothing learned -- read through labels cached as solid blocks, as Tai's
-     * were: the board of his puzzle on the Pixel (84 px, Black at the bottom) and a chess.com
-     * start (80 px, White), its board found by the detector as the desktop's test finds it (the
-     * parity audit, 2026-09-29: the geometry was written in here by hand). The desktop's
-     * rendered boards are read on the phone by the pipeline fixture `labels-read-past-by-8`.
+     * `test_the_8_reads_the_side_with_nothing_learned` (desktop 495dee2), its boards drawn as
+     * the real ones were (desktop tests/scenes.py, written here by `tools/make_vision_fixtures.py`;
+     * the real crops are kept locally): where the 8 is, at the top of the left edge or at its
+     * foot, says which side is at the bottom with nothing learned -- read through labels cached
+     * as solid blocks, as Tai's were: the board of his puzzle on the Pixel (84 px filling the
+     * frame, Black at the bottom) and a game's start (80 px, White), its board found by the
+     * detector as the desktop's test finds it (the parity audit, 2026-09-29: the geometry was
+     * written in here by hand). The desktop's 64 px rendered boards are read on the phone by the
+     * pipeline fixture `labels-read-past-by-8`.
      */
     @Test
     fun the8ReadsTheSideWithNothingLearned() {
         val solid = (1..8).associateWith { BooleanArray(Coordinates.GLYPH * Coordinates.GLYPH) { true } }
-        val puzzle = load("chesscom_puzzle_black_84.png")
+        val puzzle = load("puzzle_black_84.png")
         val onPhone = BoardGeometry(Region(0, 0, 672, 672), 84.0)
         assertEquals(Pieces.Side.BLACK, Coordinates.eights(puzzle, onPhone))
         assertEquals(Pieces.Side.BLACK, Coordinates.readBottomSide(puzzle, onPhone, solid))
-        val start = load("chesscom_start.png")
+        val start = load("start_80.png")
         val found = BoardDetect.detect(BoardDetect.toGray(start)).firstOrNull()
-        assertTrue("no board found on the chess.com start", found != null)
+        assertTrue("no board found on the start", found != null)
         val board = BoardGeometry(found!!.region, found.cellPx)
         assertEquals(Pieces.Side.WHITE, Coordinates.readBottomSide(start, board, solid))
         puzzle.release(); start.release()

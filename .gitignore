@@ -25,6 +25,33 @@ sidecoach.toml
 # Reference material read at dev time only (books, annotations) -- never committed.
 refs/
 
+# Crops of chess.com screens and its brand-green icon: kept on the developer's disk, never
+# committed (Tai, 2026-10-13). The tests draw stand-ins (tests/scenes.py); the crops are
+# checked from data/fixtures/real/ by tools/vision/real_crops.py.
+/tests/fixtures/chesscom_page.png
+/tests/fixtures/chesscom_start.png
+/tests/fixtures/chesscom_arrow_clean.png
+/tests/fixtures/chesscom_arrow_640.png
+/tests/fixtures/chesscom_arrow_662.png
+/tests/fixtures/chesscom_puzzle_black_84.png
+/tests/fixtures/g01_start.png
+/tests/fixtures/g01_settled.png
+/tests/fixtures/g01_in_flight.png
+/tests/fixtures/frames.json
+/tests/fixtures/badges/
+/desktop/app-icon.png
+/android/app/src/androidTest/assets/coordinates/chesscom_start.png
+/android/app/src/androidTest/assets/coordinates/chesscom_puzzle_black_84.png
+/android/app/src/androidTest/assets/vision/desk-chesscom-page.png
+/android/app/src/androidTest/assets/vision/badge-win_g1_80px_1915.png
+/android/app/src/androidTest/assets/vision/badge-loss_h5_80px_1915.png
+/android/app/src/androidTest/assets/vision/badge-none_g1_80px_1649.png
+/android/app/src/androidTest/assets/vision/badge-none_h5_80px_1649.png
+/android/app/src/androidTest/assets/vision/badge-loss_g1_43px_1300.png
+/android/app/src/androidTest/assets/vision/badge-win_g8_43px_1300.png
+/android/app/src/androidTest/assets/vision/badge-none_g1_43px_1200.png
+/android/app/src/androidTest/assets/vision/badge-none_g8_43px_1200.png
+
 # The desktop shell's build products (desktop/): node_modules, the Svelte build, the Cargo
 # target, Tauri's generated schemas, and the embedded Python resources.
 desktop/node_modules/

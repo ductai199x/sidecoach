@@ -558,8 +558,9 @@ Every stage is replayable: `sidecoach record` and opt-in session recordings stor
 `sidecoach replay` feeds them through the pipeline exactly as the live session saw them.
 Recordings under `data/` (`gNN-<opponent>-<note>/` with chess.com's `truth.pgn`) are for
 replays and the validation scripts; the test suite depends on nothing under `data/`
-(2026-09-18): it renders its boards (`tests/synth.py`, real piece sets, a few committed crops
-under `tests/fixtures/`), and `tests/test_stress.py` plays seeded random games through the
+(2026-09-18): it renders its boards (`tests/synth.py`, real piece sets, and in `tests/scenes.py`
+the situations of a few crops of real games, which stay local under `data/fixtures/real/` and
+are checked by `tools/vision/real_crops.py`), and `tests/test_stress.py` plays seeded random games through the
 whole pipeline over every theme, set, size and decoration (docs/testing.md).
 
 ## 6. Storage

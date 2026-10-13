@@ -8,19 +8,18 @@ the game's start. A board caught mid-move is refused, so a lifted piece is never
 empty square (the c1 bishop that read empty in flight over f4).
 
 Rendered boards first, on two themes and both orientations, the orientation read from the
-rendered coordinates; then the real frames of a recorded game (board crops under
-tests/fixtures), where the digits are chess.com's.
+rendered coordinates; then the frames of a recorded game drawn as its recording cropped them
+(tests/scenes.py; the real crops, where the digits are chess.com's, are kept locally and read
+by tools/vision/real_crops.py).
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable
 from pathlib import Path
 
 import chess
-import cv2
 import numpy as np
 import pytest
 
@@ -28,12 +27,12 @@ from sidecoach.events import GameStarted, Region, Side
 from sidecoach.state.pipeline import COLD_NOTICE_S, GamePipeline
 from sidecoach.vision.squares import BoardGeometry
 from sidecoach.vision.theme_cache import ThemeCache
+from tests import scenes
 from tests.games import sans_of
 from tests.synth import GEOM, PieceStyle, synthetic_board
 
 pytestmark = pytest.mark.vision
 
-FIXTURES = Path(__file__).parent / "fixtures"
 # After 10 moves of a Ruy Lopez, with both sides castled: a quiet middlegame board.
 MIDGAME = "r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 4 8"
 
@@ -195,38 +194,32 @@ def test_cold_start_without_coordinates_takes_the_side_it_is_told(tmp_path: Path
     assert cold.reconciler is not None and not _squares_off(cold.reconciler.board, truth)
 
 
-def _real(name: str) -> np.ndarray:
-    frame = cv2.imread(str(FIXTURES / name))
-    assert frame is not None, name
-    return frame
-
-
-def test_cold_start_reads_the_real_frames_the_same(tmp_path: Path) -> None:
-    """The recorded game g01: the theme learned from its start frame, then a settled
-    mid-game frame adopted and compared square by square with the tracked position, and
-    a frame with a piece in flight refused."""
-    meta = json.loads((FIXTURES / "frames.json").read_text(encoding="utf-8"))
-    margin = meta["margin"]
+def test_cold_start_reads_the_recorded_games_frames_the_same(tmp_path: Path) -> None:
+    """The recorded game g01 as its recording cropped it (`scenes.joined_scenes`, the
+    stand-ins for its chess.com crops, now kept locally: tools/vision/real_crops.py), at
+    43 px squares: the theme learned from its start frame, then a settled mid-game frame
+    adopted and compared square by square with the tracked position, and a frame with a
+    piece in flight refused."""
+    frames = scenes.joined_scenes()
     cache = ThemeCache(tmp_path)
     warm = GamePipeline(cache=cache)
-    start = _real("g01_start.png")
     for i in range(4):
-        warm.process(start, 0.1 * i)
+        warm.process(frames["start"], 0.1 * i)
     assert warm.model is not None and warm.model.rank_labels, "no theme learned from g01"
-    side = meta["g01_settled"]["region"][2]
-    geometry = BoardGeometry(Region(margin, margin, side, side), side / 8)
+    side = 8 * scenes.JOINED_CELL
+    geometry = BoardGeometry(Region(scenes.MARGIN, scenes.MARGIN, side, side), side / 8)
 
     cold = GamePipeline(cache=cache)
-    events = cold.cold_start(_real("g01_settled.png"), geometry)
+    events = cold.cold_start(frames["settled"], geometry)
     assert any(isinstance(e, GameStarted) for e in events), "cold start did not begin a game"
-    assert cold.bottom is not None and cold.bottom.value == meta["g01_settled"]["bottom"]
+    assert cold.bottom is Side.WHITE
     assert cold.reconciler is not None
-    truth = chess.Board(meta["g01_settled"]["placement"] + " w - - 0 1")
+    truth = chess.Board(scenes.JOINED_PLACEMENT + " w - - 0 1")
     off = _squares_off(cold.reconciler.board, truth)
     assert not off, f"cold read disagrees with the tracked position on {off}"
 
     refused = GamePipeline(cache=cache)
-    assert refused.cold_start(_real("g01_in_flight.png"), geometry) == []
+    assert refused.cold_start(frames["in_flight"], geometry) == []
 
 
 def _tick(pipe: GamePipeline, frame: np.ndarray, ts: float) -> list:

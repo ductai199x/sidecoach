@@ -11,7 +11,8 @@ odd. This records, compactly, one table per part:
 - gate: frames built from a flat grey and rectangles moved by some levels (the Kotlin builds
   the same), each scenario a run of frames and the `changed` answers of the desktop's
   `ChangeGate`; and `board_gate` for boards whose half cell is a half pixel, or off the frame.
-- badges: the live games' crops (tests/fixtures/badges) and a few rendered boards (both
+- badges: the live games' crops as tests/scenes.py draws them (`badge_crops`: lichess's
+  boards and pieces, the real crops being kept locally) and a few rendered boards (both
   orientations, two sizes, the kings on the edges, a bulky piece walling off its corner, no
   result), with `badge_at`/`find_disc`, and the pair `result_of` makes of the kings' badges.
 - boards: small frames with a board on a busy page -- in place, nudged, slid, resized,
@@ -34,22 +35,25 @@ odd. This records, compactly, one table per part:
   again, and a game board moved past a re-fit's reach with an empty board beside it. Each
   passes the desktop's own assertions here, or the generator stops.
 - desk (the parity audit, 2026-09-29): more of the desktop's detector and tracker tests on
-  their own pages -- two boards half a cell or more apart found and closer refused, the real
-  chess.com page, a 37 px cell at (17, 333); a re-fit adopted on its boundary against a better
-  fit, an inverted theme's palette kept through a nudge, a dialog beside a page edge, and a
-  cover near one square colour over half the board, the lock's colours recorded with the lock.
-  And under badges, the board's own decorations and a lone badge, none a result.
+  their own pages -- two boards half a cell or more apart found and closer refused, a site's
+  cluttered page (`scenes.cluttered_page`), a 37 px cell at (17, 333); a re-fit adopted on its
+  boundary against a better fit, an inverted theme's palette kept through a nudge, a dialog
+  beside a page edge, and a cover near one square colour over half the board, the lock's
+  colours recorded with the lock. And under badges, the board's own decorations and a lone
+  badge, none a result.
+- coordinates: `CoordinatesTest`'s two boards, as tests/test_coordinates.py's
+  `test_the_8_reads_the_side_with_nothing_learned` reads them (`scenes.puzzle_black_84` and
+  the start of `scenes.arrow_scenes`), into ../coordinates/.
 
     cd D:/chess-coaching-companion
     uv run --no-sync python <worktree>/tools/make_vision_fixtures.py
 
-It writes next to itself: <worktree>/app/src/androidTest/assets/vision/.
+It writes next to itself: <worktree>/app/src/androidTest/assets/vision/ (and coordinates/).
 """
 
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -71,6 +75,7 @@ from sidecoach.vision.board_detect import (  # noqa: E402
     square_colours,
     to_gray,
 )
+from sidecoach.vision.coordinates import GLYPH, eights, read_bottom_side  # noqa: E402
 from sidecoach.vision.result_badges import (  # noqa: E402
     Badge,
     badge_at,
@@ -81,6 +86,7 @@ from sidecoach.vision.result_badges import (  # noqa: E402
 )
 from sidecoach.vision.squares import BoardGeometry  # noqa: E402
 from sidecoach.vision.tracker import BoardTracker  # noqa: E402
+from tests import scenes  # noqa: E402
 from tests.synth import (  # noqa: E402
     DARK,
     LIGHT,
@@ -93,7 +99,7 @@ from tests.synth import (  # noqa: E402
 )
 
 OUT = Path(__file__).resolve().parents[1] / "app" / "src" / "androidTest" / "assets" / "vision"
-BADGES = DESKTOP / "tests" / "fixtures" / "badges"
+COORDINATES = OUT.parent / "coordinates"
 W, H = 560, 440
 
 
@@ -199,22 +205,23 @@ def disc_of(found) -> list | None:  # noqa: ANN001
 
 
 def badge_cases() -> dict:
-    manifest = json.loads((BADGES / "manifest.json").read_text(encoding="utf-8"))
     crops = []
-    for entry in manifest:
-        shutil.copyfile(BADGES / entry["file"], OUT / f"badge-{entry['file']}")
-        crop = cv2.imread(str(BADGES / entry["file"]))
-        cell = float(entry["cell"])
-        corner_x = float(entry["x0"]) + cell
-        corner_y = float(entry["y0"])
+    for name, entry in scenes.badge_crops().items():
+        crop = entry.crop
+        cell = entry.cell
+        corner_x = entry.x0 + cell
+        corner_y = entry.y0
         background = square_colour(crop, corner_x, corner_y, cell)
         badge = badge_at(crop, corner_x, corner_y, cell)
+        want = {"win": Badge.WIN, "loss": Badge.LOSS, "none": None}[entry.kind]
+        if badge is not want:  # test_the_live_games_badges_read_as_recorded
+            raise SystemExit(f"the live games' badge {name}: the desktop read {badge}")
         crops.append(
             {
-                "file": f"badge-{entry['file']}",
+                "file": png(f"badge-{name}.png", crop),
                 "corner": [corner_x, corner_y],
                 "cell": cell,
-                "kind": entry["kind"],
+                "kind": entry.kind,
                 "background": [r6(v) for v in background],
                 "disc": disc_of(find_disc(crop, corner_x, corner_y, cell, background)),
                 "badge": None if badge is None else badge.value,
@@ -516,7 +523,7 @@ def _two_boards(gap: float) -> tuple[np.ndarray, int]:
 
 def desktop_detections() -> dict[str, np.ndarray]:
     """test_board_detect's boards half a cell or more apart (both found) and closer (read as one
-    pattern: none), the real chess.com page, and an odd cell at an odd place."""
+    pattern: none), a site's cluttered page, and an odd cell at an odd place."""
     frames: dict[str, np.ndarray] = {}
     for gap in (0.0, 0.25, 0.5, 1.0):
         frame, second_x = _two_boards(gap)
@@ -529,12 +536,12 @@ def desktop_detections() -> dict[str, np.ndarray]:
         if not apart and found:
             raise SystemExit(f"two boards {gap} apart: the desktop found {found}")
         frames[f"two-boards-{gap}-apart"] = frame
-    page = cv2.imread(str(DESKTOP / "tests" / "fixtures" / "chesscom_page.png"))
+    page = scenes.cluttered_page()
     found = detect_boards(page)
     if not (found and found[0].fit >= 0.85 and abs(found[0].cell_px - 86) <= 1
             and abs(found[0].region.x - 290) <= 2 and abs(found[0].region.y - 65) <= 2):  # fmt: skip
-        raise SystemExit(f"the chess.com page: the desktop found {found[:1]}")
-    frames["chesscom-page"] = page
+        raise SystemExit(f"the cluttered page: the desktop found {found[:1]}")
+    frames["cluttered-page"] = page
     odd = flatten_around(synthetic_board(x0=17, y0=333, cell=37, seed=3), [(17, 333, 37)])
     found = detect_boards(odd)
     if not (found and abs(found[0].region.x - 17) <= 2 and abs(found[0].region.y - 333) <= 2
@@ -853,6 +860,32 @@ def edge_cases() -> dict:
     return {"detections": detections, "runs": runs}
 
 
+# ---- the coordinates -------------------------------------------------------------------------
+
+
+def coordinate_boards() -> list[str]:
+    """`CoordinatesTest.the8ReadsTheSideWithNothingLearned`'s two boards, desktop
+    test_coordinates's `test_the_8_reads_the_side_with_nothing_learned`: the phone's puzzle,
+    84 px squares filling the frame with Black at the bottom, and a game's start at 80 px with
+    White, each checked to read here as that test asserts, through labels cached as solid
+    blocks."""
+    COORDINATES.mkdir(parents=True, exist_ok=True)
+    solid = {rank: np.ones((GLYPH, GLYPH), dtype=bool) for rank in range(1, 9)}
+    puzzle = scenes.puzzle_black_84()
+    on_phone = BoardGeometry(Region(0, 0, 672, 672), 84.0)
+    if eights(puzzle, on_phone) is not Side.BLACK or read_bottom_side(puzzle, on_phone, solid) is not Side.BLACK:
+        raise SystemExit("the puzzle: the desktop did not read Black at the bottom")
+    start = scenes.arrow_scenes()["start"]
+    [board, *_] = detect_boards(start)
+    if read_bottom_side(start, BoardGeometry(board.region, board.cell_px), solid) is not Side.WHITE:
+        raise SystemExit("the start: the desktop did not read White at the bottom")
+    written = []
+    for name, frame in (("puzzle_black_84.png", puzzle), ("start_80.png", start)):
+        cv2.imwrite(str(COORDINATES / name), frame, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+        written.append(name)
+    return written
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for old in OUT.glob("*.png"):
@@ -864,7 +897,10 @@ def main() -> None:
         "edges": edge_cases(),
         "desk": desk_cases(),
     }
-    (OUT / "index.json").write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
+    (OUT / "index.json").write_text(
+        json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n"
+    )
+    print("coordinates:", coordinate_boards())
     size = sum(p.stat().st_size for p in OUT.iterdir())
     gate = out["gate"]
     print("gate:", [s["changed"] for s in gate["scenarios"]], [b["gate"] for b in gate["boards"]])
