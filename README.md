@@ -16,6 +16,7 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-e8b040"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-e8b040">
   <img alt="Android" src="https://img.shields.io/badge/Android-phone-e8b040">
+  <img alt="Linux preview" src="https://img.shields.io/badge/Linux-preview-e8b040">
 </p>
 
 <p align="center">
@@ -226,6 +227,12 @@ play on, press **Start**, and play.
 **Android:** install `Sidecoach_<version>_android.apk` from the same release (allow installs
 from your browser or file manager), open it once, grant screen capture, and play in your chess
 app. Building it yourself: [android/README.md](android/README.md).
+
+**Linux (preview):** `Sidecoach_<version>_amd64.AppImage` (make it executable and run it) or
+`Sidecoach_<version>_amd64.deb` (`sudo apt install ./Sidecoach_<version>_amd64.deb`), x86-64.
+It is built and checked under WSL, not yet on a real Linux desktop. Watching the screen needs an
+X11 (Xorg) session; under Wayland, the default on recent Ubuntu and Fedora, it cannot see the
+screen yet.
 
 <details>
 <summary>Run from source</summary>

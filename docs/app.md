@@ -585,16 +585,21 @@ CUDA. `release_desktop.py` runs on Linux and sets `APPIMAGELAUNCHER_DISABLE=1`; 
 Tauri-cached `linuxdeploy-plugin-appimage` had to be replaced by its 1-alpha-20230713-1
 release.
 
-It has never run on a real Linux desktop, and it is not released. Screen capture there is
-untested: the only backends are WGC and mss (X11), and there is no xdg-desktop-portal
-backend for Wayland. CI does not build Linux, the updater's `latest.json` names only
-`windows-x86_64`, and `release_desktop.py --install` is Windows only.
+0.1.88's AppImage and `.deb` were built the same way (2026-10-13) and are on the GitHub
+release as a preview. They have never run on a real Linux desktop. The only capture backends
+are WGC and mss (X11): under Xvfb, the AppImage's own Python grabbed the screen with mss and
+`sidecoach detect` found a drawn board at its exact place; under WSLg (Wayland with XWayland)
+the grab fails with an X11 protocol error, and a Wayland desktop is expected to fail the same
+way: there is no xdg-desktop-portal backend for Wayland. CI does not build Linux, the
+updater's `latest.json` names only `windows-x86_64`, and `release_desktop.py --install` is
+Windows only.
 
 ## Not done
 
 - **Linux on a real desktop:** capture (a portal backend for Wayland), push-to-talk, the
-  frameless splash and the tray under a real compositor, a release. See [Linux](#linux).
-- **A release on GitHub:** no tag has been pushed, so the updater has nothing to find.
+  frameless splash and the tray under a real compositor. See [Linux](#linux).
+- **The updater's release:** v0.1.88 is on GitHub (Windows, Android, the Linux preview) without
+  the updater's `latest.json`, so the updater still has nothing to find.
 - **Start with the system:** `shell.json` has an `autostart` field and the page carries it,
   but the settings page shows no control for it and the shell does nothing with it.
 - **The phone's distribution:** it is installed over adb with the debug key; there is no
