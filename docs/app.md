@@ -648,9 +648,10 @@ for itself, and behave as on Windows, 1:1.
   phone's `Mic.kt` the same): the VAD hears the held frames on the listener thread, and a press
   with no speech in it comes to nothing, as a tap too short does. The recogniser made "yeah" of
   silence and it went to the coach.
-- **The build machine is Ubuntu 22.04**: the packages need the build's glibc, and built on 24.04
-  they needed 2.39 (no Ubuntu 22.04, Debian 12 or Mint 21). Built on 22.04 (a VM, 2026-10-14)
-  the newest any file in the AppImage needs is 2.35 (WebKitGTK's own libraries); the shell 2.34.
+- **The build machine is Ubuntu 24.04** (Tai, 2026-10-14: "only build on 24"): the packages
+  need the build's glibc, 2.39 from 24.04, so they run on Ubuntu 24.04 and later, Fedora 40 and
+  later, Debian 13, Mint 22; not on Ubuntu 22.04, Debian 12 or Mint 21. (Built on 22.04, a VM,
+  2026-10-14, they needed 2.35; the checks below were made with those.)
 - **The AppImage takes libwayland and libdrm from the system** (`release_desktop.py`
   `APPIMAGE_SYSTEM_LIBRARIES`: removed from the AppDir, the image packed again with the packer
   Tauri downloads; linuxdeploy as Tauri runs it takes no exclusions). With 22.04's in it,
