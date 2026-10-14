@@ -115,3 +115,39 @@ def test_the_appimage_gets_the_static_runtime_and_keeps_its_image(
     appimage.write_bytes(old + b"not an image")
     with pytest.raises(SystemExit, match="no squashfs"):
         release._static_runtime(appimage)
+
+
+def test_the_appimage_is_packed_again_without_the_systems_graphics_libraries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ubuntu 22.04's libwayland and libdrm in the AppImage left Fedora 44's window empty
+    (WebKit had no EGL display under the newer Mesa, 2026-10-14): they are removed from the
+    AppDir and the image packed again from it; the rest of the AppDir stays, and an image
+    without them is left as it is. The packer is a stand-in that records its call."""
+    release = _script("release_desktop")
+    bundle = tmp_path / "appimage"
+    libs = bundle / "Sidecoach.AppDir" / "usr" / "lib"
+    libs.mkdir(parents=True)
+    names = ("libwayland-client.so.0", "libwayland-egl.so.1", "libdrm-b0291a67.so.2.4.0")
+    for name in (*names, "libwebkit2gtk-4.1.so.0", "libgtk-3.so.0"):
+        (libs / name).write_bytes(b"x")
+    image = bundle / "Sidecoach_0.1.89_amd64.AppImage"
+    image.write_bytes(b"tauri's")
+    packer = tmp_path / "packer"
+    packer.write_bytes(b"")
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def run(name: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
+        calls.append((command, env or {}))
+        Path((env or {})["OUTPUT"]).write_bytes(b"packed")
+
+    monkeypatch.setattr(release, "APPIMAGE_PACKER", packer)
+    monkeypatch.setattr(release, "_run", run)
+    release._without_system_libraries(image)
+    assert sorted(p.name for p in libs.iterdir()) == ["libgtk-3.so.0", "libwebkit2gtk-4.1.so.0"]
+    assert image.read_bytes() == b"packed"
+    ((command, env),) = calls
+    assert command == [str(packer), "--appdir", str(libs.parent.parent)]
+    assert env["OUTPUT"] == str(image) and env["APPIMAGE_EXTRACT_AND_RUN"] == "1"
+    release._without_system_libraries(image)  # nothing left to remove: not packed again
+    assert len(calls) == 1 and image.read_bytes() == b"packed"

@@ -56,7 +56,11 @@ SYSTEM_LIB_DIRS = (
 
 
 class PortalError(RuntimeError):
-    """The portal refused, or the stream cannot be read; the message says what to do."""
+    """The portal refused, or the stream cannot be read; the message says what to do.
+    `status` is the panel's status line when the session ends on it (the log alone said why,
+    and the panel showed "stopped")."""
+
+    status = "the desktop did not share the screen · Start tries again"
 
 
 class PortalCancelled(PortalError):
@@ -64,6 +68,16 @@ class PortalCancelled(PortalError):
     capture loop does not retry it (`fatal`), or every retry would ask again."""
 
     fatal = True
+    status = "screen sharing cancelled · Start asks again"
+
+
+class PortalStopped(PortalError):
+    """The shared screen's stream ended: the user stopped sharing from the desktop's own
+    indicator (or the screen went away). Final too: the loop reopened the capture with the
+    remembered choice, which shared the screen again without a word, against the user's stop."""
+
+    fatal = True
+    status = "screen sharing stopped from the desktop · Start shares it again"
 
 
 def request_path(unique_name: str, token: str) -> str:
@@ -230,6 +244,31 @@ class _Portal:
         if reply.header.message_type == MessageType.error:
             raise PortalError(f"the desktop gave no PipeWire stream: {_error_text(reply)}")
         return int(reply.body[0].to_raw_fd())
+
+    def wait_closed(self, give_up: threading.Event) -> bool:
+        """Block until the desktop closes the session -- the user stopped sharing from its
+        indicator; the stream itself says nothing then, and its last picture stayed -- or
+        until `give_up` is set. The only user of the connection meanwhile."""
+        from jeepney import MatchRule  # type: ignore[reportMissingImports]
+        from jeepney.bus_messages import message_bus  # type: ignore[reportMissingImports]
+
+        if not self.session:
+            return False
+        rule = MatchRule(
+            type="signal",
+            interface="org.freedesktop.portal.Session",
+            member="Closed",
+            path=self.session,
+        )
+        self.conn.send_and_get_reply(message_bus.AddMatch(rule), timeout=10)
+        with self.conn.filter(rule) as queue:
+            while not give_up.is_set():
+                try:
+                    self.conn.recv_until_filtered(queue, timeout=0.5)
+                except TimeoutError:
+                    continue
+                return True
+        return False
 
     def close(self) -> None:
         from jeepney import DBusAddress, new_method_call  # type: ignore[reportMissingImports]
@@ -447,7 +486,7 @@ class _Stream:
         if not self._first.wait(timeout):
             raise PortalError("the shared screen sends no picture")
         if self.failure:
-            raise PortalError(self.failure)
+            raise PortalStopped(self.failure)
         with self._lock:
             frame = self._frame
         if frame is None:
@@ -476,6 +515,10 @@ class PortalCapture:
         self._stream: _Stream | None = None
         self._origin = (0, 0)
         self._refused: PortalCancelled | None = None
+        # The desktop closed the session (`_Portal.wait_closed`, watched on a thread of its
+        # own while the screen is shared), and the thread's stop.
+        self._closed = threading.Event()
+        self._watch: tuple[threading.Event, threading.Thread] | None = None
         self._open()
 
     def _open(self) -> None:
@@ -495,6 +538,17 @@ class PortalCapture:
             raise
         self._portal, self._stream = portal, stream
         self._origin = position or (0, 0)
+        self._closed.clear()
+        give_up = threading.Event()
+
+        def watch() -> None:
+            with contextlib.suppress(Exception):  # a broken bus: the stream decides
+                if portal.wait_closed(give_up):
+                    self._closed.set()
+
+        thread = threading.Thread(target=watch, name="portal-session", daemon=True)
+        thread.start()
+        self._watch = (give_up, thread)
 
     def monitors(self) -> list[Region]:
         assert self._stream is not None
@@ -504,6 +558,8 @@ class PortalCapture:
     def grab(self, region: Region) -> np.ndarray:
         if self._refused is not None:
             raise self._refused
+        if self._closed.is_set():
+            raise PortalStopped("the desktop stopped sharing the screen")
         if self._stream is None:
             raise PortalError("the screen is not shared")
         frame = self._stream.latest(FIRST_FRAME_TIMEOUT_S)
@@ -527,6 +583,11 @@ class PortalCapture:
             raise
 
     def close(self) -> None:
+        if self._watch is not None:  # first: it holds the portal's connection
+            give_up, thread = self._watch
+            give_up.set()
+            thread.join(timeout=2)
+            self._watch = None
         if self._stream is not None:
             self._stream.close()
             self._stream = None

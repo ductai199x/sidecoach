@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import signal
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 RULE_NAME = "70-sidecoach-input.rules"
 # The .deb's copy is the package's; an AppImage's goes where an administrator's rules go.
@@ -166,3 +168,27 @@ def allow_keyboards() -> tuple[bool, str]:
     if done.returncode != 0:
         return False, (done.stderr or done.stdout).strip() or f"exit {done.returncode}"
     return (True, "") if keyboards_readable() else (False, "the keyboards are still not readable")
+
+
+def from_appimage(env: Mapping[str, str] | None = None) -> bool:
+    """Running from an AppImage: its files are a mount its runtime takes away when told to
+    end."""
+    env = os.environ if env is None else env
+    return bool(env.get("APPIMAGE"))
+
+
+def quick_term(handle_exit: Callable[[int, Any], None]) -> Callable[[int, Any], None]:
+    """`handle_exit` (the server's signal handler) with SIGTERM ending the process at once.
+
+    SIGTERM comes from outside the app -- a logout, a shutdown -- and reaches every process of
+    it together, the AppImage's runtime too, which takes its mount away: the server's orderly
+    end then ran over files no longer there, and the sidecar died of SIGBUS, a crash report at
+    the next login (Fedora 44, 2026-10-14). The app's own quit never sends it (the shell asks
+    over HTTP, then kills)."""
+
+    def handle(sig: int, frame: Any) -> None:
+        if sig == signal.SIGTERM:
+            os._exit(0)
+        handle_exit(sig, frame)
+
+    return handle

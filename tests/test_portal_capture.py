@@ -23,6 +23,7 @@ from sidecoach.capture.portal_backend import (
     write_token,
 )
 from sidecoach.events import Region
+from tests.fakes import HANG_S
 
 
 @pytest.mark.parametrize(
@@ -105,6 +106,8 @@ def _capture(frame: np.ndarray, origin: tuple[int, int] = (0, 0)) -> PortalCaptu
     cap._stream = _Stream(frame)  # type: ignore[assignment]
     cap._origin = origin
     cap._refused = None
+    cap._closed = portal_backend.threading.Event()
+    cap._watch = None
     return cap
 
 
@@ -136,3 +139,85 @@ def test_once_refused_the_screen_is_not_asked_for_again(monkeypatch: pytest.Monk
     with pytest.raises(PortalCancelled) as raised:
         cap.grab(Region(0, 0, 4, 4))
     assert raised.value.fatal
+
+
+def test_the_desktop_closing_the_session_is_heard_and_ends_the_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stop sharing from GNOME's or KDE's indicator closes the portal's session, and the stream
+    says nothing: the last picture stayed and the session ran on it (KDE, 2026-10-14). The
+    session's Closed signal is watched while the screen is shared: once heard, every grab is
+    final. Closing the capture lets the watch go first (it holds the portal's connection)."""
+    from sidecoach.capture.portal_backend import PortalStopped
+
+    told = portal_backend.threading.Event()
+    watched: list[str] = []
+
+    class Portal:
+        def start(self, token: str | None) -> tuple[int, tuple[int, int], str]:
+            return 7, (0, 0), "token"
+
+        def pipewire_fd(self) -> int:
+            return 3
+
+        def wait_closed(self, give_up: object) -> bool:
+            watched.append("watching")
+            told.wait(HANG_S)
+            return not give_up.is_set()  # type: ignore[attr-defined]
+
+        def close(self) -> None:
+            watched.append("closed")
+
+    monkeypatch.setattr(portal_backend, "_Portal", Portal)
+    monkeypatch.setattr(portal_backend, "_Stream", lambda fd, node: _Stream(np.zeros((4, 4, 3))))
+    cap = PortalCapture()
+    assert cap.grab(Region(0, 0, 4, 4)).shape == (4, 4, 3)
+    told.set()  # the desktop's Closed
+    assert cap._watch is not None
+    cap._watch[1].join(HANG_S)
+    with pytest.raises(PortalStopped) as stopped:
+        cap.grab(Region(0, 0, 4, 4))
+    assert stopped.value.fatal
+
+    # A second capture, closed by the app: the watch is let go before the portal closes.
+    class Quiet(Portal):
+        def wait_closed(self, give_up: object) -> bool:
+            watched.append("watching")
+            give_up.wait(HANG_S)  # type: ignore[attr-defined]
+            return False
+
+    monkeypatch.setattr(portal_backend, "_Portal", Quiet)
+    watched.clear()
+    other = PortalCapture()
+    watch = other._watch
+    assert watch is not None
+    other.close()
+    assert not watch[1].is_alive() and other._watch is None
+    assert watched == ["watching", "closed"] and not other._closed.is_set()
+
+
+def test_sharing_stopped_from_the_desktop_ends_the_session_without_sharing_again() -> None:
+    """The user stops sharing from the desktop's indicator: the stream ends. The capture loop
+    took it for a passing failure and reopened the capture with the remembered choice, which
+    shared the screen again without a word. It is final now: the loop ends at once, never
+    reopening, and the panel says why on its status line, as for a cancelled dialog."""
+    from sidecoach.capture.loop import CaptureFailed, capture_loop
+    from sidecoach.ui.panel import _ended
+
+    stream = portal_backend._Stream.__new__(portal_backend._Stream)
+    stream._first = portal_backend.threading.Event()
+    stream._lock = portal_backend.threading.Lock()
+    stream._frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    stream.failure = "the desktop stopped sharing the screen"  # what the reader saw: EOS
+    stream._first.set()
+    cap = _capture(np.zeros((4, 4, 3), dtype=np.uint8))
+    cap._stream = stream
+    reopened: list[int] = []
+    cap.reopen = lambda: reopened.append(1)  # type: ignore[method-assign]
+    with pytest.raises(CaptureFailed) as failed:
+        next(capture_loop(cap, Region(0, 0, 4, 4), fps=10, retry_delay=0.0))
+    assert reopened == [] and "1 grabs failed" in str(failed.value)
+    assert _ended(failed.value) == "screen sharing stopped from the desktop · Start shares it again"
+    assert _ended(PortalCancelled("x")) == "screen sharing cancelled · Start asks again"
+    assert _ended(PortalError("x")).startswith("the desktop did not share the screen")
+    assert _ended(RuntimeError("a backend that says nothing")) == "stopped"

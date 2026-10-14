@@ -61,16 +61,21 @@ ESPEAK_COPY = "espeak-ng.dll"
 ESPEAK_COPIES = (ESPEAK_COPY, "libespeak-ng.so")
 
 
-def _mapped_libraries() -> set[str]:
+def _mapped_libraries(proc: Path = Path("/proc")) -> set[str]:
     """Linux: every file some process has mapped -- a copy in use, which Linux, unlike Windows,
     would let the sweep delete under it. Empty where /proc says nothing."""
     mapped: set[str] = set()
-    for maps in Path("/proc").glob("[0-9]*/maps"):
+    for maps in proc.glob("[0-9]*/maps"):
         try:
             text = maps.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        mapped.update(line.split(None, 5)[5] for line in text.splitlines() if line.count(" ") >= 5)
+        # address perms offset dev inode [path]: anonymous memory has no path, only the
+        # padding after its inode (the voice went silent on Linux over such a line).
+        for line in text.splitlines():
+            fields = line.split(None, 5)
+            if len(fields) == 6:
+                mapped.add(fields[5])
     return mapped
 
 

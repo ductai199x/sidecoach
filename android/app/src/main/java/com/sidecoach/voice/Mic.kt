@@ -260,6 +260,17 @@ class Listener(
     private val deliveries = LinkedBlockingQueue<Pair<FloatArray, Double>>()
     private var deliverer: Thread? = null
 
+    // Push-to-talk: the VAD hears the held frames on the listener thread, as the voice mode's
+    // start does -- two frames in a row over its bar are speech; a press held over silence is
+    // handed over as nothing (the recogniser made "yeah" of it, Tai 2026-10-14). [pttVad] is
+    // whether a VAD is there to ask (null: not asked yet this press); without one, all that was
+    // held is handed over.
+    private var presses = 0
+    private var pttChecked = 0
+    private var pttRun = 0
+    private var pttVad: Boolean? = null
+    private var pttSpoke = false
+
     private fun now(): Double = clock()
 
     // ---- control ---------------------------------------------------------------------------
@@ -308,6 +319,11 @@ class Listener(
             ptt = true
             buffer = ArrayList(pre)
             startedAt = now()
+            presses += 1
+            pttChecked = 0
+            pttRun = 0
+            pttVad = null
+            pttSpoke = false
         }
         onSpeechStart()
     }
@@ -361,6 +377,8 @@ class Listener(
             // exception (it silences the voice at once). Listening resumes with the first frame
             // after the voice stops.
             val echo = coachSpeaking()
+            var unheard: List<FloatArray> = emptyList()
+            var press = 0
             synchronized(lock) {
                 current = mode
                 if (current == "ptt") {
@@ -373,7 +391,13 @@ class Listener(
                             ptt = false
                             finish(discard = false)
                         } else {
-                            partial = partialDue()
+                            if (!pttSpoke) {
+                                unheard = ArrayList(buffer.subList(pttChecked, buffer.size))
+                                pttChecked = buffer.size
+                                press = presses
+                            }
+                            // No words on the screen before any were said.
+                            if (pttSpoke || pttVad == false) partial = partialDue()
                         }
                     } else if (echo) {
                         // Not held: the pre-roll a press would keep holds no coach's words.
@@ -385,6 +409,7 @@ class Listener(
                 }
             }
             if (current != "vad") {
+                if (unheard.isNotEmpty()) hearHeld(unheard, press)
                 partial?.let { onPartial?.invoke(it) }
                 continue
             }
@@ -449,6 +474,34 @@ class Listener(
         }
     }
 
+    /**
+     * The VAD on frames held under the push-to-talk key (outside the lock: it is the slow part),
+     * until speech is heard: two frames in a row over the voice mode's start.
+     */
+    private fun hearHeld(frames: List<FloatArray>, press: Int) {
+        var vad = synchronized(lock) { pttVad }
+        if (vad == null) {
+            vad = gate.load()
+            gate.reset()
+        }
+        if (!vad) {
+            synchronized(lock) { if (press == presses) pttVad = false }
+            return
+        }
+        var run = pttRun
+        for (frame in frames) {
+            run = if (gate.probability(frame).toDouble() >= endpointer.start) run + 1 else 0
+            if (run >= endpointer.startFrames) break
+        }
+        synchronized(lock) {
+            if (press == presses) {
+                pttVad = true
+                pttRun = run
+                pttSpoke = run >= endpointer.startFrames
+            }
+        }
+    }
+
     /** True (and stop growing) once an utterance has reached its maximum length. */
     private fun cap(): Boolean = buffer.size * HOP >= MAX_UTTERANCE_S * SAMPLE_RATE
 
@@ -469,7 +522,14 @@ class Listener(
         startedAt = null
         pre.clear()
         gate.reset()
-        val audio = if (kept.isNotEmpty() && !discard) concat(kept) else null
+        val silent = mode == "ptt" && pttVad == true && !pttSpoke
+        pttVad = null
+        var drop = discard
+        if (silent && kept.isNotEmpty() && !discard) {
+            drop = true
+            onEvent("debug", "push-to-talk held with nothing said, ignored")
+        }
+        val audio = if (kept.isNotEmpty() && !drop) concat(kept) else null
         val seconds = if (audio != null) audio.size.toDouble() / SAMPLE_RATE else 0.0
         if (audio == null || seconds < 0.25) {
             if (started != null) onDropped()

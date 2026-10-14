@@ -200,6 +200,65 @@ def test_an_utterance_that_comes_to_nothing_is_said() -> None:
         listener.set_mode("off")
 
 
+def test_a_press_held_over_silence_hands_over_nothing() -> None:
+    """Push-to-talk held with nothing said (Tai, 2026-10-14): the recogniser made "yeah" of
+    the silence and it went to the coach. The VAD hears what the key holds, on the listener
+    thread: without speech (two frames in a row over the voice mode's start) the press comes
+    to nothing, as a tap too short does, and no words show on the screen meanwhile; with
+    speech the whole press is handed over, the silence before the words included. Without a
+    VAD to ask, all that was held is handed over, as before."""
+    import queue as _queue
+
+    from sidecoach.voice.mic import HOP, Listener
+    from tests.fakes import HANG_S, SteppedMic
+
+    SPEECH, QUIET = 0.75, 0.0
+    dropped: list[str] = []
+    partials: list[int] = []
+    heard: _queue.Queue[np.ndarray] = _queue.Queue()
+    mic = SteppedMic()
+    gate = _LevelGate()
+    listener = Listener(
+        mic,  # type: ignore[arg-type]
+        gate,  # type: ignore[arg-type]
+        on_utterance=lambda audio, seconds: heard.put(audio),
+        on_dropped=lambda: dropped.append("dropped"),
+        on_partial=lambda audio: partials.append(len(audio)),
+        partial_every_s=0.0,
+    )
+
+    def hold(*values: float) -> None:
+        listener.press()
+        for value in values:
+            mic.frames.put(np.full(HOP, value, dtype=np.float32))
+        mic.steps.idle()
+        listener.release()
+
+    listener.set_mode("ptt")
+    try:
+        hold(*[QUIET] * 40)  # 1.3 s of silence
+        assert dropped == ["dropped"] and partials == [] and heard.empty()
+        # One loud frame is a click, not a word.
+        hold(*[QUIET] * 20, SPEECH, *[QUIET] * 20)
+        assert dropped == ["dropped", "dropped"] and partials == [] and heard.empty()
+        # Words after a pause: the whole press, and words on the screen once said.
+        hold(*[QUIET] * 20, *[SPEECH] * 10, *[QUIET] * 5)
+        said = heard.get(timeout=HANG_S)
+        assert len(said) == 35 * HOP and np.count_nonzero(said == SPEECH) == 10 * HOP
+        assert dropped == ["dropped", "dropped"] and partials
+        asked = gate.asked
+        # Speech heard, the rest of the press is not asked about.
+        hold(*[SPEECH] * 2, *[QUIET] * 30)
+        assert len(heard.get(timeout=HANG_S)) == 32 * HOP and gate.asked == asked + 2
+        # No VAD: the press is handed over whole, as before.
+        gate.load = lambda: False  # type: ignore[method-assign]
+        hold(*[QUIET] * 40)
+        assert len(heard.get(timeout=HANG_S)) == 40 * HOP and len(dropped) == 2
+    finally:
+        mic.steps.free()
+        listener.set_mode("off")
+
+
 def test_voice_mode_comes_once_setup_has_the_silero_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """Listening asked for before Setup fetched the Silero file falls back to push-to-talk; once
     the file is there, voice mode is asked for again (Setup's end does) and it comes, without a

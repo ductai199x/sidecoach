@@ -90,11 +90,11 @@ class VoiceLogTest {
         override fun close() = Unit
     }
 
-    private class Quiet : VoiceGate {
+    private class Talking : VoiceGate {
         override fun load() = true
-        override fun healthcheck() = true to "quiet"
+        override fun healthcheck() = true to "talking"
         override fun reset() = Unit
-        override fun probability(input: FloatArray) = 0f
+        override fun probability(input: FloatArray) = 1f
     }
 
     @Test
@@ -103,7 +103,7 @@ class VoiceLogTest {
         val heard = LinkedBlockingQueue<Double>()
         var first = true
         val mic = SteppedMic()
-        val listener = Listener(mic, Quiet(), onUtterance = { _, seconds ->
+        val listener = Listener(mic, Talking(), onUtterance = { _, seconds ->
             if (first) {
                 first = false
                 throw IllegalStateException("boom")

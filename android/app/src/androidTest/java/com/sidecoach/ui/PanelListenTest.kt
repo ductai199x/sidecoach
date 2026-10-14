@@ -643,6 +643,85 @@ class PanelListenTest {
         }
     }
 
+    /** Every frame is speech: what the key holds is handed over. */
+    private class TalkingGate : VoiceGate {
+        override fun load() = true
+        override fun healthcheck() = true to "talking"
+        override fun reset() = Unit
+        override fun probability(input: FloatArray): Float = 1f
+    }
+
+    /**
+     * Push-to-talk held with nothing said (Tai, 2026-10-14; `test_a_press_held_over_silence_hands_over_nothing`):
+     * the recogniser made "yeah" of the silence. Without speech (two frames in a row over the
+     * voice mode's start) the press comes to nothing and no words show meanwhile; with speech the
+     * whole press is handed over; without a VAD to ask, all that was held is handed over.
+     */
+    @Test
+    fun aPressHeldOverSilenceHandsOverNothing() {
+        val speech = 0.75f
+        val quiet = 0f
+        val dropped = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val partials = java.util.concurrent.CopyOnWriteArrayList<Int>()
+        val heard = LinkedBlockingQueue<FloatArray>()
+        val mic = SteppedMic()
+        var vad = true
+        val gate = object : VoiceGate {
+            @Volatile var asked = 0
+            override fun load() = vad
+            override fun healthcheck() = true to "level"
+            override fun reset() = Unit
+            override fun probability(input: FloatArray): Float {
+                asked += 1
+                return input[0]
+            }
+        }
+        val listener = Listener(
+            mic,
+            gate,
+            onUtterance = { audio, _ -> heard.put(audio) },
+            onDropped = { dropped.add("dropped") },
+            onPartial = { partials.add(it.size) },
+            partialEveryS = 0.0,
+        )
+        fun hold(vararg values: Float) {
+            listener.press()
+            for (v in values) mic.frames.put(FloatArray(HOP) { v })
+            mic.steps.idle()
+            listener.release()
+        }
+        fun count(said: FloatArray, value: Float) = said.count { it == value }
+        listener.setMode("ptt")
+        try {
+            hold(*FloatArray(40) { quiet }) // 1.3 s of silence
+            assertEquals(listOf("dropped"), dropped.toList())
+            assertTrue(partials.isEmpty() && heard.isEmpty())
+            // One loud frame is a click, not a word.
+            hold(*(FloatArray(20) { quiet } + speech + FloatArray(20) { quiet }))
+            assertEquals(2, dropped.size)
+            assertTrue(partials.isEmpty() && heard.isEmpty())
+            // Words after a pause: the whole press, and words on the screen once said.
+            hold(*(FloatArray(20) { quiet } + FloatArray(10) { speech } + FloatArray(5) { quiet }))
+            val said = heard.poll(HANG_MS, TimeUnit.MILLISECONDS)!!
+            assertEquals(35 * HOP, said.size)
+            assertEquals(10 * HOP, count(said, speech))
+            assertTrue(dropped.size == 2 && partials.isNotEmpty())
+            val asked = gate.asked
+            // Speech heard, the rest of the press is not asked about.
+            hold(*(FloatArray(2) { speech } + FloatArray(30) { quiet }))
+            assertEquals(32 * HOP, heard.poll(HANG_MS, TimeUnit.MILLISECONDS)!!.size)
+            assertEquals(asked + 2, gate.asked)
+            // No VAD: the press is handed over whole, as before.
+            vad = false
+            hold(*FloatArray(40) { quiet })
+            assertEquals(40 * HOP, heard.poll(HANG_MS, TimeUnit.MILLISECONDS)!!.size)
+            assertEquals(2, dropped.size)
+        } finally {
+            mic.steps.free()
+            listener.setMode("off")
+        }
+    }
+
     /**
      * The echo guard (Tai, 2026-10-02; `test_the_microphone_is_ignored_while_the_coach_speaks_but_not_a_held_key`):
      * while the coach's voice plays, what the microphone hears is ignored -- no utterance starts,
@@ -768,7 +847,7 @@ class PanelListenTest {
         val heard = java.util.concurrent.CopyOnWriteArrayList<Double>()
         val handed = LinkedBlockingQueue<Double>()
         val mic = SteppedMic()
-        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ ->
+        val listener = Listener(mic, TalkingGate(), onUtterance = { audio, _ ->
             heard.add(audio.size / 16000.0)
             handed.put(audio.size / 16000.0)
         })
@@ -823,7 +902,7 @@ class PanelListenTest {
             override fun close() = Unit
         }
         val heard = LinkedBlockingQueue<Double>()
-        val listener = Listener(mic, ScriptedGate(emptyList()), onUtterance = { audio, _ -> heard.put(audio.size / 16000.0) })
+        val listener = Listener(mic, TalkingGate(), onUtterance = { audio, _ -> heard.put(audio.size / 16000.0) })
         listener.setMode("ptt")
         try {
             listener.press()

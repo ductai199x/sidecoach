@@ -141,9 +141,9 @@ export async function buildTray(): Promise<void> {
     const { TrayIcon } = await import("@tauri-apps/api/tray");
     const { Menu, MenuItem, PredefinedMenuItem } = await import("@tauri-apps/api/menu");
     const { defaultWindowIcon } = await import("@tauri-apps/api/app");
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const win = getCurrentWindow();
-    const show = async () => { await win.show(); await win.unminimize(); await win.setFocus(); };
+    // The shell shows it, as a second launch does: on Linux it raises the window with the X
+    // server's time, which GNOME takes as asked for (src-tauri lib.rs `raise`).
+    const show = () => invoke("show_main_window").catch((e) => console.warn("show:", e));
     const menu = await Menu.new({
       items: [
         await MenuItem.new({ text: "Show Sidecoach", action: show }),

@@ -135,6 +135,14 @@ def _install(version: str) -> None:
 # runtime swapped for this one, pinned and checked.
 RUNTIME_URL = "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
 RUNTIME_SHA256 = "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+# Libraries the AppImage takes from the system it runs on, never the build machine's: they go
+# with the system's Mesa, which the AppImage never carries, and every desktop has them. With
+# Ubuntu 22.04's in it, WebKit could not make its EGL display under Fedora 44's newer Mesa and
+# the window stayed empty (2026-10-14). linuxdeploy, as Tauri runs it, takes no exclusions:
+# they are removed from the AppDir and the image packed again (`_without_system_libraries`).
+APPIMAGE_SYSTEM_LIBRARIES = ("libwayland-*", "libdrm*")
+# The AppImage packer Tauri downloads for its own build (one-time setup, docs/app.md).
+APPIMAGE_PACKER = Path.home() / ".cache" / "tauri" / "linuxdeploy-plugin-appimage.AppImage"
 
 
 def _elf_end(head: bytes) -> int:
@@ -163,6 +171,28 @@ def _runtime() -> bytes:
         cache.unlink()
         sys.exit(f"the AppImage runtime from {RUNTIME_URL} is not the pinned one")
     return data
+
+
+def _without_system_libraries(image: Path) -> None:
+    """`image` packed again from its AppDir without APPIMAGE_SYSTEM_LIBRARIES."""
+    appdirs = list(image.parent.glob("*.AppDir"))
+    if len(appdirs) != 1:
+        sys.exit(f"{image.name}: expected one AppDir beside it, found {len(appdirs)}")
+    libs = appdirs[0] / "usr" / "lib"
+    removed = sorted({path for pattern in APPIMAGE_SYSTEM_LIBRARIES for path in libs.glob(pattern)})
+    if not removed:
+        return
+    if not APPIMAGE_PACKER.exists():
+        sys.exit(f"{APPIMAGE_PACKER} is missing: Tauri downloads it with its first AppImage")
+    for path in removed:
+        path.unlink()
+    env = dict(os.environ, ARCH="x86_64", OUTPUT=str(image), LDAI_OUTPUT=str(image))
+    env["APPIMAGE_EXTRACT_AND_RUN"] = "1"  # the packer is an AppImage too; no FUSE here
+    image.unlink()
+    _run("repack-appimage", [str(APPIMAGE_PACKER), "--appdir", str(appdirs[0])], image.parent, env)
+    if not image.exists():
+        sys.exit(f"{image.name}: the AppImage was not packed again")
+    print(f"{image.name}: without {', '.join(p.name for p in removed)}", flush=True)
 
 
 def _static_runtime(image: Path) -> None:
@@ -242,7 +272,8 @@ def main() -> None:
 
     bundle = DESKTOP / "src-tauri" / "target" / "release" / "bundle"
     if not WINDOWS:
-        for image in bundle.glob(f"appimage/*{version}*.AppImage"):
+        for image in list(bundle.glob(f"appimage/*{version}*.AppImage")):
+            _without_system_libraries(image)
             _static_runtime(image)
     built = [p for p in bundle.rglob(f"*{version}*") if p.is_file()]
     for path in built:

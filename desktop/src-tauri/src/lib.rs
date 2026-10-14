@@ -473,8 +473,47 @@ fn show_main(app: &AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         places::shown(&window);
+        #[cfg(target_os = "linux")]
+        raise(&window);
+        #[cfg(not(target_os = "linux"))]
         let _ = window.set_focus();
     }
+}
+
+/// The main window shown and in front, from the tray's "Show Sidecoach" (the shell's own way,
+/// the one a second launch takes).
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    show_main(&app);
+}
+
+/// Linux: the window brought to the front with the X server's time. GNOME refuses a raise
+/// that carries no time (GTK's own, from `set_focus`) as focus stealing: a second launch or the
+/// tray's Show left the window behind the browser, or minimized, with only a "Sidecoach is
+/// ready" notice (Ubuntu 22.04 and Fedora 44, 2026-10-14).
+#[cfg(target_os = "linux")]
+fn raise(window: &tauri::WebviewWindow) {
+    let window = window.clone();
+    let main = window.clone();
+    let _ = main.run_on_main_thread(move || {
+        use gtk::glib::object::ObjectExt;
+        use gtk::glib::translate::ToGlibPtr;
+        use gtk::prelude::{GtkWindowExt, WidgetExt};
+        let Ok(gtk_window) = window.gtk_window() else {
+            return;
+        };
+        let time = gtk_window
+            .window()
+            .filter(|gdk_window| gdk_window.type_().name() == "GdkX11Window")
+            .map(|gdk_window| unsafe { gdk_x11_get_server_time(gdk_window.to_glib_none().0) })
+            .unwrap_or(0);
+        gtk_window.present_with_time(time);
+    });
+}
+
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn gdk_x11_get_server_time(window: *mut gtk::gdk::ffi::GdkWindow) -> u32;
 }
 
 /// The splash screen: a small frameless window over the desktop while the sidecar
@@ -840,10 +879,124 @@ fn without_appimage_env(cmd: &mut Command) {
     cmd.env_remove("GDK_BACKEND");
 }
 
+/// The AppImage's place in the menu and the dock (Tai, 2026-10-14): an AppImage is one file
+/// nothing installs, and GNOME showed its window with a gear and no name, and the app grid had
+/// no Sidecoach. At each start, a menu entry for the file as it is now (where it was moved to)
+/// and its icon, in the user's own data folder; written again only when they changed. The
+/// entry's TryExec hides it once the file is gone. Not when the .deb is installed: its entry
+/// is the one.
+#[cfg(target_os = "linux")]
+fn appimage_menu_entry() {
+    use std::path::PathBuf;
+    let (Some(image), Some(appdir)) = (std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"))
+    else {
+        return;
+    };
+    if std::path::Path::new("/usr/share/applications/Sidecoach.desktop").exists() {
+        return;
+    }
+    let data = match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(".local/share"),
+            None => return,
+        },
+    };
+    let appdir = PathBuf::from(appdir);
+    let icon_from = [
+        appdir.join("usr/share/icons/hicolor/256x256/apps/sidecoach.png"),
+        appdir.join("sidecoach.png"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file());
+    let icon = data.join("icons/hicolor/256x256/apps/sidecoach.png");
+    if let Some(from) = icon_from {
+        if let Ok(bytes) = std::fs::read(&from) {
+            write_if_changed(&icon, &bytes);
+        }
+    }
+    let entry = menu_entry(&image.to_string_lossy(), &icon.to_string_lossy());
+    write_if_changed(
+        &data.join("applications/sidecoach-appimage.desktop"),
+        entry.as_bytes(),
+    );
+}
+
+/// A tray on this desktop: something on the session bus shows status icons (KDE, Ubuntu's
+/// GNOME with its AppIndicator extension, most others). Plain GNOME has none, and a window
+/// hidden to the tray there could only come back by starting the app again.
+#[cfg(target_os = "linux")]
+fn tray_host() -> bool {
+    use gtk::gio;
+    use gtk::glib::{Variant, VariantTy};
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        return true; // no session bus to ask: as before
+    };
+    bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "NameHasOwner",
+        Some(&(("org.kde.StatusNotifierWatcher",)).into()),
+        Some(VariantTy::new("(b)").unwrap()),
+        gio::DBusCallFlags::NONE,
+        1000,
+        gio::Cancellable::NONE,
+    )
+    .ok()
+    .and_then(|reply: Variant| reply.child_value(0).get::<bool>())
+    .unwrap_or(true)
+}
+
+#[cfg(target_os = "linux")]
+fn write_if_changed(path: &std::path::Path, bytes: &[u8]) {
+    if std::fs::read(path).ok().as_deref() == Some(bytes) {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(err) = std::fs::write(path, bytes) {
+        eprintln!("menu entry: {}: {err}", path.display());
+    }
+}
+
+/// The desktop entry that starts the AppImage at `image`, with the icon at `icon`. The path is
+/// quoted as the Desktop Entry spec says (a space, a quote, `$` or a backslash in it), its `%`
+/// doubled, and every backslash of the result escaped once more as the file's strings are.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn menu_entry(image: &str, icon: &str) -> String {
+    let reserved = |c: char| " \t\n\"'\\><~|&;$*?#()`".contains(c);
+    let mut exec = image.replace('%', "%%");
+    if exec.chars().any(reserved) {
+        let mut quoted = String::from("\"");
+        for c in exec.chars() {
+            if matches!(c, '"' | '`' | '$' | '\\') {
+                quoted.push('\\');
+            }
+            quoted.push(c);
+        }
+        quoted.push('"');
+        exec = quoted;
+    }
+    let string = |s: &str| s.replace('\\', "\\\\");
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Sidecoach\n\
+         Comment=A chess coaching companion that watches your screen\n\
+         Categories=Education;\nExec={}\nTryExec={}\nIcon={}\n\
+         StartupWMClass=sidecoach\nTerminal=false\n",
+        string(&exec),
+        string(image),
+        string(icon)
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     webkit_defaults();
+    #[cfg(target_os = "linux")]
+    appimage_menu_entry();
     let sidecar = Sidecar {
         token: random_token(),
         ..Default::default()
@@ -874,6 +1027,7 @@ pub fn run() {
             sidecar_token,
             data_dir_command,
             open_data_folder,
+            show_main_window,
             shell_settings,
             set_shell_settings,
             open_window,
@@ -989,6 +1143,13 @@ pub fn run() {
                         .clone();
                     if close == "tray" {
                         api.prevent_close();
+                        #[cfg(target_os = "linux")]
+                        if !tray_host() {
+                            // No tray to bring a hidden window back from (GNOME without the
+                            // AppIndicator extension): the window goes to the dock instead.
+                            let _ = window.minimize();
+                            return;
+                        }
                         let _ = window.hide();
                     } else {
                         window.app_handle().exit(0);
@@ -1008,8 +1169,22 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_exited, keep_previous_log};
+    use super::{child_exited, keep_previous_log, menu_entry};
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn the_menu_entry_quotes_the_appimage_where_it_must() {
+        let plain = menu_entry("/home/a/Apps/Sidecoach.AppImage", "/home/a/icon.png");
+        assert!(plain.contains("\nExec=/home/a/Apps/Sidecoach.AppImage\n"));
+        assert!(plain.contains("\nTryExec=/home/a/Apps/Sidecoach.AppImage\n"));
+        assert!(plain.contains("\nIcon=/home/a/icon.png\n"));
+        assert!(plain.contains("\nStartupWMClass=sidecoach\n"));
+        // A space, a dollar and a percent: quoted, `$` escaped, `%` doubled, and the escaping
+        // backslash itself escaped as the file's strings are.
+        let odd = menu_entry("/home/a/My Apps/$x 100%.AppImage", "/i.png");
+        assert!(odd.contains("\nExec=\"/home/a/My Apps/\\\\$x 100%%.AppImage\"\n"), "{odd}");
+        assert!(odd.contains("\nTryExec=/home/a/My Apps/$x 100%.AppImage\n"), "{odd}");
+    }
 
     #[test]
     fn stopped_means_the_process_ended() {

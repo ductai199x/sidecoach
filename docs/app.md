@@ -636,6 +636,43 @@ for itself, and behave as on Windows, 1:1.
   captions' cross before making it click-through (tao unwrapped its missing GDK window and the
   app aborted when captions were turned on). The page takes its board's place from the shell
   (`innerPosition`), exact on X11 and Windows.
+- **The AppImage in the menu** (Tai, 2026-10-14): at each start it writes its desktop entry and
+  icon into the user's data folder (`lib.rs` `appimage_menu_entry`:
+  `~/.local/share/applications/sidecoach-appimage.desktop`, the icon under `icons/hicolor`),
+  again only when they changed (the file moved); `TryExec` hides it once the file is gone; not
+  when the .deb's entry is installed. The dock shows the knight and the app grid has Sidecoach.
+- **Close to the tray without a tray** (plain GNOME, Fedora's): no StatusNotifierWatcher on the
+  session bus, so the window is minimized to the dock instead of hidden (`lib.rs` `tray_host`);
+  a hidden window could only have come back by starting the app again.
+- **Push-to-talk held over silence** hands nothing over (Tai, 2026-10-14, every platform; the
+  phone's `Mic.kt` the same): the VAD hears the held frames on the listener thread, and a press
+  with no speech in it comes to nothing, as a tap too short does. The recogniser made "yeah" of
+  silence and it went to the coach.
+- **The build machine is Ubuntu 22.04**: the packages need the build's glibc, and built on 24.04
+  they needed 2.39 (no Ubuntu 22.04, Debian 12 or Mint 21). Built on 22.04 (a VM, 2026-10-14)
+  the newest any file in the AppImage needs is 2.35 (WebKitGTK's own libraries); the shell 2.34.
+- **The AppImage takes libwayland and libdrm from the system** (`release_desktop.py`
+  `APPIMAGE_SYSTEM_LIBRARIES`: removed from the AppDir, the image packed again with the packer
+  Tauri downloads; linuxdeploy as Tauri runs it takes no exclusions). With 22.04's in it,
+  WebKit's page process aborted under Fedora 44's Mesa ("Could not create default EGL display:
+  EGL_BAD_PARAMETER") and the window stayed empty.
+- **The coach's voice on Linux**: the sweep of espeak's copies read `/proc/*/maps` and failed on
+  anonymous memory (a line with no path), so the voice never loaded ("list index out of range");
+  fixed in `kokoro._mapped_libraries` (the 2026-10-13 round's own bug, never released).
+- **A second launch, or the tray's Show**, brings the window to the front with the X server's
+  time (`lib.rs` `raise`): GNOME took GTK's untimed raise for focus stealing and left the window
+  behind the browser or minimized, with a "Sidecoach is ready" notice. The tray's Show is the
+  shell's own command (`show_main_window`).
+- **Sharing stopped from the desktop** (GNOME's or KDE's indicator) ends the session and says
+  so on the status line ("screen sharing stopped from the desktop · Start shares it again"):
+  the portal's session `Closed` signal is watched while sharing (`PortalCapture`, the stream
+  itself says nothing and its last picture stayed), and it is final (`PortalStopped`): the loop
+  reopened the capture with the remembered choice, sharing the screen again behind the user's
+  back. A cancelled dialog and a refusal say theirs too (`panel._ended`); the log alone said why.
+- **Logout with the AppImage running**: SIGTERM reaches the runtime too, which takes its mount
+  away; the server's orderly end then hit missing files (SIGBUS, Fedora's crash notice at the
+  next login). From an AppImage the sidecar ends at once on SIGTERM (`linux.quick_term`); the
+  app's own quit asks over HTTP and is unchanged.
 
 **Checked** in VMs (VMware Workstation, headless), the game on a self-playing page:
 - Ubuntu 24.04, GNOME 46, Wayland, the AppImage: no FUSE 2; the window drawn; the keyring locked
@@ -652,20 +689,46 @@ for itself, and behave as on Windows, 1:1.
   with the panel's board on screen: no lock on it; a whole game read and coached; push-to-talk
   Right yes, Left no, with no prompt; closed, no process left. The AppImage starts there too.
 
-Seen once and not reproduced: on Xorg, GNOME Shell segfaulted twice while the test's own
-virtual input devices (ydotool, a uinput keyboard) came and went, and Sidecoach segfaulted
-seven seconds later each time; with the shell crashed or restarted on purpose, and with dozens
-of clicks and key holds, Sidecoach stayed up.
+Checked again (2026-10-14) with the packages built on 22.04:
+- Ubuntu 22.04, GNOME 42, Wayland, the AppImage (no FUSE 2): the window drawn, the knight in
+  the dock and the tray; Setup's downloads; the Share dialog, a whole game read and coached, the
+  choice remembered (no dialog at the next Start); the voice loaded; "Allow in every window",
+  the password, Right Ctrl over Firefox taken (and, nothing said, handed over as nothing), Left
+  Ctrl nothing; closed to the tray, a second launch brought the window to the front, focused.
+  The .deb: installed with apt (its dependencies all in 22.04), the rule in place, the key in
+  every window with no prompt, the window drawn, no AppImage menu entry written.
+- Fedora 44, GNOME 50 (no tray), Wayland, the AppImage: the window drawn (after the libwayland
+  fix); Setup; the Share dialog, a whole game read and coached; Allow through SELinux, Right yes,
+  Left no; closed with the tray setting: minimized, and a second launch restored it, focused;
+  Alt+F4 with the default: no process, no mount, no crash report; three stops by SIGTERM: no
+  crash report (each one had one before).
+- Fedora 44, KDE Plasma 6.7, Wayland, the AppImage: the knight in the taskbar and the system
+  tray; KDE's share dialog ("Allow restoring" ticked), whole games read move for move, Start again
+  with no dialog; Allow with KDE's own password dialog, Right yes, Left no; the session closed
+  from KDE's side: the session ended and said so, the screen not shared again.
+- Ubuntu 24.04, Xorg, the AppImage: `mss`, a whole game; with no rule and the device access of a
+  fresh boot, X11's own key listening: Right yes, Left no.
+- Ubuntu 26.04, GNOME 50, the .deb built on 22.04: installed with apt; the voice loaded; the
+  Share dialog, the game followed to its mate and the next game seen; Right yes, Left no.
 
-Not like Windows yet: the AppImage's window shows GNOME's generic icon in the dock (no desktop
-entry; the .deb has one); the tray needs the desktop's AppIndicator support (Ubuntu has it);
-Wayland shares one monitor, the one picked. CI does not build Linux, the updater's
-`latest.json` names only `windows-x86_64`, and `release_desktop.py --install` is Windows only.
+The Xorg segfaults of 2026-10-13 (GNOME Shell twice, then Sidecoach) were in GTK 3's own
+`libgdk-3` at the same offset as a crash of GNOME's own "something went wrong" dialog between
+them: a GTK bug, set off by the test tool making and removing virtual input devices within
+milliseconds; real devices do not come and go like that, and nothing of Sidecoach's is on the
+stack.
+
+KDE's share dialog once answered 2 (failure) to a choice made with Enter ("Pipewire stream is not
+ready" in its log); the same choice with Space, and every one after, shared. The status line says
+"the desktop did not share the screen · Start tries again". An AppImage stopped by SIGTERM
+leaves its runtime's mount point in /tmp (the runtime's own behaviour); nothing reads it.
+
+Not like Windows: Wayland's share dialog at the first Start (the desktop's rule; remembered
+after), and the push-to-talk permission from the AppImage (the .deb needs none). CI does not
+build Linux, and `release_desktop.py --install` is Windows only.
 
 ## Not done
 
-- **Linux:** the AppImage's desktop entry (its dock icon), Linux in CI, and a release of the
-  work under [Linux](#linux).
+- **Linux:** Linux in CI, and a release of the work under [Linux](#linux).
 - **The updater's release:** v0.1.88 is on GitHub (Windows, Android, the Linux preview) without
   the updater's `latest.json`, so the updater still has nothing to find.
 - **Start with the system:** `shell.json` has an `autostart` field and the page carries it,

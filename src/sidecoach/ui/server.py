@@ -1482,6 +1482,11 @@ def run_server(
     try:
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         uv = uvicorn.Server(config)
+        if sys.platform.startswith("linux"):
+            from sidecoach.linux import from_appimage, quick_term
+
+            if from_appimage():
+                uv.handle_exit = quick_term(uv.handle_exit)  # type: ignore[method-assign]
         app.state.exit_server = lambda: setattr(uv, "should_exit", True)
         uv.run(sockets=[sock])
     finally:

@@ -604,6 +604,14 @@ class _QuietGate:
         return 0.0
 
 
+class _TalkingGate(_QuietGate):
+    """Every frame is speech: what the key holds is handed over (a press over silence is
+    not, test_voice_hearing.py)."""
+
+    def probability(self, frame: Any) -> float:
+        return 1.0
+
+
 def test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go() -> None:
     """Voice finding 7: a held key buffered without end; a switch with the key down left it
     pressed, so the next press was ignored."""
@@ -620,7 +628,7 @@ def test_push_to_talk_stops_at_the_longest_utterance_and_a_mode_switch_lets_go()
     mic = SteppedMic()
     ear = Listener(
         mic,  # type: ignore[arg-type]
-        _QuietGate(),  # type: ignore[arg-type]
+        _TalkingGate(),  # type: ignore[arg-type]
         on_utterance=on_utterance,
     )
     ear.set_mode("ptt")
@@ -655,7 +663,7 @@ def test_a_45_second_question_held_on_the_key_is_handed_over_whole() -> None:
     mic = SteppedMic()
     ear = Listener(
         mic,  # type: ignore[arg-type]
-        _QuietGate(),  # type: ignore[arg-type]
+        _TalkingGate(),  # type: ignore[arg-type]
         on_utterance=lambda audio, seconds: handed.put(len(audio) / SAMPLE_RATE),
     )
     ear.set_mode("ptt")

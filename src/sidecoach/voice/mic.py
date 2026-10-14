@@ -5,7 +5,9 @@ sounddevice into a bounded queue -- if nobody drains it, the oldest frames are d
 can never grow. `Listener` consumes those frames on its own thread in one of two modes:
 
   push-to-talk  frames are kept between `press()` and `release()`, then handed over as one
-                utterance -- no VAD involved, no false triggers;
+                utterance -- the key decides when, and the VAD only whether anything was
+                said: a press held over silence is handed over as nothing (the recogniser
+                made "yeah" of it, Tai 2026-10-14);
   voice         Silero VAD decides: an utterance starts after two confident frames (and the
                 coach is cut off -- barge-in), keeps a short pre-roll so the first syllable
                 is not clipped, and ends after 400 ms of silence. Utterances are capped at
@@ -205,6 +207,15 @@ class Listener:
         self._reopen_tried = 0.0
         # The last frame was the coach's voice (the echo guard, `_run`).
         self._echoed = False
+        # Push-to-talk: the VAD hears the held frames on the listener thread (never the
+        # keyboard hook's), as the voice mode's start does -- two confident frames in a row
+        # are speech. `_ptt_vad` is whether a VAD is there to ask (None: not asked yet this
+        # press); without one, all that was held is handed over, as before.
+        self._presses = 0
+        self._ptt_checked = 0
+        self._ptt_run = 0
+        self._ptt_vad: bool | None = None
+        self._ptt_spoke = False
 
     # ---- control ------------------------------------------------------------------------
 
@@ -245,6 +256,11 @@ class Listener:
             self._ptt = True
             self._buffer = list(self._pre)
             self._started_at = time.monotonic()
+            self._presses += 1
+            self._ptt_checked = 0
+            self._ptt_run = 0
+            self._ptt_vad = None
+            self._ptt_spoke = False
         self._on_speech_start()
 
     def release(self) -> None:
@@ -275,6 +291,8 @@ class Listener:
             # the exception (it silences the voice at once). Listening resumes with the first
             # frame after the voice stops.
             echo = self._coach_speaking()
+            unheard: list[np.ndarray] = []
+            press = 0
             with self._lock:
                 mode = self.mode
                 if mode == "ptt":
@@ -288,13 +306,21 @@ class Listener:
                             self._ptt = False
                             self._finish(discard=False)
                             continue
-                        partial = self._partial_due()
+                        if not self._ptt_spoke:
+                            unheard = self._buffer[self._ptt_checked :]
+                            self._ptt_checked = len(self._buffer)
+                            press = self._presses
+                        # No words on the screen before any were said.
+                        if self._ptt_spoke or self._ptt_vad is False:
+                            partial = self._partial_due()
                     elif echo:
                         # Not held: the pre-roll a press would keep holds no coach's words.
                         self._pre.clear()
                     else:
                         self._pre.append(frame)
             if mode != "vad":
+                if unheard:
+                    self._hear_held(unheard, press)
                 if partial is not None:
                     self._on_partial(partial)  # type: ignore[misc]
                 continue
@@ -342,6 +368,31 @@ class Listener:
             if partial is not None:
                 self._on_partial(partial)  # type: ignore[misc]
 
+    def _hear_held(self, frames: list[np.ndarray], press: int) -> None:
+        """The VAD on frames held under the push-to-talk key (outside the lock: it is the
+        slow part), until speech is heard: two frames in a row over the voice mode's start."""
+        with self._lock:
+            vad = self._ptt_vad
+        if vad is None:
+            vad = self.gate.load()
+            self.gate.reset()
+        if not vad:
+            with self._lock:
+                if press == self._presses:
+                    self._ptt_vad = False
+            return
+        start, need = self.endpointer.start, self.endpointer.start_frames
+        run = self._ptt_run
+        for frame in frames:
+            run = run + 1 if self.gate.probability(frame) >= start else 0
+            if run >= need:
+                break
+        with self._lock:
+            if press == self._presses:
+                self._ptt_vad = True
+                self._ptt_run = run
+                self._ptt_spoke = run >= need
+
     def _reopen_if_stalled(self) -> None:
         """A microphone whose stream died is reopened, at most once every few seconds:
         it was never reopened, and the coach stayed deaf until the mode was switched
@@ -377,6 +428,11 @@ class Listener:
         self._started_at = None
         self._pre.clear()
         self.gate.reset()
+        silent = self.mode == "ptt" and self._ptt_vad is True and not self._ptt_spoke
+        self._ptt_vad = None
+        if silent and buffer and not discard:
+            discard = True
+            self._on_event("debug", "push-to-talk held with nothing said, ignored")
         audio = np.concatenate(buffer) if buffer and not discard else None
         seconds = len(audio) / SAMPLE_RATE if audio is not None else 0.0
         if audio is None or seconds < 0.25:

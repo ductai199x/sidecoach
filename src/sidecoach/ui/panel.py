@@ -266,6 +266,18 @@ ENGINE_TROUBLE = (
 )
 
 
+def _ended(exc: BaseException) -> str:
+    """The status a session that ended on `exc` stops on: the error's own word for the
+    player when it has one (`status`, as Wayland's screen sharing does: cancelled, stopped from
+    the desktop), on it or on what it wraps (the capture loop's CaptureFailed), else
+    "stopped"."""
+    for error in (exc, exc.__cause__):
+        status = getattr(error, "status", None)
+        if isinstance(status, str) and status:
+            return status
+    return "stopped"
+
+
 def _all_of(*steps: Callable[[], None]) -> None:
     """Each step on a thread of its own, all waited for; the first failure raised after."""
     failures: list[BaseException] = []
@@ -2324,7 +2336,13 @@ class PanelEngine:
         return self.settings.data_dir / kind / stamp
 
     def _unbuilt(
-        self, cap: Any, recorder: Any, events_log: IO[str] | None, store: Any, coaching: Any
+        self,
+        cap: Any,
+        recorder: Any,
+        events_log: IO[str] | None,
+        store: Any,
+        coaching: Any,
+        status: str = "stopped",
     ) -> None:
         """A session that failed while `_run` built it: what it had opened is closed, and the
         panel stopped as the end of `_run` stops it."""
@@ -2337,7 +2355,7 @@ class PanelEngine:
                 with contextlib.suppress(Exception):
                     one.close()
         self._record_failed = False
-        self._set(running=False, status="stopped", recording_dir=None)
+        self._set(running=False, status=status, recording_dir=None)
         self._emit("sys", "info", "engine stopped")
         self._log.close()
 
@@ -2540,7 +2558,7 @@ class PanelEngine:
             # as one whose loop failed: said, and the panel stopped. It killed this thread
             # silently, and the panel stayed on "running" (the audit of 2026-10-07).
             self._emit("sys", "error", f"engine stopped: {exc!r}")
-            self._unbuilt(cap, recorder, events_log, store, coaching)
+            self._unbuilt(cap, recorder, events_log, store, coaching, _ended(exc))
             return
 
         latest: Any = None
@@ -2556,6 +2574,7 @@ class PanelEngine:
         ticks = 0
         pipeline_ms: list[float] = []
         last_health = time.monotonic()
+        ended = "stopped"  # the status the session ends on: a reason when it ended on one
         try:
             tick_end = time.perf_counter()
             for frame_id, ts, frame in frames:
@@ -2716,6 +2735,7 @@ class PanelEngine:
                 tick_end = t_done
         except Exception as exc:  # noqa: BLE001 - report and shut down cleanly
             self._emit("sys", "error", f"engine stopped: {exc!r}")
+            ended = _ended(exc)
         finally:
             # Listening is left as it is: the warm-up opened it and `close()` lets it go, as
             # Start and Stop only start and stop reading the screen.
@@ -2767,7 +2787,7 @@ class PanelEngine:
             if cap is not None:
                 cap.close()
             self._record_failed = False  # a fresh Start may record again
-            self._set(running=False, status="stopped", recording_dir=None)
+            self._set(running=False, status=ended, recording_dir=None)
             self._emit("sys", "info", "engine stopped")
             self._log.close()
 
