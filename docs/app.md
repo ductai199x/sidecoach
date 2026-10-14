@@ -586,18 +586,40 @@ Tauri-cached `linuxdeploy-plugin-appimage` had to be replaced by its 1-alpha-202
 release.
 
 0.1.88's AppImage and `.deb` were built the same way (2026-10-13) and are on the GitHub
-release as a preview. They have never run on a real Linux desktop. The only capture backends
-are WGC and mss (X11): under Xvfb, the AppImage's own Python grabbed the screen with mss and
-`sidecoach detect` found a drawn board at its exact place; under WSLg (Wayland with XWayland)
-the grab fails with an X11 protocol error, and a Wayland desktop is expected to fail the same
-way: there is no xdg-desktop-portal backend for Wayland. CI does not build Linux, the
+release as a preview. The only capture backends are WGC and mss (X11): under Xvfb, the
+AppImage's own Python grabbed the screen with mss and `sidecoach detect` found a drawn board at
+its exact place; under WSLg (Wayland with XWayland) the grab fails with an X11 protocol error.
+
+The AppImage was then run on Ubuntu 24.04 (GNOME, a VMware Workstation VM, 2026-10-13), the
+game on a self-playing page in Firefox. Under Xorg it followed a whole game (13 plies, game
+over 1-0, the offline coach's mate line and review) and joined the next one. Under Wayland,
+capture fails: "31 grabs failed in a row: X11 Protocol Error", as under WSLg, since there is
+no xdg-desktop-portal backend. Found on the way, none fixed yet:
+
+- The AppImage does not start without FUSE 2, which Ubuntu 24.04 lacks
+  (`libfuse2t64`).
+- The window drew nothing, on Wayland and on Xorg, until WebKitGTK's DMA-BUF renderer was
+  turned off (`WEBKIT_DISABLE_DMABUF_RENDERER=1`): the VM's graphics; NVIDIA's driver is known
+  to do the same.
+- The sidecar's start waits on the keyring: `config.secrets_get` asks the Secret Service, which
+  shows "Choose password for new keyring" (no keyring yet) or "Authentication required" (locked,
+  as after automatic login). Unanswered for 120 s, the shell gives up: "the sidecar did not
+  announce a port in time".
+- Push-to-talk starts on Left Ctrl as well as Right Ctrl: on X11 the key arrives as plain
+  "ctrl" with no scan data, and `hotkey.matches_key` then matches it (so Ctrl+C in any window
+  dictates).
+- The page reports its own board's screen position about 37 px too high (the title bar's
+  height: board at y=138, reported 101; x right), so the mask that hides it from the vision
+  covers it only through its 24 px margin.
+
+CI does not build Linux, the
 updater's `latest.json` names only `windows-x86_64`, and `release_desktop.py --install` is
 Windows only.
 
 ## Not done
 
-- **Linux on a real desktop:** capture (a portal backend for Wayland), push-to-talk, the
-  frameless splash and the tray under a real compositor. See [Linux](#linux).
+- **Linux:** capture under Wayland (a portal backend), and the five findings under
+  [Linux](#linux); the tray and the frameless splash are unchecked.
 - **The updater's release:** v0.1.88 is on GitHub (Windows, Android, the Linux preview) without
   the updater's `latest.json`, so the updater still has nothing to find.
 - **Start with the system:** `shell.json` has an `autostart` field and the page carries it,

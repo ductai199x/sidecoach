@@ -230,9 +230,11 @@ app. Building it yourself: [android/README.md](android/README.md).
 
 **Linux (preview):** `Sidecoach_<version>_amd64.AppImage` (make it executable and run it) or
 `Sidecoach_<version>_amd64.deb` (`sudo apt install ./Sidecoach_<version>_amd64.deb`), x86-64.
-It is built and checked under WSL, not yet on a real Linux desktop. Watching the screen needs an
-X11 (Xorg) session; under Wayland, the default on recent Ubuntu and Fedora, it cannot see the
-screen yet.
+The AppImage needs FUSE 2 (`sudo apt install libfuse2t64` on Ubuntu 24.04). Watching the screen
+needs an X11 (Xorg) session; under Wayland, the default on recent Ubuntu and Fedora, it cannot
+see the screen yet. If the window opens blank, start it with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`. Checked on Ubuntu 24.04 in a virtual machine: under Xorg it
+followed a whole game and coached it.
 
 <details>
 <summary>Run from source</summary>
