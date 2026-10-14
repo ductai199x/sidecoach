@@ -12,6 +12,7 @@ thresholds in centipawns, because 50 centipawns at +8 is nothing and at 0.0 is a
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -28,6 +29,8 @@ import chess.engine
 
 from sidecoach.analysis.score import expected_score, game_over
 from sidecoach.events import Line
+
+log = logging.getLogger(__name__)
 
 # A principal variation can run thirty plies; nobody reads that far and events stay small.
 DEFAULT_PV_PLIES = 12
@@ -48,10 +51,17 @@ WDL_MODEL = "sf"
 DEFAULT_SCORE_MODEL = "human"
 
 
-def _lower_priority() -> None:
-    """In the engine's process before it starts (POSIX): below the player's own work."""
-    if sys.platform != "win32":
-        os.nice(5)
+def _lower_priority(engine: chess.engine.SimpleEngine) -> None:
+    """The engine's process below the player's own work (POSIX), once it has started: set in
+    the child before it ran (`preexec_fn`) is unsafe in a process with threads, as the sidecar
+    is -- the child can deadlock on a lock another thread held (the Linux audit, 2026-10-13)."""
+    if sys.platform == "win32":
+        return
+    try:
+        pid = engine.transport.get_pid()
+        os.setpriority(os.PRIO_PROCESS, pid, 5)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 - the engine runs all the same, at normal priority
+        log.warning("the engine's priority was not lowered: %s", exc)
 
 
 def _quit(engine: chess.engine.SimpleEngine) -> None:
@@ -159,12 +169,12 @@ class Engine:
         popen: dict[str, Any] = {}
         if self.low_priority and sys.platform == "win32":
             popen["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
-        elif self.low_priority:
-            popen["preexec_fn"] = _lower_priority
         try:
             engine = chess.engine.SimpleEngine.popen_uci(str(self.path), **popen)
         except Exception as exc:  # noqa: BLE001
             raise EngineUnavailable(f"cannot start {self.path}: {exc}") from exc
+        if self.low_priority:
+            _lower_priority(engine)
         options: dict[str, str | int | bool | None] = {}
         if "Threads" in engine.options:
             options["Threads"] = self.threads

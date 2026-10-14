@@ -128,6 +128,70 @@ def _install(version: str) -> None:
     print(f"install: Sidecoach {installed} at {exe}", flush=True)
 
 
+# The AppImage runtime Tauri's bundler puts in front of the image loads libfuse.so.2, which
+# Ubuntu stopped installing in 22.04: on a stock 24.04 the AppImage did not start ("AppImages
+# require FUSE to run", 2026-10-13). AppImage's type2 runtime is linked statically and needs no
+# FUSE 2. An AppImage is its runtime with the squashfs image after it: the image is kept, the
+# runtime swapped for this one, pinned and checked.
+RUNTIME_URL = "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
+RUNTIME_SHA256 = "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+
+
+def _elf_end(head: bytes) -> int:
+    """Where a 64-bit ELF file's own bytes end (its section headers come last): the offset
+    of the squashfs image an AppImage carries after its runtime."""
+    import struct
+
+    if head[:4] != b"\x7fELF" or head[4] != 2 or head[5] != 1:
+        raise ValueError("not a little-endian 64-bit ELF file")
+    shoff = struct.unpack_from("<Q", head, 0x28)[0]
+    shentsize, shnum = struct.unpack_from("<HH", head, 0x3A)
+    return shoff + shentsize * shnum
+
+
+def _runtime() -> bytes:
+    import hashlib
+    import urllib.request
+
+    cache = Path.home() / ".cache" / "sidecoach-build" / f"runtime-x86_64-{RUNTIME_SHA256[:12]}"
+    if not cache.exists():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(RUNTIME_URL, timeout=60) as response:
+            cache.write_bytes(response.read())
+    data = cache.read_bytes()
+    if hashlib.sha256(data).hexdigest() != RUNTIME_SHA256:
+        cache.unlink()
+        sys.exit(f"the AppImage runtime from {RUNTIME_URL} is not the pinned one")
+    return data
+
+
+def _static_runtime(image: Path) -> None:
+    """`image` with its runtime swapped for the static one (see RUNTIME_URL)."""
+    data = image.read_bytes()
+    start = _elf_end(data[:4096])
+    if data[start : start + 4] != b"hsqs":
+        sys.exit(f"{image.name}: no squashfs image after its runtime at {start}")
+    runtime = _runtime()
+    if data[:start] == runtime:
+        return
+    swapped = image.with_suffix(".swap")
+    swapped.write_bytes(runtime + data[start:])
+    swapped.chmod(0o755)
+    swapped.replace(image)
+    print(f"{image.name}: static runtime (no FUSE 2 needed)", flush=True)
+    # The updater's signature was made of the image as Tauri left it: made again of this one,
+    # or an update to it would fail its check (the Linux audit, 2026-10-13).
+    signature = image.with_name(image.name + ".sig")
+    if signature.exists() or os.environ.get("TAURI_SIGNING_PRIVATE_KEY"):
+        npm = shutil.which("npm")
+        if npm is None:
+            sys.exit("npm is not on PATH: the AppImage's updater signature cannot be made again")
+        signature.unlink(missing_ok=True)
+        _run("sign-appimage", [npm, "run", "tauri", "--", "signer", "sign", str(image)], DESKTOP)
+        if not signature.exists():
+            sys.exit(f"{image.name}: the updater signature was not made again")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n", 1)[0])
     parser.add_argument("--install", action="store_true", help="install it here (Windows)")
@@ -161,6 +225,13 @@ def main() -> None:
     npm = shutil.which("npm")
     if npm is None:
         sys.exit("npm is not on PATH")
+    if not WINDOWS:
+        # Into the .deb as they are on disk: a rule file is read, never run (a copy from
+        # Windows came out executable).
+        for path in (DESKTOP / "src-tauri" / "linux").glob("*.rules"):
+            path.chmod(0o644)
+        for path in (DESKTOP / "src-tauri" / "linux").glob("*.sh"):
+            path.chmod(0o755)
     command = [npm, "run", "tauri", "--", "build"]
     env = dict(os.environ)
     if not env.get("TAURI_SIGNING_PRIVATE_KEY"):
@@ -170,6 +241,9 @@ def main() -> None:
     _run("tauri", command, DESKTOP, env)
 
     bundle = DESKTOP / "src-tauri" / "target" / "release" / "bundle"
+    if not WINDOWS:
+        for image in bundle.glob(f"appimage/*{version}*.AppImage"):
+            _static_runtime(image)
     built = [p for p in bundle.rglob(f"*{version}*") if p.is_file()]
     for path in built:
         print(f"built: {path.relative_to(ROOT)} ({path.stat().st_size / 1e6:.0f} MB)")

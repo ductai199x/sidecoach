@@ -129,8 +129,13 @@ def _check_llm(settings: Settings) -> tuple[str, str]:
 
 def _check_capture(backend: str = "auto") -> tuple[str, str]:
     try:
-        from sidecoach.capture.wgc_backend import make_capture
+        from sidecoach.capture.wgc_backend import auto_backend, make_capture
 
+        if (auto_backend() if backend == "auto" else backend) == "portal":
+            # A grab would open the desktop's screen-sharing dialog: the doctor asks nothing.
+            from sidecoach.capture.portal_backend import portal_status
+
+            return portal_status()
         cap = make_capture(backend)
         try:
             monitors = cap.monitors()
@@ -234,7 +239,7 @@ def snap(
     folder = out or settings.data_dir / "screenshots"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    cap = make_capture(settings.capture.backend)
+    cap = make_capture(settings.capture.backend, settings.data_dir)
     try:
         monitors = cap.monitors()
         targets = [monitor] if monitor is not None else range(len(monitors))
@@ -279,7 +284,7 @@ def record(
 
     settings = load_settings(config)
     folder = out or settings.data_dir / "recordings" / time.strftime("%Y%m%d-%H%M%S")
-    cap = make_capture(settings.capture.backend)
+    cap = make_capture(settings.capture.backend, settings.data_dir)
     tracker = BoardTracker()
 
     try:
@@ -1994,7 +1999,7 @@ def watch(
     from sidecoach.vision.clock import ClockReader
 
     settings = load_settings(config)
-    cap = make_capture(settings.capture.backend)
+    cap = make_capture(settings.capture.backend, settings.data_dir)
     monitor, region = _monitor_region(cap, monitor)
     pipe = GamePipeline(clock=ClockReader())
     recorder: Recorder | None = None

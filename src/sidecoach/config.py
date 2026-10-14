@@ -13,10 +13,12 @@ OS credential store (`secrets_get`, `secrets_set`, through `keyring` when it is 
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import tomllib
@@ -49,17 +51,18 @@ class _Settings(BaseModel):
 class CaptureSettings(_Settings):
     backend: str = Field(
         default="auto",
-        description="Automatic picks Windows Graphics Capture when it is available, else GDI. "
-        "GDI can show a hardware-accelerated browser window frozen until it is "
-        "moved.",
+        description="Automatic picks Windows Graphics Capture on Windows, the desktop's screen "
+        "sharing on a Wayland desktop (it asks once which screen), else a direct grab. GDI can "
+        "show a hardware-accelerated browser window frozen until it is moved.",
         json_schema_extra=_extra(
-            choices=["auto", "wgc", "mss"],
+            choices=["auto", "wgc", "portal", "mss"],
             applies="next",
             label="How the screen is read",
             choice_labels={
                 "auto": "Automatic",
                 "wgc": "Windows Graphics Capture",
-                "mss": "GDI (mss)",
+                "portal": "Screen sharing (Wayland)",
+                "mss": "Direct grab (GDI, X11)",
             },
             advanced=True,
             section="Reading the screen",
@@ -908,8 +911,107 @@ def load_dotenv(path: str | os.PathLike[str] = ".env") -> dict[str, str]:
     return loaded
 
 
-def secrets_get(name: str) -> str | None:
-    """A secret from the OS credential store, or None (also when keyring is missing)."""
+def _secret_service() -> bool:
+    """Whether the credential store is the freedesktop Secret Service (Linux), which can lock
+    and ask for a password where Windows' Credential Manager never does."""
+    return sys.platform.startswith("linux")
+
+
+def _service_items(name: str) -> tuple[Any, list[Any]]:
+    """The Secret Service's items for `name` in every collection, locked ones included, and the
+    connection they came on (to close). Searching asks nothing: no collection is unlocked or
+    made, which keyring's own lookup does -- it opens the default collection first, and on a
+    desktop logged in automatically that was a "Choose password for new keyring" or an
+    "Authentication required" dialog the app's start waited on, two minutes and then a failed
+    start (Ubuntu 24.04, 2026-10-13)."""
+    import secretstorage  # type: ignore[import-not-found]
+
+    conn = secretstorage.dbus_init()
+    try:
+        items = list(
+            secretstorage.search_items(conn, {"service": KEYRING_SERVICE, "username": name})
+        )
+    except Exception:
+        conn.close()
+        raise
+    return conn, items
+
+
+def keys_file() -> Path:
+    """Linux: where the app keeps its keys -- a file only this user may read, beside the
+    settings. Windows' Credential Manager never asks for a password; the Secret Service locks
+    with the desktop's keyring, which after an automatic login asked at every start (Tai,
+    2026-10-13: the keyring dialog once, at the first launch, never again). A key found in the
+    keyring is moved here once (`secrets_get`, `unlock_secret`)."""
+    config = os.environ.get("SIDECOACH_CONFIG")
+    if config:
+        return Path(config).parent / "keys.json"
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "sidecoach" / "keys.json"
+
+
+def _keys_read() -> dict[str, str]:
+    try:
+        data = json.loads(keys_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if v} if isinstance(data, dict) else {}
+
+
+def _keys_write(keys: dict[str, str]) -> bool:
+    """The keys file written whole, readable by this user alone (0600, its folder 0700)."""
+    path = keys_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            path.parent.chmod(0o700)
+        temp = path.with_suffix(".tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(keys, f, indent=1)
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+        return True
+    except OSError:
+        return False
+
+
+def _keyring_secret(name: str, *, unlock: bool) -> str | None:
+    """The Secret Service's copy of `name`; behind a locked keyring None unless `unlock`
+    (which shows the desktop's unlock dialog and waits for it)."""
+    try:
+        conn, items = _service_items(name)
+    except Exception:  # noqa: BLE001 - no Secret Service on the bus: no store
+        return None
+    try:
+        for item in items:
+            if item.is_locked():
+                if not unlock:
+                    continue
+                item.unlock()
+                if item.is_locked():
+                    continue  # the dialog was dismissed
+            return item.get_secret().decode("utf-8")
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        conn.close()
+
+
+def secrets_get(name: str, *, unlock: bool = False) -> str | None:
+    """A secret from the OS credential store, or None (also when keyring is missing). On Linux
+    the app's keys file, else the keyring's copy, moved into the file so it is asked for
+    never again; one behind a locked keyring is None unless `unlock` (the desktop's unlock
+    dialog, waited on): only ever asked for off the app's start, and once."""
+    if _secret_service():
+        kept = _keys_read().get(name)
+        if kept:
+            return kept
+        value = _keyring_secret(name, unlock=unlock)
+        if value:
+            _keys_write({**_keys_read(), name: value})
+        return value
     try:
         import keyring  # type: ignore[import-not-found]
 
@@ -918,8 +1020,47 @@ def secrets_get(name: str) -> str | None:
         return None
 
 
+def secrets_locked(name: str) -> bool:
+    """Whether a secret is stored but only behind a locked keyring (Linux), asking nothing."""
+    if not _secret_service() or _keys_read().get(name):
+        return False
+    try:
+        conn, items = _service_items(name)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        return bool(items) and all(item.is_locked() for item in items)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        conn.close()
+
+
+def secrets_stored(name: str) -> bool:
+    """Whether a secret is stored at all, locked or not, asking nothing."""
+    return secrets_get(name) is not None or secrets_locked(name)
+
+
 def secrets_set(name: str, value: str | None) -> bool:
-    """Store (or with None, delete) a secret; False when there is no credential store."""
+    """Store (or with None, delete) a secret; False when there is no credential store. On
+    Linux in the keys file (`keys_file`): saving a key asks for no keyring password either."""
+    if _secret_service():
+        keys = _keys_read()
+        if value:
+            keys[name] = value
+        else:
+            keys.pop(name, None)
+            # A copy the keyring still holds would come back at the next start: gone too,
+            # where that asks nothing (an unlocked keyring).
+            with contextlib.suppress(Exception):
+                conn, items = _service_items(name)
+                try:
+                    for item in items:
+                        if not item.is_locked():
+                            item.delete()
+                finally:
+                    conn.close()
+        return _keys_write(keys)
     try:
         import keyring  # type: ignore[import-not-found]
 
@@ -935,7 +1076,8 @@ def secrets_set(name: str, value: str | None) -> bool:
 
 def load_secrets(settings: Settings) -> None:
     """Put the keys the settings need into the environment from the credential store,
-    unless the environment (or .env) already has them."""
+    unless the environment (or .env) already has them. Never asks: a key behind a locked
+    keyring is left for `unlock_secret`, after the start."""
     names = set(KEY_ENVS.values())
     if settings.llm.api_key_env:
         names.add(settings.llm.api_key_env)
@@ -944,6 +1086,19 @@ def load_secrets(settings: Settings) -> None:
             value = secrets_get(name)
             if value:
                 os.environ[name] = value
+
+
+def unlock_secret(name: str) -> bool:
+    """The key `name` from a locked keyring into the environment: the desktop asks for its
+    password (waited on here, so off any thread a start or a page waits for). True when the
+    key is now there; False when there was none to unlock or the dialog was dismissed."""
+    if name in os.environ or not secrets_locked(name):
+        return False
+    value = secrets_get(name, unlock=True)
+    if not value:
+        return False
+    os.environ.setdefault(name, value)
+    return True
 
 
 def settings_path(path: str | os.PathLike[str] | None = None) -> Path:

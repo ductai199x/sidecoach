@@ -53,7 +53,9 @@ def capture_loop(
             frame = backend.grab(region)
         except Exception as exc:  # noqa: BLE001
             failures += 1
-            if failures > grab_retries:
+            # A refusal (the desktop's screen-sharing dialog cancelled) is the user's answer:
+            # retried, it would ask again at every retry.
+            if getattr(exc, "fatal", False) or failures > grab_retries:
                 raise CaptureFailed(f"{failures} grabs failed in a row: {exc}") from exc
             with contextlib.suppress(Exception):  # the next grab decides if the capture is back
                 backend.reopen()

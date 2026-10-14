@@ -99,3 +99,24 @@ def test_an_engine_closed_while_its_process_starts_quits_it(
     assert engine._engine is None and len(started) == 1
     _gone, alive = psutil.wait_procs(started, timeout=30)
     assert not alive, "a Stockfish nobody closes"
+
+
+def test_on_posix_the_engine_runs_below_the_players_own_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lowered once it has started, by its pid (set in the child before it ran, `preexec_fn`,
+    was unsafe in the threaded sidecar; then read from the wrong attribute, and Stockfish ran
+    at normal priority on Linux: the Linux audit, 2026-10-13)."""
+    import types
+
+    from sidecoach.analysis import engine as engine_module
+
+    lowered: list[tuple[int, int, int]] = []
+    monkeypatch.setattr(engine_module.sys, "platform", "linux")
+    monkeypatch.setattr(engine_module.os, "PRIO_PROCESS", 0, raising=False)
+    monkeypatch.setattr(
+        engine_module.os, "setpriority", lambda *a: lowered.append(a), raising=False
+    )
+    fake = types.SimpleNamespace(transport=types.SimpleNamespace(get_pid=lambda: 4321))
+    engine_module._lower_priority(fake)  # type: ignore[arg-type]
+    assert lowered == [(0, 4321, 5)]

@@ -11,6 +11,7 @@ what took effect now, what waits for the next Start, and what needs a restart.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from typing import Any
 
@@ -23,8 +24,8 @@ from sidecoach.config import (
     Settings,
     drop_refused,
     save_settings,
-    secrets_get,
     secrets_set,
+    secrets_stored,
     unwritable,
 )
 from sidecoach.voice.voices import english_voices
@@ -87,6 +88,8 @@ def _secret_names(settings: Settings) -> list[str]:
 
 
 def _keyring_available() -> bool:
+    if sys.platform.startswith("linux"):
+        return True  # the app's own keys file (config.keys_file): always there to save into
     try:
         import keyring  # type: ignore[import-not-found]  # noqa: F401
 
@@ -106,7 +109,8 @@ def describe(settings: Settings) -> dict[str, Any]:
         "schema": schema,
         "path": str(settings.source),
         "secrets": {
-            name: bool(os.environ.get(name) or secrets_get(name))
+            # Stored behind a locked keyring counts as stored; asked about, it is not unlocked.
+            name: bool(os.environ.get(name) or secrets_stored(name))
             for name in _secret_names(settings)
         },
         "keyring": _keyring_available(),

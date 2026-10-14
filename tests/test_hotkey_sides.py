@@ -41,6 +41,31 @@ def test_the_hand_is_read_from_the_scan_data(
     assert matches_key(wanted, got, scan, extended) is expected
 
 
+@pytest.mark.parametrize(
+    ("wanted", "got", "keysym", "expected"),
+    [
+        # X11 (pynput's xorg backend): Left Ctrl comes as plain "ctrl", Control_L its keysym.
+        # Ctrl+C in any window started push-to-talk (Ubuntu 24.04, 2026-10-13).
+        ("ctrl_r", "ctrl", 0xFFE3, False),
+        ("ctrl_r", "ctrl_r", 0xFFE4, True),
+        ("ctrl_l", "ctrl", 0xFFE3, True),
+        ("ctrl", "ctrl", 0xFFE3, True),  # a generic setting wants either hand
+        ("shift_r", "shift", 0xFFE1, False),
+        ("shift_r", "shift_r", 0xFFE2, True),
+        ("alt_r", "alt", 0xFFE9, False),
+        ("alt_gr", "alt_gr", 0xFE03, True),
+        # A keysym that names no hand: a plain report matches, as it did.
+        ("ctrl_r", "ctrl", 0x61, True),
+    ],
+)
+def test_on_x11_the_hand_is_read_from_the_keysym(
+    wanted: str, got: str, keysym: int, expected: bool
+) -> None:
+    from sidecoach.voice.hotkey import x11_hand
+
+    assert matches_key(wanted, got, hand=x11_hand(keysym)) is expected
+
+
 def test_hand_of_knows_the_modifiers_only() -> None:
     assert hand_of("ctrl", 0x1D, True) == "r"
     assert hand_of("ctrl", 0x1D, False) == "l"

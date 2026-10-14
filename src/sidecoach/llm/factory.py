@@ -89,6 +89,13 @@ def _key_env(settings: LLMSettings, defaults: ProviderDefaults | None) -> str | 
     return defaults.api_key_env
 
 
+def key_name(settings: LLMSettings) -> str | None:
+    """The variable a provider made from `settings` reads its key from; None for none."""
+    if settings.provider == "none":
+        return None
+    return _key_env(settings, PROVIDER_DEFAULTS.get(settings.provider))
+
+
 def api_key_of(settings: LLMSettings) -> str | None:
     """The key a provider made from `settings` now would carry, or None: for a model kept and
     made again when the key changes (Game Review's kept the old one until a restart, the

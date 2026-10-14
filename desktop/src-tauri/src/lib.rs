@@ -157,7 +157,13 @@ fn embedded_python(app: &AppHandle) -> Option<PathBuf> {
 /// one, else `uv run` in the repository (development).
 fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
     let mut cmd = if let Some(python) = embedded_python(app) {
-        let mut c = Command::new(python);
+        let mut c = Command::new(&python);
+        // In the app's own resources, whatever folder the shell was started from: the sidecar
+        // reads a `.env` in its working folder, and Linux starts apps in the home folder, where
+        // one may hold anything (the Linux audit, 2026-10-13). Windows' was the install folder.
+        if let Ok(resources) = app.path().resource_dir() {
+            c.current_dir(resources);
+        }
         // Isolated: the embedded interpreter ignores the environment's PYTHON* variables
         // and the user's site-packages. An AppImage's launcher exports PYTHONHOME and
         // PYTHONPATH for any Python inside it, which sent this one looking for its
@@ -174,6 +180,8 @@ fn sidecar_command(app: &AppHandle, token: &str) -> Result<Command, String> {
         }
         c.args(["-m", "sidecoach", "panel"]);
         c.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
+        #[cfg(target_os = "linux")]
+        without_appimage_env(&mut c);
         c
     } else {
         let root = repo_root()
@@ -516,6 +524,23 @@ fn data_dir_command(app: AppHandle) -> String {
         .unwrap_or_default()
 }
 
+/// The data folder opened in the system's file manager (the drawer's "Open data folder"). The
+/// page asked for a command named `data_dir` that was never registered, and the opener's
+/// default permission does not open paths: the button did nothing (the Linux audit,
+/// 2026-10-13). Opened here, by the shell, it needs no permission of the page's.
+#[tauri::command]
+fn open_data_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = data_dir_command(app.clone());
+    if path.is_empty() {
+        return Err("no data folder".into());
+    }
+    let _ = std::fs::create_dir_all(&path);
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn shell_settings(shell: State<'_, Shell>) -> ShellSettings {
     shell.settings.lock().unwrap().clone()
@@ -570,6 +595,28 @@ fn page_report(app: &AppHandle) -> String {
     }
 }
 
+/// The pointer passes through `window`. On Linux a window built hidden has no GDK window until
+/// it is realized, and tao unwraps it: turning the captions on brought the whole app down
+/// ("called `Option::unwrap()` on a `None` value", event_loop.rs:457 -- Ubuntu 24.04,
+/// 2026-10-13). Realized first there, on GTK's thread, it never shows for that.
+fn click_through(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            if let Ok(gtk_window) = w.gtk_window() {
+                use gtk::prelude::WidgetExt;
+                gtk_window.realize();
+            }
+            let _ = w.set_ignore_cursor_events(true);
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window.set_ignore_cursor_events(true);
+    }
+}
+
 /// The captions' two windows, built hidden if they are not there yet: the box with the
 /// coach's words (`captions`) and the cross a box is dropped on to turn them off
 /// (`captions-cross`). Over every other window, without a frame or a taskbar button, and
@@ -602,7 +649,7 @@ async fn open_captions(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         if label == "w-captions-cross" {
             // Shown under a box being carried: the pointer passes through it to the box.
-            let _ = window.set_ignore_cursor_events(true);
+            click_through(&window);
         }
     }
     Ok(())
@@ -740,8 +787,63 @@ async fn open_window(app: AppHandle, route: String) -> Result<(), String> {
     Ok(())
 }
 
+/// WebKitGTK draws through DMA-BUF by default, and where the graphics driver cannot (a virtual
+/// machine's, NVIDIA's own) every window stayed blank, on Wayland and on X11 alike (Ubuntu
+/// 24.04, 2026-10-13). Shared memory draws everywhere; one set by the user is theirs.
+///
+/// The windows go through XWayland on a Wayland desktop, as the AppImage's launcher already
+/// sends them (GDK_BACKEND=x11): a Wayland window may not place itself, stay on top, or say
+/// where it is, so the captions box could not be put or dragged, Keep on top did nothing and
+/// no window came back where it was left (the Linux audit, 2026-10-13). Wayland only where
+/// there is no XWayland.
+#[cfg(target_os = "linux")]
+fn webkit_defaults() {
+    // Before any thread exists: GTK and WebKit read them as they start.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    if std::env::var_os("GDK_BACKEND").is_none() {
+        std::env::set_var("GDK_BACKEND", "x11,wayland");
+    }
+}
+
+/// The variables an AppImage's launcher points into its own folder (APPDIR): the library path,
+/// GStreamer's plugins, GTK's modules, the data dirs. They are for the shell's GTK and WebKit;
+/// the sidecar is a Python of its own, and with them it loaded the AppImage's GStreamer, which
+/// has no PipeWire plugin, for the Wayland screen. Each one is given back without the AppImage's
+/// entries, or removed when nothing else was in it.
+#[cfg(target_os = "linux")]
+fn without_appimage_env(cmd: &mut Command) {
+    let Some(appdir) = std::env::var_os("APPDIR") else {
+        return;
+    };
+    let appdir = appdir.to_string_lossy().trim_end_matches('/').to_string();
+    if appdir.is_empty() {
+        return;
+    }
+    for (name, value) in std::env::vars_os() {
+        let value = value.to_string_lossy();
+        if !value.contains(&appdir) {
+            continue;
+        }
+        let kept: Vec<&str> = value
+            .split(':')
+            .filter(|part| !part.is_empty() && !part.starts_with(&appdir))
+            .collect();
+        if kept.is_empty() {
+            cmd.env_remove(&name);
+        } else {
+            cmd.env(&name, kept.join(":"));
+        }
+    }
+    // Forced by the AppImage for its GTK; the sidecar draws no window.
+    cmd.env_remove("GDK_BACKEND");
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    webkit_defaults();
     let sidecar = Sidecar {
         token: random_token(),
         ..Default::default()
@@ -771,6 +873,7 @@ pub fn run() {
             splash_reveal,
             sidecar_token,
             data_dir_command,
+            open_data_folder,
             shell_settings,
             set_shell_settings,
             open_window,
@@ -913,8 +1016,13 @@ mod tests {
         // Nothing held: not an exit.
         assert!(!child_exited(&mut None));
         // A process that is alive (it waits on its stdin) is not stopped, however long.
-        let mut alive = Command::new("cmd")
-            .args(["/c", "pause"])
+        #[cfg(windows)]
+        let mut waiting = Command::new("cmd");
+        #[cfg(windows)]
+        waiting.args(["/c", "pause"]);
+        #[cfg(not(windows))]
+        let mut waiting = Command::new("cat");
+        let mut alive = waiting
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()

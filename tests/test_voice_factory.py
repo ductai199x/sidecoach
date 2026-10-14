@@ -6,6 +6,7 @@ from importlib.util import find_spec
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from sidecoach.config import Settings, VoiceSettings
 from sidecoach.voice import make_recogniser, make_tts
@@ -87,3 +88,21 @@ def test_copies_of_espeak_left_by_dead_processes_are_swept_and_nothing_else(tmp_
         assert sweep_espeak_copies(tmp_path) == 2
     assert not any(p.exists() for p in stale)
     assert busy.exists() and all((p / ESPEAK_COPY).exists() for p in kept)
+
+
+def test_linux_copies_are_swept_but_never_one_a_live_process_has_mapped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Linux the copy is libespeak-ng.so (eight piled up in /tmp after a few launches, the
+    Linux audit 2026-10-13), and Linux, unlike Windows, deletes a loaded file: a copy some
+    process has mapped (/proc/*/maps) is left to it."""
+    from sidecoach.voice import kokoro
+
+    for name in ("tmpdead0001", "tmplive0002"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "libespeak-ng.so").write_bytes(b"x")
+    live = tmp_path / "tmplive0002" / "libespeak-ng.so"
+    monkeypatch.setattr(kokoro.sys, "platform", "linux")
+    monkeypatch.setattr(kokoro, "_mapped_libraries", lambda: {str(live)})
+    assert kokoro.sweep_espeak_copies(tmp_path) == 1
+    assert not (tmp_path / "tmpdead0001").exists() and live.exists()

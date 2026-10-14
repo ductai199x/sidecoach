@@ -235,7 +235,7 @@ class BoardTracker:
             gray = self._gray.convert(frame_bgr)
             self._memo.clear()  # a new image: nothing computed on it yet
         if self.board is None:
-            if changed and (back := self._back_in_place(gray)) is not None:
+            if changed and (back := self._back_in_place(gray, frame_bgr)) is not None:
                 return back
             # Without a board on screen, searching every frame would stall capture. The
             # search near the last cell size is cheap and runs every few frames, so a
@@ -262,6 +262,18 @@ class BoardTracker:
                 self._lost = board_occupancy(seen_gray, seen.region, seen.cell_px)
                 self._seen = None
             return self._search(gray, frame_bgr, True)
+        if changed and self._vetoed(frame_bgr, candidate):
+            # The lock was taken on a frame where the panel's own board did not show its
+            # signature -- GNOME dims a window behind a dialog, and the screen-sharing one
+            # opens over the panel at Start: the step of three fell under the tolerance and the
+            # panel's board was followed (Ubuntu 26.04, 2026-10-14). Dropped as soon as it
+            # shows, and not taken back in place: the search goes on for the game's.
+            self.board = None
+            self.colours = None
+            self._last = None
+            self._seen = None
+            self.misses = 0
+            return self._search(gray, frame_bgr, True)
         readable = (
             self._readable_cells(gray, candidate.region, candidate.cell_px, self.colours)
             if self.colours is not None
@@ -278,17 +290,27 @@ class BoardTracker:
         self.last_cell_px = self.board.cell_px
         return self.board
 
-    def _back_in_place(self, gray: np.ndarray) -> BoardCandidate | None:
+    def _vetoed(self, frame_bgr: np.ndarray, board: BoardCandidate) -> bool:
+        """Whether the veto (`reject`) refuses `board` on this frame, counted."""
+        if self.reject is None or not self.reject(frame_bgr, board.region, board.cell_px):
+            return False
+        self.rejected += 1
+        return True
+
+    def _back_in_place(self, gray: np.ndarray, frame_bgr: np.ndarray) -> BoardCandidate | None:
         """The lost lock again, when this frame validates where it was: a cover lifted from a
         board that never moved. One fit, so it is tried on every changed frame; the searches'
         back-off kept a board back from under the dim between two puzzles unread for two
         ticks, and the next puzzle's first board, on screen for one, was never seen (the
-        puzzle sweep, 2026-10-03)."""
+        puzzle sweep, 2026-10-03). Not the panel's own board: the veto holds here too."""
         if self._last is None:
             return None
         board, colours = self._last
         fit, contrast = self._fit(gray, board.region, board.cell_px, colours)
         if not self._passes(fit, contrast):
+            return None
+        if self._vetoed(frame_bgr, board):
+            self._last = None
             return None
         self._lock(gray, replace(board, fit=fit, contrast=contrast), colours)
         self._full.reset()

@@ -497,6 +497,9 @@ class PanelEngine:
             "listen": "off",
             "ptt": False,
             "ptt_key": self.settings.voice.ptt_key,
+            # Linux, a Wayland desktop: the key works in Sidecoach's window only until the user
+            # allows it in every window (`allow_ptt_everywhere`); the page offers that once.
+            "ptt_allow": False,
             "heard": None,
             # What is being said, as recognised so far: text, whether the microphone is
             # still capturing it, and when it sends (a wall-clock ms timestamp, or null).
@@ -601,6 +604,7 @@ class PanelEngine:
                 # the splash waited on it (setup finding 18). The coach is ready to be
                 # asked; its first answer waits for the model, as without a warm-up.
                 threading.Thread(target=self._warm_model, name="warm-model", daemon=True).start()
+                threading.Thread(target=self._unlock_key, name="unlock-key", daemon=True).start()
                 if coaching.on:
                     self._stage("coach", "done", coaching.detail)
                 self._stage("ready", "done")
@@ -613,6 +617,26 @@ class PanelEngine:
                             stage["detail"] = f"{exc!r}"
             finally:
                 self._warm_done.set()
+
+    def _unlock_key(self) -> None:
+        """The model's key, when it is stored behind a locked keyring (Linux, a desktop logged
+        in automatically): the desktop asks for the keyring's password beside the running app,
+        and the coach is rebuilt with the key once given. Off the start, which never waits on
+        that dialog (it waited two minutes, then failed: Ubuntu 24.04, 2026-10-13)."""
+        from sidecoach.config import unlock_secret
+        from sidecoach.llm.factory import key_name
+
+        name = key_name(self.settings.llm)
+        if not name:
+            return
+        try:
+            unlocked = unlock_secret(name)
+        except Exception as exc:  # noqa: BLE001 - the keyring is the desktop's; the app goes on
+            self._emit("sys", "warn", f"keyring: {exc}")
+            return
+        if unlocked:
+            self._emit("sys", "info", f"keyring: {name} unlocked")
+            self.reprovision([name])
 
     def _warm_pieces(self) -> None:
         """The embedding net loaded and primed."""
@@ -1254,7 +1278,35 @@ class PanelEngine:
                 self._emit("voice", "warn", f"push-to-talk key: {self._hotkey.detail}")
         else:
             self._hotkey.stop()
+        self._set(ptt_allow=self._ptt_needs_permission())
         return self._listener.mode
+
+    def _ptt_needs_permission(self) -> bool:
+        """Whether the push-to-talk key, listened for, works in this window only until the
+        user allows it everywhere (Linux, a Wayland desktop)."""
+        return self._listener.mode == "ptt" and bool(
+            getattr(self._hotkey, "needs_permission", False)
+        )
+
+    def allow_ptt_everywhere(self) -> dict[str, Any]:
+        """Linux, a Wayland desktop: the user allows the push-to-talk key in every window. The
+        desktop asks for their password once (sidecoach.linux.allow_keyboards), off the
+        caller's thread; the key's listener is then started again and reads the keyboards."""
+        from sidecoach.linux import allow_keyboards
+
+        def run() -> None:
+            ok, why = allow_keyboards()
+            if not ok:
+                self._emit("voice", "warn", f"push-to-talk in every window: {why}")
+                return
+            self._hotkey.stop()
+            if self._listener.mode == "ptt":
+                self._hotkey.start()
+            self._set(ptt_allow=self._ptt_needs_permission())
+            self._emit("voice", "info", f"push-to-talk: {self._hotkey.detail}")
+
+        threading.Thread(target=run, name="allow-ptt", daemon=True).start()
+        return {"ok": True}
 
     def ptt(self, down: bool) -> None:
         """Push-to-talk pressed or released. Pressed, the coach goes quiet at once (the
@@ -2330,7 +2382,7 @@ class PanelEngine:
                 from sidecoach.cli import _monitor_region
                 from sidecoach.replay.recording import ChangeGate, Recorder
 
-                cap = make_capture(self.settings.capture.backend)
+                cap = make_capture(self.settings.capture.backend, self.settings.data_dir)
                 monitor, region = _monitor_region(cap, self.monitor)
                 screen_origin = (region.x, region.y)
                 self._emit(
@@ -2518,7 +2570,10 @@ class PanelEngine:
 
                     with self._lock:
                         excluded = list(self._exclude)
-                    if excluded:
+                    # A Wayland screen shared through the portal is a stream whose pixels the
+                    # page's screen coordinates do not map onto (Wayland tells no window where
+                    # it is): the board's own signature (vision.ownboard) keeps it out alone.
+                    if excluded and getattr(cap, "name", "") != "portal":
                         self.mask(frame, region, excluded)
 
                     gate.region = board_gate(pipe.board, region.w, region.h)

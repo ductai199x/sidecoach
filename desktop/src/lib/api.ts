@@ -259,6 +259,7 @@ export const panel = {
   correct: (body: { game_id: string; segment: number; ply: number; cause: string }) => post("/api/correct", body),
   exclude: (rect: { x: number; y: number; w: number; h: number }) => post("/api/exclude", rect),
   ptt: (down: boolean) => post("/api/ptt", { down }),
+  pttAllow: () => post("/api/ptt/allow", {}),
   cancelDictation: () => post<{ ok: boolean; text: string }>("/api/dictation/cancel"),
   dump: () => post<{ ok: boolean; path: string }>("/api/dump", {}, { timeout: SLOW_MS }),
   perf: (label: string, sample: Record<string, unknown>) => post("/api/perf", { label, sample }),
@@ -662,6 +663,8 @@ export type PanelState = {
   stt_ready?: boolean;
   ptt?: boolean;
   ptt_key?: string;
+  /** Linux, a Wayland desktop: the key works in Sidecoach's window only until allowed. */
+  ptt_allow?: boolean;
   heard?: string;
   /** What is being said, as recognised so far; `live` while the microphone still captures
    * it, `sends_at` (ms since the epoch) once it is about to be sent on its own. */

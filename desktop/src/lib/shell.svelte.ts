@@ -71,6 +71,28 @@ export function toggleTerminal(): void {
   prefs.setStr("fold", terminal.open ? "0" : "1");
 }
 
+// Where the window's page begins on the screen, in physical pixels, as the shell knows it:
+// asked in the background (one question at a time), the last answer kept. `screenY` plus the
+// outer height less the inner left out the title bar on Linux, where WebKitGTK reports the two
+// heights equal: the mask over the panel's own board sat 37 px high (Ubuntu, 2026-10-13).
+let inner: { x: number; y: number } | null = null;
+let innerAsking = false;
+
+/** The page's top-left on the screen in physical pixels; null until the shell has answered,
+ * undefined outside the shell (a browser tab, where `screenX` and `screenY` are all there is). */
+export function pageOrigin(): { x: number; y: number } | null | undefined {
+  if (!isTauri()) return undefined;
+  if (!innerAsking) {
+    innerAsking = true;
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().innerPosition())
+      .then((p) => { inner = { x: p.x, y: p.y }; })
+      .catch(() => { inner = null; })
+      .finally(() => { innerAsking = false; });
+  }
+  return inner;
+}
+
 // What only the shell has, for the drawer's rows (they were the menu bar's).
 
 export async function alwaysOnTop(): Promise<boolean> {
@@ -94,9 +116,8 @@ export async function openInBrowser(): Promise<void> {
 
 export async function openDataFolder(): Promise<void> {
   if (!isTauri()) return;
-  const path = await invoke<string>("data_dir").catch(() => "");
-  const opener = await import("@tauri-apps/plugin-opener").catch(() => null);
-  if (path && opener) await opener.openPath(path);
+  // The shell opens it: the page has no permission to open paths (src-tauri lib.rs).
+  await invoke("open_data_folder");
 }
 
 /** Quit the app, whatever closing the window is set to do: the shell kills the sidecar on

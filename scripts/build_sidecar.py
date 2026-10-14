@@ -161,6 +161,55 @@ def prune(root: Path) -> None:
             a.unlink(missing_ok=True)
 
 
+# Linux: PortAudio, which sounddevice loads for the voice and the microphone. Its Windows wheel
+# carries the library; on Linux it is the system's, and stock Ubuntu has none (no voice, no
+# microphone from the AppImage: the Linux audit, 2026-10-13). Built here for ALSA alone, which
+# every Linux desktop has (PipeWire and PulseAudio answer ALSA's "default"); Ubuntu's own build
+# would pull JACK in too. Found by sidecoach.linux.use_bundled_portaudio.
+PORTAUDIO_URL = "https://files.portaudio.com/archives/pa_stable_v190700_20210406.tgz"
+PORTAUDIO_SHA256 = "47efbf42c77c19a05d22e627d42873e991ec0c1357219c0d74ce6a2948cb2def"
+PORTAUDIO_LIB = "libportaudio.so.2"
+
+
+def portaudio() -> Path:
+    """libportaudio.so.2 built from the pinned source (cached between builds)."""
+    import hashlib
+    import tarfile
+    import urllib.request
+
+    cache = Path.home() / ".cache" / "sidecoach-build" / f"portaudio-{PORTAUDIO_SHA256[:12]}"
+    built = cache / PORTAUDIO_LIB
+    if built.exists():
+        return built
+    cache.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(PORTAUDIO_URL, timeout=120) as response:
+        data = response.read()
+    if hashlib.sha256(data).hexdigest() != PORTAUDIO_SHA256:
+        raise SystemExit(f"PortAudio from {PORTAUDIO_URL} is not the pinned source")
+    with tempfile.TemporaryDirectory(prefix="portaudio-") as scratch:
+        with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+            tar.extractall(scratch, filter="data")
+        src = Path(scratch) / "portaudio"
+        run(
+            "./configure",
+            "--without-jack",
+            "--without-oss",
+            "--disable-static",
+            "--prefix=/usr",
+            cwd=src,
+        )
+        run("make", f"-j{os.cpu_count() or 4}", cwd=src)
+        made = src / "lib" / ".libs" / "libportaudio.so.2.0.0"
+        shutil.copy2(made, built)
+    subprocess.run(["strip", "--strip-unneeded", str(built)], check=False)
+    needed = run("objdump", "-p", str(built))
+    linked = [ln.split()[-1] for ln in needed.splitlines() if ln.strip().startswith("NEEDED")]
+    print(f"PortAudio: {built.stat().st_size // 1024} KB, needs {', '.join(linked)}")
+    if any("jack" in lib for lib in linked):
+        raise SystemExit("PortAudio was built with JACK, which stock desktops lack")
+    return built
+
+
 def size(root: Path) -> int:
     return sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
 
@@ -184,6 +233,8 @@ def build(out: Path) -> None:
     run("uv", "pip", "install", "--python", str(python), "-r", str(req), cwd=neutral)
     run("uv", "pip", "install", "--python", str(python), "--no-deps", str(ROOT), cwd=neutral)
     prune(out)
+    if sys.platform.startswith("linux"):
+        shutil.copy2(portaudio(), out / "lib" / PORTAUDIO_LIB)
     # A marker the shell and doctor can show.
     (out / "SIDECOACH_BUILD").write_text(
         time.strftime("%Y-%m-%d %H:%M:%S") + "\n", encoding="utf-8"

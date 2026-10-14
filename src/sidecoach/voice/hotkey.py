@@ -14,7 +14,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import sys
 import threading
+import time
 from collections.abc import Callable
 from importlib.util import find_spec
 from typing import Any
@@ -82,8 +84,210 @@ def hand_of(generic: str, scan: int, extended: bool) -> str | None:
     return None
 
 
+# X11 names a modifier's hand in its keysym. pynput's X11 backend reports Left Ctrl, Shift and
+# Alt as plain "ctrl", "shift", "alt" (its Key.ctrl and Key.ctrl_l are one member there), with
+# no scan data: Left Ctrl started push-to-talk -- Ctrl+C in any window dictated (Ubuntu 24.04,
+# 2026-10-13). The keysym is the key's value's `vk`.
+_X11_HAND = {
+    0xFFE1: "l",  # Shift_L
+    0xFFE2: "r",  # Shift_R
+    0xFFE3: "l",  # Control_L
+    0xFFE4: "r",  # Control_R
+    0xFFE9: "l",  # Alt_L
+    0xFFEA: "r",  # Alt_R
+    0xFE03: "r",  # ISO_Level3_Shift (AltGr)
+}
+
+
+# Linux reads the key from the keyboard devices themselves (sidecoach.linux): the setting's name
+# to the kernel's key codes (linux/input-event-codes.h), each a name in evdev.ecodes. A
+# modifier's generic name holds by either hand; a sided one by its own only.
+_EVDEV_NAMED: dict[str, tuple[str, ...]] = {
+    "ctrl_r": ("KEY_RIGHTCTRL",),
+    "ctrl_l": ("KEY_LEFTCTRL",),
+    "ctrl": ("KEY_LEFTCTRL", "KEY_RIGHTCTRL"),
+    "alt_r": ("KEY_RIGHTALT",),
+    "alt_gr": ("KEY_RIGHTALT",),
+    "alt_l": ("KEY_LEFTALT",),
+    "alt": ("KEY_LEFTALT", "KEY_RIGHTALT"),
+    "shift_r": ("KEY_RIGHTSHIFT",),
+    "shift_l": ("KEY_LEFTSHIFT",),
+    "shift": ("KEY_LEFTSHIFT", "KEY_RIGHTSHIFT"),
+    "cmd_r": ("KEY_RIGHTMETA",),
+    "cmd_l": ("KEY_LEFTMETA",),
+    "cmd": ("KEY_LEFTMETA", "KEY_RIGHTMETA"),
+    "caps_lock": ("KEY_CAPSLOCK",),
+    "scroll_lock": ("KEY_SCROLLLOCK",),
+    "num_lock": ("KEY_NUMLOCK",),
+    "pause": ("KEY_PAUSE",),
+    "insert": ("KEY_INSERT",),
+    "delete": ("KEY_DELETE",),
+    "home": ("KEY_HOME",),
+    "end": ("KEY_END",),
+    "page_up": ("KEY_PAGEUP",),
+    "page_down": ("KEY_PAGEDOWN",),
+    "backspace": ("KEY_BACKSPACE",),
+    "tab": ("KEY_TAB",),
+    "space": ("KEY_SPACE",),
+    "enter": ("KEY_ENTER", "KEY_KPENTER"),
+    "menu": ("KEY_COMPOSE",),
+    "print_screen": ("KEY_SYSRQ",),
+    "up": ("KEY_UP",),
+    "down": ("KEY_DOWN",),
+    "left": ("KEY_LEFT",),
+    "right": ("KEY_RIGHT",),
+    "mouse_x1": ("BTN_SIDE",),
+    "mouse_x2": ("BTN_EXTRA",),
+    "mouse_middle": ("BTN_MIDDLE",),
+}
+_EVDEV_CHAR = {
+    ";": "KEY_SEMICOLON",
+    ",": "KEY_COMMA",
+    ".": "KEY_DOT",
+    "/": "KEY_SLASH",
+    "-": "KEY_MINUS",
+    "=": "KEY_EQUAL",
+    "[": "KEY_LEFTBRACE",
+    "]": "KEY_RIGHTBRACE",
+    "'": "KEY_APOSTROPHE",
+    "`": "KEY_GRAVE",
+    "\\": "KEY_BACKSLASH",
+}
+
+
+def evdev_names(name: str) -> tuple[str, ...]:
+    """The kernel key codes (evdev.ecodes names) the push-to-talk key `name` is held by;
+    empty for a key this does not know."""
+    name = (name or "").strip().lower()
+    if name in _EVDEV_NAMED:
+        return _EVDEV_NAMED[name]
+    if name.startswith("f") and name[1:].isdigit() and 1 <= int(name[1:]) <= 24:
+        return (f"KEY_F{int(name[1:])}",)
+    if len(name) == 1 and (name.isascii() and name.isalnum()):
+        return (f"KEY_{name.upper()}",)
+    if name in _EVDEV_CHAR:
+        return (_EVDEV_CHAR[name],)
+    return ()
+
+
+class EvdevListener(threading.Thread):
+    """The push-to-talk key read from every keyboard and mouse device this user may read
+    (Linux): held in any window, Wayland's or X11's, as on Windows. Devices plugged in later
+    are found within a second; one unplugged while the key is held lets the key go. Nothing
+    but the key's own code is looked at, and nothing is kept or logged: these devices carry
+    every key typed (see the keylogger note in GlobalPushToTalk)."""
+
+    RESCAN_S = 1.0
+
+    def __init__(
+        self, names: tuple[str, ...], on_press: Callable[[], None], on_release: Callable[[], None]
+    ) -> None:
+        super().__init__(name="ptt-evdev", daemon=True)
+        from evdev import ecodes  # type: ignore[import-not-found]
+
+        self._codes = {getattr(ecodes, n) for n in names if hasattr(ecodes, n)}
+        self._on_press = on_press
+        self._on_release = on_release
+        self._stop_event = threading.Event()
+        self._devices: dict[str, Any] = {}
+        self._holding: set[str] = set()  # the devices the key is down on
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def _rescan(self) -> None:
+        import evdev  # type: ignore[import-not-found]
+        from evdev import ecodes  # type: ignore[import-not-found]
+
+        for path in evdev.list_devices():
+            if path in self._devices or not os.access(path, os.R_OK):
+                continue
+            try:
+                device = evdev.InputDevice(path)
+            except OSError:
+                continue
+            if self._codes & set(device.capabilities().get(ecodes.EV_KEY, [])):
+                self._devices[path] = device
+            else:
+                device.close()
+
+    def _drop(self, path: str) -> None:
+        device = self._devices.pop(path, None)
+        if device is not None:
+            with contextlib.suppress(Exception):
+                device.close()
+        if path in self._holding:
+            self._holding.discard(path)
+            if not self._holding:
+                self._on_release()
+
+    def run(self) -> None:
+        import select
+
+        from evdev import ecodes  # type: ignore[import-not-found]
+
+        last_scan = 0.0
+        try:
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                if now - last_scan >= self.RESCAN_S:
+                    self._rescan()
+                    last_scan = now
+                if not self._devices:
+                    self._stop_event.wait(0.2)
+                    continue
+                by_fd = {device.fd: path for path, device in self._devices.items()}
+                try:
+                    ready, _, _ = select.select(list(by_fd), [], [], 0.2)
+                except (OSError, ValueError):
+                    ready = []
+                    for path in list(self._devices):
+                        self._drop(path)
+                for fd in ready:
+                    path = by_fd[fd]
+                    device = self._devices.get(path)
+                    if device is None:
+                        continue
+                    try:
+                        events = list(device.read())
+                    except OSError:  # unplugged
+                        self._drop(path)
+                        continue
+                    self._handle(path, events, ecodes.EV_KEY)
+        finally:
+            for path in list(self._devices):
+                self._drop(path)
+
+    def _handle(self, path: str, events: list[Any], ev_key: int) -> None:
+        """One device's events: the key down on the first device pressed, up when the last
+        lets go; 1 is down, 0 up, 2 the key's auto-repeat (one press already)."""
+        for event in events:
+            if event.type != ev_key or event.code not in self._codes:
+                continue
+            if event.value == 1 and path not in self._holding:
+                self._holding.add(path)
+                if len(self._holding) == 1:
+                    self._on_press()
+            elif event.value == 0 and path in self._holding:
+                self._holding.discard(path)
+                if not self._holding:
+                    self._on_release()
+
+
+X11_MOUSE = {"x1": "button8", "x2": "button9"}
+
+
+def x11_hand(keysym: int | None) -> str | None:
+    """ "l" or "r" for an X11 modifier keysym, or None."""
+    return _X11_HAND.get(keysym) if keysym is not None else None
+
+
 def matches_key(
-    wanted: str, got: str, scan: int | None = None, extended: bool | None = None
+    wanted: str,
+    got: str,
+    scan: int | None = None,
+    extended: bool | None = None,
+    hand: str | None = None,
 ) -> bool:
     """Whether a key reported as `got` is the key named `wanted` ("ctrl_r", "ctrl", "f9").
 
@@ -93,7 +297,8 @@ def matches_key(
     uses. Then the hardware's scan data says whose hand it was, so Left Ctrl, which a plain
     "ctrl" report would equally be, never starts push-to-talk (Tai, 2026-10-01: "why does my
     keyboard report right ctrl as only ctrl?" -- whatever the cause in his stack, the hand is
-    read from the scan code). Without scan data (another system), a plain report matches."""
+    read from the scan code). On X11, `hand` is the one the keysym names (`x11_hand`). Without
+    either (another system), a plain report matches."""
     if got == wanted:
         return True
     if got.startswith(wanted + "_"):
@@ -101,6 +306,8 @@ def matches_key(
     generic, _, side = wanted.partition("_")
     if side not in ("l", "r") or got != generic:
         return False
+    if hand is not None:
+        return hand == side
     if scan is None or extended is None:
         return True
     return hand_of(generic, scan, extended) == side
@@ -122,6 +329,9 @@ class GlobalPushToTalk:
         self._down = False
         self._lock = threading.Lock()
         self.detail = "off"
+        # Linux, a Wayland desktop: the key is heard in X11 windows only (Sidecoach's own)
+        # until the user allows reading the keyboards (sidecoach.linux.allow_keyboards).
+        self.needs_permission = False
         # Whether a virtual key is down now (Windows: GetAsyncKeyState); None elsewhere.
         self.key_down: Callable[[int], bool] | None = _windows_key_down if os.name == "nt" else None
 
@@ -135,6 +345,9 @@ class GlobalPushToTalk:
     def start(self) -> bool:
         if self._listener is not None:
             return True
+        self.needs_permission = False
+        if sys.platform.startswith("linux") and self.key and self._start_evdev():
+            return True
         ok, detail = self.healthcheck()
         self.detail = detail
         if not ok:
@@ -146,11 +359,42 @@ class GlobalPushToTalk:
                 self._listener = self._keyboard_listener(self.key)
             self._listener.daemon = True
             self._listener.start()
-            return True
         except Exception as exc:  # noqa: BLE001 - a bad key name or a headless box
             self.detail = f"global key unavailable: {exc}"
             self._listener = None
             return False
+        if self.needs_permission:
+            self.detail = (
+                f"hold {self.key} in Sidecoach's window; in every window once allowed "
+                "(this Wayland desktop gives no app the keys of another's window)"
+            )
+        return True
+
+    def _start_evdev(self) -> bool:
+        """Linux: the key read from the keyboard devices, in every window, when this user may
+        read them (sidecoach.linux). False to fall back to the X11 listener -- which on Wayland
+        hears X11 windows only, so the key then needs the user's permission (`needs_permission`)."""
+        from sidecoach.linux import keyboards_readable, wayland_session
+
+        names = evdev_names(self.key)
+        if not names:
+            return False
+        try:
+            readable = keyboards_readable()
+        except Exception:  # noqa: BLE001
+            readable = False
+        if not readable:
+            self.needs_permission = wayland_session()
+            return False
+        try:
+            listener = EvdevListener(names, self._press, self._release)
+            listener.start()
+        except Exception as exc:  # noqa: BLE001 - evdev missing or broken: the X11 listener
+            log.warning("evdev push-to-talk unavailable: %s", exc)
+            return False
+        self._listener = listener
+        self.detail = f"hold {self.key} from any window"
+        return True
 
     def stop(self) -> None:
         listener, self._listener = self._listener, None
@@ -219,6 +463,8 @@ class GlobalPushToTalk:
             if not isinstance(wanted, keyboard.Key):
                 return False
             vk = getattr(getattr(key, "value", None), "vk", None)
+            if os.name != "nt":
+                return matches_key(name, got, hand=x11_hand(vk))
             scan, extended = by_vk.get(vk, (None, None)) if vk is not None else (None, None)
             return matches_key(name, got, scan, extended)
 
@@ -241,6 +487,10 @@ class GlobalPushToTalk:
     def _mouse_listener(self, name: str) -> Any:
         from pynput import mouse  # type: ignore[reportMissingImports]
 
+        # X11 numbers the side buttons: back 8, forward 9 (pynput's xorg Button has no x1/x2,
+        # and the key never started there: the Linux audit, 2026-10-13).
+        if os.name != "nt":
+            name = X11_MOUSE.get(name, name)
         wanted = mouse.Button[name]
 
         def on_click(_x: int, _y: int, button: Any, pressed: bool) -> None:

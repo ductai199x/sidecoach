@@ -51,8 +51,14 @@
     "linux": {
       "deb": {
         "depends": [
-          "libportaudio2"
-        ]
+          "gstreamer1.0-pipewire",
+          "gstreamer1.0-plugins-base"
+        ],
+        "files": {
+          "/usr/lib/udev/rules.d/70-sidecoach-input.rules": "linux/70-sidecoach-input.rules"
+        },
+        "postInstallScript": "linux/postinst.sh",
+        "postRemoveScript": "linux/postrm.sh"
       }
     },
     "windows": {

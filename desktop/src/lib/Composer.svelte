@@ -223,6 +223,14 @@
   {#if notSent}
     <div class="not-sent" role="alert">Not sent — <button onclick={retry}>Retry</button></div>
   {/if}
+  {#if store.state.ptt_allow && keyName}
+    <!-- Linux, a Wayland desktop: no app hears another window's keys unless the user allows
+         it; once allowed, the key works in every window, as on Windows. -->
+    <div class="ptt-allow">
+      {keyName} works only in this window here —
+      <button title="Lets Sidecoach read the keyboard for {keyName}; asks for your password once" onclick={() => { void panel.pttAllow(); }}>Allow in every window</button>
+    </div>
+  {/if}
   <div class="chips-row">
     <button class="qchip" title="A nudge at the current disclosure level" onclick={() => quick("hint")}>Hint</button>
     <button class="qchip" title="The engine's move, then why" onclick={() => quick("move")}>Best move</button>

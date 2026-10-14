@@ -59,6 +59,26 @@ def test_capture_loop_gives_up_after_too_many_failures() -> None:
     assert backend.reopened == 3
 
 
+def test_a_refused_screen_is_not_asked_for_again() -> None:
+    """The desktop's screen-sharing dialog cancelled (Wayland) is the user's answer: the loop
+    stops at once instead of reopening the capture, which would show the dialog at every one
+    of its thirty retries."""
+
+    class Refused(RuntimeError):
+        fatal = True
+
+    class RefusedBackend(FlakyBackend):
+        def grab(self, region: Region) -> np.ndarray:
+            self.grabs += 1
+            raise Refused("screen sharing was cancelled")
+
+    backend = RefusedBackend(failures=0)
+    with pytest.raises(CaptureFailed, match="cancelled"):
+        for _ in capture_loop(backend, Region(0, 0, 8, 8), fps=100, retry_delay=0.0):
+            raise AssertionError("no frame should come")
+    assert backend.grabs == 1 and backend.reopened == 0
+
+
 def test_primary_monitor_is_the_one_at_the_origin() -> None:
     side = Region(-1080, 0, 1080, 1920)
     main = Region(0, 0, 2560, 1440)

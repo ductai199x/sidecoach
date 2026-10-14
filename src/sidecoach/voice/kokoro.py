@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -54,8 +55,23 @@ VOICES_FILE = "voices-v1.0.bin"
 STREAM_DEAD_S = 1.5
 # The voice's phonemizer copies espeak's library into a folder of its own under the system's
 # temp directory for each backend it makes, four a process, and on Windows removes them only
-# at a clean exit (`phonemizer.backend.espeak.api`).
+# at a clean exit (`phonemizer.backend.espeak.api`). On Linux the copy is libespeak-ng.so, and
+# they piled up the same way (eight in /tmp after a few launches, the Linux audit 2026-10-13).
 ESPEAK_COPY = "espeak-ng.dll"
+ESPEAK_COPIES = (ESPEAK_COPY, "libespeak-ng.so")
+
+
+def _mapped_libraries() -> set[str]:
+    """Linux: every file some process has mapped -- a copy in use, which Linux, unlike Windows,
+    would let the sweep delete under it. Empty where /proc says nothing."""
+    mapped: set[str] = set()
+    for maps in Path("/proc").glob("[0-9]*/maps"):
+        try:
+            text = maps.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        mapped.update(line.split(None, 5)[5] for line in text.splitlines() if line.count(" ") >= 5)
+    return mapped
 
 
 def sweep_espeak_copies(temp: Path | None = None) -> int:
@@ -68,11 +84,18 @@ def sweep_espeak_copies(temp: Path | None = None) -> int:
     import tempfile
 
     removed = 0
+    in_use = _mapped_libraries() if sys.platform.startswith("linux") else set()
     for folder in Path(temp or tempfile.gettempdir()).glob("tmp*"):
         try:
-            if not folder.is_dir() or [p.name for p in folder.iterdir()] != [ESPEAK_COPY]:
+            if not folder.is_dir():
                 continue
-            (folder / ESPEAK_COPY).unlink()
+            names = [p.name for p in folder.iterdir()]
+            if len(names) != 1 or names[0] not in ESPEAK_COPIES:
+                continue
+            copy = folder / names[0]
+            if str(copy) in in_use:
+                continue  # a live process's
+            copy.unlink()
             folder.rmdir()
             removed += 1
         except OSError:

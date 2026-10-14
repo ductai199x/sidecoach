@@ -1,0 +1,4 @@
+# Sidecoach: the user at the desktop may read keyboards and mice, for the push-to-talk key
+# held in any window (the active local session only: logind's uaccess).
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"

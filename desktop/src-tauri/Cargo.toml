@@ -34,6 +34,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.2"
 
+# Linux: GTK's own calls on the windows Tauri builds (the captions' cross is realized before it
+# is made click-through; lib.rs, open_captions). The version Tauri itself uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 # The installer's build: whole-program optimisation, one codegen unit -- the smallest,

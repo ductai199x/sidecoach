@@ -893,6 +893,12 @@ def build_app(engine: PanelEngine, token: str = "", *, background: bool = False)
         engine.ptt(body.down)
         return {"ok": True}
 
+    @app.post("/api/ptt/allow")
+    def ptt_allow() -> dict[str, Any]:
+        """Linux, a Wayland desktop: the push-to-talk key allowed in every window (the desktop
+        asks for the user's password once; `ptt_allow` in the state clears when it is done)."""
+        return engine.allow_ptt_everywhere()
+
     @app.post("/api/hear")
     async def hear(request: Request) -> dict[str, Any]:
         """A 16 kHz mono WAV in the body is treated as something the user said -- the way to

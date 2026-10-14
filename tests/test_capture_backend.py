@@ -14,9 +14,51 @@ def test_backends_are_chosen_by_name_and_unknown_names_are_refused() -> None:
     assert isinstance(make_capture("mss"), MssCapture)
     with pytest.raises(ValueError):
         make_capture("gdi++")
-    auto = make_capture("auto")
-    assert isinstance(auto, WgcCapture if available() else MssCapture)
-    assert auto.name in ("wgc", "mss")
+    if sys.platform == "win32":
+        auto = make_capture("auto")
+        assert isinstance(auto, WgcCapture if available() else MssCapture)
+        assert auto.name in ("wgc", "mss")
+
+
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        # Wayland lets no app grab the screen: the desktop's portal shares it.
+        ("linux", {"XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0"}, "portal"),
+        ("linux", {"WAYLAND_DISPLAY": "wayland-0"}, "portal"),
+        # An X11 session reads the screen directly, a stray Wayland socket or not.
+        ("linux", {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}, "mss"),
+        ("linux", {"XDG_SESSION_TYPE": "x11", "WAYLAND_DISPLAY": "wayland-0"}, "mss"),
+        ("linux", {"DISPLAY": ":0"}, "mss"),
+        # Without WGC, Windows grabs with GDI, whatever the environment says.
+        ("win32", {"XDG_SESSION_TYPE": "wayland"}, "mss"),
+    ],
+)
+def test_automatic_capture_follows_the_desktop(
+    monkeypatch: pytest.MonkeyPatch, platform: str, env: dict[str, str], expected: str
+) -> None:
+    from sidecoach.capture import wgc_backend
+
+    for name in ("XDG_SESSION_TYPE", "WAYLAND_DISPLAY", "DISPLAY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(wgc_backend, "available", lambda: False)
+    monkeypatch.setattr(wgc_backend.sys, "platform", platform)
+    assert wgc_backend.auto_backend() == expected
+
+
+def test_the_portal_keeps_what_the_user_chose_in_the_data_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """make_capture("portal") hands the data folder to the portal backend, where the token
+    that shares the same screen again without asking is kept."""
+    from sidecoach.capture import portal_backend
+
+    made: list[object] = []
+    monkeypatch.setattr(portal_backend, "PortalCapture", lambda state_dir: made.append(state_dir))
+    make_capture("portal", tmp_path)
+    assert made == [tmp_path]
 
 
 @pytest.mark.skipif(sys.platform != "win32" or not available(), reason="WGC is Windows-only")

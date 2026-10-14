@@ -79,3 +79,39 @@ def test_the_doctor_reports_voice_speech_and_gpu_and_survives_a_raising_check(
         assert row in result.output
     assert result.exit_code == 1  # an error row, reported; not a crash
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def _elf(size: int) -> bytes:
+    """A 64-bit little-endian ELF file of `size` bytes whose section headers end it."""
+    import struct
+
+    head = bytearray(size)
+    head[:6] = b"\x7fELF\x02\x01"
+    shentsize, shnum = 64, 2
+    struct.pack_into("<Q", head, 0x28, size - shentsize * shnum)
+    struct.pack_into("<HH", head, 0x3A, shentsize, shnum)
+    return bytes(head)
+
+
+def test_the_appimage_gets_the_static_runtime_and_keeps_its_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tauri's AppImage runtime loads libfuse.so.2, which stock Ubuntu 24.04 lacks: the AppImage
+    did not start (2026-10-13). The release swaps the runtime for the static one and keeps the
+    squashfs image after it byte for byte; a second pass changes nothing."""
+    release = _script("release_desktop")
+    old, new = _elf(512), _elf(768)
+    image = b"hsqs" + bytes(range(256)) * 4
+    appimage = tmp_path / "Sidecoach_0.1.89_amd64.AppImage"
+    appimage.write_bytes(old + image)
+    monkeypatch.setattr(release, "_runtime", lambda: new)
+    release._static_runtime(appimage)
+    assert appimage.read_bytes() == new + image
+    release._static_runtime(appimage)
+    assert appimage.read_bytes() == new + image
+    assert release._elf_end(new) == len(new)
+    with pytest.raises(ValueError):
+        release._elf_end(b"MZ" + bytes(100))
+    appimage.write_bytes(old + b"not an image")
+    with pytest.raises(SystemExit, match="no squashfs"):
+        release._static_runtime(appimage)

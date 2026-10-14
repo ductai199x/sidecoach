@@ -87,3 +87,20 @@ def test_the_panels_board_near_the_old_size_does_not_hide_a_resized_game() -> No
         board = tracker.update(frame(50))
     assert board is not None and tracker.verified, board
     assert abs(board.region.x - 40) <= 2 and abs(board.cell_px - 50) <= 1.5, board
+
+
+def test_a_lock_taken_while_the_signature_was_hidden_is_dropped_when_it_shows() -> None:
+    """GNOME dims a window behind a dialog -- the screen-sharing one opens over the panel at
+    Start -- and the step of three fell under the tolerance: the tracker locked onto the
+    panel's board and kept it once the dim had lifted (Ubuntu 26.04, 2026-10-14). The veto is
+    checked again on every changed frame that validates the lock, and before a lock is taken
+    back in place."""
+    signed = board_image(signed=True)
+    dimmed = (signed.astype(np.float32) * 0.6).astype(np.uint8)
+    tracker = BoardTracker(reject=is_own_board)
+    assert tracker.update(dimmed) is not None, "the dimmed panel board was not adopted (no case)"
+    # The dim lifts: the lock goes, and it is not taken back where it was.
+    for _ in range(5):
+        board = tracker.update(signed)
+        assert board is None or not is_own_board(signed, board.region, board.cell_px), board
+    assert tracker.rejected >= 1 and tracker.board is None

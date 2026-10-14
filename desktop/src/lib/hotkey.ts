@@ -38,10 +38,14 @@ export function keyFromMouse(e: MouseEvent): string | null {
   return e.button === 3 ? "mouse_x1" : e.button === 4 ? "mouse_x2" : e.button === 1 ? "mouse_middle" : null;
 }
 
+const LINUX = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+
 /** The key as a person reads it: "Right Ctrl", "F9", "A". */
 export function keyName(key: string | null | undefined): string {
   const k = (key ?? "").trim().toLowerCase();
   if (!k) return "None";
+  // Linux names that key Super.
+  if (NAMES[k] && LINUX) return NAMES[k].replace("Windows key", "Super key");
   if (NAMES[k]) return NAMES[k];
   if (/^f\d{1,2}$/.test(k)) return k.toUpperCase();
   return k.length === 1 ? k.toUpperCase() : k;

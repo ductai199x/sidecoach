@@ -14,8 +14,10 @@ session is opened per monitor, once, and kept until `close`.
 from __future__ import annotations
 
 import contextlib
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -159,13 +161,32 @@ def available() -> bool:
     return True
 
 
-def make_capture(backend: str = "auto") -> Any:
-    """The capture backend: "wgc" (Windows Graphics Capture), "mss" (GDI), or "auto" --
-    WGC when it is installed, which on Windows it should be, else mss."""
+def auto_backend() -> str:
+    """What "auto" means here: WGC when it is installed (Windows), the desktop's
+    screen-sharing portal in a Wayland session (no app may grab a Wayland screen itself), else
+    a direct grab (GDI on Windows, X11 on Linux)."""
+    if available():
+        return "wgc"
+    if sys.platform.startswith("linux"):
+        from sidecoach.linux import wayland_session
+
+        if wayland_session():
+            return "portal"
+    return "mss"
+
+
+def make_capture(backend: str = "auto", state_dir: Path | None = None) -> Any:
+    """The capture backend: "wgc" (Windows Graphics Capture), "portal" (Wayland's
+    screen-sharing portal, which keeps what the user chose in `state_dir`), "mss" (GDI, X11),
+    or "auto" (`auto_backend`)."""
+    if backend == "auto":
+        backend = auto_backend()
     if backend == "mss":
         return MssCapture()
     if backend == "wgc":
         return WgcCapture()
-    if backend != "auto":
-        raise ValueError(f"capture backend must be auto, wgc or mss, got {backend!r}")
-    return WgcCapture() if available() else MssCapture()
+    if backend == "portal":
+        from sidecoach.capture.portal_backend import PortalCapture
+
+        return PortalCapture(state_dir)
+    raise ValueError(f"capture backend must be auto, wgc, portal or mss, got {backend!r}")

@@ -18,7 +18,7 @@
   import { boardHandle, fitBoard, layoutMode, mobileBoard as sizeMobileBoard, splitter } from "$lib/layout";
   import { prefs, store } from "$lib/panel.svelte";
   import { perf } from "$lib/perf.svelte";
-  import { buildTray, checkForUpdates, inShell, onPhone, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
+  import { buildTray, checkForUpdates, inShell, onPhone, pageOrigin, panes, terminal, toggleTerminal } from "$lib/shell.svelte";
 
   let mainEl = $state<HTMLElement | null>(null);
   let footer = $state<HTMLElement | null>(null);
@@ -60,14 +60,22 @@
   function reportBoardRect() {
     const r = boardEl?.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
+    // In the shell, where its page begins on the screen (`pageOrigin`); in a browser tab, the
+    // window's place and its chrome's height.
+    const origin = pageOrigin();
     const chromeH = Math.max(0, window.outerHeight - window.innerHeight);
-    // No board on screen (its pane hidden, the window hidden or minimised): nothing to mask.
-    const rect = !r || !r.width || !panes.board || document.hidden ? { x: 0, y: 0, w: 0, h: 0 } : {
-      x: Math.round((window.screenX + r.left) * dpr),
-      y: Math.round((window.screenY + chromeH + r.top) * dpr),
-      w: Math.round(r.width * dpr),
-      h: Math.round(r.height * dpr),
-    };
+    const left = origin ? origin.x : window.screenX * dpr;
+    const top = origin ? origin.y : (window.screenY + chromeH) * dpr;
+    // No board on screen (its pane hidden, the window hidden or minimised), or the shell has
+    // not said where the window is yet: nothing to mask.
+    const rect = !r || !r.width || !panes.board || document.hidden || origin === null
+      ? { x: 0, y: 0, w: 0, h: 0 }
+      : {
+        x: Math.round(left + r.left * dpr),
+        y: Math.round(top + r.top * dpr),
+        w: Math.round(r.width * dpr),
+        h: Math.round(r.height * dpr),
+      };
     const key = JSON.stringify(rect);
     if (key !== lastRect) { lastRect = key; panel.exclude(rect).catch(() => { lastRect = ""; }); }
   }

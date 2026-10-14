@@ -590,36 +590,82 @@ release as a preview. The only capture backends are WGC and mss (X11): under Xvf
 AppImage's own Python grabbed the screen with mss and `sidecoach detect` found a drawn board at
 its exact place; under WSLg (Wayland with XWayland) the grab fails with an X11 protocol error.
 
-The AppImage was then run on Ubuntu 24.04 (GNOME, a VMware Workstation VM, 2026-10-13), the
-game on a self-playing page in Firefox. Under Xorg it followed a whole game (13 plies, game
-over 1-0, the offline coach's mate line and review) and joined the next one. Under Wayland,
-capture fails: "31 grabs failed in a row: X11 Protocol Error", as under WSLg, since there is
-no xdg-desktop-portal backend. Found on the way, none fixed yet:
+The 0.1.88 AppImage was then run on Ubuntu 24.04 (GNOME 46, a VMware Workstation VM,
+2026-10-13): under Xorg it followed a whole game; under Wayland capture failed ("31 grabs
+failed in a row: X11 Protocol Error"), and it would not start without FUSE 2, drew a blank
+window, waited on the keyring at its start, took Left Ctrl for push-to-talk, and masked its own
+board 37 px high. Tai (2026-10-13): Linux must work on Wayland and X11 alike, the app choosing
+for itself, and behave as on Windows, 1:1.
 
-- The AppImage does not start without FUSE 2, which Ubuntu 24.04 lacks
-  (`libfuse2t64`).
-- The window drew nothing, on Wayland and on Xorg, until WebKitGTK's DMA-BUF renderer was
-  turned off (`WEBKIT_DISABLE_DMABUF_RENDERER=1`): the VM's graphics; NVIDIA's driver is known
-  to do the same.
-- The sidecar's start waits on the keyring: `config.secrets_get` asks the Secret Service, which
-  shows "Choose password for new keyring" (no keyring yet) or "Authentication required" (locked,
-  as after automatic login). Unanswered for 120 s, the shell gives up: "the sidecar did not
-  announce a port in time".
-- Push-to-talk starts on Left Ctrl as well as Right Ctrl: on X11 the key arrives as plain
-  "ctrl" with no scan data, and `hotkey.matches_key` then matches it (so Ctrl+C in any window
-  dictates).
-- The page reports its own board's screen position about 37 px too high (the title bar's
-  height: board at y=138, reported 101; x right), so the mask that hides it from the vision
-  covers it only through its 24 px margin.
+**What Linux does now** (2026-10-14; the code and the tests named):
 
-CI does not build Linux, the
-updater's `latest.json` names only `windows-x86_64`, and `release_desktop.py --install` is
-Windows only.
+- **The screen.** A Wayland session (`XDG_SESSION_TYPE`, `sidecoach.linux.wayland_session`)
+  is read through the xdg-desktop-portal ScreenCast interface (`capture/portal_backend.py`):
+  the desktop's "Share Screen" dialog at the first Start, its choice remembered (the restore
+  token, `data/screencast-restore-token`; GNOME's "Remember this selection" is ticked), the
+  frames from PipeWire through the system's GStreamer (ctypes: `pipewiresrc`, `videoconvert`,
+  `appsink`; the .deb depends on gstreamer1.0-pipewire and -plugins-base, stock on Ubuntu). A
+  cancelled dialog ends the session at once (`fatal`, not thirty retries). X11 keeps `mss`.
+  The doctor reports the portal without opening the dialog. The screen-rectangle mask is not
+  used on the portal's frames (Wayland tells no window where it is); the board's signature
+  (`vision/ownboard.py`) keeps the panel's board out, and the tracker now checks it again on
+  every changed frame and before taking a lock back in place: a lock taken while GNOME dimmed
+  the panel behind the share dialog followed the panel's own board (26.04, 2026-10-14).
+- **The push-to-talk key** is read from the keyboard devices (evdev, `voice/hotkey.py`
+  `EvdevListener`): held in any window, Wayland's included, Left and Right told apart by key
+  code, keyboards plugged in later found. Access is a udev rule (`linux/70-sidecoach-input.rules`,
+  logind `uaccess`: the user at the desktop, at once, no new login). The .deb installs it
+  (`postinst.sh`); from the AppImage the page offers "Allow in every window" once, which asks for
+  the password (`linux.allow_keyboards`, pkexec of a helper named for what it does). Until then
+  the X11 listener hears the key in Sidecoach's window. On X11 without the rule, the X11
+  listener reads the hand from the keysym (Left Ctrl is plain "ctrl" there); the mouse side
+  buttons are `button8`/`button9`.
+- **The key for the model** lives in a file only the user may read (`config.keys_file`,
+  `~/.config/sidecoach/keys.json`, 0600), as Windows' Credential Manager asks for nothing. A
+  key found in the keyring is moved there once: silently if the keyring is open, else with one
+  unlock dialog beside the running app (`panel._unlock_key`), never again. The start never waits
+  on a keyring.
+- **The AppImage** carries AppImage's static type2 runtime (`release_desktop.py`
+  `_static_runtime`, pinned and checked): no FUSE 2 needed. Its updater signature is made again
+  after the swap. It carries a PortAudio built for ALSA alone (`build_sidecar.py`, pinned
+  v19.7.0; Ubuntu ships none), which sounddevice is pointed at (`linux.use_bundled_portaudio`).
+- **The shell** turns WebKitGTK's DMA-BUF renderer off and sends its windows through XWayland
+  (`GDK_BACKEND=x11,wayland`) unless the user set them, so captions, Keep on top and window
+  places work from the .deb as from the AppImage; it starts the sidecar without the AppImage's
+  library and plugin paths, in the app's own folder (no stray `~/.env`); it realizes the
+  captions' cross before making it click-through (tao unwrapped its missing GDK window and the
+  app aborted when captions were turned on). The page takes its board's place from the shell
+  (`innerPosition`), exact on X11 and Windows.
+
+**Checked** in VMs (VMware Workstation, headless), the game on a self-playing page:
+- Ubuntu 24.04, GNOME 46, Wayland, the AppImage: no FUSE 2; the window drawn; the keyring locked
+  with a key in it: the app up at once, one unlock dialog, the key moved, no dialog at the next
+  start with the keyring locked again; "Allow in every window", the password, then Right Ctrl
+  held over Firefox recorded 1.5 s and Left Ctrl nothing; the Share dialog, a whole game read
+  move for move and coached (`e4 e5 Nf3 d6 Bc4 Bg4 Nc3 g6 Nxe5 Bxd1 Bxf7+ Ke7 Nd5#`), Stop and
+  Start with no dialog; captions over the browser; the window closed, no process left.
+- Ubuntu 24.04, Xorg, the AppImage: `mss`, a whole game; push-to-talk Right yes, Left no; the
+  mask at the panel's board exactly ((80,140) maximized, (860,138) tiled).
+- Ubuntu 26.04, GNOME 50, Wayland only, stock (no PortAudio, no FUSE 2), the .deb: installed
+  with apt, keyboards readable straight away; Setup's downloads (Stockfish's Linux build
+  included); the bundled PortAudio listing PipeWire's `default` and using it; the Share dialog
+  with the panel's board on screen: no lock on it; a whole game read and coached; push-to-talk
+  Right yes, Left no, with no prompt; closed, no process left. The AppImage starts there too.
+
+Seen once and not reproduced: on Xorg, GNOME Shell segfaulted twice while the test's own
+virtual input devices (ydotool, a uinput keyboard) came and went, and Sidecoach segfaulted
+seven seconds later each time; with the shell crashed or restarted on purpose, and with dozens
+of clicks and key holds, Sidecoach stayed up.
+
+Not like Windows yet: the AppImage's window shows GNOME's generic icon in the dock (no desktop
+entry; the .deb has one); the tray needs the desktop's AppIndicator support (Ubuntu has it);
+Wayland shares one monitor, the one picked. CI does not build Linux, the updater's
+`latest.json` names only `windows-x86_64`, and `release_desktop.py --install` is Windows only.
 
 ## Not done
 
-- **Linux:** capture under Wayland (a portal backend), and the five findings under
-  [Linux](#linux); the tray and the frameless splash are unchecked.
+- **Linux:** the AppImage's desktop entry (its dock icon), Linux in CI, and a release of the
+  work under [Linux](#linux).
 - **The updater's release:** v0.1.88 is on GitHub (Windows, Android, the Linux preview) without
   the updater's `latest.json`, so the updater still has nothing to find.
 - **Start with the system:** `shell.json` has an `autostart` field and the page carries it,
