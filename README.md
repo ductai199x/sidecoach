@@ -16,7 +16,7 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-e8b040"></a>
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-e8b040">
   <img alt="Android" src="https://img.shields.io/badge/Android-phone-e8b040">
-  <img alt="Linux preview" src="https://img.shields.io/badge/Linux-preview-e8b040">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-Wayland%20%7C%20X11-e8b040">
 </p>
 
 <p align="center">
@@ -228,13 +228,14 @@ play on, press **Start**, and play.
 from your browser or file manager), open it once, grant screen capture, and play in your chess
 app. Building it yourself: [android/README.md](android/README.md).
 
-**Linux (preview):** `Sidecoach_<version>_amd64.AppImage` (make it executable and run it) or
-`Sidecoach_<version>_amd64.deb` (`sudo apt install ./Sidecoach_<version>_amd64.deb`), x86-64.
-The AppImage needs FUSE 2 (`sudo apt install libfuse2t64` on Ubuntu 24.04). Watching the screen
-needs an X11 (Xorg) session; under Wayland, the default on recent Ubuntu and Fedora, it cannot
-see the screen yet. If the window opens blank, start it with
-`WEBKIT_DISABLE_DMABUF_RENDERER=1`. Checked on Ubuntu 24.04 in a virtual machine: under Xorg it
-followed a whole game and coached it.
+**Linux:** `Sidecoach_<version>_amd64.AppImage` (make it executable and run it; it adds itself
+to your app menu) or `Sidecoach_<version>_amd64.deb` (`sudo apt install
+./Sidecoach_<version>_amd64.deb`), x86-64, for Ubuntu 24.04 or later, Fedora 40 or later,
+Debian 13, Linux Mint 22 and others as recent. Wayland and X11 both work, on GNOME, KDE Plasma
+and the rest: under Wayland your desktop asks once which screen to share. The push-to-talk key
+works in every window; the .deb sets that up, and the AppImage asks for your password once
+(*Allow in every window*). Checked in virtual machines on Ubuntu and Fedora (GNOME and KDE): it
+followed whole games and coached them.
 
 <details>
 <summary>Run from source</summary>

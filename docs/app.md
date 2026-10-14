@@ -712,6 +712,20 @@ Checked again (2026-10-14) with the packages built on 22.04:
 - Ubuntu 26.04, GNOME 50, the .deb built on 22.04: installed with apt; the voice loaded; the
   Share dialog, the game followed to its mate and the next game seen; Right yes, Left no.
 
+The 0.1.89 release's own packages (built on Ubuntu 24.04, WSL), in fresh VMs (2026-10-14):
+- Ubuntu 24.04, stock, Wayland: the AppImage (no FUSE 2, no PortAudio installed): drawn, the
+  knight in the dock and the tray; Setup; the Share dialog, a whole game read and reviewed;
+  Allow, Right yes, Left no; closed, nothing left. The .deb: installed with apt, the key in every
+  window with no prompt, the remembered screen reused, the game followed to its mate.
+- Fedora 44 GNOME 50: the AppImage drawn; Setup; a whole game; Allow, Right yes, Left no; closed,
+  no process and no crash report. KDE Plasma 6.7: the share dialog, games read whole (11 of 13
+  with no hiccup; the screen locked and the display switched off by KDE's power saving, the board
+  was found again after the unlock), Right yes, Left no.
+- Two KDE games had one "resync: position adopted" each early in the run (the site's last-move
+  mark fitting no story right after a move); the app went on from the right position, but the
+  record of the game before it was cut. Not seen again in nine recorded games, three of them with
+  the host under full load; the cause was not found.
+
 The Xorg segfaults of 2026-10-13 (GNOME Shell twice, then Sidecoach) were in GTK 3's own
 `libgdk-3` at the same offset as a crash of GNOME's own "something went wrong" dialog between
 them: a GTK bug, set off by the test tool making and removing virtual input devices within
