@@ -156,6 +156,12 @@ class PanelApi(
                 ok(done())
             }
 
+            // The desktop's on Linux: the push-to-talk key allowed in every window (a keyboard
+            // permission). The phone has no keyboard key and never asks (`ptt_allow` is never set).
+            path == "/api/ptt/allow" -> ok(
+                JSONObject().put("ok", false).put("error", "the phone has no push-to-talk key to allow")
+            )
+
             path == "/api/hear" -> hear(raw)
 
             // The person typed over the dictation: it stays in the box, nothing sends itself.
@@ -544,7 +550,7 @@ class PanelApi(
                 "/api/say", "/api/voice", "/api/muted", "/api/dictation/cancel", "/api/record", "/api/shutdown",
                 "/api/exclude", "/api/end", "/api/setup/start", "/api/setup/cancel",
                 "/api/setup/remove_pack", "/api/reset_profile", "/api/clear_caches", "/api/correct",
-                "/api/listen", "/api/ptt", "/api/hear", "/api/games/import", "/api/pieces/own",
+                "/api/listen", "/api/ptt", "/api/ptt/allow", "/api/hear", "/api/games/import", "/api/pieces/own",
                 "/api/jobs/reviews", "/api/games/remove", "/api/games/restore",
             ),
             "PUT" to setOf("/api/settings"),
