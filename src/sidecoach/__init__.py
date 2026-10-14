@@ -2,7 +2,7 @@
 
 import sys as _sys
 
-__version__ = "0.1.88"
+__version__ = "0.1.89"
 
 if _sys.platform.startswith("linux"):
     # The app's own PortAudio, found before sounddevice is first imported (sidecoach.linux).
