@@ -488,7 +488,9 @@ the apps read it from the latest release. Signing after the build is what lets t
 fit the AppImage repacked by `release_desktop.py` and the Linux files built in WSL.
 `--base-url` points the files at a test server: a build made with `--config` naming a local
 `endpoints` address and `dangerousInsecureTransportProtocol` checks one (how 0.1.88 to 0.1.89 was
-tried on Windows 11, and the AppImage and the .deb on Ubuntu 24.04, 2026-10-16).
+tried on Windows 11, and the AppImage and the .deb on Ubuntu 24.04, 2026-10-16). v0.1.89 was
+the first release given `latest.json` (2026-10-16, after it was published): the released
+0.1.88 installer, from GitHub, then updated itself to 0.1.89 on Windows 11.
 
 **The installer** is Tauri's NSIS bundle: per user, no administrator prompt, the WebView2
 bootstrapper if needed. Its hook (`desktop/src-tauri/nsis/hooks.nsh`) compares its own file
@@ -768,9 +770,8 @@ build Linux, and `release_desktop.py --install` is Windows only.
 ## Not done
 
 - **Linux:** Linux in CI, and a release of the work under [Linux](#linux).
-- **The updater's release:** no release on GitHub has a `latest.json` yet (v0.1.89 is the
-  latest), so the daily check finds nothing and the drawer's Check for updates says "Could not
-  fetch a valid release JSON from the remote".
+- **The phone's updates:** the APK is installed by hand; nothing on the phone checks for a
+  newer one.
 - **The update's questions** are the page's `window.confirm`, titled by the webview
   ("tauri.localhost says" on Windows, "JavaScript - tauri://localhost" on Linux), with no
   progress shown while the file downloads.
