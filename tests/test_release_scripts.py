@@ -6,6 +6,7 @@ that raises."""
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -151,3 +152,39 @@ def test_the_appimage_is_packed_again_without_the_systems_graphics_libraries(
     assert env["OUTPUT"] == str(image) and env["APPIMAGE_EXTRACT_AND_RUN"] == "1"
     release._without_system_libraries(image)  # nothing left to remove: not packed again
     assert len(calls) == 1 and image.read_bytes() == b"packed"
+
+
+def test_the_update_manifest_offers_each_installer_only_its_own_file() -> None:
+    """latest.json (scripts/update_manifest.py): the Windows installer under both names the
+    updater asks for, the AppImage and the .deb each under its own installer's name only (no
+    plain linux-x86_64, which would hand an AppImage a .deb), the URLs at the release's own
+    downloads; a file of another version is not listed."""
+    manifest = _script("update_manifest").manifest
+    files = {
+        "Sidecoach_0.1.90_x64-setup.exe": "sig-exe",
+        "Sidecoach_0.1.90_amd64.AppImage": "sig-appimage",
+        "Sidecoach_0.1.90_amd64.deb": "sig-deb",
+        "Sidecoach_0.1.89_amd64.deb": "sig-old",
+    }
+    when = datetime(2026, 10, 16, 4, 30, tzinfo=UTC)
+    base = "https://github.com/ductai199x/sidecoach/releases/download/v0.1.90"
+    data = manifest("0.1.90", files, "What's new", base, when)
+    assert data["version"] == "0.1.90" and data["notes"] == "What's new"
+    assert data["pub_date"] == "2026-10-16T04:30:00Z"
+    platforms = data["platforms"]
+    assert sorted(platforms) == [
+        "linux-x86_64-appimage",
+        "linux-x86_64-deb",
+        "windows-x86_64",
+        "windows-x86_64-nsis",
+    ]
+    assert (
+        platforms["windows-x86_64"]
+        == platforms["windows-x86_64-nsis"]
+        == {
+            "signature": "sig-exe",
+            "url": base + "/Sidecoach_0.1.90_x64-setup.exe",
+        }
+    )
+    assert platforms["linux-x86_64-appimage"]["url"] == base + "/Sidecoach_0.1.90_amd64.AppImage"
+    assert platforms["linux-x86_64-deb"]["signature"] == "sig-deb"

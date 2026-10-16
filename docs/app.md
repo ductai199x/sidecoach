@@ -108,7 +108,11 @@ shortcut again, the installer of the installed version) shows the running window
 **The updater** (`tauri-plugin-updater`) reads `latest.json` from the GitHub release
 (`tauri.conf.json`, `plugins.updater`), verified with the minisign public key there. The page
 checks once a day, 20 s after start, and from the drawer's Check for updates; it downloads and
-installs only after a yes.
+installs only after a yes. Every build since the first installer (2026-09-21) carries this key and
+address, so a release with `latest.json` reaches all of them. Each installer takes its own file: the Windows app the
+setup exe (run passive, then the app starts again), an AppImage the new AppImage (written over
+itself where it lies), the .deb the new .deb (`pkexec dpkg -i`, the system's password prompt).
+The file is made at release time (below, "The updater's file").
 
 ### The page
 
@@ -466,6 +470,26 @@ uv run --no-sync python scripts/release_desktop.py --install
 Logs of each step go to `data/build/<step>-<version>.log`. For a quick try of a shell change,
 `npm run build:app:fast` builds the executable without LTO and without the installer.
 
+**The updater's file.** The installers are built without the updater's artifacts; the files are
+signed as they will be uploaded, and `latest.json` made of them:
+
+```
+uv run --no-sync python scripts/update_manifest.py <version> <dir> --notes <notes.txt>
+```
+
+`<dir>` holds `Sidecoach_<version>_x64-setup.exe`, `_amd64.AppImage` and `_amd64.deb` (a
+missing one is not offered); each is signed with `~/.tauri/sidecoach.key` (or
+`TAURI_SIGNING_PRIVATE_KEY_PATH`; the key stays on the release machine, never in the repo), the
+signature left beside it as `.sig`. `latest.json` lists the Windows file under
+`windows-x86_64-nsis` and `windows-x86_64`, the AppImage under `linux-x86_64-appimage` and the
+.deb under `linux-x86_64-deb` only, so neither Linux package is handed the other. The notes are
+the few plain lines the update's question shows. Upload `latest.json` with the release's files;
+the apps read it from the latest release. Signing after the build is what lets the signature
+fit the AppImage repacked by `release_desktop.py` and the Linux files built in WSL.
+`--base-url` points the files at a test server: a build made with `--config` naming a local
+`endpoints` address and `dangerousInsecureTransportProtocol` checks one (how 0.1.88 to 0.1.89 was
+tried on Windows 11, and the AppImage and the .deb on Ubuntu 24.04, 2026-10-16).
+
 **The installer** is Tauri's NSIS bundle: per user, no administrator prompt, the WebView2
 bootstrapper if needed. Its hook (`desktop/src-tauri/nsis/hooks.nsh`) compares its own file
 version with the installed exe's; when they match it starts the installed app and quits, so
@@ -538,9 +562,9 @@ the debug build's end-to-end check. The phone's test rules are its `docs/testing
 `.github/workflows/desktop.yml`, Windows only, two jobs: the Python checks and the tests
 that need no GPU; and the app (the page built and diffed against the committed copy, the
 embedded interpreter, the Tauri build, a smoke test of three launch/quit cycles through
-`scripts/shell_cycles.ps1`). On a `v*` tag it would also publish the installer and
-`latest.json` for the updater. No tag has been pushed, so the updater has never had a release
-to find; releases are installed locally with the scripts above.
+`scripts/shell_cycles.ps1`). On a `v*` tag it would also publish the installer and a
+Windows-only `latest.json`. The workflow is disabled, so releases are built and published by
+hand with the scripts above, `latest.json` included.
 
 ## Decisions
 
@@ -744,8 +768,12 @@ build Linux, and `release_desktop.py --install` is Windows only.
 ## Not done
 
 - **Linux:** Linux in CI, and a release of the work under [Linux](#linux).
-- **The updater's release:** v0.1.88 is on GitHub (Windows, Android, the Linux preview) without
-  the updater's `latest.json`, so the updater still has nothing to find.
+- **The updater's release:** no release on GitHub has a `latest.json` yet (v0.1.89 is the
+  latest), so the daily check finds nothing and the drawer's Check for updates says "Could not
+  fetch a valid release JSON from the remote".
+- **The update's questions** are the page's `window.confirm`, titled by the webview
+  ("tauri.localhost says" on Windows, "JavaScript - tauri://localhost" on Linux), with no
+  progress shown while the file downloads.
 - **Start with the system:** `shell.json` has an `autostart` field and the page carries it,
   but the settings page shows no control for it and the shell does nothing with it.
 - **The phone's distribution:** it is installed over adb with the debug key; there is no
